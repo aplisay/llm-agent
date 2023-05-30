@@ -1,0 +1,19 @@
+{
+  "name": "llm-agent",
+  "version": "0.0.2",
+  "description": "GPT3.5 voice agent",
+  "main": "index.js",
+  "scripts": {
+    "develop": "NODE_ENV=development node index",
+    "start": "NODE_ENV=production node index"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@jambonz/node-client-ws": "^0.1.6",
+    "axios": "^1.4.0",
+    "dotenv": "^16.0.3",
+    "pino": "^8.8.0",
+    "pino-pretty": "^10.0.0"
+  }
+}
