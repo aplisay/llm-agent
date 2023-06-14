@@ -5,11 +5,13 @@
   "main": "index.js",
   "scripts": {
     "develop": "NODE_ENV=development nodemon index",
-    "start": "NODE_ENV=production node index"
+    "start": "NODE_ENV=production node index",
+    "test": "NODE_ENV=development jest --silent=false"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@google-cloud/aiplatform": "^2.15.0",
     "@jambonz/node-client-ws": "^0.1.6",
     "axios": "^1.4.0",
     "dotenv": "^16.0.3",
@@ -17,6 +19,7 @@
     "pino-pretty": "^10.0.0"
   },
   "devDependencies": {
+    "jest": "^29.5.0",
     "nodemon": "^2.0.22"
   }
 }
