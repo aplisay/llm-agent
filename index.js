@@ -1,4 +1,4 @@
-require('dotenv').config({ path: `.env.${process.env.NODE_ENV}` });
+require('dotenv').config();
 const { createServer } = require('http');
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const Gpt35 = require('./lib/gpt35');

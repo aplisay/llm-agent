@@ -6,7 +6,7 @@
   "scripts": {
     "develop": "NODE_ENV=development nodemon index",
     "start": "NODE_ENV=production node index",
-    "test": "NODE_ENV=development jest --silent=false"
+    "test": "NODE_ENV=development jest"
   },
   "author": "",
   "license": "MIT",
