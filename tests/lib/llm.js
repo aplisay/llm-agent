@@ -1,17 +1,7 @@
 module.exports = function (Llm) {
-  const logger = require('pino')({
-    level: process.env.LOGLEVEL || 'info',
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true
-      }
-    }
-  });
-
 
   test('Initialises', () => {
-    model = new Llm(logger, 'user');
+    model = new Llm(require('../../lib/logger'), 'user');
     expect(model).toBeInstanceOf(Llm);
 
   });
