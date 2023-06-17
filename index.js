@@ -1,9 +1,17 @@
 require('dotenv').config();
-const Application = require('./lib/application');
-const { createEndpoint } = require('@jambonz/node-client-ws');
-const { createServer } = require('http');
+const express = require('express');
+const ws = require('ws');
+const app = express();
 
-const server = createServer();
+const { createEndpoint } = require('@jambonz/node-client-ws');
+
+const Application = require('./lib/application');
+
+const port = process.env.WS_PORT || 4000;
+const server = app.listen(port, () => {
+  logger.info(`Server listening at http://localhost:${port}`);
+});
+
 const makeService = createEndpoint({ server });
 const logger = require('pino')({
   level: process.env.LOGLEVEL || 'info',
@@ -14,9 +22,9 @@ const logger = require('pino')({
     }
   }
 });
-const port = process.env.WS_PORT || 4000;
 
-app = {
+
+appParameters = {
   logger,
   makeService
 }
@@ -24,7 +32,7 @@ app = {
 applications = [];
 
 let servers = Application.listAgents().map(([name, info]) => {
-  let application = new Application({ ...app, agentName: name });
+  let application = new Application({ ...appParameters, agentName: name });
   return application.create().then(number => {
     logger.info({ application }, `Application created on number ${number}`);
     applications.push(application);
@@ -43,6 +51,3 @@ function cleanup() {
   applications.forEach(application => application.destroy());
 }
 
-server.listen(port, () => {
-  logger.info(`Server listening at http://localhost:${port}`);
-});

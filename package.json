@@ -16,9 +16,11 @@
     "async-mutex": "^0.4.0",
     "axios": "^1.4.0",
     "dotenv": "^16.0.3",
+    "express": "^4.18.2",
     "pino": "^8.8.0",
     "pino-pretty": "^10.0.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "ws": "^8.13.0"
   },
   "devDependencies": {
     "jest": "^29.5.0",
