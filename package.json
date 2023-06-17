@@ -6,17 +6,19 @@
   "scripts": {
     "develop": "NODE_ENV=development nodemon index",
     "start": "NODE_ENV=production node index",
-    "test": "NODE_ENV=development jest"
+    "test": "NODE_ENV=development jest --silent"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@google-cloud/aiplatform": "^2.15.0",
     "@jambonz/node-client-ws": "^0.1.6",
+    "async-mutex": "^0.4.0",
     "axios": "^1.4.0",
     "dotenv": "^16.0.3",
     "pino": "^8.8.0",
-    "pino-pretty": "^10.0.0"
+    "pino-pretty": "^10.0.0",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "jest": "^29.5.0",
