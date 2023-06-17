@@ -1,5 +1,8 @@
 const { createServer } = require('http');
+const { createEndpoint } = require('@jambonz/node-client-ws');
 const server = createServer();
+const makeService = createEndpoint({ server });
+
 const Application = require('../lib/application');
 
 let application;
@@ -20,7 +23,7 @@ let options = {
 
 
 let agent = {
-  server,
+  makeService,
   options,
   logger: require('../lib/logger')
 }
@@ -59,3 +62,13 @@ test('destroy', async () => {
   expect(application.application).toBeUndefined();
 });
 
+test('create again', async () => {
+  let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
+  expect(application.number.application_sid).toBe(application.application.application_sid);
+  return res;
+});
+
+test('static cleanall', async () => {
+  let res = await expect(Application.cleanAll()).resolves;
+  return res;
+});
