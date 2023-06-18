@@ -50,9 +50,10 @@ const pino = PinoHttp({
 
 server.use(pino);
 
-server.get("/api/agent/list", api.agentList);
-server.post("/api/agent/create", api.agentCreate);
-server.delete("/api/agent/:id", api.agentDelete);
+server.get("/api/agents", api.agentList);
+server.post("/api/agents", api.agentCreate);
+server.put("/api/agents/:id", api.agentUpdate);
+server.delete("/api/agents/:id", api.agentDelete);
 
 
 

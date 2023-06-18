@@ -2,8 +2,8 @@ const Application = require('../lib/application');
 
 let appParameters, log;
 
-module.exports = 
-function ({ logger, makeService }) {
+module.exports =
+  function ({ logger, makeService }) {
     (appParameters = {
       logger,
       makeService
@@ -12,12 +12,13 @@ function ({ logger, makeService }) {
     return {
       agentList,
       agentCreate,
+      agentUpdate,
       agentDelete
     };
   };
 
 async function agentList(req, res) {
-  res.send(Application.listAgents().map(([name]) => name));
+  res.send(Application.listAgents());
 }
 
 async function agentCreate(req, res) {
@@ -30,7 +31,7 @@ async function agentCreate(req, res) {
   else {
 
     try {
-      let application = new Application({ ...appParameters, agentName });
+      let application = new Application({ ...appParameters, agentName, prompt, options });
       let number = await application.create();
       log.info({ application }, `Application created on NNnumber ${number} with id ${application.id}`);
       res.send({ number, id: application.id });
@@ -45,10 +46,25 @@ async function agentCreate(req, res) {
 
 };
 
+
+async function agentUpdate(req, res) {
+  let { prompt } = req.body;
+  let { id } = req.params;
+
+  let application = Application.recover(id);
+  if (!application) {
+    res.status(404).send(`no agent ${id}`);
+  }
+  else {
+    application.prompt = prompt;
+    res.send(application);
+  }
+};
+
 async function agentDelete(req, res) {
   let { id } = req.params;
   log.info({ id }, 'delete');
-  let application
+  let application;
 
   if (!(application = Application.recover(id))) {
     res.status(404).send(`no agent for ${id}`);
