@@ -30,6 +30,15 @@ test('List numbers', async () => {
   return await expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array); 
 });
 
+test('List applications', async () => {
+  let applications = await jambonz.listApplications();
+  expect(applications).toBeInstanceOf(Array);
+  let stub = applications.find(a => (a.name === testApplication.name && a.call_hook.url === testApplication.url));
+  if (stub) {
+    await jambonz.deleteApplication(stub.application_sid);
+  }
+});
+
 
 test('Add application', async () => {
   return await expect(jambonz.addApplication(testApplication).then(a => ((applicationSid = a.sid),a))).resolves.toHaveProperty('sid');
