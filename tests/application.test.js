@@ -28,6 +28,7 @@ let agent = {
   logger: require('../lib/logger')
 }
 
+
 test('Static agent list', () => {
   expect(Application.listAgents().length).toBe(2);
   expect(Application.listAgents()[0].length).toBe(2);
@@ -44,11 +45,10 @@ test('Instantiate', () => {
   expect(application).toBeInstanceOf(Application);
 });
 
+
 test('Application not null', async () => {
   return expect(application).toBeInstanceOf(Application);
 });
-
-
 
 test('create', async () => {
   let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
@@ -56,19 +56,27 @@ test('create', async () => {
   return res;
 });
 
+test('recover', () => {
+  return expect(Application.recover(application.id)).toMatchObject(application);
+});
+
+
 test('destroy', async () => {
   await application.destroy()
   expect(application.number).toBeUndefined();
   expect(application.application).toBeUndefined();
 });
 
-test('create again', async () => {
-  let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
+test('static clean', async () => {
+  await application.create();
   expect(application.number.application_sid).toBe(application.application.application_sid);
-  return res;
+  await Application.clean();
+  expect(application.number).toBeUndefined();
+  expect(application.application).toBeUndefined();
 });
 
-test('static cleanall', async () => {
-  let res = await expect(Application.cleanAll()).resolves;
-  return res;
+test('static cleanAll', async () => {
+  await application.create();
+  expect(application.number.application_sid).toBe(application.application.application_sid);
+  return expect(Application.cleanAll()).resolves;
 });
