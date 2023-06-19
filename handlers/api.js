@@ -3,9 +3,10 @@ const Application = require('../lib/application');
 let appParameters, log;
 
 module.exports =
-  function ({ logger, makeService }) {
+  function ({ logger, wsServer, makeService }) {
     (appParameters = {
       logger,
+      wsServer,
       makeService
     });
     log = logger;
@@ -33,8 +34,8 @@ async function agentCreate(req, res) {
     try {
       let application = new Application({ ...appParameters, agentName, prompt, options });
       let number = await application.create();
-      log.info({ application }, `Application created on NNnumber ${number} with id ${application.id}`);
-      res.send({ number, id: application.id });
+      log.info({ application, appParameters }, `Application created on NNnumber ${number} with id ${application.id}`);
+      res.send({ number, id: application.id, socket: application.agent.socketPath });
     }
     catch (err) {
       res.status(500).send(err);

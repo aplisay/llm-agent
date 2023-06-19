@@ -1,7 +1,9 @@
 const { createServer } = require('http');
 const { createEndpoint } = require('@jambonz/node-client-ws');
+const logger = require('../lib/logger');
 const server = createServer();
 const makeService = createEndpoint({ server });
+const wsServer = require('../lib/ws-handler')({ server, logger });
 
 const Application = require('../lib/application');
 
@@ -19,14 +21,15 @@ let options = {
     language: "en-GB",
   }
 
-}
+};
 
 
 let agent = {
   makeService,
+  wsServer,
   options,
-  logger: require('../lib/logger')
-}
+  logger
+};
 
 
 test('Static agent list', () => {
@@ -62,7 +65,7 @@ test('recover', () => {
 
 
 test('destroy', async () => {
-  await application.destroy()
+  await application.destroy();
   expect(application.number).toBeUndefined();
   expect(application.application).toBeUndefined();
 });
