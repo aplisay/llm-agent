@@ -12,7 +12,7 @@
   "license": "MIT",
   "dependencies": {
     "@google-cloud/aiplatform": "^2.15.0",
-    "@jambonz/node-client-ws": "^0.1.6",
+    "@jambonz/node-client-ws": "https://github.com/rjp44/node-client-ws#coexist",
     "async-mutex": "^0.4.0",
     "axios": "^1.4.0",
     "cors": "^2.8.5",

@@ -9,8 +9,9 @@ const PinoHttp = require('pino-http');
 const httpServer = require('http').createServer(server);
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server: httpServer });
-const api = require("./handlers/api")({ makeService, logger });
-
+const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
+logger.info({ wsServer }, 'WSserver');
+const api = require("./handlers/api")({ makeService, wsServer, logger });
 
 const Application = require('./lib/application');
 

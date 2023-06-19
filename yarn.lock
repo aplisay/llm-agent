@@ -342,19 +342,18 @@
   resolved "https://registry.yarnpkg.com/@istanbuljs/schema/-/schema-0.1.3.tgz#e45e384e4b8ec16bce2fd903af78450f6bf7ec98"
   integrity sha512-ZXRY4jNvVgSVQ8DL3LTcakaAtXwTVUxE81hslsyD2AtoXW/wVob10HkOJ1X/pAlcI7D+2YoZKg5do8G/w6RYgA==
 
-"@jambonz/node-client-ws@^0.1.6":
-  version "0.1.14"
-  resolved "https://registry.yarnpkg.com/@jambonz/node-client-ws/-/node-client-ws-0.1.14.tgz#2cd8c0ad60da9225cacf120e88fe1e43aa52d851"
-  integrity sha512-HybIyDUZMZFnwT95FKwFyLMffUjz3/MVrEwuiH+ubbHbjOlKNh0s7LW7AiRN6DM/Q60dIqeOz5RzXhxhX+hU8Q==
+"@jambonz/node-client-ws@https://github.com/rjp44/node-client-ws#coexist":
+  version "0.1.15"
+  resolved "https://github.com/rjp44/node-client-ws#e4314cc38c6bf6d456a8af12d6adca6929aac165"
   dependencies:
-    "@jambonz/verb-specifications" "^0.0.21"
+    "@jambonz/verb-specifications" "^0.0.24"
     parseurl "^1.3.3"
     ws "^8.13.0"
 
-"@jambonz/verb-specifications@^0.0.21":
-  version "0.0.21"
-  resolved "https://registry.yarnpkg.com/@jambonz/verb-specifications/-/verb-specifications-0.0.21.tgz#106971bf22e9fd3f24ada20fcb3934786d1c7b2b"
-  integrity sha512-NQTQLI0k7nFmjqiKIbPaux2+ES2etFh/hnMNzPbszXS313mAnMZtv7y+EWrbniXeiXMCwHbkavm1H/N8+Lv5Qg==
+"@jambonz/verb-specifications@^0.0.24":
+  version "0.0.24"
+  resolved "https://registry.yarnpkg.com/@jambonz/verb-specifications/-/verb-specifications-0.0.24.tgz#2db790c7535df4cfa9fd07e484ede3201b074aea"
+  integrity sha512-Bm8NKaCa2Xor82I1c873BtBaXbtFHXS3rPrnSM1+cYQqz5eXkl4QE4qDKqv2z9ihYYuuTZzTwwp8jQSXJGIb0g==
   dependencies:
     debug "^4.3.4"
     pino "^8.8.0"
