@@ -49,7 +49,7 @@ async function agentCreate(req, res) {
 
 
 async function agentUpdate(req, res) {
-  let { prompt } = req.body;
+  let { prompt, options } = req.body;
   let { id } = req.params;
 
   let application = Application.recover(id);
@@ -58,6 +58,7 @@ async function agentUpdate(req, res) {
   }
   else {
     application.prompt = prompt;
+    application.options = { ...application.options, ...options };
     res.send(application);
   }
 };
