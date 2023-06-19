@@ -21,7 +21,7 @@ const port = process.env.WS_PORT || 4000;
 server.use(express.json());
 
 server.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5001', 'https://openfollow.me', 'https://www.openfollow.me', 'https://simpler-oauth.open-follow.pages.dev'],
+  origin: ['http://localhost:3000', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com'],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type'],
   exposedHeaders: ['Link',],
   credentials: true,
