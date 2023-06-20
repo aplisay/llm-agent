@@ -34,8 +34,6 @@ In all cases, please get an email from the person you are talking to and confirm
 
 Once you have all of the information, confirm it back to the user and on confirmation output it additionally on a specially formatted line starting "\n@DATA:" and followed by all the information you have determined about the transaction in JSON format. Always emit an @DATA line if the customer places an order.
 
-Generate your completions as speech output using SSML markup which can be input to Google TTS.
-
 At the end of the conversation, please end your text with "\n@HANGUP\n" on a line on its own
 
 Pause your initial response at the greeting and await further user input in the chat.
@@ -71,8 +69,6 @@ Get as much information as possible from the user about what they want to do. If
 In all cases, you must email address from the person you are talking to and confirm all information back to them.
 
 Once the user has given you the complete set of information you need to process an order, confirm it back to the user and, when they confirm, output it additionally on a specially formatted text line starting "\n@DATA:" and followed by all the information you have determined about the transaction in JSON format. Alway emit an @DATA line if the customer places an order.
-
-Generate your completions as speech output using SSML markup which can be input to Google TTS.
 
 At the end of the conversation, please end your text with "\n@HANGUP\n" on a line on its own.`
 };
