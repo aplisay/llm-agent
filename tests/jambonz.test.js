@@ -2,7 +2,7 @@ const Jambonz = require('../lib/jambonz');
 
 let jambonz;
 
-let testNumber = "02080996999"
+let testNumber = "442080996999"
 
 let testApplication = {
   name: "Test Application",
