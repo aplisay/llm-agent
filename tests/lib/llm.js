@@ -1,7 +1,7 @@
-module.exports = function (Llm) {
+module.exports = function (Llm, prompt) {
 
   test('Initialises', () => {
-    model = new Llm(require('../../lib/logger'), 'user');
+    model = new Llm(require('../../lib/logger'), 'user', prompt);
     expect(model).toBeInstanceOf(Llm);
 
   });
