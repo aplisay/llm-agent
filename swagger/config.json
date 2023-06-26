@@ -1,0 +1,9 @@
+{
+  "swaggerDefinition": {
+    "info": {
+      "title": "llm-agent API",
+        "version": "1.0.0"
+    }
+  },
+  "apis": ["index.js"]
+}
