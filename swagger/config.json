@@ -5,5 +5,5 @@
         "version": "1.0.0"
     }
   },
-  "apis": ["index.js"]
+  "apis": ["handlers/api.js"]
 }
