@@ -19,6 +19,45 @@ module.exports =
     };
   };
 
+
+/**
+* @swagger
+* /api/agents:
+*   get:
+*     summary: Retrieve a list of current agent names
+*     description: Get all the existing agent names known to the server
+*   post:
+*     summary: Create a new agent
+*     description: Create a new agent on the LLM and link it to a free phone number on the Jambonz instance
+*     produces:
+*       - application/json
+*     parameters:
+*       - name: agentName
+*         description: An agent name
+*         in: formData
+*         required: true
+*         type: string
+*       - name: prompt
+*         description: The system prompt to use for this agent
+*         in: formData
+*         required: true
+*         type: string
+*       - name: options
+*         description: Options to use for this agent
+*         in: formData
+*         required: false
+*         type: object
+*     responses:
+*       200:
+*         description: OK
+*   put:
+*     summary: Update an agent
+*     description: Change the prompt or options on an existing agent
+*   delete:
+*     summary: Delete an agent
+*     description: Delete an agent and free up the number on the underlying Jambonz instance.
+*/
+
 async function agentList(req, res) {
   res.send(Application.listAgents());
 }
