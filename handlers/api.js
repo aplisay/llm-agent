@@ -53,9 +53,31 @@ module.exports =
 *   put:
 *     summary: Update an agent
 *     description: Change the prompt or options on an existing agent
+*     parameters:
+*       - name: id
+*         description: Existing agent ID
+*         in: path
+*         required: true
+*         type: string
+*       - name: prompt
+*         description: The system prompt to use for this agent
+*         in: formData
+*         required: true
+*         type: string
+*       - name: options
+*         description: Options to use for this agent
+*         in: formData
+*         required: false
+*         type: object
 *   delete:
 *     summary: Delete an agent
 *     description: Delete an agent and free up the number on the underlying Jambonz instance.
+*     parameters:
+*       - name: id
+*         description: Existing agent ID
+*         in: path
+*         required: true
+*         type: string
 */
 
 async function agentList(req, res) {
