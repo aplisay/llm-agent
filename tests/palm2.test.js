@@ -1,3 +1,3 @@
 const Llm = require('../lib/palm2');
-require('./lib/llm.js')(Llm);
-
+const prompt = require('../data/defaultPrompts')['palm2'];
+require('./lib/llm.js')(Llm, prompt);
