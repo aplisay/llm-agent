@@ -14,7 +14,7 @@ let options = {
   tts: {
     vendor: "google",
     language: "en-GB",
-    voice: "en-GB-Standard-A"
+    voice: "en-GB-Wavenet-B"
   },
   stt: {
     vendor: 'google',
