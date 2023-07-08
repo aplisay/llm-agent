@@ -50,22 +50,6 @@ const pino = PinoHttp({
 
 server.use(pino);
 
-/**
- * @swagger
- * /api/agents:
- *   get:
- *     summary: Retrieve a list of current agents
- *     description: Get all the existing agents known to the server
- *   post:
- *     summary: Create a new agent
- *     description: Create a new agent on the LLM and link it to a free phone number on the Jambonz instance
- *   put:
- *     summary: Update an agent
- *     description: Change the prompt or options on an existing agent
- *   delete:
- *     summary: Delete an agent
- *     description: Delete an agent and free up the number on the underlying Jambonz instance.
-*/
 server.get("/api/agents", api.agentList);
 server.post("/api/agents", api.agentCreate);
 server.put("/api/agents/:id", api.agentUpdate);
