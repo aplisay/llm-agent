@@ -1,4 +1,5 @@
 const Jambonz = require('../lib/jambonz');
+const fs = require('fs');
 
 let jambonz;
 
@@ -20,7 +21,8 @@ let testApplication = {
 };
 
 let carriers, numbers, makeNumbers;
-let needNumbers = require('../credentials/numbers.js') || [];
+
+let needNumbers = (fs.existsSync('../credentials/numbers.js') && require('../credentials/numbers.js')) || [];
 
 let applicationSid, numberSid;
 process.env.LOGLEVEL = 'fatal';
