@@ -19,6 +19,9 @@ let testApplication = {
 
 };
 
+let carriers, numbers, makeNumbers;
+let needNumbers = require('../credentials/numbers.js') || [];
+
 let applicationSid, numberSid;
 process.env.LOGLEVEL = 'fatal';
 
@@ -26,45 +29,107 @@ process.env.LOGLEVEL = 'fatal';
 describe('Jambonz', () => {
   try {
 
-
-
     test('Initialises', () => {
       jambonz = new Jambonz(require('../lib/logger'), 'user');
       return expect(jambonz).toBeInstanceOf(Jambonz);
     });
 
     test('List numbers', async () => {
-      return await expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array);
+      numbers = await jambonz.listNumbers();
+      expect(numbers).toBeInstanceOf(Array);
+      let t;
+      if (t = numbers.find(n => n.number === testNumber)) {
+        try {
+          jambonz.deleteNumber(t.phone_number_sid);
+        }
+        catch (e) {
+          console.log({ message: e.message, request: e.request.path }, 'delete number error');
+        }
+        
+      }
+      makeNumbers = needNumbers.filter(n => {
+        return !numbers.find(nn => nn.number === n);
+      });
+      return numbers;
+    });
+
+    test('List Carriers', async () => {
+      try {
+        carriers = await jambonz.listCarriers();
+      }
+      catch (e) {
+        console.log({ message: e.message, request: e.request.path }, 'List carriers');
+      }
+      console.log({ carriers }, 'list');
+      expect(carriers).toBeInstanceOf(Array);
+      expect(carriers.length).toBeGreaterThan(0);
+    });
+
+
+    test('Add missing numbers', async () => {
+      console.log({ numbers, needNumbers, makeNumbers, carriers, create: {  voip_carrier_sid: carriers[0]?.voip_carrier_sid } })
+      return await expect(Promise.all(makeNumbers?.map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })) || [Promise.resolve()])).resolves;
     });
 
     test('List applications', async () => {
-      let applications = await jambonz.listApplications();
+      let applications;
+      try {
+        applications = await jambonz.listApplications();
+      }
+      catch (e) {
+        console.log({ message: e.message, request: e.request.path }, 'list application error');
+      }
       expect(applications).toBeInstanceOf(Array);
       let stub = applications.find(a => (a.name === testApplication.name && a.call_hook.url === testApplication.url));
       if (stub) {
-        await jambonz.deleteApplication(stub.application_sid);
+        try {
+          await jambonz.deleteApplication(stub.application_sid);
+        }
+        catch (e) {
+          console.log({ message: e.message, request: e.request.path }, 'delete application error');
+        }
       }
+
+      return;
     });
 
 
     test('Add application', async () => {
-      return await expect(jambonz.addApplication(testApplication).then(a => ((applicationSid = a.sid), a))).resolves.toHaveProperty('sid');
+
+      try {
+        let a = await jambonz.addApplication(testApplication);
+        expect(a).toHaveProperty('sid');
+        applicationSid = a.sid;
+      }
+      catch (e) {
+        console.log({ message: e.message, request: e.request.path }, 'Add application error');
+        throw new Error("shouldn't fail");
+      }
     });
 
     test('Get application', async () => {
-      return await expect(jambonz.getApplication(applicationSid)).resolves.toHaveProperty('name', testApplication.name);
+      expect(applicationSid).toContain('-');
+
+      try {
+        expect(await jambonz.getApplication(applicationSid)).toHaveProperty('name', testApplication.name);
+      }
+      catch (e) {
+        console.log({ message: e.message, request: e.request.path }, 'Get application error');
+        throw new Error("shouldn't fail");
+      }
     });
 
-    test('Add number', async () => {
-      return await expect(jambonz.addNumber({ number: testNumber }).then(n => ((numberSid = n.sid), n))).resolves.toHaveProperty('sid');
+    test('Add number', () => {
+      return expect(jambonz.addNumber({ number: testNumber }).then(n => ((numberSid = n.sid), n))).resolves.toHaveProperty('sid');
     });
 
-    test('Get number', async () => {
-      return await expect(jambonz.getNumber(numberSid)).resolves.toHaveProperty('number', testNumber);
+    test('Get number', () => {
+      expect(numberSid).toContain('-');
+      return expect(jambonz.getNumber(numberSid)).resolves.toHaveProperty('number', testNumber);
     });
 
-    test('List numbers', async () => {
-      return await expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array);
+    test('List numbers', () => {
+      return expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array);
     });
 
     test('link application to number', async () => {
@@ -72,8 +137,11 @@ describe('Jambonz', () => {
     });
 
     test('DeleteNumber', async () => {
-      return await expect(jambonz.deleteNumber(numberSid))
-        .resolves;
+      expect(numberSid).toContain('-');
+      if (numberSid) {
+        return expect(jambonz.deleteNumber(numberSid))
+          .resolves;
+      }
     });
 
     test('List numbers', async () => {
@@ -81,6 +149,7 @@ describe('Jambonz', () => {
     });
 
     test('Delete Application', async () => {
+      expect(applicationSid).toContain('-');
       return await expect(jambonz.deleteApplication(applicationSid)).resolves;
     });
 

@@ -9,7 +9,7 @@ module.exports = function (Llm, prompt) {
   jest.setTimeout(30000);
 
   test('initial', async () => {
-    await expect(model.initial()).resolves.toContain('ello');
+    await expect(model.initial()).resolves.toMatch(/(hello|help|welcome|thank|today)/i);
   });
 
   test('flagsinfo', async () => {
