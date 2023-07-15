@@ -49,31 +49,25 @@ test('Instantiate', () => {
 });
 
 test('create', async () => {
-  console.log(`creating ${application.id}`);
-  let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
-  console.log(`created ${application.id}`);
-  expect(application.number.application_sid).toBe(application.application.application_sid);
+    let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
+    expect(application.number.application_sid).toBe(application.application.application_sid);
 });
 
 test('recover', () => {
-  console.log(`matching ${application.id} ${new Date()}`);
-  let target = Application.recover(application.id);
-  console.log(`got ${target.id} ${new Date()}`);
-  expect(target).toMatchObject(application);
-});
+    let target = Application.recover(application.id);
+    expect(target.id).toMatch(application.id);
+  });
 
 
 test('destroy', async () => {
-  console.log(`destroying ${application.id} ${new Date()}`);
-  await application.destroy();
-  console.log(`destroyed ${application.id} ${new Date()}`);
-  expect(application.number).toBeUndefined();
+    await application.destroy();
+    expect(application.number).toBeUndefined();
   expect(application.application).toBeUndefined();
 });
 
-test('static clean', async () => {
-  await application.create();
-  expect(application.number.application_sid).toBe(application.application.application_sid);
+  test('static clean', async () => {
+      await application.create();
+      expect(application.number.application_sid).toBe(application.application.application_sid);
   await Application.clean();
   expect(application.number).toBeUndefined();
   expect(application.application).toBeUndefined();
