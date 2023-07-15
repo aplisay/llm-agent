@@ -70,19 +70,18 @@ httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
 });
 
-process.on('SIGINT', cleanup);
-process.once('SIGTERM', function () {
-  cleanup().then(() => {
-    process.kill(process.pid, 'SIGKILL');
-  });
-});
-process.on('SIGUSR2', function () {
-  cleanup().then(() => {
-    process.kill(process.pid, 'SIGKILL');
-  });
-});
+process.on('SIGINT', cleanupAndExit);
+process.once('SIGTERM', cleanupAndExit);
+process.on('SIGUSR2', cleanupAndExit);
+
 async function cleanup() {
   logger.info({}, `beforeExit: applications running`);
   await Application.clean();
+  logger.info({}, `cleanup: applications cleaned`);
+}
+
+async function cleanupAndExit() {
+  await cleanup();
+  process.exit(-1);
 }
 
