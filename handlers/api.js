@@ -121,8 +121,8 @@ async function agentUpdate(req, res) {
     res.status(404).send(`no agent ${id}`);
   }
   else {
-    application.prompt = prompt;
-    application.options = { ...application.options, ...options };
+    prompt && (application.prompt = prompt);
+    options && (application.options = { ...application.options, ...options });
     res.send(application);
   }
 };
