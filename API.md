@@ -1,7 +1,13 @@
 ## Classes
 
 <dl>
+<dt><a href="#JambonzSession">JambonzSession</a></dt>
+<dd></dd>
+<dt><a href="#Agent">Agent</a></dt>
+<dd></dd>
 <dt><a href="#Application">Application</a></dt>
+<dd></dd>
+<dt><a href="#GoogleHelper">GoogleHelper</a></dt>
 <dd></dd>
 <dt><a href="#Gpt35">Gpt35</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
 <dd></dd>
@@ -13,12 +19,82 @@
 <dd></dd>
 </dl>
 
+## Functions
+
+<dl>
+<dt><a href="#agentList">agentList()</a></dt>
+<dd></dd>
+</dl>
+
 ## Typedefs
 
 <dl>
 <dt><a href="#Completion">Completion</a> : <code>Object</code></dt>
 <dd></dd>
 </dl>
+
+<a name="JambonzSession"></a>
+
+## JambonzSession
+**Kind**: global class  
+
+* [JambonzSession](#JambonzSession)
+    * [new JambonzSession({, params)](#new_JambonzSession_new)
+    * [.handler()](#JambonzSession+handler) ⇒ <code>Promise</code>
+    * [.forceClose()](#JambonzSession+forceClose) ⇒ <code>Promise</code>
+
+<a name="new_JambonzSession_new"></a>
+
+### new JambonzSession({, params)
+
+| Param | Type | Description |
+| --- | --- | --- |
+| { | <code>\*</code> | progress, logger, session, llmClass, prompt, options } |
+| params | <code>Object</code> | Session parameters |
+| params.path | <code>string</code> | The path to this service |
+| params.agent | [<code>Llm</code>](#Llm) | LLM class instance for implementation class |
+| params.progress | <code>WebSocket</code> | A websocket to write progress messages to |
+| params.logger | <code>Object</code> | Pino logger instance |
+| params.session | <code>Object</code> | Jambonz WebSocket session object |
+| params.options | <code>Object</code> | Options object containing combined STT, TTS and model options |
+
+<a name="JambonzSession+handler"></a>
+
+### jambonzSession.handler() ⇒ <code>Promise</code>
+Handler for a Jambonz session, main wait loop that sets listeners on Jambonz and the LLM agent
+dispatches messages between them as long as they are both responding and closes them gracefully
+on hangup or other errors.
+
+**Kind**: instance method of [<code>JambonzSession</code>](#JambonzSession)  
+**Returns**: <code>Promise</code> - Resolves to a void value when the conversation ends  
+<a name="JambonzSession+forceClose"></a>
+
+### jambonzSession.forceClose() ⇒ <code>Promise</code>
+Force closes a (maybe) open session, send some polite text to the caller
+then hangup. Doesn't really do much of the cleanup, just waits for it to
+happen
+
+**Kind**: instance method of [<code>JambonzSession</code>](#JambonzSession)  
+**Returns**: <code>Promise</code> - Resolves to a void value when the conversation finally closes  
+<a name="Agent"></a>
+
+## Agent
+**Kind**: global class  
+<a name="new_Agent_new"></a>
+
+### new Agent({, params, logger, [prompt])
+
+| Param | Type | Description |
+| --- | --- | --- |
+| { | <code>\*</code> | name, llmClass, logger, wsServer, makeService, prompt, options, handleClose = () => (null)} |
+| params | <code>Object</code> | Application creation parameters |
+| params.name | <code>string</code> | supported LLM agent name, must be one of #Application.agents |
+| [params.wsServer] | <code>Object</code> | An HTTP server object to attach an progress websocket to |
+| params.makeService | <code>function</code> | A Jambonz WS SDK makeServer Function |
+| [params.options] | <code>Object</code> | Options object to pass down to the underlying LLM agent |
+| logger | <code>Object</code> | Pino logger instance |
+| params.name | <code>string</code> | Globally unique id for this agent instance |
+| [prompt] | <code>string</code> | Initial (system) prompt to the agent |
 
 <a name="Application"></a>
 
@@ -114,6 +190,17 @@ Really aggressively scour the Jambonz instance for anything that looks like
 an auto created application of ours, unlink the phone number and delete the application
 
 **Kind**: static method of [<code>Application</code>](#Application)  
+<a name="GoogleHelper"></a>
+
+## GoogleHelper
+**Kind**: global class  
+<a name="GoogleHelper+listVoices"></a>
+
+### googleHelper.listVoices() ⇒ <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code>
+Get all of the Google TTS voices
+
+**Kind**: instance method of [<code>GoogleHelper</code>](#GoogleHelper)  
+**Returns**: <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code> - All Jambonz number resources on the instance  
 <a name="Gpt35"></a>
 
 ## Gpt35 ⇐ [<code>Llm</code>](#Llm)
@@ -135,8 +222,6 @@ an auto created application of ours, unlink the phone number and delete the appl
 
 ### new Gpt35(logger, user, prompt, options)
 Implements the LLM class against the OpenAI GPT3.5-turbo model
-
-   * Creates an instance of Gpt35.
 
 
 | Param | Type | Description |
@@ -204,6 +289,7 @@ Creates an instance of Gpt35.
     * [new Jambonz()](#new_Jambonz_new)
     * _instance_
         * [.listNumbers()](#Jambonz+listNumbers) ⇒ <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code>
+        * [.listCarriers()](#Jambonz+listCarriers) ⇒ <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code>
         * [.getNumber(sid)](#Jambonz+getNumber) ⇒ <code>Promise.&lt;Object&gt;</code>
         * [.addNumber({)](#Jambonz+addNumber) ⇒ <code>Promise.&lt;string&gt;</code>
         * [.updateNumber(sid, {)](#Jambonz+updateNumber) ⇒ <code>Promise</code>
@@ -226,6 +312,13 @@ Client implementation of selected parts of the Jambonz API
 
 ### jambonz.listNumbers() ⇒ <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code>
 Gett all of the Jambonz numbers on the instance
+
+**Kind**: instance method of [<code>Jambonz</code>](#Jambonz)  
+**Returns**: <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code> - All Jambonz number resources on the instance  
+<a name="Jambonz+listCarriers"></a>
+
+### jambonz.listCarriers() ⇒ <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code>
+Get all of the Jambonz Service Providers
 
 **Kind**: instance method of [<code>Jambonz</code>](#Jambonz)  
 **Returns**: <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code> - All Jambonz number resources on the instance  
@@ -479,6 +572,66 @@ Creates an instance of Palm2.
 | options | <code>Object</code> | options |
 | options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
 
+<a name="agentList"></a>
+
+## agentList()
+**Kind**: global function  
+**Swagger**: /api/agents:
+  get:
+    summary: Retrieve a list of current agent names
+    description: Get all the existing agent names known to the server
+  post:
+    summary: Create a new agent
+    description: Create a new agent on the LLM and link it to a free phone number on the Jambonz instance
+    produces:
+      - application/json
+    parameters:
+      - name: agentName
+        description: An agent name
+        in: formData
+        required: true
+        type: string
+      - name: prompt
+        description: The system prompt to use for this agent
+        in: formData
+        required: true
+        type: string
+      - name: options
+        description: Options to use for this agent
+        in: formData
+        required: false
+        type: object
+    responses:
+      200:
+        description: OK
+  put:
+    summary: Update an agent
+    description: Change the prompt or options on an existing agent
+    parameters:
+      - name: id
+        description: Existing agent ID
+        in: path
+        required: true
+        type: string
+      - name: prompt
+        description: The system prompt to use for this agent
+        in: formData
+        required: true
+        type: string
+      - name: options
+        description: Options to use for this agent
+        in: formData
+        required: false
+        type: object
+  delete:
+    summary: Delete an agent
+    description: Delete an agent and free up the number on the underlying Jambonz instance.
+    parameters:
+      - name: id
+        description: Existing agent ID
+        in: path
+        required: true
+        type: string  
 <a name="Completion"></a>
 
 ## Completion : <code>Object</code>
