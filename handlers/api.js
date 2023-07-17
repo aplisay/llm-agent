@@ -1,4 +1,5 @@
 const Application = require('../lib/application');
+const GoogleHelper = require('../lib/google-helper');
 
 let appParameters, log;
 
@@ -15,7 +16,8 @@ module.exports =
       agentList,
       agentCreate,
       agentUpdate,
-      agentDelete
+      agentDelete,
+      voicesList
     };
   };
 
@@ -149,3 +151,14 @@ async function agentDelete(req, res) {
   }
 
 };
+
+async function voicesList(req, res) {
+  helper = new GoogleHelper(req.log);
+  try {
+    res.send(await helper.listVoices());
+  }
+  catch (err) {
+    res.status(500).send(err);
+    req.log.error(err, 'getting voices');
+  }
+}

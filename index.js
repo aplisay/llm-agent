@@ -54,17 +54,12 @@ server.get("/api/agents", api.agentList);
 server.post("/api/agents", api.agentCreate);
 server.put("/api/agents/:id", api.agentUpdate);
 server.delete("/api/agents/:id", api.agentDelete);
-
-
+server.get("/api/voices", api.voicesList);
 
 appParameters = {
   logger,
   makeService
 }
-
-
-
-
 
 httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
