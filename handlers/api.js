@@ -139,7 +139,6 @@ async function agentDelete(req, res) {
 
     try {
       await application.destroy();
-      delete application;
       res.send({ id });
     }
     catch (err) {
