@@ -80,6 +80,10 @@ module.exports =
 *         in: path
 *         required: true
 *         type: string
+* /api/voices:
+*   get:
+*     summary: Retrieve a list of supported languages/voices
+*     description: Get a list of all the languages supported by the server and all the associated voices
 */
 
 async function agentList(req, res) {

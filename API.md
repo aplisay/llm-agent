@@ -631,7 +631,11 @@ Creates an instance of Palm2.
         description: Existing agent ID
         in: path
         required: true
-        type: string  
+        type: string
+/api/voices:
+  get:
+    summary: Retrieve a list of supported languages/voices
+    description: Get a list of all the languages supported by the server and all the associated voices  
 <a name="Completion"></a>
 
 ## Completion : <code>Object</code>
