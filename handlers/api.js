@@ -103,7 +103,12 @@ async function agentCreate(req, res) {
       let application = new Application({ ...appParameters, agentName, prompt, options });
       let number = await application.create();
       log.info({ application, appParameters }, `Application created on NNnumber ${number} with id ${application.id}`);
-      res.send({ number, id: application.id, socket: application.agent.socketPath });
+      if (number) {
+        res.send({ number, id: application.id, socket: application.agent.socketPath });
+      }
+      else {
+        res.status(424).send({ message: "No free phone numbers available on instance, please try later" });
+      }
     }
     catch (err) {
       res.status(500).send(err);
