@@ -127,7 +127,7 @@ async function agentUpdate(req, res) {
   else {
     prompt && (application.prompt = prompt);
     options && (application.options = { ...application.options, ...options });
-    res.send(application);
+    res.send({ prompt: application.prompt, options: application.options, id: application.id });
   }
 };
 
