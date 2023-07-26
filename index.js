@@ -21,7 +21,7 @@ server.use(express.json());
 
 server.use(cors({
   origin: ['http://localhost:3000', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com'],
-  allowedHeaders: ['Cookie', 'Link', 'Content-Type'],
+  allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
   exposedHeaders: ['Link',],
   credentials: true,
 
@@ -49,7 +49,7 @@ const pino = PinoHttp({
 });
 
 server.use(pino);
-
+process.env.AUTHENTICATE_USERS !== "NO" && require('./middleware/auth.js')(server, logger);
 server.get("/api/agents", api.agentList);
 server.post("/api/agents", api.agentCreate);
 server.put("/api/agents/:id", api.agentUpdate);

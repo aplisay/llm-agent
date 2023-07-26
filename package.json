@@ -36,5 +36,8 @@
     "nodemon": "^2.0.22",
     "swagger-jsdoc-generator": "^1.0.3",
     "swagger-markdown": "^2.3.0"
+  },
+  "optionalDependencies": {
+    "firebase-admin": "^11.10.1"
   }
 }
