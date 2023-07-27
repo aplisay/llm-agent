@@ -31,7 +31,7 @@ function init(app, logger) {
           res.locals.userAuthError = authError;
           req.log.error({ authError }, 'Auth error');
           res.status(401)
-            .json({ message: `Authentication error: ${res.locals.userAuthError}` });
+            .json({ message: `Authentication error` });
         });
     }
     else {
