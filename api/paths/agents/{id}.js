@@ -52,12 +52,13 @@ agentUpdate.apiDoc = {
           type: "object",
           properties: {
             prompt: {
-              $ref: '#/components/schemas/Prompt'
+              $ref: '#/components/schemas/Prompt',
             },
             options: {
-              $ref: '#/components/schemas/AgentOptions'
+              $ref: '#/components/schemas/AgentOptions',
             }
-          }
+          },
+          required: [],
         }
       }
     }

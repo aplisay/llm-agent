@@ -1,7 +1,7 @@
 const doc = {
   openapi: "3.0.0",
   servers: [{
-    url: 'https://llm.aplisay.com/api'
+    url: `http${process.env.SERVER_NAME.match(/localhost/i)?'':'s'}://${process.env.SERVER_NAME}/api`
   }
   ],
   info: {
