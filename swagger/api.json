@@ -18,7 +18,7 @@
         ],
         "parameters": [
           {
-            "name": "agentName",
+            "name": "modelName",
             "description": "An agent name",
             "in": "formData",
             "required": true,

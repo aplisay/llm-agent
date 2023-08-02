@@ -110,7 +110,7 @@ happen
         * [.live](#Application.live)
         * [.agents](#Application.agents)
         * [.recover(id)](#Application.recover) ⇒ [<code>Application</code>](#Application)
-        * [.listAgents()](#Application.listAgents) ⇒ <code>Array.&lt;Object&gt;</code>
+        * [.listModels()](#Application.listModels) ⇒ <code>Array.&lt;Object&gt;</code>
         * [.clean()](#Application.clean) ⇒ <code>Promise</code>
         * [.cleanAll()](#Application.cleanAll)
 
@@ -123,7 +123,7 @@ Create a new application
 | Param | Type | Description |
 | --- | --- | --- |
 | params | <code>Object</code> | Application creation parameters |
-| params.agentName | <code>string</code> | supported LLM agent name, must be one of #Application.agents |
+| params.modelName | <code>string</code> | supported LLM agent name, must be one of #Application.agents |
 | params.wsServer | <code>Object</code> | An HTTP server object to attach an progress websocket to |
 | params.makeService | <code>function</code> | A Jambonz WS SDK makeServer Function |
 | params.options | <code>Object</code> | Options object to pass down to the underlying LLM agent |
@@ -169,9 +169,9 @@ Find the application corresponding to an ID
 | --- | --- |
 | id | <code>string</code> | 
 
-<a name="Application.listAgents"></a>
+<a name="Application.listModels"></a>
 
-### Application.listAgents() ⇒ <code>Array.&lt;Object&gt;</code>
+### Application.listModels() ⇒ <code>Array.&lt;Object&gt;</code>
 List of available agent types
 
 **Kind**: static method of [<code>Application</code>](#Application)  
@@ -586,7 +586,7 @@ Creates an instance of Palm2.
     produces:
       - application/json
     parameters:
-      - name: agentName
+      - name: modelName
         description: An agent name
         in: formData
         required: true

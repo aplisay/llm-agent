@@ -7,12 +7,11 @@ function handleError(error, req, res, next) {
   res.status(status);
   const message = STATUS_CODES[status];
   if (process.env.NODE_ENV === "development") {
-    req.log.error(error);
-    const stackArray = error.stack.split("\n").map((line) => line.trim());
+    req.log.error({ error, data: error.data, message, status });
     res.json({
       error: message,
       info: (error.response && error.response.body) || error.message,
-      stack: stackArray,
+      stack: error.stack
     });
   } else {
     res.json({ error: message, info: error.message });
