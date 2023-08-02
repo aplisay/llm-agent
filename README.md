@@ -40,7 +40,7 @@ See the instructions on that application to deploy locally.
 
 ### API
 
-Implements a REST API.
+Implements a REST API, which is documented [in swagger here](https://llm.aplisay.com/#/swagger).
 
 List agent type names available by `GET`ing from `/api/agents` (currently `gpt35`for GPT3.5-turbo or `palm2` for Google PaLM2)
 
@@ -68,12 +68,9 @@ Currently, this supports temperature which has a value between 0 and 1 (inclusiv
 
 When an agent is no-longer needed, issue a `DELETE` to `/api/agents/${id}`. This is important as otherwise you will leak phone numbers and leave extraneous applications lying around on your Jambonz instance. The agent is automatically deleted when your client disconnects the progress WebSocket so this does provide an active backstop to prevent this.
 
-
-See [Swagger docs](https://llm-agent.aplisay.com/swagger/), or just use the [React frontend](https://github.com/aplisay/llm-frontend) as a playground.
-
 ## Implementation
 
-Express routes are setup directly in `index.js` which point to handlers in `/handlers/api.js`.
+Uses `express-openapi` structure with in-band documented REST paths under `/api`.
 
 On receiving a `POST`, the handler instantiates a new `Application` object, then calls `Application.create()` which calls the main event handler setup in `/lib/agent.js`. This listens on a Jambonz Websocket interface for new call, connects and dispatches messages between Jambonz and the chosen LLM agent. The dispatcher also listens for client connects on the progress event Websocket.
 Once the dispatcher is setup `Application.create()` creates a matching unique application on the Jambonz instance, finds a number which has no existing application linked to it and sets up routing to the new application.
