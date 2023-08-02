@@ -19,8 +19,7 @@ gulp.task('watch', function () {
 gulp.task('docs', function () {
   const fs = require('fs-then-native')
   const jsdoc2md = require('jsdoc-to-markdown');
-  console.log({ paths }, 'paths');
-
+  
   return jsdoc2md.render({
       files: paths.libs,
       configure: 'jsdoc.json'
