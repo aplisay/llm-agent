@@ -6,7 +6,7 @@ const execSync = require('child_process')
   .execSync;
 
 var paths = {
-  libs: ['lib/**/*.js', 'handlers/**/*.js'],
+  libs: ['lib/**/*.js', 'api/**/*.js'],
 };
 
 gulp.task('watch', function () {

@@ -19,13 +19,6 @@
 <dd></dd>
 </dl>
 
-## Functions
-
-<dl>
-<dt><a href="#agentList">agentList()</a></dt>
-<dd></dd>
-</dl>
-
 ## Typedefs
 
 <dl>
@@ -110,7 +103,7 @@ happen
         * [.live](#Application.live)
         * [.agents](#Application.agents)
         * [.recover(id)](#Application.recover) ⇒ [<code>Application</code>](#Application)
-        * [.listAgents()](#Application.listAgents) ⇒ <code>Array.&lt;Object&gt;</code>
+        * [.listModels()](#Application.listModels) ⇒ <code>Array.&lt;Object&gt;</code>
         * [.clean()](#Application.clean) ⇒ <code>Promise</code>
         * [.cleanAll()](#Application.cleanAll)
 
@@ -123,7 +116,7 @@ Create a new application
 | Param | Type | Description |
 | --- | --- | --- |
 | params | <code>Object</code> | Application creation parameters |
-| params.agentName | <code>string</code> | supported LLM agent name, must be one of #Application.agents |
+| params.modelName | <code>string</code> | supported LLM agent name, must be one of #Application.agents |
 | params.wsServer | <code>Object</code> | An HTTP server object to attach an progress websocket to |
 | params.makeService | <code>function</code> | A Jambonz WS SDK makeServer Function |
 | params.options | <code>Object</code> | Options object to pass down to the underlying LLM agent |
@@ -169,9 +162,9 @@ Find the application corresponding to an ID
 | --- | --- |
 | id | <code>string</code> | 
 
-<a name="Application.listAgents"></a>
+<a name="Application.listModels"></a>
 
-### Application.listAgents() ⇒ <code>Array.&lt;Object&gt;</code>
+### Application.listModels() ⇒ <code>Array.&lt;Object&gt;</code>
 List of available agent types
 
 **Kind**: static method of [<code>Application</code>](#Application)  
@@ -572,70 +565,6 @@ Creates an instance of Palm2.
 | options | <code>Object</code> | options |
 | options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
 
-<a name="agentList"></a>
-
-## agentList()
-**Kind**: global function  
-**Swagger**: /api/agents:
-  get:
-    summary: Retrieve a list of current agent names
-    description: Get all the existing agent names known to the server
-  post:
-    summary: Create a new agent
-    description: Create a new agent on the LLM and link it to a free phone number on the Jambonz instance
-    produces:
-      - application/json
-    parameters:
-      - name: agentName
-        description: An agent name
-        in: formData
-        required: true
-        type: string
-      - name: prompt
-        description: The system prompt to use for this agent
-        in: formData
-        required: true
-        type: string
-      - name: options
-        description: Options to use for this agent
-        in: formData
-        required: false
-        type: object
-    responses:
-      200:
-        description: OK
-  put:
-    summary: Update an agent
-    description: Change the prompt or options on an existing agent
-    parameters:
-      - name: id
-        description: Existing agent ID
-        in: path
-        required: true
-        type: string
-      - name: prompt
-        description: The system prompt to use for this agent
-        in: formData
-        required: true
-        type: string
-      - name: options
-        description: Options to use for this agent
-        in: formData
-        required: false
-        type: object
-  delete:
-    summary: Delete an agent
-    description: Delete an agent and free up the number on the underlying Jambonz instance.
-    parameters:
-      - name: id
-        description: Existing agent ID
-        in: path
-        required: true
-        type: string
-/api/voices:
-  get:
-    summary: Retrieve a list of supported languages/voices
-    description: Get a list of all the languages supported by the server and all the associated voices  
 <a name="Completion"></a>
 
 ## Completion : <code>Object</code>

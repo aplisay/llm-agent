@@ -1,5 +1,7 @@
 require('dotenv').config();
 const express = require('express');
+const openapi = require('express-openapi');
+const GoogleHelper = require('./lib/google-helper');
 const ws = require('ws');
 const server = express();
 const cors = require("cors");
@@ -10,8 +12,7 @@ const httpServer = require('http').createServer(server);
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server: httpServer });
 const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
-const api = require("./handlers/api")({ makeService, wsServer, logger });
-
+const apiDoc = require('./api/api-doc')
 const Application = require('./lib/application');
 
 const port = process.env.WS_PORT || 4000;
@@ -50,16 +51,17 @@ const pino = PinoHttp({
 
 server.use(pino);
 process.env.AUTHENTICATE_USERS !== "NO" && require('./middleware/auth.js')(server, logger);
-server.get("/api/agents", api.agentList);
-server.post("/api/agents", api.agentCreate);
-server.put("/api/agents/:id", api.agentUpdate);
-server.delete("/api/agents/:id", api.agentDelete);
-server.get("/api/voices", api.voicesList);
 
-appParameters = {
-  logger,
-  makeService
-}
+openapi.initialize({
+  app: server,
+  apiDoc,
+  exposeApiDocs: true,
+  docsPath: "/api-docs",
+  dependencies: { makeService, wsServer, logger, googleHelper: new GoogleHelper(logger) },
+  paths: './api/paths',
+  promiseMode: true,
+  errorMiddleware: require('./middleware/errors.js')
+});
 
 httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
