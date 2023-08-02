@@ -33,10 +33,10 @@ let agent = {
 
 describe(`application`, () => {
 test('Static agent list', () => {
-  expect(Application.listAgents().length).toBe(2);
-  expect(Application.listAgents()[0].length).toBe(2);
-  expect(Application.listAgents()[0][1]).toHaveProperty('description');
-  expect(Application.listAgents()[0][1].implementation).toBeInstanceOf(Function);
+  expect(Application.listModels().length).toBe(2);
+  expect(Application.listModels()[0].length).toBe(2);
+  expect(Application.listModels()[0][1]).toHaveProperty('description');
+  expect(Application.listModels()[0][1].implementation).toBeInstanceOf(Function);
 });
 
 test('No agent name', () => {
@@ -44,7 +44,7 @@ test('No agent name', () => {
 });
 
 test('Instantiate', () => {
-  application = new Application({ ...agent, agentName: Application.listAgents()[0][0] });
+  application = new Application({ ...agent, modelName: Application.listModels()[0][0] });
   expect(application).toBeInstanceOf(Application);
 });
 

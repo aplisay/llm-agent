@@ -1,12 +1,12 @@
 {
 	"folders": [
     {
-      "name": "llm-frontend",
-      "path": "../llm-frontend"
-    },
-    {
       "name": "llm-agent",
       "path": "."
+    },
+    {
+      "name": "llm-frontend",
+      "path": "../llm-frontend"
     }
   ],
   "settings": {}

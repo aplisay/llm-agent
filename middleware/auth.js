@@ -35,9 +35,15 @@ function init(app, logger) {
         });
     }
     else {
-      req.log.error({ headers: req.headers, bearer, token }, 'No auth header!');
-      res.status(401)
-        .json({ message: `Authentication error: no Auth header!` });
+      console.log({ path: req.originalUrl, p: req.path }, 'fail')
+      if (req.originalUrl.startsWith('/api/api-docs')) {
+        next();
+      }
+      else {
+        req.log.error({ headers: req.headers, bearer, token }, 'No auth header!');
+        res.status(401)
+          .json({ message: `Authentication error: no Auth header!` });
+      }
     }
   });
 
