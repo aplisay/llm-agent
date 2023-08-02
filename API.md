@@ -19,13 +19,6 @@
 <dd></dd>
 </dl>
 
-## Functions
-
-<dl>
-<dt><a href="#agentList">agentList()</a></dt>
-<dd></dd>
-</dl>
-
 ## Typedefs
 
 <dl>
@@ -572,70 +565,6 @@ Creates an instance of Palm2.
 | options | <code>Object</code> | options |
 | options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
 
-<a name="agentList"></a>
-
-## agentList()
-**Kind**: global function  
-**Swagger**: /api/agents:
-  get:
-    summary: Retrieve a list of current agent names
-    description: Get all the existing agent names known to the server
-  post:
-    summary: Create a new agent
-    description: Create a new agent on the LLM and link it to a free phone number on the Jambonz instance
-    produces:
-      - application/json
-    parameters:
-      - name: modelName
-        description: An agent name
-        in: formData
-        required: true
-        type: string
-      - name: prompt
-        description: The system prompt to use for this agent
-        in: formData
-        required: true
-        type: string
-      - name: options
-        description: Options to use for this agent
-        in: formData
-        required: false
-        type: object
-    responses:
-      200:
-        description: OK
-  put:
-    summary: Update an agent
-    description: Change the prompt or options on an existing agent
-    parameters:
-      - name: id
-        description: Existing agent ID
-        in: path
-        required: true
-        type: string
-      - name: prompt
-        description: The system prompt to use for this agent
-        in: formData
-        required: true
-        type: string
-      - name: options
-        description: Options to use for this agent
-        in: formData
-        required: false
-        type: object
-  delete:
-    summary: Delete an agent
-    description: Delete an agent and free up the number on the underlying Jambonz instance.
-    parameters:
-      - name: id
-        description: Existing agent ID
-        in: path
-        required: true
-        type: string
-/api/voices:
-  get:
-    summary: Retrieve a list of supported languages/voices
-    description: Get a list of all the languages supported by the server and all the associated voices  
 <a name="Completion"></a>
 
 ## Completion : <code>Object</code>
