@@ -40,7 +40,7 @@ See the instructions on that application to deploy locally.
 
 ### API
 
-Implements a REST API, which is documented [in swagger here](https://llm.aplisay.com/swagger).
+Implements a REST API, which is documented [in swagger here](https://llm.aplisay.com/api).
 
 List agent type names available by `GET`ing from `/api/agents` (currently `gpt35`for GPT3.5-turbo or `palm2` for Google PaLM2)
 
