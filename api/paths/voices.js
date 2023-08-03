@@ -29,15 +29,15 @@ module.exports =
                 additionalProperties: {
                   type: "array",
                   items: {
-                    type: "string",
-                    description: "Voice name",
+                    $ref: '#/components/schemas/Voice'
                   }
                 }
               },
               example: {
-                'en-GB': ["en-GB-Standard-A", "en-GB-Standard-B", "en-GB-Wavenrt-A", "en-GB-Wavenet-B"],
-                'en-US': ["en-US-Standard-A", "en-US-Standard-B", "en-US-Wavenet-A", "en-US-Wavenet-B"]
+                'en-GB': [{ name: 'en-GB-Wavenet-A', gender: 'male' }, { name: 'en-GB-Wavenet-b', gender: 'female' }, { name: 'en-GB-Wavenet-C', gender: 'male' }],
+                'ca-ES': [{ name: 'ca-ES-Wavenet-A', gender: 'male' }, { name: 'ca-ES-Wavenet-b', gender: 'female' }, { name: 'ca-ES-Wavenet-C', gender: 'male' }],
               }
+
             }
           }
         },
