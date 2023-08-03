@@ -29,7 +29,7 @@ modelList.apiDoc = {
               $ref: '#/components/schemas/Model'
             }
           },
-          example: { 'gpt-35': "GPT-3.5-turbo chat", palm2: "PaLM2 via Vertex AI" }
+          example: { 'gpt35': "GPT-3.5-turbo chat", palm2: "PaLM2 via Vertex AI" }
         }
       }
     },
