@@ -29,7 +29,16 @@ modelList.apiDoc = {
               $ref: '#/components/schemas/Model'
             }
           },
-          example: { 'gpt35': "GPT-3.5-turbo chat", palm2: "PaLM2 via Vertex AI" }
+          example: {
+            "gpt35": {
+              "description": "GPT3.5-turbo chat",
+              "defaultPrompt": "You are operating the user service line for Flagco..."
+            },
+            "palm2": {
+              "description": "Google PaLM2 (BARD via Vertex AI)",
+              "defaultPrompt": "You work for GFlags, a company that..."
+            }
+          }
         }
       }
     },
