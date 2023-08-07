@@ -5,8 +5,8 @@ info:
   title: LLM Agent API
   version: 1.0.0
   description: |-
-    Simple API to instantiate, update and monitor an agent connecting inbound telephone calls to 
-    a large language model (LLM) based AI engine via Jambonzx.
+    Simple API to create, update and monitor agents connecting inbound telephone calls to 
+    a large language model (LLM) based AI engine via Jambonz.
 
     Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
     Also allows setting and modification of text to speech (TTS) and speech to text (STT) parameters which are used for voice recognition and voicing of responses.
