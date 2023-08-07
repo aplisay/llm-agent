@@ -19,6 +19,7 @@ module.exports =
     voicesList.apiDoc = {
       summary: 'Returns list of valid TTS voice models',
       operationId: 'voicesList',
+      tags: ["Voices"],
       responses: {
         200: {
           description: 'A list of available voices',

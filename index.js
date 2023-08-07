@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const yaml = require('js-yaml');
 const express = require('express');
 const openapi = require('express-openapi');
 const GoogleHelper = require('./lib/google-helper');
@@ -12,8 +14,19 @@ const httpServer = require('http').createServer(server);
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server: httpServer });
 const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
-const apiDoc = require('./api/api-doc')
+
 const Application = require('./lib/application');
+
+let apiDoc
+
+try {
+  apiDoc = yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8'));
+  console.log({apiDoc})
+}
+catch (e) {
+  logger.error(e, 'Couldn\'t load API spec');
+  process.exit(1);
+}
 
 const port = process.env.WS_PORT || 4000;
 

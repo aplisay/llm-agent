@@ -34,6 +34,7 @@ const agentUpdate = async (req, res) => {
 agentUpdate.apiDoc = {
   summary: 'Updates an existing, operating agent',
   operationId: 'updateAgent',
+  tags: ["Agent"],
   parameters: [
     {
       description: "ID of the agent to modify",
@@ -128,6 +129,7 @@ const agentDelete = async (req, res) => {
 agentDelete.apiDoc = {
   summary: 'Deletes an agent',
   operationId: 'deleteAgent',
+  tags: ["Agent"],
   parameters: [
     {
       description: "ID of the agent to delete",
