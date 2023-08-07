@@ -47,6 +47,7 @@ const agentCreate = (async (req, res) => {
 agentCreate.apiDoc = {
   summary: 'Creates an agent and associates it with a phone number',
   operationId: 'createAgent',
+  tags: ["Agent"],
   requestBody: {
     content: {
       'application/json': {

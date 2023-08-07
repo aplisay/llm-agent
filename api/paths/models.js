@@ -18,6 +18,7 @@ const modelList = async (req, res) => {
 modelList.apiDoc = {
   summary: 'Returns list of valid model names',
   operationId: 'modelList',
+  tags: ["Models"],
   responses: {
     200: {
       description: 'A list of available models.',
