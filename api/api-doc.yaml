@@ -33,7 +33,7 @@ info:
     have been destroyed by the error or in response to your closing the client.
 
     If you don't set TTS or STT language parameters, then a default will be used for calls to your agent.
-    This can be overriden by substituting one of the availble values obtained from the list returned by **[GET voices](#operations-Voices-voicesList)**.
+    This can be overriden by substituting one of the available values obtained from the list returned by **[GET voices](#operations-Voices-voicesList)**.
 components:
   schemas:
     Model:

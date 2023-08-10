@@ -20,7 +20,6 @@ module.exports = function (logger, wsServer, makeService) {
 const agentUpdate = async (req, res) => {
   let { prompt, options } = req.body;
   let { id } = req.params;
-  console.log({ id, prompt, options }, 'update');
   let application = Application.recover(id);
   if (!application) {
     res.status(404).send(`no agent ${id}`);

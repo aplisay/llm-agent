@@ -19,9 +19,26 @@ const Application = require('./lib/application');
 
 let apiDoc
 
+// This is a bodge to fix the fact that some error conditions can cause the Axios request
+//  structure to be returned in the error message, and this is circular, causing an exception
+//  we should eradicate these anyway.
+server.set('json replacer', (() => {
+  const seen = new WeakSet();
+  return (key, value) => {
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) {
+        return;
+      }
+      seen.add(value);
+    }
+    return value;
+  };
+})());
+
+
+
 try {
   apiDoc = yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8'));
-  console.log({apiDoc})
 }
 catch (e) {
   logger.error(e, 'Couldn\'t load API spec');
@@ -32,6 +49,7 @@ const port = process.env.WS_PORT || 4000;
 
 
 server.use(express.json());
+
 
 server.use(cors({
   origin: ['http://localhost:3000', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com'],
