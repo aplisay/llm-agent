@@ -35,7 +35,6 @@ function init(app, logger) {
         });
     }
     else {
-      console.log({ path: req.originalUrl, p: req.path }, 'fail')
       if (req.originalUrl.startsWith('/api/api-docs')) {
         next();
       }

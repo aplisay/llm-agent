@@ -56,7 +56,6 @@ module.exports =
       }
     };
 
-    console.log({ GET: voicesList }, 'voiceslist');
 
     return {
       GET: voicesList

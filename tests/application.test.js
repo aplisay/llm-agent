@@ -32,50 +32,52 @@ let agent = {
 };
 
 describe(`application`, () => {
-test('Static agent list', () => {
-  expect(Application.listModels().length).toBe(2);
-  expect(Application.listModels()[0].length).toBe(2);
-  expect(Application.listModels()[0][1]).toHaveProperty('description');
-  expect(Application.listModels()[0][1].implementation).toBeInstanceOf(Function);
-});
+  test('Static agent list', () => {
+    let models = Object.entries(Application.listModels());
+    expect(models.length).toBe(3);
+    expect(models[0].length).toBe(2);
+    expect(models[0][1]).toHaveProperty('description');
+  });
 
-test('No agent name', () => {
-  expect(() => new Application(agent)).toThrow(/Bad agent name/i);
-});
+  test('No agent name', () => {
+    expect(() => new Application(agent)).toThrow(/Bad agent name/i);
+  });
 
-test('Instantiate', () => {
-  application = new Application({ ...agent, modelName: Application.listModels()[0][0] });
-  expect(application).toBeInstanceOf(Application);
-});
+  test('Instantiate', () => {
+    application = new Application({ ...agent, modelName: Object.keys(Application.listModels())[0] });
+    expect(application).toBeInstanceOf(Application);
+  });
 
-test('create', async () => {
+  test('create', async () => {
     let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
     expect(application.number.application_sid).toBe(application.application.application_sid);
-});
+  });
 
-test('recover', () => {
+  test('recover', () => {
     let target = Application.recover(application.id);
     expect(target.id).toMatch(application.id);
   });
 
 
-test('destroy', async () => {
+  test('destroy', async () => {
     await application.destroy();
     expect(application.number).toBeUndefined();
-  expect(application.application).toBeUndefined();
-});
+    expect(application.application).toBeUndefined();
+  });
 
   test('static clean', async () => {
-      await application.create();
-      expect(application.number.application_sid).toBe(application.application.application_sid);
-  await Application.clean();
-  expect(application.number).toBeUndefined();
-  expect(application.application).toBeUndefined();
-});
+    application = new Application({ ...agent, modelName: Object.keys(Application.listModels())[1] });
+    await application.create();
+    expect(application.number.application_sid).toBe(application.application.application_sid);
+    await Application.clean();
+    expect(application.number).toBeUndefined();
+    expect(application.application).toBeUndefined();
+  });
 
-test('static cleanAll', async () => {
-  await application.create();
-  expect(application.number.application_sid).toBe(application.application.application_sid);
-  expect(Application.cleanAll()).resolves;
-});
+  test('static cleanAll', async () => {
+    application = new Application({ ...agent, modelName: Object.keys(Application.listModels())[0] });
+    await application.create();
+    expect(application.number.application_sid).toBe(application.application.application_sid);
+    expect(Application.cleanAll()).resolves;
+  });
 });
