@@ -1,3 +1,18 @@
+const GoogleHelper = require('../lib/google-helper.js');
+
+// function to populate the enum property
+async function populateLanguageEnum() {
+  try {
+    const googleHelper = new GoogleHelper();
+    const voices = await googleHelper.listVoices();
+    const languageCodes = Object.keys(voices);
+    return languageCodes;
+  } catch (error) {
+    console.error("Error populating language enum:", error);
+    return ["ca-ES", "en-GB", "en-IN"]; // Default values
+  }
+}
+
 const doc = {
   openapi: "3.0.0",
   servers: [{
@@ -88,7 +103,8 @@ const doc = {
                                 For now, list of supported recognition voices is identical to the voicing languages returned from the \`voices\` api.
                                 This should change in future`,
         type: "string",
-        example: ["ca-ES", 'en-GB', 'en-IN']
+        example: "en-GB",
+        enum: []
       },
       Voice: {
         type: 'object',
@@ -123,4 +139,11 @@ const doc = {
   paths: {}
 };
 
-module.exports = doc;
+// Populate the enum property with voicingLanguages
+(async () => {
+  const voicingLanguages = await populateLanguageEnum();
+  doc.components.schemas.Language.enum = voicingLanguages;
+
+  // Now export doc
+  module.exports = doc;
+})();
