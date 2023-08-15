@@ -60,24 +60,7 @@ server.use(cors({
 }));
 
 const pino = PinoHttp({
-  level: process.env.LOGLEVEL || 'info',
-  transport: {
-    target: 'pino-pretty',
-    options: {
-      colorize: true
-    }
-  },
-  serializers: {
-    req: (req) => {
-      let session = req.raw;
-      //let session = res.status !== 200 && req.raw.session;
-      return ({
-        method: req.method,
-        url: req.url,
-        //session: req.raw.session,
-      });
-    },
-  },
+  logger,
 });
 
 server.use(pino);
