@@ -14,10 +14,9 @@ const httpServer = require('http').createServer(server);
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server: httpServer });
 const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
-
 const Application = require('./lib/application');
 
-let apiDoc
+let apiDoc;
 
 // This is a bodge to fix the fact that some error conditions can cause the Axios request
 //  structure to be returned in the error message, and this is circular, causing an exception
@@ -47,6 +46,10 @@ catch (e) {
 
 const port = process.env.WS_PORT || 4000;
 
+if (process.env.NODE_ENV === 'development') {
+  apiDoc.servers.unshift({ url: `http://localhost:${port}` });
+}
+
 
 server.use(express.json());
 
@@ -60,7 +63,7 @@ server.use(cors({
 }));
 
 const pino = PinoHttp({
-  logger,
+  logger
 });
 
 server.use(pino);
@@ -78,7 +81,7 @@ openapi.initialize({
 });
 
 httpServer.listen(port, () => {
-  logger.info(`Server listening at http://localhost:${port}`);
+  logger.info(`Server listening at http://localhost:${port}/api`);
 });
 
 process.on('SIGINT', cleanupAndExit);

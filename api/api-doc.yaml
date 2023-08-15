@@ -1,4 +1,4 @@
-openapi: 3.0.0
+openapi: 3.1.0
 servers:
   - url: https://llm-backend.aplisay.com/api
 info:
@@ -99,10 +99,7 @@ components:
         For now, list of supported recognition voices is identical to the voicing languages returned from the `voices` api.
         This should change in future
       type: string
-      example:
-        - ca-ES
-        - en-GB
-        - en-IN
+ 
     Voice:
       type: object
       properties:
@@ -114,6 +111,21 @@ components:
           type: string
           description: The vendor assigned gender of this voice within the TTS engine
           example: male
+    Call:
+      type: object
+      properties:
+        identifier:
+          type: string
+          description: unique ID of this call
+          example: 648aa45d-204a-4c0c-a1e1-419406254134
+        from:
+          type: string
+          description: Caller number (as received, no format guaranteed)
+          example: "03300889471"
+        to:
+          type: string
+          description: Called number for this call 
+          example: "+442080996945"
     Error:
       type: object
       properties:
