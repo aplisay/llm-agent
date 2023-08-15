@@ -9,7 +9,6 @@ module.exports = function (logger, wsServer, makeService) {
     makeService
   });
   log = logger;
-  Application.cleanAll();
   return {
     POST: agentCreate
   };
