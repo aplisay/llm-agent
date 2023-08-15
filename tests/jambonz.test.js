@@ -25,7 +25,6 @@ let carriers, numbers, makeNumbers;
 let needNumbers = (fs.existsSync('../credentials/numbers.js') && require('../credentials/numbers.js')) || [];
 
 let applicationSid, numberSid;
-process.env.LOGLEVEL = 'fatal';
 
 
 describe('Jambonz', () => {
@@ -37,7 +36,12 @@ describe('Jambonz', () => {
     });
 
     test('List numbers', async () => {
-      numbers = await jambonz.listNumbers();
+      try {
+        numbers = await jambonz.listNumbers();
+      }
+      catch (e) {
+        console.log({ message: e.message, path: e.request.path, response: e.response }, 'list number error');
+      }
       expect(numbers).toBeInstanceOf(Array);
       let t;
       if (t = numbers.find(n => n.number === testNumber)) {
@@ -45,7 +49,7 @@ describe('Jambonz', () => {
           jambonz.deleteNumber(t.phone_number_sid);
         }
         catch (e) {
-          ({ message: e.message, request: e.request.path }, 'delete number error');
+          console.log({ message: e.message, request: e.request.path }, 'delete number error');
         }
         
       }
@@ -60,16 +64,16 @@ describe('Jambonz', () => {
         carriers = await jambonz.listCarriers();
       }
       catch (e) {
-        ({ message: e.message, request: e.request.path }, 'List carriers');
+        console.log({ message: e.message, request: e.request.path }, 'List carriers');
       }
-      ({ carriers }, 'list');
+      console.log({ carriers }, 'list');
       expect(carriers).toBeInstanceOf(Array);
       expect(carriers.length).toBeGreaterThan(0);
     });
 
 
     test('Add missing numbers', async () => {
-      ({ numbers, needNumbers, makeNumbers, carriers, create: {  voip_carrier_sid: carriers[0]?.voip_carrier_sid } })
+      console.log({ numbers, needNumbers, makeNumbers, carriers, create: {  voip_carrier_sid: carriers[0]?.voip_carrier_sid } })
       return await expect(Promise.all(makeNumbers?.map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })) || [Promise.resolve()])).resolves;
     });
 
@@ -79,7 +83,7 @@ describe('Jambonz', () => {
         applications = await jambonz.listApplications();
       }
       catch (e) {
-        ({ message: e.message, request: e.request.path }, 'list application error');
+        console.log({ message: e.message, request: e.request.path }, 'list application error');
       }
       expect(applications).toBeInstanceOf(Array);
       let stub = applications.find(a => (a.name === testApplication.name && a.call_hook.url === testApplication.url));
@@ -88,7 +92,7 @@ describe('Jambonz', () => {
           await jambonz.deleteApplication(stub.application_sid);
         }
         catch (e) {
-          ({ message: e.message, request: e.request.path }, 'delete application error');
+          console.log({ message: e.message, request: e.request.path }, 'delete application error');
         }
       }
 
@@ -104,7 +108,7 @@ describe('Jambonz', () => {
         applicationSid = a.sid;
       }
       catch (e) {
-        ({ message: e.message, request: e.request.path }, 'Add application error');
+        console.log({ message: e.message, request: e.request.path }, 'Add application error');
         throw new Error("shouldn't fail");
       }
     });
@@ -116,7 +120,7 @@ describe('Jambonz', () => {
         expect(await jambonz.getApplication(applicationSid)).toHaveProperty('name', testApplication.name);
       }
       catch (e) {
-        ({ message: e.message, request: e.request.path }, 'Get application error');
+        console.log({ message: e.message, request: e.request.path }, 'Get application error');
         throw new Error("shouldn't fail");
       }
     });
@@ -157,7 +161,7 @@ describe('Jambonz', () => {
 
   }
   catch (e) {
-    (`Error ${e.message}`, e);
+    console.log(`Error ${e.message}`, e);
   }
 });
 

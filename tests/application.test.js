@@ -49,7 +49,8 @@ describe(`application`, () => {
   });
 
   test('create', async () => {
-    let res = await expect(application.create()).resolves.toMatch(/^[0-9\+]+$/);
+    let res = await application.create();
+    expect(res).toMatch(/^[0-9\+]+$/);
     expect(application.number.application_sid).toBe(application.application.application_sid);
   });
 
