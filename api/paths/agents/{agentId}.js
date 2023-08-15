@@ -1,13 +1,8 @@
 const Application = require('../../../lib/application');
 
-let appParameters, log;
+let log;
 
-module.exports = function (logger, wsServer, makeService) {
-  (appParameters = {
-    logger,
-    wsServer,
-    makeService
-  });
+module.exports = function (logger) {
   log = logger;
   Application.cleanAll();
   return {
@@ -19,10 +14,10 @@ module.exports = function (logger, wsServer, makeService) {
 
 const agentUpdate = async (req, res) => {
   let { prompt, options } = req.body;
-  let { id } = req.params;
-  let application = Application.recover(id);
+  let { agentId } = req.params;
+  let application = Application.recover(agentId);
   if (!application) {
-    res.status(404).send(`no agent ${id}`);
+    res.status(404).send(`no agent ${agentId}`);
   }
   else {
     prompt && (application.prompt = prompt);
@@ -38,7 +33,7 @@ agentUpdate.apiDoc = {
     {
       description: "ID of the agent to modify",
       in: 'path',
-      name: 'id',
+      name: 'agentId',
       required: true,
       schema: {
         type: 'string'
@@ -103,18 +98,18 @@ agentUpdate.apiDoc = {
 };
 
 const agentDelete = async (req, res) => {
-  let { id } = req.params;
-  log.info({ id }, 'delete');
+  let { agentId } = req.params;
+  log.info({ id: agentId }, 'delete');
   let application;
 
-  if (!(application = Application.recover(id))) {
-    res.status(404).send(`no agent for ${id}`);
+  if (!(application = Application.recover(agentId))) {
+    res.status(404).send(`no agent for ${agentId}`);
   }
   else {
 
     try {
       await application.destroy();
-      res.send({ id });
+      res.send({ id: agentId });
     }
     catch (err) {
       res.status(500).send(err);
@@ -133,7 +128,7 @@ agentDelete.apiDoc = {
     {
       description: "ID of the agent to delete",
       in: 'path',
-      name: 'id',
+      name: 'agentId',
       required: true,
       schema: {
         type: 'string'
