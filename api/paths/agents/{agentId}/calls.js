@@ -25,17 +25,6 @@ module.exports =
       summary: 'Returns list of calls in progress to this agent',
       operationId: 'callsList',
       tags: ["Calls"],
-      parameters: [
-        {
-          description: "ID of the parent agent",
-          in: 'path',
-          name: 'agentId',
-          required: true,
-          schema: {
-            type: 'string'
-          }
-        }
-      ],
       responses: {
         200: {
           description: 'A list of in progress calls',
@@ -54,8 +43,18 @@ module.exports =
             }
           }
         },
+        404: {
+          description: 'Agent not found',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/NotFound'
+              }
+            }
+          }
+        },
         default: {
-          description: 'An error occurred',
+          description: 'Another kind of error occurred',
           content: {
             'application/json': {
               schema: {
@@ -70,6 +69,22 @@ module.exports =
 
 
     return {
+      description: `Call objects are created when an agent receives a call from an external caller
+                    and are destroyed when the dialogue is complete and either agent or caller hang up.
+                    \`Calls\` operations allow listing of live calls, updating agent parameters mid-call
+                    for just one call, and hanging up a call by the agent.`,
+      summary: 'Call objects represent live calls on the agent and may be manipulated to modify a single call',
+      parameters: [
+        {
+          description: "ID of the parent agent",
+          in: 'path',
+          name: 'agentId',
+          required: true,
+          schema: {
+            type: 'string'
+          }
+        }
+      ],
       GET: callsList
     };
 

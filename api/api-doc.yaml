@@ -19,21 +19,39 @@ info:
     Typical simple transaction flow will be:
       
     1. **[GET models](#operations-Models-modelList)** to obtain a list of valid models.
-    2. **[POST agents](#operations-Agent-createAgent)** to create an agent.
-    3. Test the return value from the above POST to make sure the agent has been created, a `number` and `socket` have been returned.
+    2. **[POST agents](#operations-Agent-createAgent)** with a chosen model identifier and prompt to create an agent.
+    3. Obtain the `number` and `socket` values from the create call result.
     4. Open a new Websocket client to the URL returned in `socket`, and listen on results.
     5. Place calls to the returned `number`, observing the progress updates on the websocket.
     6. When done with the agent, close the websocket client.
-    7. Call **[DELETE agents/:{id}](#operations-Agent-deleteAgent)**.
+    7. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
 
-    Note that server may tear down the agent in response terminal error conditions in the telephone interface or LLM service
-    and may also do so when you close the websocket client. You may receive `error` events on the websocket and/or the 
-    socket may be closed at the server end to indicate a terminal failure. It is good practice to call **DELETE** when you
-    detect this or otherwise when done with an agent, but you should tolerate failure of this call as the agent may already
-    have been destroyed by the error or in response to your closing the client.
+    The above is sufficient for a naive agent that simply operates from a single prompt for the duration of the call as a demo if LLMs interacting with telephone callers.
 
-    If you don't set TTS or STT language parameters, then a default will be used for calls to your agent.
-    This can be overriden by substituting one of the available values obtained from the list returned by **[GET voices](#operations-Voices-voicesList)**.
+    More sophisticated agents will invariably be built by using logic and data to interact with the agent and modify behaviour throughout a call transaction.
+    This is done via the `socket` event stream to follow the conversation, and the `Calls` methods to dynamically change the agent system prompt, inject
+    phrases directly into the call, or hang it up if necessary.
+
+tags:
+  - name: Calls
+    description: |-
+      Call objects are created when an agent receives a call from an external caller
+      and are destroyed when the dialogue is complete and either agent or caller hang up.
+      Calls operations are always referenced by parent agent and allow listing of live calls, live updating of agent parameters mid-call
+      for just one call, and hanging up a call by the agent.
+  - name: Agent
+    description: |-
+      An Agent is the core of this API. It describes an AI engine which operates using a prompt and is connected to a single phone 
+      number for inbound calls.
+  - name: Models
+    description: |-
+      A Model is an AI language model provider which is used by an Agent and controlled through a prompt.
+      The Model for a particular agent is set at agent creation time.
+  - name: Voices
+    description: |-
+      Voices are the list of text to speach (TTS) voices which are available in the engine, again they are
+      set at agent creation time, but may also be modified in the course of running an agent.
+
 components:
   schemas:
     Model:
@@ -132,7 +150,16 @@ components:
         code:
           type: string
           description: String representation of a numeric error code
+          example: "1234"
         message:
           type: string
           description: Human readable error condition (largely) suitable to present to the client.
+          example: "general server error"
+    NotFound:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human readable message describing which parameter was not found
+          example: ThingID 1234 not found.
 paths: {}
