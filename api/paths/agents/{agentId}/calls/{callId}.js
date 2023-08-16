@@ -34,6 +34,9 @@ module.exports = function (logger) {
   };
   callUpdate.apiDoc = {
     summary: 'Updates the agent being used on a call',
+    description: `Call this endpoint to dynamically change the agent prompt/options for just this call.
+                  Takes effect asynchronously at the next speech detection event in call after the update
+                  completes`,
     operationId: 'callUpdate',
     tags: ["Calls"],
     parameters: [
@@ -85,8 +88,18 @@ module.exports = function (logger) {
           }
         }
       },
+      404: {
+        description: 'Agent or call not found',
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/NotFound'
+            }
+          }
+        }
+      },
       default: {
-        description: 'An error occurred',
+        description: 'Another kind of error occurred',
         content: {
           'application/json': {
             schema: {
@@ -122,8 +135,12 @@ module.exports = function (logger) {
   };
   callHangup.apiDoc = {
     summary: 'Hangs up a call',
+    description: `Causes the agent to gracefully end the call by telling the caller they
+                  have to go now, then hanging up the telephone call at the recipient end.
+                  The API call returns once this process has started. The actual hangup is
+                  irrevocable and asynchronous and will happen at some point after the API call
+                  is made but may not be complete by the time the return value is sent.`,
     operationId: 'callHangup',
-    tags: ["Calls"],
     parameters: [
       {
         description: "ID of the parent agent for the call",
@@ -144,12 +161,23 @@ module.exports = function (logger) {
         }
       }
     ],
+    tags: ["Calls"],
     responses: {
       200: {
-        description: 'Hanging up call: may not be synchronous, call may still be in progress and closing',
+        description: 'Request accepted, hanging up the call',
+      },
+      404: {
+        description: 'Agent or call not found',
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/NotFound'
+            }
+          }
+        }
       },
       default: {
-        description: 'An error occurred',
+        description: 'Another kind of error occurred',
         content: {
           'application/json': {
             schema: {
