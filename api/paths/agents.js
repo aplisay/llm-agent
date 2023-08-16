@@ -15,7 +15,7 @@ module.exports = function (logger, wsServer, makeService) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { modelName, prompt, options } = req.body;
+  let { modelName, prompt, options, callbackUrl } = req.body;
   log.info({ modelName, body: req.body }, 'create');
 
   if (!Application.agents[modelName]) {
@@ -24,7 +24,7 @@ const agentCreate = (async (req, res) => {
   else {
 
     try {
-      let application = new Application({ ...appParameters, modelName, prompt, options });
+      let application = new Application({ ...appParameters, modelName, prompt, options, callbackUrl });
       let number = await application.create();
       log.info({ application, appParameters }, `Application created on Nnumber ${number} with id ${application.id}`);
       if (number) {
@@ -61,9 +61,36 @@ agentCreate.apiDoc = {
             },
             options: {
               $ref: '#/components/schemas/AgentOptions'
+            },
+            callbackUrl: {
+              $ref: '#/components/schemas/CallbackUrl'
             }
           },
           required: ['modelName', 'prompt']
+        }
+      }
+    }
+  },
+  callbacks: {
+    webhooks: {
+      progressCallback: {
+        post: {
+          requestBody: {
+            description: `This is delivered as the JSON body of a callback to callbackUrl
+                          but more usefully in JSON encoded websocket messages on \`socket\``,
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: "#/components/schemas/Progress"
+                }
+              }
+            }
+          },
+          responses: {
+            "200": {
+              description: 'Return a 200 status to indicate that the data was received successfully'
+            }
+          }
         }
       }
     }
