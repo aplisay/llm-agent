@@ -4,7 +4,6 @@ let log;
 
 module.exports = function (logger) {
   log = logger;
-  Application.cleanAll();
   return {
     PUT: agentUpdate,
     DELETE: agentDelete,
