@@ -26,7 +26,7 @@ info:
     6. When done with the agent, close the websocket client.
     7. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
 
-    The above is sufficient for a naive agent that simply operates from a single prompt for the duration of the call as a demo if LLMs interacting with telephone callers.
+    The above is sufficient for a naive agent that simply operates from a single prompt for the duration of the call as a demo of LLMs interacting with telephone callers.
 
     More sophisticated agents will invariably be built by using logic and data to interact with the agent and modify behaviour throughout a call transaction.
     This is done via the `socket` event stream to follow the conversation, and the `Calls` methods to dynamically change the agent system prompt, inject
@@ -38,7 +38,7 @@ tags:
       Call objects are created when an agent receives a call from an external caller
       and are destroyed when the dialogue is complete and either agent or caller hang up.
       Calls operations are always referenced by parent agent and allow listing of live calls, live updating of agent parameters mid-call
-      for just one call, and hanging up a call by the agent.
+      for just one call, injection of direct speech by the app, and hanging up a call by the agent.
   - name: Agent
     description: |-
       An Agent is the core of this API. It describes an AI engine which operates using a prompt and is connected to a single phone 
