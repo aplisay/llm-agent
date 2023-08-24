@@ -1,4 +1,4 @@
-const Llm = require('../lib/gpt35');
-const prompt = require('../data/defaultPrompts')['gpt35']
+const Llm = require('../lib/models/gpt35');
+const prompt = require('../data/defaultPrompts')['gpt']
 require('./lib/llm.js')(Llm, prompt);
 

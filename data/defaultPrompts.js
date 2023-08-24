@@ -1,5 +1,5 @@
 module.exports = {
-  gpt35: `You are operating the user service line for Flagco. 
+  gpt: `You are operating the user service line for Flagco. 
 
 There are two things you can do for customers who call up:
 
