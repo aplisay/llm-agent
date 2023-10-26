@@ -6,7 +6,7 @@ Interacts to Jambonz, OpenAI and Google Vertex to create, modify and manage AI a
 
 ## Installation
 
-You will need a Jambonz instance or account with some free inbound telephone numbers routed from a SIP trunk provider to allow inbound calls to the agent.
+You will need a Jambonz instance or account with some unallocated inbound telephone numbers routed from a SIP trunk provider to allow inbound calls to the agent.
 Ensure the spare numbers are listed on your Jambonz dashboard and do not currently have any application associated with them. Add STT and TTS provider credentials to Jambonz for the Google provider. Add an application API key to Jambonz, and copy it into your clipboard.
 
 Clone this repo, and add the following environment variables (the repo uses .env so you can either directly place variables in your environment or copy the [Environment Example](https://github.com/aplisay/llm-agent/blob/main/environment-example) directly to a `.env` file:
@@ -66,7 +66,10 @@ Currently, this supports temperature which has a value between 0 and 1 (inclusiv
 }
 ```
 
-When an agent is no-longer needed, issue a `DELETE` to `/api/agents/${id}`. This is important as otherwise you will leak phone numbers and leave extraneous applications lying around on your Jambonz instance. The agent is automatically deleted when your client disconnects the progress WebSocket so this does provide an active backstop to prevent this.
+When an agent is no-longer needed, issue a `DELETE` to `/api/agents/${id}`. This is important as otherwise you will leak phone numbers and leave extraneous applications lying around on your Jambonz instance.
+The agent is automatically deleted when your client disconnects the progress WebSocket so this does provide an active backstop to prevent this only if your client connects to and maintains that socket.
+Currently, if the client never connects to the socket, then the agent will exist until it actively calls DELETE, so you will leak agents until you run out of numbers if you do this.
+At some future point, the code will probably either move to mandating websocket connection, or implementing an idle timeout so that quiescent agents are deleted.
 
 ## Implementation
 
@@ -77,4 +80,19 @@ Once the dispatcher is setup `Application.create()` creates a matching unique ap
 
 When calls arrive, the event dispatcher in `/lib/agents.js` calls the LLM for an initial greeting and then emits updates on the progress websocket as the conversation turns proceed.
 
-See [Developer Documentation](API.md) for class structure
+## Development
+
+See [Developer Documentation](API.md) for class structure.
+
+As of 23/Oct/2023, after taking input from numerous use cases since the first pass back in July, the rough backlog for development work on this project now involves implementation in the following areas (in no particular order):
+
+  *  Adding Llama2 as a model
+
+  *  Reducing the latency and flexibility of STT and TTS by re-layering the project to operate within or in conjunction with a Jambonz Custom STT engine.
+  As well as reducing latency, this will allow us to do better audio response slicing to solve the interruption and end of response detection problems.
+
+  *  Adding a model/vendor independent function call model. OpenAI has a baked in feature which we can't currently use because it breaks our vendor agnostic approach, but we can use this where it is available and synthesize it for other models by inserting text into the prompts.
+
+  *  A "bot API" text injection endpoint to improve bot to bot interactions, allow BYOSTT for clients, and allow use of core logic by text based UIs.
+
+If you want to work on one of these areas let me know, happy to accept contributions.
