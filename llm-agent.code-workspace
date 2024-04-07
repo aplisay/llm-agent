@@ -7,6 +7,9 @@
     {
       "name": "llm-frontend",
       "path": "../llm-frontend"
+    },
+    {
+      "path": "../bank-demo"
     }
   ],
   "settings": {}
