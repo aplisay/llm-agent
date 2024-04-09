@@ -2,7 +2,13 @@
 
 LLM based Agent.
 
-Interacts to Jambonz, OpenAI and Google Vertex to create, modify and manage AI agents which listen on free phone numbers in Jambonz. Routes the calls via an STT to the LLM of choice with an initial system prompt, and then takes the completions and plays them to the caller via an TTS.
+Interacts with Jambonz, Anthropic, OpenAI and Google Vertex to create, modify and manage AI agents which listen on free phone numbers in Jambonz. Routes the calls via an STT to the LLM of choice with an initial system prompt, and then takes the completions and plays them to the caller via an TTS.
+
+Currently supports:
+ * Anthropic `message` API (Claude 3)
+ * OpenAI chat API (GPT-3/4)
+ * Google `aiplatform` API (Palm2 - bison-chat)
+ * Google `VertexAI` API (Gemini - gemini-1.0-pro)
 
 ## Installation
 
@@ -12,13 +18,14 @@ Ensure the spare numbers are listed on your Jambonz dashboard and do not current
 Clone this repo, and add the following environment variables (the repo uses .env so you can either directly place variables in your environment or copy the [Environment Example](https://github.com/aplisay/llm-agent/blob/main/environment-example) directly to a `.env` file:
 
 ```shell
-OPENAI_API_KEY=<YOUR OPENAI KEY>
-OPENAI_MODEL=gpt-3.5-turbo
+ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 GOOGLE_PROJECT_ID=<YOUR GOOGLE PROJECT ID>
 GOOGLE_PROJECT_LOCATION="us-central1"
 GOOGLE_APPLICATION_CREDENTIALS=<PATH TO CREDENTIAL JSON FILE>
 JAMBONZ_SERVER=<JAMBONZ API SERVER HOSTNAME>, usually api.server.name
 JAMBONZ_API_KEY=<JAMBONZ API KEY>
+OPENAI_API_KEY=<YOUR OPENAI KEY>
+OPENAI_MODEL=gpt-3.5-turbo
 SERVER_NAME=<THIS SERVER DNS NAME>
 AUTHENTICATE_USERS=NO
 ```
@@ -84,7 +91,7 @@ When calls arrive, the event dispatcher in `/lib/agents.js` calls the LLM for an
 
 See [Developer Documentation](API.md) for class structure.
 
-As of 23/Oct/2023, after taking input from numerous use cases since the first pass back in July, the rough backlog for development work on this project now involves implementation in the following areas (in no particular order):
+The rough backlog for development work on this project now involves implementation in the following areas (in no particular order):
 
   *  Adding Llama2 as a model
 
