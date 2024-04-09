@@ -11,6 +11,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.1",
     "@google-cloud/aiplatform": "^2.15.0",
     "@google-cloud/text-to-speech": "^4.2.3",
     "@google-cloud/vertexai": "^0.5.0",

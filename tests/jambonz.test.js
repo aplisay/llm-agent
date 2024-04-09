@@ -66,14 +66,12 @@ describe('Jambonz', () => {
       catch (e) {
         console.log({ message: e.message, request: e.request.path }, 'List carriers');
       }
-      console.log({ carriers }, 'list');
       expect(carriers).toBeInstanceOf(Array);
       expect(carriers.length).toBeGreaterThan(0);
     });
 
 
     test('Add missing numbers', async () => {
-      console.log({ numbers, needNumbers, makeNumbers, carriers, create: {  voip_carrier_sid: carriers[0]?.voip_carrier_sid } })
       return await expect(Promise.all(makeNumbers?.map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })) || [Promise.resolve()])).resolves;
     });
 
