@@ -2,7 +2,7 @@
 
 LLM based Agent.
 
-Interacts with Jambonz, Anthropic, OpenAI and Google Vertex to create, modify and manage AI agents which listen on free phone numbers in Jambonz. Routes the calls via an STT to the LLM of choice with an initial system prompt, and then takes the completions and plays them to the caller via an TTS.
+Interacts with Jambonz, Anthropic, OpenAI and Google Vertex to create, modify and manage AI agents which listen on free phone numbers in Jambonz. Routes the calls via an STT to the LLM of choice with an initial system prompt, and then takes the completions and plays them to the caller via a TTS.
 
 Currently supports:
  * Anthropic `message` API (Claude 3)
