@@ -9,10 +9,10 @@ module.exports = function (Llm, prompt) {
   jest.setTimeout(30000);
 
   test('initial', async () => {
-    await expect(model.initial()).resolves.toMatch(/(hello|help|welcome|thank|today|good day)/i);
+    return expect(model.initial()).resolves.toMatch(/(hello|help|welcome|thank|today|good day)/i);
   });
 
   test('flagsinfo', async () => {
-    await expect(model.completion('I would like to buy some flags')).resolves.toHaveProperty('text');
+      return expect(model.completion('I would like to buy some flags')).resolves.toHaveProperty('text');
   });
 };
