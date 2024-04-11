@@ -64,6 +64,9 @@ agentCreate.apiDoc = {
             },
             callbackUrl: {
               $ref: '#/components/schemas/CallbackUrl'
+            },
+            tools: {
+              $ref: '#/components/schemas/Tools'
             }
           },
           required: ['modelName', 'prompt']
