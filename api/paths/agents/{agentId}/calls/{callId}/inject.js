@@ -21,7 +21,6 @@ module.exports = function (logger) {
           res.send({ id: callId });
         }
         catch (e) {
-          console.log(e, 'error');
           logger.error({ message: e.message, e }, 'injecting text');
           res.status(500).send({ msg: e.message });
         }

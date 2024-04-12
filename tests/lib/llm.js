@@ -61,14 +61,22 @@ const functions =  [
     }
   }
 ];
+const tools = {
+  functions: functions.map(f => ({ ...f, implementation: undefined }))
+}
 
 
 
+module.exports = function (Llm, prompt, modelName = undefined) {
 
-module.exports = function (Llm, prompt) {
-
-  test('Initialises', () => {
-    model = new Llm(require('../../lib/logger'), 'user', prompt);
+  test('Initialises', async () => {
+    if (!Llm.supportsFunctions) {
+      expect(() => new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName, functions: tools.functions })).toThrow('Functions not supported by this model');
+      model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName });
+    }
+    else {
+      model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName, functions: tools.functions });
+    }
     return expect(model).toBeInstanceOf(Llm);
   });
 
@@ -82,11 +90,18 @@ module.exports = function (Llm, prompt) {
   
   test('flagsinfo', () => expect(model.completion('I would like to buy some flags')).resolves.toHaveProperty('text'));
 
+  test('change prompt', () => {
+    model.prompt = "you are a helpful agent talking on the telephone.";
+    return expect(model.completion('I would like to buy some flags')).resolves.toHaveProperty('text');
+  });
+
   test('Weather in London', async () => {
-    let request = model.completion('What is the weather like in London', { functions });
-    if (!Llm.supportsFunctions)
-      return await expect(request).rejects.toThrow('Functions not supported by this model');
+    let request = model.completion('What is the weather like in London');
+    if (!Llm.supportsFunctions){
+        return expect(request).resolves.not.toHaveProperty('calls');
+    }
     else {
+
         await expect(request).resolves.toHaveProperty('calls');
         let calls = (await request).calls;
         expect(calls.length).toBe(1);
@@ -95,16 +110,17 @@ module.exports = function (Llm, prompt) {
         expect(calls[0]).toHaveProperty('id');
         expect(calls[0].name).toBe('get_weather');
         let f = functions.find(entry => entry.name === calls[0].name);
-        let completion = model.callResult([{ id: calls[0].id, result: f.implementation(calls[0].input) }], { functions });
+        let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }], { functions });
         return expect(completion).resolves.toHaveProperty('text');
     }
   });
   
   
   test('Hangup function call', async () => {
-    let request = model.completion('Please hangup this call', { functions })
-    if (!Llm.supportsFunctions)
-      return await expect(request).rejects.toThrow('Functions not supported by this model');
+    let request = model.completion('Please hangup this call')
+    if (!Llm.supportsFunctions) {
+      return expect(request).resolves.not.toHaveProperty('calls');
+    }
     else {
       await expect(request).resolves.toHaveProperty('calls');
       let calls = (await request).calls;
@@ -114,7 +130,7 @@ module.exports = function (Llm, prompt) {
       expect(calls[0]).toHaveProperty('id');
       expect(calls[0].name).toBe('hangup');
       let f = functions.find(entry => entry.name === calls[0].name);
-      let completion = model.callResult([{ id: calls[0].id, name: calls[0].name, result: f.implementation(calls[0].input) }], { functions });
+      let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }], { functions });
       return expect(completion).resolves.toHaveProperty('text');
     }
   }); 
