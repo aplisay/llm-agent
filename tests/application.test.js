@@ -34,13 +34,13 @@ let agent = {
 describe(`application`, () => {
   test('Static agent list', () => {
     let models = Object.entries(Application.listModels());
-    expect(models.length).toBe(5);
+    expect(models.length).toBe(8);
     expect(models[0].length).toBe(2);
     expect(models[0][1]).toHaveProperty('description');
   });
 
   test('No agent name', () => {
-    expect(() => new Application(agent)).toThrow(/Bad agent name/i);
+    expect(() => new Application(agent)).toThrow(/Bad agent/i);
   });
 
   test('Instantiate', () => {

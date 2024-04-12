@@ -114,6 +114,33 @@ components:
       type: string
       description: A callback URL to be used for status updates
       example: https://app.aplisay.com/status/updates
+    Tools:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+            description: The function call name, used in the invocation
+            example: get_weather
+          description:
+            type: string
+            description: A description of what the function call does which will be used by the LLM when deciding to invoke it
+            example: Get the current weather in a given location
+          input_schema:
+            type: object
+            description: An OpenAPI style schema for the invocation parameters
+            example:
+              type: object
+              properties:
+                location:
+                  type: string
+                  description: The city and country, e.g. London, UK
+                units:
+                  type: string
+                  enum: ['celsius', 'fahrenheit']
+                  description: The unit of temperature, either \"celsius\" or \"fahrenheit\"
+              required: ['location']
     Language:
       description: >-
         Language and country dialect specified as an ISO639-1 language code
