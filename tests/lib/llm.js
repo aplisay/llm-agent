@@ -84,7 +84,7 @@ module.exports = function (Llm, prompt) {
 
   test('Weather in London', async () => {
     let request = model.completion('What is the weather like in London', { functions });
-    if (!model.supportsFunctions)
+    if (!Llm.supportsFunctions)
       return await expect(request).rejects.toThrow('Functions not supported by this model');
     else {
         await expect(request).resolves.toHaveProperty('calls');
@@ -103,7 +103,7 @@ module.exports = function (Llm, prompt) {
   
   test('Hangup function call', async () => {
     let request = model.completion('Please hangup this call', { functions })
-    if (!model.supportsFunctions)
+    if (!Llm.supportsFunctions)
       return await expect(request).rejects.toThrow('Functions not supported by this model');
     else {
       await expect(request).resolves.toHaveProperty('calls');
