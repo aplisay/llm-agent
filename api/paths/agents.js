@@ -17,31 +17,28 @@ module.exports = function (logger, wsServer, makeService) {
 const agentCreate = (async (req, res) => {
   let { modelName, prompt, options, callbackUrl } = req.body;
   log.info({ modelName, body: req.body }, 'create');
+  let application;
 
-  if (!Application.agents[modelName]) {
+  try {
+    application = new Application({ ...appParameters, modelName, prompt, options, callbackUrl });
+  }
+  catch (e) {
     res.status(405).send(`no agent for ${modelName}`);
   }
-  else {
-
-    try {
-      let application = new Application({ ...appParameters, modelName, prompt, options, callbackUrl });
-      let number = await application.create();
-      log.info({ application, appParameters }, `Application created on Nnumber ${number} with id ${application.id}`);
-      if (number) {
-        res.send({ number, id: application.id, socket: application.agent.socketPath });
-      }
-      else {
-        res.status(424).send({ message: "No free phone numbers available on instance, please try later" });
-      }
+  try {
+    let number = await application.create();
+    log.info({ application, appParameters }, `Application created on Number ${number} with id ${application.id}`);
+    if (number) {
+      res.send({ number, id: application.id, socket: application.agent.socketPath });
     }
-    catch (err) {
-      res.status(500).send(err);
-      req.log.error(err, 'creating agent');
+    else {
+      res.status(424).send({ message: "No free phone numbers available on instance, please try later" });
     }
-
-
   }
-
+  catch (err) {
+    res.status(500).send(err);
+    req.log.error(err, 'creating agent');
+  }
 });
 agentCreate.apiDoc = {
   summary: 'Creates an agent and associates it with a phone number',
