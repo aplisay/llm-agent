@@ -9,11 +9,19 @@
 <dd></dd>
 <dt><a href="#GoogleHelper">GoogleHelper</a></dt>
 <dd></dd>
-<dt><a href="#Gpt35">Gpt35</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
-<dd></dd>
 <dt><a href="#Jambonz">Jambonz</a></dt>
 <dd></dd>
 <dt><a href="#Llm">Llm</a></dt>
+<dd></dd>
+<dt><a href="#Anthropic">Anthropic</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
+<dd></dd>
+<dt><a href="#Gemini">Gemini</a> ⇐ <code><a href="#Google">Google</a></code></dt>
+<dd></dd>
+<dt><a href="#Google">Google</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
+<dd></dd>
+<dt><a href="#Google">Google</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
+<dd></dd>
+<dt><a href="#OpenAi">OpenAi</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
 <dd></dd>
 <dt><a href="#Palm2">Palm2</a> ⇐ <code><a href="#Llm">Llm</a></code></dt>
 <dd></dd>
@@ -35,6 +43,7 @@
     * [new JambonzSession({, params)](#new_JambonzSession_new)
     * [.handler()](#JambonzSession+handler) ⇒ <code>Promise</code>
     * [.forceClose()](#JambonzSession+forceClose) ⇒ <code>Promise</code>
+    * [.inject(text)](#JambonzSession+inject) ⇒ <code>Promise</code>
 
 <a name="new_JambonzSession_new"></a>
 
@@ -69,6 +78,18 @@ happen
 
 **Kind**: instance method of [<code>JambonzSession</code>](#JambonzSession)  
 **Returns**: <code>Promise</code> - Resolves to a void value when the conversation finally closes  
+<a name="JambonzSession+inject"></a>
+
+### jambonzSession.inject(text) ⇒ <code>Promise</code>
+Inject a phrase into the conversation via TTS. Doesn't change the AI turn in any way
+
+**Kind**: instance method of [<code>JambonzSession</code>](#JambonzSession)  
+**Returns**: <code>Promise</code> - resolves when Jambonz accepts transaction  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| text | <code>string</code> | text to be spoken into the conversation by TTS |
+
 <a name="Agent"></a>
 
 ## Agent
@@ -194,85 +215,6 @@ Get all of the Google TTS voices
 
 **Kind**: instance method of [<code>GoogleHelper</code>](#GoogleHelper)  
 **Returns**: <code>Promise.&lt;Array.&lt;Object&gt;&gt;</code> - All Jambonz number resources on the instance  
-<a name="Gpt35"></a>
-
-## Gpt35 ⇐ [<code>Llm</code>](#Llm)
-**Kind**: global class  
-**Extends**: [<code>Llm</code>](#Llm)  
-
-* [Gpt35](#Gpt35) ⇐ [<code>Llm</code>](#Llm)
-    * [new Gpt35(logger, user, prompt, options)](#new_Gpt35_new)
-    * _instance_
-        * [.voiceHints](#Llm+voiceHints)
-        * [.initial()](#Gpt35+initial) ⇒ <code>string</code>
-        * [.rawCompletion(input)](#Gpt35+rawCompletion) ⇒ <code>string</code>
-        * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
-    * _static_
-        * [.Gpt35](#Gpt35.Gpt35)
-            * [new Gpt35()](#new_Gpt35.Gpt35_new)
-
-<a name="new_Gpt35_new"></a>
-
-### new Gpt35(logger, user, prompt, options)
-Implements the LLM class against the OpenAI GPT3.5-turbo model
-
-
-| Param | Type | Description |
-| --- | --- | --- |
-| logger | <code>Object</code> | Pino logger instance |
-| user | <code>string</code> | a unique user ID |
-| prompt | <code>string</code> | The initial (system) chat prompt |
-| options | <code>Object</code> | options |
-| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
-
-<a name="Llm+voiceHints"></a>
-
-### gpt35.voiceHints
-A list of all the unique words in the initial prompt.
-Useful as hints for STT context priming.
-
-**Kind**: instance property of [<code>Gpt35</code>](#Gpt35)  
-**Read only**: true  
-<a name="Gpt35+initial"></a>
-
-### gpt35.initial() ⇒ <code>string</code>
-Start the chat session and return the initial greeting
-
-**Kind**: instance method of [<code>Gpt35</code>](#Gpt35)  
-**Returns**: <code>string</code> - initial response  
-<a name="Gpt35+rawCompletion"></a>
-
-### gpt35.rawCompletion(input) ⇒ <code>string</code>
-Generate the next round of chat response
-
-**Kind**: instance method of [<code>Gpt35</code>](#Gpt35)  
-**Returns**: <code>string</code> - the raw completion output from the GPT-3.5 model  
-
-| Param | Type | Description |
-| --- | --- | --- |
-| input | <code>string</code> | the user prompt input text |
-
-<a name="Llm+completion"></a>
-
-### gpt35.completion(input) ⇒ [<code>Completion</code>](#Completion)
-Parse a raw completion, return speech text, data and hangup signal
-
-**Kind**: instance method of [<code>Gpt35</code>](#Gpt35)  
-**Returns**: [<code>Completion</code>](#Completion) - completion parsed completion  
-
-| Param | Type | Description |
-| --- | --- | --- |
-| input | <code>string</code> | raw completion |
-
-<a name="Gpt35.Gpt35"></a>
-
-### Gpt35.Gpt35
-**Kind**: static class of [<code>Gpt35</code>](#Gpt35)  
-<a name="new_Gpt35.Gpt35_new"></a>
-
-#### new Gpt35()
-Creates an instance of Gpt35.
-
 <a name="Jambonz"></a>
 
 ## Jambonz
@@ -443,6 +385,7 @@ Creates an instance of Jambonz.
     * _static_
         * [.Llm](#Llm.Llm)
             * [new Llm(logger, user, prompt, options)](#new_Llm.Llm_new)
+        * [.supportsFunctions](#Llm.supportsFunctions)
 
 <a name="new_Llm_new"></a>
 
@@ -485,6 +428,604 @@ Parse a raw completion, return speech text, data and hangup signal
 | options | <code>Object</code> | options |
 | options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
 
+<a name="Llm.supportsFunctions"></a>
+
+### Llm.supportsFunctions
+Default us not to support function calling
+
+**Kind**: static property of [<code>Llm</code>](#Llm)  
+<a name="Anthropic"></a>
+
+## Anthropic ⇐ [<code>Llm</code>](#Llm)
+**Kind**: global class  
+**Extends**: [<code>Llm</code>](#Llm)  
+
+* [Anthropic](#Anthropic) ⇐ [<code>Llm</code>](#Llm)
+    * [new Anthropic(logger, user, prompt, options)](#new_Anthropic_new)
+    * _instance_
+        * [.voiceHints](#Llm+voiceHints)
+        * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
+    * _static_
+        * [.AnthropicLlm](#Anthropic.AnthropicLlm)
+            * [new AnthropicLlm()](#new_Anthropic.AnthropicLlm_new)
+
+<a name="new_Anthropic_new"></a>
+
+### new Anthropic(logger, user, prompt, options)
+Implements the LLM class against the Anthropic Claude models
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="Llm+voiceHints"></a>
+
+### anthropic.voiceHints
+A list of all the unique words in the initial prompt.
+Useful as hints for STT context priming.
+
+**Kind**: instance property of [<code>Anthropic</code>](#Anthropic)  
+**Read only**: true  
+<a name="Llm+completion"></a>
+
+### anthropic.completion(input) ⇒ [<code>Completion</code>](#Completion)
+Parse a raw completion, return speech text, data and hangup signal
+
+**Kind**: instance method of [<code>Anthropic</code>](#Anthropic)  
+**Returns**: [<code>Completion</code>](#Completion) - completion parsed completion  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | raw completion |
+
+<a name="Anthropic.AnthropicLlm"></a>
+
+### Anthropic.AnthropicLlm
+**Kind**: static class of [<code>Anthropic</code>](#Anthropic)  
+<a name="new_Anthropic.AnthropicLlm_new"></a>
+
+#### new AnthropicLlm()
+Creates an instance of Anthropic.
+
+<a name="Gemini"></a>
+
+## Gemini ⇐ [<code>Google</code>](#Google)
+**Kind**: global class  
+**Extends**: [<code>Google</code>](#Google)  
+
+* [Gemini](#Gemini) ⇐ [<code>Google</code>](#Google)
+    * [new Gemini()](#new_Gemini_new)
+    * _instance_
+        * [.initial()](#Google+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#Google+rawCompletion) ⇒ <code>string</code>
+    * _static_
+        * [.Gemini](#Gemini.Gemini)
+            * [new Gemini(logger, user, prompt, options)](#new_Gemini.Gemini_new)
+
+<a name="new_Gemini_new"></a>
+
+### new Gemini()
+Implements the LLM class for Google's Gemini model via the Vertex AI
+interface.
+
+<a name="Google+initial"></a>
+
+### gemini.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>Gemini</code>](#Gemini)  
+**Overrides**: [<code>initial</code>](#Google+initial)  
+**Returns**: <code>string</code> - initial response  
+<a name="Google+rawCompletion"></a>
+
+### gemini.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>Gemini</code>](#Gemini)  
+**Overrides**: [<code>rawCompletion</code>](#Google+rawCompletion)  
+**Returns**: <code>string</code> - the raw completion output from Google model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="Gemini.Gemini"></a>
+
+### Gemini.Gemini
+**Kind**: static class of [<code>Gemini</code>](#Gemini)  
+<a name="new_Gemini.Gemini_new"></a>
+
+#### new Gemini(logger, user, prompt, options)
+Creates an instance of Gemini.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="Google"></a>
+
+## Google ⇐ [<code>Llm</code>](#Llm)
+**Kind**: global class  
+**Extends**: [<code>Llm</code>](#Llm)  
+
+* [Google](#Google) ⇐ [<code>Llm</code>](#Llm)
+    * [new Google()](#new_Google_new)
+    * [new Google()](#new_Google_new)
+    * _instance_
+        * [.voiceHints](#Llm+voiceHints)
+        * [.initial()](#Google+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#Google+rawCompletion) ⇒ <code>string</code>
+        * [.initial()](#Google+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#Google+rawCompletion) ⇒ <code>string</code>
+        * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
+    * _static_
+        * [.Google](#Google.Google)
+            * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+            * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+        * [.Google](#Google.Google)
+            * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+            * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+        * [.supportsFunctions](#Google.supportsFunctions)
+
+<a name="new_Google_new"></a>
+
+### new Google()
+Implements the LLM class for Google's Google model via the Vertex AI
+interface.
+
+<a name="new_Google_new"></a>
+
+### new Google()
+Implements the LLM class for Google's Vertex AI platform
+interface.
+
+<a name="Llm+voiceHints"></a>
+
+### google.voiceHints
+A list of all the unique words in the initial prompt.
+Useful as hints for STT context priming.
+
+**Kind**: instance property of [<code>Google</code>](#Google)  
+**Overrides**: [<code>voiceHints</code>](#Llm+voiceHints)  
+**Read only**: true  
+<a name="Google+initial"></a>
+
+### google.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - initial response  
+<a name="Google+rawCompletion"></a>
+
+### google.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - the raw completion output from Google model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="Google+initial"></a>
+
+### google.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - initial response  
+<a name="Google+rawCompletion"></a>
+
+### google.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - the raw completion output from Google model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="Llm+completion"></a>
+
+### google.completion(input) ⇒ [<code>Completion</code>](#Completion)
+Parse a raw completion, return speech text, data and hangup signal
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Overrides**: [<code>completion</code>](#Llm+completion)  
+**Returns**: [<code>Completion</code>](#Completion) - completion parsed completion  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | raw completion |
+
+<a name="Google.Google"></a>
+
+### Google.Google
+**Kind**: static class of [<code>Google</code>](#Google)  
+
+* [.Google](#Google.Google)
+    * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+    * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options, location, model)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+| location | <code>string</code> | Google service location |
+| model | <code>string</code> | Google model name |
+
+<a name="Google.Google"></a>
+
+### Google.Google
+**Kind**: static class of [<code>Google</code>](#Google)  
+
+* [.Google](#Google.Google)
+    * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+    * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options, location, model)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+| location | <code>string</code> | Google service location |
+| model | <code>string</code> | Google model name |
+
+<a name="Google.supportsFunctions"></a>
+
+### Google.supportsFunctions
+Gemini Pro (only) via the VertexAI API supports function calling
+
+**Kind**: static property of [<code>Google</code>](#Google)  
+<a name="Google"></a>
+
+## Google ⇐ [<code>Llm</code>](#Llm)
+**Kind**: global class  
+**Extends**: [<code>Llm</code>](#Llm)  
+
+* [Google](#Google) ⇐ [<code>Llm</code>](#Llm)
+    * [new Google()](#new_Google_new)
+    * [new Google()](#new_Google_new)
+    * _instance_
+        * [.voiceHints](#Llm+voiceHints)
+        * [.initial()](#Google+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#Google+rawCompletion) ⇒ <code>string</code>
+        * [.initial()](#Google+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#Google+rawCompletion) ⇒ <code>string</code>
+        * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
+    * _static_
+        * [.Google](#Google.Google)
+            * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+            * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+        * [.Google](#Google.Google)
+            * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+            * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+        * [.supportsFunctions](#Google.supportsFunctions)
+
+<a name="new_Google_new"></a>
+
+### new Google()
+Implements the LLM class for Google's Google model via the Vertex AI
+interface.
+
+<a name="new_Google_new"></a>
+
+### new Google()
+Implements the LLM class for Google's Vertex AI platform
+interface.
+
+<a name="Llm+voiceHints"></a>
+
+### google.voiceHints
+A list of all the unique words in the initial prompt.
+Useful as hints for STT context priming.
+
+**Kind**: instance property of [<code>Google</code>](#Google)  
+**Overrides**: [<code>voiceHints</code>](#Llm+voiceHints)  
+**Read only**: true  
+<a name="Google+initial"></a>
+
+### google.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - initial response  
+<a name="Google+rawCompletion"></a>
+
+### google.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - the raw completion output from Google model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="Google+initial"></a>
+
+### google.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - initial response  
+<a name="Google+rawCompletion"></a>
+
+### google.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Returns**: <code>string</code> - the raw completion output from Google model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="Llm+completion"></a>
+
+### google.completion(input) ⇒ [<code>Completion</code>](#Completion)
+Parse a raw completion, return speech text, data and hangup signal
+
+**Kind**: instance method of [<code>Google</code>](#Google)  
+**Overrides**: [<code>completion</code>](#Llm+completion)  
+**Returns**: [<code>Completion</code>](#Completion) - completion parsed completion  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | raw completion |
+
+<a name="Google.Google"></a>
+
+### Google.Google
+**Kind**: static class of [<code>Google</code>](#Google)  
+
+* [.Google](#Google.Google)
+    * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+    * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options, location, model)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+| location | <code>string</code> | Google service location |
+| model | <code>string</code> | Google model name |
+
+<a name="Google.Google"></a>
+
+### Google.Google
+**Kind**: static class of [<code>Google</code>](#Google)  
+
+* [.Google](#Google.Google)
+    * [new Google(logger, user, prompt, options)](#new_Google.Google_new)
+    * [new Google(logger, user, prompt, options, location, model)](#new_Google.Google_new)
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="new_Google.Google_new"></a>
+
+#### new Google(logger, user, prompt, options, location, model)
+Creates an instance of Google LLM.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+| location | <code>string</code> | Google service location |
+| model | <code>string</code> | Google model name |
+
+<a name="Google.supportsFunctions"></a>
+
+### Google.supportsFunctions
+Gemini Pro (only) via the VertexAI API supports function calling
+
+**Kind**: static property of [<code>Google</code>](#Google)  
+<a name="OpenAi"></a>
+
+## OpenAi ⇐ [<code>Llm</code>](#Llm)
+**Kind**: global class  
+**Extends**: [<code>Llm</code>](#Llm)  
+
+* [OpenAi](#OpenAi) ⇐ [<code>Llm</code>](#Llm)
+    * [new OpenAi(logger, user, prompt, options)](#new_OpenAi_new)
+    * _instance_
+        * [.voiceHints](#Llm+voiceHints)
+        * [.initial()](#OpenAi+initial) ⇒ <code>string</code>
+        * [.rawCompletion(input)](#OpenAi+rawCompletion) ⇒ <code>string</code>
+        * [.callResult(Array)](#OpenAi+callResult) ⇒
+        * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
+    * _static_
+        * [.OpenAi](#OpenAi.OpenAi)
+            * [new OpenAi()](#new_OpenAi.OpenAi_new)
+        * [.supportsFunctions](#OpenAi.supportsFunctions)
+        * [.Google#callResult(Array)](#OpenAi.Google+callResult) ⇒
+
+<a name="new_OpenAi_new"></a>
+
+### new OpenAi(logger, user, prompt, options)
+Implements the LLM class against the OpenAI GPT3.5-turbo model
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| logger | <code>Object</code> | Pino logger instance |
+| user | <code>string</code> | a unique user ID |
+| prompt | <code>string</code> | The initial (system) chat prompt |
+| options | <code>Object</code> | options |
+| options.temperature | <code>number</code> | The LLM temperature                 See model documentation |
+
+<a name="Llm+voiceHints"></a>
+
+### openAi.voiceHints
+A list of all the unique words in the initial prompt.
+Useful as hints for STT context priming.
+
+**Kind**: instance property of [<code>OpenAi</code>](#OpenAi)  
+**Read only**: true  
+<a name="OpenAi+initial"></a>
+
+### openAi.initial() ⇒ <code>string</code>
+Start the chat session and return the initial greeting
+
+**Kind**: instance method of [<code>OpenAi</code>](#OpenAi)  
+**Returns**: <code>string</code> - initial response  
+<a name="OpenAi+rawCompletion"></a>
+
+### openAi.rawCompletion(input) ⇒ <code>string</code>
+Generate the next round of chat response
+
+**Kind**: instance method of [<code>OpenAi</code>](#OpenAi)  
+**Returns**: <code>string</code> - the raw completion output from the GPT-3.5 model  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | the user prompt input text |
+
+<a name="OpenAi+callResult"></a>
+
+### openAi.callResult(Array) ⇒
+Send a set of function call results back to generate the next round of responses
+
+**Kind**: instance method of [<code>OpenAi</code>](#OpenAi)  
+**Returns**: the rawCompletion output  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| Array | <code>Array</code> | of id, result string tuples |
+
+<a name="Llm+completion"></a>
+
+### openAi.completion(input) ⇒ [<code>Completion</code>](#Completion)
+Parse a raw completion, return speech text, data and hangup signal
+
+**Kind**: instance method of [<code>OpenAi</code>](#OpenAi)  
+**Returns**: [<code>Completion</code>](#Completion) - completion parsed completion  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| input | <code>string</code> | raw completion |
+
+<a name="OpenAi.OpenAi"></a>
+
+### OpenAi.OpenAi
+**Kind**: static class of [<code>OpenAi</code>](#OpenAi)  
+<a name="new_OpenAi.OpenAi_new"></a>
+
+#### new OpenAi()
+Creates an instance of OpenAi.
+
+<a name="OpenAi.supportsFunctions"></a>
+
+### OpenAi.supportsFunctions
+OpenAI implementation supports function calling
+
+**Kind**: static property of [<code>OpenAi</code>](#OpenAi)  
+<a name="OpenAi.Google+callResult"></a>
+
+### OpenAi.Google#callResult(Array) ⇒
+Send a set of function call results back to generate the next round of responses
+
+**Kind**: static method of [<code>OpenAi</code>](#OpenAi)  
+**Returns**: the rawCompletion output  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| Array | <code>Array</code> | of id, result string tuples |
+
 <a name="Palm2"></a>
 
 ## Palm2 ⇐ [<code>Llm</code>](#Llm)
@@ -495,8 +1036,6 @@ Parse a raw completion, return speech text, data and hangup signal
     * [new Palm2()](#new_Palm2_new)
     * _instance_
         * [.voiceHints](#Llm+voiceHints)
-        * [.initial()](#Palm2+initial) ⇒ <code>string</code>
-        * [.rawCompletion(input)](#Palm2+rawCompletion) ⇒ <code>string</code>
         * [.completion(input)](#Llm+completion) ⇒ [<code>Completion</code>](#Completion)
     * _static_
         * [.Palm2](#Palm2.Palm2)
@@ -516,25 +1055,6 @@ Useful as hints for STT context priming.
 
 **Kind**: instance property of [<code>Palm2</code>](#Palm2)  
 **Read only**: true  
-<a name="Palm2+initial"></a>
-
-### palm2.initial() ⇒ <code>string</code>
-Start the chat session and return the initial greeting
-
-**Kind**: instance method of [<code>Palm2</code>](#Palm2)  
-**Returns**: <code>string</code> - initial response  
-<a name="Palm2+rawCompletion"></a>
-
-### palm2.rawCompletion(input) ⇒ <code>string</code>
-Generate the next round of chat response
-
-**Kind**: instance method of [<code>Palm2</code>](#Palm2)  
-**Returns**: <code>string</code> - the raw completion output from PaLM2 model  
-
-| Param | Type | Description |
-| --- | --- | --- |
-| input | <code>string</code> | the user prompt input text |
-
 <a name="Llm+completion"></a>
 
 ### palm2.completion(input) ⇒ [<code>Completion</code>](#Completion)

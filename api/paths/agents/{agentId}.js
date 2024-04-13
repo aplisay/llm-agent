@@ -12,7 +12,7 @@ module.exports = function (logger) {
 
 
 const agentUpdate = async (req, res) => {
-  let { prompt, options } = req.body;
+  let { prompt, options, functions } = req.body;
   let { agentId } = req.params;
   let application = Application.recover(agentId);
   if (!application) {
@@ -21,6 +21,7 @@ const agentUpdate = async (req, res) => {
   else {
     prompt && (application.prompt = prompt);
     options && (application.options = { ...application.options, ...options });
+    functions && (application.functions = functions);
     res.send({ prompt: application.prompt, options: application.options, id: application.id });
   }
 };
@@ -50,6 +51,9 @@ agentUpdate.apiDoc = {
             },
             options: {
               $ref: '#/components/schemas/AgentOptions',
+            },
+            functions: {
+              $ref: '#/components/schemas/Functions'
             }
           },
           required: [],
@@ -77,6 +81,9 @@ agentUpdate.apiDoc = {
               },
               prompt: {
                 $ref: '#/components/schemas/Prompt'
+              },
+              functions: {
+                $ref: '#/components/schemas/Functions'
               }
             }
           }
