@@ -3,7 +3,7 @@ const Application = require('../../../../../lib/application');
 
 module.exports = function (logger) {
   const callUpdate = async (req, res) => {
-    let { prompt, options } = req.body;
+    let { prompt, options, functions } = req.body;
     let { agentId, callId } = req.params;
     let application = Application.recover(agentId);
     if (!application) {
@@ -18,12 +18,12 @@ module.exports = function (logger) {
       }
       else {
         try {
-          call.prompt = prompt;
-          call.options = options;
+          prompt && (call.prompt = prompt);
+          options && (call.options = options);
+          functions && (call.functions = functions);
           res.send({ id: callId });
         }
         catch (e) {
-          console.log(e, 'error');
           logger.error({ message: e.message, e }, 'updating call agent error');
           res.status(500).send({ msg: e.message });
         }
@@ -70,6 +70,9 @@ module.exports = function (logger) {
               },
               options: {
                 $ref: '#/components/schemas/AgentOptions',
+              },
+              functions: {
+                $ref: '#/components/schemas/Functions'
               }
             },
             required: [],
