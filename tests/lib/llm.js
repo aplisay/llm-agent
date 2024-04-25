@@ -110,7 +110,7 @@ module.exports = function (Llm, prompt, modelName = undefined) {
         expect(calls[0]).toHaveProperty('id');
         expect(calls[0].name).toBe('get_weather');
         let f = functions.find(entry => entry.name === calls[0].name);
-        let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }], { functions });
+        let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }]);
         return expect(completion).resolves.toHaveProperty('text');
     }
   });
@@ -130,7 +130,7 @@ module.exports = function (Llm, prompt, modelName = undefined) {
       expect(calls[0]).toHaveProperty('id');
       expect(calls[0].name).toBe('hangup');
       let f = functions.find(entry => entry.name === calls[0].name);
-      let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }], { functions });
+      let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }]);
       return expect(completion).resolves.toHaveProperty('text');
     }
   }); 

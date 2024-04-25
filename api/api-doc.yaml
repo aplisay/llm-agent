@@ -114,8 +114,9 @@ components:
       type: string
       description: A callback URL to be used for status updates
       example: https://app.aplisay.com/status/updates
-    Tools:
+    Functions:
       type: array
+      description: An array of fulfillment functions to be given to the LLM as tools
       items:
         type: object
         properties:
