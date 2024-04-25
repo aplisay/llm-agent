@@ -3,7 +3,7 @@ const fs = require('fs');
 const yaml = require('js-yaml');
 const express = require('express');
 const openapi = require('express-openapi');
-const GoogleHelper = require('./lib/google-helper');
+const Voices = require('./lib/voices/');
 const ws = require('ws');
 const server = express();
 const cors = require("cors");
@@ -74,7 +74,7 @@ openapi.initialize({
   apiDoc,
   exposeApiDocs: true,
   docsPath: "/api-docs",
-  dependencies: { makeService, wsServer, logger, googleHelper: new GoogleHelper(logger) },
+  dependencies: { makeService, wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
   errorMiddleware: require('./middleware/errors.js')
