@@ -3,13 +3,13 @@ const Application = require('../../lib/application');
 let appParameters, log;
 
 module.exports =
-  function (logger, googleHelper) {
+  function (logger, voices) {
 
     log = logger;
 
     const voicesList = (async (req, res) => {
       try {
-        res.send(await googleHelper.listVoices());
+        res.send(await voices.listVoices());
       }
       catch (err) {
         res.status(500).send(err);
