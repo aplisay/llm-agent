@@ -15,12 +15,12 @@ module.exports = function (logger, wsServer, makeService) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { modelName, prompt, options, callbackUrl } = req.body;
-  log.info({ modelName, body: req.body }, 'create');
+  let { modelName, prompt, options, callbackUrl, functions } = req.body;
+  log.info({ modelName, prompt, options, functions }, 'create API call');
   let application;
 
   try {
-    application = new Application({ ...appParameters, modelName, prompt, options, callbackUrl });
+    application = new Application({ ...appParameters, modelName, prompt, options, functions, callbackUrl });
   }
   catch (e) {
     res.status(405).send(`no agent for ${modelName}`);
@@ -36,8 +36,10 @@ const agentCreate = (async (req, res) => {
     }
   }
   catch (err) {
-    res.status(500).send(err);
+    console.error(err, 'creating agent');
     req.log.error(err, 'creating agent');
+    res.status(500).send(err);
+
   }
 });
 agentCreate.apiDoc = {
@@ -62,8 +64,8 @@ agentCreate.apiDoc = {
             callbackUrl: {
               $ref: '#/components/schemas/CallbackUrl'
             },
-            tools: {
-              $ref: '#/components/schemas/Tools'
+            functions: {
+              $ref: '#/components/schemas/Functions'
             }
           },
           required: ['modelName', 'prompt']
