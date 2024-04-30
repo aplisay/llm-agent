@@ -10,6 +10,9 @@
     },
     {
       "path": "../bank-demo"
+    },
+    {
+      "path": "../../ops/jambonz-infrastructure"
     }
   ],
   "settings": {}
