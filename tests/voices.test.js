@@ -14,7 +14,6 @@ describe(`voices`, () => {
 
   test('listVoices', async () => {
     list = await voices.listVoices('en');
-    console.log(JSON.stringify({ list }, null, 2));
     expect(list).toHaveProperty('google');
     expect(list).toHaveProperty('elevenlabs');
     return expect(list).toHaveProperty('deepgram');
