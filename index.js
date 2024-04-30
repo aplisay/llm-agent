@@ -3,7 +3,7 @@ const fs = require('fs');
 const yaml = require('js-yaml');
 const express = require('express');
 const openapi = require('express-openapi');
-const GoogleHelper = require('./lib/google-helper');
+const Voices = require('./lib/voices/');
 const ws = require('ws');
 const server = express();
 const cors = require("cors");
@@ -55,7 +55,7 @@ server.use(express.json());
 
 
 server.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com'],
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com'],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
   exposedHeaders: ['Link',],
   credentials: true,
@@ -74,7 +74,7 @@ openapi.initialize({
   apiDoc,
   exposeApiDocs: true,
   docsPath: "/api-docs",
-  dependencies: { makeService, wsServer, logger, googleHelper: new GoogleHelper(logger) },
+  dependencies: { makeService, wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
   errorMiddleware: require('./middleware/errors.js')

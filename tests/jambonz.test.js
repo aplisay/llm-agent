@@ -70,6 +70,17 @@ describe('Jambonz', () => {
       expect(carriers.length).toBeGreaterThan(0);
     });
 
+    test('List Credentials', async () => {
+      try {
+        carriers = await jambonz.getCredentials();
+      }
+      catch (e) {
+        console.log({ message: e.message, request: e.request.path }, 'List carriers');
+      }
+      expect(carriers).toBeInstanceOf(Array);
+      expect(carriers.length).toBe(3);
+    });
+
 
     test('Add missing numbers', async () => {
       return await expect(Promise.all(makeNumbers?.map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })) || [Promise.resolve()])).resolves;
