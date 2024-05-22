@@ -65,6 +65,10 @@ components:
           description: A working initial default prompt for this agent
           type: string
           example: You are a helpful agent...
+        supportsFunctions:
+          description: This model supports function calling via the `functions` property
+          type: boolean
+          example: true
       required:
         - name
         - defaultPrompt

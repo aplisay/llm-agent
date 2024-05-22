@@ -33,11 +33,13 @@ modelList.apiDoc = {
           example: {
             "gpt35": {
               "description": "GPT3.5-turbo chat",
-              "defaultPrompt": "You are operating the user service line for Flagco..."
+              "defaultPrompt": "You are operating the user service line for Flagco...",
+              "supportsFunctions": true,
             },
             "palm2": {
               "description": "Google PaLM2 (BARD via Vertex AI)",
-              "defaultPrompt": "You work for GFlags, a company that..."
+              "defaultPrompt": "You work for GFlags, a company that...",
+              "supportsFunctions": false,
             }
           }
         }
