@@ -23,7 +23,7 @@ const agentCreate = (async (req, res) => {
     application = new Application({ ...appParameters, modelName, prompt, options, functions, callbackUrl });
   }
   catch (e) {
-    res.status(405).send(`no agent for ${modelName}`);
+    res.status(405).send({ message: e.message });
   }
   try {
     let number = await application.create();

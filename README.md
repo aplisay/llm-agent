@@ -62,12 +62,12 @@ Currently, this supports temperature which has a value between 0 and 1 (inclusiv
 {
   temperature: t
   tts: {
-    provider: "google",
+    vendor: "google",
     language: "en-GB",
     voice: "en-GB-Wavenet-A"
   },
   stt: {
-    provider: "google",
+    vendor: "google",
     language: "en-GB"
   }
 }
