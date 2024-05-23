@@ -9,7 +9,7 @@
       "path": "../llm-frontend"
     },
     {
-      "path": "../bank-demo"
+      "path": "../llm-runner"
     }
   ],
   "settings": {}
