@@ -21,6 +21,9 @@ const agentCreate = (async (req, res) => {
 
   try {
     application = new Application({ ...appParameters, modelName, prompt, options, functions, callbackUrl });
+    if (!application) {
+      throw new Error(`No application for ${modelName} Application not created`);
+    }
   }
   catch (e) {
     res.status(405).send({ message: e.message });
