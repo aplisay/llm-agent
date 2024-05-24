@@ -192,19 +192,19 @@ components:
         - $ref: '#/components/schemas/Progress.hangup'
         - $ref: '#/components/schemas/Progress.data'
       example: { prompt: "I would like some candyfloss", call_id: "648aa45d-204a-4c0c-a1e1-419406254134"}
-    Progress.prompt:
+    Progress.user:
       type: object
       properties:
-        prompt:
+        user:
           type: string
           description: prompt received from user
           example: I would like some candyfloss
         call_id:
           $ref: "#/components/schemas/CallId"
-    Progress.completion:
+    Progress.agent:
       type: object
       properties:
-        completion:
+        agent:
           type: string
           description: completion from AI to user
           example: I am an AI I cannot make physical things like candyfloss
