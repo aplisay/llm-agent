@@ -9,6 +9,9 @@ Currently supports:
  * OpenAI chat API (GPT-3/4)
  * Google `aiplatform` API (Palm2 - bison-chat)
  * Google `VertexAI` API (Gemini - gemini-1.0-pro)
+ * LLaMA3 (8 & 70b)
+ * Mixtral 8x7b
+ * Gemma 7b
 
 ## Installation
 
@@ -20,13 +23,17 @@ Clone this repo, and add the following environment variables (the repo uses .env
 ```shell
 ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 GOOGLE_PROJECT_ID=<YOUR GOOGLE PROJECT ID>
-GOOGLE_PROJECT_LOCATION="us-central1"
+GROQ_API_KEY=<YOUR GROQ KEY>
+OPENAI_API_KEY=<YOUR OPENAI KEY>
+GOOGLE_PROJECT_ID=<YOUR GOOGLE PROJECT ID>
+GOOGLE_PROJECT_LOCATION=<YOUR GOOGLE PROJECT LOCATION>
 GOOGLE_APPLICATION_CREDENTIALS=<PATH TO CREDENTIAL JSON FILE>
+DEEPGRAM_API_KEY=<YOUR DEEPGRAM KEY>
+ELEVENLABS_API_KEY=<YOUR ELEVENLABS KEY>
 JAMBONZ_SERVER=<JAMBONZ API SERVER HOSTNAME>, usually api.server.name
 JAMBONZ_API_KEY=<JAMBONZ API KEY>
-OPENAI_API_KEY=<YOUR OPENAI KEY>
-OPENAI_MODEL=gpt-3.5-turbo
 SERVER_NAME=<THIS SERVER DNS NAME>
+LOGLEVEL=info
 AUTHENTICATE_USERS=NO
 ```
 Note that the last line is important. Because we run this code as a free service on our own infrastructure, it will by default attempt to authenticate clients. You probably don't want this if you are running a local test copy on your own infrastructure as it uses Firebase which has a huge number of steps and possibly some cost to get working auth.
@@ -44,6 +51,8 @@ Note that the last line is important. Because we run this code as a free service
 
 There is a free client in source form at [llm-frontend](https://github.com/aplisay/llm-frontend) which targets the API presented by this project.
 See the instructions on that application to deploy locally.
+
+There is also a free [LLM Runner](https://github.com/aplisay/llm-frontend), which takes a JSON agent definition and runs it against this API, creating the agent and implementing function calls when they are dispatched by the LLM.
 
 ### API
 
@@ -93,12 +102,9 @@ See [Developer Documentation](API.md) for class structure.
 
 The rough backlog for development work on this project now involves implementation in the following areas (in no particular order):
 
-  *  Adding Llama2 as a model
+  *  Further work to reduce the latency and flexibility of STT and TTS to do better audio response slicing to solve the rapid interruption and end of response detection problems.
 
-  *  Reducing the latency and flexibility of STT and TTS by re-layering the project to operate within or in conjunction with a Jambonz Custom STT engine.
-  As well as reducing latency, this will allow us to do better audio response slicing to solve the interruption and end of response detection problems.
-
-  *  Adding a model/vendor independent function call model. OpenAI has a baked in feature which we can't currently use because it breaks our vendor agnostic approach, but we can use this where it is available and synthesize it for other models by inserting text into the prompts.
+  *  Incorporation of multi-modal inputs (audio direct to model) as these become available in vendor APIs: for example the audio chat feature announced but not shipped yet in GPT-4o as a more efficient pipeline than the existing STT/TTS.
 
   *  A "bot API" text injection endpoint to improve bot to bot interactions, allow BYOSTT for clients, and allow use of core logic by text based UIs.
 
