@@ -10,9 +10,6 @@
     },
     {
       "path": "../llm-runner"
-    },
-    {
-      "path": "../emfcamp-apis"
     }
   ],
   "settings": {}
