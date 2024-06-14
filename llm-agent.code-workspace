@@ -9,7 +9,7 @@
       "path": "../llm-frontend"
     },
     {
-      "path": "../llm-runner"
+      "path": "../create-zendesk-help"
     }
   ],
   "settings": {}
