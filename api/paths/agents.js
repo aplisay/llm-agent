@@ -2,9 +2,10 @@ const Application = require('../../lib/application');
 
 let appParameters, log;
 
-module.exports = function (logger, wsServer, makeService) {
+module.exports = function (logger, voices, wsServer, makeService) {
   (appParameters = {
     logger,
+    voices,
     wsServer,
     makeService
   });
