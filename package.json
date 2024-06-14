@@ -4,7 +4,7 @@
   "description": "GPT3.5 voice agent",
   "main": "index.js",
   "scripts": {
-    "develop": "NODE_ENV=development nodemon index",
+    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
     "start": "NODE_ENV=production node index",
     "test": "LOGLEVEL=error jest"
   },
