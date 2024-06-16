@@ -10,6 +10,9 @@
     },
     {
       "path": "../create-zendesk-help"
+    },
+    {
+      "path": "../../sites/new-website"
     }
   ],
   "settings": {}
