@@ -30,13 +30,17 @@ const agentCreate = (async (req, res) => {
     res.status(405).send({ message: e.message });
   }
   try {
-    let number = await application.create();
+    let { number, id, socket } = await application.create();
     log.info({ application, appParameters }, `Application created on Number ${number} with id ${application.id}`);
-    if (number) {
-      res.send({ number, id: application.id, socket: application.agent.socketPath });
+    if (number || application.agent.constructor.audioModel) {
+      res.send({ number, id, socket });
     }
     else {
-      res.status(424).send({ message: "No free phone numbers available on instance, please try later" });
+      res.status(424).send({
+        message: application.jambonz ?
+          "No free phone numbers available on instance, please try later" :
+          "Couldn't create inband call"
+      });
     }
   }
   catch (err) {
@@ -47,7 +51,7 @@ const agentCreate = (async (req, res) => {
   }
 });
 agentCreate.apiDoc = {
-  summary: 'Creates an agent and associates it with a phone number',
+  summary: 'Creates an agent and possibly associates it with a phone number',
   operationId: 'createAgent',
   tags: ["Agent"],
   requestBody: {

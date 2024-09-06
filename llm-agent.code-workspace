@@ -9,10 +9,7 @@
       "path": "../llm-frontend"
     },
     {
-      "path": "../create-zendesk-help"
-    },
-    {
-      "path": "../../sites/new-website"
+      "path": "../ultravox-client"
     }
   ],
   "settings": {}
