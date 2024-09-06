@@ -15,6 +15,7 @@ const agentUpdate = async (req, res) => {
   let { prompt, options, functions } = req.body;
   let { agentId } = req.params;
   let application = Application.recover(agentId);
+  req.log.info({ id: agentId, live: Application.live, nid: application?.id }, 'delete');
   if (!application) {
     res.status(404).send(`no agent ${agentId}`);
   }
@@ -107,7 +108,7 @@ const agentDelete = async (req, res) => {
   let { agentId } = req.params;
   log.info({ id: agentId }, 'delete');
   let application;
-
+  req.log.info({ id: agentId, live: Application.live }, 'delete');
   if (!(application = Application.recover(agentId))) {
     res.status(404).send(`no agent for ${agentId}`);
   }
