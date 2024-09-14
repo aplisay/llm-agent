@@ -13,7 +13,12 @@ module.exports = function (logger) {
 };
 
 const modelList = async (req, res) => {
-  res.send(Application.listModels());
+  try {
+    res.send(await Application.listModels());  
+  } catch (err) {
+    res.log.error(err);
+    res.status(500).send(err);
+  }
 };
 modelList.apiDoc = {
   summary: 'Returns list of valid model names',

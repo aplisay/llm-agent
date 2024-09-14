@@ -32,8 +32,8 @@ let agent = {
 };
 
 describe(`application`, () => {
-  test('Static agent list', () => {
-    let models = Object.entries(Application.listModels());
+  test('Static agent list', async () => {
+    let models = Object.entries(await Application.listModels());
     expect(models.length).toBe(13);
     expect(models[0].length).toBe(2);
     expect(models[0][1]).toHaveProperty('description');

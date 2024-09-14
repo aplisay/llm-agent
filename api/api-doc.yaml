@@ -57,6 +57,10 @@ components:
     Model:
       type: object
       properties:
+        name:
+          description: Model Name
+          type: string
+          example: GPT3.5-turbo
         description:
           description: Agent Description
           type: string
@@ -65,10 +69,16 @@ components:
           description: A working initial default prompt for this agent
           type: string
           example: You are a helpful agent...
+        voices:
+          $ref: '#/components/schemas/VoiceList'
         supportsFunctions:
           description: This model supports function calling via the `functions` property
           type: boolean
           example: true
+        audioModel:
+          description: This model supports audio input via WebRTC
+          type: boolean
+          example: false
       required:
         - name
         - defaultPrompt
@@ -164,6 +174,14 @@ components:
           type: string
           description: The vendor assigned gender of this voice within the TTS engine
           example: male
+    VoiceList:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                $ref: '#/components/schemas/Voice'
     Call:
       type: object
       properties:
