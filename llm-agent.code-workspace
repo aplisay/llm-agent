@@ -9,7 +9,7 @@
       "path": "../llm-frontend"
     },
     {
-      "path": "../ultravox-client"
+      "path": "../ultravox-client-sdk-js"
     }
   ],
   "settings": {}
