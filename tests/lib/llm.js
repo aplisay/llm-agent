@@ -72,12 +72,12 @@ module.exports = function (Llm, prompt, modelName = undefined) {
   describe(modelName || 'default', () => {
 
     test('Initialises', async () => {
-      if (!Llm.supportsFunctions) {
+      if (!Llm.supportsFunctions(modelName)) {
         expect(() => new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName, functions: tools.functions })).toThrow('Functions not supported by this model');
         model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName });
       }
       else {
-        model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName, functions: Llm.supportsFunctions && tools.functions });
+        model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, model: modelName, functions: Llm.supportsFunctions(modelName) && tools.functions });
       }
       return expect(model).toBeInstanceOf(Llm);
     });
@@ -99,7 +99,7 @@ module.exports = function (Llm, prompt, modelName = undefined) {
 
     test('Weather in London', async () => {
       let request = model.completion('What is the weather like in London');
-      if (!Llm.supportsFunctions) {
+      if (!Llm.supportsFunctions(modelName)) {
         return expect(request).resolves.toHaveProperty('text');
       }
       else {
@@ -121,7 +121,7 @@ module.exports = function (Llm, prompt, modelName = undefined) {
     test('Hangup function call', async () => {
       let request = model.completion('Please hangup this call');
 
-      if (!Llm.supportsFunctions) {
+      if (!Llm.supportsFunctions(modelName)) {
         return expect(request).resolves.toHaveProperty('text');
       }
       else {
