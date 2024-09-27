@@ -203,8 +203,8 @@ components:
       example: 648aa45d-204a-4c0c-a1e1-419406254134
     Progress:
       oneOf:
-        - $ref: '#/components/schemas/Progress.prompt'
-        - $ref: '#/components/schemas/Progress.completion'
+        - $ref: '#/components/schemas/Progress.user'
+        - $ref: '#/components/schemas/Progress.agent'
         - $ref: '#/components/schemas/Progress.inject'
         - $ref: '#/components/schemas/Progress.call'
         - $ref: '#/components/schemas/Progress.hangup'
