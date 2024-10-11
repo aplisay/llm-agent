@@ -38,7 +38,7 @@ export default defineAgent({
             sendMessage({ rest_callout: { url } });
 
             let data = await (await fetch(url)).json();
-            sendMessage({ function_results: [{ name: fnc.name, input: args, result: data }] });
+            sendMessage({ function_results: [{ name: fnc.name, input: args, result: JSON.stringify(data) }] });
             console.debug({ data }, `returning ${JSON.stringify(data)}`);
             return JSON.stringify(data);
           }
