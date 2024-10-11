@@ -30,10 +30,11 @@ const agentCreate = (async (req, res) => {
     res.status(405).send({ message: e.message });
   }
   try {
-    let { number, id, socket } = await application.create();
-    log.info({ application, appParameters }, `Application created on Number ${number} with id ${application.id}`);
+    let agent= await application.create();
+    let { number, id, socket } = agent;
+    log.info({ agent }, `Application created on Number ${number} with id ${application.id}`);
     if (number || application.agent.constructor.audioModel) {
-      res.send({ number, id, socket });
+      res.send(agent);
     }
     else {
       res.status(424).send({

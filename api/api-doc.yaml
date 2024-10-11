@@ -91,6 +91,10 @@ components:
           $ref: '#/components/schemas/Prompt'
         options:
           $ref: '#/components/schemas/AgentOptions'
+        callbackUrl:
+          $ref: '#/components/schemas/CallbackUrl'
+        functions: 
+          $ref: '#/components/schemas/Functions'
     ModelName:
       type: string
       description: The short model name
