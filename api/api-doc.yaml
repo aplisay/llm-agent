@@ -148,6 +148,11 @@ components:
             type: string
             description: A description of what the function call does which will be used by the LLM when deciding to invoke it
             example: Get the current weather in a given location
+          implementation:
+            type: string
+            description: How this function should be implemented. \"stub\" is used to return the same fixed result each time for testing, \"rest\" makes an actual API call using *url* and the rest of the parameters 
+            enum: ["rest", "stub"]
+            example: rest
           url:
             type: string
             description: The URL to be called when the function is invoked, optionally with path variable substitutions wrapped in {} braces
@@ -157,6 +162,10 @@ components:
             description: The HTTP method to be used when calling the function
             enum: ['GET', 'POST', 'PUT', 'DELETE']
             example: GET
+          key:
+            type: string
+            description: The name of an API key which should be used with this call
+            example: WEATHER_API_KEY
           input_schema:
             type: object
             description: An OpenAPI style schema for the invocation parameters
@@ -173,7 +182,7 @@ components:
               required: ['location']
     Keys:
       type: array
-      description: An array of keys to be given to the LLM as tools
+      description: An array of keys to be used in API calls
       items:
         type: object
         properties:
