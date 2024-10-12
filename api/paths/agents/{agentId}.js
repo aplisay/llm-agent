@@ -12,7 +12,7 @@ module.exports = function (logger) {
 
 
 const agentUpdate = async (req, res) => {
-  let { prompt, options, functions } = req.body;
+  let { prompt, options, functions, keys } = req.body;
   let { agentId } = req.params;
   let application = Application.recover(agentId);
   req.log.info({ id: agentId, live: Application?.live, nid: application?.id }, 'Agent update');
@@ -23,6 +23,7 @@ const agentUpdate = async (req, res) => {
     prompt && (application.prompt = prompt);
     options && (application.options = { ...application.options, ...options });
     functions && (application.functions = functions);
+    keys && (application.keys = keys);
     res.send({ prompt: application.prompt, options: application.options, id: application.id });
   }
 };
@@ -55,6 +56,9 @@ agentUpdate.apiDoc = {
             },
             functions: {
               $ref: '#/components/schemas/Functions'
+            },
+            keys: {
+              $ref: '#/components/schemas/Keys'
             }
           },
           required: [],
