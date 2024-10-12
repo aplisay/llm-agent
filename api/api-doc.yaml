@@ -95,6 +95,8 @@ components:
           $ref: '#/components/schemas/CallbackUrl'
         functions: 
           $ref: '#/components/schemas/Functions'
+        keys: 
+          $ref: '#/components/schemas/Keys'
     ModelName:
       type: string
       description: The short model name
@@ -146,6 +148,15 @@ components:
             type: string
             description: A description of what the function call does which will be used by the LLM when deciding to invoke it
             example: Get the current weather in a given location
+          url:
+            type: string
+            description: The URL to be called when the function is invoked, optionally with path variable substitutions wrapped in {} braces
+            example: https://app.aplisay.com/weather/get_weather/{location}
+          method:
+            type: string
+            description: The HTTP method to be used when calling the function
+            enum: ['GET', 'POST', 'PUT', 'DELETE']
+            example: GET
           input_schema:
             type: object
             description: An OpenAPI style schema for the invocation parameters
@@ -160,6 +171,33 @@ components:
                   enum: ['celsius', 'fahrenheit']
                   description: The unit of temperature, either \"celsius\" or \"fahrenheit\"
               required: ['location']
+    Keys:
+      type: array
+      description: An array of keys to be given to the LLM as tools
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+            description: The key name, used in the invocation
+            example: get_weather
+          in:
+            type: string
+            description: Where in the request the key should be used
+            enum: ['query', 'basic', 'bearer', 'path']
+            example: bearer
+          value:
+            type: string
+            description: The value of the key. For keys in the \"basic\" auth header, this will be the base64 encoded value of the username:password
+            example: asdk438smw03lxdfs9se3
+          username:
+            type: string
+            description: The username for the key. Meaningful only for keys in the \"basic\" auth header.
+            example: user1
+          password:
+            type: string
+            description: The password for the key. Meaningful only for keys in the \"basic\" auth header.
+            example: <PASSWORD>
     Language:
       description: >-
         Language and country dialect specified as an ISO639-1 language code

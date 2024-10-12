@@ -1,23 +1,27 @@
 import { fileURLToPath } from 'node:url';
+import logger from '../../lib/logger.js';
 import path from 'node:path';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { Agent, Instance } from '../../lib/database.js';
+import { functionHandler } from '../../lib/function-handler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const encoder = new TextEncoder();
 dotenv.config();
+
+
 export default defineAgent({
   entry: async (ctx) => {
     await ctx.connect();
-    console.log('starting assistant example agent');
+    logger.info('starting assistant example agent');
     const participant = await ctx.waitForParticipant();
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
     const agent = instance?.Agent;
-    const { prompt, modelName, options, functions } = agent;
-    console.log({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
+    const { prompt, modelName, options, functions, keys } = agent;
+    logger.info({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
     
     const sendMessage = (message) => ctx.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
 
@@ -32,14 +36,9 @@ export default defineAgent({
           description: fnc.description,
           parameters: fnc.input_schema.properties,
           execute: async (args) => {
-            let { input_schema: { url } } = fnc;
-            url = url.replace(/{(.*?)}/g, (_, key) => args[key]);
-            console.debug(`executing ${fnc.name} function with ${url}`);
-            sendMessage({ rest_callout: { url } });
-
-            let data = await (await fetch(url)).json();
-            sendMessage({ function_results: [{ name: fnc.name, input: args, result: JSON.stringify(data) }] });
-            console.debug({ data }, `returning ${JSON.stringify(data)}`);
+            let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage);
+            let [{ result: data }] = function_results;
+            logger.info({ data }, `returning ${JSON.stringify(data)}`);
             return JSON.stringify(data);
           }
         }
@@ -55,7 +54,7 @@ export default defineAgent({
       .start(ctx.room)
       .then((session) => session);
     session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
-    session.on('response_output_added', (newOutput) => console.log({ newOutput }));
+    session.on('response_output_added', (newOutput) => logger.info({ newOutput }));
     session.on('response_output_done', output => sendMessage({agent: output?.content?.[0]?.text }));
 
     session.conversation.item.create({
