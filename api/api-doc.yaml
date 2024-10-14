@@ -160,8 +160,8 @@ components:
           method:
             type: string
             description: The HTTP method to be used when calling the function
-            enum: ['GET', 'POST', 'PUT', 'DELETE']
-            example: GET
+            enum: ['get', 'post', 'put', 'delete']
+            example: get
           key:
             type: string
             description: The name of an API key which should be used with this call
