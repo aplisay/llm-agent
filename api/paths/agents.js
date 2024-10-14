@@ -16,12 +16,12 @@ module.exports = function (logger, voices, wsServer, makeService) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { modelName, prompt, options, callbackUrl, functions } = req.body;
+  let { modelName, prompt, options, callbackUrl, functions, keys } = req.body;
   log.info({ modelName, prompt, options, functions }, 'create API call');
   let application;
 
   try {
-    application = new Application({ ...appParameters, modelName, prompt, options, functions, callbackUrl });
+    application = new Application({ ...appParameters, modelName, prompt, options, functions, keys, callbackUrl });
     if (!application) {
       throw new Error(`No application for ${modelName} Application not created`);
     }
@@ -30,10 +30,11 @@ const agentCreate = (async (req, res) => {
     res.status(405).send({ message: e.message });
   }
   try {
-    let { number, id, socket } = await application.create();
-    log.info({ application, appParameters }, `Application created on Number ${number} with id ${application.id}`);
+    let agent= await application.create();
+    let { number, id, socket } = agent;
+    log.info({ agent }, `Application created on Number ${number} with id ${application.id}`);
     if (number || application.agent.constructor.audioModel) {
-      res.send({ number, id, socket });
+      res.send(agent);
     }
     else {
       res.status(424).send({
@@ -74,6 +75,9 @@ agentCreate.apiDoc = {
             },
             functions: {
               $ref: '#/components/schemas/Functions'
+            },
+            keys: {
+              $ref: '#/components/schemas/Keys'
             }
           },
           required: ['modelName', 'prompt']
