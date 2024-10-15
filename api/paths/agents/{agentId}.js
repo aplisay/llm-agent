@@ -1,34 +1,113 @@
-const Application = require('../../../lib/application');
+const { Agent } = require('../../../lib/database');
 
 let log;
 
 module.exports = function (logger) {
   log = logger;
   return {
+    GET: agentGet,
     PUT: agentUpdate,
     DELETE: agentDelete,
   };
 };
 
 
+const agentGet = async (req, res) => {
+  let { agentId } = req.params;
+
+  try {
+    let agent = await Agent.findOne({ where: { id: agentId } });
+    req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent fetched');
+    res.send({ ...agent.dataValues, keys: undefined });
+  }
+  catch (err) {
+    req.log.error(err);
+    res.status(404).send(err);
+  }
+};
+
+agentGet.apiDoc = {
+  summary: 'Returns an existing agent',
+  operationId: 'getAgent',
+  tags: ["Agent"],
+  parameters: [
+    {
+      description: "ID of the agent to fetch",
+      in: 'path',
+      name: 'agentId',
+      required: true,
+      schema: {
+        type: 'string'
+      }
+    }
+  ],
+  responses: {
+    200: {
+      description: 'Agent Definition. Note that `keys` are never returned, even if set for security reasons.',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            description: 'Agent information',
+            properties: {
+              id: {
+                description: "Agent unique ID",
+                type: "string",
+                format: "uuid",
+                example: "32555d87-948e-48f2-a53d-fc5f261daa79"
+              },
+              modelName: {
+                $ref: '#/components/schemas/ModelName'
+              },
+              prompt: {
+                $ref: '#/components/schemas/Prompt'
+              },
+              options: {
+                $ref: '#/components/schemas/AgentOptions'
+              },
+              functions: {
+                $ref: '#/components/schemas/Functions'
+              }
+            }
+          }
+        }
+      }
+    },
+    default: {
+      description: 'An error occurred',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
+          }
+        }
+      }
+    }
+  }
+};
+
 const agentUpdate = async (req, res) => {
   let { prompt, options, functions, keys } = req.body;
   let { agentId } = req.params;
-  let application = Application.recover(agentId);
-  req.log.info({ id: agentId, live: Application?.live, nid: application?.id }, 'Agent update');
-  if (!application) {
-    res.status(404).send(`no agent ${agentId}`);
+
+  try {
+    let agent = await Agent.findOne({ where: { id: agentId } });
+    if (!agent) {
+      throw new Error(`Agent with ID ${agentId} not found`);
+    }
+    await agent.update({ prompt, options, functions, keys });
+    req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
+    res.send({ ...agent.dataValues, keys: undefined });
   }
-  else {
-    prompt && (application.prompt = prompt);
-    options && (application.options = { ...application.options, ...options });
-    functions && (application.functions = functions);
-    keys && (application.keys = keys);
-    res.send({ prompt: application.prompt, options: application.options, id: application.id });
+  catch (err) {
+    req.log.error(err);
+    err.message.includes('not found') ? res.status(404).send(err) : res.status(400).send(err);
   }
 };
 agentUpdate.apiDoc = {
-  summary: 'Updates an existing, operating agent',
+  summary: 'Updates an existing agent',
+  description: `All fields on an agent, except for the \`id\` and \`modelName\` may be mutated using this method.
+                To change the \`modelName\`, create a new Agent instance.`,
   operationId: 'updateAgent',
   tags: ["Agent"],
   parameters: [
@@ -68,7 +147,7 @@ agentUpdate.apiDoc = {
   },
   responses: {
     200: {
-      description: 'Created Agent.',
+      description: 'Updated Agent. Note that `keys` are never returned for security reasons.',
       content: {
         'application/json': {
           schema: {
@@ -108,25 +187,22 @@ agentUpdate.apiDoc = {
   }
 };
 
+
+
 const agentDelete = async (req, res) => {
   let { agentId } = req.params;
-  let application;
-  req.log.info({ id: agentId }, 'delete called');
-  if (!(application = Application.recover(agentId))) {
-    res.status(404).send(`no agent for ${agentId}`);
+  req.log.info({ id: instanceId }, 'Agent delete called');
+  try {
+    await Agent.destroy({
+      where: {
+        id: 'agentId',
+      },
+    });
+    res.status(200).send();
   }
-  else {
-
-    try {
-      await application.destroy();
-      res.send({ id: agentId });
-    }
-    catch (err) {
-      res.status(500).send(err);
-      req.log.error(err, 'deleting agent');
-    }
-
-
+  catch (err) {
+    res.status(404).send(err);
+    req.log.error(err, 'deleting instance');
   }
 
 };
