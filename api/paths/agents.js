@@ -1,4 +1,5 @@
 const Application = require('../../lib/application');
+const { Agent } = require('../../lib/database');
 
 let appParameters, log;
 
@@ -16,33 +17,14 @@ module.exports = function (logger, voices, wsServer, makeService) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { modelName, prompt, options, callbackUrl, functions, keys } = req.body;
+  let { modelName, prompt, options, functions, keys } = req.body;
+  let agent = Agent.build({ modelName, prompt, options, functions, keys });
+
   log.info({ modelName, prompt, options, functions }, 'create API call');
-  let application;
 
   try {
-    application = new Application({ ...appParameters, modelName, prompt, options, functions, keys, callbackUrl });
-    if (!application) {
-      throw new Error(`No application for ${modelName} Application not created`);
-    }
-  }
-  catch (e) {
-    res.status(405).send({ message: e.message });
-  }
-  try {
-    let agent= await application.create();
-    let { number, id, socket } = agent;
-    log.info({ agent }, `Application created on Number ${number} with id ${application.id}`);
-    if (number || application.agent.constructor.audioModel) {
-      res.send(agent);
-    }
-    else {
-      res.status(424).send({
-        message: application.jambonz ?
-          "No free phone numbers available on instance, please try later" :
-          "Couldn't create inband call"
-      });
-    }
+    await agent.save();
+    res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
     console.error(err, 'creating agent');
@@ -52,7 +34,7 @@ const agentCreate = (async (req, res) => {
   }
 });
 agentCreate.apiDoc = {
-  summary: 'Creates an agent and possibly associates it with a phone number',
+  summary: 'Creates an agent.',
   operationId: 'createAgent',
   tags: ["Agent"],
   requestBody: {
@@ -69,9 +51,6 @@ agentCreate.apiDoc = {
             },
             options: {
               $ref: '#/components/schemas/AgentOptions'
-            },
-            callbackUrl: {
-              $ref: '#/components/schemas/CallbackUrl'
             },
             functions: {
               $ref: '#/components/schemas/Functions'
@@ -118,23 +97,22 @@ agentCreate.apiDoc = {
             type: 'object',
             description: 'Agent information',
             properties: {
-              id: {
-                description: "Agent unique ID",
-                type: "string",
-                format: "uuid",
-                example: "LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
+              modelName: {
+                $ref: '#/components/schemas/ModelName'
               },
-              number: {
-                description: "The telephone number allocated to the agent in E.164 format",
-                type: "string",
-                example: "+442080996945"
+              prompt: {
+                $ref: '#/components/schemas/Prompt'
               },
-              socket: {
-                description: "The full URL of a socket which can be opened to get a stream of progress information",
-                type: "string",
-                example: "https://example.com/agent/progress/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
+              options: {
+                $ref: '#/components/schemas/AgentOptions'
+              },
+              functions: {
+                $ref: '#/components/schemas/Functions'
+              },
+              keys: {
+                $ref: '#/components/schemas/Keys'
               }
-            }
+            },
           }
         }
       }
