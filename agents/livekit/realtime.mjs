@@ -5,7 +5,7 @@ import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { Agent, Instance } from '../../lib/database.js';
+import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const encoder = new TextEncoder();
@@ -20,10 +20,16 @@ export default defineAgent({
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
     const agent = instance?.Agent;
+    const call = await Call.create({ instanceId: instance.id, callerId: instance.id });
+    await TransactionLog.create({ callId: call.id, type: 'answer', data: instance.id });
     const { prompt, modelName, options, functions, keys } = agent;
     logger.info({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
     
-    const sendMessage = (message) => ctx.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
+    const sendMessage = async (message) => {
+      let [type, data] = Object.entries(message)[0];
+      ctx.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
+      await TransactionLog.create({ callId: call.id, type, data: JSON.stringify(data) });
+    };
 
     const model = new openai.realtime.RealtimeModel({
       instructions: agent?.prompt || 'You are a helpful assistant.',
@@ -45,23 +51,12 @@ export default defineAgent({
         }), {})
     });
 
-
-
-
-
-
     const session = await lkAgent
       .start(ctx.room)
       .then((session) => session);
     session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
     session.on('response_output_added', (newOutput) => logger.info({ newOutput }));
     session.on('response_output_done', output => sendMessage({agent: output?.content?.[0]?.text }));
-
-    session.conversation.item.create({
-      type: 'message',
-      role: 'user',
-      content: [{ type: 'input_text', text: 'Say "How can I help you today?"' }],
-    });
     session.response.create();
   },
 });
