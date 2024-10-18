@@ -5,7 +5,7 @@ import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
+import { Agent, Instance, Call, TransactionLog} from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const encoder = new TextEncoder();
@@ -15,11 +15,11 @@ dotenv.config();
 export default defineAgent({
   entry: async (ctx) => {
     await ctx.connect();
-    logger.info('starting assistant example agent');
     const participant = await ctx.waitForParticipant();
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
     const agent = instance?.Agent;
+    logger.info({ agent, instance }, 'new room instance');
     const call = await Call.create({ instanceId: instance.id, callerId: instance.id });
     await TransactionLog.create({ callId: call.id, type: 'answer', data: instance.id });
     const { prompt, modelName, options, functions, keys } = agent;

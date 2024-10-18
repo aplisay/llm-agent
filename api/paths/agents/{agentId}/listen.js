@@ -4,20 +4,15 @@ const Application = require('../../../../lib/application');
 let appParameters, log;
 
 module.exports =
-  function (logger) {
+  function (logger, voices, wsServer) {
     const activate = (async (req, res) => {
       let { agentId } = req.params;
-      let { number } = req.body;
+      let { number, options } = req.body;
       try {
-        let agent = await Agent.findOne({ where: { id: agentId } });
-        req.log.info({furble: agent, req: 'vpone'}, `activating agent ${agentId} with number ${number}`);
-        let [model] = agent.modelName.split(':');
-        let type = Application.models[model].handler;
-        let llm = new Application.models[model]({ logger: req.log, ...agent.dataValues });
-        let instance = Instance.build({ agentId: agent.id, type, sipNumber: number });
-        
-        await instance.save();
-        res.send((llm.activate && await llm.activate(instance.dataValues.id)) || {})
+        let application = new Application({ wsServer, logger });
+        await application.load(agentId);
+        let activation = await application.activate({ number, options });
+        res.send(activation);
 
       }
       catch (err) {
@@ -142,9 +137,9 @@ module.exports =
                   type: "object",
                   description: "Options for this activation instance",
                   properties: {
-                    liveTrace: {
+                    streamLog: {
                       type: "boolean",
-                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room",
+                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
                     }
                   },
                   required: [],
