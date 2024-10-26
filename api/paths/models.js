@@ -1,4 +1,4 @@
-const Application = require('../../lib/application');
+const Model = require('../../lib/model');
 
 let appParameters, log;
 
@@ -14,7 +14,7 @@ module.exports = function (logger) {
 
 const modelList = async (req, res) => {
   try {
-    res.send(await Application.listModels());  
+    res.send(await Model.listModels());  
   } catch (err) {
     res.log.error(err);
     res.status(500).send(err);

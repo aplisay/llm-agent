@@ -1,4 +1,4 @@
-const Application = require('../../../../lib/application');
+const Model = require('../../../../lib/model');
 
 let appParameters, log;
 

@@ -1,5 +1,5 @@
 const { Agent, Instance } = require('../../../../lib/database');
-const Application = require('../../../../lib/application');
+const Model = require('../../../../lib/model');
 
 let appParameters, log;
 
@@ -9,11 +9,10 @@ module.exports =
       let { agentId } = req.params;
       let { number, options } = req.body;
       try {
-        let application = new Application({ wsServer, logger });
-        await application.load(agentId);
-        let activation = await application.activate({ number, options });
+        let model = new Model({ wsServer, logger });
+        await model.load(agentId);
+        let activation = await model.activate({ number, options });
         res.send(activation);
-
       }
       catch (err) {
         req.log.error(err);

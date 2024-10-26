@@ -40,8 +40,12 @@ tags:
       for just one call, injection of direct speech by the app, and hanging up a call by the agent.
   - name: Agent
     description: |-
-      An Agent is the core of this API. It describes an AI engine which operates using a prompt and is connected to a single phone 
-      number for inbound calls.
+      An Agent is the core of this API. It describes the interface to an AI engine which operates using a prompt, specifies any
+      options like speech recognition language or output voice, temperature and other LLM parameters as well as tools
+      (API) calls that a capable LLM may use to fulfill requests.
+      An instance of an Agent is created by POSTing to the `/agents` endpoint, and then one or more instances may be activated
+      using the `listen` verb to cause implementation specific worker plugins to then execute them to service inbound SIP or WebRTC 
+      calls.
   - name: Models
     description: |-
       A Model is an AI language model provider which is used by an Agent and controlled through a prompt.
