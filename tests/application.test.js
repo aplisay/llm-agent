@@ -5,7 +5,7 @@ const server = createServer();
 const makeService = createEndpoint({ server });
 const wsServer = require('../lib/ws-handler')({ server, logger });
 
-const Application = require('../lib/application');
+const Model = require('../lib/model');
 
 let application;
 

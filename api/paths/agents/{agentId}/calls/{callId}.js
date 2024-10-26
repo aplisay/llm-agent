@@ -1,119 +1,8 @@
-const Application = require('../../../../../lib/application');
+const Model = require('../../../../../lib/model');
 
 
 module.exports = function (logger) {
-  const callUpdate = async (req, res) => {
-    let { prompt, options, functions } = req.body;
-    let { agentId, callId } = req.params;
-    let application = Application.recover(agentId);
-    if (!application) {
-      res.status(404).send(`no agent ${agentId}`);
-    }
-    else {
-
-      call = callId && Object.values(application.agent.sessions)
-        .find(call => call?.session?.call_sid === callId);
-      if (!call) {
-        res.status(404).send({ message: 'call not found' });
-      }
-      else {
-        try {
-          prompt && (call.prompt = prompt);
-          options && (call.options = options);
-          functions && (call.functions = functions);
-          res.send({ id: callId });
-        }
-        catch (e) {
-          logger.error({ message: e.message, e }, 'updating call agent error');
-          res.status(500).send({ msg: e.message });
-        }
-      }
-
-    }
-
-  };
-  callUpdate.apiDoc = {
-    summary: 'Updates the agent being used on a call',
-    description: `Call this endpoint to dynamically change the agent prompt/options for just this call.
-                  Takes effect asynchronously at the next speech detection event in call after the update
-                  completes`,
-    operationId: 'callUpdate',
-    tags: ["Calls"],
-    parameters: [
-      {
-        description: "ID of the parent agent for the call",
-        in: 'path',
-        name: 'agentId',
-        required: true,
-        schema: {
-          type: 'string'
-        }
-      },
-      {
-        description: "ID of the call",
-        in: 'path',
-        name: 'callId',
-        required: true,
-        schema: {
-          type: 'string'
-        }
-      }
-    ],
-    requestBody: {
-      content: {
-        'application/json': {
-          schema: {
-            type: "object",
-            properties: {
-              prompt: {
-                $ref: '#/components/schemas/Prompt',
-              },
-              options: {
-                $ref: '#/components/schemas/AgentOptions',
-              },
-              functions: {
-                $ref: '#/components/schemas/Functions'
-              }
-            },
-            required: [],
-          }
-        }
-      }
-    },
-    responses: {
-      200: {
-        description: 'Call',
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/Call'
-            }
-          }
-        }
-      },
-      404: {
-        description: 'Agent or call not found',
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/NotFound'
-            }
-          }
-        }
-      },
-      default: {
-        description: 'Another kind of error occurred',
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/Error'
-            }
-          }
-        }
-      }
-    }
-  };
-
+  
   const callHangup = async (req, res) => {
     let { agentId, callId } = req.params;
     logger.info({ agentId, callId }, 'callHangup');
@@ -193,7 +82,6 @@ module.exports = function (logger) {
   };
 
   return {
-    PUT: callUpdate,
     DELETE: callHangup,
   };
 };
