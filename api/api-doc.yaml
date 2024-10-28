@@ -68,10 +68,6 @@ components:
           description: Agent Description
           type: string
           example: GPT3.5-turbo chat
-        defaultPrompt:
-          description: A working initial default prompt for this agent
-          type: string
-          example: You are a helpful agent...
         voices:
           $ref: '#/components/schemas/VoiceList'
         supportsFunctions:
@@ -84,7 +80,7 @@ components:
           example: false
       required:
         - name
-        - defaultPrompt
+        - description
     Agent:
       type: object
       properties:
@@ -233,9 +229,11 @@ components:
           additionalProperties:
             type: object
             additionalProperties:
-              type: array
-              items:
-                $ref: '#/components/schemas/Voice'
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Voice'
     Call:
       type: object
       properties:

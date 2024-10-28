@@ -1,4 +1,4 @@
-const Model = require('../../lib/model');
+const handlers = require('../../lib/handlers');
 
 let appParameters, log;
 
@@ -14,7 +14,18 @@ module.exports = function (logger) {
 
 const modelList = async (req, res) => {
   try {
-    res.send(await Model.listModels());  
+    res.send(Object.fromEntries(
+      handlers.models.map(({ name, description, supportsFunctions, implementation }) => (
+        [name,
+        {
+          description,
+          supportsFunctions,
+          audioModel: implementation.audioModel
+        }
+        ]
+      ))
+    )
+    );
   } catch (err) {
     res.log.error(err);
     res.status(500).send(err);
@@ -38,12 +49,10 @@ modelList.apiDoc = {
           example: {
             "gpt35": {
               "description": "GPT3.5-turbo chat",
-              "defaultPrompt": "You are operating the user service line for Flagco...",
               "supportsFunctions": true,
             },
             "palm2": {
               "description": "Google PaLM2 (BARD via Vertex AI)",
-              "defaultPrompt": "You work for GFlags, a company that...",
               "supportsFunctions": false,
             }
           }
