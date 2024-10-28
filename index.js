@@ -21,6 +21,7 @@ let apiDoc;
 // This is a bodge to fix the fact that some error conditions can cause the Axios request
 //  structure to be returned in the error message, and this is circular, causing an exception
 //  we should eradicate these anyway.
+/*
 server.set('json replacer', (() => {
   const seen = new WeakSet();
   return (key, value) => {
@@ -33,6 +34,7 @@ server.set('json replacer', (() => {
     return value;
   };
 })());
+*/
 
 
 

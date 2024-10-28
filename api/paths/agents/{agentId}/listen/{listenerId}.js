@@ -10,12 +10,12 @@ module.exports = function (logger) {
 };
 
 const listenerDelete = async (req, res) => {
-  let { instanceId } = req.params;
-  req.log.info({ id: instanceId }, 'instance delete called');
+  let { listenerId } = req.params;
+  req.log.info({ id: listenerId }, 'instance delete called');
   try {
     await Instance.destroy({
       where: {
-        id: 'instanceId',
+        id: listenerId,
       },
     });
     res.status(200).send();
@@ -32,6 +32,15 @@ listenerDelete.apiDoc = {
   operationId: 'deleteListener',
   tags: ["Agent"],
   parameters: [
+    {
+      description: "Agent ID of the listener to delete",
+      in: 'path',
+      name: 'agentId',
+      required: true,
+      schema: {
+        type: 'string'
+      }
+    },
     {
       description: "ID of the listener to delete",
       in: 'path',

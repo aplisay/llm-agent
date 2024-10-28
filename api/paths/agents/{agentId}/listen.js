@@ -1,17 +1,18 @@
-const { Agent, Instance } = require('../../../../lib/database');
-const Model = require('../../../../lib/model');
+const { Agent } = require('../../../../lib/database');
+const handlers = require('../../../../lib/handlers');
 
 let appParameters, log;
 
 module.exports =
-  function (logger, voices, wsServer) {
+  function (wsServer) {
     const activate = (async (req, res) => {
       let { agentId } = req.params;
       let { number, options } = req.body;
       try {
-        let model = new Model({ wsServer, logger });
-        await model.load(agentId);
-        let activation = await model.activate({ number, options });
+        let agent = await Agent.findByPk(agentId);
+        let Handler = handlers.getHandler(agent.modelName);
+        let handler = new Handler({ agent, wsServer, logger: req.log });
+        let activation = await handler.activate({ number, options });
         res.send(activation);
       }
       catch (err) {
