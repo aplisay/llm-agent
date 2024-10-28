@@ -8,8 +8,8 @@ let list;
 describe(`voices`, () => {
   test('Instatiate', () => {
     expect(voices = new Voices(logger)).toBeInstanceOf(Voices);
-    expect(voices.clients).toHaveProperty('google');
-    expect(voices.clients).toHaveProperty('deepgram');
+    expect(voices.services).toHaveProperty('google');
+    expect(voices.services).toHaveProperty('deepgram');
   });
 
   test('listVoices', async () => {
