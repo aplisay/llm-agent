@@ -1,8 +1,8 @@
-const { Agent, Instance, Call, PhoneNumber } = require('../../../lib/database.js');
+const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../../../lib/database.js');
 const JambonzSession = require('./session.js');
 const logger = require('../../../lib/logger.js');
 const Jambonz = require('./jambonz.js');
-const Model = require('../../../lib/model.js');
+const Handler = require('../../../lib/handlers/jambonz')
 
 /**
  *
@@ -19,17 +19,23 @@ class Application {
         let called_number = session.to.replace(/^\+/, '');
         logger.info({ session, called_number }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(called_number);
-        logger.info({ number, agent, instance, session }, 'Found instance for call');
-        let [model] = agent.modelName.split(':');
-        const llmClass = Model.agents[model].implementation;
         if (instance) {
-          this.call = await Call.create({ instanceId: instance.id, callerId: instance.id });
-          let callId = session.call_sid;
+          logger.info({ number, agent, instance, session }, 'Found instance for call');
+          const { model } = new Handler({ logger, agent: agent.dataValues });
+          this.call = await Call.create({ instanceId: instance.id, callerId: called_number });
+          let callId = this.call.id;;
           let s = new JambonzSession({
             ...this,
             session,
-            agent: new llmClass({ logger, user: session.call_sid, model, ...agent }),
-            options: agent.options
+            model,
+            voices: await Handler.voices,
+            logger,
+            options: agent.options,
+            progress: {
+              send: (data) => TransactionLog.create({
+                callId, type: Object.keys(data)?.[0], data: JSON.stringify(Object.values(data)?.[0])
+              })
+            }
           });
           await s.handler();
         }

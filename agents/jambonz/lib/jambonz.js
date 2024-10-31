@@ -49,7 +49,6 @@ const getServiceProvider = async () => {
     }
   } catch (e) {
     // no `/ServiceProviders` path, we are talking to an old version
-    this.logger.debug({ e }, "No serviceprovider numberApi = api;");
   } finally {
     numberApi = numberApi || api;
     accountApi = accountApi || api;
@@ -71,7 +70,7 @@ class Jambonz {
    */
   constructor(logger, user) {
     this.logger = logger.child({ user });
-    this.serviceProvider = getServiceProvider();
+    this.serviceProvider = getServiceProvider.bind(this)();
   }
 
   /**

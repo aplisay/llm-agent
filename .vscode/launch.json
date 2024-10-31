@@ -10,6 +10,13 @@
       "request": "launch",
       "type": "node-terminal"
     },
+    {
+      "cwd": "${workspaceFolder}/agents/jambonz",
+      "command": "yarn develop",
+      "name": "Run jambonz agent",
+      "request": "launch",
+      "type": "node-terminal"
+    }
     
     {
       "type": "node",
