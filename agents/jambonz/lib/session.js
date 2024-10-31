@@ -1,4 +1,5 @@
 const uuid = require('uuid').v4;
+const voices = require('../../../lib/voices');
 
 
 /**
@@ -6,23 +7,20 @@ const uuid = require('uuid').v4;
  * @param {*} { progress, logger, session, llmClass, prompt, options }
  * @param {Object} params Session parameters
  * @param {string} params.path The path to this service
- * @param {Llm} params.agent LLM class instance for implementation class
+ * @param {Llm} params.model LLM class instance for implementation class
  * @param {WebSocket} params.progress A websocket to write progress messages to
  * @param {Object} params.logger Pino logger instance
  * @param {Object} params.session Jambonz WebSocket session object
  * @param {Object} params.options Options object containing combined STT, TTS and model options
  */
 class JambonzSession {
-  constructor({ path, agent, progress, logger, session, options, voices }) {
+  constructor({ path, model, progress, logger, session, options }) {
     logger.debug({ voices }, 'voices');
     Object.assign(this, {
       path,
-      agent,
-      voices,
-      progress: {
-        send: (msg) => progress.send({ ...msg, call_id: session.call_sid })
-      },
+      model,
       logger: logger.child({ call_sid: session.call_sid }),
+      progress,
       session
     });
     this.options = options;
@@ -31,7 +29,7 @@ class JambonzSession {
   }
 
   set prompt(newPrompt) {
-    this.agent.prompt = newPrompt;
+    this.model.prompt = newPrompt;
   }
   set options(newValue) {
     this._options = newValue;
@@ -40,10 +38,10 @@ class JambonzSession {
       id: uuid(),
       synthesizer: { vendor: "google", ...newValue.tts }
     });
-    let voice = this.voices?.clients[newValue?.tts?.vendor];
-    this.logger.debug({ options: newValue, voices: this.voices, speak: voice.speak, ssml: voice.useSsml }, 'options set');
-    this.speak = voice.speak || ((str) => (str));
-    this.agent.options = this._options;
+    this.voice = voices.services?.[newValue?.tts?.vendor];
+    this.logger.debug({ options: newValue, voices: this.voices, speak: this.voice.speak, ssml: this.voice.useSsml }, 'options set');
+    this.speak = this.voice.speak || ((str) => (str));
+    this.model.options = this._options;
   }
   get options() {
     return this?._options;
@@ -63,7 +61,7 @@ class JambonzSession {
    * @memberof JambonzSession
    */
   async handler() {
-    let { session, progress, logger, agent } = this;
+    let { session, progress, logger, model } = this;
     logger.info({ handler: this }, `new incoming call`);
     progress && progress.send({ call: session?.from || 'unknown' });
 
@@ -80,7 +78,7 @@ class JambonzSession {
           recognizer: {
               vendor: "google",
               language: "en-GB",
-              hints: this.agent.voiceHints
+              hints: this.model.voiceHints
             }
           
          })
@@ -112,8 +110,8 @@ class JambonzSession {
           progress && progress.send({ inject: text });
         };
       })
-      logger.debug({ session, agent }, 'initial gathering');
-      agent.initial((args) => this.#sendCompletion(args));
+      logger.debug({ session, model }, 'initial gathering');
+      model.initial((args) => this.#sendCompletion(args));
     }
     catch (err) {
       this.#onError(err);
@@ -217,7 +215,7 @@ class JambonzSession {
 
 
   async #getCompletion(evt) {
-    const { logger, session, progress, agent } = this;
+    const { logger, session, progress, model } = this;
     const { transcript, confidence } = evt.speech.alternatives[0];
     
     this.#say(this.speak('OK...'))
@@ -231,7 +229,7 @@ class JambonzSession {
 
     logger.info({ transcript }, 'sending prompt to LLM');
     try {
-      await agent.completion(transcript, (args) => this.#sendCompletion(args));
+      await model.completion(transcript, (args) => this.#sendCompletion(args));
     } catch (err) {
       logger.info({ err }, 'LLM error');
     }
@@ -239,7 +237,7 @@ class JambonzSession {
 
 
   async #sendCompletion({ text, hangup, data, calls }) {
-    const { logger, session, progress, agent } = this;
+    const { logger, session, progress, model } = this;
     let error;
 
     logger.debug({ text, hangup, data, calls }, 'got completion from LLM');
@@ -255,7 +253,7 @@ class JambonzSession {
       logger.debug({ progress, results }, 'got function call results');
       try {
         ({ text, hangup, data, calls, error } = {});
-        ({ text, hangup, data, calls, error } = await agent.callResult(results));
+        ({ text, hangup, data, calls, error } = await model.callResult(results));
         this.watchdog();
         logger.info({ text, hangup, data, calls, error }, 'got function completion from LLM');
         text && progress && progress.send({ agent: text });
@@ -303,105 +301,5 @@ class JambonzSession {
 }
 
 
-/**
- *
- *
- * @param {*} { name, llmClass, logger, wsServer, makeService, prompt, options, handleClose = () => (null)}
- * @param {Object} params Application creation parameters
- * @param {string} params.name supported LLM agent name, must be one of #Application.agents
- * @param {Object=} params.wsServer  An HTTP server object to attach an progress websocket to   
- * @param {Function} params.makeService  A Jambonz WS SDK makeServer Function
- * @param {Object=} params.options Options object to pass down to the underlying LLM agent
- * @param {Object} logger Pino logger instance
- * @param {string} params.name  Globally unique id for this agent instance
- * @param {string=} prompt Initial (system) prompt to the agent
- *  
- * @return {*} 
- */
-class Agent {
-
-  sessions = {};
-
-  constructor({ implementationName, model, name, llmClass, logger, wsServer, makeService, prompt, options, functions, callbackUrl, voices, handleClose = () => (null) }) {
-    let path = `/agent/${name}`;
-    let progressPath = `/progress/${name}`;
-    let socket = makeService({ path });
-    this.progress = { send: () => (null) };
-    logger.debug({ voices }, 'Agent voices');
-
-    Object.assign(this, { name, path, socketPath: progressPath, wsServer, socket, llmClass, logger: logger.child({ name, implementationName }), prompt, functions, handleClose, voices, callbackUrl });
-    this.callbackTries = 6;
-    this._options = options;
-
-
-    wsServer.createEndpoint(progressPath, (ws) => {
-      this.ws = ws;
-      ws.send(JSON.stringify({ hello: true }));
-      this.progress = {
-        send: async (msg) => {
-          ws.send(JSON.stringify(msg));
-          callbackUrl && this.callbackTries > 0 && axios.post(callbackUrl, msg).catch((e) => {
-            --this.callbackTries || this.logger.error({ callbackUrl, tries: this.callbackTries, error: e.message }, 'Callback disabled');
-            this.logger.info({ callbackUrl, tries: this.callbackTries, error: e.message }, 'Callback failed');
-          });
-        }
-      };
-      ws.on('message', (data) => {
-        let message;
-        try {
-          message = JSON.parse(data);
-          this.sessions?.[message.call_id]?.onMessage(message);
-        }
-        catch (e) {
-          this.logger.error({ e, message }, 'malformed WS message');
-        }
-      })
-        .on('error', (err) => {
-          this.logger.error({ err }, `received socket error ${err.message}`);
-        })
-        .on('close', (code, reason) => {
-          this.logger.info({ code, reason }, `socket close`);
-          this.handleClose();
-        });
-    });
-
-    logger.info({ name, path, prompt, options, functions }, `creating agent on ${path}`);
-
-    socket.on('session:new', async (session) => {
-      let callId = session.call_sid;
-      let s = new JambonzSession({
-        ...this,
-        session,
-        agent: new llmClass({ logger, user: session.call_sid, model, prompt: this.prompt, functions, options: this.options }),
-        options: this._options
-      });
-      this.sessions[callId] = s;
-      await s.handler();
-      this.sessions[callId] = undefined;
-    });
-
-
-  }
-
-  set options(newValue) {
-    this._options = newValue;
-    Object.values(this.sessions).forEach(session => session && (session.options = newValue));
-  }
-  get options() {
-    return this._options;
-  }
-
-  async destroy() {
-    // Actively terminate any existing call sessions
-    await Promise.all(Object.values(this.sessions).map(session => (session?.forceClose() || Promise.resolve())));
-    // Null out the close handler, otherwise closing sockets
-    //  may trigger a recursive call to our caller.
-    this.handleClose = () => (null);
-    this.ws?.close && this.ws.close();
-    this.socket?.close && this.socket.close();
-    this.wsServer.deleteEndpoint(this.socketPath);
-  }
-
-}
 
 module.exports = JambonzSession;
