@@ -14,7 +14,7 @@ const httpServer = require('http').createServer(server);
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server: httpServer, logger });
 const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
-const Model = require('./lib/model');
+const handlers = require('./lib/handlers');
 
 let apiDoc;
 
@@ -92,7 +92,7 @@ process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
   logger.info({}, `beforeExit: applications running`);
-  await Application.clean();
+  await handlers.clean();
   logger.info({}, `cleanup: applications cleaned`);
 }
 

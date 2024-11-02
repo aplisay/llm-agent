@@ -1,5 +1,5 @@
 const uuid = require('uuid').v4;
-const voices = require('../../../lib/voices');
+const Voices = require('../../../lib/voices');
 
 
 /**
@@ -15,7 +15,6 @@ const voices = require('../../../lib/voices');
  */
 class JambonzSession {
   constructor({ path, model, progress, logger, session, options }) {
-    logger.debug({ voices }, 'voices');
     Object.assign(this, {
       path,
       model,
@@ -25,7 +24,6 @@ class JambonzSession {
     });
     this.options = options;
     this.waiting = {};
-    this.speak = (text) => text;
   }
 
   set prompt(newPrompt) {
@@ -34,13 +32,11 @@ class JambonzSession {
   set options(newValue) {
     this._options = newValue;
     newValue.tts && (this.sayOptions = {
-      // ick, better non vendor specific way of doing this needed
-      id: uuid(),
       synthesizer: { vendor: "google", ...newValue.tts }
     });
-    this.voice = voices.services?.[newValue?.tts?.vendor];
-    this.logger.debug({ options: newValue, voices: this.voices, speak: this.voice.speak, ssml: this.voice.useSsml }, 'options set');
-    this.speak = this.voice.speak || ((str) => (str));
+    this.voice = Voices.services?.[newValue?.tts?.vendor];
+    this.speak = this.voice?.speak || ((str) => (str));
+    console.log({ options: newValue, voice: this.voice, speak: this.voice.speak, ssml: this.voice?.useSsml }, 'options set');
     this.model.options = this._options;
   }
   get options() {
@@ -183,9 +179,10 @@ class JambonzSession {
 
   #say(text, hangup = false) {
     let { session, logger } = this;
+    logger.debug({ text, speak: this.speak, synthesizer: { ...this.sayOptions.synthesizer } }, `saying`);
     let waitingId = uuid();
     let pipeline = text && session
-      .say({ text, ...this.sayOptions, id: waitingId })
+      .say({ text, synthesizer: { ...this.sayOptions.synthesizer }, id: waitingId })
     pipeline && hangup && (pipeline = pipeline.hangup());
     pipeline && pipeline.send();
     return pipeline && this.#waitFor(waitingId);

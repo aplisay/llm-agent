@@ -1,8 +1,8 @@
 const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../../../lib/database.js');
 const JambonzSession = require('./session.js');
 const logger = require('../../../lib/logger.js');
-const Jambonz = require('./jambonz.js');
-const Handler = require('../../../lib/handlers/jambonz')
+const Jambonz = require('../../../lib/jambonz.js');
+const Handler = require('../../../lib/handlers/jambonz');
 
 /**
  *
@@ -16,15 +16,21 @@ class Application {
     this.jambonz = new Jambonz(logger, 'worker');
     socket.on('session:new', async (session) => {
       try {
-        let called_number = session.to.replace(/^\+/, '');
-        logger.info({ session, called_number }, 'new Jambonz call');
-        const { number, instance, agent } = await Agent.fromNumber(called_number);
+        let calledId = session.to.replace(/^\+/, '');
+        let callerId = session.from;
+        logger.info({ session, callerId, calledId }, 'new Jambonz call');
+        const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
           logger.info({ number, agent, instance, session }, 'Found instance for call');
-          const { model } = new Handler({ logger, agent: agent.dataValues });
-          this.call = await Call.create({ instanceId: instance.id, callerId: called_number });
-          let callId = this.call.id;;
-          let s = new JambonzSession({
+          const { model } = new Handler({ logger, agent });
+          let call = this.call = await Call.create({
+            instanceId: instance.id,
+            agentId: agent.id,
+            calledId,
+            callerId,
+          });
+          let callId = call.id;;
+          let sessionHandler = this.sessionHandler = new JambonzSession({
             ...this,
             session,
             model,
@@ -32,19 +38,31 @@ class Application {
             logger,
             options: agent.options,
             progress: {
-              send: (data) => TransactionLog.create({
-                callId, type: Object.keys(data)?.[0], data: JSON.stringify(Object.values(data)?.[0])
-              })
+              send: async (data) => {
+                try {
+                  data.call && call.start();
+                  await TransactionLog.create({
+                    callId, type: Object.keys(data)?.[0], data: JSON.stringify(Object.values(data)?.[0])
+                  });
+                }
+                catch (err) {
+                  logger.info(err, 'error in call progress logging');
+                  sessionHandler.forceClose();
+                }
+              }
             }
           });
-          await s.handler();
+          await sessionHandler.handler();
+          call.end();
         }
         else {
-          logger.info({ called_number }, 'No instance for call');
+          logger.info({ calledId }, 'No instance for call');
         }
       }
       catch (err) {
-        logger.error(err, 'error getting instance for callllM');
+        logger.info(err, 'error in call progress');
+        await this.sessionHandler.forceClose();
+        this.call && this.call.end();
       }
     });
   }
@@ -60,12 +78,13 @@ class Application {
 
       return Promise.all(
         phoneNumbers.map(async phoneNumber => {
-        let { number } = phoneNumber;
-        if (!jambonzNumbers.find(n => n?.number === number)) {
-          logger.info({ number, carrier, application }, 'creating number on Jambonz');
-          await jambonz.addNumber({ number, carrier, application });
-        }
-        return number;
+          let { number } = phoneNumber;
+          if (!jambonzNumbers.find(n => n?.number === number)) {
+            logger.info({ number, carrier, application }, 'creating number on Jambonz');
+            let res = await jambonz.addNumber({ number, carrier, application });
+            logger.info({ res }, 'created number on Jambonz');
+          }
+          return number;
         })
       );
     }
