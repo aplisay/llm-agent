@@ -20,7 +20,6 @@ process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
   logger.info({}, `beforeExit: applications running`);
-  await Application.clean();
   logger.info({}, `cleanup: applications cleaned`);
 }
 
