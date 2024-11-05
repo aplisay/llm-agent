@@ -1,5 +1,3 @@
-const Model = require('../../../../lib/model');
-
 let appParameters, log;
 
 module.exports =
@@ -14,10 +12,9 @@ module.exports =
         res.status(404).send(`no agent ${agentId}`);
       }
       else {
-
         calls = Object.entries(application.agent.sessions)
           .map(([id, call]) => ({id, from: call?.session?.from, to: call?.session?.to }));
-        logger.info({ application, calls }, 'calls');
+        logger.debug({ application, calls }, 'calls');
         res.send(calls);
       }
     });

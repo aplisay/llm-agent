@@ -1,5 +1,6 @@
 const uuid = require('uuid').v4;
 const Voices = require('../../../lib/voices');
+const { functionHandler } = require('../../../lib/function-handler.js');
 
 
 /**
@@ -58,7 +59,7 @@ class JambonzSession {
    */
   async handler() {
     let { session, progress, logger, model } = this;
-    logger.info({ handler: this }, `new incoming call`);
+    logger.debug({ handler: this }, `new incoming call`);
     progress && progress.send({ call: session?.from || 'unknown' });
 
     let sessionEnded = new Promise(resolve => {
@@ -79,7 +80,7 @@ class JambonzSession {
           
          })
         .on('/prompt', evt => this.#onUserPrompt(evt))
-        .on('/record', evt => this.logger.info({ evt }, `recording`))
+        .on('/record', evt => this.logger.debug({ evt }, `recording`))
         .on('verb:status', evt => {
           this.watchdog(); // something happened so reset watchdog
           this.logger.debug({ evt, waiting: this.waiting?.[evt.id] }, 'verb:status');
@@ -107,7 +108,7 @@ class JambonzSession {
         };
       })
       logger.debug({ session, model }, 'initial gathering');
-      model.initial((args) => this.#sendCompletion(args));
+      model.initial((args) => this.#handleCompletion(args));
     }
     catch (err) {
       this.#onError(err);
@@ -120,9 +121,9 @@ class JambonzSession {
     this.waitCount = this.waitCount || 3;
 
     const handler = () => {
-      logger.info({}, 'agent watchdog fired');
+      logger.debug({}, 'agent watchdog fired');
       if (Object.keys(this.waiting).length > 0 && --this.waitCount > 0) {
-        logger.info({ waiting: this.waiting, length: Object.keys(this.waiting) }, 'outstanding waits');
+        logger.debug({ waiting: this.waiting, length: Object.keys(this.waiting) }, 'outstanding waits');
         this.watchdogTimer = setTimeout(handler, this.watchdogTimeout);
       }
       else {
@@ -162,7 +163,7 @@ class JambonzSession {
     let closed = new Promise(resolve => session.on('close', resolve));
     this.#say(this.speak(text), true);
     await closed;
-    logger.info({}, `force close ${session.call_sid} done`);
+    logger.debug({}, `force close ${session.call_sid} done`);
   };
   /**
    * Inject a phrase into the conversation via TTS. Doesn't change the AI turn in any way
@@ -216,50 +217,43 @@ class JambonzSession {
     const { transcript, confidence } = evt.speech.alternatives[0];
     
     this.#say(this.speak('OK...'))
-    /*
-    session
-      //.play({ url: 'https://llm.aplisay.com/slight-noise.wav' })
-      .reply();
-      */
     progress.send({ user: transcript });
     this.watchdog();
 
-    logger.info({ transcript }, 'sending prompt to LLM');
+    logger.debug({ transcript }, 'sending prompt to LLM');
     try {
-      await model.completion(transcript, (args) => this.#sendCompletion(args));
+      await model.completion(transcript, (args) => this.#handleCompletion(args));
     } catch (err) {
       logger.info({ err }, 'LLM error');
     }
   };
 
 
-  async #sendCompletion({ text, hangup, data, calls }) {
+  async #handleCompletion({ text, hangup, data, calls }) {
     const { logger, session, progress, model } = this;
+    const { functions, keys } = model;
     let error;
 
-    logger.debug({ text, hangup, data, calls }, 'got completion from LLM');
+    logger.debug({ text, hangup, data, calls, functions }, 'got completion from LLM');
     text && progress && progress.send({ agent: text });
     data && progress && progress.send({ data });
     while (calls && calls.length) {
       let waiting = this.#say(this.speak(text));
       this.watchdog();
       logger.debug({ text: this.speak(text), ...this.sayOptions, id: waiting }, 'sent text');
-      this.awaitingFunctionCalls = new Promise(resolve => (this.gotFunctionCalls = resolve));
-      progress ? progress.send({ function_calls: calls }) : this.gotFunctionCalls(this.#functionsFailed(calls));
-      let results = await this.awaitingFunctionCalls;
-      logger.debug({ progress, results }, 'got function call results');
+      let { function_results } = await functionHandler(calls, functions, keys, progress?.send)
+      logger.debug({ progress, function_results }, 'got function call results');
       try {
         ({ text, hangup, data, calls, error } = {});
-        ({ text, hangup, data, calls, error } = await model.callResult(results));
+        ({ text, hangup, data, calls, error } = await model.callResult(function_results));
         this.watchdog();
-        logger.info({ text, hangup, data, calls, error }, 'got function completion from LLM');
+        logger.debug({ text, hangup, data, calls, error }, 'got function completion from LLM');
         text && progress && progress.send({ agent: text });
         error && progress && progress.send({ error });
       } catch (err) {
         logger.error({ err }, 'Error sending function results');
         text = 'Sorry, I am having a bit of trouble getting the data you need at the moment. Lets try again...';
       }
-      this.awaitingFunctionCalls = undefined;
       logger.debug({ waiting}, 'waiting for say completion');
       waiting && await waiting;
       logger.debug({ waiting }, 'got say completion');
