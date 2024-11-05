@@ -1,4 +1,3 @@
-const Model = require('../../lib/model');
 const { Agent } = require('../../lib/database');
 
 let appParameters, log;

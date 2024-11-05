@@ -97,7 +97,7 @@ class Application {
   async loadApplication() {
     const { host, path, jambonz } = this;
     const applications = await jambonz.listApplications();
-    logger.info({ applications }, 'loaded applications');
+    logger.debug({ applications }, 'loaded applications');
     this.application = applications
       .find(a => a?.call_hook?.url === `wss://${host}${path}`)
       ?.application_sid;
@@ -105,7 +105,7 @@ class Application {
       logger.debug({ application: this.application }, 'found Jambonz application');
     }
     else {
-      logger.info('no Jambonz application: creating');
+      logger.debug('no Jambonz application: creating');
       this.application = (await jambonz.addApplication({
         name: `Aplisay Handler ${host}`,
         url: `wss://${host}${path}`
@@ -117,7 +117,7 @@ class Application {
   async loadCarrier() {
     const { jambonz } = this;
     const carriers = await jambonz.listCarriers();
-    logger.info({ carriers }, 'loaded carriers');
+    logger.debug({ carriers }, 'loaded carriers');
     this.carrier = (carriers.length == 1 ? carriers[0] : carriers.find(c => c.name === 'Aplisay'))?.voip_carrier_sid;
     return this.carrier;
   }

@@ -1,11 +1,11 @@
-const Model = require('../../../../../lib/model');
+
 
 
 module.exports = function (logger) {
   
   const callHangup = async (req, res) => {
     let { agentId, callId } = req.params;
-    logger.info({ agentId, callId }, 'callHangup');
+    logger.debug({ agentId, callId }, 'callHangup');
     let application = Application.recover(agentId);
     if (!application) {
       res.status(404).send(`no agent ${agentId}`);
@@ -13,7 +13,7 @@ module.exports = function (logger) {
     else {
       let call = callId && Object.values(application.agent.sessions)
         .find(call => call?.session?.call_sid === callId);
-      logger.info({ call }, 'updating call');
+      logger.debug({ call }, 'updating call');
       if (call) {
         await call.forceClose();
         res.send({ id: callId });

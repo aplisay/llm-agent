@@ -91,9 +91,9 @@ process.once('SIGTERM', cleanupAndExit);
 process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
-  logger.info({}, `beforeExit: applications running`);
+  logger.debug({}, `beforeExit: applications running`);
   await handlers.clean();
-  logger.info({}, `cleanup: applications cleaned`);
+  logger.debug({}, `cleanup: applications cleaned`);
 }
 
 async function cleanupAndExit() {
