@@ -10,7 +10,7 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/cloud-run-source-deploy/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
-      - .
+      - ./agents/jambonz
       - '-f'
       - Dockerfile
     id: Build
@@ -45,10 +45,15 @@ options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _PLATFORM: managed
+  _SERVICE_NAME: jambonz-agent
+  _DEPLOY_REGION: $LOCATION
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
 tags:
   - gcp-cloud-build-deploy-cloud-run
   - gcp-cloud-build-deploy-cloud-run-managed
-  - llm-agent
+  - jambonz-agent
 availableSecrets:
   secretManager:
     - versionName: projects/$PROJECT_ID/secrets/SECRETENV_BUNDLE/versions/latest
