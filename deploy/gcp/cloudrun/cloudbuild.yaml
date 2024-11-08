@@ -4,9 +4,9 @@ steps:
       - build
       - '--no-cache'
       - '--build-arg'
-      - SECRETENV_BUNDLE=$$SECRETENV_BUNDLE
+      - SECRETENV_BUNDLE
       - '--build-arg'
-      - SECRETENV_KEY=$$SECRETENV_KEY
+      - SECRETENV_KEY
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/cloud-run-source-deploy/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
