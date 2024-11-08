@@ -4,15 +4,11 @@ const yaml = require('js-yaml');
 const express = require('express');
 const openapi = require('express-openapi');
 const Voices = require('./lib/voices/');
-const ws = require('ws');
 const server = express();
 const cors = require("cors");
-const morgan = require("morgan");
 const logger = require('./lib/logger');
 const PinoHttp = require('pino-http');
 const httpServer = require('http').createServer(server);
-const { createEndpoint } = require('@jambonz/node-client-ws');
-const makeService = createEndpoint({ server: httpServer, logger });
 const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
 const handlers = require('./lib/handlers');
 
@@ -76,7 +72,7 @@ openapi.initialize({
   apiDoc,
   exposeApiDocs: true,
   docsPath: "/api-docs",
-  dependencies: { makeService, wsServer, logger, voices: new Voices(logger) },
+  dependencies: { wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
   errorMiddleware: require('./middleware/errors.js')
