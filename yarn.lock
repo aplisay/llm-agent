@@ -387,14 +387,6 @@
   dependencies:
     tslib "^2.1.0"
 
-"@google-cloud/aiplatform@^2.15.0":
-  version "2.17.0"
-  resolved "https://registry.yarnpkg.com/@google-cloud/aiplatform/-/aiplatform-2.17.0.tgz#1218e7fcdfa609d06ee178c53b16d2b8f695b4d5"
-  integrity sha512-l4sRYSWhgiKjTo8/JG98Pf6Lz4LlQde7HEnnJbazWEHXJcMp5euSN3tMYGnjIZAKh9L5I+cr4XKM188lIjLpUw==
-  dependencies:
-    google-gax "^3.5.8"
-    protobuf.js "^1.1.2"
-
 "@google-cloud/firestore@^6.8.0":
   version "6.8.0"
   resolved "https://registry.yarnpkg.com/@google-cloud/firestore/-/firestore-6.8.0.tgz#d8c852844c381afaf62592796606c10e178400b5"
@@ -4721,11 +4713,6 @@ long@^5.0.0:
   resolved "https://registry.yarnpkg.com/long/-/long-5.2.3.tgz#a3ba97f3877cf1d778eccbcb048525ebb77499e1"
   integrity sha512-lcHwpNoggQTObv5apGNCTdJrO69eHOZMi4BNC+rTLER8iHAqGrUVeLh/irVIM7zTw2bOXA8T6uNPeujwOLg/2Q==
 
-long@~1.1.2:
-  version "1.1.5"
-  resolved "https://registry.yarnpkg.com/long/-/long-1.1.5.tgz#b5c2c10a3d83ee0ec0aaffb3e4e711d01f607e9a"
-  integrity sha512-TU6nAF5SdasnTr28c7e74P4Crbn9o3/zwo1pM22Wvg2i2vlZ4Eelxwu4QT7j21z0sDBlJDEnEZjXTZg2J8WJrg==
-
 lru-cache@6.0.0, lru-cache@^6.0.0:
   version "6.0.0"
   resolved "https://registry.yarnpkg.com/lru-cache/-/lru-cache-6.0.0.tgz#6d6fe6570ebd96aaf90fcad1dafa3b2566db3a94"
@@ -5787,13 +5774,6 @@ proto3-json-serializer@^1.0.0:
   integrity sha512-AwAuY4g9nxx0u52DnSMkqqgyLHaW/XaPLtaAo3y/ZCfeaQB/g4YDH4kb8Wc/mWzWvu0YjOznVnfn373MVZZrgw==
   dependencies:
     protobufjs "^7.0.0"
-
-protobuf.js@^1.1.2:
-  version "1.1.2"
-  resolved "https://registry.yarnpkg.com/protobuf.js/-/protobuf.js-1.1.2.tgz#85870a1734a06a2ef0074d876cd7fe0b2ea0cf26"
-  integrity sha512-USO7Xus/pzPw549M1TguiyoOrKEhm9VMXv+CkDufcjMC8Rd7EPbxeRQPEjCV8ua1tm0k7z9xHkogcxovZogWdA==
-  dependencies:
-    long "~1.1.2"
 
 protobufjs-cli@1.1.1:
   version "1.1.1"
