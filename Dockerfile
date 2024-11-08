@@ -1,5 +1,6 @@
 # Really simple Dockerfile to build a production container which listens on port 80
 FROM node:20-alpine
+RUN apk add git
 EXPOSE $PORT
 WORKDIR /usr/src/app
 COPY package*.json ./
