@@ -4,7 +4,7 @@ const handlers = require('../lib/handlers/');
 
 afterAll(async () => {
   await stopDatabase();
-});
+}, 60000);
 
 describe(`handlers`, () => {
 
