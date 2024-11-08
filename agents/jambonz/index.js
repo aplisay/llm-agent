@@ -1,6 +1,6 @@
 require('dotenv').config();
 const Application = require('./lib/application');
-const logger = require('../../lib/logger');
+const logger = require('./agent-lib/logger');
 const server = require('http').createServer();
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server });
