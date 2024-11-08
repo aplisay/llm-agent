@@ -1662,6 +1662,16 @@ command-line-args@^5.0.0:
     lodash.camelcase "^4.3.0"
     typical "^4.0.0"
 
+command-line-args@^6.0.1:
+  version "6.0.1"
+  resolved "https://registry.yarnpkg.com/command-line-args/-/command-line-args-6.0.1.tgz#cbd1efb4f72b285dbd54bde9a8585c2d9694b070"
+  integrity sha512-Jr3eByUjqyK0qd8W0SGFW1nZwqCaNCtbXjRo2cRJC1OYxWl3MZ5t1US3jq+cO4sPavqgw4l9BMGX0CBe+trepg==
+  dependencies:
+    array-back "^6.2.2"
+    find-replace "^5.0.2"
+    lodash.camelcase "^4.3.0"
+    typical "^7.2.0"
+
 command-line-tool@^0.8.0:
   version "0.8.0"
   resolved "https://registry.yarnpkg.com/command-line-tool/-/command-line-tool-0.8.0.tgz#b00290ef1dfc11cc731dd1f43a92cfa5f21e715b"
@@ -1779,6 +1789,11 @@ cross-spawn@^7.0.3:
     path-key "^3.1.0"
     shebang-command "^2.0.0"
     which "^2.0.1"
+
+crypto@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/crypto/-/crypto-1.0.1.tgz#2af1b7cad8175d24c8a1b0778255794a21803037"
+  integrity sha512-VxBKmeNcqQdiUQUW2Tzq0t377b54N2bMtXO/qiLa+6eRRmmC4qT3D4OnTGoT/U6O9aklQ/jTwbOtRMTTY8G0Ig==
 
 d@1, d@^1.0.1, d@^1.0.2:
   version "1.0.2"
@@ -1939,10 +1954,18 @@ dmd@^6.2.3:
     test-value "^3.0.0"
     walk-back "^5.1.0"
 
-dotenv@^16.0.3:
+dotenv@^16.4.5:
   version "16.4.5"
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.4.5.tgz#cdd3b3b604cb327e286b4762e13502f717cb099f"
   integrity sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==
+
+"dotenv@https://github.com/rjp44/secretenv":
+  version "1.0.3-secretenv"
+  resolved "https://github.com/rjp44/secretenv#8b4eae728f9aa766d11b885fe581ad0f447abfc7"
+  dependencies:
+    command-line-args "^6.0.1"
+    crypto "^1.0.1"
+    dotenv "^16.4.5"
 
 dottie@^2.0.6:
   version "2.0.6"
@@ -2349,7 +2372,7 @@ find-replace@^3.0.0:
   dependencies:
     array-back "^3.0.1"
 
-find-replace@^5.0.1:
+find-replace@^5.0.1, find-replace@^5.0.2:
   version "5.0.2"
   resolved "https://registry.yarnpkg.com/find-replace/-/find-replace-5.0.2.tgz#fe27ff0be05975aef6fc679c1139bbabea564e26"
   integrity sha512-Y45BAiE3mz2QsrN2fb5QEtO4qb44NcS7en/0y9PEVsg351HsLeVclP8QPMH79Le9sH3rs5RSwJu99W0WPZO43Q==
@@ -5779,7 +5802,7 @@ typical@^4.0.0:
   resolved "https://registry.yarnpkg.com/typical/-/typical-4.0.0.tgz#cbeaff3b9d7ae1e2bbfaf5a4e6f11eccfde94fc4"
   integrity sha512-VAH4IvQ7BDFYglMd7BPRDfLgxZZX4O4TFcRDA6EN5X7erNJJq+McIEp8np9aVtxrCJ6qx4GTYVfOWNjcqwZgRw==
 
-typical@^7.1.1:
+typical@^7.1.1, typical@^7.2.0:
   version "7.2.0"
   resolved "https://registry.yarnpkg.com/typical/-/typical-7.2.0.tgz#b3ec4b76530d144640df86c6b061dafd70e10c1e"
   integrity sha512-W1+HdVRUl8fS3MZ9ogD51GOb46xMmhAZzR0WPw5jcgIZQJVvkddYzAl4YTU6g5w33Y1iRQLdIi2/1jhi2RNL0g==
