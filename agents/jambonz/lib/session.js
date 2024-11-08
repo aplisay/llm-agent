@@ -1,6 +1,6 @@
 const uuid = require('uuid').v4;
-const Voices = require('../../../lib/voices');
-const { functionHandler } = require('../../../lib/function-handler.js');
+const Voices = require('../agent-lib/voices');
+const { functionHandler } = require('../agent-lib/function-handler.js');
 
 
 /**

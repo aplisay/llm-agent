@@ -1,8 +1,8 @@
-const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../../../lib/database.js');
+const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../agent-lib/database.js');
 const JambonzSession = require('./session.js');
-const logger = require('../../../lib/logger.js');
-const Jambonz = require('../../../lib/jambonz.js');
-const Handler = require('../../../lib/handlers/jambonz');
+const logger = require('../agent-lib/logger.js');
+const Jambonz = require('../agent-lib/jambonz.js');
+const Handler = require('../agent-lib/handlers/jambonz');
 
 /**
  *
