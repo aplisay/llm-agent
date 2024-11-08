@@ -4,7 +4,7 @@ const logger = require('../../lib/logger');
 const server = require('http').createServer();
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server });
-const { JAMBONZ_PORT: port = 8080, JAMBONZ_APPLICATION_PATH: path = '/jambonz/application', SERVER_NAME: host} = process.env;
+const { JAMBONZ_PORT: port = 8080, JAMBONZ_APPLICATION_PATH: path = '/jambonz/application', JAMBONZ_AGENT_NAME: host} = process.env;
 
 server.listen(port, () => {
   logger.info(`Jambonz listening at http://localhost:${port}`);

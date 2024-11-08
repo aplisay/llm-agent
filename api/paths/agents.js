@@ -2,12 +2,11 @@ const { Agent } = require('../../lib/database');
 
 let appParameters, log;
 
-module.exports = function (logger, voices, wsServer, makeService) {
+module.exports = function (logger, voices, wsServer) {
   (appParameters = {
     logger,
     voices,
-    wsServer,
-    makeService
+    wsServer
   });
   log = logger;
   return {

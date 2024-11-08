@@ -191,11 +191,11 @@ agentUpdate.apiDoc = {
 
 const agentDelete = async (req, res) => {
   let { agentId } = req.params;
-  req.log.info({ id: instanceId }, 'Agent delete called');
+  req.log.info({ id: agentId }, 'Agent delete called');
   try {
     await Agent.destroy({
       where: {
-        id: 'agentId',
+        id: agentId,
       },
     });
     res.status(200).send();
