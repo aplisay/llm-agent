@@ -1,6 +1,10 @@
-# Really simple Dockerfile to build a production container which listens on port 80
 FROM node:20-alpine
 RUN apk add git
+ARG CACHEBUST=2
+ARG SECRETENV_BUNDLE
+ARG SECRETENV_KEY
+RUN echo SECRETENV_BUNDLE=$SECRETENV_BUNDLE
+RUN echo SECRETENV_KEY=$SECRETENV_KEY
 EXPOSE $PORT
 WORKDIR /usr/src/app
 COPY package*.json ./
