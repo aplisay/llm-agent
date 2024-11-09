@@ -2375,7 +2375,7 @@ dotenv@^16.4.5:
 
 "dotenv@https://github.com/rjp44/secretenv":
   version "1.0.3-secretenv"
-  resolved "https://github.com/rjp44/secretenv#8b4eae728f9aa766d11b885fe581ad0f447abfc7"
+  resolved "https://github.com/rjp44/secretenv#e718b7b0d0d4b96e321b230547cbfa8f0090c8bb"
   dependencies:
     command-line-args "^6.0.1"
     crypto "^1.0.1"
@@ -5143,9 +5143,9 @@ object-hash@^3.0.0:
   integrity sha512-RSn9F68PjH9HqtltsSnqYC1XXoWe9Bju5+213R98cNGttag9q9yAOTzdbsqvIa7aNm5WffBZFpWYr2aWrklWAw==
 
 object-inspect@^1.13.1:
-  version "1.13.2"
-  resolved "https://registry.yarnpkg.com/object-inspect/-/object-inspect-1.13.2.tgz#dea0088467fb991e67af4058147a24824a3043ff"
-  integrity sha512-IRZSRuzJiynemAXPYtPe5BoI/RESNYR7TYm50MC5Mqbd3Jmw5y790sErYw3V6SryFJD64b74qQQs9wn5Bg/k3g==
+  version "1.13.3"
+  resolved "https://registry.yarnpkg.com/object-inspect/-/object-inspect-1.13.3.tgz#f14c183de51130243d6d18ae149375ff50ea488a"
+  integrity sha512-kDCGIbxkDSXE3euJZZXzc6to7fCrKHNI/hSRQnRuQ+BWjFNzZwiFF8fj/6o2t2G9/jTj8PSIYTfCLelLZEeRpA==
 
 object-keys@^1.1.1:
   version "1.1.1"
