@@ -13,4 +13,5 @@ RUN rm -f agent-lib
 RUN mkdir -p agent-lib
 COPY lib agent-lib
 RUN yarn test
-CMD [ "yarn", "start"]
+ENV NODE_ENV production
+ENTRYPOINT node index
