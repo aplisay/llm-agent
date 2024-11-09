@@ -53,7 +53,8 @@ server.use(express.json());
 
 
 server.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', 'https://llm.aplisay.com', 'https://llm.aplisay.uk', 'https://llm-backend.aplisay.com', 'https://llm.us.aplisay.com'],
+  origin: [
+    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /https:\/\/.*\.aplisay\.com$/],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
   exposedHeaders: ['Link',],
   credentials: true,
