@@ -10,6 +10,9 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:latest
       - .
       - '-f'
       - Dockerfile
@@ -17,8 +20,6 @@ steps:
     secretEnv:
       - SECRETENV_BUNDLE
       - SECRETENV_KEY
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['tag', '$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA', '$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:latest']
   - name: gcr.io/cloud-builders/docker
     args:
       - push
