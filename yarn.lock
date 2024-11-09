@@ -748,7 +748,7 @@
   dependencies:
     lodash "^4.17.21"
 
-"@livekit/agents-plugin-openai@^0.3.2":
+"@livekit/agents-plugin-openai@^0.3.5":
   version "0.3.5"
   resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-openai/-/agents-plugin-openai-0.3.5.tgz#c6bb461bc5e4de314ffdde5057b382f934e50bad"
   integrity sha512-8Av1zRpt5A+SN8px997RhF+KrOtdkVqBsMjMTJOPHGveBzFFz64WQ3/69lT7NYVJL5nlfDvLPe9VeiMVlz9Pvg==
@@ -757,7 +757,7 @@
     "@livekit/rtc-node" "^0.11.0"
     ws "^8.16.0"
 
-"@livekit/agents@0.3.5":
+"@livekit/agents@0.3.5", "@livekit/agents@^0.3.5":
   version "0.3.5"
   resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-0.3.5.tgz#e5400aada94b8dbe2eb93f2d0b98dfd34a368349"
   integrity sha512-qjEIRkr/HdOvEOnvLKZMfnQ472bShQ1Ai2KKng8a1caSDHiLhQBeSb1tzA1Evsmm1k8hilXqh+81/SDj4cfiDA==
@@ -4627,10 +4627,10 @@ linkify-it@^5.0.0:
   dependencies:
     uc.micro "^2.0.0"
 
-livekit-server-sdk@^2.6.1, livekit-server-sdk@^2.7.1:
-  version "2.8.0"
-  resolved "https://registry.yarnpkg.com/livekit-server-sdk/-/livekit-server-sdk-2.8.0.tgz#56a9f8358629ade289e49893b7e110845bbcf64a"
-  integrity sha512-1pcbW+Sw+34P6aG2nYFcO4dMO0pWT+CL4cFc9wj2qiiScAz0GjahDPgX5/wQFWoaiT125/oRBP4sBeIPRmg81A==
+livekit-server-sdk@^2.6.1, livekit-server-sdk@^2.8.1:
+  version "2.8.1"
+  resolved "https://registry.yarnpkg.com/livekit-server-sdk/-/livekit-server-sdk-2.8.1.tgz#f9cb967b992f14dbce3fb3773da56ffba93dd8e4"
+  integrity sha512-l8egXU10jPuRJM2Df9Gk/KPEk6tBV0JEGG19cD5QeQtyIMgqULCCd/5yyG2FRvcWRf7pEyZZMXi63zDn7uaKHQ==
   dependencies:
     "@livekit/protocol" "^1.27.1"
     camelcase-keys "^9.0.0"
