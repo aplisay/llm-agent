@@ -14,26 +14,6 @@ const handlers = require('./lib/handlers');
 
 let apiDoc;
 
-// This is a bodge to fix the fact that some error conditions can cause the Axios request
-//  structure to be returned in the error message, and this is circular, causing an exception
-//  we should eradicate these anyway.
-/*
-server.set('json replacer', (() => {
-  const seen = new WeakSet();
-  return (key, value) => {
-    if (typeof value === "object" && value !== null) {
-      if (seen.has(value)) {
-        return;
-      }
-      seen.add(value);
-    }
-    return value;
-  };
-})());
-*/
-
-
-
 try {
   apiDoc = yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8'));
 }
@@ -48,9 +28,7 @@ if (process.env.NODE_ENV === 'development') {
   apiDoc.servers.unshift({ url: `http://localhost:${port}/api` });
 }
 
-
 server.use(express.json());
-
 
 server.use(cors({
   origin: [
