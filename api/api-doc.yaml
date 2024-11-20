@@ -192,7 +192,7 @@ components:
           in:
             type: string
             description: Where in the request the key should be used
-            enum: ['query', 'basic', 'bearer', 'path']
+            enum: ['basic', 'bearer', 'header', 'path', 'query']
             example: bearer
           value:
             type: string
@@ -202,6 +202,10 @@ components:
             type: string
             description: The username for the key. Meaningful only for keys in the \"basic\" auth header.
             example: user1
+          header:
+            type: string
+            description: The custom header name for the key. Meaningful only for keys with an `in` of \"header\".
+            example: X-Api-Key
           password:
             type: string
             description: The password for the key. Meaningful only for keys in the \"basic\" auth header.
