@@ -2,6 +2,9 @@ const uuid = require('uuid').v4;
 const Voices = require('../agent-lib/voices');
 const { functionHandler } = require('../agent-lib/function-handler.js');
 
+const { JAMBONZ_AGENT_NAME: server } = process.env;
+const wsPath = `wss://${server}/audio`
+
 
 /**
  *
@@ -15,13 +18,15 @@ const { functionHandler } = require('../agent-lib/function-handler.js');
  * @param {Object} params.options Options object containing combined STT, TTS and model options
  */
 class JambonzSession {
-  constructor({ path, model, progress, logger, session, options }) {
+  constructor({ path, model, progress, logger, session, options, instanceId, streamUrl }) {
     Object.assign(this, {
       path,
       model,
       logger: logger.child({ call_sid: session.call_sid }),
       progress,
-      session
+      session,
+      instanceId,
+      streamUrl
     });
     this.options = options;
     this.waiting = {};
@@ -37,8 +42,8 @@ class JambonzSession {
     });
     this.voice = Voices.services?.[newValue?.tts?.vendor];
     this.speak = this.voice?.speak || ((str) => (str));
-    console.log({ options: newValue, voice: this.voice, speak: this.voice.speak, ssml: this.voice?.useSsml }, 'options set');
-    this.model.options = this._options;
+    console.log({ options: newValue, voice: this.voice, speak: this.voice?.speak, ssml: this.voice?.useSsml }, 'options set');
+    this.model && (this.model.options = this._options);
   }
   get options() {
     return this?._options;
@@ -49,6 +54,10 @@ class JambonzSession {
     return id ? new Promise(resolve => (this.waiting[id] = resolve)) : Promise.resolve();
   }
 
+  handler() {
+    return this.streamUrl ? this.#streamHandler() : this.#pipelineHandler();
+  }
+
   /**
    * Handler for a Jambonz session, main wait loop that sets listeners on Jambonz and the LLM agent
    * dispatches messages between them as long as they are both responding and closes them gracefully
@@ -57,9 +66,9 @@ class JambonzSession {
    * @return {Promise} Resolves to a void value when the conversation ends
    * @memberof JambonzSession
    */
-  async handler() {
+  async #pipelineHandler() {
     let { session, progress, logger, model } = this;
-    logger.debug({ handler: this }, `new incoming call`);
+    logger.debug({ handler: this }, `new incoming pipeline call`);
     progress && progress.send({ call: session?.from || 'unknown' });
 
     let sessionEnded = new Promise(resolve => {
@@ -114,6 +123,52 @@ class JambonzSession {
       this.#onError(err);
     }
     await sessionEnded;
+  }
+
+  async #streamHandler() {
+    let { session, logger, callId, instanceId } = this;
+    let url = `${wsPath}/${instanceId}`;
+    logger.debug({ handler: this, url }, `new incoming streaming call`);
+
+    try {
+
+      return await new Promise(resolve => {
+        session
+          .on('close', (code, reason) => {
+            this.#onClose(code, reason);
+            resolve();
+          })
+          .on('error', err => this.#onError(err))
+          .on('/end', () => {
+            this.#onClose();
+            resolve();
+          });
+        session
+          .answer()
+          .listen({
+            url,
+            actionHook: '/end',
+            sampleRate: 8000,
+            bidirectionalAudio: {
+              enabled: true,
+              streaming: true,
+              sampleRate: 8000
+            },
+            metadata: {
+              instanceId,
+              callId
+            }
+          })
+          .send();
+
+
+      });
+      
+    }
+    catch (err) {
+      logger.error({ err }, 'error in stream handler'); this.#onError(err);
+    }
+
   }
 
   async watchdog(watchdogFcn, watchdogTimeout = 20000) {

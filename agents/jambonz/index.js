@@ -2,6 +2,7 @@ require('dotenv').config();
 const Application = require('./lib/application');
 const logger = require('./agent-lib/logger');
 const server = require('http').createServer();
+require('./agent-lib/ws-handler')({ server, logger }, 'audio');
 const { createEndpoint } = require('@jambonz/node-client-ws');
 const makeService = createEndpoint({ server });
 const { JAMBONZ_PORT: port = 8080, JAMBONZ_APPLICATION_PATH: path = '/jambonz/application', JAMBONZ_AGENT_NAME: host} = process.env;
