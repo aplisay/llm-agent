@@ -22,6 +22,7 @@ class Application {
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
           logger.info({ number, agent, instance, session }, 'Found instance for call');
+          let { streamUrl } = instance;
           const { model } = new Handler({ logger, agent });
           let call = this.call = await Call.create({
             instanceId: instance.id,
@@ -31,6 +32,9 @@ class Application {
           });
           let callId = call.id;;
           let sessionHandler = this.sessionHandler = new JambonzSession({
+            instanceId: instance.id,
+            callId,
+            streamUrl,
             ...this,
             session,
             model,
@@ -53,6 +57,7 @@ class Application {
             }
           });
           await sessionHandler.handler();
+          logger.debug({ callId }, 'session ended');
           call.end();
         }
         else {
@@ -61,7 +66,7 @@ class Application {
       }
       catch (err) {
         logger.info(err, 'error in call progress');
-        await this.sessionHandler.forceClose();
+        this.sessionHandler && await this.sessionHandler.forceClose();
         this.call && this.call.end();
       }
     });

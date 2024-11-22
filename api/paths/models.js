@@ -15,12 +15,14 @@ module.exports = function (logger) {
 const modelList = async (req, res) => {
   try {
     res.send(Object.fromEntries(
-      handlers.models.map(({ name, description, supportsFunctions, implementation }) => (
+      handlers.models.map(({ name, description, supportsFunctions, implementation, hasTelephony, hasWebRTC}) => (
         [name,
         {
           description,
           supportsFunctions,
-          audioModel: implementation.audioModel
+          audioModel: implementation.audioModel,
+          hasTelephony,
+          hasWebRTC,
         }
         ]
       ))

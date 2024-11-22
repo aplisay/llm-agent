@@ -74,10 +74,18 @@ components:
           description: This model supports function calling via the `functions` property
           type: boolean
           example: true
-        audioModel:
-          description: This model supports audio input via WebRTC
+        audioModel: 
+          description: This model is a speech-to-speech audio model
           type: boolean
           example: false
+        hasTelephony:
+          description: This model has a telephony interface so can be activated with a number if required
+          type: boolean
+          example: true
+        hasWebRTC:
+          description: This model supports audio input via WebRTC
+          type: boolean
+          example: true
       required:
         - name
         - description

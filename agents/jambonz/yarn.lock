@@ -379,20 +379,20 @@
   resolved "https://registry.yarnpkg.com/@istanbuljs/schema/-/schema-0.1.3.tgz#e45e384e4b8ec16bce2fd903af78450f6bf7ec98"
   integrity sha512-ZXRY4jNvVgSVQ8DL3LTcakaAtXwTVUxE81hslsyD2AtoXW/wVob10HkOJ1X/pAlcI7D+2YoZKg5do8G/w6RYgA==
 
-"@jambonz/node-client-ws@^0.1.41":
-  version "0.1.57"
-  resolved "https://registry.yarnpkg.com/@jambonz/node-client-ws/-/node-client-ws-0.1.57.tgz#6ee1e5c4f7a840bb50af8c5a7fc5ff8483634f92"
-  integrity sha512-FEilau7PXzjRPcePDKAzyd9rtSDWxn549gSkGLCIASeP3bxts47R0r3EqCnknZqTZ3gDs4Q/XdTF3C/wMEFb7g==
+"@jambonz/node-client-ws@^0.1.61":
+  version "0.1.61"
+  resolved "https://registry.yarnpkg.com/@jambonz/node-client-ws/-/node-client-ws-0.1.61.tgz#4e17685533c5c234c080065aa8e1d37dc26cdea6"
+  integrity sha512-zEUVt2bjGd2pjxcCbl54I+X0m7XzCL8k0ABlxGbd97kb2YdjUinUn/YoRySk+AQvxgEJs0FryKd8xZahg7+gTg==
   dependencies:
-    "@jambonz/verb-specifications" "^0.0.83"
+    "@jambonz/verb-specifications" "^0.0.86"
     debug "^4.3.4"
     parseurl "^1.3.3"
     ws "^8.18.0"
 
-"@jambonz/verb-specifications@^0.0.83":
-  version "0.0.83"
-  resolved "https://registry.yarnpkg.com/@jambonz/verb-specifications/-/verb-specifications-0.0.83.tgz#729f1de0841fd705be9b4397f33384ce5e6a2d70"
-  integrity sha512-3m1o3gnWw1yEwNfkZ6IIyUhdUqsQ3aWBNoWJHswe4udvVbEIxPHi+8jKGTJVF2vxddzwfOWp7RmMCV9RmKWzkw==
+"@jambonz/verb-specifications@^0.0.86":
+  version "0.0.86"
+  resolved "https://registry.yarnpkg.com/@jambonz/verb-specifications/-/verb-specifications-0.0.86.tgz#8b58e60245ee696422fa8eb160f3cf9861c91a64"
+  integrity sha512-nTMMeFJtkSIVD3icQajOKv+zFBiAaUNuky2htVgYKipE2AIq/H/SsdurYdBij3KQq1o58/FuUuXcqCwjnZnoUg==
   dependencies:
     debug "^4.3.4"
     pino "^8.8.0"
@@ -3904,6 +3904,11 @@ lines-and-columns@^1.1.6:
   version "1.2.4"
   resolved "https://registry.yarnpkg.com/lines-and-columns/-/lines-and-columns-1.2.4.tgz#eca284f75d2965079309dc0ad9255abb2ebc1632"
   integrity sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==
+
+link@^2.1.1:
+  version "2.1.1"
+  resolved "https://registry.yarnpkg.com/link/-/link-2.1.1.tgz#c5db408c295fcc75c9f7ff44ae62607e9b836dfa"
+  integrity sha512-NV3AUVYBovJ6eVQcTeRoPnZSxzt2LOijNd+ugEZKRy/XeQlpTRhVRkuDv5kOlXwMAUx30vfUc7asRFb9RT65yg==
 
 linkify-it@^5.0.0:
   version "5.0.0"
