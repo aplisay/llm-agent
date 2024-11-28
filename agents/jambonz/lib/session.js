@@ -23,6 +23,7 @@ class JambonzSession {
       path,
       model,
       logger: logger.child({ call_sid: session.call_sid }),
+      callId: session.call_sid,
       progress,
       session,
       instanceId,
@@ -126,7 +127,7 @@ class JambonzSession {
   }
 
   async #streamHandler() {
-    let { session, logger, callId, instanceId } = this;
+    let { session, logger, callId, instanceId, streamUrl } = this;
     let url = `${wsPath}/${instanceId}`;
     logger.debug({ handler: this, url }, `new incoming streaming call`);
 
@@ -155,6 +156,7 @@ class JambonzSession {
               sampleRate: 8000
             },
             metadata: {
+              streamUrl,
               instanceId,
               callId
             }

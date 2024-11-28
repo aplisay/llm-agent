@@ -2,7 +2,7 @@ const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../agent
 const JambonzSession = require('./session.js');
 const logger = require('../agent-lib/logger.js');
 const Jambonz = require('../agent-lib/jambonz.js');
-const Handler = require('../agent-lib/handlers/jambonz');
+const handlers = require('../agent-lib/handlers');
 
 /**
  *
@@ -22,11 +22,19 @@ class Application {
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
           logger.info({ number, agent, instance, session }, 'Found instance for call');
-          let { streamUrl } = instance;
-          const { model } = new Handler({ logger, agent });
+          let Handler = handlers.getHandler(agent.modelName);
+          let handler = new Handler({ logger, agent, instance });
+          let { model } = handler;
+          let room = handler.join && await handler.join(true);
+          let { ultravox } = room || {};
+          let { joinUrl: streamUrl } = ultravox || {};
+          logger.debug({ streamUrl, room, ultravox }, 'application handler');
+
           let call = this.call = await Call.create({
+            id: session.call_sid,
             instanceId: instance.id,
             agentId: agent.id,
+            streamUrl,
             calledId,
             callerId,
           });
@@ -42,16 +50,16 @@ class Application {
             logger,
             options: agent.options,
             progress: {
-              send: async (data) => {
+              send: async (data, isFinal = true) => {
                 try {
                   data.call && call.start();
-                  await TransactionLog.create({
+                  await handler.transcript({
                     callId, type: Object.keys(data)?.[0], data: JSON.stringify(Object.values(data)?.[0])
                   });
                 }
                 catch (err) {
                   logger.info(err, 'error in call progress logging');
-                  sessionHandler.forceClose();
+                  //sessionHandler.forceClose();
                 }
               }
             }
