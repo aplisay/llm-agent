@@ -1,4 +1,4 @@
-const Jambonz = require('../lib/jambonz');
+const Jambonz = require('../agent-lib/jambonz');
 const fs = require('fs');
 
 let jambonz;
@@ -31,7 +31,7 @@ describe('Jambonz', () => {
   try {
 
     test('Initialises', () => {
-      jambonz = new Jambonz(require('../lib/logger'), 'user');
+      jambonz = new Jambonz(require('../agent-lib/logger'), 'user');
       return expect(jambonz).toBeInstanceOf(Jambonz);
     });
 

@@ -1,0 +1,47 @@
+{
+  "name": "aplisay-jambonz-handler",
+  "version": "0.0.2",
+  "description": "Aplisay Jambonz Handler",
+  "main": "index.js",
+  "scripts": {
+    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
+    "start": "NODE_ENV=production node index",
+    "test": "LOGLEVEL=error jest"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.1",
+    "@deepgram/sdk": "^3.2.0",
+    "@google-cloud/aiplatform": "^2.15.0",
+    "@google-cloud/pino-logging-gcp-config": "^1.0.2",
+    "@google-cloud/text-to-speech": "^4.2.3",
+    "@google-cloud/vertexai": "^0.5.0",
+    "@jambonz/node-client-ws": "https://github.com/rjp44/node-client-ws.git#main",
+    "axios": "^1.4.0",
+    "cors": "^2.8.5",
+    "dotenv": "https://github.com/rjp44/secretenv",
+    "elevenlabs": "^0.4.0",
+    "js-yaml": "^4.1.0",
+    "link": "^2.1.1",
+    "pg": "^8.13.0",
+    "pg-hstore": "^2.3.4",
+    "pg-listen": "^1.7.0",
+    "pino": "^8.8.0",
+    "pino-http": "^8.3.3",
+    "pino-pretty": "^10.0.0",
+    "sequelize": "^6.37.4",
+    "swagger-sequelize": "^0.1.5",
+    "uuid": "^9.0.0",
+    "ws": "^8.13.0"
+  },
+  "devDependencies": {
+    "gulp": "^4.0.2",
+    "gulp-exec": "^5.0.0",
+    "gulp-rename": "^2.0.0",
+    "gulp-replace": "^1.1.4",
+    "jest": "^29.5.0",
+    "jsdoc-to-markdown": "^8.0.0",
+    "nodemon": "^2.0.22"
+  }
+}

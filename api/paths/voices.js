@@ -1,6 +1,7 @@
-const Application = require('../../lib/application');
+const handlers = require('../../lib/handlers').implementations;
 
 let appParameters, log;
+
 
 module.exports =
   function (logger, voices) {
@@ -9,7 +10,8 @@ module.exports =
 
     const voicesList = (async (req, res) => {
       try {
-        res.send(await voices.listVoices());
+        let voices = Object.fromEntries(await Promise.all(handlers.map(async ({ name, voices }) => ([name, await voices]))));
+        res.send(voices);
       }
       catch (err) {
         res.status(500).send(err);
@@ -28,19 +30,24 @@ module.exports =
               schema: {
                 type: 'object',
                 additionalProperties: {
-                  type: "object",
+                  type: 'object',
                   additionalProperties: {
-                    type: "array",
+                    type: "object",
+                    additionalProperties: {
+                      type: "array",
                       items: {
                         $ref: '#/components/schemas/Voice'
                       }
+                    }
                   }
                 }
               },
               example: {
-                'google': {
-                  'en-GB': [{ name: 'en-GB-Wavenet-A', gender: 'male' }, { name: 'en-GB-Wavenet-b', gender: 'female' }, { name: 'en-GB-Wavenet-C', gender: 'male' }],
-                  'ca-ES': [{ name: 'ca-ES-Wavenet-A', gender: 'male' }, { name: 'ca-ES-Wavenet-b', gender: 'female' }, { name: 'ca-ES-Wavenet-C', gender: 'male' }],
+                jambonz: {
+                  'google': {
+                    'en-GB': [{ name: 'en-GB-Wavenet-A', gender: 'male' }, { name: 'en-GB-Wavenet-b', gender: 'female' }, { name: 'en-GB-Wavenet-C', gender: 'male' }],
+                    'ca-ES': [{ name: 'ca-ES-Wavenet-A', gender: 'male' }, { name: 'ca-ES-Wavenet-b', gender: 'female' }, { name: 'ca-ES-Wavenet-C', gender: 'male' }],
+                  }
                 }
               }
 

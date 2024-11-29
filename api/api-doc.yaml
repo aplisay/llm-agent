@@ -5,9 +5,14 @@ info:
   title: LLM Agent API
   version: 1.0.0
   description: |-
-    Simple API to create, update and monitor agents connecting inbound telephone calls to 
-    a large language model (LLM) based AI engine via Jambonz.
+    Simple platform agnostic API to create, update and monitor agents connecting inbound audio sessions to 
+    a large language model (LLM) based AI engine.
 
+    Extensible architecture that currently supports the following frameworks:
+      * Jambonz: connecting LLMs to telephone calls via an STT->model->TTS pipeline (15 models, any STT,TTS supported by Jambonz)
+      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API (traditional STT/TTS pipeline agents coming soon)
+      * Ultravox: connecting LLMs to WebRTC rooms and SIP calls using the Ultravox API and SDK.
+      
     Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
     Also allows setting and modification of text to speech (TTS) and speech to text (STT) parameters which are used for voice recognition and voicing of responses.
     
@@ -20,17 +25,11 @@ info:
       
     1. **[GET models](#operations-Models-modelList)** to obtain a list of valid models.
     2. **[POST agents](#operations-Agent-createAgent)** with a chosen model identifier and prompt to create an agent.
-    3. Obtain the `number` and `socket` values from the create call result.
-    4. Open a new Websocket client to the URL returned in `socket`, and listen on results.
-    5. Place calls to the returned `number`, observing the progress updates on the websocket.
-    6. When done with the agent, close the websocket client.
-    7. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
-
-    The above is sufficient for a naive agent that simply operates from a single prompt for the duration of the call as a demo of LLMs interacting with telephone callers.
-
-    More sophisticated agents will invariably be built by using logic and data to interact with the agent and modify behaviour throughout a call transaction.
-    This is done via the `socket` event stream to follow the conversation, and the `Calls` methods to dynamically change the agent system prompt, inject
-    phrases directly into the call, or hang it up if necessary.
+    3. **[POST listen](#operations-Agent-activate)** with the agent ID and type to receive an `instanceId` and either
+       a `number` or livekit/ultravox room values from the create call result.
+    4. Open a new livekit client session and join the room to receive transcript updates and send/receive audio, or call the number.
+    5. When done with the agent, shut down the listener **[DELETE agents/{id}/listen/{instanceId}](#operations-Agent-deleteListener).
+    6. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
 
 tags:
   - name: Calls
@@ -41,8 +40,12 @@ tags:
       for just one call, injection of direct speech by the app, and hanging up a call by the agent.
   - name: Agent
     description: |-
-      An Agent is the core of this API. It describes an AI engine which operates using a prompt and is connected to a single phone 
-      number for inbound calls.
+      An Agent is the core of this API. It describes the interface to an AI engine which operates using a prompt, specifies any
+      options like speech recognition language or output voice, temperature and other LLM parameters as well as tools
+      (API) calls that a capable LLM may use to fulfill requests.
+      An instance of an Agent is created by POSTing to the `/agents` endpoint, and then one or more instances may be activated
+      using the `listen` verb to cause implementation specific worker plugins to then execute them to service inbound SIP or WebRTC 
+      calls.
   - name: Models
     description: |-
       A Model is an AI language model provider which is used by an Agent and controlled through a prompt.
@@ -65,23 +68,27 @@ components:
           description: Agent Description
           type: string
           example: GPT3.5-turbo chat
-        defaultPrompt:
-          description: A working initial default prompt for this agent
-          type: string
-          example: You are a helpful agent...
         voices:
           $ref: '#/components/schemas/VoiceList'
         supportsFunctions:
           description: This model supports function calling via the `functions` property
           type: boolean
           example: true
-        audioModel:
-          description: This model supports audio input via WebRTC
+        audioModel: 
+          description: This model is a speech-to-speech audio model
           type: boolean
           example: false
+        hasTelephony:
+          description: This model has a telephony interface so can be activated with a number if required
+          type: boolean
+          example: true
+        hasWebRTC:
+          description: This model supports audio input via WebRTC
+          type: boolean
+          example: true
       required:
         - name
-        - defaultPrompt
+        - description
     Agent:
       type: object
       properties:
@@ -91,8 +98,6 @@ components:
           $ref: '#/components/schemas/Prompt'
         options:
           $ref: '#/components/schemas/AgentOptions'
-        callbackUrl:
-          $ref: '#/components/schemas/CallbackUrl'
         functions: 
           $ref: '#/components/schemas/Functions'
         keys: 
@@ -130,6 +135,8 @@ components:
           properties:
             language:
               $ref: '#/components/schemas/Language'
+        callbackUrl:
+          $ref: '#/components/schemas/CallbackUrl'
     CallbackUrl:
       type: string
       description: A callback URL to be used for status updates
@@ -193,7 +200,7 @@ components:
           in:
             type: string
             description: Where in the request the key should be used
-            enum: ['query', 'basic', 'bearer', 'path']
+            enum: ['basic', 'bearer', 'header', 'path', 'query']
             example: bearer
           value:
             type: string
@@ -203,6 +210,10 @@ components:
             type: string
             description: The username for the key. Meaningful only for keys in the \"basic\" auth header.
             example: user1
+          header:
+            type: string
+            description: The custom header name for the key. Meaningful only for keys with an `in` of \"header\".
+            example: X-Api-Key
           password:
             type: string
             description: The password for the key. Meaningful only for keys in the \"basic\" auth header.
@@ -230,9 +241,11 @@ components:
           additionalProperties:
             type: object
             additionalProperties:
-              type: array
-              items:
-                $ref: '#/components/schemas/Voice'
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Voice'
     Call:
       type: object
       properties:
