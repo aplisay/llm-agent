@@ -127,11 +127,13 @@ class JambonzSession {
   }
 
   async #streamHandler() {
-    let { session, logger, callId, instanceId, streamUrl } = this;
+    let { session, logger, callId, instanceId, streamUrl, progress } = this;
     let url = `${wsPath}/${instanceId}`;
     logger.debug({ handler: this, url }, `new incoming streaming call`);
 
     try {
+
+      progress && progress.send({ call: session?.from || 'unknown' });
 
       return await new Promise(resolve => {
         session
@@ -333,9 +335,10 @@ class JambonzSession {
   }
 
   async #onClose(code, reason) {
-    let { session, logger, progress } = this;
+    let { session, logger, progress, closed } = this;
     this.watchdog(() => (false), 0);
-    progress.send({ hangup: true });
+    !closed && progress.send({ hangup: true });
+    this.closed = true;
     logger.info({ session, code, reason }, `session ${session.call_sid} closed`);
   };
 
