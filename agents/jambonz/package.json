@@ -17,7 +17,7 @@
     "@google-cloud/pino-logging-gcp-config": "^1.0.2",
     "@google-cloud/text-to-speech": "^4.2.3",
     "@google-cloud/vertexai": "^0.5.0",
-    "@jambonz/node-client-ws": "https://github.com/rjp44/node-client-ws.git",
+    "@jambonz/node-client-ws": "https://github.com/rjp44/node-client-ws.git#main",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
     "dotenv": "https://github.com/rjp44/secretenv",
