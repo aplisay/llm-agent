@@ -50,33 +50,6 @@ module.exports =
                     type: "string",
                     example: "https://example.com/agent/progress/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
                   },
-                  livekit: {
-                    description: "If the agent is connected to a livekit room, this is the URL of the livekit room access information",
-                    type: "object",
-                    properties: {
-                      url: {
-                        description: "The URL of the livekit room access information",
-                        type: "string",
-                        example: "https://example.com/livekit/join/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
-                      },
-                      token: {
-                        description: "The token used to join the livekit room",
-                        type: "string",
-                        example: "<KEY>"
-                      }
-                    }
-                  },
-                  ultravox: {
-                    description: "Set to true if the agent is connected to a ultravox room",
-                    type: "object",
-                    properties: {
-                      joinUrl: {
-                        description: "The URL of the ultravox websocket which then supplies the room access information",
-                        type: "string",
-                        example: "https://example.com/livekit/join/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
-                      }
-                    }
-                  }
                 }
               }
             }
