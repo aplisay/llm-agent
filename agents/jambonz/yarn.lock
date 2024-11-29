@@ -452,10 +452,9 @@
   resolved "https://registry.yarnpkg.com/@istanbuljs/schema/-/schema-0.1.3.tgz#e45e384e4b8ec16bce2fd903af78450f6bf7ec98"
   integrity sha512-ZXRY4jNvVgSVQ8DL3LTcakaAtXwTVUxE81hslsyD2AtoXW/wVob10HkOJ1X/pAlcI7D+2YoZKg5do8G/w6RYgA==
 
-"@jambonz/node-client-ws@^0.1.61":
+"@jambonz/node-client-ws@https://github.com/rjp44/node-client-ws.git":
   version "0.1.61"
-  resolved "https://registry.yarnpkg.com/@jambonz/node-client-ws/-/node-client-ws-0.1.61.tgz#4e17685533c5c234c080065aa8e1d37dc26cdea6"
-  integrity sha512-zEUVt2bjGd2pjxcCbl54I+X0m7XzCL8k0ABlxGbd97kb2YdjUinUn/YoRySk+AQvxgEJs0FryKd8xZahg7+gTg==
+  resolved "https://github.com/rjp44/node-client-ws.git#1da3565069fa98f30ca0914d782e83fa834b4d74"
   dependencies:
     "@jambonz/verb-specifications" "^0.0.86"
     debug "^4.3.4"
