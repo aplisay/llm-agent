@@ -38,7 +38,7 @@ class Application {
             calledId,
             callerId,
           });
-          let callId = call.id;;
+          let callId = call.id;
           let sessionHandler = this.sessionHandler = new JambonzSession({
             instanceId: instance.id,
             callId,
