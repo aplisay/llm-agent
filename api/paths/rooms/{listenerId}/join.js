@@ -18,7 +18,7 @@ module.exports =
         }
         let Handler = handlers.getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
-        let room = await handler.join({ options });
+        let room = await handler.join();
         res.send(room);
       }
       catch (err) {
