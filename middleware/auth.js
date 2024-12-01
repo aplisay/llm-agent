@@ -1,4 +1,5 @@
 const { initializeApp, applicationDefault } = require('firebase-admin/app');
+const { User, AuthKey } = require('../lib/database');
 const firebase = require('firebase-admin/auth');
 
 function init(app, logger) {
@@ -22,10 +23,13 @@ function init(app, logger) {
       return firebase
         .getAuth()
         .verifyIdToken(token)
-        .then((user) => {
+        .then(async (user) => {
           res.locals.user = user;
-          next();
+          await User.import({ ...user, id: user.user_id });
         })
+        .then(() => {
+          next();
+         })
         .catch((authError) => {
           res.locals.user = undefined;
           res.locals.userAuthError = authError;
