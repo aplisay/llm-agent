@@ -44,7 +44,10 @@ const pino = PinoHttp({
 });
 
 server.use(pino);
-process.env.AUTHENTICATE_USERS !== "NO" && require('./middleware/auth.js')(server, logger);
+process.env.AUTHENTICATE_USERS === "NO" ?
+  require('./middleware/no-auth.js')(server, logger) :
+  require('./middleware/auth.js')(server, logger);
+
 
 openapi.initialize({
   app: server,

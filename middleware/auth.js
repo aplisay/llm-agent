@@ -20,23 +20,35 @@ function init(app, logger) {
     const [bearer, token] = (req.headers?.authorization && req.headers?.authorization?.split(" ")) || [];
     if (bearer === 'Bearer' && token) {
       res.locals.userAuth = true;
-      return firebase
-        .getAuth()
-        .verifyIdToken(token)
-        .then(async (user) => {
+      AuthKey.verify(token).then(({ user, expiry } = {}) => {
+        logger.debug({ user, expiry }, 'Authkey');
+        if (user) {
           res.locals.user = user;
-          await User.import({ ...user, id: user.user_id });
-        })
-        .then(() => {
+          res.locals.userAuth = true;
+          res.locals.userAuthExpiry = expiry;
           next();
-         })
-        .catch((authError) => {
-          res.locals.user = undefined;
-          res.locals.userAuthError = authError;
-          req.log.error({ authError }, 'Auth error');
-          res.status(401)
-            .json({ message: `Authentication error` });
-        });
+          return;
+        }
+        else {
+          return firebase
+            .getAuth()
+            .verifyIdToken(token)
+            .then(async (user) => {
+              res.locals.user = user;
+              await User.import({ ...user, id: user.user_id });
+            })
+            .then(() => {
+              next();
+            })
+            .catch((authError) => {
+              res.locals.user = undefined;
+              res.locals.userAuthError = authError;
+              req.log.error({ authError }, 'Auth error');
+              res.status(401)
+                .json({ message: `Authentication error` });
+            });
+        }
+      });
     }
     else {
       if (req.originalUrl.startsWith('/api/api-docs')) {
@@ -49,6 +61,7 @@ function init(app, logger) {
       }
     }
   });
+  
 
 }
 
