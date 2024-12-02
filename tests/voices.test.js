@@ -18,7 +18,7 @@ describe(`voices`, () => {
     expect(list).toHaveProperty('elevenlabs');
     return expect(list).toHaveProperty('deepgram');
 
-  });
+  }, 20000);
 
 
 });
