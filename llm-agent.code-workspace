@@ -13,6 +13,9 @@
     },
     {
       "path": "../secretenv"
+    },
+    {
+      "path": "../simplyvideo-agent"
     }
   ],
   "settings": {}

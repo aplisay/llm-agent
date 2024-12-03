@@ -150,6 +150,8 @@ databaseStarted.then(async () => {
         await authKey.destroy();
         logger.info({ authKey }, 'deleted AuthKey');
         break;
+      case 'upgrade-db':
+        break;
       
       default:
         throw new Error(`unrecognised command: ${command}`);
