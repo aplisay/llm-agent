@@ -34,8 +34,8 @@ function init(app, logger) {
             .getAuth()
             .verifyIdToken(token)
             .then(async (user) => {
-              res.locals.user = user;
-              await User.import({ ...user, id: user.user_id });
+              res.locals.user = { ...user, id: user.user_id };
+              await User.import(res.locals.user);
             })
             .then(() => {
               next();

@@ -191,13 +191,17 @@ agentUpdate.apiDoc = {
 
 const agentDelete = async (req, res) => {
   let { agentId } = req.params;
+  let UserId = res.locals.user.id;
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
-    await Agent.destroy({
+    let data = await Agent.destroy({
       where: {
         id: agentId,
+        UserId
       },
     });
+    if(data === 0)
+      throw new Error(`Agent with ID ${agentId} not found`);
     res.status(200).send();
   }
   catch (err) {
