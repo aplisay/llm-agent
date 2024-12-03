@@ -1,4 +1,4 @@
-const { Agent } = require('../../lib/database');
+const { Agent, Instance, PhoneNumber } = require('../../lib/database');
 
 let appParameters, log;
 
@@ -10,15 +10,17 @@ module.exports = function (logger, voices, wsServer) {
   });
   log = logger;
   return {
-    POST: agentCreate
+    POST: agentCreate,
+    GET: agentList
   };
 };
 
 const agentCreate = (async (req, res) => {
-  let { modelName, prompt, options, functions, keys } = req.body;
-  let agent = Agent.build({ modelName, prompt, options, functions, keys });
+  let { name, description, modelName, prompt, options, functions, keys } = req.body;
+  let UserId = res.locals.user.id;
+  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, UserId });
 
-  log.info({ modelName, prompt, options, functions }, 'create API call');
+  log.info({ modelName, prompt, options, functions, UserId }, 'create API call');
 
   try {
     await agent.save();
@@ -31,6 +33,7 @@ const agentCreate = (async (req, res) => {
 
   }
 });
+
 agentCreate.apiDoc = {
   summary: 'Creates an agent.',
   operationId: 'createAgent',
@@ -41,6 +44,12 @@ agentCreate.apiDoc = {
         schema: {
           type: "object",
           properties: {
+            name: {
+              type: "string"
+            },
+            description: {
+              type: "string"
+            },
             modelName: {
               $ref: '#/components/schemas/ModelName'
             },
@@ -127,6 +136,68 @@ agentCreate.apiDoc = {
     }
   }
 };
+
+
+
+const agentList = (async (req, res) => {
+  let UserId = res.locals.user.id;
+  try {
+    let agents = await Agent.findAll({
+      where: { UserId },
+      include: [
+        {
+          model: Instance,
+          as: 'listeners',
+          required: true,
+          include: [
+            {
+              model: PhoneNumber,
+              as: 'number',
+              required: true
+            },
+
+          ]
+        }
+      ]
+    });
+    res.send(agents);
+  }
+  catch (err) {
+    req.log.error(err, 'listing agents');
+    res.status(500).send(err);
+  }
+});
+agentList.apiDoc = {
+  summary: 'Returns a list of all this user\'s agents.',
+  operationId: 'listAgents',
+  tags: ["Agent"],
+  responses: {
+    200: {
+      description: 'List of agents.',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/Agent'
+            }
+          }
+        }
+      }
+    },
+    default: {
+      description: 'An error occurred',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
+          }
+        }
+      }
+    }
+  }
+};
+
 
 
 
