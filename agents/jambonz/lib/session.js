@@ -38,7 +38,7 @@ class JambonzSession {
   }
   set options(newValue) {
     this._options = newValue;
-    newValue.tts && (this.sayOptions = {
+    newValue?.tts && (this.sayOptions = {
       synthesizer: { vendor: "google", ...newValue.tts }
     });
     this.voice = Voices.services?.[newValue?.tts?.vendor];
