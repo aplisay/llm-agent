@@ -1,5 +1,5 @@
 const { initializeApp, applicationDefault } = require('firebase-admin/app');
-const { User, AuthKey } = require('../lib/database');
+const { User, AuthKey, Op } = require('../lib/database');
 const firebase = require('firebase-admin/auth');
 
 function init(app, logger) {
@@ -26,6 +26,7 @@ function init(app, logger) {
           res.locals.user = user;
           res.locals.userAuth = true;
           res.locals.userAuthExpiry = expiry;
+          res.locals.user.sql = { where: { userId: user.id } };
           next();
           return;
         }
@@ -34,8 +35,8 @@ function init(app, logger) {
             .getAuth()
             .verifyIdToken(token)
             .then(async (user) => {
-              res.locals.user = { ...user, id: user.user_id };
-              await User.import(res.locals.user);
+              res.locals.user = await User.import({ ...user, id: user.user_id });
+              res.locals.user.sql = { where: { id: res.locals.user.id } } ;
             })
             .then(() => {
               next();
