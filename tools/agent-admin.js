@@ -91,7 +91,7 @@ databaseStarted.then(async () => {
         else {
           let authKey = await AuthKey.create({
             key: options.key || token,
-            UserId: user.id,
+            userId: user.id,
             expiry: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10,
           });
           logger.info({ authKey}, 'created AuthKey');
