@@ -9,13 +9,10 @@
       "path": "../llm-frontend"
     },
     {
-      "path": "../ultravox-client-sdk-js"
-    },
-    {
-      "path": "../secretenv"
-    },
-    {
       "path": "../simplyvideo-agent"
+    },
+    {
+      "path": "../../sites/new-website"
     }
   ],
   "settings": {}

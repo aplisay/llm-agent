@@ -246,6 +246,39 @@ components:
                 type: array
                 items:
                   $ref: '#/components/schemas/Voice'
+    TransactionLog:
+      type: array
+      description: An array of log entries for this transaction
+      items:
+        $ref: '#/components/schemas/TransactionLogRow'
+    TransactionLogRow:
+      type: object
+      properties:
+        callId:
+          type: string
+          description: unique ID of this transaction
+          example: 648aa45d-204a-4c0c-a1e1-419406254134
+        type:
+          type: string
+          description: The type of this log entry
+          enum: ['call', 'agent', 'user', 'hangup']
+          example: call
+        data:
+          type: string
+          description: The data associated with this log entry
+          example: "hello, how may a I help you"
+        createdAt:
+          type: string
+          description: The time this log entry was created
+          example: 2020-01-01T00:00:00Z
+        updatedAt:
+          type: string
+          description: The time this log entry was last updated
+          example: 2020-01-01T00:00:00Z
+        isFinal:
+          type: boolean
+          description: Whether this log entry is the final form for this row, if false, then the row may change in future (e.g. to add further transcriptions)
+          example: true
     Call:
       type: object
       properties:

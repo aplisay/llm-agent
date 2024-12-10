@@ -12,6 +12,7 @@ const optionDefinitions = [
   { name: 'userName', alias: 'u', type: String },
   { name: 'userId', alias: 'w', type: String },
   { name: 'key', alias: 'k', type: String },
+  { name: 'joinOnly', alias: 'j', type: Boolean },
 ];
 const options = commandLineArgs(optionDefinitions);
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
@@ -31,6 +32,8 @@ if (!command) {
   console.log(`Options: --userName <userName> -u <userName> - specify the user name`);
   console.log(`Options: --userId <userId> -w <userId> - specify the user id`);
   console.log(`Options: --key <key> -k <key> - specify the auth key`);
+  console.log(`Options: --joinOnly -j - specify the auth key`);
+
   exit(1);
 }
 else if (command === 'upgrade-db') {
@@ -91,22 +94,23 @@ databaseStarted.then(async () => {
         else {
           let authKey = await AuthKey.create({
             key: options.key || token,
-            UserId: user.id,
+            userId: user.id,
+            roleRestriction: options.joinOnly && { join: true },
             expiry: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10,
           });
-          logger.info({ authKey}, 'created AuthKey');
+          logger.info({ authKey }, 'created AuthKey');
         }
         break;
       case 'list-users':
         let users = await User.findAll();
         users.forEach(user => logger.info({ user }, `${user.name}`));
         break;
-      
+
       case 'list-authkeys':
         let authKeys = await AuthKey.findAll({ include: [User] });
         authKeys.forEach(({ key, User: user }) => logger.info({ key, user }, `${user && user.name}`));
         break;
-      
+
       case 'delete-user':
         where = {
           userId: options.userId,
@@ -152,14 +156,14 @@ databaseStarted.then(async () => {
         break;
       case 'upgrade-db':
         break;
-      
+
       default:
         throw new Error(`unrecognised command: ${command}`);
 
 
     }
 
-    exit(0)
+    exit(0);
   }
   catch (err) {
     logger.error(err);
