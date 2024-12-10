@@ -7,7 +7,9 @@ module.exports =
   function () {
     const join = (async (req, res) => {
       let { listenerId } = req.params;
-      let { options } = req.body;
+      req.log.debug({ listenerId, body: req.body }, 'join called');
+      let { options } = req.body || {};
+
       try {
         let instance = await Instance.findByPk(listenerId, { include: Agent });
         let { Agent: agent } = instance;
@@ -22,8 +24,8 @@ module.exports =
         res.send(room);
       }
       catch (err) {
-        req.log.error(err);
-        res.status(404).send(`no agent ${agentId}`);
+        req.log.error({message: err?.message, stack: err?.stack}, 'join error');
+        res.status(404).send(`no agent ${listenerId}`);
       }
 
     });
