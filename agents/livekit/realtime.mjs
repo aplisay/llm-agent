@@ -5,7 +5,7 @@ import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { Agent, Instance, Call, TransactionLog} from '../../lib/database.js';
+import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const encoder = new TextEncoder();
@@ -19,16 +19,17 @@ export default defineAgent({
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
     const agent = instance?.Agent;
+    const { userId, organisationId } = instance;
     logger.info({ agent, instance }, 'new room instance');
-    const call = await Call.create({ instanceId: instance.id, callerId: instance.id });
-    await TransactionLog.create({ callId: call.id, type: 'answer', data: instance.id });
+    const call = await Call.create({ userId, organisationId, instanceId: instance.id, callerId: instance.id });
+    await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id });
     const { prompt, modelName, options, functions, keys } = agent;
     logger.debug({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
-    
+
     const sendMessage = async (message) => {
       let [type, data] = Object.entries(message)[0];
       ctx.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
-      await TransactionLog.create({ callId: call.id, type, data: JSON.stringify(data) });
+      await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data) });
     };
 
     const model = new openai.realtime.RealtimeModel({
@@ -48,7 +49,7 @@ export default defineAgent({
             return JSON.stringify(data);
           }
         }
-        }), {})
+      }), {})
     });
 
     const session = await lkAgent
@@ -56,7 +57,7 @@ export default defineAgent({
       .then((session) => session);
     session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
     session.on('response_output_added', (newOutput) => logger.debug({ newOutput }));
-    session.on('response_output_done', output => sendMessage({agent: output?.content?.[0]?.text }));
+    session.on('response_output_done', output => sendMessage({ agent: output?.content?.[0]?.text }));
     session.response.create();
   },
 });

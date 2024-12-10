@@ -1,5 +1,5 @@
 const { initializeApp, applicationDefault } = require('firebase-admin/app');
-const { User, AuthKey } = require('../lib/database');
+const { Instance, User, AuthKey, Op } = require('../lib/database');
 const firebase = require('firebase-admin/auth');
 
 function init(app, logger) {
@@ -14,55 +14,81 @@ function init(app, logger) {
     logger.error({ e }, 'firebase auth error');
   };
 
-  // Install a route that looks for an access token and tries to divine the Firebase user if it finds one.
+  // Install a route that looks for an access token and tries to work out what sort of token it is
 
-  app.use((req, res, next) => {
-    const [bearer, token] = (req.headers?.authorization && req.headers?.authorization?.split(" ")) || [];
-    if (bearer === 'Bearer' && token) {
-      res.locals.userAuth = true;
-      AuthKey.verify(token).then(({ user, expiry } = {}) => {
-        logger.debug({ user, expiry }, 'Authkey');
-        if (user) {
-          res.locals.user = user;
-          res.locals.userAuth = true;
-          res.locals.userAuthExpiry = expiry;
-          next();
-          return;
+  app.use(async (req, res, next) => {
+    try {
+      const [bearer, token] = (req.headers?.authorization && req.headers?.authorization?.split(" ")) || [];
+      if (bearer === 'Bearer' && token) {
+        let type, instance;
+        try {
+          ([type, instance] = atob(token).split(':'));
         }
-        else {
-          return firebase
-            .getAuth()
-            .verifyIdToken(token)
-            .then(async (user) => {
-              res.locals.user = { ...user, id: user.user_id };
-              await User.import(res.locals.user);
-            })
-            .then(() => {
+        catch (e) {
+        }
+        req.log.debug({ type, instance, path: req.path }, 'token type');
+        // Single use join token
+        if (type === 'instance') {
+          if (req.path === `/api/rooms/${instance}/join`) {
+            let dbInstance = await Instance.findByPk(instance);
+            if (dbInstance && dbInstance.key === token) {
+              res.locals.instance = dbInstance;
               next();
-            })
-            .catch((authError) => {
-              res.locals.user = undefined;
-              res.locals.userAuthError = authError;
-              req.log.error({ authError }, 'Auth error');
-              res.status(401)
-                .json({ message: `Authentication error` });
-            });
+            }
+            else {
+              throw new Error('Instance token auth error');
+            }
+          }
+          else {
+            throw new Error('Path instance token error, check path');
+          }
         }
-      });
-    }
-    else {
-      if (req.originalUrl.startsWith('/api/api-docs')) {
-        next();
+        // Some other bearer token
+        else if (type !== 'instance') {
+          // Check for a static auth key.
+          let { user, expiry } = await AuthKey.verify(token) || {};
+          logger.debug({ user, expiry }, 'Authkey');
+          if (user) {
+            res.locals.user = user;
+            res.locals.userAuth = true;
+            res.locals.userAuthExpiry = expiry;
+            res.locals.user.sql = { where: { userId: user.id } };
+            res.locals.userAuth = true;
+            next();
+          }
+          else {
+            req.log.debug({ token }, 'trying firebase auth');
+            let user = await firebase
+              .getAuth()
+              .verifyIdToken(token);
+            req.log.debug({ user, token }, 'firebase auth');
+            if (user) {
+              res.locals.user = await User.import({ ...user, id: user.user_id });
+              req.log.debug({ user: res.locals.user }, 'imported user');
+              res.locals.user.sql = { where: { id: res.locals.user.id } };
+              next();
+            }
+            else {
+              throw new Error('firebase auth error');
+            }
+          }
+        }
       }
       else {
-        req.log.error({ headers: req.headers, bearer, token }, 'No auth header!');
-        res.status(401)
-          .json({ message: `Authentication error: no Auth header!` });
+        if (req.originalUrl.startsWith('/api/api-docs')) {
+          next();
+        }
+        else {
+          throw new Error(`Authentication error: no Auth header!`);
+        }
       }
     }
+    catch (e) {
+      req.log.error({ message: e.message, error: e.stack }, 'Auth error');
+      res.status(401)
+        .json({ message: e.message || `Authentication error` });
+    }
   });
-  
-
 }
 
 

@@ -1,4 +1,4 @@
-const { Agent, Instance, Call, TransactionLog, PhoneNumber } = require('../agent-lib/database.js');
+const { Agent, Call, PhoneNumber } = require('../agent-lib/database.js');
 const JambonzSession = require('./session.js');
 const logger = require('../agent-lib/logger.js');
 const Jambonz = require('../agent-lib/jambonz.js');
@@ -21,6 +21,7 @@ class Application {
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
+          let { userId, organizationId } = agent;
           logger.info({ number, agent, instance, session }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
@@ -31,6 +32,8 @@ class Application {
           logger.debug({ streamUrl, room, ultravox }, 'application handler');
 
           let call = this.call = await Call.create({
+            userId,
+            organizationId,
             id: session.call_sid,
             instanceId: instance.id,
             agentId: agent.id,
