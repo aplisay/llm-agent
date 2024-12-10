@@ -148,14 +148,11 @@ const agentList = (async (req, res) => {
         {
           model: Instance,
           as: 'listeners',
-          required: true,
           include: [
             {
               model: PhoneNumber,
               as: 'number',
-              required: true
             },
-
           ]
         }
       ]
