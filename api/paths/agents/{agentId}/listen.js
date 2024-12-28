@@ -22,9 +22,51 @@ module.exports =
 
     });
     activate.apiDoc = {
+      description: `Activates an agent. For telephone agents, this will allocate a number to the agent and start a call to the agent.
+      For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.`,
       summary: 'Activates an instance of an agent to listen for either calls or WebRTC rooms connections.',
       operationId: 'activate',
       tags: ["Agent"],
+      parameters: [
+        {
+          description: "ID of the parent agent",
+          in: 'path',
+          name: 'agentId',
+          required: true,
+          schema: {
+            type: 'string'
+          }
+        }
+      ],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              type: "object",
+              properties: {
+                number: {
+                  type: "string",
+                  description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.
+                                If this field is not present then the session will be assumed to be a WebRTC session.`,
+                  example: "+442080996945"
+                },
+                options: {
+                  type: "object",
+                  description: "Options for this activation instance",
+                  properties: {
+                    streamLog: {
+                      type: "boolean",
+                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                    }
+                  },
+                  required: [],
+                }
+              },
+              required: [],
+            }
+          }
+        }
+      },
       responses: {
         200: {
           description: 'Agent activated.',
@@ -80,49 +122,6 @@ module.exports =
     };
 
     return {
-      description: `Activates an agent. For telephone agents, this will allocate a number to the agent and start a call to the agent.
-      For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.`,
-      summary: 'Activate an instance of this agent as a telephone or WebRTC listener',
-      parameters: [
-        {
-          description: "ID of the parent agent",
-          in: 'path',
-          name: 'agentId',
-          required: true,
-          schema: {
-            type: 'string'
-          }
-        }
-      ],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              type: "object",
-              properties: {
-                number: {
-                  type: "string",
-                  description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.
-                                If this field is not present then the session will be assumed to be a WebRTC session.`,
-                  example: "+442080996945"
-                },
-                options: {
-                  type: "object",
-                  description: "Options for this activation instance",
-                  properties: {
-                    streamLog: {
-                      type: "boolean",
-                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
-                    }
-                  },
-                  required: [],
-                }
-              },
-              required: [],
-            }
-          }
-        }
-      },
       POST: activate
     };
 
