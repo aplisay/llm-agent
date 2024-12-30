@@ -17,6 +17,10 @@ function init(app, logger) {
   // Install a route that looks for an access token and tries to work out what sort of token it is
 
   app.use(async (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+      next();
+      return;
+    }
     try {
       const [bearer, token] = (req.headers?.authorization && req.headers?.authorization?.split(" ")) || [];
       if (bearer === 'Bearer' && token) {

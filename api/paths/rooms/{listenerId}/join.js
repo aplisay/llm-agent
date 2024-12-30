@@ -1,3 +1,4 @@
+const cors = require("cors");
 const { Agent, Instance } = require('../../../../lib/database');
 const handlers = require('../../../../lib/handlers');
 
@@ -9,6 +10,7 @@ module.exports =
       let { listenerId } = req.params;
       req.log.debug({ listenerId, body: req.body }, 'join called');
       let { options } = req.body || {};
+      res.set('Access-Control-Allow-Origin', '*');
 
       try {
         let instance = await Instance.findByPk(listenerId, { include: Agent });
@@ -117,23 +119,32 @@ module.exports =
           'application/json': {
             schema: {
               type: "object",
-                options: {
-                  type: "object",
-                  description: "Options for this conversation",
-                  properties: {
-                    streamLog: {
-                      type: "boolean",
-                      description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket",
-                    }
-                  },
-                  required: [],
-                }
-              },
-              required: [],
-            }
+              options: {
+                type: "object",
+                description: "Options for this conversation",
+                properties: {
+                  streamLog: {
+                    type: "boolean",
+                    description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket",
+                  }
+                },
+                required: [],
+              }
+            },
+            required: [],
           }
-        },
-      POST: join
+        }
+      },
+      POST: join,
+      // We want to overide CORS allowed origins for this one endpoint. CORS is set at a global level
+      //  by an express use() before we add the OpenAPI middleware, but we can override specific headers
+      //  here to add the requestors origin and narrow the allowed methods.
+      OPTIONS: async (req, res, next) => {
+          res.set('Access-Control-Allow-Origin', req?.headers?.origin || '*');
+          res.set('Access-Control-Allow-Methods', 'POST');
+          next();
+      }
+   
     };
 
   };
