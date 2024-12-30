@@ -36,6 +36,7 @@ server.use(cors({
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
   exposedHeaders: ['Link',],
   credentials: true,
+  preflightContinue: true,
 
 }));
 
