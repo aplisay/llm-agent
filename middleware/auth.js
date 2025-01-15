@@ -17,7 +17,11 @@ function init(app, logger) {
   // Install a route that looks for an access token and tries to work out what sort of token it is
 
   app.use(async (req, res, next) => {
-    if (req.method === 'OPTIONS') {
+    if (
+      req.method === 'OPTIONS'
+      || req.originalUrl.startsWith('/api/api-docs') 
+      || req.originalUrl.startsWith('/api/hooks')
+     ) {
       next();
       return;
     }
@@ -51,7 +55,6 @@ function init(app, logger) {
         else if (type !== 'instance') {
           // Check for a static auth key.
           let { user, expiry } = await AuthKey.verify(token) || {};
-          logger.debug({ user, expiry }, 'Authkey');
           if (user) {
             res.locals.user = user;
             res.locals.userAuth = true;
@@ -61,14 +64,12 @@ function init(app, logger) {
             next();
           }
           else {
-            req.log.debug({ token }, 'trying firebase auth');
             let user = await firebase
               .getAuth()
               .verifyIdToken(token);
             req.log.debug({ user, token }, 'firebase auth');
             if (user) {
               res.locals.user = await User.import({ ...user, id: user.user_id });
-              req.log.debug({ user: res.locals.user }, 'imported user');
               res.locals.user.sql = { where: { id: res.locals.user.id } };
               next();
             }
@@ -79,12 +80,7 @@ function init(app, logger) {
         }
       }
       else {
-        if (req.originalUrl.startsWith('/api/api-docs')) {
-          next();
-        }
-        else {
           throw new Error(`Authentication error: no Auth header!`);
-        }
       }
     }
     catch (e) {
