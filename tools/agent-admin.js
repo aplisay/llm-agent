@@ -107,8 +107,15 @@ databaseStarted.then(async () => {
         break;
 
       case 'list-authkeys':
-        let authKeys = await AuthKey.findAll({ include: [User] });
-        authKeys.forEach(({ key, User: user }) => logger.info({ key, user }, `${user && user.name}`));
+        let spec = {
+          include: {
+            model: User
+          }
+        };
+        options.userId && (spec.include.where = { ...(spec.include.where || {}), id: options.userId });
+        options.email && (spec.include.where = { ...(spec.include.where || {}), email: { [Op.iLike]: options.email } });
+        let authKeys = await AuthKey.findAll(spec);
+        authKeys.forEach(({ key, User: user }) => console.log(`${user && user.name} ${user.email}, key: "${key}"`));
         break;
 
       case 'delete-user':
