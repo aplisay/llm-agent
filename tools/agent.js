@@ -13,6 +13,7 @@ const optionDefinitions = [
   { name: 'call', alias: 'c', type: String },
   { name: 'all', type: Boolean, defaultValue: false },
   { name: 'webrtc', alias: 'w', type: Boolean, defaultValue: false },
+  { name: 'environment', alias: 'e', type: String, defaultValue: '' },
   { name: 'verbose', alias: 'v', type: Boolean, defaultValue: false},
   { name: 'server', alias: 's', type: String, defaultValue: 'https://llm-agent.aplisay.com' },
   { name: 'help', alias: 'h', type: Boolean, defaultValue: false }
@@ -122,7 +123,17 @@ const transformFunctions = (functions) => functions?.map?.(({ name, description,
   };
 });
 
-async function start(file, { number, webrtc, trace }) {
+
+function outputEnvironment(environment, { listenerId, key, server }) {
+  if (environment?.length) {
+    console.log(`Use this agent in your app:`);
+    console.log(`  export ${environment}_APLISAY_AGENT="${listenerId}"`);
+    console.log(`  export ${environment}_APLISAY_KEY="${key}"`);
+    console.log(`  export ${environment}_APLISAY_URL="${server}"`);
+  }
+}
+
+async function start(file, { number, webrtc, trace, server, environment }) {
   let agentData = await fs.readFile(path.resolve(file), { encoding: 'utf8' });
   let agent = await JSON.parse(agentData);
   let { name, description, prompt: { value: prompt }, modelName, functions: functionSpec, keys, options } = agent;
@@ -132,6 +143,7 @@ async function start(file, { number, webrtc, trace }) {
   ({ data: { socket, id: listenerId, number, key } } = await api.post(`/agents/${agentId}/listen`, { number, options: { streamLog: !!trace } }));
   let accessInfo = number ? `on ${number}` : `webrtc key ${key}`
   console.log(`agent ${agentId}, listener ${listenerId} on ${accessInfo}`);
+  webrtc && outputEnvironment(environment, { listenerId, key, server });
   return { socket, listenerId, agentId, key };
 }
 
@@ -155,7 +167,7 @@ async function stop({ agent: agentId, all }) {
   !list.length && console.log(`No agents to delete`);
 }
 
-async function list({verbose}) {
+async function list({verbose, server, environment}) {
   let { data: agents } = await api.get('/agents');
   agents.forEach(agent => {
 
@@ -166,9 +178,10 @@ async function list({verbose}) {
     verbose && console.log(`  prompt: ${agent.prompt}`);
     verbose && console.log(`  options: ${JSON.stringify(agent.options)}`);
     verbose && console.log(`  functions: ${JSON.stringify(functions)}`);
-    agent.listeners.forEach(l => {
-      let on = l?.number?.number ? `on number ${l.number.number}` : `using webrtc key ${l.key}`;
-      console.log(`  listener ${l.id}: ${on}`);
+    agent.listeners.forEach(({ id, number, key }) => {
+      let on = number?.number ? `on number ${number.number}` : `using webrtc key ${key}`;
+      console.log(`  listener ${id}: ${on}`);
+      outputEnvironment(environment, { listenerId: id, key, server });
     });
   });
 }
