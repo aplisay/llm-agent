@@ -1,13 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import logger from '../../lib/logger.js';
-import path from 'node:path';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
-import { z } from 'zod';
 import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const encoder = new TextEncoder();
 dotenv.config();
 
@@ -22,34 +19,43 @@ export default defineAgent({
     const { userId, organisationId } = instance;
     logger.info({ agent, instance }, 'new room instance');
     const call = await Call.create({ userId, organisationId, instanceId: instance.id, callerId: instance.id });
-    await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id });
+    await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
+
     const { prompt, modelName, options, functions, keys } = agent;
     logger.debug({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
 
     const sendMessage = async (message) => {
       let [type, data] = Object.entries(message)[0];
       ctx.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
-      await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data) });
+      await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
     };
 
     const model = new openai.realtime.RealtimeModel({
       instructions: agent?.prompt || 'You are a helpful assistant.',
     });
+    const fncCtx = functions.reduce((acc, fnc) => ({
+      ...acc,
+      [fnc.name]: {
+        description: fnc.description,
+        parameters: {
+          type: 'object',
+          properties: fnc.input_schema.properties,
+          required: Object.keys(fnc.input_schema.properties)
+        },
+          execute: async (args) => {
+          logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
+          let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage);
+          let [{ result: data }] = function_results;
+          logger.debug({ data }, `returning ${JSON.stringify(data)}`);
+          return JSON.stringify(data);
+        }
+      }
+
+    }), {});
+    logger.debug({ model, fncCtx }, 'got fncCtx');
     const lkAgent = new multimodal.MultimodalAgent({
       model,
-      fncCtx: functions.reduce((acc, fnc) => ({
-        ...acc,
-        [fnc.name]: {
-          description: fnc.description,
-          parameters: fnc.input_schema.properties,
-          execute: async (args) => {
-            let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage);
-            let [{ result: data }] = function_results;
-            logger.debug({ data }, `returning ${JSON.stringify(data)}`);
-            return JSON.stringify(data);
-          }
-        }
-      }), {})
+      fncCtx
     });
 
     const session = await lkAgent
