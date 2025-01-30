@@ -158,7 +158,7 @@ components:
           implementation:
             type: string
             description: How this function should be implemented. \"stub\" is used to return the same fixed result each time for testing, \"rest\" makes an actual API call using *url* and the rest of the parameters 
-            enum: ["rest", "stub"]
+            enum: ["rest", "stub", "client"]
             example: rest
           url:
             type: string
