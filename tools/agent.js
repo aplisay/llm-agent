@@ -96,7 +96,7 @@ async function run(command, options) {
 }
 
 const transformFunctions = (functions) => functions?.map?.(({ name, description, parameters, url, implementation, method, key }) => {
-  let pUrl = new URL(url);
+  let pUrl = URL.parse(url);
   return {
     name,
     description,
@@ -108,8 +108,8 @@ const transformFunctions = (functions) => functions?.map?.(({ name, description,
       type: "object",
       properties:
         parameters?.reduce((o, p) => {
-          let isIn = pUrl.pathname.includes(`{${p.name}}`) && 'path';
-          isIn = isIn || (pUrl.searchParams.has(p.name) && 'query');
+          let isIn = pUrl?.pathname?.includes(`{${p.name}}`) && 'path';
+          isIn = isIn || (pUrl?.searchParams?.has(p.name) && 'query');
           isIn = isIn || (method === 'post' && 'body');
           return {
             ...o, [p.name]: {
