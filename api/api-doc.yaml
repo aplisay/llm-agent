@@ -160,6 +160,10 @@ components:
             description: How this function should be implemented. \"stub\" is used to return the same fixed result each time for testing, \"rest\" makes an actual API call using *url* and the rest of the parameters 
             enum: ["rest", "stub", "client"]
             example: rest
+          result:
+            type: string
+            description: The hardwired result of this function call, optional and only useful for `stub` or `client`
+            example: the result is one
           url:
             type: string
             description: The URL to be called when the function is invoked, optionally with path variable substitutions wrapped in {} braces
