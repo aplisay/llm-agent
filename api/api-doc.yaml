@@ -1,6 +1,6 @@
 openapi: 3.0.0
 servers:
-  - url: https://llm-backend.aplisay.com/api
+  - url: https://llm-agent.aplisay.com/api
 info:
   title: LLM Agent API
   version: 1.0.0

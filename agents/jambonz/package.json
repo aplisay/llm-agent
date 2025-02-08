@@ -6,6 +6,7 @@
   "scripts": {
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
     "start": "NODE_ENV=production node index",
+    "stage": "NODE_ENV=staging LOGLEVEL=debug node index",
     "test": "LOGLEVEL=error jest"
   },
   "author": "",
