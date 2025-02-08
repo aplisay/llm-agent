@@ -1,7 +1,7 @@
 {
   "name": "llm-agent",
-  "version": "0.0.2",
-  "description": "GPT3.5 voice agent",
+  "version": "0.9.1",
+  "description": "Omni provider voice agent",
   "main": "index.js",
   "scripts": {
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
