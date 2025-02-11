@@ -35,7 +35,7 @@ let command = options.command && options.command.toLowerCase();
 
 if (!command || command === 'help' || options.help) {
   console.log(`Usage: ${progName} command [options]`);
-  console.log(`Commands: start, stop, dev, list-agents, list-calls, show-logs`);
+  console.log(`Commands: dev, start, stop, update, list-agents, list-calls, show-logs`);
   console.log(`Options:  --file: Path to the agent file (default: agent.json)`);
   console.log(`          --number: The number to dial (default: *)`);
   console.log(`          --webrtc: This agent will be accessed using a webrtc room`);
@@ -79,6 +79,9 @@ async function run(command, options) {
       break;
     case 'stop':
       await stop(options);
+      break;
+    case 'update':
+      await update(file, options);
       break;
     case 'list-agents':
       await list(options);
@@ -145,6 +148,16 @@ async function start(file, { number, webrtc, trace, server, environment }) {
   console.log(`agent ${agentId}, listener ${listenerId} on ${accessInfo}`);
   webrtc && outputEnvironment(environment, { listenerId, key, server });
   return { socket, listenerId, agentId, key };
+}
+
+async function update(file, { agent: agentId }) {
+  let agentData = await fs.readFile(path.resolve(file), { encoding: 'utf8' });
+  let agent = await JSON.parse(agentData);
+  let { name, description, prompt: { value: prompt }, modelName, functions: functionSpec, keys, options } = agent;
+  functions = transformFunctions(functionSpec);
+  ({ data: { id: agentId } } = await api.put(`/agents/${agentId}`, { name, description, modelName, prompt, options, functions, keys }));
+  console.log(`agent ${agentId} updated`);
+  return { agentId };
 }
 
 async function stop({ agent: agentId, all }) {
