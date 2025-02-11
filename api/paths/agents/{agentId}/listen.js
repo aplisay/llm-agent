@@ -57,17 +57,6 @@ module.exports =
                     streamLog: {
                       type: "boolean",
                       description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
-                    },
-                    metadata: {
-                      type: "object",
-                      description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
-                      example: {
-                        myapp:
-                        {
-                          mykey: "mydata"
-                        }
-                      }
-                  
                     }
                   },
                   required: [],
