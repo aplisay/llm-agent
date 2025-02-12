@@ -8,16 +8,25 @@ module.exports =
     const activate = (async (req, res) => {
       let { agentId } = req.params;
       let { number, options } = req.body;
+      let agent, handler, activation;
       try {
-        let agent = await Agent.findByPk(agentId);
+        agent = await Agent.findByPk(agentId);
         let Handler = handlers.getHandler(agent.modelName);
-        let handler = new Handler({ agent, wsServer, logger: req.log });
-        let activation = await handler.activate({ number, options });
+        handler = new Handler({ agent, wsServer, logger: req.log });
+        activation = await handler.activate({ number, options });
         res.send(activation);
       }
       catch (err) {
         req.log.error(err);
-        res.status(404).send(`no agent ${agentId}`);
+        if (!agent) {
+          res.status(404).send(`no agent ${agentId}`);
+        }
+        else if (!handler) {
+          res.status(400).send(`no handler for ${agent.modelName}`);
+        }
+        else {
+          res.status(404).send(err.message);
+        }
       }
 
     });
