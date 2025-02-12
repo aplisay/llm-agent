@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-require('dotenv').config();
 const dir = require('path');
 const axios = require('axios');
 const commandLineArgs = require('command-line-args');
-const logger = require('../lib/logger');
-const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'number', type: String, defaultOption: true },
@@ -14,7 +11,11 @@ const optionDefinitions = [
 ];
 const options = commandLineArgs(optionDefinitions);
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
-require('dotenv').config(configArgs);
+const parsed = require('dotenv').config(configArgs);
+const logger = require('../lib/logger');
+const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
+
+logger.debug({ env: process.env, options, db: process.env.POSTGRES_DB, parsed }, 'Environment');
 
 const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT } = process.env;
 
