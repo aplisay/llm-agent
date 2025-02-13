@@ -1,4 +1,4 @@
-const { Agent } = require('../../../lib/database');
+const { Agent, Instance, PhoneNumber } = require('../../../lib/database');
 
 let log;
 
@@ -13,10 +13,27 @@ module.exports = function (logger) {
 
 
 const agentGet = async (req, res) => {
+  let userId = res.locals.user.id;
   let { agentId } = req.params;
-
   try {
-    let agent = await Agent.findOne({ where: { id: agentId } });
+    let agent = await Agent.findOne({
+      where: {
+        id: agentId,
+        userId,
+      },
+      include: [
+        {
+          model: Instance,
+          as: 'listeners',
+          include: [
+            {
+              model: PhoneNumber,
+              as: 'number',
+            },
+          ]
+        }
+      ]
+    });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent fetched');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -43,7 +60,10 @@ agentGet.apiDoc = {
   ],
   responses: {
     200: {
-      description: 'Agent Definition. Note that `keys` are never returned, even if set for security reasons.',
+      description: `Agent Definition.Note that \`keys\` are never returned, even if set. 
+                    For security reasons these are write only.
+                    Also returns an array of listeners that are active for this agent`,
+
       content: {
         'application/json': {
           schema: {
@@ -67,6 +87,25 @@ agentGet.apiDoc = {
               },
               functions: {
                 $ref: '#/components/schemas/Functions'
+              },
+              listeners: {
+                type: 'array',
+                items: {
+                  properties:
+                  {
+                    id: {
+                      description: "Listener unique ID",
+                      type: "string",
+                      format: "uuid",
+                      example: "32555d87-948e-48f2-a53d-fc5f261daa79"
+                    },
+                    number: {
+                      description: "The telephone number allocated to the agent in E.164 format (if any)",
+                      type: "string",
+                      example: "+442080996945"
+                    }
+                  }
+                }
               }
             }
           }
@@ -200,7 +239,7 @@ const agentDelete = async (req, res) => {
         userId
       },
     });
-    if(data === 0)
+    if (data === 0)
       throw new Error(`Agent with ID ${agentId} not found`);
     res.status(200).send();
   }

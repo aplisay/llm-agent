@@ -14,7 +14,7 @@ const optionDefinitions = [
   { name: 'all', type: Boolean, defaultValue: false },
   { name: 'webrtc', alias: 'w', type: Boolean, defaultValue: false },
   { name: 'environment', alias: 'e', type: String, defaultValue: '' },
-  { name: 'verbose', alias: 'v', type: Boolean, defaultValue: false},
+  { name: 'verbose', alias: 'v', type: Boolean, defaultValue: false },
   { name: 'server', alias: 's', type: String, defaultValue: 'https://llm-agent.aplisay.com' },
   { name: 'help', alias: 'h', type: Boolean, defaultValue: false }
 ];
@@ -141,7 +141,7 @@ async function start(file, { number, webrtc, trace, server, environment }) {
   functions = transformFunctions(functionSpec);
   ({ data: { id: agentId } } = await api.post('/agents', { name, description, modelName, prompt, options, functions, keys }));
   ({ data: { socket, id: listenerId, number, key } } = await api.post(`/agents/${agentId}/listen`, { number, options: { streamLog: !!trace } }));
-  let accessInfo = number ? `on ${number}` : `webrtc key ${key}`
+  let accessInfo = number ? `on ${number}` : `webrtc key ${key}`;
   console.log(`agent ${agentId}, listener ${listenerId} on ${accessInfo}`);
   webrtc && outputEnvironment(environment, { listenerId, key, server });
   return { socket, listenerId, agentId, key };
@@ -167,9 +167,10 @@ async function stop({ agent: agentId, all }) {
   !list.length && console.log(`No agents to delete`);
 }
 
-async function list({verbose, server, environment}) {
+async function list({ verbose, server, environment }) {
   let { data: agents } = await api.get('/agents');
-  agents.forEach(agent => {
+  for (let a of agents) {
+    const { data: agent } = await api.get(`/agents/${a.id}`);
 
     let functions = verbose && agent?.functions?.map(f => `${f.name}(): ${f.method} ${f.url}`);
     console.log(`agent ${agent.id} ${agent.name}: `);
@@ -178,15 +179,15 @@ async function list({verbose, server, environment}) {
     verbose && console.log(`  prompt: ${agent.prompt}`);
     verbose && console.log(`  options: ${JSON.stringify(agent.options)}`);
     verbose && console.log(`  functions: ${JSON.stringify(functions)}`);
-    agent.listeners.forEach(({ id, number, key }) => {
+    agent.listeners?.forEach(({ id, number, key }) => {
       let on = number?.number ? `on number ${number.number}` : `using webrtc key ${key}`;
       console.log(`  listener ${id}: ${on}`);
       outputEnvironment(environment, { listenerId: id, key, server });
     });
-  });
+  };
 }
 
-async function listCalls ({agent}) {
+async function listCalls({ agent }) {
   let next, calls;
   do {
     ({ data: { calls, next } } = await api.get(`/agents/${agent}/calls${next ? `?offset=${next}` : ''}`));
