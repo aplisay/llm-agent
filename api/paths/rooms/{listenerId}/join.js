@@ -44,6 +44,12 @@ module.exports =
                 type: 'object',
                 description: 'Agent information',
                 properties: {
+                  callId: {
+                    description: `The provisional call ID that will be used for any conversation in this room. 
+                                 An ID will be returned but may or may not exist in the database unless/until a client subsequently joins the WebRTC room.`,
+                    type: "string",
+                    example: "32555d87-948e-48f2-a53d-fc5f261daa79"
+                  },
                   livekit: {
                     description: "Returned if the agent instance is connected to a Livekit room",
                     type: "object",
