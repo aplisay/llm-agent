@@ -70,7 +70,7 @@ function init(app, logger) {
             req.log.debug({ user, token }, 'firebase auth');
             if (user) {
               res.locals.user = await User.import({ ...user, id: user.user_id });
-              res.locals.user.sql = { where: { id: res.locals.user.id } };
+              res.locals.user.sql = { where: { userId: res.locals.user.id } };
               next();
             }
             else {
