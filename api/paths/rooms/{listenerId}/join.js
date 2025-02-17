@@ -35,6 +35,52 @@ module.exports =
       summary: 'Gets join information for a realtime room connected to an agent.',
       operationId: 'join',
       tags: ["Room"],
+      description: `Gets room joining information for the room connected to an instance of an agent.`,
+      parameters: [
+        {
+          description: "ID of the agent listener instance",
+          in: 'path',
+          name: 'listenerId',
+          required: true,
+          schema: {
+            type: 'string'
+          }
+        }
+      ],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              type: "object",
+              properties: {
+                options: {
+                  type: "object",
+                  description: "Options for this conversation",
+                  properties: {
+                    streamLog: {
+                      type: "boolean",
+                      description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket",
+                    },
+                    metadata: {
+                      type: "object",
+                      description: "Metadata to be associated with this call, copied over the top of any metadata set in the listener activation.",
+                      example: {
+                        myapp:
+                        {
+                          mykey: "mydata"
+                        }
+                      }
+                    }
+                  },
+                  required: [],
+       
+                }
+              },
+              required: []
+            }
+          }
+        }
+      },
       responses: {
         200: {
           description: 'Agent activated.',
@@ -107,40 +153,6 @@ module.exports =
     };
 
     return {
-      description: `Gets room joining information for the room connected to an instance of an agent.`,
-      summary: 'Get the WebRTC room to talk to an agent',
-      parameters: [
-        {
-          description: "ID of the agent listener instance",
-          in: 'path',
-          name: 'listenerId',
-          required: true,
-          schema: {
-            type: 'string'
-          }
-        }
-      ],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              type: "object",
-              options: {
-                type: "object",
-                description: "Options for this conversation",
-                properties: {
-                  streamLog: {
-                    type: "boolean",
-                    description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket",
-                  }
-                },
-                required: [],
-              }
-            },
-            required: [],
-          }
-        }
-      },
       POST: join,
       // We want to overide CORS allowed origins for this one endpoint. CORS is set at a global level
       //  by an express use() before we add the OpenAPI middleware, but we can override specific headers
