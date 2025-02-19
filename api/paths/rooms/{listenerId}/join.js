@@ -22,11 +22,11 @@ module.exports =
         }
         let Handler = handlers.getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
-        let room = await handler.join();
+        let room = await handler.join({ options });
         res.send(room);
       }
       catch (err) {
-        req.log.error({message: err?.message, stack: err?.stack}, 'join error');
+        req.log.error({ message: err?.message, stack: err?.stack }, 'join error');
         res.status(404).send(`no agent ${listenerId}`);
       }
 
@@ -73,7 +73,7 @@ module.exports =
                     }
                   },
                   required: [],
-       
+
                 }
               },
               required: []
@@ -158,11 +158,11 @@ module.exports =
       //  by an express use() before we add the OpenAPI middleware, but we can override specific headers
       //  here to add the requestors origin and narrow the allowed methods.
       OPTIONS: async (req, res, next) => {
-          res.set('Access-Control-Allow-Origin', req?.headers?.origin || '*');
-          res.set('Access-Control-Allow-Methods', 'POST');
-          next();
+        res.set('Access-Control-Allow-Origin', req?.headers?.origin || '*');
+        res.set('Access-Control-Allow-Methods', 'POST');
+        next();
       }
-   
+
     };
 
   };

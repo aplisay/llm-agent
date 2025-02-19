@@ -118,73 +118,77 @@ components:
          * `metadata` parameters are used to pass per call or invocation variant data to the function, the `from` field is a text key to the metadata object.
 
         `static` and `metadata` parameters are not seen by the LLM (unless a function call returns them in it's results), but are added to the function call after dispatch by the LLM.
-      additionalProperties:
-        type: object
-        description: A parameter for a function call
+      properties:
         properties:
-          name:
-            type: string
-            description: The name of the parameter
-            example: temperature
-          description:
-            type: string
-            description: >
-              If the parameter is `generated` then this property is essential and is a description of what the parameter does and how it should be set which 
-              will be used by the LLM to shape the input. Careful specification of the syntax and semantics of the parameter here is essential for reliable function
-              invocation by the LLM.
-            example: The city name to be looked up.
-          type:
-            type: string
-            description: The type of the parameter
-            default: "string"
-            enum: ["string", "number", "boolean"]
-          in:
-            type: string
-            description: Where in the request the parameter should be used
-            enum: ["body", "header", "path", "query"]
-            default: "query"
-            example: query
-          required:
-            type: boolean
-            description: Whether this parameter is required
-            default: false
-            example: true
-          source:
-            type: string
-            description: The type of the parameter
-            enum: ["generated", "static", "metadata"]
-            default: "generated"
-            example: "static"
-          from:
-            type: string
-            description: |-
-              The source value of the parameter for `static` or `metadata` parameters, either a constant string value for `static` parameters, or a key to the metadata object for `metadata` parameters.
-              Metadata keys consist of one or two levels of keys separated by a dot. 
-              All builtin keys sit under an `aplisay` top level namespace, e.g. `aplisay.callerId`, `aplisay.isWebrtc`.
-              Custom metadata keys can be added by the caller in certain setup calls.
-              Whilst these can be any string, it is recommended to use a namespace to avoid clashes, *e.g.* `myapp.mykey`.
-            example: aplisay.callerId
+         type: object
+         additionalProperties:
+           type: object
+           description: A parameter for a function call
+           properties:
+             name:
+               type: string
+               description: The name of the parameter
+               example: temperature
+             description:
+               type: string
+               description: >
+                 If the parameter is `generated` then this property is essential and is a description of what the parameter does and how it should be set which 
+                 will be used by the LLM to shape the input. Careful specification of the syntax and semantics of the parameter here is essential for reliable function
+                 invocation by the LLM.
+               example: The city name to be looked up.
+             type:
+               type: string
+               description: The type of the parameter
+               default: "string"
+               enum: ["string", "number", "boolean"]
+             in:
+               type: string
+               description: Where in the request the parameter should be used
+               enum: ["body", "header", "path", "query"]
+               default: "query"
+               example: query
+             required:
+               type: boolean
+               description: Whether this parameter is required
+               default: false
+               example: true
+             source:
+               type: string
+               description: The type of the parameter
+               enum: ["generated", "static", "metadata"]
+               default: "generated"
+               example: "static"
+             from:
+               type: string
+               description: |-
+                 The source value of the parameter for `static` or `metadata` parameters, either a constant string value for `static` parameters, or a key to the metadata object for `metadata` parameters.
+                 Metadata keys consist of one or two levels of keys separated by a dot. 
+                 All builtin keys sit under an `aplisay` top level namespace, e.g. `aplisay.callerId`, `aplisay.isWebrtc`.
+                 Custom metadata keys can be added by the caller in certain setup calls.
+                 Whilst these can be any string, it is recommended to use a namespace to avoid clashes, *e.g.* `myapp.mykey`.
+               example: aplisay.callerId
       example:
-        location:
-          type: string
-          description: The city and country, e.g. London, UK
-          required: true
-        units:
-          type: string
-          enum: ["celsius", "fahrenheit"]
-          description: The unit of temperature, either \"celsius\" or \"fahrenheit\"
-        caller_id:
-          type: string
-          source: metadata
-          from: aplisay.callerId
-        userData:
-          type: string
-          source: metadata
-          from: myapp.userData
-        someStaticParam:
-          type: string
-          source: static
-          from: "some value"
+        properties:
+          location:
+            type: string
+            description: The city and country, e.g. London, UK
+            required: true
+          units:
+            type: string
+            enum: ["celsius", "fahrenheit"]
+            description: The unit of temperature, either \"celsius\" or \"fahrenheit\"
+          caller_id:
+            type: string
+            source: metadata
+            from: aplisay.callerId
+          userData:
+            type: string
+            source: metadata
+            from: myapp.userData
+          someStaticParam:
+            type: string
+            source: static
+            from: "some value"
 
     Prompt:
       type: string
