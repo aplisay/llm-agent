@@ -26,7 +26,11 @@ class Application {
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
           let { model } = handler;
-          let room = handler.join && await handler.join(true);
+          let room = handler.join && await handler.join(
+            {
+              websocket: true,
+            }
+          );
           let { ultravox } = room || {};
           let { joinUrl: streamUrl } = ultravox || {};
           logger.debug({ streamUrl, room, ultravox }, 'application handler');
@@ -40,6 +44,14 @@ class Application {
             streamUrl,
             calledId,
             callerId,
+            metadata: {
+              ...instance.metadata,
+              aplisay: {
+                callerId,
+                calledId,
+                model: agent.modelName,
+              }
+            }
           });
           let callId = call.id;
           let sessionHandler = this.sessionHandler = new JambonzSession({
