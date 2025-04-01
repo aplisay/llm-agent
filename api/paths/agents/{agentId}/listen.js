@@ -32,8 +32,10 @@ module.exports =
     });
     activate.apiDoc = {
       description: `Activates an agent. For telephone agents, this will allocate a number to the agent and start a call to the agent.
-      For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.`,
-      summary: 'Activates an instance of an agent to listen for either calls or WebRTC rooms connections.',
+      For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.
+      For websocket agents (currently only available for the Ultravox technology), this will start a listening agent that will await connects
+      from a websocket client.`,
+      summary: 'Activates an instance of an agent to listen for either calls, WebRTC rooms, or websocket connections.',
       operationId: 'activate',
       tags: ["Agent"],
       parameters: [
@@ -58,6 +60,11 @@ module.exports =
                   description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.
                                 If this field is not present then the session will be assumed to be a WebRTC session.`,
                   example: "+442080996945"
+                },
+                websocket: {
+                  type: "boolean",
+                  description: "If true, then this is a websocket session, mutually exclusive with number",
+                  example: true
                 },
                 options: {
                   type: "object",
@@ -108,10 +115,16 @@ module.exports =
                     example: "+442080996945"
                   },
                   socket: {
-                    description: "The full URL of a socket which can be opened to get a stream of progress information",
+                    description: `The full URL of a socket which can be opened to get a stream of progress information
+                                  only returned when available and when the streamLog option is true`,
                     type: "string",
                     example: "https://example.com/agent/progress/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
                   },
+                  audioSocket: {
+                    description: "The full URL of a socket which can be opened to exchange audio with the agent",
+                    type: "string",
+                    example: "https://example.com/agent/audio/Ultravox-96255d87-948e-48f2-157d-fc5f261d2345"
+                  }
                 }
               }
             }
