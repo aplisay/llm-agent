@@ -113,7 +113,7 @@ const transformFunctions = (functions) => functions?.map?.(({ name, description,
         parameters?.reduce((o, p) => {
           let isIn = pUrl?.pathname?.includes(`{${p.name}}`) && 'path';
           isIn = isIn || (pUrl?.searchParams?.has(p.name) && 'query');
-          isIn = isIn || (method === 'post' && 'body');
+          isIn = isIn || (Array.from(pUrl?.searchParams?.values() || []).includes(`{${p.name}}`) && 'query');
           return {
             ...o, [p.name]: {
               type: p.type,
