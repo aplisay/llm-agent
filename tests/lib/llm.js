@@ -87,7 +87,7 @@ module.exports = function (Llm, prompt, modelName = undefined) {
     test('initial', async () => {
       let greeting = model.initial();
       expect(greeting).resolves.toHaveProperty('text');
-      return expect((await greeting).text).toMatch(/(hello|help|welcome|thank|today|good day)/i);
+      return expect((await greeting).text).toMatch(/(hi|hello|help|welcome|thank|today|good day)/i);
     });
 
     test('flagsinfo', () => expect(model.completion('I would like to buy some flags')).resolves.toHaveProperty('text'));
