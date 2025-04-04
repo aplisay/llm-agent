@@ -29,6 +29,7 @@ class Application {
           let room = handler.join && await handler.join(
             {
               websocket: true,
+              deferCallRecord: true,
             }
           );
           let { ultravox } = room || {};
