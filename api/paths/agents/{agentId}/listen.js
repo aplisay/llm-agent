@@ -7,13 +7,13 @@ module.exports =
   function (wsServer) {
     const activate = (async (req, res) => {
       let { agentId } = req.params;
-      let { number, options } = req.body;
+      let { number, options, websocket } = req.body;
       let agent, handler, activation;
       try {
         agent = await Agent.findByPk(agentId);
         let Handler = handlers.getHandler(agent.modelName);
         handler = new Handler({ agent, wsServer, logger: req.log });
-        activation = await handler.activate({ number, options });
+        activation = await handler.activate({ number, options, websocket });
         res.send(activation);
       }
       catch (err) {
