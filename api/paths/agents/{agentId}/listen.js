@@ -7,13 +7,13 @@ module.exports =
   function (wsServer) {
     const activate = (async (req, res) => {
       let { agentId } = req.params;
-      let { number, options } = req.body;
+      let { number, options, websocket } = req.body;
       let agent, handler, activation;
       try {
         agent = await Agent.findByPk(agentId);
         let Handler = handlers.getHandler(agent.modelName);
         handler = new Handler({ agent, wsServer, logger: req.log });
-        activation = await handler.activate({ number, options });
+        activation = await handler.activate({ number, options, websocket });
         res.send(activation);
       }
       catch (err) {
@@ -22,7 +22,7 @@ module.exports =
           res.status(404).send(`no agent ${agentId}`);
         }
         else if (!handler) {
-          res.status(400).send(`no handler for ${agent.modelName}`);
+          res.status(400).send(`no handler for ${agent.modelName} ${err.message}`);
         }
         else {
           res.status(404).send(err.message);
@@ -31,7 +31,7 @@ module.exports =
 
     });
     activate.apiDoc = {
-      description: `Activates an agent. For telephone agents, this will allocate a number to the agent and start a call to the agent.
+      description: `Activates an agent. For telephone agents, this will allocate a number to the agent and wait for calls to the agent.
       For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.
       For websocket agents (currently only available for the Ultravox technology), this will start a listening agent that will await connects
       from a websocket client.`,
