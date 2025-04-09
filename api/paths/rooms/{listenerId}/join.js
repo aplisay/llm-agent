@@ -122,6 +122,17 @@ module.exports =
                         example: "https://example.com/livekit/join/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
                       }
                     }
+                  },
+                  audioSocket: {
+                    description: "Returned if the agent is connected to an audio WebSocket",
+                    type: "object",
+                    properties: {
+                      url: {
+                        description: "The URL of the audio WebSocket",
+                        type: "string",
+                        example: "wss://example.com/audio"
+                      }
+                    }
                   }
                 }
               }
