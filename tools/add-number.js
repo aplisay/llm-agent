@@ -6,7 +6,8 @@ const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'number', type: String, defaultOption: true },
   { name: 'handler', alias: 'h', type: String, defaultValue: 'jambonz' },
-  { name: 'reservation', alias: 'r', type: String },
+  { name: 'reservation', alias: 'r', type: Boolean },
+  { name: 'organisation', alias: 'o', type: String },
   { name: 'noMap', alias: 'n', type: Boolean },
 ];
 const options = commandLineArgs(optionDefinitions);
@@ -52,6 +53,7 @@ databaseStarted.then(() =>
     number: options.number.replace(/^0/, '44'),
     handler: options.handler,
     reservation: options.reservation,
+    orgnisationId: options.organisation
   }))
   .then(phone => {
     logger.info(phone, `Created ${options.number}`);
