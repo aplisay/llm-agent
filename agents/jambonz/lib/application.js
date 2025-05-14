@@ -21,7 +21,7 @@ class Application {
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
-          let { userId, organizationId } = agent;
+          let { userId, organisationId } = agent;
           logger.info({ number, agent, instance, session }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
@@ -38,7 +38,7 @@ class Application {
 
           let call = this.call = await Call.create({
             userId,
-            organizationId,
+            organisationId,
             id: session.call_sid,
             instanceId: instance.id,
             agentId: agent.id,
