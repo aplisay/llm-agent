@@ -39,8 +39,8 @@ export default defineAgent({
         description: fnc.description,
         parameters: {
           type: 'object',
-          properties: fnc.input_schema.properties,
-          required: Object.keys(fnc.input_schema.properties)
+          properties: Object.fromEntries(Object.entries(fnc.input_schema.properties).map(([key, value]) => ([key, {...value, required: undefined}]))),
+          required: Object.keys(fnc.input_schema.properties).filter(key => fnc.input_schema.properties[key].required) || []
         },
           execute: async (args) => {
           logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
