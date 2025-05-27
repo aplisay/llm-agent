@@ -12,6 +12,8 @@ dotenv.config();
 export default defineAgent({
   entry: async (ctx) => {
     await ctx.connect();
+    const room = ctx.room;
+
     const participant = await ctx.waitForParticipant();
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
@@ -39,8 +41,8 @@ export default defineAgent({
         description: fnc.description,
         parameters: {
           type: 'object',
-          properties: fnc.input_schema.properties,
-          required: Object.keys(fnc.input_schema.properties)
+          properties: Object.fromEntries(Object.entries(fnc.input_schema.properties).map(([key, value]) => ([key, {...value, required: undefined}]))),
+          required: Object.keys(fnc.input_schema.properties).filter(key => fnc.input_schema.properties[key].required) || []
         },
           execute: async (args) => {
           logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
@@ -64,6 +66,14 @@ export default defineAgent({
     session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
     session.on('response_output_added', (newOutput) => logger.debug({ newOutput }));
     session.on('response_output_done', output => sendMessage({ agent: output?.content?.[0]?.text }));
+    ctx.room.on('participantDisconnected', async (p) => {
+      if (p.info.identity === participant.info.identity) {
+        logger.info({ participant }, 'Closing realtime model');
+        await model.close();
+        logger.info({ participant }, 'model closed');
+      }
+    });
+
     session.response.create();
   },
 });
