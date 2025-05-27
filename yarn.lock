@@ -940,13 +940,29 @@
   dependencies:
     lodash "^4.17.21"
 
-"@livekit/agents-plugin-openai@link:../agents-js/plugins/openai":
-  version "0.0.0"
-  uid ""
+"@livekit/agents-plugin-openai@^0.9.1":
+  version "0.9.1"
+  resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-openai/-/agents-plugin-openai-0.9.1.tgz#e3da3008c4955dd35e02e52c397349040396d6d5"
+  integrity sha512-GAMSyQzenV/GILRbZgf3TgEP/uFHpj6TgaR5ReGbJuFdn0ngyWuCqJshpnjC9gdPnbdTvWFTl4dVBgNf+RLyRA==
+  dependencies:
+    openai "^4.91.1"
+    sharp "^0.33.5"
+    ws "^8.16.0"
 
-"@livekit/agents@link:../agents-js/agents":
-  version "0.0.0"
-  uid ""
+"@livekit/agents@^0.7.5":
+  version "0.7.5"
+  resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-0.7.5.tgz#866efa2888675480bd33ddea573b25b25514203b"
+  integrity sha512-f/GHUS2vChX7lrHDezRXl+xmTqCXzuvPd7EHlyA++NcaUGU8KONbC234Q0eS+Jq5XqnRgG2GrFALsTI5V9Vd6Q==
+  dependencies:
+    "@livekit/mutex" "^1.1.1"
+    "@livekit/protocol" "^1.29.1"
+    "@livekit/typed-emitter" "^3.0.0"
+    commander "^12.0.0"
+    livekit-server-sdk "^2.9.2"
+    pino "^8.19.0"
+    pino-pretty "^11.0.0"
+    ws "^8.16.0"
+    zod "^3.23.8"
 
 "@livekit/mutex@^1.0.0", "@livekit/mutex@^1.1.1":
   version "1.1.1"
@@ -985,7 +1001,7 @@
   resolved "https://registry.yarnpkg.com/@livekit/rtc-node-win32-x64-msvc/-/rtc-node-win32-x64-msvc-0.13.14.tgz#f230334e277ab9d6daea3426c72b485f77e9479d"
   integrity sha512-DTwNhwq6xoesT6zr19F7fnOkzBxHtLXYyhnRzK6JzieWWxclKGNaUKaBeUPvvQjOwttwYUbf6djqO78ylvDA4Q==
 
-"@livekit/rtc-node@^0.13.12":
+"@livekit/rtc-node@^0.13.14":
   version "0.13.14"
   resolved "https://registry.yarnpkg.com/@livekit/rtc-node/-/rtc-node-0.13.14.tgz#19a877d69821358c857818b2d1d09b96c15fc1e8"
   integrity sha512-PU3mYvnY6bZwpc483Yt5aLy1Xi0GM4fj5kuv6tfvLE8w1/kOrCQ8jrHxRY/GWT9SqbB8kf8eIkA/aDtyTx+DZQ==
