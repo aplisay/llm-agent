@@ -22,11 +22,11 @@ module.exports =
         }
         let Handler = handlers.getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
-        let room = await handler.join();
+        let room = await handler.join({ options });
         res.send(room);
       }
       catch (err) {
-        req.log.error({message: err?.message, stack: err?.stack}, 'join error');
+        req.log.error({ message: err?.message, stack: err?.stack }, 'join error');
         res.status(404).send(`no agent ${listenerId}`);
       }
 
@@ -73,7 +73,7 @@ module.exports =
                     }
                   },
                   required: [],
-       
+
                 }
               },
               required: []
@@ -90,6 +90,12 @@ module.exports =
                 type: 'object',
                 description: 'Agent information',
                 properties: {
+                  callId: {
+                    description: `The provisional call ID that will be used for any conversation in this room. 
+                                 An ID will be returned but may or may not exist in the database unless/until a client subsequently joins the WebRTC room.`,
+                    type: "string",
+                    example: "32555d87-948e-48f2-a53d-fc5f261daa79"
+                  },
                   livekit: {
                     description: "Returned if the agent instance is connected to a Livekit room",
                     type: "object",
@@ -114,6 +120,17 @@ module.exports =
                         description: "The URL of the ultravox websocket which then supplies the room access information",
                         type: "string",
                         example: "https://example.com/livekit/join/LLM-gpt35-32555d87-948e-48f2-a53d-fc5f261daa79"
+                      }
+                    }
+                  },
+                  audioSocket: {
+                    description: "Returned if the agent is connected to an audio WebSocket",
+                    type: "object",
+                    properties: {
+                      url: {
+                        description: "The URL of the audio WebSocket",
+                        type: "string",
+                        example: "wss://example.com/audio"
                       }
                     }
                   }
@@ -152,11 +169,11 @@ module.exports =
       //  by an express use() before we add the OpenAPI middleware, but we can override specific headers
       //  here to add the requestors origin and narrow the allowed methods.
       OPTIONS: async (req, res, next) => {
-          res.set('Access-Control-Allow-Origin', req?.headers?.origin || '*');
-          res.set('Access-Control-Allow-Methods', 'POST');
-          next();
+        res.set('Access-Control-Allow-Origin', req?.headers?.origin || '*');
+        res.set('Access-Control-Allow-Methods', 'POST');
+        next();
       }
-   
+
     };
 
   };
