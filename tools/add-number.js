@@ -16,8 +16,6 @@ const parsed = require('dotenv').config(configArgs);
 const logger = require('../lib/logger');
 const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
 
-logger.debug({ env: process.env, options, db: process.env.POSTGRES_DB, parsed }, 'Environment');
-
 const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT } = process.env;
 
 if (!MAGRATHEA_USERNAME || !MAGRATHEA_PASSWORD || !JAMBONZ_SIP_ENDPOINT) {
