@@ -1,20 +1,22 @@
 #!/usr/bin/env node
-require('dotenv').config();
 const dir = require('path');
 const axios = require('axios');
 const commandLineArgs = require('command-line-args');
-const logger = require('../lib/logger');
-const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'number', type: String, defaultOption: true },
   { name: 'handler', alias: 'h', type: String, defaultValue: 'jambonz' },
-  { name: 'reservation', alias: 'r', type: String },
+  { name: 'reservation', alias: 'r', type: Boolean },
+  { name: 'organisation', alias: 'o', type: String },
   { name: 'noMap', alias: 'n', type: Boolean },
 ];
 const options = commandLineArgs(optionDefinitions);
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
-require('dotenv').config(configArgs);
+const parsed = require('dotenv').config(configArgs);
+const logger = require('../lib/logger');
+const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
+
+logger.debug({ env: process.env, options, db: process.env.POSTGRES_DB, parsed }, 'Environment');
 
 const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT } = process.env;
 
@@ -51,6 +53,7 @@ databaseStarted.then(() =>
     number: options.number.replace(/^0/, '44'),
     handler: options.handler,
     reservation: options.reservation,
+    orgnisationId: options.organisation
   }))
   .then(phone => {
     logger.info(phone, `Created ${options.number}`);

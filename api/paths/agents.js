@@ -17,10 +17,10 @@ module.exports = function (logger, voices, wsServer) {
 
 const agentCreate = (async (req, res) => {
   let { name, description, modelName, prompt, options, functions, keys } = req.body;
-  let userId = res.locals.user.id;
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, userId });
+  let { id: userId, organisationId } = res.locals.user;
+  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, userId, organisationId });
 
-  log.info({ modelName, prompt, options, functions, userId }, 'create API call');
+  log.info({ modelName, prompt, options, functions, userId, organisationId}, 'create API call');
 
   try {
     await agent.save();
