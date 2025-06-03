@@ -19,6 +19,7 @@
     "@google-cloud/vertexai": "^0.5.0",
     "@jambonz/node-client-ws": "github:rjp44/node-client-ws#main",
     "@livekit/agents": "link:../agents-js/agents",
+    "@livekit/agents-plugin-aws-nova": "link:../agents-js/plugins/aws-nova",
     "@livekit/agents-plugin-openai": "link:../agents-js/plugins/openai",
     "@livekit/rtc-node": "^0.13.12",
     "async-mutex": "^0.4.1",

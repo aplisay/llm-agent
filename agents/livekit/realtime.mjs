@@ -2,12 +2,12 @@ import { fileURLToPath } from 'node:url';
 import logger from '../../lib/logger.js';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
+import * as aws from '@livekit/agents-plugin-aws-nova';
 import dotenv from 'dotenv';
 import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
-
 
 export default defineAgent({
   entry: async (ctx) => {
@@ -32,9 +32,22 @@ export default defineAgent({
       await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
     };
 
-    const model = new openai.realtime.RealtimeModel({
-      instructions: agent?.prompt || 'You are a helpful assistant.',
-    });
+    // Create model based on agent type
+    let model;
+    if (modelName?.toLowerCase().includes('nova')) {
+      logger.info({ modelName, aws, realtime: aws.realtime, openai, orealtime: openai.realtime }, 'using aws nova model');
+      model = new aws.realtime.RealtimeModel({
+        instructions: agent?.prompt || 'You are a helpful assistant.',
+        model: 'nova-sonic',
+        temperature: options?.temperature || 0.7,
+        maxResponseOutputTokens: options?.maxTokens || 1024,
+      });
+    } else {
+      model = new openai.realtime.RealtimeModel({
+        instructions: agent?.prompt || 'You are a helpful assistant.',
+      });
+    }
+
     const fncCtx = functions.reduce((acc, fnc) => ({
       ...acc,
       [fnc.name]: {
@@ -44,7 +57,7 @@ export default defineAgent({
           properties: Object.fromEntries(Object.entries(fnc.input_schema.properties).map(([key, value]) => ([key, {...value, required: undefined}]))),
           required: Object.keys(fnc.input_schema.properties).filter(key => fnc.input_schema.properties[key].required) || []
         },
-          execute: async (args) => {
+        execute: async (args) => {
           logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
           let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage);
           let [{ result: data }] = function_results;
@@ -52,7 +65,6 @@ export default defineAgent({
           return JSON.stringify(data);
         }
       }
-
     }), {});
     logger.debug({ model, fncCtx }, 'got fncCtx');
     const lkAgent = new multimodal.MultimodalAgent({
@@ -63,6 +75,7 @@ export default defineAgent({
     const session = await lkAgent
       .start(ctx.room)
       .then((session) => session);
+    logger.info({ session, model }, 'session started');
     session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
     session.on('response_output_added', (newOutput) => logger.debug({ newOutput }));
     session.on('response_output_done', output => sendMessage({ agent: output?.content?.[0]?.text }));
