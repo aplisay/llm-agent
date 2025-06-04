@@ -2,7 +2,7 @@
 
 This document describes how to handle call redirection in LLM agents using both the fallback option and the builtin transfer function.
 
-This functionality is only available for telephone agents, and only when outbound calling or SIP redirects are enabled for the provider trunk. This is not enabled on the free tier of out platform.
+This functionality is only available for telephone agents, and only when outbound calling or SIP redirects are enabled for the provider trunk. This is not enabled on the free tier of our hosted platform.
 
 ## Fallback Option
 

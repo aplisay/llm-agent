@@ -228,11 +228,8 @@ components:
                 If the LLM is unavailable or not responding, the call will be transferred to this number.
 
                 This fallback number will also be available as metadata for use in function calls as `aplisay.fallbackNumber`.
-                It can be used to actively trigger a fallback to a human agent by the LLM by arranging for it to call the `platform` function `transfer` with the number as a parameter.
-              type: array
-              items:
-                type: string
-                description: A phone number to call if the LLM is unavailable or not responding.
+                It can be used there to actively trigger a fallback to a human agent by the LLM by arranging for it to call the `platform` function `transfer` with the number as a parameter.
+              type: string
               example: "+44123456780"
         callbackUrl:
           $ref: "#/components/schemas/CallbackUrl"
