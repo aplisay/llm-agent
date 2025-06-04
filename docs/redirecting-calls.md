@@ -143,7 +143,59 @@ For more dynamic control, you can use the builtin `transfer` platform function t
    
    This example shows how to set up multiple transfer functions, each with its own static number. The LLM can choose which department to transfer to based on the caller's needs.
 
-   A similar effect could be achieved in a more data driven way by using custom metadata on the listen call to determine which number to transfer to.
+   A similar effect could be achieved in a more data driven way by using custom metadata on the listen call to determine which number to transfer to...
+
+4. **Multiple Transfer Functions with Numbers Sourced from External Source of Truth**
+
+   ```json
+   {
+     "functions": [
+       {
+         "name": "transfer_customer_service",
+         "description": "Transfer the call to the customer service team assigned to this customer",
+         "implementation": "builtin",
+         "platform": "transfer",
+         "input_schema": {
+           "properties": {
+             "number": {
+               "type": "string",
+               "description": "The customer service contact number from CRM",
+               "source": "metadata",
+               "from": "crm.cSContact"
+             }
+           }
+         }
+       },
+       {
+         "name": "transfer_returns_team",
+         "description": "Transfer the call to the returns team assigned to this customer",
+         "implementation": "builtin",
+         "platform": "transfer",
+         "input_schema": {
+           "properties": {
+             "number": {
+               "type": "string",
+               "description": "The returns team contact number from CRM",
+               "source": "metadata",
+               "from": "crm.returnsContact"
+             }
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+   This example shows how to use transfer functions with contact numbers sourced dynamically from an external CRM system. The numbers are passed as metadata (`crm.cSContact` and `crm.returnsContact`) and could for example be updated in real-time based on customer assignments, team availability, or just time of day in the CRM system without needing to dynamically change the agent spec.
+  
+
+   > **Security Note**: When using external systems like CRM to source transfer numbers, there is a potential that malicious users could abuse the system by triggering transfers to premium rate numbers. To prevent this, ensure that:
+   > 1. The external system has proper validation of phone numbers before they are stored
+   > 2. The numbers are vetted against allowed patterns (e.g., only company-owned numbers, or only UK mobile or geographic numbers)
+   > 3. Access to modify these numbers is properly secured
+   > 4. Consider implementing extra checks or a whitelist of allowed numbers in your middleware or API which loads the metadata.
+   > 5. Monitor transfer patterns for any unexpected changes in destination numbers
+
 
 ## Best Practices
 
