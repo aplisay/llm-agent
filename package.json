@@ -4,7 +4,7 @@
   "description": "Omni provider voice agent",
   "main": "index.js",
   "scripts": {
-    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
+    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index",
     "start": "NODE_ENV=production node index",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index",
     "test": "LOGLEVEL=fatal jest"
