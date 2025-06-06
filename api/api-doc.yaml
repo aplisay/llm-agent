@@ -362,6 +362,10 @@ components:
           type: string
           description: unique ID of this call
           example: 648aa45d-204a-4c0c-a1e1-419406254134
+        agentId:
+          type: string
+          description: The ID of the agent that this call is associated with
+          example: 648aa45d-204a-4c0c-a1e1-419406252234
         from:
           type: string
           description: Caller number (as received, no format guaranteed)
@@ -370,6 +374,14 @@ components:
           type: string
           description: Called number for this call
           example: "+442080996945"
+        startedAt:
+          type: string
+          description: The time this call started
+          example: 2025-06-04T12:00:00.000Z
+        endedAt:
+          type: string
+          description: The time this call ended
+          example: 2025-06-04T12:01:00.000Z
     CallId:
       type: string
       description: The Call ID the event relates to

@@ -26,7 +26,7 @@ module.exports =
           };
         }
         let { count, rows: calls } = await Call.findAndCountAll({
-          attributes: ['id', 'index', 'callerId', 'calledId', 'startedAt', 'endedAt'],
+          attributes: ['id', 'index', 'agentId', 'callerId', 'calledId', 'startedAt', 'endedAt'],
           where,
           order: [['index', 'ASC']],
           limit: parseInt(limit),
@@ -64,8 +64,8 @@ module.exports =
                 },
                 example: {
                   calls: [
-                    { id: "648aa45d-204a-4c0c-a1e1-419406254134", index: 1, from: "+443300889471", to: "+442080996945" },
-                    { id: "632555d87-948e-48f2-a53d-fc5f261daa7", index: 2, from: "+443300889470", to: "+442080996945" },
+                    { id: "648aa45d-204a-4c0c-a1e1-419406254134", index: 1, agentId: "648aa45d-204a-4c0c-a1e1-419406252234", callerId: "+443300889471", calledId: "+442080996945", startedAt: "2025-06-04T12:00:00.000Z", endedAt: "2025-06-04T12:01:00.000Z" },
+                    { id: "632555d87-948e-48f2-a53d-fc5f261daa7", index: 2, agentId: "632555d87-948e-48f2-a53d-fc5f261df2a", callerId: "+443300889470", calledId: "+442080996945", startedAt: "2025-06-04T12:01:00.000Z", endedAt: "2025-06-04T12:02:00.000Z" },
                   ],
                 }
               }
