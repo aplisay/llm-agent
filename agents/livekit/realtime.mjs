@@ -1,9 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import logger from '../../lib/logger.js';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
+import { SipClient } from 'livekit-server-sdk';
 import * as openai from '@livekit/agents-plugin-openai';
 import dotenv from 'dotenv';
-import { Agent, Instance, Call, TransactionLog } from '../../lib/database.js';
+import { Agent, Instance, Call, TransactionLog, PhoneNumber } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
@@ -15,6 +16,7 @@ export default defineAgent({
     const room = ctx.room;
 
     const participant = await ctx.waitForParticipant();
+    logger.info({ participant }, 'new participant');
     const instanceId = participant.metadata;
     const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
     const agent = instance?.Agent;
@@ -41,10 +43,10 @@ export default defineAgent({
         description: fnc.description,
         parameters: {
           type: 'object',
-          properties: Object.fromEntries(Object.entries(fnc.input_schema.properties).map(([key, value]) => ([key, {...value, required: undefined}]))),
+          properties: Object.fromEntries(Object.entries(fnc.input_schema.properties).map(([key, value]) => ([key, { ...value, required: undefined }]))),
           required: Object.keys(fnc.input_schema.properties).filter(key => fnc.input_schema.properties[key].required) || []
         },
-          execute: async (args) => {
+        execute: async (args) => {
           logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
           let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage);
           let [{ result: data }] = function_results;
@@ -77,4 +79,67 @@ export default defineAgent({
     session.response.create();
   },
 });
-cli.runApp(new WorkerOptions({ agent: fileURLToPath(import.meta.url) }));
+
+async function setupSIPClients() {
+  const sipClient = new SipClient(process.env.LIVEKIT_URL, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET);
+
+  const phoneNumbers = (await PhoneNumber.findAll({ where: { handler: 'livekit' } })).map(p => `+${p.number}`);
+  logger.info({ phoneNumbers }, 'Phone numbers');
+  if (!phoneNumbers.length) {
+    logger.info('No phone numbers found');
+    return {};
+  }
+  const sipTrunks = await sipClient.listSipInboundTrunk();
+  let sipTrunk = sipTrunks.find(t => t.name === 'Aplisay');
+  if (!sipTrunk) {
+    sipTrunk = await sipClient.createSipInboundTrunk('Aplisay', phoneNumbers);
+    logger.info({ sipTrunk }, 'SIP trunk created');
+  }
+  else {
+    logger.info({ sipTrunk }, 'SIP trunk found');
+    // sync phone numbers from out database to livekit
+    if (sipTrunk.numbers.length !== phoneNumbers.length || sipTrunk.numbers.some(n => !phoneNumbers.includes(n))) {
+      sipTrunk = await sipClient.updateSipInboundTrunk(sipTrunk.sipTrunkId, {
+        numbers: phoneNumbers,
+      });
+    }
+    logger.info({ sipTrunk }, 'SIP trunk updated');
+  }
+  if (!sipTrunk) {
+    throw new Error('LIvekit SIP trunk not found and can\'t be created');
+  }
+
+  const dispatchRules = await sipClient.listSipDispatchRule();
+  let dispatchRule = dispatchRules.find(d => d.name === 'Aplisay');
+  if (!dispatchRule) {
+    dispatchRule = await sipClient.createSipDispatchRule({
+      type: 'individual',
+      roomPrefix: 'call'
+    },
+      {
+        name: 'Aplisay',
+        roomConfig: {
+          agents: [{
+            agentName: 'realtime'
+          }]
+        }
+      }
+    );
+    logger.info({ dispatchRule }, 'SIP dispatch rule created');
+  }
+  if (!dispatchRule) {
+    throw new Error('Livekit SIP dispatch rule not found and can\'t be created');
+  }
+
+  return { phoneNumbers, dispatchRule };
+}
+
+
+setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
+  logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
+  cli.runApp(new WorkerOptions({
+    agent: fileURLToPath(import.meta.url),
+    agentName: 'realtime'
+  }));
+});
+

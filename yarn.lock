@@ -5014,7 +5014,7 @@ linkify-it@^5.0.0:
   dependencies:
     uc.micro "^2.0.0"
 
-livekit-server-sdk@^2.9.2:
+livekit-server-sdk@^2.13.0, livekit-server-sdk@^2.9.2:
   version "2.13.0"
   resolved "https://registry.yarnpkg.com/livekit-server-sdk/-/livekit-server-sdk-2.13.0.tgz#ba548f8027fd89207de042501708349ddf429766"
   integrity sha512-fQJI/zEJRPeXKdKMkEfJNYSSnvmuPQsk2Q+X6tPfUrJPy7fnyYPax/icf/CZ8EYZQBhFgSD7WaKOYGSSfGSyZw==
