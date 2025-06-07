@@ -9,20 +9,57 @@ import { functionHandler } from '../../lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
 
+console.log(process.argv, 'invoked with args');
+
 
 export default defineAgent({
   entry: async (ctx) => {
     await ctx.connect();
     const room = ctx.room;
+    let instance, agent, number;
 
     const participant = await ctx.waitForParticipant();
-    logger.info({ participant }, 'new participant');
-    const instanceId = participant.metadata;
-    const instance = await Instance.findOne({ where: { id: participant.metadata }, include: Agent });
-    const agent = instance?.Agent;
-    const { userId, organisationId } = instance;
+    // Either we are WebRTC and have participant metadata, or we are SIP and have calledId and callerId
+    let instanceId = participant.metadata;
+    let { 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId } = participant?.attributes || {};
+    calledId = calledId?.replace('+', '');
+    if (instanceId) {
+      instance = await Instance.findByPk(instanceId, { include: Agent });
+    }
+    else if (calledId) {
+      logger.info({ callerId, calledId }, 'new Livekit call');
+      ({ number, instance, agent } = await Agent.fromNumber(calledId));
+    }    
+    else {
+      logger.error({ participant }, 'no instance id or phone number');
+      return;
+    }
+    if (!instance) {
+      logger.error({ participant }, 'no instance found');
+      throw new Error('No instance found');
+      return;
+    }
+    agent = agent || instance?.Agent;
+    const { userId, organisationId, options: { fallback: { number: fallbackNumbers } = {} } = {} } = agent;
     logger.info({ agent, instance }, 'new room instance');
-    const call = await Call.create({ userId, organisationId, instanceId: instance.id, callerId: instance.id });
+
+    const call = await Call.create({
+      userId,
+      organisationId,
+      instanceId: instance.id,
+      agentId: agent.id,
+      calledId,
+      callerId,
+      metadata: {
+        ...instance.metadata,
+        aplisay: {
+          callerId,
+          calledId,
+          fallbackNumbers,
+          model: agent.modelName,
+        }
+      }
+    });
     await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
     const { prompt, modelName, options, functions, keys } = agent;
@@ -70,7 +107,7 @@ export default defineAgent({
     session.on('response_output_done', output => sendMessage({ agent: output?.content?.[0]?.text }));
     ctx.room.on('participantDisconnected', async (p) => {
       if (p.info.identity === participant.info.identity) {
-        logger.info({ participant }, 'Closing realtime model');
+        logger.info({ participant }, 'Participant disconnected, closing realtime model');
         await model.close();
         logger.info({ participant }, 'model closed');
       }
@@ -134,12 +171,21 @@ async function setupSIPClients() {
   return { phoneNumbers, dispatchRule };
 }
 
-
-setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
-  logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
+if (!process.argv[1].match(/job_proc_lazy_main.js/)) {
+  setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
+    logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
+    cli.runApp(new WorkerOptions({
+      agent: fileURLToPath(import.meta.url),
+      agentName: 'realtime'
+    }));
+  });
+}
+else {
   cli.runApp(new WorkerOptions({
     agent: fileURLToPath(import.meta.url),
     agentName: 'realtime'
   }));
-});
-
+}
+cli.runApp(new WorkerOptions({
+  agent: fileURLToPath(import.meta.url),
+}));
