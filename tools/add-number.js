@@ -16,10 +16,10 @@ const parsed = require('dotenv').config(configArgs);
 const logger = require('../lib/logger');
 const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
 
-const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT } = process.env;
+const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT, LIVEKIT_SIP_ENDPOINT } = process.env;
 
-if (!MAGRATHEA_USERNAME || !MAGRATHEA_PASSWORD || !JAMBONZ_SIP_ENDPOINT) {
-  console.error('Please set MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT');
+if (!MAGRATHEA_USERNAME || !MAGRATHEA_PASSWORD || !JAMBONZ_SIP_ENDPOINT || !LIVEKIT_SIP_ENDPOINT) {
+  console.error('Please set MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT, LIVEKIT_SIP_ENDPOINT');
   process.exit(1);
 }
 
@@ -32,7 +32,12 @@ let api = axios.create({
 });
 
 if (!options.noMap) {
-  let destinationIdentifier = `+44${options.number.replace(/^0/, '')}@${JAMBONZ_SIP_ENDPOINT}`;
+  if (options.handler === 'livekit') {
+    destinationIdentifier = `+44${options.number.replace(/^0/, '')}@${LIVEKIT_SIP_ENDPOINT}`;
+  }
+  else if (options.handler === 'jambonz') {
+    let destinationIdentifier = `+44${options.number.replace(/^0/, '')}@${JAMBONZ_SIP_ENDPOINT}`;
+  }
   api.post(options.number, {
     destinationType: 'SIP_RFC2833',
     index: 1,
