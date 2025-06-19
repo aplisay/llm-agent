@@ -4,6 +4,8 @@ const axios = require('axios');
 const commandLineArgs = require('command-line-args');
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
+  { name: 'add', alias: 'a', type: Boolean, defaultValue: false },
+  { name: 'delete', alias: 'd', type: Boolean, defaultValue: false },
   { name: 'number', type: String, defaultOption: true },
   { name: 'handler', alias: 'h', type: String, defaultValue: 'jambonz' },
   { name: 'reservation', alias: 'r', type: Boolean },
@@ -11,6 +13,13 @@ const optionDefinitions = [
   { name: 'noMap', alias: 'n', type: Boolean },
 ];
 const options = commandLineArgs(optionDefinitions);
+if (options.add && options.delete) {
+  console.error('Cannot use add and delete together');
+  process.exit(1);
+}
+if (!options.add && !options.delete) {
+  options.add = true;
+}
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
 const parsed = require('dotenv').config(configArgs);
 const logger = require('../lib/logger');
@@ -52,18 +61,25 @@ if (!options.noMap) {
 }
 
 databaseStarted.then(() =>
-  PhoneNumber.upsert({
+  (options.add ? PhoneNumber.upsert({
     number: options.number.replace(/^0/, '44'),
     handler: options.handler,
     reservation: options.reservation,
     orgnisationId: options.organisation
-  }))
-  .then(phone => {
-    logger.info(phone, `Created ${options.number}`);
+  }) : PhoneNumber.destroy({
+    where: {
+      number: options.number.replace(/^0/, '44'),
+      handler: options.handler,
+    }
   })
-  .then(() => stopDatabase())
-  .catch(err => {
-    logger.error({ err }, `Error creating ${options.number}`);
-  });
+  )
+    .then(phone => {
+      logger.info(phone, `number-maint: ${(options.add) ? 'Created' : 'Removed'} ${options.number}`);
+    })
+    .then(() => stopDatabase())
+    .catch(err => {
+      logger.error({ err }, `Error creating ${options.number}`);
+    })
+);
 
 
