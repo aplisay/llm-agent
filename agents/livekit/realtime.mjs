@@ -2,20 +2,54 @@ import { fileURLToPath } from 'node:url';
 import logger from '../../lib/logger.js';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import { RoomServiceClient, SipClient } from 'livekit-server-sdk';
+import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as openai from '@livekit/agents-plugin-openai';
+import * as ultravox from '@livekit/agents-plugin-ultravox';
 import dotenv from 'dotenv';
 import { Agent, Instance, Call, TransactionLog, PhoneNumber } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
 
-console.log(process.argv, 'invoked with args');
+const events = [
+  'input_speech_committed',
+  'input_speech_started',
+  'input_speech_stopped',
+  'input_speech_transcription_completed',
+  'input_speech_transcription_failed',
+  'response_created',
+  'response_done',
+  'metrics_collected',
+  'response_output_added',
+  'function_call_started',
+  'function_call_completed',
+  'function_call_failed',
+  'response_output_done',
+  'response_content_added',
+  'response_content_done',
+  'response_text_delta',
+  'response_text_done',
+];
+
+
+const models = {
+  ultravox,
+  openai
+};
+
+logger.info({ argv: process.argv, models }, 'worker started');
+
+const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
 
 
-const roomService = new RoomServiceClient(process.env.LIVEKIT_URL,
-  process.env.LIVEKIT_API_KEY,
-  process.env.LIVEKIT_API_SECRET);
+const roomService = new RoomServiceClient(
+  LIVEKIT_URL,
+  LIVEKIT_API_KEY,
+  LIVEKIT_API_SECRET
+);
+
+
 
 
 
@@ -30,28 +64,33 @@ async function transferParticipant(roomName, participant, transferTo, aplisayId)
   logger.info({ result }, 'transfer participant result');
 }
 
-async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId) {
-  logger.info({ roomName, participant, bridgeTo }, "bridge participant initiated");
+async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId, callerId) {
 
-  const sipClient = new SipClient(process.env.LIVEKIT_URL,
-    process.env.LIVEKIT_API_KEY,
-    process.env.LIVEKIT_API_SECRET);
 
-  // Outbound trunk to use for the call
-  const trunkId = 'ST_xcWCuSmt73sL';
+  const sipClient = new SipClient(LIVEKIT_URL,
+    LIVEKIT_API_KEY,
+    LIVEKIT_API_SECRET);
+  
+  const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
+  let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
+  const { sipTrunkId } = outboundSipTrunk;
 
+  // Outbound trunk to use for the c
   const sipParticipantOptions = {
-    participantIdentity: 'sip-test',
+    participantIdentity: 'sip-outbound-call',
     headers: {
       'X-Aplisay-Trunk': aplisayId
     },
-    participantName: 'Test Caller',
+    participantName: 'Aplisay Outbound Call',
+    fromNumber: callerId.replace(/^(?!\+)/, '+'),
     krispEnabled: true,
     waitUntilAnswered: true
   };
 
+  logger.info({ roomName, participant, bridgeTo, callerId, sipParticipantOptions }, "bridge participant initiated");
+
   const newParticipant = await sipClient.createSipParticipant(
-    trunkId,
+    sipTrunkId,
     bridgeTo,
     roomName,
     sipParticipantOptions
@@ -65,14 +104,12 @@ async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId) {
 export default defineAgent({
   entry: async (ctx) => {
 
-
-
-
     await ctx.connect();
     const room = ctx.room;
     let instance, agent, number;
     const participant = await ctx.waitForParticipant();
     let bridgedParticipant;
+    let model;
 
     try {
 
@@ -80,20 +117,14 @@ export default defineAgent({
       let instanceId = participant.metadata;
       let { 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = participant?.attributes || {};
 
-      const transfer = async (args) => {
-        logger.info({ args, number: args.number, identity: participant.info['identity'], room, aplisayId }, 'transfer participant');
-        bridgedParticipant = await bridgeParticipant(room.name, participant.info['identity'], args.number, aplisayId);
-        logger.info({ bridgedParticipant }, 'new participant created');
-        await model.close();
-        return bridgedParticipant;
-      };
+
 
       calledId = calledId?.replace('+', '');
       if (instanceId) {
         instance = await Instance.findByPk(instanceId, { include: Agent });
       }
       else if (calledId) {
-        logger.info({ callerId, calledId }, 'new Livekit call');
+        logger.info({ callerId, calledId, aplisayId }, 'new Livekit call');
         ({ number, instance, agent } = await Agent.fromNumber(calledId));
       }
       if (!instance) {
@@ -103,6 +134,22 @@ export default defineAgent({
       agent = agent || instance?.Agent;
       const { userId, organisationId, options: { fallback: { number: fallbackNumbers } = {} } = {} } = agent;
       logger.info({ agent, instance }, 'new room instance');
+
+
+      const transfer = async (args) => {
+        try {
+          logger.info({ args, number: args.number, identity: participant.info['identity'], room, aplisayId }, 'transfer participant');
+          bridgedParticipant = await bridgeParticipant(room.name, participant.info['identity'], args.number, aplisayId, calledId);
+          logger.info({ bridgedParticipant }, 'new participant created');
+          model && await model.close() && (model = null);
+          return bridgedParticipant;
+        }
+        catch (e) {
+          console.log({ e, type: typeof e, message: e.message, stack: e.stack }, 'transfer error');
+          logger.error({ e }, 'error transferring participant');
+          throw e;
+        }
+      };
 
       const call = await Call.create({
         userId,
@@ -132,7 +179,13 @@ export default defineAgent({
         await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
       };
 
-      const model = new openai.realtime.RealtimeModel({
+      const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
+      const realtime = plugin && models[plugin]?.realtime;
+      if (!realtime) {
+        logger.error({ modelName, plugin, realtime, plugin: models[plugin], models }, 'Unsupported model');
+        throw new Error(`Unsupported model: ${modelName} ${plugin}`);
+      }
+      model = new realtime.RealtimeModel({
         instructions: agent?.prompt || 'You are a helpful assistant.',
       });
       const fncCtx = functions.reduce((acc, fnc) => ({
@@ -163,20 +216,32 @@ export default defineAgent({
       const session = await lkAgent
         .start(ctx.room)
         .then((session) => session);
+      events.forEach(event => {
+        session.on(event, (data) => {
+          logger.debug({ event }, `Got event ${event}`);
+        });
+      });
       session.on('input_speech_transcription_completed', ({ transcript }) => sendMessage({ user: transcript }));
       session.on('response_output_added', (newOutput) => logger.debug({ newOutput }));
-      session.on('response_output_done', output => sendMessage({ agent: output?.content?.[0]?.text }));
+      session.on('response_output_done', output => {
+        output?.content?.[0]?.audio && (output.content[0].audio = undefined);
+        logger.debug({ output }, 'response_output_done');
+        sendMessage({ agent: output?.content?.[0]?.text });
+      });
       ctx.room.on('participantDisconnected', async (p) => {
         logger.info({ p }, 'participant disconnected');
         if (p.info.identity === participant.info.identity) {
           logger.info({ participant }, 'Original participant disconnected, closing realtime model');
-          await model.close();
+          model && await model.close() && (model = null);
+          room && room.name && await roomService.deleteRoom(room.name);
           logger.info({ participant }, 'model closed');
+
         }
         if (p.info.sid === bridgedParticipant?.participantId) {
           logger.info({ bridgedParticipant }, 'Bridged participant disconnected, closing whole room');
           room && room.name && await roomService.deleteRoom(room.name);
           logger.info({ bridgedParticipant }, 'room closed');
+
         }
       });
 
@@ -198,24 +263,51 @@ async function setupSIPClients() {
     logger.info('No phone numbers found');
     return {};
   }
-  const sipTrunks = await sipClient.listSipInboundTrunk();
-  let sipTrunk = sipTrunks.find(t => t.name === 'Aplisay');
-  if (!sipTrunk) {
-    sipTrunk = await sipClient.createSipInboundTrunk('Aplisay', phoneNumbers);
-    logger.info({ sipTrunk }, 'SIP trunk created');
+  const inboundSipTrunks = await sipClient.listSipInboundTrunk();
+  let inboundSipTrunk = inboundSipTrunks.find(t => t.name === 'Aplisay');
+  if (!inboundSipTrunk) {
+    inboundSipTrunk = await sipClient.createSipInboundTrunk(
+      'Aplisay',
+      phoneNumbers,
+      {
+        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS
+      }
+    );
+    logger.info({ inboundSipTrunk }, 'SIP trunk created');
   }
   else {
-    logger.info({ sipTrunk }, 'SIP trunk found');
+    logger.info({ inboundSipTrunk }, 'SIP trunk found');
     // sync phone numbers from out database to livekit
-    if (sipTrunk.numbers.length !== phoneNumbers.length || sipTrunk.numbers.some(n => !phoneNumbers.includes(n))) {
-      sipTrunk = await sipClient.updateSipInboundTrunk(sipTrunk.sipTrunkId, {
-        numbers: phoneNumbers,
+    if (inboundSipTrunk.numbers.length !== phoneNumbers.length || inboundSipTrunk.numbers.some(n => !phoneNumbers.includes(n))) {
+      inboundSipTrunk = await sipClient.updateSipInboundTrunk(inboundSipTrunk.sipTrunkId, {
+        numbers: phoneNumbers
       });
     }
-    logger.info({ sipTrunk }, 'SIP trunk updated');
+    logger.info({ inboundSipTrunk }, 'SIP trunk updated');
   }
-  if (!sipTrunk) {
+  if (!inboundSipTrunk) {
     throw new Error('LIvekit SIP trunk not found and can\'t be created');
+  }
+
+  const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
+  let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
+  outboundSipTrunk && await sipClient.deleteSipTrunk(outboundSipTrunk.sipTrunkId);
+  outboundSipTrunk = null;
+  if (!outboundSipTrunk) {
+    outboundSipTrunk = await sipClient.createSipOutboundTrunk(
+      "Aplisay Outbound",
+      LIVEKIT_SIP_OUTBOUND,
+      phoneNumbers,
+      {
+        transport: SIPTransport.SIP_TRANSPORT_TCP,
+        authUsername: LIVEKIT_SIP_USERNAME,
+        authPassword: LIVEKIT_SIP_PASSWORD
+      }
+    );
+    logger.info({ outboundSipTrunk }, 'SIP outbound trunk created');
+  }
+  else {
+    logger.info({ outboundSipTrunk }, 'SIP outbound trunk found');
   }
 
   const dispatchRules = await sipClient.listSipDispatchRule();
@@ -255,7 +347,9 @@ if (!process.argv[1].match(/job_proc_lazy_main.js/)) {
 else {
   cli.runApp(new WorkerOptions({
     agent: fileURLToPath(import.meta.url),
-    agentName: 'realtime'
+    agentName: 'realtime',
+    debug: true,
+    logLevel: 'DEBUG'
   }));
 }
 cli.runApp(new WorkerOptions({
