@@ -351,11 +351,13 @@ else {
 
   cli.runApp(new WorkerOptions({
     agent: fileURLToPath(import.meta.url),
-    agentName: 'realtime'
+    agentName: 'realtime',
+    port: 8081
   }));
 
   cli.runApp(new WorkerOptions({
     agent: fileURLToPath(import.meta.url),
+    port: 8082
   }));
   
 }
