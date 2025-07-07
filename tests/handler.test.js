@@ -10,7 +10,7 @@ describe(`handlers`, () => {
 
   test('Full list of handlers and models', () => {
     expect(Object.keys(handlers.implementations).length).toBe(3);
-    expect(handlers.models.length).toBe(20);
+    expect(handlers.models.length).toBe(21);
   });
 
   test('voices', async () => {
