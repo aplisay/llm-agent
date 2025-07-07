@@ -20,7 +20,7 @@
     "@jambonz/node-client-ws": "github:rjp44/node-client-ws#main",
     "@livekit/agents": "^0.7.5",
     "@livekit/agents-plugin-openai": "^0.9.1",
-    "@livekit/agents-plugin-ultravox": "^0.0.1",
+    "@aplisay/agents-plugin-ultravox": "^0.0.1",
     "@livekit/rtc-node": "^0.13.14",
     "async-mutex": "^0.4.1",
     "axios": "^1.9.0",

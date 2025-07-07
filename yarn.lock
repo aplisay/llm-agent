@@ -24,6 +24,15 @@
     node-fetch "^2.6.7"
     web-streams-polyfill "^3.2.1"
 
+"@aplisay/agents-plugin-ultravox@^0.0.1":
+  version "0.0.1"
+  resolved "https://registry.yarnpkg.com/@aplisay/agents-plugin-ultravox/-/agents-plugin-ultravox-0.0.1.tgz#46b7323a497965072413aa84fc9154c38e1a4908"
+  integrity sha512-PoAOs+Ieo6J3Tby9wTTaRSdhfiKYAdAWCysGmOdL/U1bTTiwx4PWI60R8/Dc5ov7PnnF8iBLyuCxo7M5Qt0wRA==
+  dependencies:
+    openai "^4.91.1"
+    sharp "^0.33.5"
+    ws "^8.16.0"
+
 "@babel/code-frame@^7.0.0", "@babel/code-frame@^7.12.13", "@babel/code-frame@^7.26.2":
   version "7.26.2"
   resolved "https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.26.2.tgz#4b5fab97d33338eff916235055f0ebc21e573a85"
