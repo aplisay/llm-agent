@@ -117,8 +117,6 @@ export default defineAgent({
       let instanceId = participant.metadata;
       let { 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = participant?.attributes || {};
 
-
-
       calledId = calledId?.replace('+', '');
       if (instanceId) {
         instance = await Instance.findByPk(instanceId, { include: Agent });
@@ -137,8 +135,13 @@ export default defineAgent({
 
 
       const transfer = async (args) => {
+        if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
+          logger.info({ args }, 'invalid number');
+          throw new Error('Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets');
+        }
         try {
           logger.info({ args, number: args.number, identity: participant.info['identity'], room, aplisayId }, 'transfer participant');
+
           bridgedParticipant = await bridgeParticipant(room.name, participant.info['identity'], args.number, aplisayId, calledId);
           logger.info({ bridgedParticipant }, 'new participant created');
           model && await model.close() && (model = null);
