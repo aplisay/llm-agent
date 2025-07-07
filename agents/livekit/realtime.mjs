@@ -6,7 +6,7 @@ import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as ultravox from '@livekit/agents-plugin-ultravox';
 import dotenv from 'dotenv';
-import { Agent, Instance, Call, TransactionLog, PhoneNumber } from '../../lib/database.js';
+import { Agent, Instance, Call, TransactionLog, PhoneNumber, stopDatabase } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
@@ -70,7 +70,7 @@ async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId, cal
   const sipClient = new SipClient(LIVEKIT_URL,
     LIVEKIT_API_KEY,
     LIVEKIT_API_SECRET);
-  
+
   const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
   let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
   const { sipTrunkId } = outboundSipTrunk;
@@ -335,7 +335,7 @@ async function setupSIPClients() {
   return { phoneNumbers, dispatchRule };
 }
 
-if (!process.argv[1].match(/job_proc_lazy_main.js/)) {
+if (process.argv[2] === 'setup') {
   setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
     logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
     cli.runApp(new WorkerOptions({
@@ -343,15 +343,19 @@ if (!process.argv[1].match(/job_proc_lazy_main.js/)) {
       agentName: 'realtime'
     }));
   });
+  logger.info('SIP clients setup, exiting');
+  stopDatabase();
+  process.exit(0);
 }
 else {
+
   cli.runApp(new WorkerOptions({
     agent: fileURLToPath(import.meta.url),
-    agentName: 'realtime',
-    debug: true,
-    logLevel: 'DEBUG'
+    agentName: 'realtime'
   }));
+
+  cli.runApp(new WorkerOptions({
+    agent: fileURLToPath(import.meta.url),
+  }));
+  
 }
-cli.runApp(new WorkerOptions({
-  agent: fileURLToPath(import.meta.url),
-}));
