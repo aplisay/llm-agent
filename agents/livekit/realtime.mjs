@@ -4,7 +4,7 @@ import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import { RoomServiceClient, SipClient } from 'livekit-server-sdk';
 import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as openai from '@livekit/agents-plugin-openai';
-import * as ultravox from '@livekit/agents-plugin-ultravox';
+import * as ultravox from '@aplisay/agents-plugin-ultravox';
 import dotenv from 'dotenv';
 import { Agent, Instance, Call, TransactionLog, PhoneNumber, stopDatabase } from '../../lib/database.js';
 import { functionHandler } from '../../lib/function-handler.js';
