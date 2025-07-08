@@ -27,9 +27,13 @@ const agentCreate = (async (req, res) => {
     res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
-    console.error(err, 'creating agent');
-    req.log.error(err, 'creating agent');
-    res.status(500).send(err);
+    req.log.error(err, 'DATABASE ERROR: creating agent');
+    if (err.name === 'SequelizeValidationError') {
+      res.status(400).send(err.errors.map((e) => e.message));
+    }
+    else {
+      res.status(500).send(err);
+    }
 
   }
 });
