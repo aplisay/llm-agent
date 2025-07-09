@@ -66,6 +66,9 @@ async function transferParticipant(roomName, participant, transferTo, aplisayId)
 
 async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId, callerId) {
 
+  if (!aplisayId?.length) {
+    throw new Error('No inbound trunk or inbound trunk does not support bridging');
+  }
 
   const sipClient = new SipClient(LIVEKIT_URL,
     LIVEKIT_API_KEY,
@@ -74,6 +77,10 @@ async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId, cal
   const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
   let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
   const { sipTrunkId } = outboundSipTrunk;
+
+  if (!outboundSipTrunk) {
+    throw new Error('No livekit outbound SIP trunk found');
+  }
 
   // Outbound trunk to use for the c
   const sipParticipantOptions = {
@@ -190,6 +197,7 @@ export default defineAgent({
       }
       model = new realtime.RealtimeModel({
         instructions: agent?.prompt || 'You are a helpful assistant.',
+        voice: agent?.options?.voice
       });
       const fncCtx = functions.reduce((acc, fnc) => ({
         ...acc,
