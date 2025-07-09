@@ -197,7 +197,7 @@ export default defineAgent({
       }
       model = new realtime.RealtimeModel({
         instructions: agent?.prompt || 'You are a helpful assistant.',
-        voice: agent?.options?.voice
+        voice: agent?.options?.tts?.voice
       });
       const fncCtx = functions.reduce((acc, fnc) => ({
         ...acc,
