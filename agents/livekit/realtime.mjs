@@ -197,6 +197,7 @@ export default defineAgent({
       }
       model = new realtime.RealtimeModel({
         instructions: agent?.prompt || 'You are a helpful assistant.',
+        voice: agent?.options?.tts?.voice
       });
       const fncCtx = functions.reduce((acc, fnc) => ({
         ...acc,
@@ -348,14 +349,12 @@ async function setupSIPClients() {
 if (process.argv[2] === 'setup') {
   setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
     logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
-    cli.runApp(new WorkerOptions({
-      agent: fileURLToPath(import.meta.url),
-      agentName: 'realtime'
-    }));
+    logger.info('SIP clients setup, exiting');
+    stopDatabase();
+    process.exit(0);
+
   });
-  logger.info('SIP clients setup, exiting');
-  stopDatabase();
-  process.exit(0);
+
 }
 else {
 
