@@ -178,6 +178,8 @@ export default defineAgent({
           }
         }
       });
+      const { metadata } = call;
+      metadata.aplisay.callId = call.id;
       await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
       const { prompt, modelName, options, functions, keys } = agent;
@@ -210,7 +212,7 @@ export default defineAgent({
           },
           execute: async (args) => {
             logger.debug({ name: fnc.name, args, fnc }, `Got function call ${fnc.name}`);
-            let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage, {}, { transfer }); // fix metadata here
+            let { function_results } = await functionHandler([{ ...fnc, input: args }], functions, keys, sendMessage, metadata, { transfer }); // fix metadata here
             let [{ result: data }] = function_results;
             logger.debug({ data }, `returning ${JSON.stringify(data)}`);
             return JSON.stringify(data);
