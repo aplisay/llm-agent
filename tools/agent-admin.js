@@ -287,29 +287,30 @@ databaseStarted.then(async () => {
           const summary = cdrs.reduce((acc, c) => {
             let userEmail = c?.User?.email || 'unknown';
             let month = c.startedAt.toLocaleString('default', { month: 'long' });
-            acc[month] = acc[month] || {
+            acc.month[month] = acc.month[month] || {
               duration: 0,
-              count: 0
+              count: 0,
+              users: {}
             };
-            acc[month].duration += c.billingDuration;
-            acc[month].count++;
+            acc.month[month].duration += c.billingDuration;
+            acc.month[month].count++;
             acc.totalDuration += c.billingDuration;
             acc.totalCount++;
 
-            acc[month][userEmail] = acc[month][userEmail] || {
+            acc.month[month].users[userEmail] = acc.month[month].users[userEmail] || {
               duration: 0,
               count: 0
             };
-            acc[month][userEmail].duration += c.billingDuration;
-            acc[month][userEmail].count++;
+            acc.month[month].users[userEmail].duration += c.billingDuration;
+            acc.month[month].users[userEmail].count++;
             return acc;
-          }, { totalDuration: 0, totalCount: 0 });
+          }, { totalDuration: 0, totalCount: 0, month: {} });
           summary.totalDuration = Math.round(summary.totalDuration);
 
-          Object.entries(summary).forEach(([key, data]) => {
+          Object.entries(summary.month).forEach(([key, data]) => {
             if (typeof data === 'object') {
               data.duration = Math.round(data.duration);
-              Object.values(data).forEach((userData) => {
+              Object.values(data.users).forEach((userData) => {
                 userData.duration && (userData.duration = Math.round(userData.duration));
               });
             }
@@ -326,6 +327,11 @@ databaseStarted.then(async () => {
             c.billingDuration
           ]));
           detail.unshift(['callerId', 'calledId', 'userEmail', 'userOrg', 'startedAt', 'endedAt', 'duration s', 'billing duration m']);
+          const summaryOutput = Object.entries(summary.month).map(([month, data]) => {
+            return `  ${month}\n${data.users && Object.entries(data.users).map(([userEmail, userData]) => {
+              return `    ${userEmail}, ${userData.duration} mins, ${userData.count} calls`;
+            }).join('\n') || ''}\n  Duration: ${data.duration} mins, Count: ${data.count} calls`;
+          }).join('\n') + `\nTotal Duration: ${summary.totalDuration} mins, Total Count: ${summary.totalCount} calls`;
           console.log(`All calls for ${options.email || options.userId || options.orgId} from ${options.start} to ${options.end}`);
           if (options.detail) {
           console.log('--------------------------------');
@@ -333,7 +339,7 @@ databaseStarted.then(async () => {
             console.log('--------------------------------');
           }
           console.log('Summary:');
-          console.log(summary);
+          console.log(summaryOutput);
           console.log('--------------------------------');
           console.log(`dropped ${data.length - cdrs.length} calls with no duration`);
           exit(0);
