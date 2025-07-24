@@ -25,7 +25,14 @@ module.exports =
           res.status(400).send(`no handler for ${agent.modelName} ${err.message}`);
         }
         else {
-          res.status(404).send(err.message);
+          let status = 404;
+          if (err.message.includes('In use:')) {
+            status = 409;
+          }
+          else if (err.message.includes('Not supported:')) {
+            status = 412;
+          }
+          res.status(status).send(err.message);
         }
       }
 
@@ -131,11 +138,31 @@ module.exports =
           }
         },
         404: {
-          description: 'Agent not found',
+          description: 'Agent not found or requested number not available',
           content: {
             'application/json': {
               schema: {
                 $ref: '#/components/schemas/NotFound'
+              }
+            }
+          }
+        },
+        409: {
+          description: 'Requested number is already in use by another agent',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/Conflict'
+              }
+            }
+          }
+        },
+        412: {
+          description: 'Requested number exists but is not supported by this agent',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/PreConditionFailed'
               }
             }
           }

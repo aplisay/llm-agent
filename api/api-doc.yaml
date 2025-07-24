@@ -498,5 +498,19 @@ components:
         message:
           type: string
           description: Human readable message describing which parameter was not found
-          example: ThingID 1234 not found.
+          example: "Not found: no phone number matching 1234 exists for this user/organisation"
+    Conflict:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human readable message describing which parameter was in conflct
+          example: "In use: number 1234 is already linked to another instance"
+    PreConditionFailed:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human readable message describing which condition failed
+          example: "Not supported: 1234 routes to jambonz but this agent uses livekit"
 paths: {}
