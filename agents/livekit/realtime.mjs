@@ -1,13 +1,13 @@
 import { fileURLToPath } from 'node:url';
-import logger from '../../lib/logger.js';
+import logger from './agent-lib/logger.js';
 import { WorkerOptions, cli, defineAgent, multimodal } from '@livekit/agents';
 import { RoomServiceClient, SipClient } from 'livekit-server-sdk';
 import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as openai from '@livekit/agents-plugin-openai';
-import * as ultravox from '@aplisay/agents-plugin-ultravox';
+import * as ultravox from './plugins/ultravox/dist/index.js';
 import dotenv from 'dotenv';
-import { Agent, Instance, Call, TransactionLog, PhoneNumber, stopDatabase } from '../../lib/database.js';
-import { functionHandler } from '../../lib/function-handler.js';
+import { Agent, Instance, Call, TransactionLog, PhoneNumber, stopDatabase } from './agent-lib/database.js';
+import { functionHandler } from './agent-lib/function-handler.js';
 const encoder = new TextEncoder();
 dotenv.config();
 
