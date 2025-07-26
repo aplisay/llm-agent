@@ -1,8 +1,10 @@
-FROM node:22
+FROM node:22-slim
 ARG SECRETENV_BUNDLE
 ARG SECRETENV_KEY
 EXPOSE $PORT
 WORKDIR /usr/src/app
+RUN apt-get -y update 
+RUN apt-get install -y ca-certificates
 COPY agents/livekit ./
 RUN yarn install
 RUN yarn build
