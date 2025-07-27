@@ -41,17 +41,11 @@ logger.info({ argv: process.argv, models }, 'worker started');
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
-
-
 const roomService = new RoomServiceClient(
   LIVEKIT_URL,
   LIVEKIT_API_KEY,
   LIVEKIT_API_SECRET
 );
-
-
-
-
 
 async function transferParticipant(roomName, participant, transferTo, aplisayId) {
   logger.info({ roomName, participant, transferTo }, "transfer participant initiated");
@@ -366,9 +360,5 @@ else {
     port: 8081
   }));
 
-  cli.runApp(new WorkerOptions({
-    agent: fileURLToPath(import.meta.url),
-    port: 8082
-  }));
   
 }
