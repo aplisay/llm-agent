@@ -131,7 +131,8 @@ export default defineAgent({
         throw new Error('No instance found');
       }
       agent = agent || instance?.Agent;
-      const { userId, organisationId, options: { fallback: { number: fallbackNumbers } = {} } = {} } = agent;
+      const { userId, modelName, organisationId, options = {} } = agent;
+      const { fallback: { number: fallbackNumbers } = {} } = options;
       logger.info({ agent, instance }, 'new room instance');
 
 
@@ -162,6 +163,8 @@ export default defineAgent({
         agentId: agent.id,
         calledId,
         callerId,
+        modelName,
+        options,
         metadata: {
           ...instance.metadata,
           aplisay: {
@@ -176,7 +179,7 @@ export default defineAgent({
       metadata.aplisay.callId = call.id;
       await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
-      const { prompt, modelName, options, functions, keys } = agent;
+      const { prompt, functions, keys } = agent;
       logger.debug({ agent, instanceId, instance, prompt, modelName, options, functions }, 'got agent');
 
       const sendMessage = async (message) => {
