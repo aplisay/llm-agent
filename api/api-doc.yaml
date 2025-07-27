@@ -219,6 +219,18 @@ components:
           properties:
             language:
               $ref: "#/components/schemas/Language"
+        fallback:
+          type: object
+          properties:
+            number:
+              description: |-
+                A phone number to try transferring the call to if the LLM is unavailable or not responding (telephone agents only)
+                If the LLM is unavailable or not responding, the call will be transferred to this number.
+
+                This fallback number will also be available as metadata for use in function calls as `aplisay.fallbackNumber`.
+                It can be used there to actively trigger a fallback to a human agent by the LLM by arranging for it to call the `platform` function `transfer` with the number as a parameter.
+              type: string
+              example: "+44123456780"
         callbackUrl:
           $ref: "#/components/schemas/CallbackUrl"
     CallbackUrl:
@@ -233,7 +245,7 @@ components:
         properties:
           name:
             type: string
-            description: The function call name, used in the invocation
+            description: The function call name, used in the invocation, this is an arbitrary string identifier.
             example: get_weather
           description:
             type: string
@@ -241,9 +253,25 @@ components:
             example: Get the current weather in a given location
           implementation:
             type: string
-            description: How this function should be implemented. \"stub\" is used to return the same fixed result each time for testing, \"rest\" makes an actual API call using *url* and the rest of the parameters
-            enum: ["rest", "stub", "client"]
+            description: |-
+              How this function should be implemented.
+              * `stub` is used to return the same fixed result each time for testing,
+              * `rest` makes an actual API call using *url* and the rest of the parameters
+              * `client` is a client side function that is implemented in the client code (only useful for WebRTC agents)
+              * `builtin` is a function that is built into the Aplisay LLM platform.
+            enum: ["rest", "stub", "client", "builtin"]
             example: rest
+          platform:
+            type: string
+            enum: ["hangup", "transfer"]
+            description: >  
+                For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
+                  * `hangup` takes no parameters and will hang up the call
+                  * `transfer` will transfer the call to a number specified in the `number` parameter
+                
+                Note that the transfer function will only be available to telephone agents, and the `number` parameter 
+                can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata.
+                For anti-fraud reasons, it is not possible to use a LLM `generated` parameter as the number to transfer a call to.
           result:
             type: string
             description: The hardwired result of this function call, optional and only useful for `stub` or `client`
@@ -470,5 +498,19 @@ components:
         message:
           type: string
           description: Human readable message describing which parameter was not found
-          example: ThingID 1234 not found.
+          example: "Not found: no phone number matching 1234 exists for this user/organisation"
+    Conflict:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human readable message describing which parameter was in conflct
+          example: "In use: number 1234 is already linked to another instance"
+    PreConditionFailed:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human readable message describing which condition failed
+          example: "Not supported: 1234 routes to jambonz but this agent uses livekit"
 paths: {}

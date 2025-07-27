@@ -21,7 +21,7 @@ class Application {
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
-          let { userId, organisationId } = agent;
+          let { userId, organisationId, options: {fallback: {number: fallbackNumbers} = {} } = {} } = agent;
           logger.info({ number, agent, instance, session }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
@@ -50,6 +50,7 @@ class Application {
               aplisay: {
                 callerId,
                 calledId,
+                fallbackNumbers,
                 model: agent.modelName,
               }
             }

@@ -1,0 +1,40 @@
+{
+  "name": "livekit-agent",
+  "version": "0.9.1",
+  "description": "Omni provider voice agent",
+  "main": "realtime.mjs",
+  "scripts": {
+    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml realtime.mjs dev",
+    "start": "NODE_ENV=production node realtime.mjs start",
+    "stage": "NODE_ENV=staging LOGLEVEL=debug node realtime.mjs dev",
+    "build": "cd plugins/ultravox && yarn install && yarn build && rm -rf node_modules"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google-cloud/pino-logging-gcp-config": "^1.0.4",
+    "@livekit/agents": "0.7.9",
+    "@livekit/agents-plugin-openai": "^0.9.1",
+    "@livekit/rtc-node": "^0.13.11",
+    "async-mutex": "^0.4.1",
+    "axios": "^1.9.0",
+    "command-line-args": "^6.0.1",
+    "config": "^3.3.12",
+    "cors": "^2.8.5",
+    "dotenv": "github:rjp44/secretenv",
+    "livekit-server-sdk": "^2.13.0",
+    "pg": "^8.16.0",
+    "pg-hstore": "^2.3.4",
+    "pg-listen": "^1.7.0",
+    "pino": "^9.7.0",
+    "pino-http": "^10.4.0",
+    "pino-pretty": "^13.0.0",
+    "sequelize": "^6.37.7",
+    "uuid": "^9.0.1",
+    "ws": "^8.18.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^2.0.22"
+  }
+}
