@@ -8,6 +8,7 @@ import {
   Queue,
   llm,
   log,
+  initializeLogger,
   multimodal,
 } from '@livekit/agents';
 import { AudioFrame } from '@livekit/rtc-node';
@@ -216,7 +217,7 @@ export class RealtimeModel extends multimodal.RealtimeModel {
     firstSpeaker?: string;
   }) {
     super();
-
+    initializeLogger({});
     if (apiKey === '') {
       throw new Error(
         'Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable',
@@ -316,7 +317,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
   #currentOutputIndex = 0;
   #currentContentIndex = 0;
   #audioStream?: AudioByteStream;
-
+  #audioBuffer: Buffer[] = [];
   constructor(
     opts: ModelOptions,
     client: UltravoxClient,
@@ -805,20 +806,24 @@ export class RealtimeSession extends multimodal.RealtimeSession {
 
   async #handleAudio(audioData: Buffer): Promise<void> {
     if (!this.#currentResponseId) {
-      this.#logger.info('No current response id, skipping audio', {
+      this.#logger.info('No current response id, buffering audio', {
         currentResponseId: this.#currentResponseId,
       });
+      this.#audioBuffer.push(audioData);
       return;
     }
-
     const { content } = this.#getContent();
-
-    const frames = this.#audioStream?.write(audioData);
-    frames &&
-      frames.forEach((frame: AudioFrame) => {
-        content?.audio.push(frame);
-        content?.audioStream.put(frame);
-      });
+    this.#audioBuffer.push(audioData);
+    let data: Buffer | undefined;
+    while ((data = this.#audioBuffer.shift())) {
+      const frames = this.#audioStream?.write(data);
+      if (frames) {
+        frames.forEach((frame: AudioFrame) => {
+          content?.audio.push(frame);
+          content?.audioStream.put(frame);
+        });
+      }
+    }
   }
 
   /** Create an empty audio message with the given duration. */
