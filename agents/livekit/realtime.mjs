@@ -117,8 +117,10 @@ export default defineAgent({
       // Either we are WebRTC and have participant metadata, or we are SIP and have calledId and callerId
       let instanceId = participant.metadata;
       let { 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = participant?.attributes || {};
-
+      // Remove + from the numbers
       calledId = calledId?.replace('+', '');
+      callerId = callerId?.replace('+', '');
+
       if (instanceId) {
         instance = await Instance.findByPk(instanceId, { include: Agent });
       }
@@ -131,9 +133,11 @@ export default defineAgent({
         throw new Error('No instance found');
       }
       agent = agent || instance?.Agent;
+      calledId = calledId || 'WebRTC';
+      callerId = callerId || 'WebRTC'
       const { userId, modelName, organisationId, options = {} } = agent;
       const { fallback: { number: fallbackNumbers } = {} } = options;
-      logger.info({ agent, instance }, 'new room instance');
+      logger.info({ agent, instance, calledId, callerId, ctx, room, participant }, 'new room instance');
 
 
       const transfer = async (args) => {
@@ -161,6 +165,8 @@ export default defineAgent({
         organisationId,
         instanceId: instance.id,
         agentId: agent.id,
+        platform: 'livekit',
+        platformCallId: room?.info?.sid,
         calledId,
         callerId,
         modelName,
@@ -243,19 +249,20 @@ export default defineAgent({
         if (p.info.identity === participant.info.identity) {
           logger.info({ participant }, 'Original participant disconnected, closing realtime model');
           model && await model.close() && (model = null);
+          call.end();
           room && room.name && await roomService.deleteRoom(room.name);
           logger.info({ participant }, 'model closed');
-
         }
         if (p.info.sid === bridgedParticipant?.participantId) {
           logger.info({ bridgedParticipant }, 'Bridged participant disconnected, closing whole room');
           room && room.name && await roomService.deleteRoom(room.name);
           logger.info({ bridgedParticipant }, 'room closed');
-
+          call.end();
         }
       });
 
       session.response.create();
+      call.start();
     }
     catch (e) {
       logger.error(`error: closing room ${e.message} ${e.stack}`);
