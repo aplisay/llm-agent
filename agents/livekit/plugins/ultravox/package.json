@@ -1,0 +1,47 @@
+{
+  "name": "@aplisay/agents-plugin-ultravox",
+  "version": "0.0.1",
+  "description": "Ultravox plugin for LiveKit Node Agents",
+  "main": "dist/index.js",
+  "require": "dist/index.cjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "author": "rjp44",
+  "type": "module",
+  "repository": "git@github.com:aplisay/agents-js.git",
+  "license": "Apache-2.0",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup --onSuccess \"tsc --declaration --emitDeclarationOnly\"",
+    "clean": "rm -rf dist",
+    "clean:build": "pnpm clean && pnpm build",
+    "lint": "eslint -f unix \"src/**/*.{ts,js}\"",
+    "api:check": "api-extractor run --typescript-compiler-folder ../../node_modules/typescript",
+    "api:update": "api-extractor run --local --typescript-compiler-folder ../../node_modules/typescript --verbose"
+  },
+  "devDependencies": {
+    "@livekit/agents": "0.7.9",
+    "@livekit/rtc-node": "^0.13.11",
+    "@types/ws": "^8.5.10",
+    "tsup": "^8.3.5",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5",
+    "ws": "^8.16.0"
+  },
+  "peerDependencies": {
+    "@livekit/agents": "0.7.9",
+    "@livekit/rtc-node": "^0.13.11"
+  }
+}

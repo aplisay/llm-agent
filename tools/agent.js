@@ -98,13 +98,14 @@ async function run(command, options) {
   }
 }
 
-const transformFunctions = (functions) => functions?.map?.(({ name, description, parameters, url, implementation, method, key }) => {
-  let pUrl = URL.parse(url);
+const transformFunctions = (functions) => functions?.map?.(({ name, description, parameters, url, implementation, platform, method, key }) => {
+  let pUrl = url?.length && new URL(url);
   return {
     name,
     description,
     url,
     implementation,
+    platform,
     method,
     key,
     input_schema: {
@@ -112,20 +113,22 @@ const transformFunctions = (functions) => functions?.map?.(({ name, description,
       properties:
         parameters?.reduce((o, p) => {
           let isIn = pUrl?.pathname?.includes(`{${p.name}}`) && 'path';
-          isIn = isIn || (pUrl?.searchParams?.has(p.name) && 'query');
           isIn = isIn || (Array.from(pUrl?.searchParams?.values() || []).includes(`{${p.name}}`) && 'query');
+          isIn = isIn || (method === 'post' ? 'body' : 'query');
+          let { name, type, description, source, from } = p;
           return {
-            ...o, [p.name]: {
-              type: p.type,
+            ...o, [name]: {
+              type,
               in: isIn,
-              description: p.description
+              source,
+              from,
+              description
             }
           };
         }, {}) || {},
     }
   };
 });
-
 
 function outputEnvironment(environment, { listenerId, key, server }) {
   if (environment?.length) {

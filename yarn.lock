@@ -24,6 +24,15 @@
     node-fetch "^2.6.7"
     web-streams-polyfill "^3.2.1"
 
+"@aplisay/agents-plugin-ultravox@^0.0.1":
+  version "0.0.1"
+  resolved "https://registry.yarnpkg.com/@aplisay/agents-plugin-ultravox/-/agents-plugin-ultravox-0.0.1.tgz#46b7323a497965072413aa84fc9154c38e1a4908"
+  integrity sha512-PoAOs+Ieo6J3Tby9wTTaRSdhfiKYAdAWCysGmOdL/U1bTTiwx4PWI60R8/Dc5ov7PnnF8iBLyuCxo7M5Qt0wRA==
+  dependencies:
+    openai "^4.91.1"
+    sharp "^0.33.5"
+    ws "^8.16.0"
+
 "@babel/code-frame@^7.0.0", "@babel/code-frame@^7.12.13", "@babel/code-frame@^7.26.2":
   version "7.26.2"
   resolved "https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.26.2.tgz#4b5fab97d33338eff916235055f0ebc21e573a85"
@@ -949,10 +958,10 @@
     sharp "^0.33.5"
     ws "^8.16.0"
 
-"@livekit/agents@^0.7.5":
-  version "0.7.5"
-  resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-0.7.5.tgz#866efa2888675480bd33ddea573b25b25514203b"
-  integrity sha512-f/GHUS2vChX7lrHDezRXl+xmTqCXzuvPd7EHlyA++NcaUGU8KONbC234Q0eS+Jq5XqnRgG2GrFALsTI5V9Vd6Q==
+"@livekit/agents@0.7.9":
+  version "0.7.9"
+  resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-0.7.9.tgz#7f20c0f364740789cc345f5cf85ec40ec9d8490f"
+  integrity sha512-zAZksQtV3JKiQVHolyayvn9hCiLpV84tSqFEiiQDDZp2DpSy7opQa3jxVe1hVX9MreH7iUvbHCh0Miq3nKQG1Q==
   dependencies:
     "@livekit/mutex" "^1.1.1"
     "@livekit/protocol" "^1.29.1"
@@ -976,35 +985,35 @@
   dependencies:
     "@bufbuild/protobuf" "^1.10.0"
 
-"@livekit/rtc-node-darwin-arm64@0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-darwin-arm64/-/rtc-node-darwin-arm64-0.13.14.tgz#6f4caa57adcd2b31b925d5c94518dd89333d5b2f"
-  integrity sha512-o1g2mPvbTROqbs2G0rULJ4uvyN8/H29MA9RCxtxKVshwZhTWHKZ2FIkSZpiOUPnzQfPP8ZISgo8i5vqxq6qjvQ==
+"@livekit/rtc-node-darwin-arm64@0.13.18":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-darwin-arm64/-/rtc-node-darwin-arm64-0.13.18.tgz#b9e9a09a45559079ef0f3d8023132dbbffbc7b54"
+  integrity sha512-grHN5y2vasZR2eohrSuJHASzQUeKFjhcYt0ijzVrYBU+UBaXiL38YmhpvmGBxTgPT9rwQFdHQ3SpvJvYOPfPzA==
 
-"@livekit/rtc-node-darwin-x64@0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-darwin-x64/-/rtc-node-darwin-x64-0.13.14.tgz#f55f31a68812f5713f2a9aa4cc8c6f57c7ce5eaf"
-  integrity sha512-MBVXapEig6kfXyhhGJ8CwwCs1gj3qU2MkJ7zB2AfO9hKxIwWCecghOqipSu93xVybrmshoRNadSqL3G0A/K67A==
+"@livekit/rtc-node-darwin-x64@0.13.18":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-darwin-x64/-/rtc-node-darwin-x64-0.13.18.tgz#fb0628933ef00508006266b3c98ee57d0db5bdd3"
+  integrity sha512-0mpBBgxFN4RpOHh4EU+2yUKYEEWZJUzMj9cInz5JSSIMGxmiftyogHXFdPw1n3f1Yro7KeEF76tUNrRzoW2jSQ==
 
-"@livekit/rtc-node-linux-arm64-gnu@0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-linux-arm64-gnu/-/rtc-node-linux-arm64-gnu-0.13.14.tgz#2b032c8ff8b8c322d700a1eac074fae143f934e6"
-  integrity sha512-dKkArPtKqbjdnmhOD+h4PmssVHCW2joZPPlNjIcFLZ8WqC306VNVVr89dg11otBS0XzuGibvDU0hq/ivQgCl2Q==
+"@livekit/rtc-node-linux-arm64-gnu@0.13.18":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-linux-arm64-gnu/-/rtc-node-linux-arm64-gnu-0.13.18.tgz#fe7838d34d104634b6edd49f656e9dfd26fd50a7"
+  integrity sha512-MwoxxgwyphwqIe0C+gFpprH//34hFWAy0b6TBIPFJwxu1gHW88qJpPJcDONZu6SyCaKBlEnOEjMgz2vDiSggTg==
 
-"@livekit/rtc-node-linux-x64-gnu@0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-linux-x64-gnu/-/rtc-node-linux-x64-gnu-0.13.14.tgz#5a3510079c0648d7dc4b1ffe7f1c01ebb2df2be3"
-  integrity sha512-z8g2aH+pmK90sC1L+MmGghk4mSIqQZ+mnarZhw0r3NBOWa30kOH7uzGm/ehck64ATQc/8k5aouwESbkyR5M08Q==
+"@livekit/rtc-node-linux-x64-gnu@0.13.18":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-linux-x64-gnu/-/rtc-node-linux-x64-gnu-0.13.18.tgz#e5d05de60b64dc3d909c8c03e0b2a188bd3193f2"
+  integrity sha512-WHgvglYNYW+byZ3ql9GnSnecdLZD9N3Hdt3wdg44+pekbVxdDTzb6EmY0nZeS7YlA4KIh04wNQuwkLFVN1q4Jw==
 
-"@livekit/rtc-node-win32-x64-msvc@0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-win32-x64-msvc/-/rtc-node-win32-x64-msvc-0.13.14.tgz#f230334e277ab9d6daea3426c72b485f77e9479d"
-  integrity sha512-DTwNhwq6xoesT6zr19F7fnOkzBxHtLXYyhnRzK6JzieWWxclKGNaUKaBeUPvvQjOwttwYUbf6djqO78ylvDA4Q==
+"@livekit/rtc-node-win32-x64-msvc@0.13.18":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node-win32-x64-msvc/-/rtc-node-win32-x64-msvc-0.13.18.tgz#4d8b81c453ec306e22e6e8116580d7bf176ac498"
+  integrity sha512-xm+TymR3eH523qnFDrkkKoCpV+v9Yc+KBAoDn28Rtda/BgX0tDS8jWWxJ6vi0EmW3UhEsS3kdnoYM+QU38b2vg==
 
-"@livekit/rtc-node@^0.13.14":
-  version "0.13.14"
-  resolved "https://registry.yarnpkg.com/@livekit/rtc-node/-/rtc-node-0.13.14.tgz#19a877d69821358c857818b2d1d09b96c15fc1e8"
-  integrity sha512-PU3mYvnY6bZwpc483Yt5aLy1Xi0GM4fj5kuv6tfvLE8w1/kOrCQ8jrHxRY/GWT9SqbB8kf8eIkA/aDtyTx+DZQ==
+"@livekit/rtc-node@^0.13.12":
+  version "0.13.18"
+  resolved "https://registry.yarnpkg.com/@livekit/rtc-node/-/rtc-node-0.13.18.tgz#4be43599d4f9e26c8a448ea417c3f75662997bf7"
+  integrity sha512-Kk0z4LWq0yKxQaqAuM9p4TpgCTDrhMBcGeEm6OpQjdjCS42vo8NLB3Q/XP305HWM0Cis65U4gzMkfJ/W2fAqRw==
   dependencies:
     "@bufbuild/protobuf" "^1.10.0"
     "@livekit/mutex" "^1.0.0"
@@ -1012,11 +1021,11 @@
     pino "^9.0.0"
     pino-pretty "^13.0.0"
   optionalDependencies:
-    "@livekit/rtc-node-darwin-arm64" "0.13.14"
-    "@livekit/rtc-node-darwin-x64" "0.13.14"
-    "@livekit/rtc-node-linux-arm64-gnu" "0.13.14"
-    "@livekit/rtc-node-linux-x64-gnu" "0.13.14"
-    "@livekit/rtc-node-win32-x64-msvc" "0.13.14"
+    "@livekit/rtc-node-darwin-arm64" "0.13.18"
+    "@livekit/rtc-node-darwin-x64" "0.13.18"
+    "@livekit/rtc-node-linux-arm64-gnu" "0.13.18"
+    "@livekit/rtc-node-linux-x64-gnu" "0.13.18"
+    "@livekit/rtc-node-win32-x64-msvc" "0.13.18"
 
 "@livekit/typed-emitter@^3.0.0":
   version "3.0.0"
@@ -5014,7 +5023,7 @@ linkify-it@^5.0.0:
   dependencies:
     uc.micro "^2.0.0"
 
-livekit-server-sdk@^2.9.2:
+livekit-server-sdk@^2.13.0, livekit-server-sdk@^2.9.2:
   version "2.13.0"
   resolved "https://registry.yarnpkg.com/livekit-server-sdk/-/livekit-server-sdk-2.13.0.tgz#ba548f8027fd89207de042501708349ddf429766"
   integrity sha512-fQJI/zEJRPeXKdKMkEfJNYSSnvmuPQsk2Q+X6tPfUrJPy7fnyYPax/icf/CZ8EYZQBhFgSD7WaKOYGSSfGSyZw==
