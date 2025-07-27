@@ -217,7 +217,6 @@ export class RealtimeModel extends multimodal.RealtimeModel {
     firstSpeaker?: string;
   }) {
     super();
-    initializeLogger({});
     if (apiKey === '') {
       throw new Error(
         'Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable',
