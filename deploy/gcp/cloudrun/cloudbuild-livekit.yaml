@@ -16,7 +16,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME
-      - .
       - '-f'
       - agents/livekit/Dockerfile
       - .
