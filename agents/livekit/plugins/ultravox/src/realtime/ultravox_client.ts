@@ -27,7 +27,8 @@ export class UltravoxClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to create Ultravox call: ${response.status} ${response.statusText}`);
+      const body = await response.text();
+      throw new Error(`Failed to create Ultravox call: ${response.status} ${response.statusText} - ${body}\n${JSON.stringify(modelData)}`);
     }
 
     return response.json();
