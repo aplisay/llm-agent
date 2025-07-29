@@ -14,6 +14,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.9",
+    "@aplisay/agents-plugin-ultravox": "^0.0.1",
     "@deepgram/sdk": "^3.13.0",
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
     "@google-cloud/text-to-speech": "^4.2.3",
@@ -21,7 +22,6 @@
     "@jambonz/node-client-ws": "github:rjp44/node-client-ws#main",
     "@livekit/agents": "0.7.9",
     "@livekit/agents-plugin-openai": "^0.9.1",
-    "@aplisay/agents-plugin-ultravox": "^0.0.1",
     "@livekit/rtc-node": "^0.13.12",
     "async-mutex": "^0.4.1",
     "axios": "^1.9.0",
@@ -53,7 +53,9 @@
     "gulp-replace": "^1.1.4",
     "jest": "^29.7.0",
     "jsdoc-to-markdown": "^8.0.3",
-    "nodemon": "^2.0.22"
+    "nodemon": "^2.0.22",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
   },
   "optionalDependencies": {
     "firebase-admin": "^11.11.1"
