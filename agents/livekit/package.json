@@ -2,12 +2,25 @@
   "name": "livekit-agent",
   "version": "0.9.1",
   "description": "Omni provider voice agent",
-  "main": "realtime.mjs",
+  "main": "dist/realtime.js",
+  "exports": {
+    ".": {
+      "import": "./dist/realtime.js",
+      "require": "./dist/realtime.js"
+    },
+    "./lib/*": {
+      "import": "./dist/lib/*.js",
+      "require": "./dist/lib/*.js"
+    }
+  },
   "scripts": {
-    "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml realtime.mjs dev",
-    "start": "NODE_ENV=production node realtime.mjs start",
-    "stage": "NODE_ENV=staging LOGLEVEL=debug node realtime.mjs dev",
-    "build": "cd plugins/ultravox && yarn install && yarn build && rm -rf node_modules"
+    "develop": "yarn build && NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml,ts dist/realtime.js dev",
+    "start": "yarn build && NODE_ENV=production node dist/realtime.js start",
+    "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.js dev",
+    "build": "tsc && yarn postbuild",
+    "build:full": "tsc && yarn postbuild",
+    "postbuild": "./fix-imports.sh",
+    "dev": "tsc --watch"
   },
   "author": "",
   "license": "MIT",
@@ -34,7 +47,10 @@
     "ws": "^8.18.2"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "jest": "^29.7.0",
-    "nodemon": "^2.0.22"
+    "nodemon": "^2.0.22",
+    "tsup": "^8.0.2",
+    "typescript": "^5.8.3"
   }
 }
