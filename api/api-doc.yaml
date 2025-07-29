@@ -246,6 +246,7 @@ components:
           name:
             type: string
             description: The function call name, used in the invocation, this is an arbitrary string identifier.
+            pattern: '^[a-zA-Z0-9_-]{1,64}$'
             example: get_weather
           description:
             type: string
