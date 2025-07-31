@@ -2,7 +2,7 @@ import { TransactionLog  } from '../../../../lib/database.js';;
 
 
 
-module.exports = function (logger) {
+export default function (logger) {
   
   const callTransactionLog = async (req, res) => {
     let { callId } = req.params;
