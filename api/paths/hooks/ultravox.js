@@ -3,7 +3,7 @@ import Handler from '../../../lib/handlers/ultravox.js';;
 
 let appParameters, log;
 
-module.exports = function (logger, voices, wsServer) {
+export default function (logger, voices, wsServer) {
   (appParameters = {
     logger,
     voices,

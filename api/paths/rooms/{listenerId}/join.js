@@ -1,11 +1,10 @@
 import cors from 'cors';;
 import { Agent, Instance  } from '../../../../lib/database.js';;
-import handlers from '../../../../lib/handlers.js';;
+import handlers from '../../../../lib/handlers/index.js';;
 
 let appParameters, log;
 
-module.exports =
-  function () {
+export default function () {
     const join = (async (req, res) => {
       let { listenerId } = req.params;
       req.log.debug({ listenerId, body: req.body }, 'join called');

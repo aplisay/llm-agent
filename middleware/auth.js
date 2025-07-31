@@ -1,6 +1,6 @@
 import { initializeApp, applicationDefault } from 'firebase-admin/app';
 import { Instance, User, AuthKey, Op } from '../lib/database.js';
-import firebase from 'firebase-admin/auth';
+import * as firebase from 'firebase-admin/auth';
 
 function init(app, logger) {
 

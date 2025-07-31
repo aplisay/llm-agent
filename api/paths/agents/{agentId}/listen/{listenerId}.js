@@ -2,7 +2,7 @@ import { Instance  } from '../../../../../lib/database.js';;
 
 let log;
 
-module.exports = function (logger) {
+export default function (logger) {
   log = logger;
   return {
     DELETE: listenerDelete,

@@ -10,6 +10,9 @@ export default function (wsServer) {
     let agent, handler, activation;
     try {
       agent = await Agent.findByPk(agentId);
+      if (!agent?.id) {
+        throw new Error(`no agent`);
+      }
       let Handler = handlers.getHandler(agent.modelName);
       handler = new Handler({ agent, wsServer, logger: req.log });
       activation = await handler.activate({ number, options, websocket });
@@ -17,7 +20,7 @@ export default function (wsServer) {
     }
     catch (err) {
       req.log.error(err);
-      if (!agent) {
+      if (!agent?.id) {
         res.status(404).send(`no agent ${agentId}`);
       }
       else if (!handler) {

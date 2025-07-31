@@ -1,16 +1,16 @@
-import handlers from '../../lib/handlers.js';.implementations;
+import handlers from '../../lib/handlers/index.js';
 
 let appParameters, log;
 
 
-module.exports =
-  function (logger, voices) {
+export default function (logger, voices) {
 
     log = logger;
 
-    const voicesList = (async (req, res) => {
+  const voicesList = (async (req, res) => {
+      log.debug({ voices, handlers }, 'voicesList');
       try {
-        let voices = Object.fromEntries(await Promise.all(handlers.map(async ({ name, voices }) => ([name, await voices]))));
+        let voices = Object.fromEntries(await Promise.all(handlers.implementations.map(async ({ name, voices }) => ([name, await voices]))));
         res.send(voices);
       }
       catch (err) {

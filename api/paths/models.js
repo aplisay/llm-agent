@@ -1,8 +1,8 @@
-import handlers from '../../lib/handlers.js';;
+import handlers from '../../lib/handlers/index.js';
 
 let appParameters, log;
 
-module.exports = function (logger) {
+export default function (logger) {
   (appParameters = {
     logger,
   });
