@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import handlers from '../../lib/handlers/index.js';
+=======
+import handlers from '../../lib/handlers.js';;
+>>>>>>> 28b3218 (Refactor project to ESM)
 
 let appParameters, log;
 

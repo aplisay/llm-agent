@@ -10,6 +10,7 @@ export default function (wsServer) {
     let agent, handler, activation;
     try {
       agent = await Agent.findByPk(agentId);
+<<<<<<< HEAD
       if (!agent?.id) {
         throw new Error(`no agent`);
       }
@@ -26,6 +27,21 @@ export default function (wsServer) {
       else if (!handler) {
         res.status(400).send(`no handler for ${agent.modelName} ${err.message}`);
       }
+=======
+      let Handler = handlers.getHandler(agent.modelName);
+      handler = new Handler({ agent, wsServer, logger: req.log });
+      activation = await handler.activate({ number, options, websocket });
+      res.send(activation);
+    }
+    catch (err) {
+      req.log.error(err);
+      if (!agent) {
+        res.status(404).send(`no agent ${agentId}`);
+      }
+      else if (!handler) {
+        res.status(400).send(`no handler for ${agent.modelName} ${err.message}`);
+      }
+>>>>>>> 28b3218 (Refactor project to ESM)
       else {
         let status = 404;
         if (err.message.includes('In use:')) {
@@ -46,7 +62,11 @@ export default function (wsServer) {
     from a websocket client.`,
     summary: 'Activates an instance of an agent to listen for either calls, WebRTC rooms, or websocket connections.',
     operationId: 'activate',
+<<<<<<< HEAD
     tags: ["Listeners"],
+=======
+    tags: ["Agent"],
+>>>>>>> 28b3218 (Refactor project to ESM)
     parameters: [
       {
         description: "ID of the parent agent",
