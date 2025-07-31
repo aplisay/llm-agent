@@ -1,16 +1,19 @@
-require('dotenv').config();
-const fs = require('fs');
-const yaml = require('js-yaml');
-const express = require('express');
-const openapi = require('express-openapi');
-const Voices = require('./lib/voices/');
+import 'dotenv/config';
+import fs from 'fs';
+import yaml from 'js-yaml';
+import express from 'express';
+import openapi from 'express-openapi';
+import Voices from './lib/voices/index.js';
+import cors from "cors";
+import logger from './lib/logger.js';
+import PinoHttp from 'pino-http';
+import { createServer } from 'http';
+import createWsServer from './lib/ws-handler.js';
+import handlers from './lib/handlers/index.js';
+
 const server = express();
-const cors = require("cors");
-const logger = require('./lib/logger');
-const PinoHttp = require('pino-http');
-const httpServer = require('http').createServer(server);
-const wsServer = require('./lib/ws-handler')({ server: httpServer, logger });
-const handlers = require('./lib/handlers');
+const httpServer = createServer(server);
+const wsServer = createWsServer({ server: httpServer, logger });
 
 let apiDoc;
 
@@ -48,10 +51,15 @@ const pino = PinoHttp({
 });
 
 server.use(pino);
-process.env.AUTHENTICATE_USERS === "NO" ?
-  require('./middleware/no-auth.js')(server, logger) :
-  require('./middleware/auth.js')(server, logger);
 
+// Import middleware dynamically based on environment
+if (process.env.AUTHENTICATE_USERS === "NO") {
+  const { default: initNoAuth } = await import('./middleware/no-auth.js');
+  initNoAuth(server, logger);
+} else {
+  const { default: initAuth } = await import('./middleware/auth.js');
+  initAuth(server, logger);
+}
 
 openapi.initialize({
   app: server,
@@ -61,7 +69,7 @@ openapi.initialize({
   dependencies: { wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
-  errorMiddleware: require('./middleware/errors.js')
+  errorMiddleware: (await import('./middleware/errors.js')).default
 });
 
 httpServer.listen(port, () => {

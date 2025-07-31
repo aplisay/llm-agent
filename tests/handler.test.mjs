@@ -1,6 +1,6 @@
-require('dotenv').config();
-const { stopDatabase } = require('../lib/database');
-const handlers = require('../lib/handlers/');
+import 'dotenv/config';
+import { stopDatabase } from '../lib/database.js';
+import handlers from '../lib/handlers/index.js';
 
 afterAll(async () => {
   await stopDatabase();

@@ -1,6 +1,6 @@
-require('dotenv').config();
-const logger = require('../lib/logger');
-const Voices = require('../lib/voices');
+import 'dotenv/config';
+import logger from '../lib/logger.js';
+import Voices from '../lib/voices/index.js';
 
 let voices;
 let list;

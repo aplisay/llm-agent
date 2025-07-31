@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-const dir = require('path');
-const axios = require('axios');
-const commandLineArgs = require('command-line-args');
+import dir from 'path';;
+import axios from 'axios';;
+import commandLineArgs from 'command-line-args';;
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'add', alias: 'a', type: Boolean, defaultValue: false },
@@ -21,9 +21,9 @@ if (!options.add && !options.delete) {
   options.add = true;
 }
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
-const parsed = require('dotenv').config(configArgs);
-const logger = require('../lib/logger');
-const { PhoneNumber, databaseStarted, stopDatabase } = require('../lib/database');
+import parsed from 'dotenv';.config(configArgs);
+import logger from '../lib/logger.js';;
+import { PhoneNumber, databaseStarted, stopDatabase  } from '../lib/database.js';;
 
 const { MAGRATHEA_USERNAME, MAGRATHEA_PASSWORD, JAMBONZ_SIP_ENDPOINT, LIVEKIT_SIP_ENDPOINT } = process.env;
 

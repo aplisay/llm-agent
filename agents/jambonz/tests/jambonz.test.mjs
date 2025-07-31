@@ -1,5 +1,6 @@
-const Jambonz = require('../agent-lib/jambonz');
-const fs = require('fs');
+import Jambonz from '../agent-lib/jambonz.js';
+import fs from 'fs';
+import logger from '../agent-lib/logger.js';
 
 let jambonz;
 
@@ -22,7 +23,7 @@ let testApplication = {
 
 let carriers, numbers, makeNumbers;
 
-let needNumbers = (fs.existsSync('../credentials/numbers.js') && require('../credentials/numbers.js')) || [];
+let needNumbers = (fs.existsSync('../credentials/numbers.js') && (await import('../credentials/numbers.js')).default) || [];
 
 let applicationSid, numberSid;
 
@@ -31,7 +32,7 @@ describe('Jambonz', () => {
   try {
 
     test('Initialises', () => {
-      jambonz = new Jambonz(require('../agent-lib/logger'), 'user');
+      jambonz = new Jambonz(logger, 'user');
       return expect(jambonz).toBeInstanceOf(Jambonz);
     });
 

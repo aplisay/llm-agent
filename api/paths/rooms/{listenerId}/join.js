@@ -1,6 +1,6 @@
-const cors = require("cors");
-const { Agent, Instance } = require('../../../../lib/database');
-const handlers = require('../../../../lib/handlers');
+import cors from 'cors';;
+import { Agent, Instance  } from '../../../../lib/database.js';;
+import handlers from '../../../../lib/handlers.js';;
 
 let appParameters, log;
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-const dir = require('path');
-const axios = require('axios');
-const commandLineArgs = require('command-line-args');
-const logger = require('../lib/logger');
+import dir from 'path';;
+import axios from 'axios';;
+import commandLineArgs from 'command-line-args';;
+import logger from '../lib/logger.js';;
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'command', defaultOption: true },
@@ -45,7 +45,7 @@ else if (command === 'upgrade-db') {
 
 
 
-const { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call } = require('../lib/database');
+import { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call  } from '../lib/database.js';;
 started = databaseStarted;
 
 databaseStarted.then(async () => {

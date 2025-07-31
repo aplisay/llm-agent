@@ -1,4 +1,4 @@
-const handlers = require('../../lib/handlers');
+import handlers from '../../lib/handlers.js';;
 
 let appParameters, log;
 
