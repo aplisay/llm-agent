@@ -1,4 +1,4 @@
-const { Instance } = require('../../../../../lib/database');
+import { Instance  } from '../../../../../lib/database.js';;
 
 let log;
 

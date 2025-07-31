@@ -1,8 +1,8 @@
 import type { Options } from 'tsup';
 
 const defaultOptions: Options = {
-  entry: ['src/**/*.ts'],
-  format: ['cjs', 'esm'],
+  entry: ['./realtime.ts', 'lib/**/*.ts', 'plugins/**/*.ts', 'agent-lib/**/*.js'],
+  format: ['esm'],
   splitting: false,
   sourcemap: true,
   // for the type maps to work, we use tsc's declaration-only command on the success callback
@@ -11,34 +11,16 @@ const defaultOptions: Options = {
   target: 'node16',
   bundle: false,
   shims: true,
+  legacyOutput: true,
   esbuildOptions: (options, context) => {
     if (context.format === 'esm') {
       options.packages = 'external';
     }
   },
-  plugins: [
-    {
-      // https://github.com/egoist/tsup/issues/953#issuecomment-2294998890
-      // ensuring that all local requires/imports in `.cjs` files import from `.cjs` files.
-      // require('./path') → require('./path.cjs') in `.cjs` files
-      // require('../path') → require('../path.cjs') in `.cjs` files
-      // from './path' → from './path.cjs' in `.cjs` files
-      // from '../path' → from '../path.cjs' in `.cjs` files
-      name: 'fix-cjs-imports',
-      renderChunk(code) {
-        if (this.format === 'cjs') {
-          const regexCjs = /require\((?<quote>['"])(?<import>\.[^'"]+)\.js['"]\)/g;
-          const regexDynamic = /import\((?<quote>['"])(?<import>\.[^'"]+)\.js['"]\)/g;
-          const regexEsm = /from(?<space>[\s]*)(?<quote>['"])(?<import>\.[^'"]+)\.js['"]/g;
-          return {
-            code: code
-              .replace(regexCjs, 'require($<quote>$<import>.cjs$<quote>)')
-              .replace(regexDynamic, 'import($<quote>$<import>.cjs$<quote>)')
-              .replace(regexEsm, 'from$<space>$<quote>$<import>.cjs$<quote>'),
-          };
-        }
-      },
-    },
-  ],
+  external: ['agent-lib/logger.js', 'agent-lib/database.js', 'agent-lib/function-handler.js'],
+  onSuccess: 'find agent-lib -type f -name "*.js" -exec cp {} dist/agent-lib/`basename {}`.cjs \\;',
+
 };
 export default defaultOptions;
+
+

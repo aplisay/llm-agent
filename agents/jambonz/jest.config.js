@@ -142,7 +142,7 @@ export default {
   // snapshotSerializers: [],
 
   // The test environment that will be used for testing
-  testEnvironment: "jest-environment-node",
+  testEnvironment: "node",
 
   // Options that will be passed to the testEnvironment
   testEnvironmentOptions: {},
@@ -193,7 +193,6 @@ export default {
   // watchman: true,
 
   // Enable ES modules support
-  extensionsToTreatAsEsm: [],
   globals: {
     'ts-jest': {
       useESM: true,

@@ -1,5 +1,5 @@
-const { Agent, Instance, Call } = require('../../../lib/database');
-const Handler = require('../../../lib/handlers/ultravox');
+import { Agent, Instance, Call  } from '../../../lib/database.js';;
+import Handler from '../../../lib/handlers/ultravox.js';;
 
 let appParameters, log;
 

@@ -1,3 +1,6 @@
+import logger from '../../lib/logger.js';
+import { jest } from '@jest/globals';
+
 const functions = [
   {
     name: "get_weather",
@@ -65,19 +68,18 @@ const tools = {
   functions: functions.map(f => ({ ...f, implementation: undefined }))
 };
 
-
-
-module.exports = function (Llm, prompt, modelName = undefined) {
+export default function (Llm, prompt, modelName = undefined) {
 
   describe(modelName || 'default', () => {
+    let model;
 
     test('Initialises', async () => {
       if (!Llm.supportsFunctions(modelName)) {
-        expect(() => new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, modelName, functions: tools.functions })).toThrow('Functions not supported by this model');
-        model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, modelName });
+        expect(() => new Llm({ logger, user: 'user', prompt, modelName, functions: tools.functions })).toThrow('Functions not supported by this model');
+        model = new Llm({ logger, user: 'user', prompt, modelName });
       }
       else {
-        model = new Llm({ logger: require('../../lib/logger'), user: 'user', prompt, modelName, functions: Llm.supportsFunctions(modelName) && tools.functions });
+        model = new Llm({ logger, user: 'user', prompt, modelName, functions: Llm.supportsFunctions(modelName) && tools.functions });
       }
       return expect(model).toBeInstanceOf(Llm);
     });

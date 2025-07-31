@@ -1,4 +1,4 @@
-const { Agent, Instance, PhoneNumber } = require('../../../lib/database');
+import { Agent, Instance, PhoneNumber  } from '../../../lib/database.js';;
 
 let log;
 
