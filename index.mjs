@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import dotenv from 'dotenv';
+=======
+import 'dotenv/config';
+>>>>>>> 28b3218 (Refactor project to ESM)
 import fs from 'fs';
 import yaml from 'js-yaml';
 import express from 'express';
@@ -9,12 +13,16 @@ import logger from './lib/logger.js';
 import PinoHttp from 'pino-http';
 import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
+<<<<<<< HEAD
 import { cleanHandlers } from './lib/handlers/index.js';
 
 logger.info('starting up');
 dotenv.config();
 logger.info({ env: process.env }, 'config done');
 
+=======
+import handlers from './lib/handlers/index.js';
+>>>>>>> 28b3218 (Refactor project to ESM)
 
 const server = express();
 const httpServer = createServer(server);
@@ -66,6 +74,7 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
   initAuth(server, logger);
 }
 
+<<<<<<< HEAD
 // Check for private API exposure flag (support multiple naming conventions)
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
 // Create a path filter to exclude private endpoints when not exposed
@@ -79,6 +88,8 @@ const securityFilter = (req, res) => {
   res.status(200).json(req.apiDoc);
 };
 
+=======
+>>>>>>> 28b3218 (Refactor project to ESM)
 openapi.initialize({
   app: server,
   apiDoc,
@@ -87,8 +98,12 @@ openapi.initialize({
   dependencies: { wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
+<<<<<<< HEAD
   errorMiddleware: (await import('./middleware/errors.js')).default,
   securityFilter
+=======
+  errorMiddleware: (await import('./middleware/errors.js')).default
+>>>>>>> 28b3218 (Refactor project to ESM)
 });
 
 httpServer.listen(port, () => {
@@ -101,7 +116,11 @@ process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
   logger.debug({}, `beforeExit: applications running`);
+<<<<<<< HEAD
   await cleanHandlers();
+=======
+  await handlers.clean();
+>>>>>>> 28b3218 (Refactor project to ESM)
   logger.debug({}, `cleanup: applications cleaned`);
 }
 

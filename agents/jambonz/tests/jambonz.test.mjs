@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 import 'dotenv/config';
+=======
+>>>>>>> 28b3218 (Refactor project to ESM)
 import Jambonz from '../agent-lib/jambonz.js';
 import fs from 'fs';
 import logger from '../agent-lib/logger.js';

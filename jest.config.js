@@ -198,11 +198,16 @@ export default {
     'ts-jest': {
       useESM: true,
     },
+<<<<<<< HEAD
     crypto: import('crypto')
 
   },
   transform: {
     '\\.[jt]sx?$': 'babel-jest',
   },
+=======
+  },
+  preset: undefined,
+>>>>>>> 28b3218 (Refactor project to ESM)
   testRunner: 'jest-circus/runner',
 };

@@ -8,6 +8,7 @@ afterAll(async () => {
 
 describe(`handlers`, () => {
 
+<<<<<<< HEAD
   let implementations, models;
 
   test('Full list of handlers and models', async () => {
@@ -20,6 +21,15 @@ describe(`handlers`, () => {
 
   test('voices', async () => {
     for (const handler of implementations) {
+=======
+  test('Full list of handlers and models', () => {
+    expect(Object.keys(handlers.implementations).length).toBe(3);
+    expect(handlers.models.length).toBe(21);
+  });
+
+  test('voices', async () => {
+    for (const handler of handlers.implementations) {
+>>>>>>> 28b3218 (Refactor project to ESM)
       const voices = await handler.voices;
       expect(Object.keys(voices).length).toBeGreaterThan(0);
     }
