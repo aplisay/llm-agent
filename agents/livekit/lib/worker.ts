@@ -2,9 +2,9 @@ import dotenv from 'dotenv';
 import { RoomServiceClient } from 'livekit-server-sdk';
 import { defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
-import * as ultravox from '../plugins/ultravox/src/realtime/index.js';
-import * as logger from '../agent-lib/logger.js';
-import * as database from '../agent-lib/database.js';
+import * as ultravox from '../plugins/ultravox/src/index.js';
+import logger from '../agent-lib/logger.js';
+import {Agent, Instance, TransactionLog, Call} from '../agent-lib/database.js';
 import * as functionHandlerModule from '../agent-lib/function-handler.js';
 import { bridgeParticipant } from './telephony.js';
 
@@ -70,11 +70,11 @@ export default defineAgent({
       callerId = callerId?.replace('+', '');
 
       if (instanceId) {
-        instance = await database.Instance.findByPk(instanceId, { include: database.Agent });
+        instance = await Instance.findByPk(instanceId, { include: Agent });
       }
       else if (calledId) {
         logger.info({ callerId, calledId, aplisayId }, 'new Livekit call');
-        const result = await database.Agent.fromNumber(calledId) as any;
+        const result = await Agent.fromNumber(calledId) as any;
         number = result.number;
         instance = result.instance;
         agent = result.agent;
@@ -83,7 +83,7 @@ export default defineAgent({
         logger.error({ participant }, 'no instance found');
         throw new Error('No instance found');
       }
-      agent = agent || instance?.database.Agent;
+      agent = agent || instance?.Agent;
       calledId = calledId || 'WebRTC';
       callerId = callerId || 'WebRTC';
       const { userId, modelName, organisationId, options = {} } = agent;
@@ -110,7 +110,7 @@ export default defineAgent({
         }
       };
 
-      const call = await database.Call.create({
+      const call = await Call.create({
         userId,
         organisationId,
         instanceId: instance.id,
@@ -133,7 +133,7 @@ export default defineAgent({
       }) as any;
       const { metadata } = call;
       metadata.aplisay.callId = call.id;
-      await database.TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
+      await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
       const { prompt, functions = [], keys = [] } = agent;
       logger.debug({ agent, instanceId: instance.id, instance, prompt, modelName, options, functions }, 'got agent');
@@ -143,7 +143,7 @@ export default defineAgent({
         if (entries.length > 0) {
           const [type, data] = entries[0] as [string, any];
           ctx.room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(message)), { reliable: true });
-          await database.TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
+          await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
         }
       };
 
