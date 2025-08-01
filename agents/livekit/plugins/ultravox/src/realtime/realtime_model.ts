@@ -446,7 +446,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
           firstSpeaker: this.#opts.firstSpeaker,
         };
 
-        this.#logger.debug({ modelData }, 'Creating Ultravox call');
+        this.#logger.info({ modelData }, 'Creating Ultravox call');
         const callResponse = await this.#client.createCall(modelData);
         this.#callId = callResponse.callId;
 
@@ -537,7 +537,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
   }
 
   async close() {
-    this.#logger.info('closing call', { ws: this.#ws, call: this.#callId });
+    this.#logger.info({ ws: this.#ws, call: this.#callId }, 'closing call');
     if (!this.#ws) return;
     this.#closing = true;
     this.#ws.close();
@@ -587,7 +587,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
       // then nothing needs to be done.
       if (!this.#currentResponseId) {
         this.#currentResponseId = this.#generateEventId();
-        this.#logger.info('Creating new response', { responseId: this.#currentResponseId });
+        this.#logger.info({ responseId: this.#currentResponseId }, 'Creating new response');
         // Create a new audio byte stream for the response
         this.#audioStream = new AudioByteStream(
           api_proto.SAMPLE_RATE,
@@ -701,7 +701,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
     this.emit('response_done', response);
 
     // Reset for next response
-    this.#logger.info('Ending response', { responseId: this.#currentResponseId });
+    this.#logger.info({ responseId: this.#currentResponseId }, 'Ending response');
     this.#currentResponseId = null;
     this.#currentOutputIndex = 0;
     this.#currentContentIndex = 0;
@@ -776,9 +776,13 @@ export class RealtimeSession extends multimodal.RealtimeSession {
       }
     } catch (error: unknown) {
       this.#logger.error(
+        {
+          error, toolCall,
+          message: error instanceof Error ? error.message : String(error),
+        },
         'Error executing function:',
-        error instanceof Error ? error.message : String(error),
       );
+
 
       // Send error result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
@@ -789,7 +793,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
           errorMessage: error instanceof Error ? error.message : String(error),
         };
 
-        this.#logger.debug('Sending function error result:', functionResult);
+        this.#logger.info(functionResult, 'Sending function error result:');
         this.#ws.send(JSON.stringify(functionResult));
       }
     }
@@ -805,9 +809,7 @@ export class RealtimeSession extends multimodal.RealtimeSession {
 
   async #handleAudio(audioData: Buffer): Promise<void> {
     if (!this.#currentResponseId) {
-      this.#logger.info('No current response id, buffering audio', {
-        currentResponseId: this.#currentResponseId,
-      });
+      this.#logger.info({ currentResponseId: this.#currentResponseId }, 'No current response id, buffering audio');
       this.#audioBuffer.push(audioData);
       return;
     }
