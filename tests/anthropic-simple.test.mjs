@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Llm from '../lib/models/anthropic.js';
 
 describe('Anthropic Model Import Test', () => {

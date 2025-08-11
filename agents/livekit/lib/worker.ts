@@ -1,10 +1,11 @@
 import dotenv from 'dotenv';
 import { RoomServiceClient } from 'livekit-server-sdk';
+import type { Room } from 'livekit-server-sdk';
 import { defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as ultravox from '../plugins/ultravox/src/index.js';
 import logger from '../agent-lib/logger.js';
-import {Agent, Instance, TransactionLog, Call} from '../agent-lib/database.js';
+import {Agent, Instance, TransactionLog, Call, PhoneNumber} from '../agent-lib/database.js';
 import * as functionHandlerModule from '../agent-lib/function-handler.js';
 import { bridgeParticipant } from './telephony.js';
 
@@ -52,41 +53,80 @@ export default defineAgent({
   entry: async (ctx: any) => {
 
     await ctx.connect();
-    const room = ctx.room;
+    const room: Room = ctx.room as Room;
     let instance: any = null;
-    let agent: any = null;
+    let agent: any | null = null;
     let number: any = null;
-    const participant = await ctx.waitForParticipant();
+    let participant: any = null;
     let bridgedParticipant: any = null;
     let model: any = null;
 
     try {
 
-      // Either we are WebRTC and have participant metadata, or we are SIP and have calledId and callerId
-      let instanceId = participant.metadata;
-      let { 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = participant?.attributes || {};
-      // Remove + from the numbers
-      calledId = calledId?.replace('+', '');
-      callerId = callerId?.replace('+', '');
+      let { callerId, calledId, instanceId, aplisayId, outbound } = ctx.job.metadata || {};
 
-      if (instanceId) {
-        instance = await Instance.findByPk(instanceId, { include: Agent });
+      if (outbound) {
+        if (!calledId || !callerId || !aplisayId || !instanceId) {
+          logger.error({ ctx }, 'missing metadata for outbound call');
+          throw new Error('Missing metadata for outbound call');
+        }
+        else {
+          instance = await Instance.findByPk(instanceId, { include: Agent });
+        }
+
+        if(!instance) {
+          logger.error({ ctx }, `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`);
+          throw new Error('No instance found for outbound call');
+        }
+        else {
+          participant = await bridgeParticipant(room.name, callerId, aplisayId, calledId);
+        }
+        if(!participant) {
+          logger.error({ ctx }, `Outbound call failed for (${calledId} => ${callerId})`);
+          throw new Error('outbound call failed');
+        }
+
       }
-      else if (calledId) {
-        logger.info({ callerId, calledId, aplisayId }, 'new Livekit call');
-        const result = await Agent.fromNumber(calledId) as any;
-        number = result.number;
-        instance = result.instance;
-        agent = result.agent;
+      else {
+
+        participant = await ctx.waitForParticipant();
+        
+        ({ 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = ctx.job.metadata);
+        calledId = calledId?.replace('+', '');
+        callerId = callerId?.replace('+', '');
+        aplisayId = aplisayId?.replace('+', '');
+      
+
+        // Either we are WebRTC and have participant metadata, or we are SIP and have calledId and callerId
+        let instanceId = participant.metadata;
+        ({ 'sip.trunkPhoneNumber': calledId, 'sip.phoneNumber': callerId, 'sip.h.x-aplisay-trunk': aplisayId } = participant?.attributes || {});
+        // Remove + from the numbers
+        calledId = calledId?.replace('+', '');
+        callerId = callerId?.replace('+', '');
+
+        if (instanceId) {
+          instance = await Instance.findByPk(instanceId, { include: Agent });
+        }
+        else if (calledId) {
+          logger.info({ callerId, calledId, aplisayId }, 'new Livekit call');
+          const result = await Agent.fromNumber(calledId) as any;
+          number = result.number;
+          instance = result.instance;
+          agent = result.agent;
+        }
+
+        if (!instance) {
+          logger.error({ participant }, `no instance found for inbound call (${calledId} => ${callerId})`);
+          throw new Error('No instance found');
+        }
+
+    
       }
-      if (!instance) {
-        logger.error({ participant }, 'no instance found');
-        throw new Error('No instance found');
-      }
-      agent = agent || instance?.Agent;
+
+      agent = agent || instance?.Agent || null;
       calledId = calledId || 'WebRTC';
       callerId = callerId || 'WebRTC';
-      const { userId, modelName, organisationId, options = {} } = agent;
+      const { userId, modelName, organisationId, options = {} } = agent as any || {};
       const { fallback: { number: fallbackNumbers } = {} } = options;
       logger.info({ agent, instance, calledId, callerId, ctx, room, participant }, 'new room instance');
 
@@ -98,7 +138,7 @@ export default defineAgent({
         try {
           logger.info({ args, number: args.number, identity: participant.info['identity'], room, aplisayId }, 'transfer participant');
 
-          bridgedParticipant = await bridgeParticipant(room.name, participant.info['identity'], args.number, aplisayId, calledId);
+          bridgedParticipant = await bridgeParticipant(room.name, args.number, aplisayId, calledId);
           logger.info({ bridgedParticipant }, 'new participant created');
           model && await model.close() && (model = null);
           return bridgedParticipant;
@@ -116,7 +156,7 @@ export default defineAgent({
         instanceId: instance.id,
         agentId: agent.id,
         platform: 'livekit',
-        platformCallId: room?.info?.sid,
+        platformCallId: room?.sid,
         calledId,
         callerId,
         modelName,
@@ -131,12 +171,14 @@ export default defineAgent({
           }
         }
       }) as any;
+
       const { metadata } = call;
       metadata.aplisay.callId = call.id;
+
       await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
       const { prompt, functions = [], keys = [] } = agent;
-      logger.debug({ agent, instanceId: instance.id, instance, prompt, modelName, options, functions }, 'got agent');
+      logger.debug({ agent, instanceId: instance.id, instance, prompt, modelName, options, metadata, functions }, 'got agent');
 
       const sendMessage = async (message: any) => {
         const entries = Object.entries(message);

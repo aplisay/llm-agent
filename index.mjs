@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import express from 'express';
@@ -9,7 +9,12 @@ import logger from './lib/logger.js';
 import PinoHttp from 'pino-http';
 import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
-import handlers from './lib/handlers/index.js';
+import { cleanHandlers } from './lib/handlers/index.js';
+
+logger.info('starting up');
+dotenv.config();
+logger.info({ env: process.env }, 'config done');
+
 
 const server = express();
 const httpServer = createServer(server);
@@ -82,7 +87,7 @@ process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
   logger.debug({}, `beforeExit: applications running`);
-  await handlers.clean();
+  await cleanHandlers();
   logger.debug({}, `cleanup: applications cleaned`);
 }
 
