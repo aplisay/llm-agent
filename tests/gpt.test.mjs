@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Llm from '../lib/models/openai.js';
 import prompts from '../data/defaultPrompts.js';
 import testLlm from './lib/llm.js';

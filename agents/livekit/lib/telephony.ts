@@ -18,7 +18,7 @@ export async function transferParticipant(roomName: string, participant: string,
   return result;
 }
 
-export async function bridgeParticipant(roomName: string, participant: string, bridgeTo: string, aplisayId: string, callerId: string): Promise<any> {
+export async function bridgeParticipant(roomName: string, bridgeTo: string, aplisayId: string, callerId: string): Promise<any> {
 
   if (!aplisayId?.length) {
     throw new Error('No inbound trunk or inbound trunk does not support bridging');
@@ -48,7 +48,7 @@ export async function bridgeParticipant(roomName: string, participant: string, b
     waitUntilAnswered: true
   };
 
-  logger.info({ roomName, participant, bridgeTo, callerId, sipParticipantOptions }, "bridge participant initiated");
+  logger.info({ roomName, bridgeTo, callerId, sipParticipantOptions }, "bridge participant initiated");
 
   const newParticipant = await sipClient.createSipParticipant(
     sipTrunkId,

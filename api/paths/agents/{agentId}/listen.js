@@ -13,7 +13,7 @@ export default function (wsServer) {
       if (!agent?.id) {
         throw new Error(`no agent`);
       }
-      let Handler = handlers.getHandler(agent.modelName);
+      let Handler = (await handlers()).getHandler(agent.modelName);
       handler = new Handler({ agent, wsServer, logger: req.log });
       activation = await handler.activate({ number, options, websocket });
       res.send(activation);

@@ -19,7 +19,7 @@ export default function () {
           req.log.info('Join called on telephony room!');
           throw new Error('bad listener');
         }
-        let Handler = handlers.getHandler(agent.modelName);
+        let Handler = (await handlers()).getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
         let room = await handler.join({ options });
         res.send(room);
