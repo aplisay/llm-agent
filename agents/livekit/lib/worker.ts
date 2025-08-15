@@ -5,9 +5,10 @@ import { defineAgent, multimodal } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as ultravox from '../plugins/ultravox/src/index.js';
 import logger from '../agent-lib/logger.js';
-import {Agent, Instance, TransactionLog, Call, PhoneNumber} from '../agent-lib/database.js';
+
 import * as functionHandlerModule from '../agent-lib/function-handler.js';
 import { bridgeParticipant } from './telephony.js';
+import { getInstanceById, getInstanceByNumber, createCall, createTransactionLog } from './api-client.js';
 
 
 dotenv.config();
@@ -71,7 +72,7 @@ export default defineAgent({
           throw new Error('Missing metadata for outbound call');
         }
         else {
-          instance = await Instance.findByPk(instanceId, { include: Agent });
+          instance = await getInstanceById(instanceId);
         }
 
         if(!instance) {
@@ -105,14 +106,14 @@ export default defineAgent({
         callerId = callerId?.replace('+', '');
 
         if (instanceId) {
-          instance = await Instance.findByPk(instanceId, { include: Agent });
+          instance = await getInstanceById(instanceId);
         }
         else if (calledId) {
           logger.info({ callerId, calledId, aplisayId }, 'new Livekit call');
-          const result = await Agent.fromNumber(calledId) as any;
+          const result = await getInstanceByNumber(calledId);
           number = result.number;
-          instance = result.instance;
-          agent = result.agent;
+          instance = result;
+          agent = result.Agent;
         }
 
         if (!instance) {
@@ -150,7 +151,7 @@ export default defineAgent({
         }
       };
 
-      const call = await Call.create({
+      const call = await createCall({
         userId,
         organisationId,
         instanceId: instance.id,
@@ -170,12 +171,12 @@ export default defineAgent({
             model: agent.modelName,
           }
         }
-      }) as any;
+      });
 
       const { metadata } = call;
       metadata.aplisay.callId = call.id;
 
-      await TransactionLog.create({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
+      await createTransactionLog({ userId, organisationId, callId: call.id, type: 'answer', data: instance.id, isFinal: true });
 
       const { prompt, functions = [], keys = [] } = agent;
       logger.debug({ agent, instanceId: instance.id, instance, prompt, modelName, options, metadata, functions }, 'got agent');
@@ -185,7 +186,7 @@ export default defineAgent({
         if (entries.length > 0) {
           const [type, data] = entries[0] as [string, any];
           ctx.room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(message)), { reliable: true });
-          await TransactionLog.create({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
+          await createTransactionLog({ userId, organisationId, callId: call.id, type, data: JSON.stringify(data), isFinal: true });
         }
       };
 

@@ -66,6 +66,19 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
   initAuth(server, logger);
 }
 
+// Check for private API exposure flag (support multiple naming conventions)
+const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
+// Create a path filter to exclude private endpoints when not exposed
+const securityFilter = (req, res) => {
+  // If private APIs should not be exposed, exclude endpoints with 'Agent Database' tag
+
+  if (!shouldExposePrivateApis) {
+    delete req.apiDoc.paths['/agent-db'];
+  }
+  logger.debug({ paths: req.apiDoc.paths, shouldExposePrivateApis }, 'after pathFilter');
+  res.status(200).json(req.apiDoc);
+};
+
 openapi.initialize({
   app: server,
   apiDoc,
@@ -74,7 +87,8 @@ openapi.initialize({
   dependencies: { wsServer, logger, voices: new Voices(logger) },
   paths: './api/paths',
   promiseMode: true,
-  errorMiddleware: (await import('./middleware/errors.js')).default
+  errorMiddleware: (await import('./middleware/errors.js')).default,
+  securityFilter
 });
 
 httpServer.listen(port, () => {

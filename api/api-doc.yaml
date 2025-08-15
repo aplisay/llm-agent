@@ -54,6 +54,11 @@ tags:
     description: |-
       Voices are the list of text to speach (TTS) voices which are available in the engine, again they are
       set at agent creation time, but may also be modified in the course of running an agent.
+  - name: Agent Database
+    description: |-
+      Agent Database operations provide a private interface for managing agent data entries.
+      These endpoints allow listing, creating, and updating agent database records with
+      proper user authentication and data isolation.
 
 components:
   schemas:
