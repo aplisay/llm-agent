@@ -1,7 +1,7 @@
 import { SipClient } from 'livekit-server-sdk';
 import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as loggerModule from '../agent-lib/logger.js';
-import * as database from '../agent-lib/database.js';
+import { getPhoneNumbers } from './api-client.js';
 
 const logger = loggerModule.default;
 
@@ -11,7 +11,8 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
 export async function setupSIPClients(): Promise<any> {
   const sipClient = new SipClient(process.env.LIVEKIT_URL!, process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!);
 
-  const phoneNumbers = (await database.PhoneNumber.findAll({ where: { handler: 'livekit' } })).map((p: any) => `+${p.number}`);
+  const phoneNumbersData = await getPhoneNumbers('livekit');
+  const phoneNumbers = phoneNumbersData.map((p: any) => `+${p.number}`);
   logger.info({ phoneNumbers }, 'Phone numbers');
   if (!phoneNumbers.length) {
     logger.info('No phone numbers found');
@@ -93,7 +94,6 @@ export async function runSetup(): Promise<void> {
   setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
     logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
     logger.info('SIP clients setup, exiting');
-    database.stopDatabase();
     process.exit(0);
   });
 } 

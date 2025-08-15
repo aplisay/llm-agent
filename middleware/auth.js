@@ -25,6 +25,21 @@ function init(app, logger) {
       next();
       return;
     }
+    
+    // Check for shared token for internal API calls
+    const sharedToken = process.env.SHARED_API_TOKEN;
+    if (sharedToken && req.headers['x-shared-token'] === sharedToken) {
+      // Create a system user for internal API calls
+      res.locals.user = {
+        id: 'system',
+        user_id: 'system',
+        name: 'System User (Internal API)',
+        isSystem: true
+      };
+      res.locals.user.sql = { where: { userId: 'system' } };
+      next();
+      return;
+    }
     try {
       const [bearer, token] = (req.headers?.authorization && req.headers?.authorization?.split(" ")) || [];
       if (bearer === 'Bearer' && token) {
