@@ -75,7 +75,7 @@ const instanceGet = (async (req, res) => {
 instanceGet.apiDoc = {
   summary: 'Returns an instance by ID or phone number with its associated agent.',
   operationId: 'getInstance',
-  tags: ["Agents"],
+  tags: ["Agent"],
   parameters: [
     {
       name: 'instanceId',
