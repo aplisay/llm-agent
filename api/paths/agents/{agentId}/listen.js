@@ -46,7 +46,7 @@ export default function (wsServer) {
     from a websocket client.`,
     summary: 'Activates an instance of an agent to listen for either calls, WebRTC rooms, or websocket connections.',
     operationId: 'activate',
-    tags: ["Agent"],
+    tags: ["Listeners"],
     parameters: [
       {
         description: "ID of the parent agent",

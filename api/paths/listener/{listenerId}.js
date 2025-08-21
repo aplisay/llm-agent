@@ -1,4 +1,4 @@
-import { Instance  } from '../../../../../lib/database.js';;
+import { Instance } from '../../../lib/database.js';
 
 let log;
 
@@ -24,24 +24,13 @@ const listenerDelete = async (req, res) => {
     res.status(404).send(err);
     req.log.error(err, 'deleting instance');
   }
-
 };
 
 listenerDelete.apiDoc = {
   summary: 'Deletes a listener',
-  operationId: 'deleteListener',
-  deprecated: true,
+  operationId: 'deleteListenerById',
   tags: ["Listeners"],
   parameters: [
-    {
-      description: "Agent ID of the listener to delete",
-      in: 'path',
-      name: 'agentId',
-      required: true,
-      schema: {
-        type: 'string'
-      }
-    },
     {
       description: "ID of the listener to delete",
       in: 'path',
@@ -54,7 +43,7 @@ listenerDelete.apiDoc = {
   ],
   responses: {
     200: {
-      description: 'Deleted Listener. Deprecated - use DELETE /listener/{listenerId}',
+      description: 'Deleted Listener.',
     },
     default: {
       description: 'An error occurred',
@@ -68,4 +57,5 @@ listenerDelete.apiDoc = {
     }
   }
 };
+
 

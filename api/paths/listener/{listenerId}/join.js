@@ -1,6 +1,6 @@
-import cors from 'cors';;
-import { Agent, Instance  } from '../../../../lib/database.js';;
-import handlers from '../../../../lib/handlers/index.js';;
+import cors from 'cors';
+import { Agent, Instance } from '../../../../lib/database.js';
+import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
 
@@ -32,8 +32,7 @@ export default function () {
     });
     join.apiDoc = {
       summary: 'Gets join information for a realtime room connected to an agent.',
-      operationId: 'join',
-      deprecated: true,
+      operationId: 'joinListener',
       tags: ["Listeners"],
       description: `Gets room joining information for the room connected to an instance of an agent.`,
       parameters: [
@@ -177,3 +176,5 @@ export default function () {
     };
 
   };
+
+
