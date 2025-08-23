@@ -1,4 +1,5 @@
-import { Agent, PhoneNumber } from '../../../../lib/database.js';
+import { Agent, Instance, PhoneNumber } from '../../../../lib/database.js';
+import { getHandler } from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
 
@@ -30,8 +31,8 @@ const originateCall = (async (req, res) => {
     }
     
     // Check if agent exists and belongs to the organization
-    const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent, as: 'agent' }] });
-    const agent = instance?.agent;
+    const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
+    const agent = instance?.Agent;
 
     if (!instance?.id || instance.organisationId !== organisationId) {
       return res.status(404).send({ error: `Agent ${listenerId} not found` });
@@ -57,15 +58,16 @@ const originateCall = (async (req, res) => {
         error: `Called number ${calledId} is not a valid UK geographic or mobile number` 
       });
     }
+    const aplisayId = callerPhoneNumber.aplisayId;
     // Check if the handler for this model has a outbound handler
-    let handler = await Handler.getAgentHandler(agent.modelName);
+    let handler = await getHandler(agent.modelName);
     if (!handler?.outbound) {
       return res.status(400).send({ 
         error: `Agent ${agent.modelName} cannot make outbound calls` 
       });
     }
-    else {
-      await handler.outbound({instance, callerId, calledId, metadata});
+    else { 
+      await handler.outbound({instance, callerId, calledId, metadata, aplisayId});
     }
     
     // If all validations pass, return success
