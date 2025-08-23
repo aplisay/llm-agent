@@ -1,4 +1,5 @@
-import { PhoneNumber } from '../../lib/database.js';
+import { PhoneNumber, Op } from '../../lib/database.js';
+import { getTelephonyHandler } from '../../lib/handlers/index.js';
 
 let appParameters, log;
 
@@ -16,17 +17,33 @@ export default function (logger, voices, wsServer) {
 
 const phoneNumberList = (async (req, res) => {
   let { organisationId } = res.locals.user;
-  let { originate } = req.query;
-  
+  let { originate, handler } = req.query;
+
   try {
-    let where = { organisationId };
-    
+    let where = {
+      [Op.or]: [
+        { organisationId },
+        {
+          organisationId: {
+            [Op.eq]: null
+          }
+        }
+      ]
+    };
+
     // If originate filter is requested, add additional conditions
     if (originate) {
       where.outbound = true;
-      where.aplisayId = { [require('sequelize').Op.ne]: null };
+      where.aplisayId = { [Op.ne]: null };
     }
-    
+
+    // If handler filter is requested, add handler condition
+    if (handler) {
+      const telephonyHandler = await getTelephonyHandler(handler);
+      where.handler = telephonyHandler;
+    }
+    req.log.debug({ where }, 'listing phone numbers');
+
     let phoneNumbers = await PhoneNumber.findAll({
       where,
       attributes: ['number', 'handler', 'outbound']
@@ -51,6 +68,16 @@ phoneNumberList.apiDoc = {
       required: false,
       schema: {
         type: 'boolean'
+      }
+    },
+    {
+      description: "Filter to only return numbers using the specified handler. Handler names are mapped to their telephony handlers (e.g., 'ultravox' maps to 'jambonz')",
+      in: 'query',
+      name: 'handler',
+      required: false,
+      schema: {
+        type: 'string',
+        enum: ['livekit', 'jambonz', 'ultravox']
       }
     }
   ],
