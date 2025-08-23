@@ -64,7 +64,10 @@ export default defineAgent({
 
     try {
 
-      let { callerId, calledId, instanceId, aplisayId, outbound } = ctx.job.metadata || {};
+      const jobMetadata = (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
+
+      let { callerId, calledId, instanceId, aplisayId, outbound } = jobMetadata || {};
+      logger.info({ callerId, calledId, instanceId, aplisayId, outbound, jobMetadata }, 'new call');
 
       if (outbound) {
         if (!calledId || !callerId || !aplisayId || !instanceId) {
@@ -80,7 +83,8 @@ export default defineAgent({
           throw new Error('No instance found for outbound call');
         }
         else {
-          participant = await bridgeParticipant(room.name, callerId, aplisayId, calledId);
+          logger.info({ callerId, calledId, instanceId, aplisayId, outbound }, 'bridging participant');
+          participant = await bridgeParticipant(room.name, calledId, aplisayId, callerId);
         }
         if(!participant) {
           logger.error({ ctx }, `Outbound call failed for (${calledId} => ${callerId})`);
