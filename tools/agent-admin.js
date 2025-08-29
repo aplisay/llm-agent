@@ -1,16 +1,9 @@
 #!/usr/bin/env node
-<<<<<<< HEAD
 import dotenv from 'dotenv';
 import dir from 'path';
 import axios from 'axios';
 import commandLineArgs from 'command-line-args';
 import logger from '../lib/logger.js';
-=======
-import dir from 'path';;
-import axios from 'axios';;
-import commandLineArgs from 'command-line-args';;
-import logger from '../lib/logger.js';;
->>>>>>> 28b3218 (Refactor project to ESM)
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'command', defaultOption: true },
@@ -54,16 +47,9 @@ else if (command === 'upgrade-db') {
 
 async function main() {
 
-<<<<<<< HEAD
   const { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize } = (await import('../lib/database.js'));
   await databaseStarted;
   started = stopDatabase;
-=======
-import { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call  } from '../lib/database.js';;
-started = databaseStarted;
-
-databaseStarted.then(async () => {
->>>>>>> 28b3218 (Refactor project to ESM)
   try {
 
     let organisation, user, authKey, where;

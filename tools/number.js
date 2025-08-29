@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-<<<<<<< HEAD
 import dir from 'path';
 import axios from 'axios';
 import commandLineArgs from 'command-line-args';
@@ -7,11 +6,6 @@ import logger from '../lib/logger.js';
 
 logger.info({ env: process.env }, 'initial dotenv');
 
-=======
-import dir from 'path';;
-import axios from 'axios';;
-import commandLineArgs from 'command-line-args';;
->>>>>>> 28b3218 (Refactor project to ESM)
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'add', alias: 'a', type: Boolean, defaultValue: false },
@@ -31,12 +25,6 @@ if (!options.add && !options.delete) {
   options.add = true;
 }
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
-<<<<<<< HEAD
-=======
-import parsed from 'dotenv';.config(configArgs);
-import logger from '../lib/logger.js';;
-import { PhoneNumber, databaseStarted, stopDatabase  } from '../lib/database.js';;
->>>>>>> 28b3218 (Refactor project to ESM)
 
 import('dotenv').then(dotenv => {
   logger.info({ configArgs }, 'configArgs');
