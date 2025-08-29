@@ -1,8 +1,5 @@
 import 'dotenv/config';
-<<<<<<< HEAD
 
-=======
->>>>>>> 28b3218 (Refactor project to ESM)
 import logger from '../lib/logger.js';
 import Voices from '../lib/voices/index.js';
 

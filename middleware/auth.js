@@ -1,10 +1,6 @@
 import { initializeApp, applicationDefault } from 'firebase-admin/app';
 import { Instance, User, AuthKey, Op } from '../lib/database.js';
-<<<<<<< HEAD
 import * as firebase from 'firebase-admin/auth';
-=======
-import firebase from 'firebase-admin/auth';
->>>>>>> 28b3218 (Refactor project to ESM)
 
 function init(app, logger) {
 

@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 import 'dotenv/config';
-=======
->>>>>>> 28b3218 (Refactor project to ESM)
 import Llm from '../lib/models/openai.js';
 import prompts from '../data/defaultPrompts.js';
 import testLlm from './lib/llm.js';
