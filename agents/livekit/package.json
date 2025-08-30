@@ -15,12 +15,11 @@
     }
   },
   "scripts": {
-    "develop": "yarn build && NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml,ts dist/realtime.mjs dev",
+    "develop": "yarn build && NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml,ts -- dev",
     "start": "yarn build && NODE_ENV=production node dist/realtime.mjs start",
     "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.mjs dev",
     "build": "tsup",
     "build:full": "tsup",
-    "postbuild": "./fix-imports.sh",
     "dev": "tsup --watch"
   },
   "author": "",
