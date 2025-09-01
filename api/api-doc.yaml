@@ -264,15 +264,22 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer"]
+            enum: ["hangup", "transfer", "metadata"]
             description: >  
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `hangup` takes no parameters and will hang up the call
+                  * `metadata` interrogates the metadata for the call, returning a JSON object with the requested metadata keys and values. 
+                     Keys are specified as a comma separated list in the `keys` parameter.
                   * `transfer` will transfer the call to a number specified in the `number` parameter
                 
                 Note that the transfer function will only be available to telephone agents, and the `number` parameter 
                 can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata.
                 For anti-fraud reasons, it is not possible to use a LLM `generated` parameter as the number to transfer a call to.
+
+                The `metadata` function will only currently be available to telephone agents, and the `keys` parameter 
+                can only be specified as a `static`. This ensures that the LLM can only work with metadata that the agent designer
+                has explicitly allowed it to which is a security feature to control the risk of data leakage.
+
           result:
             type: string
             description: The hardwired result of this function call, optional and only useful for `stub` or `client`

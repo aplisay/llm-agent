@@ -2643,7 +2643,7 @@ dotenv@^16.4.5:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.4.7.tgz#0e20c5b82950140aa99be360a8a5f52335f53c26"
   integrity sha512-47qPchRCykZC03FhkYAhrvwU4xDBFIj1QPqaarj6mdM/hgUzfPHcpkHJOn3mJAufFeeAxAzeGsr5X0M4k6fLZQ==
 
-"dotenv@github:rjp44/secretenv":
+"dotenv@github:rjp44/secretenv#v1.0.0":
   version "1.0.3-secretenv"
   resolved "https://codeload.github.com/rjp44/secretenv/tar.gz/e718b7b0d0d4b96e321b230547cbfa8f0090c8bb"
   dependencies:
