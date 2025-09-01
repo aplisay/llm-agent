@@ -30,7 +30,7 @@
     "config": "^3.3.12",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
-    "dotenv": "github:rjp44/secretenv",
+    "dotenv": "github:rjp44/secretenv#v1.0.5",
     "elevenlabs": "^0.4.1",
     "express": "^4.21.2",
     "express-openapi": "^12.1.3",
