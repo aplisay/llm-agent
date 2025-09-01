@@ -28,7 +28,7 @@
     "command-line-args": "^6.0.1",
     "config": "^3.3.12",
     "cors": "^2.8.5",
-    "dotenv": "github:rjp44/secretenv",
+    "dotenv": "github:rjp44/secretenv#v1.0.0",
     "elevenlabs": "^0.4.1",
     "express": "^4.21.2",
     "express-openapi": "^12.1.3",
