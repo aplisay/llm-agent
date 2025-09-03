@@ -68,7 +68,10 @@ transactionLogCreate.apiDoc = {
               description: 'Transaction type (e.g., answer, user, agent)'
             },
             data: {
-              type: 'string',
+              anyOf: [
+                { type: 'string' },
+                { type: 'object' }
+              ],
               description: 'Transaction data'
             },
             isFinal: {
