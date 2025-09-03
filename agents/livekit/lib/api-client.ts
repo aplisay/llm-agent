@@ -67,6 +67,7 @@ export async function getPhoneNumbers(handler?: string): Promise<any[]> {
 
 // Create a new call record
 export async function createCall(callData: {
+  id?: string;
   userId: string;
   organisationId: string;
   instanceId: string;
