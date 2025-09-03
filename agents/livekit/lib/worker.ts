@@ -324,7 +324,7 @@ export default defineAgent({
                   { name: fnc.name, args, fnc },
                   `Got function call ${fnc.name}`
                 );
-                sendMessage({ function_call: { name: fnc.name, arguments: args } });
+                sendMessage({ function_calls: { name: fnc.name, arguments: args } });
                 let result = (await functionHandlerModule.functionHandler(
                   [{ ...fnc, input: args }],
                   functions,
