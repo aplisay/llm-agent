@@ -1829,6 +1829,11 @@
   resolved "https://registry.yarnpkg.com/@unrs/resolver-binding-win32-x64-msvc/-/resolver-binding-win32-x64-msvc-1.11.1.tgz#538b1e103bf8d9864e7b85cc96fa8d6fb6c40777"
   integrity sha512-lrW200hZdbfRtztbygyaq/6jP6AKE8qQN2KvPcJ+x7wiD038YtnYtZ82IMNJ69GJibV7bwL3y9FgK+5w/pYt6g==
 
+"Odotenv@npm:dotenv@^16.4.5":
+  version "16.6.1"
+  resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
+  integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
+
 abort-controller@^3.0.0:
   version "3.0.0"
   resolved "https://registry.yarnpkg.com/abort-controller/-/abort-controller-3.0.0.tgz#eaf54d53b62bae4138e809ca225c8439a6efb392"
@@ -3113,18 +3118,13 @@ dot-prop@^6.0.0:
   dependencies:
     is-obj "^2.0.0"
 
-dotenv@^16.4.5:
-  version "16.4.7"
-  resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.4.7.tgz#0e20c5b82950140aa99be360a8a5f52335f53c26"
-  integrity sha512-47qPchRCykZC03FhkYAhrvwU4xDBFIj1QPqaarj6mdM/hgUzfPHcpkHJOn3mJAufFeeAxAzeGsr5X0M4k6fLZQ==
-
-"dotenv@github:rjp44/secretenv#v1.0.0":
-  version "1.0.3-secretenv"
-  resolved "https://codeload.github.com/rjp44/secretenv/tar.gz/e718b7b0d0d4b96e321b230547cbfa8f0090c8bb"
+"dotenv@github:rjp44/secretenv#v1.0.5":
+  version "1.0.5-secretenv"
+  resolved "https://codeload.github.com/rjp44/secretenv/tar.gz/60f64fa7d9184ae91cf75fc140e28bc31c060275"
   dependencies:
+    Odotenv "npm:dotenv@^16.4.5"
     command-line-args "^6.0.1"
     crypto "^1.0.1"
-    dotenv "^16.4.5"
 
 dottie@^2.0.6:
   version "2.0.6"

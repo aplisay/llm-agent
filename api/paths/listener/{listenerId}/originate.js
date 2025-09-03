@@ -21,15 +21,15 @@ const originateCall = (async (req, res) => {
   let { listenerId } = req.params;
   let { calledId, callerId, metadata } = req.body;
   let { organisationId } = res.locals.user;
-  
+
   try {
     // Validate required parameters - this is belt and braces and JSON schema should catch this
     if (!calledId || !callerId) {
-      return res.status(400).send({ 
-        error: 'Missing required parameters: calledId and callerId are required' 
+      return res.status(400).send({
+        error: 'Missing required parameters: calledId and callerId are required'
       });
     }
-    
+
     // Check if agent exists and belongs to the organization
     const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
     const agent = instance?.Agent;
@@ -41,47 +41,47 @@ const originateCall = (async (req, res) => {
     // Check if callerId is present in phoneNumbers table and belongs to the organization
     let callerPhoneNumber = await PhoneNumber.findByPk(callerId);
     if (!callerPhoneNumber || callerPhoneNumber.organisationId !== organisationId) {
-      return res.status(404).send({ 
-        error: `Caller phone number ${callerId} not found in phone numbers table` 
+      return res.status(404).send({
+        error: `Caller phone number ${callerId} not found in phone numbers table`
       });
     }
 
     if (!callerPhoneNumber.outbound) {
-      return res.status(400).send({ 
-        error: `Caller phone number ${callerId} is not enabled for outbound calling` 
+      return res.status(400).send({
+        error: `Caller phone number ${callerId} is not enabled for outbound calling`
       });
     }
-    
+
     // Validate that calledId is a valid UK geographic or mobile number
     if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      return res.status(400).send({ 
-        error: `Called number ${calledId} is not a valid UK geographic or mobile number` 
+      return res.status(400).send({
+        error: `Called number ${calledId} is not a valid UK geographic or mobile number`
       });
     }
     const aplisayId = callerPhoneNumber.aplisayId;
     // Check if the handler for this model has a outbound handler
     let handler = await getHandler(agent.modelName);
     if (!handler?.outbound) {
-      return res.status(400).send({ 
-        error: `Agent ${agent.modelName} cannot make outbound calls` 
+      return res.status(400).send({
+        error: `Agent ${agent.modelName} cannot make outbound calls`
       });
     }
-    else { 
-      await handler.outbound({instance, callerId, calledId, metadata, aplisayId});
-    }
-    
+
+    const { callId } = await handler.outbound({ instance, callerId, calledId, metadata, aplisayId });
+
     // If all validations pass, return success
     res.send({
       success: true,
       message: 'Call origination request validated successfully',
       data: {
+        callId,
         listenerId,
         callerId,
         calledId,
         organisationId
       }
     });
-    
+
   } catch (err) {
     req.log.error(err, 'Error in originate call endpoint');
     res.status(500).send({ error: 'Internal server error' });
@@ -144,6 +144,9 @@ originateCall.apiDoc = {
               data: {
                 type: 'object',
                 properties: {
+                  callId: {
+                    type: 'string'
+                  },
                   agentId: {
                     type: 'string'
                   },

@@ -15,7 +15,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const callCreate = (async (req, res) => {
-  let { userId, organisationId, instanceId, agentId, platform, platformCallId, calledId, callerId, modelName, options, metadata } = req.body;
+  let { id, userId, organisationId, instanceId, agentId, platform, platformCallId, calledId, callerId, modelName, options, metadata } = req.body;
   
   if (!userId || !organisationId || !instanceId || !agentId || !platform) {
     return res.status(400).send({ error: 'Missing required fields: userId, organisationId, instanceId, agentId, platform' });
@@ -23,6 +23,7 @@ const callCreate = (async (req, res) => {
 
   try {
     let call = await Call.create({
+      id,
       userId,
       organisationId,
       instanceId,
