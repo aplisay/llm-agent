@@ -17,7 +17,7 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   const url = `${baseUrl}${endpoint}`;
   const sharedToken = process.env.SHARED_API_TOKEN;
   
-  logger.debug({ url, method: options.method || 'GET' }, 'Making API request');
+  //logger.debug({ url, method: options.method || 'GET' }, 'Making API request');
   
   try {
     const response = await fetch(url, {
@@ -41,7 +41,7 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     }
 
     const data = await response.json();
-    logger.debug({ url, status: response.status }, 'API request successful');
+    //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
     logger.error({ url, error }, 'API request error');
