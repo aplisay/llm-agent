@@ -35,6 +35,8 @@ export async function bridgeParticipant(roomName: string, bridgeTo: string, apli
   if (!outboundSipTrunk) {
     throw new Error('No livekit outbound SIP trunk found');
   }
+  const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+  const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
   // Outbound trunk to use for the call
   const sipParticipantOptions = {
@@ -42,17 +44,17 @@ export async function bridgeParticipant(roomName: string, bridgeTo: string, apli
     headers: {
       'X-Aplisay-Trunk': aplisayId
     },
-    participantName: 'Aplisay Outbound Call',
-    fromNumber: callerId.replace(/^(?!\+)/, '+'),
+    participantName: 'Aplisay Bridged Transfer',
+    fromNumber: origin,
     krispEnabled: true,
     waitUntilAnswered: true
   };
 
-  logger.info({ roomName, bridgeTo, callerId, sipParticipantOptions }, "bridge participant initiated");
+  logger.info({ roomName, destination, origin, callerId, sipParticipantOptions }, "bridge participant initiated");
 
   const newParticipant = await sipClient.createSipParticipant(
     sipTrunkId,
-    bridgeTo,
+    destination,
     roomName,
     sipParticipantOptions
   );

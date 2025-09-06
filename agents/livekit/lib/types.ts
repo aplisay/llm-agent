@@ -8,14 +8,14 @@ import type {
   CallMetadata,
   OutboundInfo,
 } from './api-client.js';
-import { type RemoteParticipant } from "@livekit/rtc-node";
+import { type ParticipantInfo } from "livekit-server-sdk";
 
 
 
 export interface CallScenario {
   instance: Instance;
   agent: Agent | null;
-  participant: RemoteParticipant | null;
+  participant: ParticipantInfo | null;
   callerId: string;
   calledId: string;
   aplisayId: string;
@@ -59,7 +59,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   ctx: TContext;
   room: TRoom;
   agent: Agent;
-  participant: RemoteParticipant | null;
+  participant: ParticipantInfo | null;
   callerId: string;
   calledId: string;
   modelName: string;
@@ -67,7 +67,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sendMessage: (message: any) => Promise<void>;
   call: Call;
   onHangup: () => Promise<void>;
-  onTransfer: (params: { args: any; participant: RemoteParticipant }) => Promise<any>;
+  onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
   getModel: () => any;
   getBridgedParticipant: () => any;
   wantHangup: () => boolean;
