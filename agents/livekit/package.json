@@ -19,8 +19,11 @@
     "start": "yarn build && NODE_ENV=production node dist/realtime.mjs start",
     "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.mjs dev",
     "build": "tsup --clean",
-    "build:full": "tsup",
-    "dev": "tsup --watch"
+    "build:deps": "cd temp-livekit-agents && pnpm install && pnpm build",
+    "postinstall": "yarn build:deps && yarn patch:livekit",
+    "patch:livekit": "cp -r temp-livekit-agents/agents/dist/* node_modules/@livekit/agents/dist/ && cp -r temp-livekit-agents/plugins/openai/dist/* node_modules/@livekit/agents-plugin-openai/dist/",
+    "build:full": "yarn build:deps && tsup",
+    "dev": "yarn build:deps && tsup --watch"
   },
   "author": "",
   "license": "MIT",
