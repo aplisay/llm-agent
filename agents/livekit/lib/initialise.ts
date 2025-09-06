@@ -1,12 +1,18 @@
+import dotenv from 'dotenv';
 import { SipClient } from 'livekit-server-sdk';
 import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
 import * as loggerModule from '../agent-lib/logger.js';
 import { getPhoneNumbers } from './api-client.js';
 
+dotenv.config();
+
 const logger = loggerModule.default;
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
   LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
+
+  logger.debug({ LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD }, 'LIVEKIT_SIP_OUTBOUND');
+
 
 export async function setupSIPClients(): Promise<any> {
   const sipClient = new SipClient(process.env.LIVEKIT_URL!, process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!);
@@ -35,6 +41,7 @@ export async function setupSIPClients(): Promise<any> {
     // sync phone numbers from our database to livekit
     if (inboundSipTrunk.numbers.length !== phoneNumbers.length || inboundSipTrunk.numbers.some((n: string) => !phoneNumbers.includes(n))) {
       inboundSipTrunk = await sipClient.updateSipInboundTrunk(inboundSipTrunk.sipTrunkId, {
+        name: 'Aplisay',
         numbers: phoneNumbers
       } as any);
     }
@@ -48,6 +55,7 @@ export async function setupSIPClients(): Promise<any> {
   let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
   outboundSipTrunk && await sipClient.deleteSipTrunk(outboundSipTrunk.sipTrunkId);
   outboundSipTrunk = null as any;
+  logger.debug({ outbound: LIVEKIT_SIP_OUTBOUND }, 'outboundSipTrunk');
   if (!outboundSipTrunk) {
     outboundSipTrunk = await sipClient.createSipOutboundTrunk(
       "Aplisay Outbound",
