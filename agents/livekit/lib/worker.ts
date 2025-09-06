@@ -1,7 +1,8 @@
 import dotenv from "dotenv";
 import { RoomServiceClient } from "livekit-server-sdk";
 import type { Room } from "@livekit/rtc-node";
-import { type JobContext, defineAgent, voice } from "@livekit/agents";
+import { type JobContext, defineAgent, voice, llm } from "@livekit/agents";
+import { type RemoteParticipant } from "@livekit/rtc-node";
 import * as openai from "@livekit/agents-plugin-openai";
 import { BackgroundVoiceCancellation } from "@livekit/noise-cancellation-node";
 import logger from "../agent-lib/logger.js";
@@ -13,7 +14,25 @@ import {
   getInstanceByNumber,
   createCall,
   createTransactionLog,
+  type Instance,
+  type Agent,
+  type AgentFunction,
+  type Call,
+  type CallMetadata,
+  type OutboundInfo,
 } from "./api-client.js";
+
+import type {
+  CallScenario,
+  JobMetadata,
+  SetupCallParams,
+  RunAgentWorkerParams,
+  TransferArgs,
+  MessageData,
+  FunctionContext,
+  FunctionResult,
+} from "./types.js";
+
 
 dotenv.config();
 
@@ -43,6 +62,7 @@ logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
+    await ctx.connect();
     const room = ctx.room;
 
     // Local mutable state used across helpers
@@ -52,6 +72,7 @@ export default defineAgent({
 
     try {
       const scenario = await getCallInfo(ctx, room);
+      
       let {
         instance,
         agent,
@@ -63,14 +84,13 @@ export default defineAgent({
         callMetadata,
         outboundCall,
         outboundInfo,
-      } = scenario as any;
+      } = scenario;
 
-      const {
-        userId,
-        modelName,
-        organisationId,
-        options = {},
-      } = (agent as any) || {};
+      if (!agent) {
+        throw new Error("Agent is required but not found");
+      }
+
+      const { userId, modelName, organisationId, options = {} } = agent;
 
       const { call, metadata, sendMessage, onHangup, onTransfer } =
         await setupCallAndUtilities({
@@ -91,7 +111,7 @@ export default defineAgent({
             model = create();
             return model;
           },
-          setBridgedParticipant: (p: any) => (bridgedParticipant = p),
+          setBridgedParticipant: (p) => (bridgedParticipant = p),
           requestHangup: () => (wantHangup = true),
         });
 
@@ -121,7 +141,7 @@ export default defineAgent({
           await createTransactionLog({
             userId,
             organisationId,
-            callId: (call as any)?.id || callId,
+            callId: (call as Call)?.id || callId,
             type: "call_failed",
             data: (err as Error).message,
             isFinal: true,
@@ -134,7 +154,7 @@ export default defineAgent({
       await createTransactionLog({
         userId,
         organisationId,
-        callId: (call as any)?.id || callId,
+        callId: (call as Call)?.id || callId,
         type: "answer",
         data: instance.id,
         isFinal: true,
@@ -168,8 +188,8 @@ export default defineAgent({
 
 // ---- Helpers ----
 
-async function getCallInfo(ctx: any, room: Room) {
-  const jobMetadata = (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
+async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
+  const jobMetadata: JobMetadata = (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
   let {
     callId,
     callerId,
@@ -184,9 +204,9 @@ async function getCallInfo(ctx: any, room: Room) {
     "new call"
   );
 
-  let instance: any = null;
-  let agent: any | null = null;
-  let participant: any = null;
+  let instance: Instance | null = null;
+  let agent: Agent | null = null;
+  let participant: RemoteParticipant | null = null;
   let outboundCall = false;
   let outboundInfo: any = null;
 
@@ -212,12 +232,22 @@ async function getCallInfo(ctx: any, room: Room) {
       instanceId,
     };
   } else {
-    let pInstanceId = jobMetadata.instanceId;
-    ({
-      "sip.trunkPhoneNumber": calledId,
-      "sip.phoneNumber": callerId,
-      "sip.h.x-aplisay-trunk": aplisayId,
-    } = participant?.attributes || {});
+    // Get participant from room if not already set
+    if (!participant && room.numParticipants > 0) {
+      // For now, we'll set participant to null and handle it later
+      participant = await ctx.waitForParticipant();
+    }
+    let pInstanceId = participant?.metadata;
+    if (participant && 'attributes' in participant) {
+      const participantWithAttrs = participant as any;
+      if (participantWithAttrs.attributes) {
+        ({
+          "sip.trunkPhoneNumber": calledId,
+          "sip.phoneNumber": callerId,
+          "sip.h.x-aplisay-trunk": aplisayId,
+        } = participantWithAttrs.attributes);
+      }
+    }
     calledId = calledId?.replace("+", "");
     callerId = callerId?.replace("+", "");
     if (pInstanceId) {
@@ -245,14 +275,14 @@ async function getCallInfo(ctx: any, room: Room) {
   callerId = callerId || "WebRTC";
 
   return {
-    instance,
+    instance: instance!,
     agent,
     participant,
-    callerId,
-    calledId,
-    aplisayId,
-    callId,
-    callMetadata,
+    callerId: calledId!,
+    calledId: callerId!,
+    aplisayId: aplisayId!,
+    callId: callId!,
+    callMetadata: callMetadata || {},
     outboundCall,
     outboundInfo,
   };
@@ -275,7 +305,7 @@ async function setupCallAndUtilities({
   createModelRef,
   setBridgedParticipant,
   requestHangup,
-}: any) {
+}: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
   logger.info(
     { agent, instance, calledId, callerId, ctx, room },
@@ -289,7 +319,7 @@ async function setupCallAndUtilities({
     instanceId: instance.id,
     agentId: agent.id,
     platform: "livekit",
-    platformCallId: room?.sid,
+    platformCallId: room?.name,
     calledId,
     callerId,
     modelName,
@@ -310,11 +340,11 @@ async function setupCallAndUtilities({
   metadata.aplisay = metadata.aplisay || {};
   metadata.aplisay.callId = call.id;
 
-  const sendMessage = async (message: any) => {
+  const sendMessage = async (message: MessageData) => {
     const entries = Object.entries(message);
     if (entries.length > 0) {
       const [type, data] = entries[0] as [string, any];
-      ctx.room.localParticipant.publishData(
+      ctx.room.localParticipant?.publishData(
         new TextEncoder().encode(JSON.stringify(message)),
         { reliable: true }
       );
@@ -329,7 +359,7 @@ async function setupCallAndUtilities({
     }
   };
 
-  const onTransfer = async ({ args, participant }: any) => {
+  const onTransfer = async ({ args, participant }: { args: TransferArgs; participant: RemoteParticipant }) => {
     if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
       logger.info({ args }, "invalid number");
       throw new Error(
@@ -341,16 +371,16 @@ async function setupCallAndUtilities({
         {
           args,
           number: args.number,
-          identity: participant.info["identity"],
+          identity: participant.info?.["identity"],
           room,
           aplisayId,
         },
         "transfer participant"
       );
       const p = await bridgeParticipant(
-        room.name,
+        room.name!,
         args.number,
-        aplisayId,
+        aplisayId!,
         calledId
       );
       logger.info({ p }, "new participant created");
@@ -399,7 +429,7 @@ async function runAgentWorker({
   getModel,
   getBridgedParticipant,
   wantHangup,
-}: any) {
+}: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime = plugin && (models as any)[plugin]?.realtime;
   if (!realtime) {
@@ -409,12 +439,12 @@ async function runAgentWorker({
   logger.debug({ realtime, models, openAI: openai.realtime }, "got realtime");
 
   const { functions = [], keys = [] } = agent;
-  const fncCtx =
+  const tools: llm.ToolContext =
     functions &&
     functions.reduce(
-      (acc: any, fnc: any) => ({
+      (acc: llm.ToolContext, fnc: AgentFunction) => ({
         ...acc,
-        [fnc.name]: {
+        [fnc.name]: llm.tool({
           description: fnc.description,
           parameters: {
             type: "object",
@@ -444,21 +474,22 @@ async function runAgentWorker({
               metadata,
               {
                 hangup: onHangup,
-                transfer: (a: any) => onTransfer({ args: a, participant }),
+                transfer: (a: any) => onTransfer({ args: a, participant: participant! }),
               }
-            )) as any;
+            )) as FunctionResult;
             let { function_results } = result;
             let [{ result: data }] = function_results;
             logger.debug({ data }, `returning ${JSON.stringify(data)}`);
             return JSON.stringify(data);
           },
-        },
+        }),
       }),
       {}
-    );
+    ) as llm.ToolContext;
+  
   const model = new voice.Agent({
     instructions: agent?.prompt || "You are a helpful assistant.",
-    tools: fncCtx,
+    tools
   });
 
   logger.debug({ model }, "got fncCtx");
@@ -468,7 +499,7 @@ async function runAgentWorker({
       voice: agent?.options?.tts?.voice,
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 4000));
+
 
   Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
     session.on(
@@ -482,16 +513,16 @@ async function runAgentWorker({
   });
   session.on(
     voice.AgentSessionEventTypes.UserInputTranscribed,
-    ({ transcript }: any) => sendMessage({ user: transcript })
+    ({ transcript }: { transcript: string }) => sendMessage({ user: transcript })
   );
 
   await session.start({
     room: ctx.room,
-    agent,
+    agent: model,
   });
-  await ctx.connect();
+  await new Promise((resolve) => setTimeout(resolve, 4000));
   logger.debug("session started, generating reply");
-  // session.generateReply({ userInput: "say hello" });
+  session.generateReply({ userInput: "say hello" });
   call.start();
   sendMessage({ call: `${calledId} => ${callerId}` });
 }

@@ -1,5 +1,77 @@
 import logger from '../agent-lib/logger.js';
 
+// API-related type definitions
+export interface Instance {
+  id: string;
+  metadata?: Record<string, any>;
+  Agent?: Agent;
+}
+
+export interface Agent {
+  id: string;
+  userId: string;
+  modelName: string;
+  organisationId: string;
+  prompt?: string;
+  options?: {
+    tts?: {
+      voice?: string;
+    };
+  };
+  functions?: AgentFunction[];
+  keys?: string[];
+}
+
+export interface AgentFunction {
+  name: string;
+  description: string;
+  input_schema: {
+    properties: Record<string, {
+      type: string;
+      required?: boolean;
+      [key: string]: any;
+    }>;
+  };
+}
+
+export interface Call {
+  id: string;
+  userId: string;
+  organisationId: string;
+  instanceId: string;
+  agentId: string;
+  platform: string;
+  platformCallId?: string;
+  calledId?: string;
+  callerId?: string;
+  modelName?: string;
+  options?: any;
+  metadata?: {
+    aplisay?: {
+      callerId?: string;
+      calledId?: string;
+      fallbackNumbers?: string[];
+      model?: string;
+      callId?: string;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
+  start(): Promise<void>;
+  end(): Promise<void>;
+}
+
+export interface CallMetadata {
+  [key: string]: any;
+}
+
+export interface OutboundInfo {
+  toNumber: string;
+  fromNumber: string;
+  aplisayId: string;
+  instanceId: string;
+}
+
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
   const serviceBaseUri = process.env.SERVICE_BASE_URI;
