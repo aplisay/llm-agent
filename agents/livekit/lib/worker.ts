@@ -1,12 +1,11 @@
+// External dependencies
 import dotenv from "dotenv";
 import { RoomServiceClient } from "livekit-server-sdk";
-import type { Room } from "@livekit/rtc-node";
 import { type JobContext, defineAgent, voice, llm } from "@livekit/agents";
-import { type RemoteParticipant } from "@livekit/rtc-node";
 import * as openai from "@livekit/agents-plugin-openai";
-import { BackgroundVoiceCancellation } from "@livekit/noise-cancellation-node";
-import logger from "../agent-lib/logger.js";
 
+// Internal modules
+import logger from "../agent-lib/logger.js";
 import * as functionHandlerModule from "../agent-lib/function-handler.js";
 import { bridgeParticipant } from "./telephony.js";
 import {
@@ -22,6 +21,8 @@ import {
   type OutboundInfo,
 } from "./api-client.js";
 
+// Types
+import type { Room, RemoteParticipant } from "@livekit/rtc-node";
 import type {
   CallScenario,
   JobMetadata,
@@ -29,15 +30,10 @@ import type {
   RunAgentWorkerParams,
   TransferArgs,
   MessageData,
-  FunctionContext,
   FunctionResult,
 } from "./types.js";
 
-
 dotenv.config();
-
-// logger will be imported dynamically
-
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
 const models = {
@@ -413,34 +409,27 @@ async function setupCallAndUtilities({
   return { call, metadata, sendMessage, onHangup, onTransfer };
 }
 
-async function runAgentWorker({
-  ctx,
-  room,
+/**
+ * Creates tools for the agent based on the agent's functions configuration
+ */
+function createTools({
   agent,
   participant,
-  callerId,
-  calledId,
-  modelName,
-  metadata,
   sendMessage,
-  call,
+  metadata,
   onHangup,
   onTransfer,
-  getModel,
-  getBridgedParticipant,
-  wantHangup,
-}: RunAgentWorkerParams) {
-  const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const realtime = plugin && (models as any)[plugin]?.realtime;
-  if (!realtime) {
-    logger.error({ modelName, plugin, realtime, models }, "Unsupported model");
-    throw new Error(`Unsupported model: ${modelName} ${plugin}`);
-  }
-  logger.debug({ realtime, models, openAI: openai.realtime }, "got realtime");
-
+}: {
+  agent: Agent;
+  participant: RemoteParticipant | null;
+  sendMessage: (message: MessageData) => Promise<void>;
+  metadata: CallMetadata;
+  onHangup: () => Promise<void>;
+  onTransfer: ({ args, participant }: { args: TransferArgs; participant: RemoteParticipant }) => Promise<any>;
+}): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
-  const tools: llm.ToolContext =
-    functions &&
+  
+  return functions &&
     functions.reduce(
       (acc: llm.ToolContext, fnc: AgentFunction) => ({
         ...acc,
@@ -486,13 +475,47 @@ async function runAgentWorker({
       }),
       {}
     ) as llm.ToolContext;
+}
+
+async function runAgentWorker({
+  ctx,
+  room,
+  agent,
+  participant,
+  callerId,
+  calledId,
+  modelName,
+  metadata,
+  sendMessage,
+  call,
+  onHangup,
+  onTransfer,
+  getModel,
+  getBridgedParticipant,
+  wantHangup,
+}: RunAgentWorkerParams) {
+  const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
+  const realtime = plugin && (models as any)[plugin]?.realtime;
+  if (!realtime) {
+    logger.error({ modelName, plugin, realtime, models }, "Unsupported model");
+    throw new Error(`Unsupported model: ${modelName} ${plugin}`);
+  }
+  logger.debug({ realtime, models, openAI: openai.realtime }, "got realtime");
+
+  const tools = createTools({
+    agent,
+    participant,
+    sendMessage,
+    metadata,
+    onHangup,
+    onTransfer,
+  });
   
   const model = new voice.Agent({
     instructions: agent?.prompt || "You are a helpful assistant.",
     tools
   });
 
-  logger.debug({ model }, "got fncCtx");
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({
@@ -500,7 +523,7 @@ async function runAgentWorker({
     }),
   });
 
-
+  // Listen on all the things for now (debug)
   Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
     session.on(
       voice.AgentSessionEventTypes[
@@ -511,15 +534,21 @@ async function runAgentWorker({
       }
     );
   });
+
+  // Listen on the user input transcribed event
   session.on(
     voice.AgentSessionEventTypes.UserInputTranscribed,
-    ({ transcript }: { transcript: string }) => sendMessage({ user: transcript })
+    ({ transcript }: voice.UserInputTranscribedEvent) =>
+      sendMessage({ user: transcript })
   );
 
+  //
   await session.start({
     room: ctx.room,
     agent: model,
   });
+
+  // Hack to workaround 
   await new Promise((resolve) => setTimeout(resolve, 4000));
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });
