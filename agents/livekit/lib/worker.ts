@@ -549,7 +549,6 @@ async function runAgentWorker({
   });
 
   // Hack to workaround 
-  await new Promise((resolve) => setTimeout(resolve, 4000));
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });
   call.start();
