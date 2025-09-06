@@ -58,8 +58,9 @@ logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
-    await ctx.connect();
-    const room = ctx.room;
+    const job = ctx.job;
+    const room = job.room as unknown as Room;
+    logger.debug({ ctx, job, room }, "new call");
 
     // Local mutable state used across helpers
     let model: any = null;
@@ -68,7 +69,7 @@ export default defineAgent({
 
     try {
       const scenario = await getCallInfo(ctx, room);
-      
+
       let {
         instance,
         agent,
@@ -185,18 +186,20 @@ export default defineAgent({
 // ---- Helpers ----
 
 async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
-  const jobMetadata: JobMetadata = (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
+  const jobMetadata: JobMetadata =
+    (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
   let {
     callId,
     callerId,
     calledId,
+    identity,
     instanceId,
     aplisayId,
     outbound,
     callMetadata,
   } = jobMetadata || {};
   logger.info(
-    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata },
+    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata, room },
     "new call"
   );
 
@@ -228,42 +231,35 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instanceId,
     };
   } else {
-    // Get participant from room if not already set
-    if (!participant && room.numParticipants > 0) {
-      // For now, we'll set participant to null and handle it later
-      participant = await ctx.waitForParticipant();
-    }
-    let pInstanceId = participant?.metadata;
-    if (participant && 'attributes' in participant) {
-      const participantWithAttrs = participant as any;
-      if (participantWithAttrs.attributes) {
+    if (identity) {
+      instance = await getInstanceById(identity);
+    } else if (room.name) {
+      const participants = await roomService.listParticipants(room.name);
+      const participant = participants[0];
+      logger.debug({ participants, attributes: participant.attributes }, "participants");
+      if (participant) {
         ({
-          "sip.trunkPhoneNumber": calledId,
-          "sip.phoneNumber": callerId,
-          "sip.h.x-aplisay-trunk": aplisayId,
-        } = participantWithAttrs.attributes);
+          "sipTrunkPhoneNumber": calledId,
+          "sipPhoneNumber": callerId,
+          "sipHXAplisayTrunk": aplisayId,
+        } = participant.attributes);
       }
     }
     calledId = calledId?.replace("+", "");
     callerId = callerId?.replace("+", "");
-    if (pInstanceId) {
-      instance = await getInstanceById(pInstanceId);
-    } else if (calledId) {
-      logger.info(
-        { callerId, calledId, aplisayId },
-        "new Livekit inbound telephone call, looking up instance by number"
-      );
-      const result = await getInstanceByNumber(calledId);
-      instance = result;
-      agent = result.Agent;
-    }
-    if (!instance) {
-      logger.error(
-        { participant },
-        `no instance found for inbound call (${calledId} => ${callerId})`
-      );
-      throw new Error("No instance found");
-    }
+
+    logger.info(
+      { callerId, calledId, aplisayId },
+      "new Livekit inbound telephone call, looking up instance by number"
+    );
+    instance = calledId && (await getInstanceByNumber(calledId!));
+  }
+  if (!instance) {
+    logger.error(
+      { participant },
+      `no instance found for inbound call (${calledId} => ${callerId} or ${identity})`
+    );
+    throw new Error("No instance found");
   }
 
   agent = agent || instance?.Agent || null;
@@ -355,7 +351,13 @@ async function setupCallAndUtilities({
     }
   };
 
-  const onTransfer = async ({ args, participant }: { args: TransferArgs; participant: RemoteParticipant }) => {
+  const onTransfer = async ({
+    args,
+    participant,
+  }: {
+    args: TransferArgs;
+    participant: RemoteParticipant;
+  }) => {
     if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
       logger.info({ args }, "invalid number");
       throw new Error(
@@ -425,12 +427,19 @@ function createTools({
   sendMessage: (message: MessageData) => Promise<void>;
   metadata: CallMetadata;
   onHangup: () => Promise<void>;
-  onTransfer: ({ args, participant }: { args: TransferArgs; participant: RemoteParticipant }) => Promise<any>;
+  onTransfer: ({
+    args,
+    participant,
+  }: {
+    args: TransferArgs;
+    participant: RemoteParticipant;
+  }) => Promise<any>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
-  
-  return functions &&
-    functions.reduce(
+
+  return (
+    functions &&
+    (functions.reduce(
       (acc: llm.ToolContext, fnc: AgentFunction) => ({
         ...acc,
         [fnc.name]: llm.tool({
@@ -463,7 +472,8 @@ function createTools({
               metadata,
               {
                 hangup: onHangup,
-                transfer: (a: any) => onTransfer({ args: a, participant: participant! }),
+                transfer: (a: any) =>
+                  onTransfer({ args: a, participant: participant! }),
               }
             )) as FunctionResult;
             let { function_results } = result;
@@ -474,7 +484,8 @@ function createTools({
         }),
       }),
       {}
-    ) as llm.ToolContext;
+    ) as llm.ToolContext)
+  );
 }
 
 async function runAgentWorker({
@@ -510,12 +521,11 @@ async function runAgentWorker({
     onHangup,
     onTransfer,
   });
-  
+
   const model = new voice.Agent({
     instructions: agent?.prompt || "You are a helpful assistant.",
-    tools
+    tools,
   });
-
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({
@@ -548,7 +558,10 @@ async function runAgentWorker({
     agent: model,
   });
 
-  // Hack to workaround 
+  // Ordering is important here, if we call connect() before the session is started, agent doesn't get participant audio
+  // This is new in 1.0!
+  await ctx.connect();
+
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });
   call.start();
