@@ -26,6 +26,6 @@
     }
   },
 
-  "include": ["realtime.ts", "lib/**/*.ts", "agent-lib/**/*.js"],
-  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts"]
+  "include": ["realtime.ts", "lib/**/*.ts"],
+  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts", "agent-lib"]
 }
