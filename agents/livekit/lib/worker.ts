@@ -22,7 +22,8 @@ import {
 } from "./api-client.js";
 
 // Types
-import type { Room, RemoteParticipant } from "@livekit/rtc-node";
+import type { Room } from "@livekit/rtc-node";
+import type { ParticipantInfo } from "livekit-server-sdk";
 import type {
   CallScenario,
   JobMetadata,
@@ -205,7 +206,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
 
   let instance: Instance | null = null;
   let agent: Agent | null = null;
-  let participant: RemoteParticipant | null = null;
+  let participant: ParticipantInfo | null = null;
   let outboundCall = false;
   let outboundInfo: any = null;
 
@@ -235,7 +236,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instance = await getInstanceById(identity);
     } else if (room.name) {
       const participants = await roomService.listParticipants(room.name);
-      const participant = participants[0];
+      participant = participants[0] as ParticipantInfo;
       logger.debug({ participants, attributes: participant.attributes }, "participants");
       if (participant) {
         ({
@@ -270,8 +271,8 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     instance: instance!,
     agent,
     participant,
-    callerId: calledId!,
-    calledId: callerId!,
+    callerId: callerId!,
+    calledId: calledId!,
     aplisayId: aplisayId!,
     callId: callId!,
     callMetadata: callMetadata || {},
@@ -356,7 +357,7 @@ async function setupCallAndUtilities({
     participant,
   }: {
     args: TransferArgs;
-    participant: RemoteParticipant;
+    participant: ParticipantInfo;
   }) => {
     if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
       logger.info({ args }, "invalid number");
@@ -369,9 +370,10 @@ async function setupCallAndUtilities({
         {
           args,
           number: args.number,
-          identity: participant.info?.["identity"],
+          identity: participant.sid,
           room,
           aplisayId,
+          calledId
         },
         "transfer participant"
       );
@@ -423,7 +425,7 @@ function createTools({
   onTransfer,
 }: {
   agent: Agent;
-  participant: RemoteParticipant | null;
+  participant: ParticipantInfo | null;
   sendMessage: (message: MessageData) => Promise<void>;
   metadata: CallMetadata;
   onHangup: () => Promise<void>;
@@ -432,7 +434,7 @@ function createTools({
     participant,
   }: {
     args: TransferArgs;
-    participant: RemoteParticipant;
+    participant: ParticipantInfo;
   }) => Promise<any>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
@@ -547,10 +549,15 @@ async function runAgentWorker({
 
   // Listen on the user input transcribed event
   session.on(
-    voice.AgentSessionEventTypes.UserInputTranscribed,
-    ({ transcript }: voice.UserInputTranscribedEvent) =>
-      sendMessage({ user: transcript })
+    voice.AgentSessionEventTypes.ConversationItemAdded,
+    ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
+      if (type === "message") {
+        sendMessage({ [role === "user" ? "user" : "agent"]: content.join('') });
+      }
+    }
   );
+
+
 
   //
   await session.start({
