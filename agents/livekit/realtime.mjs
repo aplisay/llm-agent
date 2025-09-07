@@ -64,6 +64,8 @@ async function bridgeParticipant(roomName, participant, bridgeTo, aplisayId, cal
     throw new Error('No inbound trunk or inbound trunk does not support bridging');
   }
 
+  bridgeTo = bridgeTo.replace(/^0/, '44').replace(/^(?!\+)/, '+');
+
   const sipClient = new SipClient(LIVEKIT_URL,
     LIVEKIT_API_KEY,
     LIVEKIT_API_SECRET);
