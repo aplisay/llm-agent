@@ -50,7 +50,11 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   organisationId: string;
   modelName: string;
   options: any;
-  createModelRef: (create: () => any) => any;
+  // Preferred API used by current code
+  modelRef: (create?: () => any) => any;
+  // Back-compat with older call sites
+  createModelRef?: (create: () => any) => any;
+  sessionRef: (session: any) => void;
   setBridgedParticipant: (participant: any) => void;
   requestHangup: () => void;
 }
@@ -68,6 +72,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   call: Call;
   onHangup: () => Promise<void>;
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
+  sessionRef: (session: any) => void;
   getModel: () => any;
   getBridgedParticipant: () => any;
   wantHangup: () => boolean;
