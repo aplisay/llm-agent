@@ -64,7 +64,7 @@ export default defineAgent({
     logger.debug({ ctx, job, room }, "new call");
 
     // Local mutable state used across helpers
-    let model: any = null;
+    let session: any = null;
     let bridgedParticipant: any = null;
     let wantHangup = false;
 
@@ -90,7 +90,7 @@ export default defineAgent({
 
       const { userId, modelName, organisationId, options = {} } = agent;
 
-      const { call, metadata, sendMessage, onHangup, onTransfer } =
+      const { call, metadata, sendMessage, onHangup, onTransfer, sessionRef } =
         await setupCallAndUtilities({
           ctx,
           room,
@@ -105,9 +105,9 @@ export default defineAgent({
           organisationId,
           modelName,
           options,
-          createModelRef: (create: () => any) => {
-            model = create();
-            return model;
+          sessionRef: (create) => {
+            create && (session = create);
+            return session;
           },
           setBridgedParticipant: (p) => (bridgedParticipant = p),
           requestHangup: () => (wantHangup = true),
@@ -171,6 +171,7 @@ export default defineAgent({
         call,
         onHangup,
         onTransfer,
+        sessionRef,
         getModel: () => model,
         getBridgedParticipant: () => bridgedParticipant,
         wantHangup: () => wantHangup,
@@ -295,7 +296,7 @@ async function setupCallAndUtilities({
   organisationId,
   modelName,
   options,
-  createModelRef,
+  sessionRef,
   setBridgedParticipant,
   requestHangup,
 }: SetupCallParams) {
@@ -384,7 +385,7 @@ async function setupCallAndUtilities({
         calledId
       );
       logger.info({ p }, "new participant created");
-      const currentModel = createModelRef(() => null);
+      const currentModel = sessionRef();
       if (currentModel && typeof currentModel.close === "function") {
         await currentModel.close();
       }
@@ -410,7 +411,7 @@ async function setupCallAndUtilities({
     requestHangup();
   };
 
-  return { call, metadata, sendMessage, onHangup, onTransfer };
+  return { call, metadata, sendMessage, onHangup, onTransfer, sessionRef };
 }
 
 /**
@@ -506,6 +507,7 @@ async function runAgentWorker({
   getModel,
   getBridgedParticipant,
   wantHangup,
+  sessionRef,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime = plugin && (models as any)[plugin]?.realtime;
@@ -534,6 +536,7 @@ async function runAgentWorker({
       voice: agent?.options?.tts?.voice,
     }),
   });
+  sessionRef(session);
 
   // Listen on all the things for now (debug)
   Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
