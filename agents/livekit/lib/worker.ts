@@ -1,7 +1,13 @@
 // External dependencies
 import dotenv from "dotenv";
 import { RoomServiceClient } from "livekit-server-sdk";
-import { type JobContext, defineAgent, voice, llm } from "@livekit/agents";
+import {
+  type JobContext,
+  defineAgent,
+  getJobContext,
+  voice,
+  llm,
+} from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 
 // Internal modules
@@ -66,7 +72,6 @@ export default defineAgent({
     // Local mutable state used across helpers
     let session: any = null;
     let bridgedParticipant: any = null;
-    let wantHangup = false;
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -90,7 +95,7 @@ export default defineAgent({
 
       const { userId, modelName, organisationId, options = {} } = agent;
 
-      const { call, metadata, sendMessage, onHangup, onTransfer, sessionRef } =
+      const { call, metadata, sendMessage, onHangup, onTransfer, checkForHangup, sessionRef } =
         await setupCallAndUtilities({
           ctx,
           room,
@@ -105,6 +110,10 @@ export default defineAgent({
           organisationId,
           modelName,
           options,
+          modelRef: (create) => {
+            create && (session = create());
+            return session;
+          },
           sessionRef: (create) => {
             create && (session = create);
             return session;
@@ -172,9 +181,9 @@ export default defineAgent({
         onHangup,
         onTransfer,
         sessionRef,
-        getModel: () => model,
+        getModel: () => models,
         getBridgedParticipant: () => bridgedParticipant,
-        wantHangup: () => wantHangup,
+        checkForHangup,
       });
     } catch (e) {
       logger.error(
@@ -238,12 +247,15 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     } else if (room.name) {
       const participants = await roomService.listParticipants(room.name);
       participant = participants[0] as ParticipantInfo;
-      logger.debug({ participants, attributes: participant.attributes }, "participants");
+      logger.debug(
+        { participants, attributes: participant.attributes },
+        "participants"
+      );
       if (participant) {
         ({
-          "sipTrunkPhoneNumber": calledId,
-          "sipPhoneNumber": callerId,
-          "sipHXAplisayTrunk": aplisayId,
+          sipTrunkPhoneNumber: calledId,
+          sipPhoneNumber: callerId,
+          sipHXAplisayTrunk: aplisayId,
         } = participant.attributes);
       }
     }
@@ -296,6 +308,7 @@ async function setupCallAndUtilities({
   organisationId,
   modelName,
   options,
+  modelRef,
   sessionRef,
   setBridgedParticipant,
   requestHangup,
@@ -305,6 +318,8 @@ async function setupCallAndUtilities({
     { agent, instance, calledId, callerId, ctx, room },
     "new room instance"
   );
+
+  let wantHangup = false;
 
   const call = await createCall({
     id: callId,
@@ -374,7 +389,7 @@ async function setupCallAndUtilities({
           identity: participant.sid,
           room,
           aplisayId,
-          calledId
+          calledId,
         },
         "transfer participant"
       );
@@ -385,7 +400,7 @@ async function setupCallAndUtilities({
         calledId
       );
       logger.info({ p }, "new participant created");
-      const currentModel = sessionRef();
+      const currentModel = modelRef && modelRef();
       if (currentModel && typeof currentModel.close === "function") {
         await currentModel.close();
       }
@@ -406,12 +421,23 @@ async function setupCallAndUtilities({
     }
   };
 
-  const onHangup = async () => {
-    logger.info({}, "Hangup call requested");
-    requestHangup();
+  const checkForHangup = () => {
+    return wantHangup;
   };
 
-  return { call, metadata, sendMessage, onHangup, onTransfer, sessionRef };
+  async function onHangup() {
+    wantHangup = true;
+  }
+
+  return {
+    call,
+    metadata,
+    sendMessage,
+    onHangup,
+    onTransfer,
+    checkForHangup,
+    sessionRef,
+  };
 }
 
 /**
@@ -419,6 +445,7 @@ async function setupCallAndUtilities({
  */
 function createTools({
   agent,
+  room,
   participant,
   sendMessage,
   metadata,
@@ -426,6 +453,7 @@ function createTools({
   onTransfer,
 }: {
   agent: Agent;
+  room: Room;
   participant: ParticipantInfo | null;
   sendMessage: (message: MessageData) => Promise<void>;
   metadata: CallMetadata;
@@ -474,7 +502,7 @@ function createTools({
               sendMessage,
               metadata,
               {
-                hangup: onHangup,
+                hangup: () => onHangup(),
                 transfer: (a: any) =>
                   onTransfer({ args: a, participant: participant! }),
               }
@@ -506,7 +534,7 @@ async function runAgentWorker({
   onTransfer,
   getModel,
   getBridgedParticipant,
-  wantHangup,
+  checkForHangup,
   sessionRef,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
@@ -519,6 +547,7 @@ async function runAgentWorker({
 
   const tools = createTools({
     agent,
+    room: room!,
     participant,
     sendMessage,
     metadata,
@@ -555,12 +584,37 @@ async function runAgentWorker({
     voice.AgentSessionEventTypes.ConversationItemAdded,
     ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
       if (type === "message") {
-        sendMessage({ [role === "user" ? "user" : "agent"]: content.join('') });
+        sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
       }
     }
   );
 
+  session.on(
+    voice.AgentSessionEventTypes.AgentStateChanged,
+    (ev: voice.AgentStateChangedEvent) => {
+      if (ev.newState === "listening" && checkForHangup() && room.name) {
+        logger.debug({ room }, "room close inititiated");
+        sendMessage({ hangup: 'agent initiated hangup' });
+        call.end();
+        roomService.deleteRoom(room.name);
+      }
+    }
+  );
 
+  session.on(
+    voice.AgentSessionEventTypes.Error,
+    (ev: voice.ErrorEvent) => {
+      logger.error({ ev }, "error");
+    }
+  );
+
+  session.on(
+    voice.AgentSessionEventTypes.Close,
+    (ev: voice.CloseEvent) => {
+      logger.info({ ev }, "session closed");
+      call.end();
+    }
+  );
 
   //
   await session.start({
