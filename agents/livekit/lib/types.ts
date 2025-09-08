@@ -75,7 +75,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sessionRef: (session: any) => void;
   getModel: () => any;
   getBridgedParticipant: () => any;
-  wantHangup: () => boolean;
+  checkForHangup: () => boolean;
 }
 
 export interface TransferArgs {
