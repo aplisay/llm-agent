@@ -941,7 +941,9 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
     const { content } = this.#getContent();
     this.#audioBuffer.push(audioData);
-    let data: Buffer | undefined;
+    // Should type this properly but can't see how to do it without an unnecessary (& expensive) data copy
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let data: any | undefined;
     while ((data = this.#audioBuffer.shift())) {
       const frames = this.#audioStream?.write(data);
       if (frames) {

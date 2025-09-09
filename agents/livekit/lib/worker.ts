@@ -10,8 +10,13 @@ import {
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as gemini from "@livekit/agents-plugin-google";
-// Internal modules
+
+
+// Should be contributed as a plugin to the Livekit Agents framework when stable, 
+// but for now
 import * as ultravox from "../plugins/ultravox/src/realtime/realtime_model.js";
+
+// Internal modules
 import logger from "../agent-lib/logger.js";
 import * as functionHandlerModule from "../agent-lib/function-handler.js";
 import { bridgeParticipant } from "./telephony.js";
@@ -44,7 +49,7 @@ import type {
 dotenv.config();
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
-const models = {
+const realtimeModels = {
   openai,
   ultravox,
   gemini
@@ -73,8 +78,8 @@ export default defineAgent({
     logger.debug({ ctx, job, room }, "new call");
 
     // Local mutable state used across helpers
-    let session: any = null;
-    let bridgedParticipant: any = null;
+    let session: voice.AgentSession | null = null;
+    let bridgedParticipant: ParticipantInfo | null = null;
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -122,7 +127,7 @@ export default defineAgent({
             return session;
           },
           setBridgedParticipant: (p) => (bridgedParticipant = p),
-          requestHangup: () => (wantHangup = true),
+          requestHangup: () => {},
         });
 
       if (outboundCall && outboundInfo && !participant) {
@@ -184,7 +189,7 @@ export default defineAgent({
         onHangup,
         onTransfer,
         sessionRef,
-        getModel: () => models,
+        getModel: () => realtimeModels,
         getBridgedParticipant: () => bridgedParticipant,
         checkForHangup,
       });
@@ -221,8 +226,19 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let agent: Agent | null = null;
   let participant: ParticipantInfo | null = null;
   let outboundCall = false;
-  let outboundInfo: any = null;
+  let outboundInfo: OutboundInfo | null = null;
 
+  /*
+
+  Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
+  the scenario is a bit complex:
+  Outbound calls: our manual dispatch puts the number we want to call, CID and agent instanceID in the Job Metadata
+  Inbound WebRTC calls: again, we put the instanceId in the Job Metadata as `identity` when we dispatch the call
+  Inbound SIP calls: the livekit SIP call routing and dispatch puts SIP header information in the participant attributes
+                      we use this to extract the called number, and then lookup which agent instance we should answer with.
+  
+  */
+  
   if (outbound) {
     if (!calledId || !callerId || !aplisayId || !instanceId) {
       logger.error({ ctx }, "missing metadata for outbound call");
@@ -355,7 +371,7 @@ async function setupCallAndUtilities({
   const sendMessage = async (message: MessageData) => {
     const entries = Object.entries(message);
     if (entries.length > 0) {
-      const [type, data] = entries[0] as [string, any];
+      const [type, data] = entries[0] as [string, unknown];
       ctx.room.localParticipant?.publishData(
         new TextEncoder().encode(JSON.stringify(message)),
         { reliable: true }
@@ -467,7 +483,7 @@ function createTools({
   }: {
     args: TransferArgs;
     participant: ParticipantInfo;
-  }) => Promise<any>;
+  }) => Promise<ParticipantInfo>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -493,7 +509,7 @@ function createTools({
                 (key) => fnc.input_schema.properties[key].required
               ) || [],
           },
-          execute: async (args: any) => {
+          execute: async (args: unknown) => {
             logger.debug(
               { name: fnc.name, args, fnc },
               `Got function call ${fnc.name}`
@@ -506,7 +522,7 @@ function createTools({
               metadata,
               {
                 hangup: () => onHangup(),
-                transfer: (a: any) =>
+                transfer: (a: TransferArgs) =>
                   onTransfer({ args: a, participant: participant! }),
               }
             )) as FunctionResult;
@@ -541,12 +557,12 @@ async function runAgentWorker({
   sessionRef,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const realtime = plugin && (models as any)[plugin]?.realtime;
+  const realtime = plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
   if (!realtime) {
-    logger.error({ modelName, plugin, realtime, models }, "Unsupported model");
+    logger.error({ modelName, plugin, realtime, realtimeModels }, "Unsupported model");
     throw new Error(`Unsupported model: ${modelName} ${plugin}`);
   }
-  logger.debug({ realtime, models, openAI: openai.realtime }, "got realtime");
+  logger.debug({ realtime, realtimeModels, openAI: openai.realtime }, "got realtime");
 
   const tools = createTools({
     agent,
@@ -576,7 +592,7 @@ async function runAgentWorker({
       voice.AgentSessionEventTypes[
         event as keyof typeof voice.AgentSessionEventTypes
       ],
-      (data: any) => {
+      (data: unknown) => {
         logger.debug({ data }, `Got event ${event}`);
       }
     );
