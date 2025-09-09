@@ -1,15 +1,16 @@
-require('dotenv').config();
-const logger = require('../lib/logger');
-const Voices = require('../lib/voices');
+import 'dotenv/config';
+
+import logger from '../lib/logger.js';
+import Voices from '../lib/voices/index.js';
 
 let voices;
 let list;
 
 describe(`voices`, () => {
-  test('Instatiate', () => {
+  test('Instatiate', async () => {
     expect(voices = new Voices(logger)).toBeInstanceOf(Voices);
-    expect(Voices.services).toHaveProperty('google');
-    expect(Voices.services).toHaveProperty('deepgram');
+    expect(await Voices.services()).toHaveProperty('google');
+    expect(await Voices.services()).toHaveProperty('deepgram');
   });
 
   test('listVoices', async () => {

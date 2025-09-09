@@ -2,12 +2,13 @@
   "name": "aplisay-jambonz-handler",
   "version": "0.0.2",
   "description": "Aplisay Jambonz Handler",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
     "start": "NODE_ENV=production node index",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index",
-    "test": "LOGLEVEL=error jest"
+    "test": "LOGLEVEL=error node --experimental-vm-modules node_modules/.bin/jest"
   },
   "author": "",
   "license": "MIT",

@@ -1,4 +1,4 @@
-const { STATUS_CODES } = require("http");
+import { STATUS_CODES } from "http";
 
 // eslint-disable-next-line no-unused-vars
 function handleError(error, req, res, next) {
@@ -19,4 +19,4 @@ function handleError(error, req, res, next) {
   }
 }
 
-module.exports = handleError;
+export default handleError;

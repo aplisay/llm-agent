@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-const dir = require('path');
-const axios = require('axios');
-const commandLineArgs = require('command-line-args');
-const logger = require('../lib/logger');
+import dotenv from 'dotenv';
+import dir from 'path';
+import axios from 'axios';
+import commandLineArgs from 'command-line-args';
+import logger from '../lib/logger.js';
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'command', defaultOption: true },
@@ -20,7 +21,7 @@ const optionDefinitions = [
 const options = commandLineArgs(optionDefinitions);
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
 logger.debug(configArgs, 'Using configArgs');
-require('dotenv').config(configArgs);
+dotenv.config(configArgs);
 
 let command = options.command && options.command.toLowerCase();
 let started;
@@ -44,11 +45,11 @@ else if (command === 'upgrade-db') {
 }
 
 
+async function main() {
 
-const { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call } = require('../lib/database');
-started = databaseStarted;
-
-databaseStarted.then(async () => {
+  const { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize } = (await import('../lib/database.js'));
+  await databaseStarted;
+  started = stopDatabase;
   try {
 
     let organisation, user, authKey, where;
@@ -210,33 +211,34 @@ databaseStarted.then(async () => {
       case 'usage':
         // Set default dates to last month if not provided
         if (!options.start || !options.end) {
-          const now = new Date();
+          const now = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
           let lastMonth, lastMonthEnd;
 
           if (now.getMonth() === 0) {
             // January - last month is December of previous year
-            lastMonth = new Date(now.getFullYear() - 1, 11, 1);
-            lastMonthEnd = new Date(now.getFullYear() - 1, 11, 31);
+            lastMonth = new Date(Date.UTC(now.getUTCFullYear() - 1, 11, 0, 0, 0, 0));
+            lastMonthEnd = new Date(Date.UTC(now.getUTCFullYear() - 1, 11, 31, 23, 59, 59));
           } else {
             // All other months
-            lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-            lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+            lastMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1, 0, 0, 0));
+            lastMonthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59));
           }
 
-          options.start = options.start || lastMonth.toISOString().split('T')[0];
-          options.end = options.end || lastMonthEnd.toISOString().split('T')[0];
+          options.start = options.start || lastMonth.toISOString();
+          options.end = options.end || lastMonthEnd.toISOString();
         }
 
         // Validate that only one of orgId, userId, or email is provided
-        const providedFilters = [options.orgId, options.userId, options.email].filter(Boolean);
+        const providedFilters = [options.orgId, options.orgName, options.userId, options.email].filter(Boolean);
         if (providedFilters.length > 1) {
-          throw new Error('Only one of --orgId, --userId, or --email can be specified');
+          throw new Error('Only one of --orgId, --orgName, --userId, or --email can be specified');
         }
         if (providedFilters.length === 0) {
-          throw new Error('Must specify one of --orgId, --userId, or --email');
+          throw new Error('Must specify one of --orgId, --orgName, --userId, or --email');
         }
 
         let usageSpec = {
+
           where: {
             startedAt: {
               [Op.gte]: new Date(options.start),
@@ -244,18 +246,29 @@ databaseStarted.then(async () => {
             }
           },
           order: [['startedAt', 'ASC']],
-          include: {
-            model: User,
-            include: {
-              model: Organisation
+          include: [
+            {
+              model: User,
+              required: true,
+            },
+            {
+              model: Organisation,
+              required: true
             }
-          }
+          ]
         };
 
         // Add the appropriate filter based on which option was provided
         if (options.orgId) {
-          usageSpec.include.where = { ...(usageSpec.include.where || {}), organisationId: options.orgId };
-        } else if (options.userId) {
+          usageSpec.where = { ...(usageSpec.where || {}), organisationId: options.orgId };
+        }
+        else if (options.orgName) {
+          usageSpec.where = {
+            ...(usageSpec.where || {}),
+            "$Organisation.name$": { [Op.iLike]: `%${options.orgName}%` }
+          };
+        } 
+        else if (options.userId) {
           usageSpec.include.where = { ...(usageSpec.include.where || {}), id: options.userId };
         } else if (options.email) {
           usageSpec.include.where = { ...(usageSpec.include.where || {}), email: { [Op.iLike]: options.email } };
@@ -264,12 +277,12 @@ databaseStarted.then(async () => {
           throw new Error('Must specify one of --orgId, --userId, or --email');
           exit(1);
         }
-        console.log({ usageSpec }, 'starting query');
+        logger.debug({ usageSpec }, 'starting query');
         try {
 
           let data = await Call.findAll(usageSpec);
           console.log({ length: data.length }, 'query done');
-          cdrs = data
+          let cdrs = data
             .map(c => {
               if (!c.duration) {
                 c.duration || c.endedAt - c.startedAt;
@@ -277,12 +290,12 @@ databaseStarted.then(async () => {
               return c;
             })
             .filter(record => !!record.duration)
-          .map(c => {
+            .map(c => {
             
-            c.duration_s = Math.round(c.duration / 1000);
-            c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
-            return c;
-          });
+              c.duration_s = Math.round(c.duration / 1000);
+              c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
+              return c;
+            });
           
           const summary = cdrs.reduce((acc, c) => {
             let userEmail = c?.User?.email || 'unknown';
@@ -320,7 +333,7 @@ databaseStarted.then(async () => {
             c.callerId,
             c.calledId,
             c?.User?.email,
-            c?.User?.Organisation?.name,
+            c?.Organisation?.name,
             c.startedAt.toISOString(),
             c.endedAt.toISOString(),
             c.duration_s,
@@ -332,10 +345,10 @@ databaseStarted.then(async () => {
               return `    ${userEmail}, ${userData.duration} mins, ${userData.count} calls`;
             }).join('\n') || ''}\n  Duration: ${data.duration} mins, Count: ${data.count} calls`;
           }).join('\n') + `\nTotal Duration: ${summary.totalDuration} mins, Total Count: ${summary.totalCount} calls`;
-          console.log(`All calls for ${options.email || options.userId || options.orgId} from ${options.start} to ${options.end}`);
+          console.log(`All calls for ${options.email || options.userId || options.orgId || options.orgName} from ${options.start} to ${options.end}`);
           if (options.detail) {
-          console.log('--------------------------------');
-          detail.forEach(c => console.log(c.join(', ')));
+            console.log('--------------------------------');
+            detail.forEach(c => console.log(c.join(', ')));
             console.log('--------------------------------');
           }
           console.log('Summary:');
@@ -353,19 +366,26 @@ databaseStarted.then(async () => {
         throw new Error(`unrecognised command: ${command}`);
     }
 
-  } catch (err) {
-    logger.error(err);
+  }
+  catch (e) {
+    logger.error(e, 'error');
     exit(1);
   }
-  exit(0);
+  finally {
+    exit(0);
+  }
+}
 
 
 
+main().catch(e => {
+  logger.error(e, 'error');
+  exit(1);
 });
 
 function exit(code) {
   process.exitCode = code;
-  started && stopDatabase()
+  started && started()
     .then(() => {
       logger.debug('database stopped');
     });

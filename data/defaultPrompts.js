@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   gpt: `You are operating the user service line for Flagco. 
 
 There are two things you can do for customers who call up:

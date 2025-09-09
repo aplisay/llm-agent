@@ -1,6 +1,6 @@
-const { initializeApp, applicationDefault } = require('firebase-admin/app');
-const { Instance, User, AuthKey, Op } = require('../lib/database');
-const firebase = require('firebase-admin/auth');
+import { initializeApp, applicationDefault } from 'firebase-admin/app';
+import { Instance, User, AuthKey, Op } from '../lib/database.js';
+import * as firebase from 'firebase-admin/auth';
 
 function init(app, logger) {
 
@@ -22,6 +22,21 @@ function init(app, logger) {
       || req.originalUrl.startsWith('/api/api-docs') 
       || req.originalUrl.startsWith('/api/hooks')
      ) {
+      next();
+      return;
+    }
+    
+    // Check for shared token for internal API calls
+    const sharedToken = process.env.SHARED_API_TOKEN;
+    if (sharedToken && req.headers['x-shared-token'] === sharedToken) {
+      // Create a system user for internal API calls
+      res.locals.user = {
+        id: 'system',
+        user_id: 'system',
+        name: 'System User (Internal API)',
+        isSystem: true
+      };
+      res.locals.user.sql = { where: { userId: 'system' } };
       next();
       return;
     }
@@ -91,5 +106,4 @@ function init(app, logger) {
   });
 }
 
-
-module.exports = init;
+export default init;
