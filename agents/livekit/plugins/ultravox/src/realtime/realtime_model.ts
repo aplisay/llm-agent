@@ -9,7 +9,6 @@ import {
   llm,
   log,
   initializeLogger,
-  multimodal,
 } from '@livekit/agents';
 import { AudioFrame } from '@livekit/rtc-node';
 import { once } from 'node:events';
@@ -176,7 +175,7 @@ class Response {
   }
 }
 
-export class RealtimeModel extends multimodal.RealtimeModel {
+export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
   inFrameSize = api_proto.IN_FRAME_SIZE;
@@ -216,7 +215,12 @@ export class RealtimeModel extends multimodal.RealtimeModel {
     transcriptOptional?: boolean;
     firstSpeaker?: string;
   }) {
-    super();
+    super({
+      messageTruncation: false,
+      turnDetection: false,
+      userTranscription: true,
+      autoToolReplyGeneration: false,
+    });
     if (apiKey === '') {
       throw new Error(
         'Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable',
@@ -247,47 +251,11 @@ export class RealtimeModel extends multimodal.RealtimeModel {
     return this.#sessions;
   }
 
-  session({
-    fncCtx,
-    chatCtx,
-    modalities = this.#defaultOpts.modalities,
-    instructions = this.#defaultOpts.instructions,
-    voice = this.#defaultOpts.voice,
-    inputAudioFormat = this.#defaultOpts.inputAudioFormat,
-    outputAudioFormat = this.#defaultOpts.outputAudioFormat,
-    temperature = this.#defaultOpts.temperature,
-    maxResponseOutputTokens = this.#defaultOpts.maxResponseOutputTokens,
-  }: {
-    fncCtx?: llm.FunctionContext;
-    chatCtx?: llm.ChatContext;
-    modalities?: ['text', 'audio'] | ['text'];
-    instructions?: string;
-    voice?: api_proto.Voice;
-    inputAudioFormat?: api_proto.AudioFormat;
-    outputAudioFormat?: api_proto.AudioFormat;
-    temperature?: number;
-    maxResponseOutputTokens?: number;
-  }): RealtimeSession {
-    const opts: ModelOptions = {
-      modalities,
-      instructions,
-      voice,
-      inputAudioFormat,
-      outputAudioFormat,
-      temperature,
-      maxResponseOutputTokens,
-      model: this.#defaultOpts.model,
-      apiKey: this.#defaultOpts.apiKey,
-      baseURL: this.#defaultOpts.baseURL,
-      maxDuration: this.#defaultOpts.maxDuration,
-      timeExceededMessage: this.#defaultOpts.timeExceededMessage,
-      transcriptOptional: this.#defaultOpts.transcriptOptional,
-      firstSpeaker: this.#defaultOpts.firstSpeaker,
-    };
-
-    const newSession = new RealtimeSession(opts, this.#client, {
-      chatCtx: chatCtx || new llm.ChatContext(),
-      fncCtx,
+  session(): RealtimeSession {
+    const opts: ModelOptions = { ...this.#defaultOpts };
+    const newSession = new RealtimeSession(this, opts, this.#client, {
+      chatCtx: new llm.ChatContext(),
+      fncCtx: undefined,
     });
     this.#sessions.push(newSession);
     return newSession;
@@ -298,9 +266,9 @@ export class RealtimeModel extends multimodal.RealtimeModel {
   }
 }
 
-export class RealtimeSession extends multimodal.RealtimeSession {
+export class RealtimeSession extends llm.RealtimeSession {
   #chatCtx: llm.ChatContext | undefined = undefined;
-  #fncCtx: llm.FunctionContext | undefined = undefined;
+  #fncCtx: llm.ToolContext | undefined = undefined;
   #opts: ModelOptions;
   #client: UltravoxClient;
   #pendingResponses: { [id: string]: RealtimeResponse } = {};
@@ -317,12 +285,16 @@ export class RealtimeSession extends multimodal.RealtimeSession {
   #currentContentIndex = 0;
   #audioStream?: AudioByteStream;
   #audioBuffer: Buffer[] = [];
+  #toolChoice: llm.ToolChoice | null = 'auto';
+  #messageStreamController?: ReadableStreamDefaultController<any>;
+  #functionStreamController?: ReadableStreamDefaultController<any>;
   constructor(
+    realtimeModel: llm.RealtimeModel,
     opts: ModelOptions,
     client: UltravoxClient,
-    { fncCtx, chatCtx }: { fncCtx?: llm.FunctionContext; chatCtx?: llm.ChatContext },
+    { fncCtx, chatCtx }: { fncCtx?: llm.ToolContext; chatCtx?: llm.ChatContext },
   ) {
-    super();
+    super(realtimeModel);
 
     this.#opts = opts;
     this.#client = client;
@@ -331,15 +303,59 @@ export class RealtimeSession extends multimodal.RealtimeSession {
     this.#task = this.#start();
   }
 
-  get chatCtx(): llm.ChatContext | undefined {
-    return this.#chatCtx;
+  get chatCtx(): llm.ChatContext { return this.#chatCtx || new llm.ChatContext(); }
+
+  get fncCtx(): llm.ToolContext | undefined { return this.#fncCtx; }
+
+  get tools(): llm.ToolContext {
+    return this.#fncCtx || {};
   }
 
-  get fncCtx(): llm.FunctionContext | undefined {
-    return this.#fncCtx;
+  async updateInstructions(instructions: string): Promise<void> {
+    this.#opts.instructions = instructions;
+    this.queueMsg({ type: 'session.update', session: { instructions } });
   }
 
-  set fncCtx(ctx: llm.FunctionContext | undefined) {
+  async updateChatCtx(chatCtx: llm.ChatContext): Promise<void> {
+    this.#chatCtx = chatCtx;
+  }
+
+  async updateTools(tools: llm.ToolContext): Promise<void> {
+    this.#fncCtx = tools;
+  }
+
+  updateOptions(options: { toolChoice?: llm.ToolChoice | null }): void {
+    if (options.toolChoice !== undefined) {
+      this.#toolChoice = options.toolChoice;
+    }
+  }
+
+  pushAudio(frame: AudioFrame): void {
+    this.sendAudioFrame(frame);
+  }
+
+  async generateReply(_instructions?: string): Promise<any> {
+    const empty = new ReadableStream({ start: (c) => c.close() });
+    return { messageStream: empty, functionStream: empty, userInitiated: true } as any;
+  }
+
+  async commitAudio(): Promise<void> {
+    // No-op: Ultravox consumes audio frames directly
+  }
+
+  async clearAudio(): Promise<void> {
+    // No-op for Ultravox
+  }
+
+  async interrupt(): Promise<void> {
+    // Not supported by Ultravox
+  }
+
+  async truncate(_opts: { messageId: string; audioEndMs: number }): Promise<void> {
+    // Not supported by Ultravox
+  }
+
+  set fncCtx(ctx: llm.ToolContext | undefined) {
     this.#fncCtx = ctx;
   }
 
@@ -363,6 +379,73 @@ export class RealtimeSession extends multimodal.RealtimeSession {
   }
 
   queueMsg(command: any): void {
+    // Intercept certain OpenAI-style client events to keep local state in sync
+    try {
+      if (command && typeof command === 'object' && typeof command.type === 'string') {
+        switch (command.type) {
+          case 'session.update': {
+            // Merge supported session fields into opts and emit a session.updated for compatibility
+            const sessionUpdate = command.session || {};
+            if (typeof sessionUpdate.instructions === 'string') {
+              this.#opts.instructions = sessionUpdate.instructions;
+            }
+            if (typeof sessionUpdate.voice === 'string') {
+              this.#opts.voice = sessionUpdate.voice;
+            }
+            if (typeof sessionUpdate.temperature === 'number') {
+              this.#opts.temperature = sessionUpdate.temperature;
+            }
+            if (sessionUpdate.max_response_output_tokens !== undefined) {
+              // accept number | 'inf'
+              this.#opts.maxResponseOutputTokens =
+                sessionUpdate.max_response_output_tokens === 'inf'
+                  ? Infinity
+                  : Number(sessionUpdate.max_response_output_tokens);
+            }
+            // emit synthetic session.updated event
+            const event: api_proto.Realtime_SessionUpdatedEvent = {
+              event_id: this.#generateEventId(),
+              type: 'session.updated',
+              session: {
+                id: this.#sessionId,
+                object: 'realtime.session',
+                model: this.#opts.model,
+                modalities: this.#opts.modalities,
+                instructions: this.#opts.instructions,
+                voice: this.#opts.voice || 'alloy',
+                input_audio_format: this.#opts.inputAudioFormat,
+                output_audio_format: this.#opts.outputAudioFormat,
+                input_audio_transcription: null,
+                turn_detection: null,
+                tools: [],
+                tool_choice: 'auto',
+                temperature: this.#opts.temperature,
+                max_response_output_tokens:
+                  this.#opts.maxResponseOutputTokens === Infinity
+                    ? 'inf'
+                    : this.#opts.maxResponseOutputTokens,
+                expires_at: this.#expiresAt ?? Date.now() + 5 * 60 * 1000,
+              },
+            };
+            this.emit('session_updated', event);
+            return; // do not forward to Ultravox
+          }
+          case 'conversation.item.create':
+          case 'conversation.item.truncate':
+          case 'conversation.item.delete':
+          case 'response.create':
+          case 'response.cancel':
+            // Ultravox transport does not consume these. Treat as no-ops for transport
+            // but keep local compatibility by emitting minimal events when possible.
+            // For now, swallow and do not forward.
+            return;
+          default:
+            break;
+        }
+      }
+    } catch (err) {
+      this.#logger.warn({ err }, 'error handling client event locally');
+    }
     this.#sendQueue.put(command);
   }
 
@@ -398,27 +481,26 @@ export class RealtimeSession extends multimodal.RealtimeSession {
         const selectedTools: api_proto.UltravoxTool[] = [];
         if (this.#fncCtx) {
           for (const [name, func] of Object.entries(this.#fncCtx)) {
+            const requiredList = Array.isArray((func as any).parameters?.required)
+              ? ((func as any).parameters.required as string[])
+              : [];
+            const properties = (func as any).parameters?.properties || {};
+            const dynamicParams = Object.entries(properties).map(([propName, prop]) => ({
+              name: propName,
+              location: 'PARAMETER_LOCATION_BODY',
+              schema: {
+                type: (prop as any).type || 'string',
+                description: (prop as any).description || '',
+              },
+              required: requiredList.includes(propName),
+            }));
             const tool: api_proto.UltravoxTool = {
               nameOverride: name,
               temporaryTool: {
-                description: func.description,
+                description: (func as any).description || '',
                 timeout: '30s',
                 client: {},
-                dynamicParameters: Object.entries(func.parameters.properties || {})
-                  .filter(
-                    ([, prop]) =>
-                      (prop as any).source !== 'static' && (prop as any).source !== 'metadata',
-                  )
-                  .map(([propName, prop]) => ({
-                    name: propName,
-                    location: 'PARAMETER_LOCATION_BODY',
-                    schema: {
-                      type: (prop as any).type || 'string',
-                      description: (prop as any).description || '',
-                    },
-                    required: (func.parameters.required || []).includes(propName),
-                  })),
-                // We dont send static parameters here, sort them out later in the client call
+                dynamicParameters: dynamicParams,
                 staticParameters: [],
               },
             };
@@ -495,6 +577,32 @@ export class RealtimeSession extends multimodal.RealtimeSession {
             expires_at: this.#expiresAt,
           },
         } as api_proto.Realtime_SessionCreatedEvent);
+
+        // Also emit a synthetic session.updated to align with newer interface expectations
+        this.emit('session_updated', {
+          event_id: this.#generateEventId(),
+          type: 'session.updated',
+          session: {
+            id: this.#sessionId,
+            object: 'realtime.session',
+            model: this.#opts.model,
+            modalities: this.#opts.modalities,
+            instructions: this.#opts.instructions,
+            voice: this.#opts.voice || 'alloy',
+            input_audio_format: this.#opts.inputAudioFormat,
+            output_audio_format: this.#opts.outputAudioFormat,
+            input_audio_transcription: null,
+            turn_detection: null,
+            tools: [],
+            tool_choice: 'auto',
+            temperature: this.#opts.temperature,
+            max_response_output_tokens:
+              this.#opts.maxResponseOutputTokens === Infinity
+                ? 'inf'
+                : this.#opts.maxResponseOutputTokens,
+            expires_at: this.#expiresAt!,
+          },
+        } as api_proto.Realtime_SessionUpdatedEvent);
 
         this.#ws.onmessage = (message) => {
           if (message.data instanceof Buffer) {
@@ -761,7 +869,10 @@ export class RealtimeSession extends multimodal.RealtimeSession {
     try {
       this.#logger.debug('Executing function:', toolCall.name);
 
-      const result = await func.execute(toolCall.arguments);
+      const result = await func.execute(toolCall.arguments, {
+        toolCallId: toolCall.toolCallID,
+        ctx: {} as any,
+      } as any);
 
       // Send function result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
@@ -774,6 +885,13 @@ export class RealtimeSession extends multimodal.RealtimeSession {
         this.#logger.debug('Sending function result:', functionResult);
         this.#ws.send(JSON.stringify(functionResult));
       }
+
+      // Emit a function_call_output item for interface parity
+      this.emit('function_call_output', {
+        id: toolCall.toolCallID,
+        callId: toolCall.toolCallID,
+        output: JSON.stringify(result),
+      });
     } catch (error: unknown) {
       this.#logger.error(
         {
@@ -796,6 +914,14 @@ export class RealtimeSession extends multimodal.RealtimeSession {
         this.#logger.info(functionResult, 'Sending function error result:');
         this.#ws.send(JSON.stringify(functionResult));
       }
+
+      // Emit a function_call_output item indicating error
+      this.emit('function_call_output', {
+        id: toolCall.toolCallID,
+        callId: toolCall.toolCallID,
+        output: error instanceof Error ? error.message : String(error),
+        isError: true,
+      });
     }
   }
 
@@ -828,19 +954,9 @@ export class RealtimeSession extends multimodal.RealtimeSession {
   }
 
   /** Create an empty audio message with the given duration. */
-  #createEmptyUserAudioMessage(duration: number): llm.ChatMessage {
-    const samples = duration * api_proto.SAMPLE_RATE;
-    return new llm.ChatMessage({
-      role: llm.ChatRole.USER,
-      content: {
-        frame: new AudioFrame(
-          new Int16Array(samples * api_proto.NUM_CHANNELS),
-          api_proto.SAMPLE_RATE,
-          api_proto.NUM_CHANNELS,
-          samples,
-        ),
-      },
-    });
+  #createEmptyUserAudioMessage(_duration: number): llm.ChatMessage {
+    // Stubbed: Ultravox does not require injecting mock audio to trigger responses
+    return new llm.ChatMessage({ role: 'user', content: [''] } as any);
   }
 
   /**

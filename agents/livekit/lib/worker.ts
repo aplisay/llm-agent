@@ -9,8 +9,9 @@ import {
   llm,
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
-
+import * as gemini from "@livekit/agents-plugin-google";
 // Internal modules
+import * as ultravox from "../plugins/ultravox/src/realtime/realtime_model.js";
 import logger from "../agent-lib/logger.js";
 import * as functionHandlerModule from "../agent-lib/function-handler.js";
 import { bridgeParticipant } from "./telephony.js";
@@ -45,6 +46,8 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
 const models = {
   openai,
+  ultravox,
+  gemini
 };
 
 const roomService = new RoomServiceClient(
