@@ -4,3 +4,5 @@
 export * from './api_proto.js';
 export * from './ultravox_client.js';
 export * from './realtime_model.js';
+
+export const realtime = { RealtimeModel } as any;

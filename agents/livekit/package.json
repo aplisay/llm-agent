@@ -30,6 +30,7 @@
   "dependencies": {
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
     "@livekit/agents": "^1.0.2",
+    "@livekit/agents-plugin-google": "^1.0.2",
     "@livekit/agents-plugin-openai": "1.x",
     "@livekit/noise-cancellation-node": "^0.1.9",
     "@livekit/rtc-node": "^0.13.18",
