@@ -1,15 +1,16 @@
-const { Agent, Call, PhoneNumber } = require('../agent-lib/database.js');
-const JambonzSession = require('./session.js');
-const logger = require('../agent-lib/logger.js');
-const Jambonz = require('../agent-lib/jambonz.js');
-const handlers = require('../agent-lib/handlers');
+import 'dotenv/config';
+import { Agent, Call, PhoneNumber } from '../agent-lib/database.js';
+import JambonzSession from './session.js';
+import logger from '../agent-lib/logger.js';
+import Jambonz from '../agent-lib/jambonz.js';
+import handlers from '../agent-lib/handlers/index.js';
 
 /**
  *
  * @param {*} options
  * @return {*} 
  */
-class Application {
+export default class Application {
   constructor({ socket, host, path, logger }) {
     Object.assign(this, { socket, host, path, logger });
     logger.info({ host, path, socket }, 'new application');
@@ -162,5 +163,3 @@ class Application {
   }
 
 }
-
-module.exports = Application;
