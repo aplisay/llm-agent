@@ -267,7 +267,7 @@ async function main() {
             ...(usageSpec.where || {}),
             "$Organisation.name$": { [Op.iLike]: `%${options.orgName}%` }
           };
-        } 
+        }
         else if (options.userId) {
           usageSpec.include.where = { ...(usageSpec.include.where || {}), id: options.userId };
         } else if (options.email) {
@@ -291,43 +291,67 @@ async function main() {
             })
             .filter(record => !!record.duration)
             .map(c => {
-            
+
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
+              c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
+              c.telephony = c.callerId.match(/^\+*[1-9]\d{1,14}$/) || c.calledId.match(/^\+*[1-9]\d{1,14}$/);
               return c;
             });
           
-          const summary = cdrs.reduce((acc, c) => {
-            let userEmail = c?.User?.email || 'unknown';
-            let month = c.startedAt.toLocaleString('default', { month: 'long' });
-            acc.month[month] = acc.month[month] || {
+          const recordEntry = ({ acc, type, month, userEmail, duration }) => {
+            acc[type] = acc[type] || {
+              duration: 0,
+              count: 0,
+              month: {}
+            };
+            acc[type].month[month] = acc[type].month[month] || {
               duration: 0,
               count: 0,
               users: {}
             };
-            acc.month[month].duration += c.billingDuration;
-            acc.month[month].count++;
-            acc.totalDuration += c.billingDuration;
-            acc.totalCount++;
-
-            acc.month[month].users[userEmail] = acc.month[month].users[userEmail] || {
+            acc[type].month[month].duration += duration;
+            acc[type].month[month].count++;
+            acc[type].duration += duration;
+            acc[type].count++;
+            acc[type].month[month].users[userEmail] = acc[type].month[month].users[userEmail] || {
               duration: 0,
               count: 0
             };
-            acc.month[month].users[userEmail].duration += c.billingDuration;
-            acc.month[month].users[userEmail].count++;
-            return acc;
-          }, { totalDuration: 0, totalCount: 0, month: {} });
-          summary.totalDuration = Math.round(summary.totalDuration);
+            acc[type].month[month].users[userEmail].duration += duration;
+            acc[type].month[month].users[userEmail].count++;
+          }
+          const summary = cdrs.reduce((acc, c) => {
+            let userEmail = c?.User?.email || 'unknown';
+            let month = c.startedAt.toLocaleString('default', { month: 'long' });
+            recordEntry({ acc, type: c.type, month, userEmail, duration: c.billingDuration });
+            c.telephony && recordEntry({ acc, type: 'telephony', month, userEmail, duration: c.billingDuration });
+            acc.totalCount++;
+            acc.totalDuration += c.billingDuration;
 
-          Object.entries(summary.month).forEach(([key, data]) => {
-            if (typeof data === 'object') {
-              data.duration = Math.round(data.duration);
-              Object.values(data.users).forEach((userData) => {
-                userData.duration && (userData.duration = Math.round(userData.duration));
+            return acc;
+          }, { telephony: { duration: 0, count: 0, month: {} }, totalDuration: 0, totalCount: 0 });
+
+          Object.entries(summary).forEach(([type, typeData]) => {
+            if (typeof typeData === 'object') {
+              typeData.duration && (typeData.duration = Math.round(typeData.duration));
+              Object.entries(typeData.month).forEach(([month, monthData]) => {
+                if (typeof monthData === 'object') {
+                  monthData.duration && (monthData.duration = Math.round(monthData.duration));
+                  Object.entries(monthData.users).forEach(([userEmail, userData]) => {
+                    if (typeof userData === 'object') {
+                      userData.duration && (userData.duration = Math.round(userData.duration));
+                    }
+                  });
+                };
               });
             }
-          });
+          })
+          summary.totalDuration = Math.round(summary.totalDuration);
+
+          console.log({ summary, keys: Object.entries(summary) }, 'SUMMARY summary');
+
+
 
           const detail = cdrs.map(c => ([
             c.callerId,
@@ -337,14 +361,18 @@ async function main() {
             c.startedAt.toISOString(),
             c.endedAt.toISOString(),
             c.duration_s,
-            c.billingDuration
+            c.billingDuration,
+            c.type
           ]));
           detail.unshift(['callerId', 'calledId', 'userEmail', 'userOrg', 'startedAt', 'endedAt', 'duration s', 'billing duration m']);
-          const summaryOutput = Object.entries(summary.month).map(([month, data]) => {
-            return `  ${month}\n${data.users && Object.entries(data.users).map(([userEmail, userData]) => {
-              return `    ${userEmail}, ${userData.duration} mins, ${userData.count} calls`;
-            }).join('\n') || ''}\n  Duration: ${data.duration} mins, Count: ${data.count} calls`;
-          }).join('\n') + `\nTotal Duration: ${summary.totalDuration} mins, Total Count: ${summary.totalCount} calls`;
+          const summaryOutput =
+            Object.entries(summary).map(([type, typeData]) => {
+              return typeof typeData === 'object' ? `  ${type}\n${typeData.month && Object.entries(typeData.month).map(([month, monthData]) => {
+                return `    ${month}\n${monthData.users && Object.entries(monthData.users).map(([userEmail, userData]) => {
+                  return `      ${userEmail}, ${userData.duration} mins, ${userData.count} calls`;
+                }).join('\n') || ''}\n    Duration: ${monthData.duration} mins, Count: ${monthData.count} calls`;
+              }).join('\n') || ''}\n  Duration(whole date range): ${typeData.duration} mins, Count: ${typeData.count} calls`: ''
+            }).join('\n') + `\n  Total Duration: ${summary.totalDuration} mins, Total Count: ${summary.totalCount} calls`;
           console.log(`All calls for ${options.email || options.userId || options.orgId || options.orgName} from ${options.start} to ${options.end}`);
           if (options.detail) {
             console.log('--------------------------------');
