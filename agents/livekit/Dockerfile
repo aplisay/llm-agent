@@ -6,6 +6,7 @@ WORKDIR /usr/src/app
 RUN apt-get -y update 
 RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
+COPY lib/* ./agent-lib/
 RUN npm install -g pnpm@latest-10
 RUN yarn install --development
 RUN yarn build
