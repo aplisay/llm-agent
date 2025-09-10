@@ -153,27 +153,14 @@ export default defineAgent({
           }
         } catch (err) {
           logger.error({ err }, "Outbound call failed");
-          await createTransactionLog({
-            userId,
-            organisationId,
-            callId: (call as Call)?.id || callId,
-            type: "call_failed",
-            data: (err as Error).message,
-            isFinal: true,
-          });
+          sendMessage({ call_failed: ((err as Error).message).replace(/^twirp [^:]*: /, '') });
           throw err;
         }
       }
 
       // Record the appropriate transaction at the top level
-      await createTransactionLog({
-        userId,
-        organisationId,
-        callId: (call as Call)?.id || callId,
-        type: "answer",
-        data: instance.id,
-        isFinal: true,
-      });
+      sendMessage({ answer: calledId });
+
 
       await runAgentWorker({
         ctx,
