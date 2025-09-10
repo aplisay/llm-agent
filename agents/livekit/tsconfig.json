@@ -27,5 +27,5 @@
   },
 
   "include": ["realtime.ts", "lib/**/*.ts"],
-  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts", "agent-lib"]
+  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts", "agent-lib", "temp-livekit-agents"]
 }

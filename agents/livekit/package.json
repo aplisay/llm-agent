@@ -18,7 +18,7 @@
     "develop": "yarn build && NODE_ENV=development LOGLEVEL=debug nodemon --delay 3 -e js,mjs,json,yaml,ts -- dev --log-level=debug",
     "start": "yarn build && NODE_ENV=production node dist/realtime.mjs start",
     "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.mjs dev",
-    "build": "tsup --clean",
+    "build": "npx tsup --clean",
     "build:deps": "cd temp-livekit-agents && pnpm install && pnpm build",
     "postinstall": "yarn build:deps && yarn patch:livekit",
     "patch:livekit": "cp -r temp-livekit-agents/agents/dist/* node_modules/@livekit/agents/dist/ && cp -r temp-livekit-agents/plugins/openai/dist/* node_modules/@livekit/agents-plugin-openai/dist/",

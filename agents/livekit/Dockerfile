@@ -7,7 +7,7 @@ RUN apt-get -y update
 RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
 RUN npm install -g pnpm@latest-10
-RUN yarn install
+RUN yarn install --development
 RUN yarn build
 ENV NODE_ENV production
 ENTRYPOINT node dist/realtime.mjs start
