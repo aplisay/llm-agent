@@ -30,7 +30,7 @@
     "api:update": "api-extractor run --local --typescript-compiler-folder ../../node_modules/typescript --verbose"
   },
   "devDependencies": {
-    "@livekit/agents": "0.7.9",
+    "@livekit/agents": "^1.0.3",
     "@livekit/rtc-node": "^0.13.11",
     "@types/ws": "^8.5.10",
     "tsup": "^8.3.5",
@@ -41,7 +41,7 @@
     "ws": "^8.16.0"
   },
   "peerDependencies": {
-    "@livekit/agents": "0.7.9",
+    "@livekit/agents": "^1.0.3",
     "@livekit/rtc-node": "^0.13.11"
   }
 }

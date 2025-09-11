@@ -14,7 +14,7 @@ import * as gemini from "@livekit/agents-plugin-google";
 
 // Should be contributed as a plugin to the Livekit Agents framework when stable, 
 // but for now
-import * as ultravox from "../plugins/ultravox/src/realtime/realtime_model.js";
+import * as ultravox from "../plugins/ultravox/src/index.js";
 
 // Internal modules
 import logger from "../agent-lib/logger.js";
@@ -54,6 +54,8 @@ const realtimeModels = {
   ultravox,
   gemini
 };
+
+logger.debug({ realtimeModels }, "realtime models");
 
 const roomService = new RoomServiceClient(
   LIVEKIT_URL!,
@@ -205,8 +207,8 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     callMetadata,
   } = jobMetadata || {};
   logger.info(
-    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata, room },
-    "new call"
+    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata, identity, room },
+    "getting call info"
   );
 
   let instance: Instance | null = null;
@@ -249,7 +251,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     };
   } else {
     if (identity) {
+      logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
+      logger.debug({ instance }, "instance found?");
     } else if (room.name) {
       const participants = await roomService.listParticipants(room.name);
       participant = participants[0] as ParticipantInfo;
@@ -264,15 +268,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipHXAplisayTrunk: aplisayId,
         } = participant.attributes);
       }
-    }
-    calledId = calledId?.replace("+", "");
-    callerId = callerId?.replace("+", "");
+    
+      calledId = calledId?.replace("+", "");
+      callerId = callerId?.replace("+", "");
 
-    logger.info(
-      { callerId, calledId, aplisayId },
-      "new Livekit inbound telephone call, looking up instance by number"
-    );
-    instance = calledId && (await getInstanceByNumber(calledId!));
+      logger.info(
+        { callerId, calledId, aplisayId },
+        "new Livekit inbound telephone call, looking up instance by number"
+      );
+      instance = calledId && (await getInstanceByNumber(calledId!));
+    }
   }
   if (!instance) {
     logger.error(
