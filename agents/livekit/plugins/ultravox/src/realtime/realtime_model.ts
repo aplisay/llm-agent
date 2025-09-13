@@ -294,12 +294,15 @@ export class RealtimeModel extends llm.RealtimeModel {
 
   session(): RealtimeSession {
     const opts: ModelOptions = { ...this.#defaultOpts };
+    
     const newSession = new RealtimeSession(this, opts, this.#client, {
       chatCtx: new llm.ChatContext(),
       fncCtx: undefined,
     });
+    
     // Set initial instructions from constructor
     newSession.instructions = opts.instructions;
+    
     this.#sessions.push(newSession);
     return newSession;
   }
@@ -312,6 +315,8 @@ export class RealtimeModel extends llm.RealtimeModel {
 export class RealtimeSession extends llm.RealtimeSession {
   #chatCtx: llm.ChatContext | undefined = undefined;
   #fncCtx: llm.ToolContext | undefined = undefined;
+  // Use RemoteChatContext like OpenAI for proper item insertion
+  private remoteChatCtx: llm.RemoteChatContext = new llm.RemoteChatContext();
   #opts: ModelOptions;
   #client: UltravoxClient;
   #pendingResponses: { [id: string]: RealtimeResponse } = {};
@@ -319,7 +324,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #ws: WebSocket | null = null;
   #expiresAt: number | null = null;
   #logger = log();
-  #task: Promise<void>;
+  #task: Promise<void> | undefined;
   #closing = true;
   #sendQueue = new Queue<any>();
   #callId: string | null = null;
@@ -343,6 +348,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   private responseCreatedFutures: { [id: string]: CreateResponseHandle } = {};
   // Instructions handling like OpenAI
   public instructions?: string;
+  // Agent transcript buffer for accumulating deltas
+  #agentTranscriptBuffer: string = '';
+  // Track last item ID for proper insertion order
+  #lastItemId: string | undefined = undefined;
   constructor(
     realtimeModel: llm.RealtimeModel,
     opts: ModelOptions,
@@ -355,11 +364,17 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#client = client;
     this.#fncCtx = fncCtx;
     this.#chatCtx = chatCtx;
-    this.#task = this.#start();
+    
+    // Start the session immediately if tools are available, otherwise wait for updateTools
+    if (fncCtx && Object.keys(fncCtx).length > 0) {
+      this.#task = this.#start();
+    } else {
+      this.#logger.debug("No tools provided at session creation, waiting for updateTools");
+    }
   }
 
   get chatCtx(): llm.ChatContext {
-    return this.#chatCtx || new llm.ChatContext();
+    return this.remoteChatCtx.toChatCtx();
   }
 
   get fncCtx(): llm.ToolContext | undefined {
@@ -388,6 +403,16 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   async updateTools(tools: llm.ToolContext): Promise<void> {
     this.#fncCtx = tools;
+    
+    // If the session hasn't started yet, start it now that we have tools
+    if (!this.#task && tools && Object.keys(tools).length > 0) {
+      this.#logger.debug("Starting session now that tools are available");
+      this.#task = this.#start();
+    } else if (this.#callId) {
+      this.#logger.warn("Tools updated after session started - Ultravox doesn't support updating tools after call creation");
+      // Note: Ultravox doesn't support updating tools after call creation
+      // This is a limitation compared to OpenAI's realtime API
+    }
   }
 
   updateOptions(options: { toolChoice?: llm.ToolChoice | null }): void {
@@ -594,9 +619,12 @@ export class RealtimeSession extends llm.RealtimeSession {
     return new Promise(async (resolve, reject) => {
       try {
         // Convert function context to Ultravox tools
+        this.#logger.debug({ fncCtx: this.#fncCtx }, "Converting function context to Ultravox tools");
         const selectedTools: api_proto.UltravoxTool[] = [];
         if (this.#fncCtx) {
+          this.#logger.debug({ fncCtxKeys: Object.keys(this.#fncCtx) }, "Function context keys");
           for (const [name, func] of Object.entries(this.#fncCtx)) {
+            this.#logger.debug({ name, func }, "Processing function");
             const requiredList = Array.isArray(
               (func as any).parameters?.required
             )
@@ -625,15 +653,17 @@ export class RealtimeSession extends llm.RealtimeSession {
               },
             };
             selectedTools.push(tool);
+            this.#logger.debug({ tool }, "Created Ultravox tool");
           }
         }
+        this.#logger.debug({ selectedToolsCount: selectedTools.length, selectedTools }, "Selected tools for Ultravox");
 
         // Create Ultravox call
         const modelData: api_proto.UltravoxModelData = {
           model: this.#opts.model,
           maxDuration: this.#opts.maxDuration,
           timeExceededMessage: this.#opts.timeExceededMessage,
-          systemPrompt: this.instructions || "",
+          systemPrompt: this.instructions || this.#opts.instructions || "",
           selectedTools,
           temperature: this.#opts.temperature,
           voice: this.#opts.voice,
@@ -952,31 +982,24 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
-    this.#logger.debug({ event }, "handleTranscript");
-    const { output, content, response } = this.#getContent();
-    if (event.role === "user" && response) {
-      // Emit input speech transcription completed
-      if (event.final) {
-        this.emit("input_speech_transcription_completed", {
-          itemId: "ultravox-user-transcript",
+    this.#logger.info({ event }, "handleTranscript - received transcript event");
+    
+    if (event.role === "user") {
+      // Only emit transcription events when there's actual text content
+      if (event.text && event.text.trim().length > 0) {
+        const transcriptionEvent = {
+          itemId: shortuuid('user-transcript-'),
           transcript: event.text,
-        } as InputSpeechTranscriptionCompleted);
-      }
-      // Emit input audio buffer committed
-      this.emit("input_speech_committed", {
-        itemId: "ultravox-user-input",
-      } as InputSpeechCommitted);
-    } else if (event.role === "agent" && response && content && output) {
-      // Handle agent transcript - emit text delta events
-      if (!event.final) {
-        const transcript = event.delta;
-        content.text += transcript;
-        transcript && content.textStream.put(transcript);
+          isFinal: event.final,
+        };
+        this.#logger.info({ transcriptionEvent, event }, "Emitting input_audio_transcription_completed event");
+        this.emit('input_audio_transcription_completed', transcriptionEvent);
       } else {
-        content.text = event.text || "";
-        content.textStream.close();
-        this.#endResponse();
+        this.#logger.debug({ event }, "Skipping empty transcript event");
       }
+    } else if (event.role === "agent") {
+      // Handle agent transcript through the generation stream
+      this.#handleAgentTranscript(event);
     }
   }
 
@@ -1030,35 +1053,8 @@ export class RealtimeSession extends llm.RealtimeSession {
       return;
     }
 
-    // parse the arguments and call the function inside the fnc_ctx
-    const func = this.#fncCtx[event.toolName];
-    if (!func) {
-      this.#logger.error(`no function with name ${event.toolName} in fncCtx`);
-      return;
-    }
-    this.emit("function_call_started", {
-      callId: event.invocationId,
-    });
-
-    this.#logger.debug(
-      `[Function Call ${event.invocationId}] Executing ${event.toolName} with arguments ${event.parameters}`
-    );
-
-    // Create function call tool
-    const toolCall: RealtimeToolCall = {
-      name: event.toolName,
-      arguments: event.parameters,
-      toolCallID: event.invocationId,
-    };
-
-    // Emit function call arguments done event
-    this.emit("response_function_call_arguments_done", toolCall);
-
-    this.#executeFunction(toolCall).then(() => {
-      this.emit("function_call_completed", {
-        callId: toolCall.toolCallID,
-      });
-    });
+    // Execute the function - the AgentActivity will handle creating conversation items
+    this.#executeFunctionFromEvent(event);
   }
 
   async #executeFunction(toolCall: RealtimeToolCall): Promise<void> {
@@ -1267,5 +1263,141 @@ export class RealtimeSession extends llm.RealtimeSession {
     // But we still need to track the handle for when the response actually starts
 
     return handle;
+  }
+
+  // Helper methods for creating LiveKit chat items from Ultravox events
+  #createUserMessageFromTranscript(event: api_proto.UltravoxTranscriptMessage): llm.ChatMessage {
+    return llm.ChatMessage.create({
+      id: shortuuid('user-message-'),
+      role: 'user',
+      content: [event.text || ''],
+    });
+  }
+
+  #createFunctionCallFromEvent(event: api_proto.UltravoxFunctionCallMessage): llm.FunctionCall {
+    return llm.FunctionCall.create({
+      id: shortuuid('function-call-'),
+      callId: event.invocationId,
+      name: event.toolName,
+      args: event.parameters,
+    });
+  }
+
+  #createFunctionCallOutputFromResult(callId: string, result: any, isError: boolean = false): llm.FunctionCallOutput {
+    return llm.FunctionCallOutput.create({
+      id: shortuuid('function-output-'),
+      callId: callId,
+      output: isError ? result.message || String(result) : result,
+      isError: isError,
+    });
+  }
+
+  #insertConversationItem(item: llm.ChatItem, previousItemId?: string): void {
+    try {
+      const actualPreviousId = previousItemId || this.#lastItemId;
+      this.remoteChatCtx.insert(actualPreviousId, item);
+      this.#lastItemId = item.id; // Update last item ID
+      this.#logger.debug({ itemId: item.id, itemType: item.constructor.name, previousItemId: actualPreviousId }, 'Inserted conversation item');
+    } catch (error) {
+      this.#logger.error({ error, itemId: item.id }, 'Failed to insert conversation item');
+    }
+  }
+
+  #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    // Write agent transcript to the generation stream
+    if (!this.currentGeneration) {
+      this.#logger.warn({ event }, "No current generation for agent transcript");
+      return;
+    }
+
+    // Create a message generation if one doesn't exist
+    if (this.currentGeneration.messages.size === 0) {
+      const messageId = shortuuid('agent-message-');
+      const itemGeneration: MessageGeneration = {
+        messageId: messageId,
+        textChannel: stream.createStreamChannel<string>(),
+        audioChannel: stream.createStreamChannel<AudioFrame>(),
+        audioTranscript: '',
+      };
+      
+      this.currentGeneration.messages.set(messageId, itemGeneration);
+      this.currentGeneration.messageChannel.write({
+        messageId: messageId,
+        textStream: itemGeneration.textChannel.stream(),
+        audioStream: itemGeneration.audioChannel.stream(),
+      });
+      this.#logger.debug({ messageId }, "Created message generation for agent transcript");
+    }
+
+    // Get the current message generation
+    const messageGenerations = Array.from(this.currentGeneration.messages.values());
+    const currentMessage = messageGenerations[messageGenerations.length - 1];
+
+    if (!event.final) {
+      // Write delta to text channel
+      const delta = event.delta || '';
+      currentMessage.textChannel.write(delta);
+      currentMessage.audioTranscript += delta;
+      this.#logger.debug({ delta }, "Wrote agent transcript delta to generation stream");
+    } else {
+      // Final transcript - write final text
+      const finalText = event.text || this.#agentTranscriptBuffer;
+      currentMessage.textChannel.write(finalText);
+      currentMessage.audioTranscript += finalText;
+      this.#logger.debug({ finalText }, "Wrote final agent transcript to generation stream");
+      
+      // Reset buffer
+      this.#agentTranscriptBuffer = '';
+    }
+  }
+
+  #executeFunctionFromEvent(event: api_proto.UltravoxFunctionCallMessage): void {
+    const func = this.#fncCtx![event.toolName];
+    if (!func) {
+      this.#logger.error(`No function with name ${event.toolName} in function context`);
+      return;
+    }
+
+    this.#logger.debug(`Executing function: ${event.toolName} with arguments:`, event.parameters);
+
+    // Write function call to the generation stream so AgentActivity can process it
+    if (this.currentGeneration) {
+      const functionCall = llm.FunctionCall.create({
+        id: shortuuid('function-call-'),
+        callId: event.invocationId,
+        name: event.toolName,
+        args: event.parameters,
+      });
+      this.currentGeneration.functionChannel.write(functionCall);
+      this.#logger.debug({ functionCall }, "Wrote function call to generation stream");
+    }
+
+    func.execute(event.parameters, {
+      toolCallId: event.invocationId,
+      ctx: {} as any,
+    } as any).then((result: any) => {
+      // Send result back to Ultravox
+      if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+        const functionResult: api_proto.UltravoxFunctionResultMessage = {
+          type: "client_tool_result",
+          invocationId: event.invocationId,
+          result: JSON.stringify(result),
+        };
+        this.#ws.send(JSON.stringify(functionResult));
+      }
+    }).catch((error: any) => {
+      this.#logger.error({ error, toolName: event.toolName }, 'Error executing function');
+
+      // Send error back to Ultravox
+      if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+        const functionResult: api_proto.UltravoxFunctionResultMessage = {
+          type: "client_tool_result",
+          invocationId: event.invocationId,
+          errorType: "implementation-error",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        };
+        this.#ws.send(JSON.stringify(functionResult));
+      }
+    });
   }
 }
