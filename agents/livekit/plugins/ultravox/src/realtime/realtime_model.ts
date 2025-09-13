@@ -9,15 +9,18 @@ import {
   llm,
   log,
   initializeLogger,
-} from '@livekit/agents';
-import { AudioFrame } from '@livekit/rtc-node';
-import { once } from 'node:events';
-import { WebSocket } from 'ws';
-import * as api_proto from './api_proto.js';
-import { UltravoxClient } from './ultravox_client.js';
+  stream,
+  shortuuid,
+} from "@livekit/agents";
+import { AudioFrame, combineAudioFrames } from "@livekit/rtc-node";
+import { once } from "node:events";
+import { WebSocket } from "ws";
+// import type { GenerationCreatedEvent } from '@livekit/agents';
+import * as api_proto from "./api_proto.js";
+import { UltravoxClient } from "./ultravox_client.js";
 
 interface ModelOptions {
-  modalities: ['text', 'audio'] | ['text'];
+  modalities: ["text", "audio"] | ["text"];
   instructions: string;
   voice?: api_proto.Voice;
   inputAudioFormat: api_proto.AudioFormat;
@@ -49,7 +52,7 @@ export interface RealtimeOutput {
   itemId: string;
   outputIndex: number;
   role: api_proto.Realtime_Role;
-  type: 'message' | 'function_call';
+  type: "message" | "function_call";
   content: RealtimeContent[];
   doneFut: Future;
 }
@@ -71,6 +74,36 @@ export interface RealtimeToolCall {
   name: string;
   arguments: string;
   toolCallID: string;
+}
+
+interface MessageGeneration {
+  messageId: string;
+  textChannel: stream.StreamChannel<string>;
+  audioChannel: stream.StreamChannel<AudioFrame>;
+  audioTranscript: string;
+}
+
+interface ResponseGeneration {
+  messageChannel: stream.StreamChannel<llm.MessageGeneration>;
+  functionChannel: stream.StreamChannel<llm.FunctionCall>;
+  messages: Map<string, MessageGeneration>;
+
+  /** @internal */
+  _doneFut: Future;
+  /** @internal */
+  _createdTimestamp: number;
+  /** @internal */
+  _firstTokenTimestamp?: number;
+}
+
+class CreateResponseHandle {
+  instructions?: string;
+  doneFut: Future<llm.GenerationCreatedEvent>;
+  // TODO(shubhra): add timeout
+  constructor({ instructions }: { instructions?: string }) {
+    this.instructions = instructions;
+    this.doneFut = new Future();
+  }
 }
 
 export interface InputSpeechTranscriptionCompleted {
@@ -105,16 +138,18 @@ class InputAudioBuffer {
   }
 
   append(frame: AudioFrame) {
-    // Send audio frame to Ultravox WebSocket
-    this.#session.sendAudioFrame(frame);
+    // Use the improved pushAudio method for proper buffering
+    this.#session.pushAudio(frame);
   }
 
   clear() {
-    // Clear audio buffer - not needed for Ultravox
+    // Clear audio buffer using the session's clearAudio method
+    this.#session.clearAudio();
   }
 
   commit() {
-    // Commit audio buffer - not needed for Ultravox
+    // Commit audio buffer using the session's commitAudio method
+    this.#session.commitAudio();
   }
 }
 
@@ -128,12 +163,15 @@ class ConversationItem {
 
   truncate(itemId: string, contentIndex: number, audioEnd: number) {
     // Not supported in Ultravox
-    this.#logger.debug({ itemId, contentIndex, audioEnd }, 'Truncate not supported in Ultravox');
+    this.#logger.debug(
+      { itemId, contentIndex, audioEnd },
+      "Truncate not supported in Ultravox"
+    );
   }
 
   delete(itemId: string) {
     // Not supported in Ultravox
-    this.#logger.debug({ itemId }, 'Delete not supported in Ultravox');
+    this.#logger.debug({ itemId }, "Delete not supported in Ultravox");
   }
 
   create(message: llm.ChatMessage, previousItemId?: string): void {
@@ -143,7 +181,10 @@ class ConversationItem {
 
     // For Ultravox, we handle messages through the WebSocket
     // This method is mainly for compatibility
-    this.#logger.debug('Conversation item created', { message, previousItemId });
+    this.#logger.debug("Conversation item created", {
+      message,
+      previousItemId,
+    });
   }
 }
 
@@ -185,22 +226,22 @@ export class RealtimeModel extends llm.RealtimeModel {
   #sessions: RealtimeSession[] = [];
   #client: UltravoxClient;
   constructor({
-    modalities = ['text', 'audio'],
-    instructions = '',
+    modalities = ["text", "audio"],
+    instructions = "",
     voice,
-    inputAudioFormat = 'pcm16',
-    outputAudioFormat = 'pcm16',
+    inputAudioFormat = "pcm16",
+    outputAudioFormat = "pcm16",
     temperature = 0.8,
     maxResponseOutputTokens = Infinity,
-    model = 'fixie-ai/ultravox-70B',
-    apiKey = process.env.ULTRAVOX_API_KEY || '',
-    baseURL = 'https://api.ultravox.ai/api/',
-    maxDuration = '305s',
-    timeExceededMessage = 'It has been great chatting with you, but we have exceeded our time now.',
+    model = "fixie-ai/ultravox-70B",
+    apiKey = process.env.ULTRAVOX_API_KEY || "",
+    baseURL = "https://api.ultravox.ai/api/",
+    maxDuration = "305s",
+    timeExceededMessage = "It has been great chatting with you, but we have exceeded our time now.",
     transcriptOptional = false,
-    firstSpeaker = 'FIRST_SPEAKER_AGENT',
+    firstSpeaker = "FIRST_SPEAKER_AGENT",
   }: {
-    modalities?: ['text', 'audio'] | ['text'];
+    modalities?: ["text", "audio"] | ["text"];
     instructions?: string;
     voice?: api_proto.Voice;
     inputAudioFormat?: api_proto.AudioFormat;
@@ -221,9 +262,9 @@ export class RealtimeModel extends llm.RealtimeModel {
       userTranscription: true,
       autoToolReplyGeneration: false,
     });
-    if (apiKey === '') {
+    if (apiKey === "") {
       throw new Error(
-        'Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable',
+        "Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable"
       );
     }
 
@@ -257,6 +298,8 @@ export class RealtimeModel extends llm.RealtimeModel {
       chatCtx: new llm.ChatContext(),
       fncCtx: undefined,
     });
+    // Set initial instructions from constructor
+    newSession.instructions = opts.instructions;
     this.#sessions.push(newSession);
     return newSession;
   }
@@ -272,7 +315,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #opts: ModelOptions;
   #client: UltravoxClient;
   #pendingResponses: { [id: string]: RealtimeResponse } = {};
-  #sessionId = 'not-connected';
+  #sessionId = "not-connected";
   #ws: WebSocket | null = null;
   #expiresAt: number | null = null;
   #logger = log();
@@ -285,14 +328,26 @@ export class RealtimeSession extends llm.RealtimeSession {
   #currentContentIndex = 0;
   #audioStream?: AudioByteStream;
   #audioBuffer: Buffer[] = [];
-  #toolChoice: llm.ToolChoice | null = 'auto';
+  #toolChoice: llm.ToolChoice | null = "auto";
   #messageStreamController?: ReadableStreamDefaultController<any>;
   #functionStreamController?: ReadableStreamDefaultController<any>;
+  // Audio buffering and processing
+  #bstream = new AudioByteStream(
+    api_proto.SAMPLE_RATE,
+    api_proto.NUM_CHANNELS,
+    api_proto.SAMPLE_RATE / 10
+  );
+  #pushedDurationMs: number = 0;
+  // Response generation tracking
+  private currentGeneration?: ResponseGeneration;
+  private responseCreatedFutures: { [id: string]: CreateResponseHandle } = {};
+  // Instructions handling like OpenAI
+  public instructions?: string;
   constructor(
     realtimeModel: llm.RealtimeModel,
     opts: ModelOptions,
     client: UltravoxClient,
-    { fncCtx, chatCtx }: { fncCtx?: llm.ToolContext; chatCtx?: llm.ChatContext },
+    { fncCtx, chatCtx }: { fncCtx?: llm.ToolContext; chatCtx?: llm.ChatContext }
   ) {
     super(realtimeModel);
 
@@ -303,17 +358,28 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#task = this.#start();
   }
 
-  get chatCtx(): llm.ChatContext { return this.#chatCtx || new llm.ChatContext(); }
+  get chatCtx(): llm.ChatContext {
+    return this.#chatCtx || new llm.ChatContext();
+  }
 
-  get fncCtx(): llm.ToolContext | undefined { return this.#fncCtx; }
+  get fncCtx(): llm.ToolContext | undefined {
+    return this.#fncCtx;
+  }
 
   get tools(): llm.ToolContext {
     return this.#fncCtx || {};
   }
 
   async updateInstructions(instructions: string): Promise<void> {
-    this.#opts.instructions = instructions;
-    this.queueMsg({ type: 'session.update', session: { instructions } });
+    const eventId = shortuuid("instructions_update_");
+    this.queueMsg({
+      type: "session.update",
+      session: {
+        instructions: instructions,
+      },
+      event_id: eventId,
+    });
+    this.instructions = instructions;
   }
 
   async updateChatCtx(chatCtx: llm.ChatContext): Promise<void> {
@@ -331,27 +397,51 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   pushAudio(frame: AudioFrame): void {
-    this.sendAudioFrame(frame);
+    // Process audio through resampling and buffering like OpenAI implementation
+    for (const f of this.resampleAudio(frame)) {
+      for (const nf of this.#bstream.write(f.data.buffer)) {
+        // Send buffered audio frame to Ultravox WebSocket
+        this.sendAudioFrame(nf);
+        // Track duration for proper audio handling
+        this.#pushedDurationMs += (nf.samplesPerChannel / nf.sampleRate) * 1000;
+      }
+    }
   }
 
-  async generateReply(_instructions?: string): Promise<any> {
-    const empty = new ReadableStream({ start: (c) => c.close() });
-    return { messageStream: empty, functionStream: empty, userInitiated: true } as any;
+  async generateReply(
+    instructions?: string
+  ): Promise<llm.GenerationCreatedEvent> {
+    const handle = this.createResponse({ instructions, userInitiated: true });
+    return handle.doneFut.await;
   }
 
   async commitAudio(): Promise<void> {
-    // No-op: Ultravox consumes audio frames directly
+    // Commit audio if we have enough duration (similar to OpenAI's 100ms requirement)
+    if (this.#pushedDurationMs > 50) {
+      // Ultravox might need less than OpenAI's 100ms
+      this.#logger.debug(
+        { duration: this.#pushedDurationMs },
+        "Committing audio to Ultravox"
+      );
+      // Reset duration counter after commit
+      this.#pushedDurationMs = 0;
+    }
   }
 
   async clearAudio(): Promise<void> {
-    // No-op for Ultravox
+    // Clear audio buffer and reset duration tracking
+    this.#pushedDurationMs = 0;
+    this.#logger.debug("Cleared audio buffer for Ultravox");
   }
 
   async interrupt(): Promise<void> {
     // Not supported by Ultravox
   }
 
-  async truncate(_opts: { messageId: string; audioEndMs: number }): Promise<void> {
+  async truncate(_opts: {
+    messageId: string;
+    audioEndMs: number;
+  }): Promise<void> {
     // Not supported by Ultravox
   }
 
@@ -373,7 +463,7 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   get expiration(): number {
     if (!this.#expiresAt) {
-      throw new Error('session not started');
+      throw new Error("session not started");
     }
     return this.#expiresAt * 1000;
   }
@@ -381,60 +471,64 @@ export class RealtimeSession extends llm.RealtimeSession {
   queueMsg(command: any): void {
     // Intercept certain OpenAI-style client events to keep local state in sync
     try {
-      if (command && typeof command === 'object' && typeof command.type === 'string') {
+      if (
+        command &&
+        typeof command === "object" &&
+        typeof command.type === "string"
+      ) {
         switch (command.type) {
-          case 'session.update': {
+          case "session.update": {
             // Merge supported session fields into opts and emit a session.updated for compatibility
             const sessionUpdate = command.session || {};
-            if (typeof sessionUpdate.instructions === 'string') {
-              this.#opts.instructions = sessionUpdate.instructions;
+            if (typeof sessionUpdate.instructions === "string") {
+              this.instructions = sessionUpdate.instructions;
             }
-            if (typeof sessionUpdate.voice === 'string') {
+            if (typeof sessionUpdate.voice === "string") {
               this.#opts.voice = sessionUpdate.voice;
             }
-            if (typeof sessionUpdate.temperature === 'number') {
+            if (typeof sessionUpdate.temperature === "number") {
               this.#opts.temperature = sessionUpdate.temperature;
             }
             if (sessionUpdate.max_response_output_tokens !== undefined) {
               // accept number | 'inf'
               this.#opts.maxResponseOutputTokens =
-                sessionUpdate.max_response_output_tokens === 'inf'
+                sessionUpdate.max_response_output_tokens === "inf"
                   ? Infinity
                   : Number(sessionUpdate.max_response_output_tokens);
             }
             // emit synthetic session.updated event
             const event: api_proto.Realtime_SessionUpdatedEvent = {
               event_id: this.#generateEventId(),
-              type: 'session.updated',
+              type: "session.updated",
               session: {
                 id: this.#sessionId,
-                object: 'realtime.session',
+                object: "realtime.session",
                 model: this.#opts.model,
                 modalities: this.#opts.modalities,
-                instructions: this.#opts.instructions,
-                voice: this.#opts.voice || 'alloy',
+                instructions: this.instructions || "",
+                voice: this.#opts.voice || "alloy",
                 input_audio_format: this.#opts.inputAudioFormat,
                 output_audio_format: this.#opts.outputAudioFormat,
                 input_audio_transcription: null,
                 turn_detection: null,
                 tools: [],
-                tool_choice: 'auto',
+                tool_choice: "auto",
                 temperature: this.#opts.temperature,
                 max_response_output_tokens:
                   this.#opts.maxResponseOutputTokens === Infinity
-                    ? 'inf'
+                    ? "inf"
                     : this.#opts.maxResponseOutputTokens,
                 expires_at: this.#expiresAt ?? Date.now() + 5 * 60 * 1000,
               },
             };
-            this.emit('session_updated', event);
+            this.emit("session_updated", event);
             return; // do not forward to Ultravox
           }
-          case 'conversation.item.create':
-          case 'conversation.item.truncate':
-          case 'conversation.item.delete':
-          case 'response.create':
-          case 'response.cancel':
+          case "conversation.item.create":
+          case "conversation.item.truncate":
+          case "conversation.item.delete":
+          case "response.create":
+          case "response.cancel":
             // Ultravox transport does not consume these. Treat as no-ops for transport
             // but keep local compatibility by emitting minimal events when possible.
             // For now, swallow and do not forward.
@@ -444,29 +538,51 @@ export class RealtimeSession extends llm.RealtimeSession {
         }
       }
     } catch (err) {
-      this.#logger.warn({ err }, 'error handling client event locally');
+      this.#logger.warn({ err }, "error handling client event locally");
     }
     this.#sendQueue.put(command);
   }
 
   sendAudioFrame(frame: AudioFrame): void {
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-      const audioData = Buffer.from(frame.data.buffer);
-      this.#ws.send(audioData);
+      try {
+        // Convert audio frame to buffer more robustly
+        const audioData = Buffer.from(
+          frame.data.buffer,
+          frame.data.byteOffset,
+          frame.data.byteLength
+        );
+        this.#ws.send(audioData);
+      } catch (error) {
+        this.#logger.error({ error }, "Failed to send audio frame to Ultravox");
+      }
+    } else {
+      this.#logger.warn("WebSocket not ready, buffering audio frame");
+      // Buffer the frame for later sending when WebSocket is ready
+      this.#audioBuffer.push(
+        Buffer.from(
+          frame.data.buffer,
+          frame.data.byteOffset,
+          frame.data.byteLength
+        )
+      );
     }
   }
 
   #getContent(
     ptr: ContentPtr = {
-      response_id: this.#currentResponseId || '',
+      response_id: this.#currentResponseId || "",
       output_index: this.#currentOutputIndex,
       content_index: this.#currentContentIndex,
-    },
-  ): { response?: RealtimeResponse; output?: RealtimeOutput; content?: RealtimeContent } {
+    }
+  ): {
+    response?: RealtimeResponse;
+    output?: RealtimeOutput;
+    content?: RealtimeContent;
+  } {
     const response = this.#pendingResponses[ptr.response_id];
     const output = response?.output?.[ptr.output_index];
     const content = output?.content?.[ptr.content_index];
-    this.#logger.debug('getContent', { ptr });
     return { response, output, content };
   }
 
@@ -481,24 +597,28 @@ export class RealtimeSession extends llm.RealtimeSession {
         const selectedTools: api_proto.UltravoxTool[] = [];
         if (this.#fncCtx) {
           for (const [name, func] of Object.entries(this.#fncCtx)) {
-            const requiredList = Array.isArray((func as any).parameters?.required)
+            const requiredList = Array.isArray(
+              (func as any).parameters?.required
+            )
               ? ((func as any).parameters.required as string[])
               : [];
             const properties = (func as any).parameters?.properties || {};
-            const dynamicParams = Object.entries(properties).map(([propName, prop]) => ({
-              name: propName,
-              location: 'PARAMETER_LOCATION_BODY',
-              schema: {
-                type: (prop as any).type || 'string',
-                description: (prop as any).description || '',
-              },
-              required: requiredList.includes(propName),
-            }));
+            const dynamicParams = Object.entries(properties).map(
+              ([propName, prop]) => ({
+                name: propName,
+                location: "PARAMETER_LOCATION_BODY",
+                schema: {
+                  type: (prop as any).type || "string",
+                  description: (prop as any).description || "",
+                },
+                required: requiredList.includes(propName),
+              })
+            );
             const tool: api_proto.UltravoxTool = {
               nameOverride: name,
               temporaryTool: {
-                description: (func as any).description || '',
-                timeout: '30s',
+                description: (func as any).description || "",
+                timeout: "30s",
                 client: {},
                 dynamicParameters: dynamicParams,
                 staticParameters: [],
@@ -513,7 +633,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           model: this.#opts.model,
           maxDuration: this.#opts.maxDuration,
           timeExceededMessage: this.#opts.timeExceededMessage,
-          systemPrompt: this.#opts.instructions,
+          systemPrompt: this.instructions || "",
           selectedTools,
           temperature: this.#opts.temperature,
           voice: this.#opts.voice,
@@ -528,77 +648,87 @@ export class RealtimeSession extends llm.RealtimeSession {
           firstSpeaker: this.#opts.firstSpeaker,
         };
 
-        this.#logger.info({ modelData }, 'Creating Ultravox call');
+        this.#logger.info({ modelData }, "Creating Ultravox call");
         const callResponse = await this.#client.createCall(modelData);
         this.#callId = callResponse.callId;
 
-        if (callResponse.ended || !callResponse.callId || !callResponse.joinUrl) {
-          throw new Error('Failed to create Ultravox call');
+        if (
+          callResponse.ended ||
+          !callResponse.callId ||
+          !callResponse.joinUrl
+        ) {
+          throw new Error("Failed to create Ultravox call");
         }
 
         // Connect to Ultravox WebSocket
         const joinUrl = new URL(callResponse.joinUrl);
-        joinUrl.searchParams.append('experimentalMessages', 'debug');
+        joinUrl.searchParams.append("experimentalMessages", "debug");
 
-        this.#logger.debug('Connecting to Ultravox WebSocket at', joinUrl.toString());
+        this.#logger.debug(
+          "Connecting to Ultravox WebSocket at",
+          joinUrl.toString()
+        );
         this.#ws = new WebSocket(joinUrl.toString());
 
         this.#ws.onerror = (error) => {
-          reject(new Error('Ultravox WebSocket error: ' + error.message));
+          reject(new Error("Ultravox WebSocket error: " + error.message));
         };
 
-        await once(this.#ws, 'open');
+        await once(this.#ws, "open");
         this.#closing = false;
         this.#sessionId = this.#callId;
         this.#expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
 
+        // Flush any buffered audio frames now that WebSocket is ready
+        this.#flushAudioBuffer();
+
         // Emit session created event (OpenAI format)
-        this.emit('session_created', {
+        this.emit("session_created", {
           event_id: this.#generateEventId(),
-          type: 'session.created',
+          type: "session.created",
           session: {
             id: this.#sessionId,
-            object: 'realtime.session',
+            object: "realtime.session",
             model: this.#opts.model,
             modalities: this.#opts.modalities,
-            instructions: this.#opts.instructions,
-            voice: this.#opts.voice || 'alloy',
+            instructions: this.instructions || "",
+            voice: this.#opts.voice || "alloy",
             input_audio_format: this.#opts.inputAudioFormat,
             output_audio_format: this.#opts.outputAudioFormat,
             input_audio_transcription: null,
             turn_detection: null,
             tools: [],
-            tool_choice: 'auto',
+            tool_choice: "auto",
             temperature: this.#opts.temperature,
             max_response_output_tokens:
               this.#opts.maxResponseOutputTokens === Infinity
-                ? 'inf'
+                ? "inf"
                 : this.#opts.maxResponseOutputTokens,
             expires_at: this.#expiresAt,
           },
         } as api_proto.Realtime_SessionCreatedEvent);
 
         // Also emit a synthetic session.updated to align with newer interface expectations
-        this.emit('session_updated', {
+        this.emit("session_updated", {
           event_id: this.#generateEventId(),
-          type: 'session.updated',
+          type: "session.updated",
           session: {
             id: this.#sessionId,
-            object: 'realtime.session',
+            object: "realtime.session",
             model: this.#opts.model,
             modalities: this.#opts.modalities,
-            instructions: this.#opts.instructions,
-            voice: this.#opts.voice || 'alloy',
+            instructions: this.instructions || "",
+            voice: this.#opts.voice || "alloy",
             input_audio_format: this.#opts.inputAudioFormat,
             output_audio_format: this.#opts.outputAudioFormat,
             input_audio_transcription: null,
             turn_detection: null,
             tools: [],
-            tool_choice: 'auto',
+            tool_choice: "auto",
             temperature: this.#opts.temperature,
             max_response_output_tokens:
               this.#opts.maxResponseOutputTokens === Infinity
-                ? 'inf'
+                ? "inf"
                 : this.#opts.maxResponseOutputTokens,
             expires_at: this.#expiresAt!,
           },
@@ -608,20 +738,27 @@ export class RealtimeSession extends llm.RealtimeSession {
           if (message.data instanceof Buffer) {
             this.#handleAudio(message.data);
           } else {
-            const event: api_proto.UltravoxMessage = JSON.parse(message.data as string);
+            const event: api_proto.UltravoxMessage = JSON.parse(
+              message.data as string
+            );
+            this.#logger.debug({ event }, "onmessage");
 
             this.#handleMessage(event);
           }
         };
 
         const sendTask = async () => {
-          while (this.#ws && !this.#closing && this.#ws.readyState === WebSocket.OPEN) {
+          while (
+            this.#ws &&
+            !this.#closing &&
+            this.#ws.readyState === WebSocket.OPEN
+          ) {
             try {
               const event = await this.#sendQueue.get();
               this.#logger.debug(`-> ${JSON.stringify(event)}`);
               this.#ws.send(JSON.stringify(event));
             } catch (error) {
-              this.#logger.error('Error sending event:', error);
+              this.#logger.error("Error sending event:", error);
             }
           }
         };
@@ -633,7 +770,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             this.#closing = true;
           }
           if (!this.#closing) {
-            reject(new Error('Ultravox connection closed unexpectedly'));
+            reject(new Error("Ultravox connection closed unexpectedly"));
           }
           this.#ws = null;
           resolve();
@@ -645,7 +782,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   async close() {
-    this.#logger.info({ ws: this.#ws, call: this.#callId }, 'closing call');
+    this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
     if (!this.#ws) return;
     this.#closing = true;
     this.#ws.close();
@@ -653,59 +790,96 @@ export class RealtimeSession extends llm.RealtimeSession {
       try {
         await this.#client.deleteCall(this.#callId);
       } catch (error) {
-        this.#logger.error('Error deleting call:', error);
+        this.#logger.error("Error deleting call:", error);
       }
     }
     await this.#task;
   }
 
   #handleMessage(event: api_proto.UltravoxMessage): void {
+    this.#logger.debug({ event }, "handleMessage");
     switch (event.type) {
-      case 'state':
+      case "state":
         this.#handleStatus(event);
         break;
-      case 'transcript':
+      case "transcript":
         this.#handleTranscript(event);
         break;
-      case 'client_tool_invocation':
+      case "client_tool_invocation":
         this.#handleFunctionCall(event);
         break;
-      case 'experimental_message':
+      case "experimental_message":
         this.#handleExperimentalMessage(event);
         break;
       default:
-        this.#logger.debug('Unknown message type:', (event as any).type);
+        this.#logger.debug("Unknown message type:", (event as any).type);
     }
   }
 
   #handleStatus(event: api_proto.UltravoxStatusMessage): void {
-    this.#logger.debug('Status:', event.state);
+    this.#logger.debug({ event }, "Status");
 
     // Map Ultravox status to OpenAI events
-    if (event.state === 'listening') {
+    if (event.state === "listening") {
       this.#endResponse();
       // Emit input speech started
-      this.emit('input_speech_started', {
-        itemId: 'ultravox-user-input',
+      this.emit("input_speech_started", {
+        itemId: "ultravox-user-input",
       } as InputSpeechStarted);
-    } else if (event.state === 'thinking') {
-    } else if (event.state === 'speaking') {
+    } else if (event.state === "thinking") {
+    } else if (event.state === "speaking") {
       // If we have just moved into the speaking state, we need to create a new response
       // and create a new audio byte stream for the response. If we are already in the speaking state,
       // then nothing needs to be done.
       if (!this.#currentResponseId) {
         this.#currentResponseId = this.#generateEventId();
-        this.#logger.info({ responseId: this.#currentResponseId }, 'Creating new response');
+        this.#logger.info(
+          { responseId: this.#currentResponseId },
+          "Creating new response"
+        );
+
         // Create a new audio byte stream for the response
         this.#audioStream = new AudioByteStream(
           api_proto.SAMPLE_RATE,
           api_proto.NUM_CHANNELS,
-          api_proto.OUT_FRAME_SIZE,
+          api_proto.OUT_FRAME_SIZE
         );
+
+        // Create proper response generation like OpenAI
+        this.currentGeneration = {
+          messageChannel: stream.createStreamChannel<llm.MessageGeneration>(),
+          functionChannel: stream.createStreamChannel<llm.FunctionCall>(),
+          messages: new Map(),
+          _doneFut: new Future(),
+          _createdTimestamp: Date.now(),
+        };
+
+        // Build generation event and resolve client future (if any) before emitting,
+        // matching Python behavior.
+        const generationEv = {
+          messageStream: this.currentGeneration.messageChannel.stream(),
+          functionStream: this.currentGeneration.functionChannel.stream(),
+          userInitiated: false,
+        } as llm.GenerationCreatedEvent;
+
+        // Check if this is a user-initiated response
+        const pendingHandles = Object.values(this.responseCreatedFutures);
+        if (pendingHandles.length > 0) {
+          const handle = pendingHandles[0];
+          delete this.responseCreatedFutures[
+            Object.keys(this.responseCreatedFutures)[0]
+          ];
+          generationEv.userInitiated = true;
+          if (!handle.doneFut.done) {
+            handle.doneFut.resolve(generationEv);
+          }
+        }
+
+        this.emit("generation_created", generationEv);
 
         const response: RealtimeResponse = {
           id: this.#currentResponseId,
-          status: 'in_progress',
+          status: "in_progress",
           statusDetails: null,
           usage: null,
           output: [],
@@ -715,7 +889,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#pendingResponses[this.#currentResponseId] = response;
 
         // Emit response created event
-        this.emit('response_created', response);
+        this.emit("response_created", response);
 
         // Emit response output added for audio content
         if (this.#currentResponseId) {
@@ -723,8 +897,8 @@ export class RealtimeSession extends llm.RealtimeSession {
             responseId: this.#currentResponseId,
             itemId: `output-${this.#currentOutputIndex}`,
             outputIndex: this.#currentOutputIndex,
-            role: 'assistant',
-            type: 'message',
+            role: "assistant",
+            type: "message",
             content: [],
             doneFut: new Future(),
           };
@@ -735,7 +909,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           }
 
           // Emit response output added event
-          this.emit('response_output_added', output);
+          this.emit("response_output_added", output);
 
           // Add audio content
           const content: RealtimeContent = {
@@ -743,45 +917,63 @@ export class RealtimeSession extends llm.RealtimeSession {
             itemId: output.itemId,
             outputIndex: this.#currentOutputIndex,
             contentIndex: this.#currentContentIndex,
-            text: '',
+            text: "",
             audio: [],
             textStream: new AsyncIterableQueue<string>(),
             audioStream: new AsyncIterableQueue<AudioFrame>(),
             toolCalls: [],
-            contentType: 'audio',
+            contentType: "audio",
           };
 
           output.content.push(content);
           response!.firstTokenTimestamp = Date.now();
-          this.emit('response_content_added', content);
+          this.emit("response_content_added", content);
+
+          // Create MessageGeneration and connect to stream channels like OpenAI
+          const itemGeneration: MessageGeneration = {
+            messageId: output.itemId,
+            textChannel: stream.createStreamChannel<string>(),
+            audioChannel: stream.createStreamChannel<AudioFrame>(),
+            audioTranscript: "",
+          };
+
+          // Write to the message channel to make audio available to the agent
+          this.currentGeneration!.messageChannel.write({
+            messageId: output.itemId,
+            textStream: itemGeneration.textChannel.stream(),
+            audioStream: itemGeneration.audioChannel.stream(),
+          });
+
+          this.currentGeneration!.messages.set(output.itemId, itemGeneration);
+          this.currentGeneration!._firstTokenTimestamp = Date.now();
         }
       }
     }
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
-    this.#logger.debug('handleTranscript', { event, responseId: this.#currentResponseId });
+    this.#logger.debug({ event }, "handleTranscript");
     const { output, content, response } = this.#getContent();
-    if (event.role === 'user' && response) {
+    if (event.role === "user" && response) {
       // Emit input speech transcription completed
       if (event.final) {
-        this.emit('input_speech_transcription_completed', {
-          itemId: 'ultravox-user-transcript',
+        this.emit("input_speech_transcription_completed", {
+          itemId: "ultravox-user-transcript",
           transcript: event.text,
         } as InputSpeechTranscriptionCompleted);
       }
       // Emit input audio buffer committed
-      this.emit('input_speech_committed', {
-        itemId: 'ultravox-user-input',
+      this.emit("input_speech_committed", {
+        itemId: "ultravox-user-input",
       } as InputSpeechCommitted);
-    } else if (event.role === 'agent' && response && content && output) {
+    } else if (event.role === "agent" && response && content && output) {
       // Handle agent transcript - emit text delta events
       if (!event.final) {
         const transcript = event.delta;
         content.text += transcript;
         transcript && content.textStream.put(transcript);
       } else {
-        content.text = event.text || '';
+        content.text = event.text || "";
         content.textStream.close();
         this.#endResponse();
       }
@@ -797,29 +989,44 @@ export class RealtimeSession extends llm.RealtimeSession {
     content.textStream.close();
     content.audioStream.close();
 
+    // Close stream channels like OpenAI implementation
+    if (this.currentGeneration) {
+      for (const generation of this.currentGeneration.messages.values()) {
+        generation.textChannel.close();
+        generation.audioChannel.close();
+      }
+      this.currentGeneration.functionChannel.close();
+      this.currentGeneration.messageChannel.close();
+      this.currentGeneration._doneFut.resolve();
+      this.currentGeneration = undefined;
+    }
+
     // Emit audio done event
-    this.emit('response_audio_done', content);
+    this.emit("response_audio_done", content);
     // Emit text done event
-    this.emit('response_text_done', content);
+    this.emit("response_text_done", content);
     // Emit content part done
-    this.emit('response_content_done', content);
+    this.emit("response_content_done", content);
     // Emit output item done
-    this.emit('response_output_done', output);
+    this.emit("response_output_done", output);
     // Emit response done
-    this.emit('response_done', response);
+    this.emit("response_done", response);
 
     // Reset for next response
-    this.#logger.info({ responseId: this.#currentResponseId }, 'Ending response');
+    this.#logger.info(
+      { responseId: this.#currentResponseId },
+      "Ending response"
+    );
     this.#currentResponseId = null;
     this.#currentOutputIndex = 0;
     this.#currentContentIndex = 0;
   }
 
   #handleFunctionCall(event: api_proto.UltravoxFunctionCallMessage): void {
-    this.#logger.debug('Function call received:', { event });
+    this.#logger.debug("Function call received:", { event });
 
     if (!this.#fncCtx) {
-      this.#logger.error('function call received but no fncCtx is available');
+      this.#logger.error("function call received but no fncCtx is available");
       return;
     }
 
@@ -829,12 +1036,12 @@ export class RealtimeSession extends llm.RealtimeSession {
       this.#logger.error(`no function with name ${event.toolName} in fncCtx`);
       return;
     }
-    this.emit('function_call_started', {
+    this.emit("function_call_started", {
       callId: event.invocationId,
     });
 
     this.#logger.debug(
-      `[Function Call ${event.invocationId}] Executing ${event.toolName} with arguments ${event.parameters}`,
+      `[Function Call ${event.invocationId}] Executing ${event.toolName} with arguments ${event.parameters}`
     );
 
     // Create function call tool
@@ -845,10 +1052,10 @@ export class RealtimeSession extends llm.RealtimeSession {
     };
 
     // Emit function call arguments done event
-    this.emit('response_function_call_arguments_done', toolCall);
+    this.emit("response_function_call_arguments_done", toolCall);
 
     this.#executeFunction(toolCall).then(() => {
-      this.emit('function_call_completed', {
+      this.emit("function_call_completed", {
         callId: toolCall.toolCallID,
       });
     });
@@ -856,18 +1063,20 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   async #executeFunction(toolCall: RealtimeToolCall): Promise<void> {
     if (!this.#fncCtx) {
-      this.#logger.warn('No function context available');
+      this.#logger.warn("No function context available");
       return;
     }
 
     const func = this.#fncCtx[toolCall.name];
     if (!func) {
-      this.#logger.error(`No function with name ${toolCall.name} in function context`);
+      this.#logger.error(
+        `No function with name ${toolCall.name} in function context`
+      );
       return;
     }
 
     try {
-      this.#logger.debug('Executing function:', toolCall.name);
+      this.#logger.debug("Executing function:", toolCall.name);
 
       const result = await func.execute(toolCall.arguments, {
         toolCallId: toolCall.toolCallID,
@@ -877,17 +1086,17 @@ export class RealtimeSession extends llm.RealtimeSession {
       // Send function result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
         const functionResult: api_proto.UltravoxFunctionResultMessage = {
-          type: 'client_tool_result',
+          type: "client_tool_result",
           invocationId: toolCall.toolCallID,
           result: JSON.stringify(result),
         };
 
-        this.#logger.debug('Sending function result:', functionResult);
+        this.#logger.debug("Sending function result:", functionResult);
         this.#ws.send(JSON.stringify(functionResult));
       }
 
       // Emit a function_call_output item for interface parity
-      this.emit('function_call_output', {
+      this.emit("function_call_output", {
         id: toolCall.toolCallID,
         callId: toolCall.toolCallID,
         output: JSON.stringify(result),
@@ -895,28 +1104,28 @@ export class RealtimeSession extends llm.RealtimeSession {
     } catch (error: unknown) {
       this.#logger.error(
         {
-          error, toolCall,
+          error,
+          toolCall,
           message: error instanceof Error ? error.message : String(error),
         },
-        'Error executing function:',
+        "Error executing function:"
       );
-
 
       // Send error result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
         const functionResult: api_proto.UltravoxFunctionResultMessage = {
-          type: 'client_tool_result',
+          type: "client_tool_result",
           invocationId: toolCall.toolCallID,
-          errorType: 'implementation-error',
+          errorType: "implementation-error",
           errorMessage: error instanceof Error ? error.message : String(error),
         };
 
-        this.#logger.info(functionResult, 'Sending function error result:');
+        this.#logger.info(functionResult, "Sending function error result:");
         this.#ws.send(JSON.stringify(functionResult));
       }
 
       // Emit a function_call_output item indicating error
-      this.emit('function_call_output', {
+      this.emit("function_call_output", {
         id: toolCall.toolCallID,
         callId: toolCall.toolCallID,
         output: error instanceof Error ? error.message : String(error),
@@ -925,31 +1134,51 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
   }
 
-  #handleExperimentalMessage(event: api_proto.UltravoxExperimentalMessage): void {
+  #handleExperimentalMessage(
+    event: api_proto.UltravoxExperimentalMessage
+  ): void {
     const message = event.message;
-    if (message.type === 'debug' && message.message.startsWith('LLM response:')) {
+    if (
+      message.type === "debug" &&
+      message.message.startsWith("LLM response:")
+    ) {
       // Handle LLM response
-      this.#logger.debug('LLM response:', message.message);
+      this.#logger.debug("LLM response:", message.message);
     }
   }
 
   async #handleAudio(audioData: Buffer): Promise<void> {
     if (!this.#currentResponseId) {
-      this.#logger.info({ currentResponseId: this.#currentResponseId }, 'No current response id, buffering audio');
+      this.#logger.info(
+        { currentResponseId: this.#currentResponseId },
+        "No current response id, buffering audio"
+      );
       this.#audioBuffer.push(audioData);
       return;
     }
     const { content } = this.#getContent();
     this.#audioBuffer.push(audioData);
-    // Should type this properly but can't see how to do it without an unnecessary (& expensive) data copy
+
+    // Process buffered audio data
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let data: any | undefined;
     while ((data = this.#audioBuffer.shift())) {
       const frames = this.#audioStream?.write(data);
       if (frames) {
         frames.forEach((frame: AudioFrame) => {
-          content?.audio.push(frame);
-          content?.audioStream.put(frame);
+          // Add to content for compatibility
+          content!.audio.push(frame);
+          content!.audioStream.put(frame);
+
+          // Also write to the proper audio channel for the agent
+          if (this.currentGeneration) {
+            const itemGeneration = this.currentGeneration.messages.get(
+              content!.itemId
+            );
+            if (itemGeneration) {
+              itemGeneration.audioChannel.write(frame);
+            }
+          }
         });
       }
     }
@@ -958,7 +1187,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   /** Create an empty audio message with the given duration. */
   #createEmptyUserAudioMessage(_duration: number): llm.ChatMessage {
     // Stubbed: Ultravox does not require injecting mock audio to trigger responses
-    return new llm.ChatMessage({ role: 'user', content: [''] } as any);
+    return new llm.ChatMessage({ role: "user", content: [""] } as any);
   }
 
   /**
@@ -975,5 +1204,68 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
     this.conversation.item.create(this.#createEmptyUserAudioMessage(1));
     this.response.create();
+  }
+
+  /**
+   * Resample audio frame for proper processing
+   * @param frame - The audio frame to resample
+   * @returns Generator yielding resampled audio frames
+   */
+  private *resampleAudio(frame: AudioFrame): Generator<AudioFrame> {
+    yield frame;
+  }
+
+  /**
+   * Flush any buffered audio frames to the WebSocket
+   */
+  #flushAudioBuffer(): void {
+    if (
+      this.#audioBuffer.length > 0 &&
+      this.#ws &&
+      this.#ws.readyState === WebSocket.OPEN
+    ) {
+      this.#logger.debug(
+        { bufferedFrames: this.#audioBuffer.length },
+        "Flushing buffered audio frames"
+      );
+      for (const audioData of this.#audioBuffer) {
+        try {
+          this.#ws.send(audioData);
+        } catch (error) {
+          this.#logger.error({ error }, "Failed to send buffered audio frame");
+        }
+      }
+      this.#audioBuffer = [];
+    }
+  }
+
+  private createResponse({
+    userInitiated,
+    instructions,
+    oldHandle,
+  }: {
+    userInitiated: boolean;
+    instructions?: string;
+    oldHandle?: CreateResponseHandle;
+  }): CreateResponseHandle {
+    const handle = oldHandle || new CreateResponseHandle({ instructions });
+    if (oldHandle && instructions) {
+      handle.instructions = instructions;
+    }
+
+    const eventId = shortuuid("response_create_");
+    if (userInitiated) {
+      this.responseCreatedFutures[eventId] = handle;
+    }
+
+    // Handle instructions like OpenAI implementation
+    if (instructions) {
+      this.instructions = instructions;
+    }
+
+    // For Ultravox, we don't send response.create events since Ultravox handles responses automatically
+    // But we still need to track the handle for when the response actually starts
+
+    return handle;
   }
 }

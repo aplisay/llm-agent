@@ -21,6 +21,7 @@ export default function () {
         }
         let Handler = (await handlers()).getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
+        req.log.debug({ handler }, 'handler');
         let room = await handler.join({ options });
         res.send(room);
       }

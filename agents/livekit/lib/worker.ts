@@ -9,7 +9,7 @@ import {
   llm,
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
-import * as gemini from "@livekit/agents-plugin-google";
+import * as google from "@livekit/agents-plugin-google";
 
 
 // Should be contributed as a plugin to the Livekit Agents framework when stable, 
@@ -52,7 +52,7 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 const realtimeModels = {
   openai,
   ultravox,
-  gemini
+  google
 };
 
 logger.debug({ realtimeModels }, "realtime models");
@@ -574,6 +574,7 @@ async function runAgentWorker({
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({
       voice: agent?.options?.tts?.voice,
+      instructions: agent?.prompt || "You are a helpful assistant.",
     }),
   });
   sessionRef(session);
