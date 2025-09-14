@@ -326,6 +326,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #logger = log();
   #task: Promise<void> | undefined;
   #closing = true;
+  #sessionFailed = false;
   #sendQueue = new Queue<any>();
   #callId: string | null = null;
   #currentResponseId: string | null = null;
@@ -422,7 +423,8 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   pushAudio(frame: AudioFrame): void {
-    // Process audio through resampling and buffering like OpenAI implementation
+
+    // Process audio through resampling and buffering
     for (const f of this.resampleAudio(frame)) {
       for (const nf of this.#bstream.write(f.data.buffer)) {
         // Send buffered audio frame to Ultravox WebSocket
@@ -569,6 +571,11 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   sendAudioFrame(frame: AudioFrame): void {
+    // Don't send audio if session has failed
+    if (this.#sessionFailed) {
+      return;
+    }
+
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
       try {
         // Convert audio frame to buffer more robustly
@@ -577,6 +584,16 @@ export class RealtimeSession extends llm.RealtimeSession {
           frame.data.byteOffset,
           frame.data.byteLength
         );
+        
+        // Debug logging for audio format
+        this.#logger.debug({
+          sampleRate: frame.sampleRate,
+          samplesPerChannel: frame.samplesPerChannel,
+          channels: frame.channels,
+          dataLength: audioData.length,
+          expectedLength: frame.samplesPerChannel * frame.channels * 2 // s16le = 2 bytes per sample
+        }, "Sending audio frame to Ultravox");
+        
         this.#ws.send(audioData);
       } catch (error) {
         this.#logger.error({ error }, "Failed to send audio frame to Ultravox");
@@ -613,6 +630,16 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   #generateEventId(): string {
     return `ultravox-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private emitError({ error, recoverable }: { error: Error; recoverable: boolean }): void {
+    // IMPORTANT: only emit error if there are listeners; otherwise emit will throw an error
+    this.emit('error', {
+      timestamp: Date.now(),
+      label: 'ultravox-connection',
+      error,
+      recoverable,
+    } as llm.RealtimeModelError);
   }
 
   #start(): Promise<void> {
@@ -670,8 +697,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           transcriptOptional: this.#opts.transcriptOptional,
           medium: {
             serverWebSocket: {
-              inputSampleRate: 48000,
-              outputSampleRate: 48000,
+              inputSampleRate: 24000,
+              outputSampleRate: 24000,
               clientBufferSizeMs: 60,
             },
           },
@@ -701,7 +728,11 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#ws = new WebSocket(joinUrl.toString());
 
         this.#ws.onerror = (error) => {
-          reject(new Error("Ultravox WebSocket error: " + error.message));
+          const errorMsg = "Ultravox WebSocket error: " + error.message;
+          this.#logger.error({ error }, "Ultravox WebSocket error occurred");
+          this.#sessionFailed = true;
+          this.emitError({ error: new Error(errorMsg), recoverable: false });
+          reject(new Error(errorMsg));
         };
 
         await once(this.#ws, "open");
@@ -712,7 +743,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         // Flush any buffered audio frames now that WebSocket is ready
         this.#flushAudioBuffer();
 
-        // Emit session created event (OpenAI format)
+        // Emit session created event (Livekit) format)
         this.emit("session_created", {
           event_id: this.#generateEventId(),
           type: "session.created",
@@ -800,9 +831,14 @@ export class RealtimeSession extends llm.RealtimeSession {
             this.#closing = true;
           }
           if (!this.#closing) {
-            reject(new Error("Ultravox connection closed unexpectedly"));
+            const errorMsg = "Ultravox connection closed unexpectedly";
+            this.#logger.error({ callId: this.#callId }, "Ultravox WebSocket closed unexpectedly");
+            this.#sessionFailed = true;
+            this.emitError({ error: new Error(errorMsg), recoverable: false });
+            reject(new Error(errorMsg));
           }
           this.#ws = null;
+          this.close();
           resolve();
         };
       } catch (error) {
@@ -823,6 +859,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#logger.error("Error deleting call:", error);
       }
     }
+    this.emit('close', { callId: this.#callId });
+    super.close();
     await this.#task;
   }
 
@@ -1203,11 +1241,18 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   /**
-   * Resample audio frame for proper processing
-   * @param frame - The audio frame to resample
-   * @returns Generator yielding resampled audio frames
+   * Process audio frame - no resampling needed since sample rates match
+   * @param frame - The audio frame to process
+   * @returns Generator yielding audio frames
    */
   private *resampleAudio(frame: AudioFrame): Generator<AudioFrame> {
+    // Sample rates should now match (24kHz), so no resampling needed
+    if (frame.sampleRate !== api_proto.SAMPLE_RATE) {
+      this.#logger.warn({
+        frameSampleRate: frame.sampleRate,
+        expectedSampleRate: api_proto.SAMPLE_RATE
+      }, "Sample rate mismatch detected - audio quality may be affected");
+    }
     yield frame;
   }
 
@@ -1304,6 +1349,20 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+
+    // We don't bother passing up non-final transcripts to the agent generation stream
+    //  as it buffers anyway. It isn't 100% clear that Ultravox will always send a
+    //  final transcript with a "text" property, so we buffer deltas just in case,
+    //  but we'll send the final "text" value instead if it's present.
+    if (!event.final) {
+      this.#agentTranscriptBuffer += event.delta || '';
+      return;
+    }
+    else {
+      event.text && (this.#agentTranscriptBuffer = event.text);
+    }
+
+   
     // Write agent transcript to the generation stream
     if (!this.currentGeneration) {
       this.#logger.warn({ event }, "No current generation for agent transcript");
@@ -1332,23 +1391,10 @@ export class RealtimeSession extends llm.RealtimeSession {
     // Get the current message generation
     const messageGenerations = Array.from(this.currentGeneration.messages.values());
     const currentMessage = messageGenerations[messageGenerations.length - 1];
-
-    if (!event.final) {
-      // Write delta to text channel
-      const delta = event.delta || '';
-      currentMessage.textChannel.write(delta);
-      currentMessage.audioTranscript += delta;
-      this.#logger.debug({ delta }, "Wrote agent transcript delta to generation stream");
-    } else {
-      // Final transcript - write final text
-      const finalText = event.text || this.#agentTranscriptBuffer;
-      currentMessage.textChannel.write(finalText);
-      currentMessage.audioTranscript += finalText;
-      this.#logger.debug({ finalText }, "Wrote final agent transcript to generation stream");
-      
+      currentMessage.textChannel.write(this.#agentTranscriptBuffer);
+      this.#logger.debug({ agentTranscriptBuffer: this.#agentTranscriptBuffer }, "Wrote agent transcript delta to generation stream");
       // Reset buffer
       this.#agentTranscriptBuffer = '';
-    }
   }
 
   #executeFunctionFromEvent(event: api_proto.UltravoxFunctionCallMessage): void {

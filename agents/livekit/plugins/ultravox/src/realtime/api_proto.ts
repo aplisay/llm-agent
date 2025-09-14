@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Ultravox API constants
-export const SAMPLE_RATE = 48000;
+// Ultravox API constants - matching LiveKit's standard 24kHz sample rate
+export const SAMPLE_RATE = 24000;
 export const NUM_CHANNELS = 1;
-export const IN_FRAME_SIZE = 2400; // 10ms at 48kHz
-export const OUT_FRAME_SIZE = 1200; // 10ms at 48kHz
+export const IN_FRAME_SIZE = 2400; // 100ms at 24kHz
+export const OUT_FRAME_SIZE = 1200; // 50ms at 24kHz
 
 // Ultravox API types
 export type Voice = string;

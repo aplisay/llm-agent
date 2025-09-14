@@ -624,6 +624,7 @@ async function runAgentWorker({
     voice.AgentSessionEventTypes.Close,
     (ev: voice.CloseEvent) => {
       logger.info({ ev }, "session closed");
+      roomService.deleteRoom(room.name);
       call.end();
     }
   );
