@@ -19,19 +19,15 @@
     "start": "yarn build && NODE_ENV=production node dist/realtime.mjs start",
     "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.mjs dev",
     "build": "npx tsup --clean",
-    "build:deps": "cd temp-livekit-agents && pnpm install && pnpm build",
-    "postinstall": "yarn build:deps && yarn patch:livekit",
-    "patch:livekit": "cp -r temp-livekit-agents/agents/dist/* node_modules/@livekit/agents/dist/ && cp -r temp-livekit-agents/plugins/openai/dist/* node_modules/@livekit/agents-plugin-openai/dist/",
-    "build:full": "yarn build:deps && tsup",
-    "dev": "yarn build:deps && tsup --watch"
+    "dev": "tsup --watch"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
-    "@livekit/agents": "^1.0.2",
-    "@livekit/agents-plugin-google": "^1.0.2",
-    "@livekit/agents-plugin-openai": "1.x",
+    "@livekit/agents": "^1.0.3",
+    "@livekit/agents-plugin-google": "^1.0.3",
+    "@livekit/agents-plugin-openai": "1.0.3",
     "@livekit/noise-cancellation-node": "^0.1.9",
     "@livekit/rtc-node": "^0.13.18",
     "async-mutex": "^0.4.1",
