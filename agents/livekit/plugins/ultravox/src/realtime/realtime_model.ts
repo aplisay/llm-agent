@@ -852,6 +852,7 @@ export class RealtimeSession extends llm.RealtimeSession {
     if (!this.#ws) return;
     this.#closing = true;
     this.#ws.close();
+    this.#logger.debug({ callId: this.#callId }, "ws closed, deleting call");
     if (this.#callId) {
       try {
         await this.#client.deleteCall(this.#callId);
@@ -859,9 +860,11 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#logger.error("Error deleting call:", error);
       }
     }
+    this.#logger.debug({ callId: this.#callId }, "call deleted");
     this.emit('close', { callId: this.#callId });
+    this.#logger.debug({ callId: this.#callId }, "call close");
     super.close();
-    await this.#task;
+    this.#logger.debug({ callId: this.#callId }, "call closed");
   }
 
   #handleMessage(event: api_proto.UltravoxMessage): void {

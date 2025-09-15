@@ -9,6 +9,7 @@ import type {
   OutboundInfo,
 } from './api-client.js';
 import { type ParticipantInfo } from "livekit-server-sdk";
+import { voice } from "@livekit/agents";
 
 
 
@@ -51,10 +52,10 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   modelName: string;
   options: any;
   // Preferred API used by current code
-  modelRef: (create?: () => any) => any;
+  modelRef: (model: voice.Agent | null) => voice.Agent | null;
   // Back-compat with older call sites
   createModelRef?: (create: () => any) => any;
-  sessionRef: (session: any) => void;
+  sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (participant: any) => void;
   requestHangup: () => void;
 }
@@ -72,7 +73,8 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   call: Call;
   onHangup: () => Promise<void>;
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
-  sessionRef: (session: any) => void;
+  sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
+  modelRef: (model: voice.Agent | null) => voice.Agent | null;
   getModel: () => any;
   getBridgedParticipant: () => any;
   checkForHangup: () => boolean;
@@ -81,6 +83,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
 export interface TransferArgs {
   number: string;
   [key: string]: any;
+  session?: voice.AgentSession;
 }
 
 export interface MessageData {

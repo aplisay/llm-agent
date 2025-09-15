@@ -42,7 +42,9 @@ export async function setupSIPClients(): Promise<any> {
     if (inboundSipTrunk.numbers.length !== phoneNumbers.length || inboundSipTrunk.numbers.some((n: string) => !phoneNumbers.includes(n))) {
       inboundSipTrunk = await sipClient.updateSipInboundTrunk(inboundSipTrunk.sipTrunkId, {
         name: 'Aplisay',
-        numbers: phoneNumbers
+        numbers: phoneNumbers,
+        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS,
+        krispEnabled: true,
       } as any);
     }
     logger.info({ inboundSipTrunk }, 'SIP trunk updated');

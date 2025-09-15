@@ -34,7 +34,8 @@ import {
 } from "./api-client.js";
 
 // Types
-import type { Room } from "@livekit/rtc-node";
+import type { RemoteParticipant, Room } from "@livekit/rtc-node";
+import { RoomEvent } from "@livekit/rtc-node";
 import type { ParticipantInfo } from "livekit-server-sdk";
 import type {
   CallScenario,
@@ -81,6 +82,7 @@ export default defineAgent({
 
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
+    let model: voice.Agent | null = null;
     let bridgedParticipant: ParticipantInfo | null = null;
 
     try {
@@ -105,7 +107,7 @@ export default defineAgent({
 
       const { userId, modelName, organisationId, options = {} } = agent;
 
-      const { call, metadata, sendMessage, onHangup, onTransfer, checkForHangup, sessionRef } =
+      const { call, metadata, sendMessage, onHangup, onTransfer, checkForHangup, sessionRef, modelRef } =
         await setupCallAndUtilities({
           ctx,
           room,
@@ -120,11 +122,12 @@ export default defineAgent({
           organisationId,
           modelName,
           options,
-          modelRef: (create) => {
-            create && (session = create());
-            return session;
+          modelRef: (create: voice.Agent | null ): voice.Agent | null => {
+            // Placeholder; actual model instance is set later in runAgentWorker
+            create && (model = create);
+            return model;
           },
-          sessionRef: (create) => {
+          sessionRef: (create: voice.AgentSession | null): voice.AgentSession | null => {
             create && (session = create);
             return session;
           },
@@ -177,6 +180,7 @@ export default defineAgent({
         call,
         onHangup,
         onTransfer,
+        modelRef,
         sessionRef,
         getModel: () => realtimeModels,
         getBridgedParticipant: () => bridgedParticipant,
@@ -326,7 +330,7 @@ async function setupCallAndUtilities({
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
   logger.info(
-    { agent, instance, calledId, callerId, ctx, room },
+    { agent, instance, aplisayId, calledId, callerId, ctx, room },
     "new room instance"
   );
 
@@ -411,24 +415,20 @@ async function setupCallAndUtilities({
         calledId
       );
       logger.info({ p }, "new participant created");
-      const currentModel = modelRef && modelRef();
-      if (currentModel && typeof currentModel.close === "function") {
-        await currentModel.close();
-      }
       setBridgedParticipant(p);
+      //ctx.shutdown("Call transferred to new destination, agent dropped out");
+      const session = sessionRef(null);
+      session?.llm && (session.llm as llm.RealtimeModel)?.close();
+
       return p;
-    } catch (e) {
-      console.log(
-        {
-          e,
-          type: typeof e,
-          message: (e as Error).message,
-          stack: (e as Error).stack,
-        },
-        "transfer error"
-      );
-      logger.error({ e }, "error transferring participant");
-      throw e;
+    } catch (e: any) {
+      let error = e as Error;
+      if (!(e instanceof Error)) {
+        logger.error({ e: String(e) }, `Expected error, got ${e} (${typeof e})`);
+        error = new Error(e);
+      }
+      logger.error({ error, message: error.message, stack: error.stack }, `error transferring participant`);
+      throw error;
     }
   };
 
@@ -447,6 +447,7 @@ async function setupCallAndUtilities({
     onHangup,
     onTransfer,
     checkForHangup,
+    modelRef,
     sessionRef,
   };
 }
@@ -547,6 +548,7 @@ async function runAgentWorker({
   getBridgedParticipant,
   checkForHangup,
   sessionRef,
+  modelRef,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime = plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
@@ -570,6 +572,7 @@ async function runAgentWorker({
     instructions: agent?.prompt || "You are a helpful assistant.",
     tools,
   });
+  modelRef(model);
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({
@@ -635,9 +638,20 @@ async function runAgentWorker({
     agent: model,
   });
 
-  // Ordering is important here, if we call connect() before the session is started, agent doesn't get participant audio
-  // This is new in 1.0!
   await ctx.connect();
+
+  logger.debug({ room }, "connected got room");
+
+  ctx.room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
+    const bridgedParticipant = getBridgedParticipant();
+    logger.debug({ p, bridgedParticipant }, "participant disconnected");
+
+    if (bridgedParticipant?.participantId === p?.info?.sid) {
+      logger.debug("bridge participant disconnected, shutting down");
+      roomService.deleteRoom(room.name);
+      call.end();
+    }
+  });
 
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });
