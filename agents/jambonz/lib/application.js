@@ -3,6 +3,7 @@ const JambonzSession = require('./session.js');
 const logger = require('../agent-lib/logger.js');
 const Jambonz = require('../agent-lib/jambonz.js');
 const handlers = require('../agent-lib/handlers');
+const { v4: uuidv4 } = require('uuid');
 
 /**
  *
@@ -14,6 +15,7 @@ class Application {
     Object.assign(this, { socket, host, path, logger });
     logger.info({ host, path, socket }, 'new application');
     this.jambonz = new Jambonz(logger, 'worker');
+
     socket.on('session:new', async (session) => {
       try {
         let calledId = session.to.replace(/^\+/, '');
@@ -21,11 +23,13 @@ class Application {
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
+          const callId = uuidv4();
           let { userId, organisationId, modelName, options = {} } = agent;
           const { fallback: { number: fallbackNumbers } = {} } = options;
           logger.info({ number, agent, instance, session }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
+          handler.callId = callId;
           let { model } = handler;
           let room = handler.join && await handler.join(
             {
@@ -38,6 +42,7 @@ class Application {
           logger.debug({ streamUrl, room, ultravox }, 'application handler');
 
           let call = this.call = await Call.create({
+            id: callId,
             userId,
             organisationId,
             modelName,
@@ -58,7 +63,6 @@ class Application {
               }
             }
           });
-          let callId = call.id;
           let sessionHandler = this.sessionHandler = new JambonzSession({
             instanceId: instance.id,
             callId,
