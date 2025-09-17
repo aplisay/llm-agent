@@ -35,6 +35,7 @@ class Application {
             {
               websocket: true,
               telephony: true,
+              callId
             }
           );
           let { ultravox } = room || {};
