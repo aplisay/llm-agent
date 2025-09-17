@@ -58,6 +58,11 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (participant: any) => void;
   requestHangup: () => void;
+  // consult transfer state management
+  setConsultInProgress: (value: boolean) => void;
+  setDeafenedTrackSids: (sids: string[]) => void;
+  getConsultInProgress: () => boolean;
+  getDeafenedTrackSids: () => string[];
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -78,10 +83,14 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   getModel: () => any;
   getBridgedParticipant: () => any;
   checkForHangup: () => boolean;
+  getConsultInProgress: () => boolean;
+  getDeafenedTrackSids: () => string[];
 }
 
 export interface TransferArgs {
   number: string;
+  callerId?: string;
+  operation?: 'blind' | 'consult_start' | 'consult_finalise' | 'consult_reject';
   [key: string]: any;
   session?: voice.AgentSession;
 }
