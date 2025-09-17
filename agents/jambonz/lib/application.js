@@ -20,10 +20,10 @@ class Application {
       try {
         let calledId = session.to.replace(/^\+/, '');
         let callerId = session.from;
+        const callId = session.call_sid;
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
-          const callId = uuidv4();
           let { userId, organisationId, modelName, options = {} } = agent;
           const { fallback: { number: fallbackNumbers } = {} } = options;
           logger.info({ number, agent, instance, session, callId }, 'Found instance for call');
@@ -40,15 +40,14 @@ class Application {
           );
           let { ultravox } = room || {};
           let { joinUrl: streamUrl } = ultravox || {};
-          logger.debug({ streamUrl, room, ultravox }, 'application handler');
+          logger.info({ streamUrl, room, ultravox, callId }, 'jambonzapplication handler');
 
           let call = this.call = await Call.create({
-            id: callId,
+            id: session.call_sid,
             userId,
             organisationId,
             modelName,
             options,
-            id: session.call_sid,
             instanceId: instance.id,
             agentId: agent.id,
             streamUrl,
@@ -65,6 +64,7 @@ class Application {
               }
             }
           });
+          logger.info({ callDotCallID: call.id, callId }, 'created call record');
           let sessionHandler = this.sessionHandler = new JambonzSession({
             instanceId: instance.id,
             callId,
