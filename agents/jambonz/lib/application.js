@@ -26,7 +26,7 @@ class Application {
           const callId = uuidv4();
           let { userId, organisationId, modelName, options = {} } = agent;
           const { fallback: { number: fallbackNumbers } = {} } = options;
-          logger.info({ number, agent, instance, session }, 'Found instance for call');
+          logger.info({ number, agent, instance, session, callId }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
           handler.callId = callId;
@@ -57,6 +57,7 @@ class Application {
             metadata: {
               ...instance.metadata,
               aplisay: {
+                callId,
                 callerId,
                 calledId,
                 fallbackNumbers,
