@@ -15,12 +15,16 @@ export default function (logger, voices, wsServer) {
 };
 
 const phoneNumbersList = (async (req, res) => {
-  let { handler } = req.query;
+  let { handler, number } = req.query;
   
   try {
     let whereClause = {};
     if (handler) {
       whereClause.handler = handler;
+    }
+    if (number) {
+      // Database stores E.164 without a leading '+'
+      whereClause.number = String(number).replace(/^\+/, '');
     }
 
     let phoneNumbers = await PhoneNumber.findAll({ where: whereClause });

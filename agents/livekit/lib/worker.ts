@@ -11,8 +11,7 @@ import {
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 
-
-// Should be contributed as a plugin to the Livekit Agents framework when stable, 
+// Should be contributed as a plugin to the Livekit Agents framework when stable,
 // but for now
 import * as ultravox from "../plugins/ultravox/src/index.js";
 
@@ -31,12 +30,14 @@ import {
   type Call,
   type CallMetadata,
   type OutboundInfo,
+  getPhoneNumberByNumber,
+  type PhoneNumberInfo,
 } from "./api-client.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
-import type { ParticipantInfo } from "livekit-server-sdk";
+import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type {
   CallScenario,
   JobMetadata,
@@ -53,7 +54,7 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 const realtimeModels = {
   openai,
   ultravox,
-  google
+  google,
 };
 
 logger.debug({ realtimeModels }, "realtime models");
@@ -83,7 +84,10 @@ export default defineAgent({
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
     let model: voice.Agent | null = null;
-    let bridgedParticipant: ParticipantInfo | null = null;
+    let bridgedParticipant: SipParticipant | null = null;
+    let consultInProgress = false;
+    let deafenedTrackSids: string[] = [];
+    let mutedTrackSids: string[] = [];
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -107,33 +111,49 @@ export default defineAgent({
 
       const { userId, modelName, organisationId, options = {} } = agent;
 
-      const { call, metadata, sendMessage, onHangup, onTransfer, checkForHangup, sessionRef, modelRef } =
-        await setupCallAndUtilities({
-          ctx,
-          room,
-          instance,
-          agent,
-          callerId,
-          calledId,
-          aplisayId,
-          callId,
-          callMetadata,
-          userId,
-          organisationId,
-          modelName,
-          options,
-          modelRef: (create: voice.Agent | null ): voice.Agent | null => {
-            // Placeholder; actual model instance is set later in runAgentWorker
-            create && (model = create);
-            return model;
-          },
-          sessionRef: (create: voice.AgentSession | null): voice.AgentSession | null => {
-            create && (session = create);
-            return session;
-          },
-          setBridgedParticipant: (p) => (bridgedParticipant = p),
-          requestHangup: () => {},
-        });
+      const {
+        call,
+        metadata,
+        sendMessage,
+        onHangup,
+        onTransfer,
+        checkForHangup,
+        sessionRef,
+        modelRef,
+      } = await setupCallAndUtilities({
+        ctx,
+        room,
+        instance,
+        agent,
+        callerId,
+        calledId,
+        aplisayId,
+        callId,
+        callMetadata,
+        userId,
+        organisationId,
+        modelName,
+        options,
+        modelRef: (create: voice.Agent | null): voice.Agent | null => {
+          // Placeholder; actual model instance is set later in runAgentWorker
+          create && (model = create);
+          return model;
+        },
+        sessionRef: (
+          create: voice.AgentSession | null
+        ): voice.AgentSession | null => {
+          create && (session = create);
+          return session;
+        },
+        setBridgedParticipant: (p) => (bridgedParticipant = p),
+        setConsultInProgress: (v: boolean) => (consultInProgress = v),
+        setDeafenedTrackSids: (s: string[]) => (deafenedTrackSids = s),
+        setMutedTrackSids: (s: string[]) => (mutedTrackSids = s),
+        getConsultInProgress: () => consultInProgress,
+        getDeafenedTrackSids: () => deafenedTrackSids,
+        getMutedTrackSids: () => mutedTrackSids,
+        requestHangup: () => {},
+      });
 
       if (outboundCall && outboundInfo && !participant) {
         try {
@@ -158,14 +178,15 @@ export default defineAgent({
           }
         } catch (err) {
           logger.error({ err }, "Outbound call failed");
-          sendMessage({ call_failed: ((err as Error).message).replace(/^twirp [^:]*: /, '') });
+          sendMessage({
+            call_failed: (err as Error).message.replace(/^twirp [^:]*: /, ""),
+          });
           throw err;
         }
       }
 
       // Record the appropriate transaction at the top level
       sendMessage({ answer: calledId });
-
 
       await runAgentWorker({
         ctx,
@@ -185,6 +206,9 @@ export default defineAgent({
         getModel: () => realtimeModels,
         getBridgedParticipant: () => bridgedParticipant,
         checkForHangup,
+        getConsultInProgress: () => consultInProgress,
+        getDeafenedTrackSids: () => deafenedTrackSids,
+        getMutedTrackSids: () => mutedTrackSids,
       });
     } catch (e) {
       logger.error(
@@ -211,7 +235,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     callMetadata,
   } = jobMetadata || {};
   logger.info(
-    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata, identity, room },
+    {
+      callerId,
+      calledId,
+      instanceId,
+      aplisayId,
+      outbound,
+      jobMetadata,
+      identity,
+      room,
+    },
     "getting call info"
   );
 
@@ -231,7 +264,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                       we use this to extract the called number, and then lookup which agent instance we should answer with.
   
   */
-  
+
   if (outbound) {
     if (!calledId || !callerId || !aplisayId || !instanceId) {
       logger.error({ ctx }, "missing metadata for outbound call");
@@ -254,13 +287,13 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instanceId,
     };
   } else {
+    const participants = await roomService.listParticipants(room.name!);
+    participant = participants[0] as ParticipantInfo;
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
       logger.debug({ instance }, "instance found?");
     } else if (room.name) {
-      const participants = await roomService.listParticipants(room.name);
-      participant = participants[0] as ParticipantInfo;
       logger.debug(
         { participants, attributes: participant.attributes },
         "participants"
@@ -272,7 +305,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipHXAplisayTrunk: aplisayId,
         } = participant.attributes);
       }
-    
+
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
 
@@ -326,6 +359,12 @@ async function setupCallAndUtilities({
   modelRef,
   sessionRef,
   setBridgedParticipant,
+  setConsultInProgress,
+  setDeafenedTrackSids,
+  getConsultInProgress,
+  getDeafenedTrackSids,
+  setMutedTrackSids,
+  getMutedTrackSids,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -335,6 +374,7 @@ async function setupCallAndUtilities({
   );
 
   let wantHangup = false;
+  let currentBridged: SipParticipant | null = null;
 
   const call = await createCall({
     id: callId,
@@ -383,6 +423,85 @@ async function setupCallAndUtilities({
     }
   };
 
+  // This is a bit of a hack, what we really want to do is move the caller into
+  //  an isolated "hold" room, but the agent framework gets upset when we remove it
+  //  from the main room.
+  const holdParticipant = async (identity: string, hold: boolean) => {
+    const participants = await roomService.listParticipants(room.name!);
+    const participantTracks =
+      participants.find((p) => p.sid === identity)?.tracks?.map((t) => t.sid) ||
+      [];
+    const allOtherTracks = participants
+      .filter((p) => p.sid !== identity)
+      .map((p) => p.tracks?.map((t) => t.sid))
+      .flat();
+    logger.debug(
+      { identity, participants, participantTracks, allOtherTracks, hold },
+      "holding participant"
+    );
+    const targetParticipant = participants.find((p) => p.sid === identity);
+    const targetTracks = targetParticipant?.tracks?.map((t) => t.sid) || [];
+    const bridgedParticipant = participants.find(
+      (p) => p.identity === "sip_outboud_call"
+    );
+    const bridgedTracks = bridgedParticipant?.tracks?.map((t) => t.sid) || [];
+
+    logger.debug({ targetParticipant }, "target participant");
+    try {
+      await roomService.updateSubscriptions(
+        room.name!,
+        targetParticipant?.identity!,
+        allOtherTracks,
+        !hold
+      );
+      await roomService.updateSubscriptions(
+        room.name!,
+        bridgedParticipant?.identity!,
+        targetTracks,
+        !hold
+      );
+      logger.debug(
+        { identity: targetParticipant?.sid, participantTracks, hold },
+        "updated subscriptions"
+      );
+
+      // this is completely counterintuitive and is in fact entirely wrong. Needs fix for livekit bug.
+      await Promise.all(
+        bridgedTracks.map(async (track) => {
+          await roomService.mutePublishedTrack(
+            room.name!,
+            bridgedParticipant?.sid!,
+            track,
+            hold
+          );
+        })
+      );
+      logger.debug(
+        { identity: targetParticipant?.sid, participantTracks, hold },
+        "muted tracks"
+      );
+
+      const updatedParticipants = await roomService.listParticipants(
+        room.name!
+      );
+      logger.debug(
+        { updatedParticipants },
+        "updated participants at end of hold"
+      );
+    } catch (e) {
+      logger.error(
+        {
+          e,
+          identity,
+          targetParticipant: targetParticipant?.sid,
+          roomName: room.name,
+          hold,
+        },
+        "failed to update subscriptions"
+      );
+    }
+  };
+
   const onTransfer = async ({
     args,
     participant,
@@ -397,37 +516,143 @@ async function setupCallAndUtilities({
       );
     }
     try {
+      const operation = args.operation || "blind";
+      let effectiveCallerId = args.callerId || calledId;
+
+      // Validate overridden callerId if provided
+      if (args.callerId) {
+        const pn: PhoneNumberInfo | null = await getPhoneNumberByNumber(
+          args.callerId
+        );
+        if (!pn) {
+          throw new Error("Invalid callerId: number not found");
+        }
+        if (pn.organisationId && pn.organisationId !== agent.organisationId) {
+          throw new Error(
+            "Invalid callerId: number not owned by this organisation"
+          );
+        }
+        if (!pn.outbound) {
+          throw new Error(
+            "Invalid callerId: outbound not enabled on this number"
+          );
+        }
+        // If inbound has aplisayId, require match
+        if (aplisayId) {
+          if (pn.aplisayId && pn.aplisayId !== aplisayId) {
+            throw new Error("Invalid callerId: aplisayId mismatch");
+          }
+        } else {
+          // WebRTC: adopt aplisayId from outbound number if available
+          pn.aplisayId && (aplisayId = pn.aplisayId);
+        }
+        effectiveCallerId = pn.number;
+      }
       logger.info(
         {
           args,
           number: args.number,
-          identity: participant.sid,
+          operation,
+          identity: participant?.sid,
           room,
           aplisayId,
           calledId,
+          effectiveCallerId,
         },
         "transfer participant"
       );
-      const p = await bridgeParticipant(
-        room.name!,
-        args.number,
-        aplisayId!,
-        calledId
-      );
-      logger.info({ p }, "new participant created");
-      setBridgedParticipant(p);
-      //ctx.shutdown("Call transferred to new destination, agent dropped out");
-      const session = sessionRef(null);
-      session?.llm && (session.llm as llm.RealtimeModel)?.close();
 
-      return p;
+      switch (operation) {
+        case "blind":
+        default: {
+          const p = await bridgeParticipant(
+            room.name!,
+            args.number,
+            aplisayId!,
+            effectiveCallerId
+          );
+          logger.info({ p }, "new participant created (blind)");
+          setBridgedParticipant(p);
+          const session = sessionRef(null);
+          session?.llm && (session.llm as llm.RealtimeModel)?.close();
+          return "{ status: 'OK', detail: `transfer completed, session is now closed` }";
+        }
+        case "consult_start": {
+          try {
+            const p = await bridgeParticipant(
+              room.name!,
+              args.number,
+              aplisayId!,
+              effectiveCallerId
+            );
+            logger.info({ p }, "new participant created (consult_start)");
+            setBridgedParticipant(p);
+            currentBridged = p;
+            await holdParticipant(participant.sid!, true);
+            setConsultInProgress(true);
+          } catch (e) {
+            logger.error({ e }, "failed to initiate consult transfer");
+          }
+
+          return "{ status: 'OK', detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!` }";
+        }
+        case "consult_finalise": {
+          if (!getConsultInProgress() || !currentBridged) {
+            throw new Error("No consult transfer in progress to finalise");
+          }
+
+          const session = sessionRef(null);
+          session?.llm && (session.llm as llm.RealtimeModel)?.close();
+          await holdParticipant(participant.sid!, false);
+          return "{ status: 'OK', detail: `consult transfer completed, session is now closed` }";
+        }
+        case "consult_reject": {
+          const bp = currentBridged;
+          logger.debug(
+            { roomName: room.name, identity: bp?.participantId },
+            "consult_reject"
+          );
+          if (bp && room?.name && bp.participantId) {
+            try {
+              // Use SIP hangup to ensure the outbound call is properly torn down
+              await roomService.removeParticipant(
+                room.name,
+                bp.participantIdentity
+              );
+              await holdParticipant(participant.sid!, false);
+              logger.debug({ bp }, "removed bridged participant");
+            } catch (e) {
+              logger.error(
+                { e, bp, roomName: room.name, room },
+                "failed to remove bridged participant"
+              );
+              roomService.listParticipants(room.name).then((participants) => {
+                logger.debug(
+                  { participants },
+                  "participants after failed remove"
+                );
+              });
+            }
+            setBridgedParticipant(null as unknown as SipParticipant);
+            currentBridged = null;
+          }
+          setConsultInProgress(false);
+          return "{ status: 'OK', detail: `consult transfer rejected, session is now closed` }";
+        }
+      }
     } catch (e: any) {
       let error = e as Error;
       if (!(e instanceof Error)) {
-        logger.error({ e: String(e) }, `Expected error, got ${e} (${typeof e})`);
+        logger.error(
+          { e: String(e) },
+          `Expected error, got ${e} (${typeof e})`
+        );
         error = new Error(e);
       }
-      logger.error({ error, message: error.message, stack: error.stack }, `error transferring participant`);
+      logger.error(
+        { error, message: error.message, stack: error.stack },
+        `error transferring participant`
+      );
       throw error;
     }
   };
@@ -490,12 +715,12 @@ function createTools({
           parameters: {
             type: "object",
             properties: Object.fromEntries(
-              Object.entries(fnc.input_schema.properties).map(
-                ([key, value]: [string, any]) => [
+              Object.entries(fnc.input_schema.properties)
+                .filter(([, value]) => value.source === "generated")
+                .map(([key, value]: [string, any]) => [
                   key,
                   { ...value, required: undefined },
-                ]
-              )
+                ])
             ),
             required:
               Object.keys(fnc.input_schema.properties).filter(
@@ -515,13 +740,16 @@ function createTools({
               metadata,
               {
                 hangup: () => onHangup(),
-                transfer: (a: TransferArgs) =>
-                  onTransfer({ args: a, participant: participant! }),
+                transfer: async (a: TransferArgs) =>
+                  await onTransfer({ args: a, participant: participant! }),
               }
             )) as FunctionResult;
             let { function_results } = result;
             let [{ result: data }] = function_results;
-            logger.debug({ data }, `returning ${JSON.stringify(data)}`);
+            logger.debug(
+              { data },
+              `function execute returning ${JSON.stringify(data)}`
+            );
             return JSON.stringify(data);
           },
         }),
@@ -549,14 +777,23 @@ async function runAgentWorker({
   checkForHangup,
   sessionRef,
   modelRef,
+  getConsultInProgress,
+  getDeafenedTrackSids,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const realtime = plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  const realtime =
+    plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
   if (!realtime) {
-    logger.error({ modelName, plugin, realtime, realtimeModels }, "Unsupported model");
+    logger.error(
+      { modelName, plugin, realtime, realtimeModels },
+      "Unsupported model"
+    );
     throw new Error(`Unsupported model: ${modelName} ${plugin}`);
   }
-  logger.debug({ realtime, realtimeModels, openAI: openai.realtime }, "got realtime");
+  logger.debug(
+    { realtime, realtimeModels, openAI: openai.realtime },
+    "got realtime"
+  );
 
   const tools = createTools({
     agent,
@@ -598,7 +835,7 @@ async function runAgentWorker({
   session.on(
     voice.AgentSessionEventTypes.ConversationItemAdded,
     ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
-      if (type === "message") {
+      if (type === "message" && getConsultInProgress() === false) {
         sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
       }
     }
@@ -609,28 +846,22 @@ async function runAgentWorker({
     (ev: voice.AgentStateChangedEvent) => {
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
-        sendMessage({ hangup: 'agent initiated hangup' });
+        sendMessage({ hangup: "agent initiated hangup" });
         call.end();
         roomService.deleteRoom(room.name);
       }
     }
   );
 
-  session.on(
-    voice.AgentSessionEventTypes.Error,
-    (ev: voice.ErrorEvent) => {
-      logger.error({ ev }, "error");
-    }
-  );
+  session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+    logger.error({ ev }, "error");
+  });
 
-  session.on(
-    voice.AgentSessionEventTypes.Close,
-    (ev: voice.CloseEvent) => {
-      logger.info({ ev }, "session closed");
-      roomService.deleteRoom(room.name);
-      call.end();
-    }
-  );
+  session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+    logger.info({ ev }, "session closed");
+    roomService.deleteRoom(room.name);
+    call.end();
+  });
 
   //
   await session.start({
@@ -642,16 +873,60 @@ async function runAgentWorker({
 
   logger.debug({ room }, "connected got room");
 
-  ctx.room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
-    const bridgedParticipant = getBridgedParticipant();
-    logger.debug({ p, bridgedParticipant }, "participant disconnected");
+  ctx.room.on(
+    RoomEvent.ParticipantDisconnected,
+    async (p: RemoteParticipant) => {
+      const bp = getBridgedParticipant();
+      logger.debug({ p, bridgedParticipant: bp }, "participant disconnected");
 
-    if (bridgedParticipant?.participantId === p?.info?.sid) {
-      logger.debug("bridge participant disconnected, shutting down");
-      roomService.deleteRoom(room.name);
-      call.end();
+      if (bp?.participantId === p?.info?.sid) {
+        if (getConsultInProgress()) {
+          logger.debug(
+            "consult callee disconnected, treating as consult_reject"
+          );
+          // Undeafen original participant if needed
+          try {
+            const deafenedTrackSids = getDeafenedTrackSids();
+            if (deafenedTrackSids.length) {
+              // p here is the disconnected callee; we need the original participant identity to undeafen
+              const participants = await roomService.listParticipants(
+                room.name
+              );
+              const original = participants.find(
+                (pi) => pi.sid !== bp?.participantId
+              );
+              original?.identity &&
+                (await roomService.updateSubscriptions(
+                  room.name,
+                  original.identity,
+                  deafenedTrackSids,
+                  true
+                ));
+            }
+          } catch (e) {
+            logger.error(
+              { e },
+              "failed to undeafen participant on callee hangup"
+            );
+          }
+          // reset consult state
+          // remove bridged participant if still present in server state (it should be gone already)
+          try {
+            bp?.participantIdentity &&
+              (await roomService.removeParticipant(
+                room.name,
+                bp.participantId
+              ));
+          } catch {}
+          // underlying setters live in setup scope; remaining state will be reset on next transfer call
+        } else {
+          logger.debug("bridge participant disconnected, shutting down");
+          roomService.deleteRoom(room.name);
+          call.end();
+        }
+      }
     }
-  });
+  );
 
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });

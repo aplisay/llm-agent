@@ -277,7 +277,9 @@ components:
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the metadata for the call, returning a JSON object with the requested metadata keys and values. 
                      Keys are specified as a comma separated list in the `keys` parameter.
-                  * `transfer` will transfer the call to a number specified in the `number` parameter
+                  * `transfer` will transfer the call to a number specified in the `number` parameter. Optionally, you may also supply:
+                    - `callerId` (string): override the caller ID used for the transfer
+                    - `operation` (string): specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default), `consult_start`, `consult_finalise`, `consult_reject`
                 
                 Note that the transfer function will only be available to telephone agents, and the `number` parameter 
                 can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata.

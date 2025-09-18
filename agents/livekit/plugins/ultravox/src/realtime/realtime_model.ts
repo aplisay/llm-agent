@@ -585,7 +585,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           frame.data.byteLength
         );
         
-        // Debug logging for audio format
+        /* Debug logging for audio format
         this.#logger.debug({
           sampleRate: frame.sampleRate,
           samplesPerChannel: frame.samplesPerChannel,
@@ -593,7 +593,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           dataLength: audioData.length,
           expectedLength: frame.samplesPerChannel * frame.channels * 2 // s16le = 2 bytes per sample
         }, "Sending audio frame to Ultravox");
-        
+        */
         this.#ws.send(audioData);
       } catch (error) {
         this.#logger.error({ error }, "Failed to send audio frame to Ultravox");

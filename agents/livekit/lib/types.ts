@@ -9,6 +9,17 @@ import type {
   OutboundInfo,
 } from './api-client.js';
 import { type ParticipantInfo } from "livekit-server-sdk";
+
+// Re-export ParticipantInfo for convenience
+export { ParticipantInfo };
+
+// The return type from SipClient.createSipParticipant - this is what bridgeParticipant returns
+export interface SipParticipant {
+  participantId: string;
+  participantIdentity: string;
+  roomName: string;
+  sipCallId: string;
+}
 import { voice } from "@livekit/agents";
 
 
@@ -56,8 +67,15 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   // Back-compat with older call sites
   createModelRef?: (create: () => any) => any;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
-  setBridgedParticipant: (participant: any) => void;
+  setBridgedParticipant: (participant: SipParticipant | null) => void;
   requestHangup: () => void;
+  // consult transfer state management
+  setConsultInProgress: (value: boolean) => void;
+  setDeafenedTrackSids: (sids: string[]) => void;
+  setMutedTrackSids: (sids: string[]) => void;
+  getConsultInProgress: () => boolean;
+  getDeafenedTrackSids: () => string[];
+  getMutedTrackSids: () => string[];
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -76,12 +94,17 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
   getModel: () => any;
-  getBridgedParticipant: () => any;
+  getBridgedParticipant: () => SipParticipant | null;
   checkForHangup: () => boolean;
+  getConsultInProgress: () => boolean;
+  getDeafenedTrackSids: () => string[];
+  getMutedTrackSids: () => string[];
 }
 
 export interface TransferArgs {
   number: string;
+  callerId?: string;
+  operation?: 'blind' | 'consult_start' | 'consult_finalise' | 'consult_reject';
   [key: string]: any;
   session?: voice.AgentSession;
 }
