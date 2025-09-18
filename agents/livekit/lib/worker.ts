@@ -11,8 +11,7 @@ import {
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 
-
-// Should be contributed as a plugin to the Livekit Agents framework when stable, 
+// Should be contributed as a plugin to the Livekit Agents framework when stable,
 // but for now
 import * as ultravox from "../plugins/ultravox/src/index.js";
 
@@ -38,7 +37,7 @@ import {
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
-import type { ParticipantInfo } from "livekit-server-sdk";
+import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type {
   CallScenario,
   JobMetadata,
@@ -55,7 +54,7 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 const realtimeModels = {
   openai,
   ultravox,
-  google
+  google,
 };
 
 logger.debug({ realtimeModels }, "realtime models");
@@ -85,9 +84,10 @@ export default defineAgent({
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
     let model: voice.Agent | null = null;
-    let bridgedParticipant: ParticipantInfo | null = null;
+    let bridgedParticipant: SipParticipant | null = null;
     let consultInProgress = false;
     let deafenedTrackSids: string[] = [];
+    let mutedTrackSids: string[] = [];
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -111,37 +111,49 @@ export default defineAgent({
 
       const { userId, modelName, organisationId, options = {} } = agent;
 
-      const { call, metadata, sendMessage, onHangup, onTransfer, checkForHangup, sessionRef, modelRef } =
-        await setupCallAndUtilities({
-          ctx,
-          room,
-          instance,
-          agent,
-          callerId,
-          calledId,
-          aplisayId,
-          callId,
-          callMetadata,
-          userId,
-          organisationId,
-          modelName,
-          options,
-          modelRef: (create: voice.Agent | null ): voice.Agent | null => {
-            // Placeholder; actual model instance is set later in runAgentWorker
-            create && (model = create);
-            return model;
-          },
-          sessionRef: (create: voice.AgentSession | null): voice.AgentSession | null => {
-            create && (session = create);
-            return session;
-          },
-          setBridgedParticipant: (p) => (bridgedParticipant = p),
-          setConsultInProgress: (v: boolean) => (consultInProgress = v),
-          setDeafenedTrackSids: (s: string[]) => (deafenedTrackSids = s),
-          getConsultInProgress: () => consultInProgress,
-          getDeafenedTrackSids: () => deafenedTrackSids,
-          requestHangup: () => {},
-        });
+      const {
+        call,
+        metadata,
+        sendMessage,
+        onHangup,
+        onTransfer,
+        checkForHangup,
+        sessionRef,
+        modelRef,
+      } = await setupCallAndUtilities({
+        ctx,
+        room,
+        instance,
+        agent,
+        callerId,
+        calledId,
+        aplisayId,
+        callId,
+        callMetadata,
+        userId,
+        organisationId,
+        modelName,
+        options,
+        modelRef: (create: voice.Agent | null): voice.Agent | null => {
+          // Placeholder; actual model instance is set later in runAgentWorker
+          create && (model = create);
+          return model;
+        },
+        sessionRef: (
+          create: voice.AgentSession | null
+        ): voice.AgentSession | null => {
+          create && (session = create);
+          return session;
+        },
+        setBridgedParticipant: (p) => (bridgedParticipant = p),
+        setConsultInProgress: (v: boolean) => (consultInProgress = v),
+        setDeafenedTrackSids: (s: string[]) => (deafenedTrackSids = s),
+        setMutedTrackSids: (s: string[]) => (mutedTrackSids = s),
+        getConsultInProgress: () => consultInProgress,
+        getDeafenedTrackSids: () => deafenedTrackSids,
+        getMutedTrackSids: () => mutedTrackSids,
+        requestHangup: () => {},
+      });
 
       if (outboundCall && outboundInfo && !participant) {
         try {
@@ -166,14 +178,15 @@ export default defineAgent({
           }
         } catch (err) {
           logger.error({ err }, "Outbound call failed");
-          sendMessage({ call_failed: ((err as Error).message).replace(/^twirp [^:]*: /, '') });
+          sendMessage({
+            call_failed: (err as Error).message.replace(/^twirp [^:]*: /, ""),
+          });
           throw err;
         }
       }
 
       // Record the appropriate transaction at the top level
       sendMessage({ answer: calledId });
-
 
       await runAgentWorker({
         ctx,
@@ -195,6 +208,7 @@ export default defineAgent({
         checkForHangup,
         getConsultInProgress: () => consultInProgress,
         getDeafenedTrackSids: () => deafenedTrackSids,
+        getMutedTrackSids: () => mutedTrackSids,
       });
     } catch (e) {
       logger.error(
@@ -221,7 +235,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     callMetadata,
   } = jobMetadata || {};
   logger.info(
-    { callerId, calledId, instanceId, aplisayId, outbound, jobMetadata, identity, room },
+    {
+      callerId,
+      calledId,
+      instanceId,
+      aplisayId,
+      outbound,
+      jobMetadata,
+      identity,
+      room,
+    },
     "getting call info"
   );
 
@@ -241,7 +264,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                       we use this to extract the called number, and then lookup which agent instance we should answer with.
   
   */
-  
+
   if (outbound) {
     if (!calledId || !callerId || !aplisayId || !instanceId) {
       logger.error({ ctx }, "missing metadata for outbound call");
@@ -264,13 +287,13 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instanceId,
     };
   } else {
+    const participants = await roomService.listParticipants(room.name!);
+    participant = participants[0] as ParticipantInfo;
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
       logger.debug({ instance }, "instance found?");
     } else if (room.name) {
-      const participants = await roomService.listParticipants(room.name);
-      participant = participants[0] as ParticipantInfo;
       logger.debug(
         { participants, attributes: participant.attributes },
         "participants"
@@ -282,7 +305,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipHXAplisayTrunk: aplisayId,
         } = participant.attributes);
       }
-    
+
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
 
@@ -340,6 +363,8 @@ async function setupCallAndUtilities({
   setDeafenedTrackSids,
   getConsultInProgress,
   getDeafenedTrackSids,
+  setMutedTrackSids,
+  getMutedTrackSids,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -397,8 +422,79 @@ async function setupCallAndUtilities({
     }
   };
 
+  // Helpers to explicitly (un)subscribe from a given leg's audio tracks
+  const getAudioTrackSidsByIdentity = async (identity: string): Promise<string[]> => {
+    const participants = await roomService.listParticipants(room.name!);
+    const match = participants.find(p => p.identity === identity);
+    const sids: string[] = [];
+    match?.tracks?.forEach((t: any) => {
+      if (t?.sid && (t?.type === "AUDIO" || /audio/i.test(t?.name || "") || t?.kind === 0)) {
+        sids.push(t.sid);
+      }
+    });
+    return sids;
+  };
+
+  const deafenFromTracks = async (pi: ParticipantInfo, sids: string[]) => {
+    logger.debug({ sids, identity: pi.identity }, "deafening participant from tracks");
+    if (sids.length) {
+      await roomService.updateSubscriptions(room.name!, pi.identity!, sids, false);
+    }
+    setDeafenedTrackSids(sids);
+  };
+
+  const undeafenToTracks = async (pi: ParticipantInfo, sids: string[]) => {
+    logger.debug({ sids, identity: pi.identity }, "undeafening participant to tracks");
+    if (sids.length) {
+      await roomService.updateSubscriptions(room.name!, pi.identity!, sids, true);
+    }
+    setDeafenedTrackSids([]);
+  };
+
+  const listOwnAudioTrackSids = async (identity: string): Promise<string[]> => {
+    const participants = await roomService.listParticipants(room.name!);
+    const me = participants.find(p => p.identity === identity);
+    const sids: string[] = [];
+    // Log for diagnostics in case we still see empty lists in prod
+    logger.debug({ me, identity, tracks: me?.tracks }, 'listOwnAudioTrackSids participant');
+    me?.tracks?.forEach((t: any) => {
+      // Be permissive: server SDKs may expose audio track type as number (0), string ('AUDIO'), or via naming
+      const isAudio = (t?.type === 0) || (t?.type === 'AUDIO') || (t?.kind === 0) || /audio|mic|microphone/i.test(t?.name || '');
+      if (t?.sid && isAudio) {
+        sids.push(t.sid);
+      }
+    });
+    // As a last resort, if nothing matched heuristics but there are tracks, try all track sids
+    if (sids.length === 0 && Array.isArray(me?.tracks)) {
+      me.tracks.forEach((t: any) => t?.sid && sids.push(t.sid));
+      logger.debug({ identity, fallbackSids: sids }, 'listOwnAudioTrackSids fallback all tracks');
+    }
+    return sids;
+  };
+
+  const muteParticipantInput = async (pi: ParticipantInfo) => {
+    const sids = await listOwnAudioTrackSids(pi.identity!);
+    logger.debug({ sids }, "muting participant input");
+    // true = mute
+    for (const sid of sids) {
+      await roomService.mutePublishedTrack(room.name!, pi.identity!, sid, true);
+    }
+    setMutedTrackSids(sids);
+    return sids;
+  };
+
+  const unmuteParticipantInput = async (pi: ParticipantInfo) => {
+    const sids = getMutedTrackSids();
+    logger.debug({ sids, identity: pi.identity }, "unmuting participant input");
+    for (const sid of sids) {
+      await roomService.mutePublishedTrack(room.name!, pi.identity!, sid, false);
+    }
+    logger.debug({ sids, identity: pi.identity }, "unmuted participant input");
+    setMutedTrackSids([]);
+  };
+
   // local snapshot of currently bridged participant set via setter
-  let currentBridged: ParticipantInfo | null = null;
+  let currentBridged: SipParticipant | null = null;
 
   const onTransfer = async ({
     args,
@@ -414,25 +510,31 @@ async function setupCallAndUtilities({
       );
     }
     try {
-      const operation = args.operation || 'blind';
+      const operation = args.operation || "blind";
       let effectiveCallerId = args.callerId || calledId;
 
       // Validate overridden callerId if provided
       if (args.callerId) {
-        const pn: PhoneNumberInfo | null = await getPhoneNumberByNumber(args.callerId);
+        const pn: PhoneNumberInfo | null = await getPhoneNumberByNumber(
+          args.callerId
+        );
         if (!pn) {
-          throw new Error('Invalid callerId: number not found');
+          throw new Error("Invalid callerId: number not found");
         }
         if (pn.organisationId && pn.organisationId !== agent.organisationId) {
-          throw new Error('Invalid callerId: number not owned by this organisation');
+          throw new Error(
+            "Invalid callerId: number not owned by this organisation"
+          );
         }
         if (!pn.outbound) {
-          throw new Error('Invalid callerId: outbound not enabled on this number');
+          throw new Error(
+            "Invalid callerId: outbound not enabled on this number"
+          );
         }
         // If inbound has aplisayId, require match
         if (aplisayId) {
           if (pn.aplisayId && pn.aplisayId !== aplisayId) {
-            throw new Error('Invalid callerId: aplisayId mismatch');
+            throw new Error("Invalid callerId: aplisayId mismatch");
           }
         } else {
           // WebRTC: adopt aplisayId from outbound number if available
@@ -441,29 +543,21 @@ async function setupCallAndUtilities({
         effectiveCallerId = pn.number;
       }
       logger.info(
-        { args, number: args.number, operation, identity: participant.sid, room, aplisayId, calledId, effectiveCallerId },
+        {
+          args,
+          number: args.number,
+          operation,
+          identity: participant?.sid,
+          room,
+          aplisayId,
+          calledId,
+          effectiveCallerId,
+        },
         "transfer participant"
       );
 
-      // helper to gather all audio track SIDs from other participants to (un)subscribe
-      const getOtherAudioTrackSids = async (): Promise<string[]> => {
-        const participants = await roomService.listParticipants(room.name!);
-        const sids: string[] = [];
-        participants.forEach((pi) => {
-          if (pi.sid !== participant.sid) {
-            pi.tracks?.forEach((t: any) => {
-              // Conservative: assume track name with 'audio' or undefined kind are audio
-              if (t?.sid && (t?.type === 'AUDIO' || /audio/i.test(t?.name || '') || t?.kind === 0)) {
-                sids.push(t.sid);
-              }
-            });
-          }
-        });
-        return sids;
-      };
-
       switch (operation) {
-        case 'blind':
+        case "blind":
         default: {
           const p = await bridgeParticipant(
             room.name!,
@@ -475,84 +569,93 @@ async function setupCallAndUtilities({
           setBridgedParticipant(p);
           const session = sessionRef(null);
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
-          return p;
+          return "{ status: 'OK', detail: `transfer completed, session is now closed` }";
         }
-        case 'consult_start': {
-          const p = await bridgeParticipant(
-            room.name!,
-            args.number,
-            aplisayId!,
-            effectiveCallerId
-          );
-          logger.info({ p }, "new participant created (consult_start)");
-          setBridgedParticipant(p);
-          currentBridged = p;
-          // Deafen the original participant so they can't hear the agent/callee
-          const deafenedTrackSids = await getOtherAudioTrackSids();
+        case "consult_start": {
           try {
-            if (deafenedTrackSids.length) {
-              await roomService.updateSubscriptions(room.name!, participant.identity!, deafenedTrackSids, false);
-            }
+            const p = await bridgeParticipant(
+              room.name!,
+              args.number,
+              aplisayId!,
+              effectiveCallerId
+            );
+            logger.info({ p }, "new participant created (consult_start)");
+            setBridgedParticipant(p);
+            currentBridged = p;
+            // Deafen the original participant only from the transfer leg's audio tracks
+            const transferTracks = await getAudioTrackSidsByIdentity(p.participantIdentity);
+            await deafenFromTracks(participant, transferTracks);
+            await muteParticipantInput(participant);
+            setConsultInProgress(true);
           } catch (e) {
-            logger.error({ e, deafenedTrackSids }, 'failed to deafen participant');
+            logger.error({ e }, "failed to initiate consult transfer");
           }
-          setDeafenedTrackSids(deafenedTrackSids);
-          setConsultInProgress(true);
-          return p;
+
+          return "{ status: 'OK', detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!` }";
         }
-        case 'consult_finalise': {
+        case "consult_finalise": {
           if (!getConsultInProgress() || !currentBridged) {
-            throw new Error('No consult transfer in progress to finalise');
+            throw new Error("No consult transfer in progress to finalise");
           }
-          // Undeafen the original participant so they can hear the bridged party
+          // Undeafen and unmute the original participant specifically to the transfer leg
           try {
-            const deafenedTrackSids = getDeafenedTrackSids();
-            if (deafenedTrackSids.length) {
-              await roomService.updateSubscriptions(room.name!, participant.identity!, deafenedTrackSids, true);
-            }
+            const transferTracks = currentBridged ? await getAudioTrackSidsByIdentity(currentBridged.participantIdentity) : getDeafenedTrackSids();
+            await undeafenToTracks(participant, transferTracks);
+            await unmuteParticipantInput(participant);
           } catch (e) {
-            logger.error({ e }, 'failed to undeafen participant');
+            logger.error({ e }, "failed to undeafen/unmute participant");
           }
-          setDeafenedTrackSids([]);
           setConsultInProgress(false);
           // Drop the agent
           const session = sessionRef(null);
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
-          return currentBridged;
+          return "{ status: 'OK', detail: `consult transfer completed, session is now closed` }";
         }
-        case 'consult_reject': {
-          // Hang up the bridged participant if present
+        case "consult_reject": {
           const bp = currentBridged;
-          if (bp) {
+          logger.debug(
+            { roomName: room.name, identity: bp?.participantId },
+            "consult_reject"
+          );
+          if (bp && room?.name && bp.participantId) {
             try {
-              await roomService.removeParticipant(room.name!, bp.identity!);
+              // Use SIP hangup to ensure the outbound call is properly torn down
+              await roomService.removeParticipant(room.name, bp.participantIdentity);
+              logger.debug({ bp }, "removed bridged participant");
             } catch (e) {
-              logger.error({ e, bp }, 'failed to remove bridged participant');
+              logger.error({ e, bp, roomName: room.name, room }, "failed to remove bridged participant");
+              roomService.listParticipants(room.name).then((participants) => {
+                logger.debug({ participants }, "participants after failed remove");
+              });
             }
-            setBridgedParticipant(null as unknown as ParticipantInfo);
+            setBridgedParticipant(null as unknown as SipParticipant);
             currentBridged = null;
           }
-          // Undeafen the original participant so conversation can continue with agent
+          // Undeafen and unmute the original participant so conversation can continue with agent
           try {
-            const deafenedTrackSids = getDeafenedTrackSids();
-            if (deafenedTrackSids.length) {
-              await roomService.updateSubscriptions(room.name!, participant.identity!, deafenedTrackSids, true);
-            }
+            const transferTracks = currentBridged ? await getAudioTrackSidsByIdentity(currentBridged.participantIdentity) : getDeafenedTrackSids();
+            await undeafenToTracks(participant, transferTracks);
+            await unmuteParticipantInput(participant);
           } catch (e) {
-            logger.error({ e }, 'failed to undeafen participant after consult_reject');
+            logger.error({ e }, "failed to undeafen/unmute participant after consult_reject");
           }
-          setDeafenedTrackSids([]);
           setConsultInProgress(false);
-          return participant;
+          return "{ status: 'OK', detail: `consult transfer rejected, session is now closed` }";
         }
       }
     } catch (e: any) {
       let error = e as Error;
       if (!(e instanceof Error)) {
-        logger.error({ e: String(e) }, `Expected error, got ${e} (${typeof e})`);
+        logger.error(
+          { e: String(e) },
+          `Expected error, got ${e} (${typeof e})`
+        );
         error = new Error(e);
       }
-      logger.error({ error, message: error.message, stack: error.stack }, `error transferring participant`);
+      logger.error(
+        { error, message: error.message, stack: error.stack },
+        `error transferring participant`
+      );
       throw error;
     }
   };
@@ -616,13 +719,11 @@ function createTools({
             type: "object",
             properties: Object.fromEntries(
               Object.entries(fnc.input_schema.properties)
-                .filter(([, value]) => value.source === 'generated')
-                .map(
-                ([key, value]: [string, any]) => [
+                .filter(([, value]) => value.source === "generated")
+                .map(([key, value]: [string, any]) => [
                   key,
                   { ...value, required: undefined },
-                ]
-              )
+                ])
             ),
             required:
               Object.keys(fnc.input_schema.properties).filter(
@@ -642,13 +743,13 @@ function createTools({
               metadata,
               {
                 hangup: () => onHangup(),
-                transfer: (a: TransferArgs) =>
-                  onTransfer({ args: a, participant: participant! }),
+                transfer: async (a: TransferArgs) =>
+                  await onTransfer({ args: a, participant: participant! }),
               }
             )) as FunctionResult;
             let { function_results } = result;
             let [{ result: data }] = function_results;
-            logger.debug({ data }, `returning ${JSON.stringify(data)}`);
+            logger.debug({ data }, `function execute returning ${JSON.stringify(data)}`);
             return JSON.stringify(data);
           },
         }),
@@ -680,12 +781,19 @@ async function runAgentWorker({
   getDeafenedTrackSids,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const realtime = plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  const realtime =
+    plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
   if (!realtime) {
-    logger.error({ modelName, plugin, realtime, realtimeModels }, "Unsupported model");
+    logger.error(
+      { modelName, plugin, realtime, realtimeModels },
+      "Unsupported model"
+    );
     throw new Error(`Unsupported model: ${modelName} ${plugin}`);
   }
-  logger.debug({ realtime, realtimeModels, openAI: openai.realtime }, "got realtime");
+  logger.debug(
+    { realtime, realtimeModels, openAI: openai.realtime },
+    "got realtime"
+  );
 
   const tools = createTools({
     agent,
@@ -738,28 +846,22 @@ async function runAgentWorker({
     (ev: voice.AgentStateChangedEvent) => {
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
-        sendMessage({ hangup: 'agent initiated hangup' });
+        sendMessage({ hangup: "agent initiated hangup" });
         call.end();
         roomService.deleteRoom(room.name);
       }
     }
   );
 
-  session.on(
-    voice.AgentSessionEventTypes.Error,
-    (ev: voice.ErrorEvent) => {
-      logger.error({ ev }, "error");
-    }
-  );
+  session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+    logger.error({ ev }, "error");
+  });
 
-  session.on(
-    voice.AgentSessionEventTypes.Close,
-    (ev: voice.CloseEvent) => {
-      logger.info({ ev }, "session closed");
-      roomService.deleteRoom(room.name);
-      call.end();
-    }
-  );
+  session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+    logger.info({ ev }, "session closed");
+    roomService.deleteRoom(room.name);
+    call.end();
+  });
 
   //
   await session.start({
@@ -771,38 +873,57 @@ async function runAgentWorker({
 
   logger.debug({ room }, "connected got room");
 
-  ctx.room.on(RoomEvent.ParticipantDisconnected, async (p: RemoteParticipant) => {
-    const bp = getBridgedParticipant();
-    logger.debug({ p, bridgedParticipant: bp }, "participant disconnected");
+  ctx.room.on(
+    RoomEvent.ParticipantDisconnected,
+    async (p: RemoteParticipant) => {
+      const bp = getBridgedParticipant();
+      logger.debug({ p, bridgedParticipant: bp }, "participant disconnected");
 
-    if (bp?.participantId === p?.info?.sid) {
-      if (getConsultInProgress()) {
-        logger.debug("consult callee disconnected, treating as consult_reject");
-        // Undeafen original participant if needed
-        try {
-          const deafenedTrackSids = getDeafenedTrackSids();
-          if (deafenedTrackSids.length) {
-            // p here is the disconnected callee; we need the original participant identity to undeafen
-            const participants = await roomService.listParticipants(room.name);
-            const original = participants.find(pi => pi.sid !== bp.participantId);
-            original?.identity && (await roomService.updateSubscriptions(room.name, original.identity, deafenedTrackSids, true));
+      if (bp?.participantId === p?.info?.sid) {
+        if (getConsultInProgress()) {
+          logger.debug(
+            "consult callee disconnected, treating as consult_reject"
+          );
+          // Undeafen original participant if needed
+          try {
+            const deafenedTrackSids = getDeafenedTrackSids();
+            if (deafenedTrackSids.length) {
+              // p here is the disconnected callee; we need the original participant identity to undeafen
+              const participants = await roomService.listParticipants(
+                room.name
+              );
+              const original = participants.find(
+                (pi) => pi.sid !== bp?.participantId
+              );
+              original?.identity &&
+                (await roomService.updateSubscriptions(
+                  room.name,
+                  original.identity,
+                  deafenedTrackSids,
+                  true
+                ));
+            }
+          } catch (e) {
+            logger.error(
+              { e },
+              "failed to undeafen participant on callee hangup"
+            );
           }
-        } catch (e) {
-          logger.error({ e }, 'failed to undeafen participant on callee hangup');
+          // reset consult state
+          // remove bridged participant if still present in server state (it should be gone already)
+          try {
+            bp?.participantIdentity &&
+              (await roomService.removeParticipant(room.name, bp.participantId));
+          } catch {}
+          // underlying setters live in setup scope; remaining state will be reset on next transfer call
+        } else {
+          logger.debug("bridge participant disconnected, shutting down");
+          roomService.deleteRoom(room.name);
+          call.end();
         }
-        // reset consult state
-        // remove bridged participant if still present in server state (it should be gone already)
-        try {
-          bp.identity && (await roomService.removeParticipant(room.name, bp.identity));
-        } catch {}
-        // underlying setters live in setup scope; remaining state will be reset on next transfer call
-      } else {
-        logger.debug("bridge participant disconnected, shutting down");
-        roomService.deleteRoom(room.name);
-        call.end();
       }
     }
-  });
+  );
 
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: "say hello" });
