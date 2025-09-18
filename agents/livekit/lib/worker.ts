@@ -429,17 +429,24 @@ async function setupCallAndUtilities({
   const holdParticipant = async (identity: string, hold: boolean) => {
     const participants = await roomService.listParticipants(room.name!);
     const participantTracks =
-      participants.find((p) => p.sid === identity)?.tracks?.map((t) => t.sid) || [];
-    const allOtherTracks =
-      participants
-        .filter((p) => p.sid !== identity)
-        .map((p) => p.tracks?.map((t) => t.sid))
-        .flat();
+      participants.find((p) => p.sid === identity)?.tracks?.map((t) => t.sid) ||
+      [];
+    const allOtherTracks = participants
+      .filter((p) => p.sid !== identity)
+      .map((p) => p.tracks?.map((t) => t.sid))
+      .flat();
     logger.debug(
       { identity, participants, participantTracks, allOtherTracks, hold },
       "holding participant"
     );
     const targetParticipant = participants.find((p) => p.sid === identity);
+    const targetTracks = targetParticipant?.tracks?.map((t) => t.sid) || [];
+    const bridgedParticipant = participants.find(
+      (p) => p.identity === "sip_outboud_call"
+    );
+    const bridgedTracks = bridgedParticipant?.tracks?.map((t) => t.sid) || [];
+
+    logger.debug({ targetParticipant }, "target participant");
     try {
       await roomService.updateSubscriptions(
         room.name!,
@@ -447,19 +454,52 @@ async function setupCallAndUtilities({
         allOtherTracks,
         !hold
       );
-      await Promise.all(participantTracks.map(async (track) => {
-        await roomService.mutePublishedTrack(
-          room.name!, identity, track, hold)
-      }));
+      await roomService.updateSubscriptions(
+        room.name!,
+        bridgedParticipant?.identity!,
+        targetTracks,
+        !hold
+      );
+      logger.debug(
+        { identity: targetParticipant?.sid, participantTracks, hold },
+        "updated subscriptions"
+      );
 
-      logger.debug({ identity: targetParticipant?.sid, allOtherTracks, hold }, "updated subscriptions");
+      // this is completely counterintuitive and is in fact entirely wrong. Needs fix for livekit bug.
+      await Promise.all(
+        bridgedTracks.map(async (track) => {
+          await roomService.mutePublishedTrack(
+            room.name!,
+            bridgedParticipant?.sid!,
+            track,
+            hold
+          );
+        })
+      );
+      logger.debug(
+        { identity: targetParticipant?.sid, participantTracks, hold },
+        "muted tracks"
+      );
 
+      const updatedParticipants = await roomService.listParticipants(
+        room.name!
+      );
+      logger.debug(
+        { updatedParticipants },
+        "updated participants at end of hold"
+      );
     } catch (e) {
       logger.error(
-        { e, identity, targetParticipant: targetParticipant?.sid, roomName: room.name, hold },
+        {
+          e,
+          identity,
+          targetParticipant: targetParticipant?.sid,
+          roomName: room.name,
+          hold,
+        },
         "failed to update subscriptions"
       );
-    }         
+    }
   };
 
   const onTransfer = async ({
@@ -795,7 +835,7 @@ async function runAgentWorker({
   session.on(
     voice.AgentSessionEventTypes.ConversationItemAdded,
     ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
-      if (type === "message") {
+      if (type === "message" && getConsultInProgress() === false) {
         sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
       }
     }
