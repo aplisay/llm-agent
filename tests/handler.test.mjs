@@ -15,7 +15,7 @@ describe(`handlers`, () => {
     implementations = (await handlers()).implementations;
     models = (await handlers()).models;
     expect(Object.keys(implementations).length).toBe(3);
-    expect(models.length).toBe(21);
+    expect(models.length).toBe(22);
   });
 
   test('voices', async () => {
