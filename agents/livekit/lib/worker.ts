@@ -783,6 +783,7 @@ async function runAgentWorker({
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  let initialMessage: string | null = "say hello";
   if (!realtime) {
     logger.error(
       { modelName, plugin, realtime, realtimeModels },
@@ -836,7 +837,12 @@ async function runAgentWorker({
     voice.AgentSessionEventTypes.ConversationItemAdded,
     ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
       if (type === "message" && getConsultInProgress() === false) {
-        sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
+        if (role === "assistant" && initialMessage) {
+          initialMessage = null;
+        }
+        else {
+          sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
+        }
       }
     }
   );
@@ -844,6 +850,7 @@ async function runAgentWorker({
   session.on(
     voice.AgentSessionEventTypes.AgentStateChanged,
     (ev: voice.AgentStateChangedEvent) => {
+      sendMessage({ status: ev.newState });
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
         sendMessage({ hangup: "agent initiated hangup" });
@@ -929,7 +936,7 @@ async function runAgentWorker({
   );
 
   logger.debug("session started, generating reply");
-  session.generateReply({ userInput: "say hello" });
+  session.generateReply({ userInput: initialMessage });
   call.start();
   sendMessage({ call: `${calledId} => ${callerId}` });
 }
