@@ -897,46 +897,17 @@
   resolved "https://registry.yarnpkg.com/@js-sdsl/ordered-map/-/ordered-map-4.4.2.tgz#9299f82874bab9e4c7f9c48d865becbfe8d6907c"
   integrity sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==
 
-"@livekit/agents-plugin-google@^1.0.3":
-  version "1.0.3"
-  resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-google/-/agents-plugin-google-1.0.3.tgz#ea8ae25451dff411741c264afd2002525d078124"
-  integrity sha512-Bn5qtQdvcup60tfKb6bo7TNPvs7EdygfmpuB1J6JijgNbb/tiOAJ3ZS6ASCD2JyftSNWsxVEh0JigC4vBxnFtA==
-  dependencies:
-    "@google/genai" "^1.13.0"
-    "@livekit/mutex" "^1.1.1"
-    "@types/json-schema" "^7.0.15"
-    json-schema "^0.4.0"
+"@livekit/agents-plugin-google@link:temp-livekit-agents/plugins/google":
+  version "0.0.0"
+  uid ""
 
-"@livekit/agents-plugin-openai@1.0.3":
-  version "1.0.3"
-  resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-openai/-/agents-plugin-openai-1.0.3.tgz#d9a410473552d367ca0db79bab0c28ec2db93afa"
-  integrity sha512-XQORbTAtXM5ejFjHpzUeO8jE4OmFPFzMO4YD20TnmHwEiu66quC6RND6Q3KEE2gIbKuXv316nOq7Vl0l6O0hwg==
-  dependencies:
-    "@livekit/mutex" "^1.1.1"
-    openai "^4.91.1"
-    ws "^8.16.0"
+"@livekit/agents-plugin-openai@link:temp-livekit-agents/plugins/openai":
+  version "0.0.0"
+  uid ""
 
-"@livekit/agents@^1.0.3":
-  version "1.0.3"
-  resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-1.0.3.tgz#4ec901ff9488557b07069e54239f479c32d74974"
-  integrity sha512-0QCU7vygUSkeWClzoqeax9+OUaEHzMkh3QUKVINZgv3XXKgarwi9M/weuFp6fltiqHenkeWJ4KLUycbbiZ/FiQ==
-  dependencies:
-    "@livekit/mutex" "^1.1.1"
-    "@livekit/protocol" "^1.29.1"
-    "@livekit/typed-emitter" "^3.0.0"
-    "@types/pidusage" "^2.0.5"
-    commander "^12.0.0"
-    heap-js "^2.6.0"
-    json-schema "^0.4.0"
-    livekit-server-sdk "^2.9.2"
-    pidusage "^4.0.1"
-    pino "^8.19.0"
-    pino-pretty "^11.0.0"
-    sharp "0.34.3"
-    uuid "^11.1.0"
-    ws "^8.16.0"
-    zod "^3.23.8"
-    zod-to-json-schema "^3.24.6"
+"@livekit/agents@link:temp-livekit-agents/agents":
+  version "0.0.0"
+  uid ""
 
 "@livekit/mutex@^1.0.0", "@livekit/mutex@^1.1.1":
   version "1.1.1"

@@ -197,7 +197,8 @@ export async function createTransactionLog(transactionData: {
   data?: string;
   isFinal?: boolean;
 }): Promise<any> {
-  return makeApiRequest('/api/agent-db/transaction-log', {
+  // we don't log status change events
+  return transactionData.type === 'status' ? null : makeApiRequest('/api/agent-db/transaction-log', {
     method: 'POST',
     body: JSON.stringify(transactionData)
   });

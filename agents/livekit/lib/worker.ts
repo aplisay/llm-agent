@@ -35,8 +35,12 @@ import {
 } from "./api-client.js";
 
 // Types
-import type { RemoteParticipant, Room } from "@livekit/rtc-node";
-import { RoomEvent } from "@livekit/rtc-node";
+import type {
+  RemoteParticipant,
+  RemoteTrackPublication,
+  Room,
+} from "@livekit/rtc-node";
+import { RoomEvent, TrackKind } from "@livekit/rtc-node";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type {
   CallScenario,
@@ -441,10 +445,6 @@ async function setupCallAndUtilities({
     );
     const targetParticipant = participants.find((p) => p.sid === identity);
     const targetTracks = targetParticipant?.tracks?.map((t) => t.sid) || [];
-    const bridgedParticipant = participants.find(
-      (p) => p.identity === "sip_outboud_call"
-    );
-    const bridgedTracks = bridgedParticipant?.tracks?.map((t) => t.sid) || [];
 
     logger.debug({ targetParticipant }, "target participant");
     try {
@@ -454,33 +454,20 @@ async function setupCallAndUtilities({
         allOtherTracks,
         !hold
       );
-      await roomService.updateSubscriptions(
-        room.name!,
-        bridgedParticipant?.identity!,
-        targetTracks,
-        !hold
+      await Promise.all(
+        targetTracks.map((track) =>
+          roomService.mutePublishedTrack(
+            room.name!,
+            targetParticipant?.identity!,
+            track,
+            hold
+          )
+        )
       );
       logger.debug(
         { identity: targetParticipant?.sid, participantTracks, hold },
         "updated subscriptions"
       );
-
-      // this is completely counterintuitive and is in fact entirely wrong. Needs fix for livekit bug.
-      await Promise.all(
-        bridgedTracks.map(async (track) => {
-          await roomService.mutePublishedTrack(
-            room.name!,
-            bridgedParticipant?.sid!,
-            track,
-            hold
-          );
-        })
-      );
-      logger.debug(
-        { identity: targetParticipant?.sid, participantTracks, hold },
-        "muted tracks"
-      );
-
       const updatedParticipants = await roomService.listParticipants(
         room.name!
       );
@@ -488,10 +475,16 @@ async function setupCallAndUtilities({
         { updatedParticipants },
         "updated participants at end of hold"
       );
-    } catch (e) {
+    } catch (e: any) {
+      let error = e as Error;
+      if (!(e instanceof Error)) {
+        error = new Error(e);
+      }
       logger.error(
         {
-          e,
+          error,
+          message: error.message,
+          stack: error.stack,
           identity,
           targetParticipant: targetParticipant?.sid,
           roomName: room.name,
@@ -518,6 +511,7 @@ async function setupCallAndUtilities({
     try {
       const operation = args.operation || "blind";
       let effectiveCallerId = args.callerId || calledId;
+      const session = sessionRef(null);
 
       // Validate overridden callerId if provided
       if (args.callerId) {
@@ -564,7 +558,7 @@ async function setupCallAndUtilities({
 
       switch (operation) {
         case "blind":
-        default: {
+        default:
           const p = await bridgeParticipant(
             room.name!,
             args.number,
@@ -573,11 +567,10 @@ async function setupCallAndUtilities({
           );
           logger.info({ p }, "new participant created (blind)");
           setBridgedParticipant(p);
-          const session = sessionRef(null);
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
-          return "{ status: 'OK', detail: `transfer completed, session is now closed` }";
-        }
-        case "consult_start": {
+          return { status: 'OK', detail: `transfer completed, session is now closed` };
+          break;
+        case "consult_start":
           try {
             const p = await bridgeParticipant(
               room.name!,
@@ -585,28 +578,43 @@ async function setupCallAndUtilities({
               aplisayId!,
               effectiveCallerId
             );
+            logger.debug({ p }, "bridged participant completed");
+            const rbp = await ctx.waitForParticipant(p.participantIdentity);
+            logger.debug(
+              { p, rbp },
+              "bridged participant, subscribing to tracks"
+            );
+            rbp.trackPublications?.forEach(async (t) => {
+              if (t.kind === TrackKind.KIND_AUDIO) {
+                logger.debug({ t }, "subscribing agent to track");
+                await t.setSubscribed(true);
+                logger.debug({ t }, "track subscribed");
+              }
+            });
             logger.info({ p }, "new participant created (consult_start)");
             setBridgedParticipant(p);
             currentBridged = p;
             await holdParticipant(participant.sid!, true);
             setConsultInProgress(true);
-          } catch (e) {
+            return { status: 'OK', detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!` };
+          } catch (e: any) {
+            let error = e as Error;
+            if (!(e instanceof Error)) {
+              error = new Error(e);
+            }
             logger.error({ e }, "failed to initiate consult transfer");
+            return { status: 'ERROR', detail: `Failed to initiate consult transfer`, error: error };
           }
-
-          return "{ status: 'OK', detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!` }";
-        }
-        case "consult_finalise": {
+          break;
+        case "consult_finalise":
           if (!getConsultInProgress() || !currentBridged) {
             throw new Error("No consult transfer in progress to finalise");
           }
-
-          const session = sessionRef(null);
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
           await holdParticipant(participant.sid!, false);
-          return "{ status: 'OK', detail: `consult transfer completed, session is now closed` }";
-        }
-        case "consult_reject": {
+          return { status: 'OK', detail: `consult transfer completed, session is now closed` };
+          break;
+        case "consult_reject":
           const bp = currentBridged;
           logger.debug(
             { roomName: room.name, identity: bp?.participantId },
@@ -637,8 +645,8 @@ async function setupCallAndUtilities({
             currentBridged = null;
           }
           setConsultInProgress(false);
-          return "{ status: 'OK', detail: `consult transfer rejected, session is now closed` }";
-        }
+          return { status: 'OK', detail: `consult transfer rejected, session is now closed` };
+          break;
       }
     } catch (e: any) {
       let error = e as Error;
@@ -728,29 +736,34 @@ function createTools({
               ) || [],
           },
           execute: async (args: unknown) => {
-            logger.debug(
-              { name: fnc.name, args, fnc },
-              `Got function call ${fnc.name}`
-            );
-            let result = (await functionHandlerModule.functionHandler(
-              [{ ...fnc, input: args }],
-              functions,
-              keys,
-              sendMessage,
-              metadata,
-              {
-                hangup: () => onHangup(),
-                transfer: async (a: TransferArgs) =>
-                  await onTransfer({ args: a, participant: participant! }),
-              }
-            )) as FunctionResult;
-            let { function_results } = result;
-            let [{ result: data }] = function_results;
-            logger.debug(
-              { data },
-              `function execute returning ${JSON.stringify(data)}`
-            );
-            return JSON.stringify(data);
+            try {
+              logger.debug(
+                { name: fnc.name, args, fnc },
+                `Got function call ${fnc.name}`
+              );
+              let result = (await functionHandlerModule.functionHandler(
+                [{ ...fnc, input: args }],
+                functions,
+                keys,
+                sendMessage,
+                metadata,
+                {
+                  hangup: () => onHangup(),
+                  transfer: async (a: TransferArgs) =>
+                    await onTransfer({ args: a, participant: participant! }),
+                }
+              )) as FunctionResult;
+              let { function_results } = result;
+              let [{ result: data }] = function_results;
+              logger.debug(
+                { data },
+                `function execute returning ${JSON.stringify(data)}`
+              );
+              return JSON.stringify(data);
+            } catch (e) {
+              logger.error({ e }, "error executing function");
+              throw e;
+            }
           },
         }),
       }),
@@ -839,9 +852,10 @@ async function runAgentWorker({
       if (type === "message" && getConsultInProgress() === false) {
         if (role === "assistant" && initialMessage) {
           initialMessage = null;
-        }
-        else {
-          sendMessage({ [role === "user" ? "user" : "agent"]: content.join("") });
+        } else {
+          sendMessage({
+            [role === "user" ? "user" : "agent"]: content.join(""),
+          });
         }
       }
     }
