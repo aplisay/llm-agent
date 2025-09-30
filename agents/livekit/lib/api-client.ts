@@ -41,6 +41,7 @@ export interface AgentFunction {
 
 export interface Call {
   id: string;
+  parentId?: string;
   userId: string;
   organisationId: string;
   instanceId: string;
@@ -161,6 +162,7 @@ export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumbe
 // Create a new call record
 export async function createCall(callData: {
   id?: string;
+  parentId?: string;
   userId: string;
   organisationId: string;
   instanceId: string;

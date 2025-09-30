@@ -64,18 +64,12 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   options: any;
   // Preferred API used by current code
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
-  // Back-compat with older call sites
-  createModelRef?: (create: () => any) => any;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (participant: SipParticipant | null) => void;
   requestHangup: () => void;
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
-  setDeafenedTrackSids: (sids: string[]) => void;
-  setMutedTrackSids: (sids: string[]) => void;
   getConsultInProgress: () => boolean;
-  getDeafenedTrackSids: () => string[];
-  getMutedTrackSids: () => string[];
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -93,12 +87,11 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
-  getModel: () => any;
   getBridgedParticipant: () => SipParticipant | null;
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
-  getDeafenedTrackSids: () => string[];
-  getMutedTrackSids: () => string[];
+  getActiveCall: () => Call;
+  holdParticipant: (identity: string, hold: boolean) => Promise<void>;
 }
 
 export interface TransferArgs {

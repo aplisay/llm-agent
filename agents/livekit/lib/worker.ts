@@ -37,7 +37,6 @@ import {
 // Types
 import type {
   RemoteParticipant,
-  RemoteTrackPublication,
   Room,
 } from "@livekit/rtc-node";
 import { RoomEvent, TrackKind } from "@livekit/rtc-node";
@@ -124,6 +123,8 @@ export default defineAgent({
         checkForHangup,
         sessionRef,
         modelRef,
+        holdParticipant,
+        getActiveCall,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -151,11 +152,8 @@ export default defineAgent({
         },
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
-        setDeafenedTrackSids: (s: string[]) => (deafenedTrackSids = s),
-        setMutedTrackSids: (s: string[]) => (mutedTrackSids = s),
         getConsultInProgress: () => consultInProgress,
-        getDeafenedTrackSids: () => deafenedTrackSids,
-        getMutedTrackSids: () => mutedTrackSids,
+        
         requestHangup: () => {},
       });
 
@@ -207,12 +205,11 @@ export default defineAgent({
         onTransfer,
         modelRef,
         sessionRef,
-        getModel: () => realtimeModels,
         getBridgedParticipant: () => bridgedParticipant,
         checkForHangup,
         getConsultInProgress: () => consultInProgress,
-        getDeafenedTrackSids: () => deafenedTrackSids,
-        getMutedTrackSids: () => mutedTrackSids,
+        holdParticipant,
+        getActiveCall,
       });
     } catch (e) {
       logger.error(
@@ -364,11 +361,7 @@ async function setupCallAndUtilities({
   sessionRef,
   setBridgedParticipant,
   setConsultInProgress,
-  setDeafenedTrackSids,
   getConsultInProgress,
-  getDeafenedTrackSids,
-  setMutedTrackSids,
-  getMutedTrackSids,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -379,6 +372,7 @@ async function setupCallAndUtilities({
 
   let wantHangup = false;
   let currentBridged: SipParticipant | null = null;
+  let bridgedCallRecord: Call | null = null;
 
   const call = await createCall({
     id: callId,
@@ -432,64 +426,24 @@ async function setupCallAndUtilities({
   //  from the main room.
   const holdParticipant = async (identity: string, hold: boolean) => {
     const participants = await roomService.listParticipants(room.name!);
-    const participantTracks =
-      participants.find((p) => p.sid === identity)?.tracks?.map((t) => t.sid) ||
-      [];
-    const allOtherTracks = participants
-      .filter((p) => p.sid !== identity)
-      .map((p) => p.tracks?.map((t) => t.sid))
-      .flat();
-    logger.debug(
-      { identity, participants, participantTracks, allOtherTracks, hold },
-      "holding participant"
-    );
     const targetParticipant = participants.find((p) => p.sid === identity);
-    const targetTracks = targetParticipant?.tracks?.map((t) => t.sid) || [];
-
-    logger.debug({ targetParticipant }, "target participant");
+    logger.debug({ identity, participants, hold }, "holding participant");
     try {
+      // unsubscribe from all tracks when holding; resubscribe to none, agent will still hear callee
       await roomService.updateSubscriptions(
         room.name!,
         targetParticipant?.identity!,
-        allOtherTracks,
+        [],
         !hold
       );
-      await Promise.all(
-        targetTracks.map((track) =>
-          roomService.mutePublishedTrack(
-            room.name!,
-            targetParticipant?.identity!,
-            track,
-            hold
-          )
-        )
-      );
       logger.debug(
-        { identity: targetParticipant?.sid, participantTracks, hold },
-        "updated subscriptions"
-      );
-      const updatedParticipants = await roomService.listParticipants(
-        room.name!
-      );
-      logger.debug(
-        { updatedParticipants },
-        "updated participants at end of hold"
+        { identity: targetParticipant?.sid, hold },
+        "updated subscriptions for hold"
       );
     } catch (e: any) {
-      let error = e as Error;
-      if (!(e instanceof Error)) {
-        error = new Error(e);
-      }
+      const error = e instanceof Error ? e : new Error(String(e));
       logger.error(
-        {
-          error,
-          message: error.message,
-          stack: error.stack,
-          identity,
-          targetParticipant: targetParticipant?.sid,
-          roomName: room.name,
-          hold,
-        },
+        { error, message: error.message, stack: error.stack, identity, roomName: room.name, hold },
         "failed to update subscriptions"
       );
     }
@@ -556,6 +510,37 @@ async function setupCallAndUtilities({
         "transfer participant"
       );
 
+      // helper to end current call and create/start bridged call record
+      const finaliseBridgedCall = async () => {
+        // Close down the model for the agent leg
+        session?.llm && (session.llm as llm.RealtimeModel)?.close();
+        try {
+          const originalCallId = call.id;
+          bridgedCallRecord = await createCall({
+            parentId: originalCallId,
+            userId,
+            organisationId,
+            instanceId: instance.id,
+            agentId: agent.id,
+            platform: "livekit",
+            platformCallId: room?.name,
+            calledId,
+            callerId,
+            modelName: "telephony:bridged-call",
+            options,
+            metadata: { ...call.metadata },
+          });
+          if (bridgedCallRecord) {
+            await call.end(
+              `Agent left call, new bridged call: ${bridgedCallRecord.id}`
+            );
+            await bridgedCallRecord.start();
+          }
+        } catch (e) {
+          logger.error({ e }, "failed to create bridged call record");
+        }
+      };
+
       switch (operation) {
         case "blind":
         default:
@@ -567,7 +552,7 @@ async function setupCallAndUtilities({
           );
           logger.info({ p }, "new participant created (blind)");
           setBridgedParticipant(p);
-          session?.llm && (session.llm as llm.RealtimeModel)?.close();
+          await finaliseBridgedCall();
           return {
             status: "OK",
             detail: `transfer completed, session is now closed`,
@@ -620,7 +605,7 @@ async function setupCallAndUtilities({
           if (!getConsultInProgress() || !currentBridged) {
             throw new Error("No consult transfer in progress to finalise");
           }
-          session?.llm && (session.llm as llm.RealtimeModel)?.close();
+          await finaliseBridgedCall();
           await holdParticipant(participant.sid!, false);
           return {
             status: "OK",
@@ -698,6 +683,9 @@ async function setupCallAndUtilities({
     checkForHangup,
     modelRef,
     sessionRef,
+    // expose helper to check the currently active call for logging
+    getActiveCall: () => bridgedCallRecord || call,
+    holdParticipant,
   };
 }
 
@@ -801,13 +789,13 @@ async function runAgentWorker({
   call,
   onHangup,
   onTransfer,
-  getModel,
   getBridgedParticipant,
   checkForHangup,
   sessionRef,
   modelRef,
   getConsultInProgress,
-  getDeafenedTrackSids,
+  holdParticipant,
+  getActiveCall,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime =
@@ -886,7 +874,7 @@ async function runAgentWorker({
       sendMessage({ status: ev.newState });
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
-        call.end("agent initiated hangup");
+        getActiveCall().end("agent initiated hangup");
         roomService.deleteRoom(room.name);
       }
     }
@@ -899,7 +887,7 @@ async function runAgentWorker({
   session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
     logger.info({ ev }, "session closed");
     roomService.deleteRoom(room.name);
-    call.end("session closed");
+    getActiveCall().end("session closed");
   });
 
   //
@@ -925,30 +913,15 @@ async function runAgentWorker({
           logger.debug(
             "consult callee disconnected, treating as consult_reject"
           );
-          // Undeafen original participant if needed
+          // Unhold original participant
           try {
-            const deafenedTrackSids = getDeafenedTrackSids();
-            if (deafenedTrackSids.length) {
-              // p here is the disconnected callee; we need the original participant identity to undeafen
-              const participants = await roomService.listParticipants(
-                room.name
-              );
-              const original = participants.find(
-                (pi) => pi.sid !== bp?.participantId
-              );
-              original?.identity &&
-                (await roomService.updateSubscriptions(
-                  room.name,
-                  original.identity,
-                  deafenedTrackSids,
-                  true
-                ));
+            const participants = await roomService.listParticipants(room.name);
+            const original = participants.find((pi) => pi.sid !== bp?.participantId);
+            if (original?.sid) {
+              await holdParticipant(original.sid, false);
             }
           } catch (e) {
-            logger.error(
-              { e },
-              "failed to unhold participant on callee hangup"
-            );
+            logger.error({ e }, "failed to unhold participant on callee hangup");
           }
           // reset consult state
           // remove bridged participant if still present in server state (it should be gone already)
@@ -963,14 +936,14 @@ async function runAgentWorker({
         } else {
           logger.debug("bridge participant disconnected, shutting down");
           session.close();
+          getActiveCall().end("bridged participant disconnected");
           await roomService.deleteRoom(room.name);
-          call.end("participant disconnected");
         }
       } else if (p.info?.sid === participant?.sid) {
         logger.debug("participant disconnected, shutting down");
         session.close();
+        getActiveCall().end("original participant disconnected");
         await roomService.deleteRoom(room.name);
-        call.end("participant disconnected");
       }
     }
   );
@@ -992,8 +965,8 @@ async function runAgentWorker({
     }
     // 10 secs later, tear everything down
     setTimeout(() => {
-      try { 
-        call.end("session timeout");
+      try {
+        getActiveCall().end("session timeout");
         session.close();
         roomService.deleteRoom(room.name);
       } catch (e) {
