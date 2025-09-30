@@ -47,7 +47,7 @@ else if (command === 'upgrade-db') {
 
 async function main() {
 
-  const { User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize } = (await import('../lib/database.js'));
+  const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize } = (await import('../lib/database.js'));
   await databaseStarted;
   started = stopDatabase;
   try {
@@ -254,6 +254,10 @@ async function main() {
             {
               model: Organisation,
               required: true
+            },
+            {
+              model: Agent,
+              required: false
             }
           ]
         };
@@ -294,6 +298,11 @@ async function main() {
 
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
+              c.maxDuration = c.Agent?.options?.maxDuration || '305s';
+              c.maxDuration = parseInt(c.maxDuration.replace(/s$/, '000'));
+              if (c.maxDuration < c.billingDuration) {
+                console.log({ c }, 'maxDuration < duration');
+              }
               c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
               c.telephony = c.callerId.match(/^\+*[1-9]\d{1,14}$/) || c.calledId.match(/^\+*[1-9]\d{1,14}$/);
               return c;
