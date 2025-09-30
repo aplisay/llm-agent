@@ -32,7 +32,7 @@ steps:
       - run
       - services
       - update
-      - llm-agent-staging
+      - $_SERVICE_NAME
       - '--platform=managed'
       - >-
         --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
@@ -52,7 +52,7 @@ options:
 tags:
   - gcp-cloud-build-deploy-cloud-run
   - gcp-cloud-build-deploy-cloud-run-managed
-  - llm-agent-staging
+  - $_SERVICE_NAME
 availableSecrets:
   secretManager:
     - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_BUNDLE/versions/latest
