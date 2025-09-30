@@ -286,6 +286,7 @@ async function main() {
 
           let data = await Call.findAll(usageSpec);
           console.log({ length: data.length }, 'query done');
+          let corrected = 0;
           let cdrs = data
             .map(c => {
               if (!c.duration) {
@@ -295,13 +296,14 @@ async function main() {
             })
             .filter(record => !!record.duration)
             .map(c => {
-
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
-              c.maxDuration = parseInt(c.maxDuration.replace(/s$/, '000'));
-              if (c.maxDuration < c.billingDuration) {
-                console.log({ c }, 'maxDuration < duration');
+              c.maxDuration = parseInt(c.maxDuration.replace(/s$/, ''))/60;
+
+              if (c.maxDuration + 1 < c.billingDuration) {
+                console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration + 1);
+                corrected++;
               }
               c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
               c.telephony = c.callerId.match(/^\+*[1-9]\d{1,14}$/) || c.calledId.match(/^\+*[1-9]\d{1,14}$/);
@@ -392,6 +394,7 @@ async function main() {
           console.log(summaryOutput);
           console.log('--------------------------------');
           console.log(`dropped ${data.length - cdrs.length} calls with no duration`);
+          console.log(`corrected ${corrected} calls where billingDuration > requested maxDuration`);
           exit(0);
         } catch (err) {
           logger.error(err, 'query error');
