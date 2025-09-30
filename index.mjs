@@ -69,10 +69,11 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
 // Create a path filter to exclude private endpoints when not exposed
 const securityFilter = (req, res) => {
-  // If private APIs should not be exposed, exclude endpoints with 'Agent Database' tag
-
-  if (!shouldExposePrivateApis) {
-    delete req.apiDoc.paths['/agent-db'];
+  // Hide all /agent-db* paths from Swagger output unless explicitly enabled
+  if (!shouldExposePrivateApis && req?.apiDoc?.paths) {
+    for (const path of Object.keys(req.apiDoc.paths)) {
+      if (path.startsWith('/agent-db')) delete req.apiDoc.paths[path];
+    }
   }
   logger.debug({ paths: req.apiDoc.paths, shouldExposePrivateApis }, 'after pathFilter');
   res.status(200).json(req.apiDoc);
