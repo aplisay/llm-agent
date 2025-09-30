@@ -288,6 +288,7 @@ async function main() {
 
           let data = await Call.findAll(usageSpec);
           console.log({ length: data.length }, 'query done');
+          let corrected = 0;
           let cdrs = data
             .map(c => {
               if (!c.duration) {
@@ -297,7 +298,6 @@ async function main() {
             })
             .filter(record => !!record.duration)
             .map(c => {
-
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
@@ -398,6 +398,7 @@ async function main() {
           console.log(summaryOutput);
           console.log('--------------------------------');
           console.log(`dropped ${data.length - cdrs.length} calls with no duration`);
+          console.log(`corrected ${corrected} calls where billingDuration > requested maxDuration`);
           exit(0);
         } catch (err) {
           logger.error(err, 'query error');
