@@ -1,4 +1,4 @@
-import { Call } from '../../../../../lib/database.js';
+import { Call , TransactionLog } from '../../../../../lib/database.js';
 
 let appParameters, log;
 
@@ -16,6 +16,7 @@ export default function (logger, voices, wsServer) {
 
 const callEnd = (async (req, res) => {
   let { callId } = req.params;
+  let { reason } = req.body;
   
   if (!callId) {
     return res.status(400).send({ error: 'callId parameter is required' });
@@ -28,6 +29,11 @@ const callEnd = (async (req, res) => {
       return res.status(404).send({ error: 'Call not found' });
     }
 
+    await TransactionLog.create({
+      callId,
+      type: 'hangup',
+      data: reason || 'unknown'
+    });
     await call.end();
     
     res.send({ message: 'Call ended successfully', callId });
@@ -54,9 +60,22 @@ callEnd.apiDoc = {
       description: 'The ID of the call to end'
     }
   ],
+  requestBody: {
+    required: false,
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string' }
+          }
+        }
+      }
+    }
+  },
   responses: {
     200: {
-      description: 'Call ended successfully.',
+      description: 'Call end record created successfully.',
       content: {
         'application/json': {
           schema: {

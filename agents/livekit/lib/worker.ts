@@ -190,7 +190,7 @@ export default defineAgent({
       }
 
       // Record the appropriate transaction at the top level
-      sendMessage({ answer: calledId });
+      sendMessage({ answer: callerId });
 
       await runAgentWorker({
         ctx,
@@ -568,7 +568,10 @@ async function setupCallAndUtilities({
           logger.info({ p }, "new participant created (blind)");
           setBridgedParticipant(p);
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
-          return { status: 'OK', detail: `transfer completed, session is now closed` };
+          return {
+            status: "OK",
+            detail: `transfer completed, session is now closed`,
+          };
           break;
         case "consult_start":
           try {
@@ -596,14 +599,21 @@ async function setupCallAndUtilities({
             currentBridged = p;
             await holdParticipant(participant.sid!, true);
             setConsultInProgress(true);
-            return { status: 'OK', detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!` };
+            return {
+              status: "OK",
+              detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!`,
+            };
           } catch (e: any) {
             let error = e as Error;
             if (!(e instanceof Error)) {
               error = new Error(e);
             }
             logger.error({ e }, "failed to initiate consult transfer");
-            return { status: 'ERROR', detail: `Failed to initiate consult transfer`, error: error };
+            return {
+              status: "ERROR",
+              detail: `Failed to initiate consult transfer`,
+              error: error,
+            };
           }
           break;
         case "consult_finalise":
@@ -612,7 +622,10 @@ async function setupCallAndUtilities({
           }
           session?.llm && (session.llm as llm.RealtimeModel)?.close();
           await holdParticipant(participant.sid!, false);
-          return { status: 'OK', detail: `consult transfer completed, session is now closed` };
+          return {
+            status: "OK",
+            detail: `consult transfer completed, session is now closed`,
+          };
           break;
         case "consult_reject":
           const bp = currentBridged;
@@ -645,7 +658,10 @@ async function setupCallAndUtilities({
             currentBridged = null;
           }
           setConsultInProgress(false);
-          return { status: 'OK', detail: `consult transfer rejected, session is now closed` };
+          return {
+            status: "OK",
+            detail: `consult transfer rejected, session is now closed`,
+          };
           break;
       }
     } catch (e: any) {
@@ -824,10 +840,14 @@ async function runAgentWorker({
     tools,
   });
   modelRef(model);
+  const maxDurationString: string = agent?.options?.maxDuration || "305s";
+  const maxDuration =
+    1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({
       voice: agent?.options?.tts?.voice,
+      maxDuration: maxDurationString,
       instructions: agent?.prompt || "You are a helpful assistant.",
     }),
   });
@@ -850,11 +870,10 @@ async function runAgentWorker({
     voice.AgentSessionEventTypes.ConversationItemAdded,
     ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
       if (type === "message" && getConsultInProgress() === false) {
-        if (role === "assistant" && initialMessage) {
-          initialMessage = null;
-        } else {
+        const text = content.join("");
+        if (role !== "user" || text !== initialMessage) {
           sendMessage({
-            [role === "user" ? "user" : "agent"]: content.join(""),
+            [role === "user" ? "user" : "agent"]: text,
           });
         }
       }
@@ -867,8 +886,7 @@ async function runAgentWorker({
       sendMessage({ status: ev.newState });
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
-        sendMessage({ hangup: "agent initiated hangup" });
-        call.end();
+        call.end("agent initiated hangup");
         roomService.deleteRoom(room.name);
       }
     }
@@ -881,7 +899,7 @@ async function runAgentWorker({
   session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
     logger.info({ ev }, "session closed");
     roomService.deleteRoom(room.name);
-    call.end();
+    call.end("session closed");
   });
 
   //
@@ -898,8 +916,10 @@ async function runAgentWorker({
     RoomEvent.ParticipantDisconnected,
     async (p: RemoteParticipant) => {
       const bp = getBridgedParticipant();
-      logger.debug({ p, bridgedParticipant: bp }, "participant disconnected");
-
+      logger.debug(
+        { p, bridgedParticipant: bp, participant },
+        "participant disconnected"
+      );
       if (bp?.participantId === p?.info?.sid) {
         if (getConsultInProgress()) {
           logger.debug(
@@ -927,7 +947,7 @@ async function runAgentWorker({
           } catch (e) {
             logger.error(
               { e },
-              "failed to undeafen participant on callee hangup"
+              "failed to unhold participant on callee hangup"
             );
           }
           // reset consult state
@@ -942,15 +962,48 @@ async function runAgentWorker({
           // underlying setters live in setup scope; remaining state will be reset on next transfer call
         } else {
           logger.debug("bridge participant disconnected, shutting down");
-          roomService.deleteRoom(room.name);
-          call.end();
+          session.close();
+          await roomService.deleteRoom(room.name);
+          call.end("participant disconnected");
         }
+      } else if (p.info?.sid === participant?.sid) {
+        logger.debug("participant disconnected, shutting down");
+        session.close();
+        await roomService.deleteRoom(room.name);
+        call.end("participant disconnected");
       }
     }
   );
 
+  // Hard stop timeout on the session which is 5 seconds after the AI agent maxDuration
+  // This is to ensure that the session is closed and the room is deleted even if the
+  // AI agent fails to close the session (e.g OpenAI has no maxDuration parameter)
+  setTimeout(() => {
+    // If the bridged participant is present, we have transferred out, ignore the session timeout.
+    if (getBridgedParticipant()) {
+      logger.debug("bridged participant present, ignoring session timeout");
+      return;
+    }
+    logger.debug("session timeout, generating reply");
+    try {
+      session.generateReply({ userInput: "The session has timed out." });
+    } catch (e) {
+      logger.info({ e }, "error generating timeout reply");
+    }
+    // 10 secs later, tear everything down
+    setTimeout(() => {
+      try { 
+        call.end("session timeout");
+        session.close();
+        roomService.deleteRoom(room.name);
+      } catch (e) {
+        logger.info({ e }, "error tearing down call on timeout");
+      }
+    }, 10 * 1000);
+  }, maxDuration + 5 * 1000);
+
   logger.debug("session started, generating reply");
   session.generateReply({ userInput: initialMessage });
   call.start();
-  sendMessage({ call: `${calledId} => ${callerId}` });
+  sendMessage({ call: `${callerId} => ${calledId}` });
 }

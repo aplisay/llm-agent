@@ -14,6 +14,11 @@ export interface Agent {
   organisationId: string;
   prompt?: string;
   options?: {
+    /**
+     * Optional maximum session duration for realtime LLMs (e.g. "305s").
+     * Used by worker when constructing RealtimeModel.
+     */
+    maxDuration?: string;
     tts?: {
       voice?: string;
     };
@@ -58,7 +63,7 @@ export interface Call {
     [key: string]: any;
   };
   start(): Promise<void>;
-  end(): Promise<void>;
+  end(reason?: string): Promise<void>;
 }
 
 export interface CallMetadata {
@@ -102,6 +107,7 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   //logger.debug({ url, method: options.method || 'GET' }, 'Making API request');
   
   try {
+    logger.debug({ url, method: options.method || 'GET', options }, 'Making API request');
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
@@ -174,14 +180,17 @@ export async function createCall(callData: {
   
   // Add start() and end() methods to the call object
   call.start = async () => {
+    logger.debug({ call }, "logging starting call");
     return makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
       method: 'POST'
     });
   };
   
-  call.end = async () => {
+  call.end = async (reason?: string) => {
+    logger.debug({ call, reason }, "logging ending call");
     return makeApiRequest(`/api/agent-db/call/${call.id}/end`, {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ reason })
     });
   };
   
