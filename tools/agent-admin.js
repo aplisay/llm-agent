@@ -301,9 +301,12 @@ async function main() {
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
-              c.maxDuration = parseInt(c.maxDuration.replace(/s$/, '000'));
-              if (c.maxDuration < c.billingDuration) {
-                console.log({ c }, 'maxDuration < duration');
+              c.maxDuration = Math.max(1, Math.ceil(parseInt(c.maxDuration.replace(/s$/, '')) / 10) / 6);
+
+              if (c.maxDuration + 0.5 < c.billingDuration) {
+                console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration);
+                c.billingDuration = c.maxDuration;
+                corrected++;
               }
               c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
               c.telephony = c.callerId.match(/^\+*[1-9]\d{1,14}$/) || c.calledId.match(/^\+*[1-9]\d{1,14}$/);
@@ -365,6 +368,7 @@ async function main() {
 
 
           const detail = cdrs.map(c => ([
+            c.id,
             c.callerId,
             c.calledId,
             c?.User?.email,
@@ -375,7 +379,7 @@ async function main() {
             c.billingDuration,
             c.type
           ]));
-          detail.unshift(['callerId', 'calledId', 'userEmail', 'userOrg', 'startedAt', 'endedAt', 'duration s', 'billing duration m']);
+          detail.unshift(['id', 'callerId', 'calledId', 'userEmail', 'userOrg', 'startedAt', 'endedAt', 'duration s', 'billing duration m']);
           const summaryOutput =
             Object.entries(summary).map(([type, typeData]) => {
               return typeof typeData === 'object' ? `  ${type}\n${typeData.month && Object.entries(typeData.month).map(([month, monthData]) => {
