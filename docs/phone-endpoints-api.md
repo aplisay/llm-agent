@@ -8,7 +8,25 @@ The Phone Endpoints API provides access to telephone endpoints (numbers) availab
 
 ### GET /api/phone-endpoints
 
-Returns a list of all phone endpoints for the organization of the requestor.
+Returns a paginated list of phone endpoints for the caller's organization.
+
+Query Parameters:
+- `originate` (boolean, optional): When `true`, return only endpoints that can be used for outbound calling
+- `handler` (string, optional): One of `livekit`, `jambonz`, `ultravox`
+- `type` (string, optional): One of `e164-ddi`, `phone-registration`
+- `offset` (integer, optional, default 0): 0-based offset
+- `pageSize` (integer, optional, default 50, max 200): page size
+
+Response body:
+```json
+{
+  "items": [
+    { "name": "Sales UK", "number": "+442080996945", "handler": "jambonz", "outbound": true },
+    { "name": "SIP Reg A", "id": "reg-123", "status": "active", "state": "registered", "handler": "livekit", "outbound": false }
+  ],
+  "nextOffset": 50
+}
+```
 
 ### POST /api/phone-endpoints
 
@@ -21,6 +39,7 @@ Creates a phone endpoint using an E.164 phone number with trunk configuration.
 Request body uses a base-and-union shape:
 - Always present:
   - `type` (string): `e164-ddi` | `phone-registration`
+  - `name` (string, optional): free-form, user-defined descriptive name
   - `handler` (string, optional, default `livekit`)
   - `outbound` (boolean, optional, default `false`)
 - Plus one of:
@@ -37,6 +56,7 @@ Request body uses a base-and-union shape:
 ```json
 {
   "type": "e164-ddi",
+  "name": "Main DDI",
   "number": "+1234567890",
   "trunkId": "trunk-001",
   "outbound": true
@@ -57,6 +77,7 @@ Creates a SIP registration-based phone endpoint.
 ```json
 {
   "type": "phone-registration",
+  "name": "SIP Reg A",
   "registrar": "sip:provider.example.com:5060",
   "username": "user123",
   "password": "secret",
@@ -74,12 +95,12 @@ Creates a SIP registration-based phone endpoint.
 - `password` (string, required): Registration password
 - `options` (object, optional): Implementation-specific options (TBD)
 
-### PUT /api/phone-endpoints/{number}
+### PUT /api/phone-endpoints/{identifier}
 
 Updates an existing phone endpoint.
 
 **Path Parameters:**
-- `number` (string, required): The phone number to update
+- `identifier` (string, required): The phone number (E.164) or ID of the endpoint to update
 
 **Request Body:**
 ```json
@@ -97,12 +118,12 @@ Behavior:
 - If `outbound` is omitted, its value remains unchanged.
 - If `outbound` is provided as `false`, it will be updated to `false`.
 
-### DELETE /api/phone-endpoints/{number}
+### DELETE /api/phone-endpoints/{identifier}
 
 Deletes a phone endpoint.
 
 **Path Parameters:**
-- `number` (string, required): The phone number to delete
+- `identifier` (string, required): The phone number (E.164) or ID of the endpoint to delete
 
 ## Validation
 
@@ -131,17 +152,7 @@ All endpoints require authentication. The user's `organisationId` is automatical
 
 ### GET /api/phone-endpoints
 
-Returns an array of endpoint objects with the following structure:
-
-```json
-[
-  {
-    "number": "+1234567890",
-    "handler": "jambonz",
-    "outbound": true
-  }
-]
-```
+Returns a paginated object with items and nextOffset.
 
 ### POST /api/phone-endpoints
 
@@ -167,21 +178,14 @@ Success response always includes `success: true`, plus type-specific fields:
 }
 ```
 
-### PUT /api/phone-endpoints/{number}
+### PUT /api/phone-endpoints/{identifier}
 
 **Success Response (200):**
 ```json
-{
-  "success": true,
-  "data": {
-    "number": "1234567890",
-    "handler": "livekit",
-    "outbound": false
-  }
-}
+{ "success": true }
 ```
 
-### DELETE /api/phone-endpoints/{number}
+### DELETE /api/phone-endpoints/{identifier}
 
 **Success Response (200):**
 ```json
@@ -220,6 +224,7 @@ curl -X POST "https://llm-agent.aplisay.com/api/phone-endpoints" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "e164-ddi",
+    "name": "Main DDI",
     "phoneNumber": "+1234567890",
     "trunkId": "trunk-001",
     "outbound": true
@@ -234,6 +239,7 @@ curl -X POST "https://llm-agent.aplisay.com/api/phone-endpoints" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "phone-registration",
+    "name": "SIP Reg A",
     "registrar": "sip:provider.example.com:5060",
     "username": "user123",
     "password": "secret",

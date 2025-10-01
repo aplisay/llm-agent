@@ -22,7 +22,7 @@ export default function (logger, voices, wsServer) {
 
 const phoneEndpointList = (async (req, res) => {
   let { organisationId } = res.locals.user;
-  let { originate, handler, type } = req.query;
+  let { originate, handler, type, offset, pageSize } = req.query;
 
   try {
     let where = {
@@ -60,13 +60,20 @@ const phoneEndpointList = (async (req, res) => {
         return res.send([]);
       }
     }
-    req.log.debug({ where }, 'listing phone endpoints');
+    // Offset pagination defaults
+    const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
+    const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
 
-    let phoneNumbers = await PhoneNumber.findAll({
+    req.log.debug({ where, offset: startOffset, pageSize: size }, 'listing phone endpoints');
+
+    const rows = await PhoneNumber.findAll({
       where,
-      attributes: ['number', 'handler', 'outbound']
+      attributes: ['number', 'handler', 'outbound'],
+      limit: size,
+      offset: startOffset
     });
-    res.send(phoneNumbers);
+    const nextOffset = rows.length === size ? startOffset + size : null;
+    res.send({ items: rows, nextOffset });
   }
   catch (err) {
     req.log.error(err, 'listing phone endpoints');
@@ -187,14 +194,7 @@ const updatePhoneEndpoint = async (req, res) => {
 
     await phoneNumber.update(updateFields);
 
-    return res.send({
-      success: true,
-      data: {
-        number: phoneNumber.number,
-        handler: phoneNumber.handler,
-        outbound: phoneNumber.outbound
-      }
-    });
+    return res.send({ success: true });
   } catch (err) {
     req.log.error(err, 'Error updating phone endpoint');
     return res.status(500).send({
@@ -252,7 +252,13 @@ const deletePhoneEndpoint = async (req, res) => {
 };
 
 phoneEndpointList.apiDoc = {
-  summary: 'Returns a list of all phone endpoints for the organization of the requestor. Optionally filter to only return endpoints that can be used for outbound calling.',
+  summary: 'Returns a list of all phone endpoints for the organization of the requestor. Optionally filter to only certain endpoint types.',
+  description: `Returns a paginated list of phone endpoints for the caller\'s organisation. 
+                Phone endpoints are used to assign numbers that then route via handlers and listeners to agents.
+                Both E.164 DDI number and phone SIPregistration endpoints are supported.
+                DDI numbers are assigned to trunks which are then used to route calls to agents.
+                SIP registration endpoints are used to register with a SIP provider and identified by a unique
+                non phone number like ID (UUID).`,
   operationId: 'listPhoneEndpoints',
   tags: ["Phone Endpoints"],
   parameters: [
@@ -284,6 +290,29 @@ phoneEndpointList.apiDoc = {
         type: 'string',
         enum: ['e164-ddi', 'phone-registration']
       }
+    },
+    {
+      description: "Offset (0-based)",
+      in: 'query',
+      name: 'offset',
+      required: false,
+      schema: {
+        type: 'integer',
+        minimum: 0,
+        default: 0
+      }
+    },
+    {
+      description: "Page size (max 200)",
+      in: 'query',
+      name: 'pageSize',
+      required: false,
+      schema: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 200,
+        default: 50
+      }
     }
   ],
   responses: {
@@ -292,53 +321,42 @@ phoneEndpointList.apiDoc = {
       content: {
         'application/json': {
           schema: {
-            type: 'array',
-            items: {
-              oneOf: [
-                {
-                  type: 'object',
-                  description: 'E.164 DDI endpoint',
-                  required: ['number', 'handler', 'outbound'],
-                  properties: {
-                    number: {
-                      type: 'string',
-                      description: 'The phone number'
+            type: 'object',
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  oneOf: [
+                    {
+                      type: 'object',
+                      description: 'E.164 DDI endpoint',
+                      required: ['number', 'handler', 'outbound'],
+                      properties: {
+                        name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
+                        number: { type: 'string', description: 'The phone number' },
+                        handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },
+                        outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false }
+                      }
                     },
-                    handler: {
-                      type: 'string',
-                      enum: ['livekit', 'jambonz'],
-                      description: 'The handler type for this phone endpoint'
-                    },
-                    outbound: {
-                      type: 'boolean',
-                      description: 'Whether this endpoint supports outbound calls',
-                      default: false
+                    {
+                      type: 'object',
+                      description: 'Phone registration endpoint',
+                      required: ['id', 'handler', 'outbound'],
+                      properties: {
+                        name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
+                        id: { type: 'string', description: 'The registration ID' },
+                        status: { type: 'string', description: 'High-level status of the endpoint', enum: ['active', 'failed', 'disabled'] },
+                        state: { type: 'string', description: 'Registration state', enum: ['initial', 'registering', 'registered', 'failed'] },
+                        handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },
+                        outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false }
+                      }
                     }
-                  }
-                },
-                {
-                  type: 'object',
-                  description: 'Phone registration endpoint',
-                  required: ['id', 'handler', 'outbound'],
-                  properties: {
-                    id: {
-                      type: 'string',
-                      description: 'The registration ID'
-                    },
-                    handler: {
-                      type: 'string',
-                      enum: ['livekit', 'jambonz'],
-                      description: 'The handler type for this phone endpoint'
-                    },
-                    outbound: {
-                      type: 'boolean',
-                      description: 'Whether this endpoint supports outbound calls',
-                      default: false
-                    }
-                  }
+                  ]
                 }
-              ]
-            }
+              },
+              nextOffset: { type: 'integer', nullable: true, description: 'Next offset to request, or null if no more results' }
+            },
+            required: ['items', 'nextOffset']
           }
         }
       }
@@ -358,6 +376,11 @@ phoneEndpointList.apiDoc = {
 
 createPhoneEndpoint.apiDoc = {
   summary: 'Create a new phone endpoint',
+  description: `Creates a new phone endpoint. Supports two types of endpoints:
+                DDI endpoints are created using an E.164 phone number with trunk configuration.
+                Phone registration endpoints are created using a SIP contact URI, username, and password.
+                Both kinds of endpoints can be created with a user-defined descriptive name and optionally set to support outbound calling
+                (if supported by the handler and trunk/registration account).`,
   operationId: 'createPhoneEndpoint',
   tags: ["Phone Endpoints"],
   requestBody: {
@@ -375,6 +398,11 @@ createPhoneEndpoint.apiDoc = {
                   description: 'The type of phone endpoint',
                   enum: ['e164-ddi', 'phone-registration']
                 },
+                name: {
+                  type: 'string',
+                  description: 'User-defined descriptive name',
+                  nullable: true
+                },
                 handler: {
                   type: 'string',
                   description: 'The handler type for this phone endpoint',
@@ -391,9 +419,15 @@ createPhoneEndpoint.apiDoc = {
             {
               oneOf: [
                 {
+                  description: 'E.164 DDI endpoint',
                   type: 'object',
                   required: ['number', 'trunkId'],
                   properties: {
+                    name: {
+                      type: 'string',
+                      description: 'User-defined descriptive name',
+                      nullable: true
+                    },
                     number: {
                       type: 'string',
                       description: 'E.164 phone number (with or without +)',
@@ -406,9 +440,15 @@ createPhoneEndpoint.apiDoc = {
                   }
                 },
                 {
+                  description: 'Phone registration endpoint',
                   type: 'object',
                   required: ['registrar', 'username', 'password'],
                   properties: {
+                    name: {
+                      type: 'string',
+                      description: 'User-defined descriptive name',
+                      nullable: true
+                    },
                     registrar: {
                       type: 'string',
                       description: 'SIP contact URI for phone-registration type',
@@ -570,18 +610,7 @@ updatePhoneEndpoint.apiDoc = {
       description: 'Phone endpoint updated successfully',
       content: {
         'application/json': {
-          schema: {
-            type: 'object',
-            properties: {
-              success: {
-                type: 'boolean'
-              },
-              data: {
-                type: 'object',
-                description: 'Updated phone endpoint data'
-              }
-            }
-          }
+          schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] }
         }
       }
     },
