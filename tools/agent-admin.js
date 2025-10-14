@@ -4,6 +4,7 @@ import dir from 'path';
 import axios from 'axios';
 import commandLineArgs from 'command-line-args';
 import logger from '../lib/logger.js';
+import { v4 as uuidv4 } from 'uuid';
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
   { name: 'command', defaultOption: true },
@@ -52,7 +53,7 @@ async function main() {
   started = stopDatabase;
   try {
 
-    let organisation, user, authKey, where;
+    let user, organisation;
 
     switch (command) {
       case 'add-org':
@@ -63,7 +64,8 @@ async function main() {
         organisation = await Organisation.findOrCreate({
           where: { name: options.orgName },
           defaults: {
-            name: EncodingOptionsPreset.orgName
+            name: options.orgName,
+            id: uuidv4()
           }
         });
         logger.info({ organisation }, 'created Organisation');
@@ -85,7 +87,7 @@ async function main() {
         break;
       case 'add-authkey':
         let token;
-        require('crypto').randomBytes(48, function (err, buffer) {
+        (await import('crypto')).randomBytes(48, function (err, buffer) {
           token = buffer.toString('base64');
         });
         let where = {};
@@ -144,7 +146,7 @@ async function main() {
           throw new Error('Please specify an organisation name');
           exit(1);
         }
-        let organisation = await Organisation.findOne({ where: { name: options.orgName } });
+        organisation = await Organisation.findOne({ where: { name: options.orgName } });
         if (!organisation) {
           throw new Error('Organisation not found');
           exit(1);
