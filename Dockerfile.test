@@ -1,0 +1,24 @@
+FROM node:20-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json yarn.lock ./
+
+# Install dependencies
+RUN yarn install --frozen-lockfile
+
+# Copy source code
+COPY . .
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejsgroup  && \
+    adduser -S nodejstest -u 1001
+
+# Change ownership of the app directory
+RUN chown -R nodejstest:nodejstestgroup /app
+USER nodejstest
+
+# Default command (can be overridden in docker-compose)
+CMD ["yarn", "test:comprehensive"]

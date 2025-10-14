@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: llmvoicetest
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d llmvoicetest"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-network
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: llmvoicetest
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      CREDENTIALS_KEY: test-secret-key-for-comprehensive-tests
+      DB_FORCE_SYNC: "true"
+      NODE_ENV: test
+      LOGLEVEL: fatal
+    networks:
+      - test-network
+    command: >
+      sh -c "
+        echo '🚀 Starting comprehensive tests...' &&
+        node --experimental-vm-modules node_modules/.bin/jest --config jest.config.comprehensive.js &&
+        echo '✅ All comprehensive tests passed!' &&
+        exit 0
+      "
+
+networks:
+  test-network:
+    driver: bridge
