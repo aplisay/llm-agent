@@ -1,4 +1,4 @@
-import { PhoneNumber } from '../../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 
 let log;
@@ -24,9 +24,30 @@ const activateRegistration = async (req, res) => {
       return res.status(400).send({ error: 'Identifier must be a registration ID, not a phone number' });
     }
 
-    // TODO: When registration persistence exists, validate org ownership here
-    // Return new state of the registration
-    return res.send({ success: true, id: identifier, status: 'active', state: 'registered' });
+    const registration = await PhoneRegistration.findByPk(identifier);
+    if (!registration) {
+      return res.status(404).send({ error: 'Phone registration not found' });
+    }
+    if (registration.organisationId !== organisationId) {
+      return res.status(403).send({ error: 'Access denied' });
+    }
+
+    // Update state to active and reset to initial state
+    await registration.update({
+      status: 'active',
+      state: 'initial',
+      error: null
+    });
+
+    // TODO: Emit worker signal for registration activation
+    // This could be a database event, message queue, or webhook
+
+    return res.send({ 
+      success: true, 
+      id: identifier, 
+      status: 'active', 
+      state: 'initial' 
+    });
   }
   catch (err) {
     req.log?.error(err, 'activating registration');

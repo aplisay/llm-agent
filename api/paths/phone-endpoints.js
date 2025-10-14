@@ -24,55 +24,104 @@ const phoneEndpointList = (async (req, res) => {
   let { originate, handler, type, offset, pageSize } = req.query;
 
   try {
-    let where = {
-      [Op.or]: [
-        { organisationId },
-        {
-          organisationId: {
-            [Op.eq]: null
-          }
-        }
-      ]
-    };
-
-    // If originate filter is requested, add additional conditions
-    if (originate) {
-      where.outbound = true;
-      where.aplisayId = { [Op.ne]: null };
-    }
-
-    // If handler filter is requested, add handler condition
-    if (handler) {
-      const telephonyHandler = await getTelephonyHandler(handler);
-      where.handler = telephonyHandler;
-    }
-
-    // If type filter is requested, apply type mapping
-    // Currently only 'e164-ddi' is persisted in PhoneNumber table; 'phone-registration' has no rows yet
-    if (type) {
-      if (type === 'e164-ddi') {
-        // E.164 endpoints are rows with a number value
-        where.number = { [Op.ne]: null };
-      }
-      else if (type === 'phone-registration') {
-        // No persisted phone-registration records yet
-        return res.send([]);
-      }
-    }
-    // Offset pagination defaults
     const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
     const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
 
-    req.log.debug({ where, offset: startOffset, pageSize: size }, 'listing phone endpoints');
+    const telephonyHandler = handler ? await getTelephonyHandler(handler) : null;
 
-    const rows = await PhoneNumber.findAll({
-      where,
-      attributes: ['number', 'handler', 'outbound'],
-      limit: size,
-      offset: startOffset
-    });
-    const nextOffset = rows.length === size ? startOffset + size : null;
-    res.send({ items: rows, nextOffset });
+    // Build where clauses per model
+    const numberWhere = {
+      [Op.or]: [
+        { organisationId },
+        { organisationId: { [Op.eq]: null } }
+      ]
+    };
+    if (originate) {
+      numberWhere.outbound = true;
+      numberWhere.aplisayId = { [Op.ne]: null };
+    }
+    if (telephonyHandler) {
+      numberWhere.handler = telephonyHandler;
+    }
+
+    const regWhere = {
+      organisationId
+    };
+    if (originate) {
+      regWhere.outbound = true;
+    }
+    if (telephonyHandler) {
+      regWhere.handler = telephonyHandler;
+    }
+
+    // If only one type requested, short-circuit and return that type paginated
+    if (type === 'e164-ddi') {
+      const rows = await PhoneNumber.findAll({
+        where: numberWhere,
+        attributes: ['number', 'handler', 'outbound'],
+        limit: size,
+        offset: startOffset
+      });
+      const nextOffset = rows.length === size ? startOffset + size : null;
+      return res.send({ items: rows, nextOffset });
+    }
+    if (type === 'phone-registration') {
+      const rows = await PhoneRegistration.findAll({
+        where: regWhere,
+        limit: size,
+        offset: startOffset
+      });
+      const items = rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        state: r.state,
+        handler: r.handler,
+        outbound: !!r.outbound
+      }));
+      const nextOffset = rows.length === size ? startOffset + size : null;
+      return res.send({ items, nextOffset });
+    }
+
+    // Both types: fetch a window from each, merge, and page
+    const [numRows, regRows] = await Promise.all([
+      PhoneNumber.findAll({
+        where: numberWhere,
+        attributes: ['number', 'handler', 'outbound', 'createdAt'],
+        limit: size,
+        offset: startOffset
+      }),
+      PhoneRegistration.findAll({
+        where: regWhere,
+        attributes: ['id', 'name', 'status', 'state', 'handler', 'outbound', 'createdAt'],
+        limit: size,
+        offset: startOffset
+      })
+    ]);
+
+    const mappedNumbers = numRows.map(n => ({
+      number: n.number,
+      handler: n.handler,
+      outbound: !!n.outbound,
+      _createdAt: n.createdAt
+    }));
+    const mappedRegs = regRows.map(r => ({
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      state: r.state,
+      handler: r.handler,
+      outbound: !!r.outbound,
+      _createdAt: r.createdAt
+    }));
+
+    const merged = [...mappedNumbers, ...mappedRegs]
+      .sort((a, b) => new Date(b._createdAt) - new Date(a._createdAt))
+      .slice(0, size)
+      .map(({ _createdAt, ...rest }) => rest);
+
+    const nextOffset = (numRows.length === size || regRows.length === size) ? startOffset + size : null;
+    return res.send({ items: merged, nextOffset });
   }
   catch (err) {
     req.log.error(err, 'listing phone endpoints');
@@ -168,42 +217,70 @@ const updatePhoneEndpoint = async (req, res) => {
       });
     }
 
-    let phoneNumber;
-    
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
-    } else {
-      // Assume it's an ID (UUID or other identifier)
-      phoneNumber = await PhoneNumber.findByPk(identifier);
-    }
-
-    if (!phoneNumber) {
-      return res.status(404).send({
-        error: 'Phone endpoint not found'
-      });
-    }
-
-    if (phoneNumber.organisationId !== organisationId) {
-      return res.status(403).send({
-        error: 'Access denied'
-      });
-    }
-
-    // Update allowed fields
-    const allowedFields = ['outbound', 'handler'];
-    const updateFields = {};
-    
-    for (const field of allowedFields) {
-      if (updateData[field] !== undefined) {
-        updateFields[field] = updateData[field];
+      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      
+      if (!phoneNumber) {
+        return res.status(404).send({ error: 'Phone endpoint not found' });
       }
+      if (phoneNumber.organisationId !== organisationId) {
+        return res.status(403).send({ error: 'Access denied' });
+      }
+
+      // Update allowed fields for numbers
+      const allowedFields = ['outbound', 'handler'];
+      const updateFields = {};
+      for (const field of allowedFields) {
+        if (updateData[field] !== undefined) {
+          updateFields[field] = updateData[field];
+        }
+      }
+      await phoneNumber.update(updateFields);
+      return res.send({ success: true });
+    } else {
+      // Registration ID
+      const registration = await PhoneRegistration.findByPk(identifier);
+      if (!registration) {
+        return res.status(404).send({ error: 'Phone endpoint not found' });
+      }
+      if (registration.organisationId !== organisationId) {
+        return res.status(403).send({ error: 'Access denied' });
+      }
+
+      // Update allowed fields for registrations
+      const allowedFields = ['outbound', 'handler', 'name'];
+      const credentialFields = ['registrar', 'username', 'password'];
+      const updateFields = {};
+      
+      for (const field of allowedFields) {
+        if (updateData[field] !== undefined) {
+          updateFields[field] = updateData[field];
+        }
+      }
+      
+      // Handle credential rotation
+      let credentialsChanged = false;
+      for (const field of credentialFields) {
+        if (updateData[field] !== undefined) {
+          updateFields[field] = updateData[field];
+          credentialsChanged = true;
+        }
+      }
+      
+      // If credentials changed, reset state to initial for re-registration
+      if (credentialsChanged) {
+        updateFields.state = 'initial';
+        updateFields.error = null;
+      }
+      
+      await registration.update(updateFields);
+      
+      // TODO: Emit worker signal for credential rotation if credentialsChanged
+      
+      return res.send({ success: true });
     }
-
-    await phoneNumber.update(updateFields);
-
-    return res.send({ success: true });
   } catch (err) {
     req.log.error(err, 'Error updating phone endpoint');
     return res.status(500).send({
@@ -215,6 +292,7 @@ const updatePhoneEndpoint = async (req, res) => {
 const deletePhoneEndpoint = async (req, res) => {
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
+  const { force } = req.query;
 
   try {
     if (!identifier) {
@@ -223,35 +301,53 @@ const deletePhoneEndpoint = async (req, res) => {
       });
     }
 
-    let phoneNumber;
-    
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      
+      if (!phoneNumber) {
+        return res.status(404).send({ error: 'Phone endpoint not found' });
+      }
+      if (phoneNumber.organisationId !== organisationId) {
+        return res.status(403).send({ error: 'Access denied' });
+      }
+
+      await phoneNumber.destroy();
+      return res.send({
+        success: true,
+        message: 'Phone endpoint deleted successfully'
+      });
     } else {
-      // Assume it's an ID (UUID or other identifier)
-      phoneNumber = await PhoneNumber.findByPk(identifier);
+      // Registration ID
+      const registration = await PhoneRegistration.findByPk(identifier);
+      if (!registration) {
+        return res.status(404).send({ error: 'Phone endpoint not found' });
+      }
+      if (registration.organisationId !== organisationId) {
+        return res.status(403).send({ error: 'Access denied' });
+      }
+
+      if (force === 'true') {
+        // Hard delete
+        await registration.destroy();
+        return res.send({
+          success: true,
+          message: 'Phone registration deleted successfully'
+        });
+      } else {
+        // Soft disable
+        await registration.update({
+          status: 'disabled',
+          state: 'initial',
+          error: null
+        });
+        return res.send({
+          success: true,
+          message: 'Phone registration disabled successfully'
+        });
+      }
     }
-
-    if (!phoneNumber) {
-      return res.status(404).send({
-        error: 'Phone endpoint not found'
-      });
-    }
-
-    if (phoneNumber.organisationId !== organisationId) {
-      return res.status(403).send({
-        error: 'Access denied'
-      });
-    }
-
-    await phoneNumber.destroy();
-
-    return res.send({
-      success: true,
-      message: 'Phone endpoint deleted successfully'
-    });
   } catch (err) {
     req.log.error(err, 'Error deleting phone endpoint');
     return res.status(500).send({
@@ -461,7 +557,7 @@ createPhoneEndpoint.apiDoc = {
                     registrar: {
                       type: 'string',
                       description: 'SIP contact URI for phone-registration type',
-                      pattern: '^sip:[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+(?::[0-9]+)?$'
+                      pattern: '^sip:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
                     },
                     username: {
                       type: 'string',

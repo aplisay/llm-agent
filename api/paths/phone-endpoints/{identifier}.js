@@ -1,4 +1,4 @@
-import { PhoneNumber, Op } from '../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
 import { normalizeE164 } from '../../../lib/validation.js';
 
 let log;
@@ -29,9 +29,25 @@ const getPhoneEndpoint = async (req, res) => {
       }
       record = await PhoneNumber.findByPk(normalizedNumber);
     } else {
-      // id lookup – currently no persisted phone-registration records; keep placeholder for future
-      // record = await PhoneNumber.findOne({ where: { id: identifier } }); // no id field on PhoneNumber
-      record = null;
+      // registration id lookup
+      const registration = await PhoneRegistration.findByPk(identifier);
+      if (!registration) {
+        return res.status(404).send({ error: 'Phone endpoint not found' });
+      }
+      if (registration.organisationId && organisationId && registration.organisationId !== organisationId) {
+        return res.status(403).send({ error: 'Access denied' });
+      }
+      return res.send({
+        id: registration.id,
+        name: registration.name,
+        registrar: registration.registrar,
+        username: registration.username,
+        status: registration.status,
+        state: registration.state,
+        error: registration.error,
+        handler: registration.handler,
+        outbound: !!registration.outbound
+      });
     }
 
     if (!record) {
