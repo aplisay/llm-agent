@@ -1,5 +1,4 @@
-import { PhoneNumber, Op } from '../../lib/database.js';
-import { randomUUID } from 'crypto';
+import { PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
 import { getTelephonyHandler } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
 
@@ -134,10 +133,20 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      // For phone-registration, we might need to create a different type of endpoint
-      // This is implementation-specific and would depend on your SIP registration system
-      const registrationId = randomUUID();
-      return res.status(201).send({ success: true, id: registrationId });
+      const record = await PhoneRegistration.create({
+        name: data.name,
+        handler: data.handler ?? 'livekit',
+        outbound: data.outbound ?? false,
+        registrar: data.registrar,
+        username: data.username,
+        password: data.password,
+        options: data.options || null,
+        organisationId,
+        status: 'active',
+        state: 'initial'
+      });
+
+      return res.status(201).send({ success: true, id: record.id });
     }
   } catch (err) {
     req.log.error(err, 'Error creating phone endpoint');
