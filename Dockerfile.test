@@ -11,6 +11,8 @@ RUN yarn install --frozen-lockfile
 
 # Copy source code
 COPY . .
+RUN mkdir -p credentials
+RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejsgroup  && \
