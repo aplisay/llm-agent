@@ -25,18 +25,13 @@ export async function setupRealDatabase() {
     POSTGRES_RO_SERVER_NAME: process.env.POSTGRES_RO_SERVER_NAME
   };
 
-  // Force local docker-compose Postgres connection, ignoring SECRETENV-provided URLs
-  delete process.env.DATABASE_URL;
-  delete process.env.POSTGRES_URL;
-  delete process.env.POSTGRES_CONNECTION_URL;
-
-  // Hard-wire docker network DB settings
-  process.env.POSTGRES_HOST = 'postgres';
-  process.env.POSTGRES_PORT = '5432';
+  // Set up hardwired test environment variables for container database
+  process.env.POSTGRES_HOST = 'localhost';
+  process.env.POSTGRES_PORT = '5433';
   process.env.POSTGRES_DB = 'llmvoicetest';
   process.env.POSTGRES_USER = 'testuser';
   process.env.POSTGRES_PASSWORD = 'testpass';
-  process.env.CREDENTIALS_KEY = process.env.CREDENTIALS_KEY || 'test-secret-key-for-encryption';
+  process.env.CREDENTIALS_KEY = 'test-secret-key-for-encryption';
   process.env.DB_FORCE_SYNC = 'true';
 
   // Disable SSL for test database
