@@ -1,4 +1,6 @@
-FROM node:20-alpine
+FROM node:22-alpine
+ARG SECRETENV_BUNDLE
+ARG SECRETENV_KEY
 
 # Set working directory
 WORKDIR /app
