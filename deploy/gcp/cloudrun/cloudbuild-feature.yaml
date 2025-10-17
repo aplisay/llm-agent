@@ -67,9 +67,9 @@ options:
   logging: CLOUD_LOGGING_ONLY
 availableSecrets:
   secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_BUNDLE/versions/latest
+    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_DEV_BUNDLE/versions/latest
       env: SECRETENV_BUNDLE
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_KEY/versions/latest
+    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_DEV_KEY/versions/latest
       env: SECRETENV_KEY
 
 
