@@ -15,35 +15,39 @@ export default class Application {
     Object.assign(this, { socket, host, path, logger });
     logger.info({ host, path, socket }, 'new application');
     this.jambonz = new Jambonz(logger, 'worker');
+
     socket.on('session:new', async (session) => {
       try {
         let calledId = session.to.replace(/^\+/, '');
         let callerId = session.from;
+        const callId = session.call_sid;
         logger.info({ session, callerId, calledId }, 'new Jambonz call');
         const { number, instance, agent } = await Agent.fromNumber(calledId);
         if (instance) {
           let { userId, organisationId, modelName, options = {} } = agent;
           const { fallback: { number: fallbackNumbers } = {} } = options;
-          logger.info({ number, agent, instance, session }, 'Found instance for call');
+          logger.info({ number, agent, instance, session, callId }, 'Found instance for call');
           let Handler = handlers.getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
+          handler.callId = callId;
           let { model } = handler;
           let room = handler.join && await handler.join(
             {
               websocket: true,
               telephony: true,
+              callId
             }
           );
           let { ultravox } = room || {};
           let { joinUrl: streamUrl } = ultravox || {};
-          logger.debug({ streamUrl, room, ultravox }, 'application handler');
+          logger.info({ streamUrl, room, ultravox, callId }, 'jambonzapplication handler');
 
           let call = this.call = await Call.create({
+            id: session.call_sid,
             userId,
             organisationId,
             modelName,
             options,
-            id: session.call_sid,
             instanceId: instance.id,
             agentId: agent.id,
             streamUrl,
@@ -52,6 +56,7 @@ export default class Application {
             metadata: {
               ...instance.metadata,
               aplisay: {
+                callId,
                 callerId,
                 calledId,
                 fallbackNumbers,
@@ -59,7 +64,7 @@ export default class Application {
               }
             }
           });
-          let callId = call.id;
+          logger.info({ callDotCallID: call.id, callId }, 'created call record');
           let sessionHandler = this.sessionHandler = new JambonzSession({
             instanceId: instance.id,
             callId,
