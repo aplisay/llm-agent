@@ -1,4 +1,4 @@
-const { User } = require('../lib/database');
+import { User } from '../lib/database.js';
 
 const defaultUser = {
   user_id: 'defaultNotAuthenticated',
@@ -14,4 +14,4 @@ function init(app, logger) {
   });
 
 }
-module.exports = init;
+export default init;

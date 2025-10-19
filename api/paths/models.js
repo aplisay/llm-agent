@@ -1,8 +1,8 @@
-const handlers = require('../../lib/handlers');
+import handlers from '../../lib/handlers/index.js';
 
 let appParameters, log;
 
-module.exports = function (logger) {
+export default function (logger) {
   (appParameters = {
     logger,
   });
@@ -15,7 +15,7 @@ module.exports = function (logger) {
 const modelList = async (req, res) => {
   try {
     res.send(Object.fromEntries(
-      handlers.models.map(({ name, description, supportsFunctions, implementation, hasTelephony, hasWebRTC}) => (
+      (await handlers()).models.map(({ name, description, supportsFunctions, implementation, hasTelephony, hasWebRTC}) => (
         [name,
         {
           description,

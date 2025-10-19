@@ -979,6 +979,11 @@
   dependencies:
     "@types/yargs-parser" "*"
 
+"Odotenv@npm:dotenv@^16.4.5":
+  version "16.6.1"
+  resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
+  integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
+
 abort-controller@^3.0.0:
   version "3.0.0"
   resolved "https://registry.yarnpkg.com/abort-controller/-/abort-controller-3.0.0.tgz#eaf54d53b62bae4138e809ca225c8439a6efb392"
@@ -2068,18 +2073,13 @@ dot-prop@^6.0.0:
   dependencies:
     is-obj "^2.0.0"
 
-dotenv@^16.4.5:
-  version "16.4.5"
-  resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.4.5.tgz#cdd3b3b604cb327e286b4762e13502f717cb099f"
-  integrity sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==
-
-"dotenv@https://github.com/rjp44/secretenv":
-  version "1.0.3-secretenv"
-  resolved "https://github.com/rjp44/secretenv#8b4eae728f9aa766d11b885fe581ad0f447abfc7"
+"dotenv@github:rjp44/secretenv#v1.0.5":
+  version "1.0.5-secretenv"
+  resolved "https://codeload.github.com/rjp44/secretenv/tar.gz/60f64fa7d9184ae91cf75fc140e28bc31c060275"
   dependencies:
+    Odotenv "npm:dotenv@^16.4.5"
     command-line-args "^6.0.1"
     crypto "^1.0.1"
-    dotenv "^16.4.5"
 
 dottie@^2.0.6:
   version "2.0.6"
@@ -6426,10 +6426,15 @@ write-file-atomic@^4.0.2:
     imurmurhash "^0.1.4"
     signal-exit "^3.0.7"
 
-ws@^8.13.0, ws@^8.17.0, ws@^8.18.0:
+ws@^8.17.0, ws@^8.18.0:
   version "8.18.0"
   resolved "https://registry.yarnpkg.com/ws/-/ws-8.18.0.tgz#0d7505a6eafe2b0e712d232b42279f53bc289bbc"
   integrity sha512-8VbfWfHLbbwu3+N6OKsOMpBdT4kXPDDB9cJk2bJ6mh9ucxdlnNvH1e+roYkKmN9Nxw2yjz7VzeO9oOz2zJ04Pw==
+
+ws@^8.18.3:
+  version "8.18.3"
+  resolved "https://registry.yarnpkg.com/ws/-/ws-8.18.3.tgz#b56b88abffde62791c639170400c93dcb0c95472"
+  integrity sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg==
 
 xmlcreate@^2.0.4:
   version "2.0.4"

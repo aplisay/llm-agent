@@ -55,7 +55,7 @@ tags:
   - llm-agent-staging
 availableSecrets:
   secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_BUNDLE/versions/latest
+    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_BUNDLE/versions/latest
       env: SECRETENV_BUNDLE
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_KEY/versions/latest
+    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_STAGING_KEY/versions/latest
       env: SECRETENV_KEY

@@ -28,7 +28,7 @@ info:
     3. **[POST listen](#operations-Agent-activate)** with the agent ID and type to receive an `instanceId` and either
        a `number` or livekit/ultravox room values from the create call result.
     4. Open a new livekit client session and join the room to receive transcript updates and send/receive audio, or call the number.
-    5. When done with the agent, shut down the listener **[DELETE agents/{id}/listen/{instanceId}](#operations-Agent-deleteListener).
+    5. When done with the agent, shut down the listener **[DELETE /listener/{listenerId}](#operations-Agent-deleteListenerById)**.
     6. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
 
 tags:
@@ -54,6 +54,13 @@ tags:
     description: |-
       Voices are the list of text to speach (TTS) voices which are available in the engine, again they are
       set at agent creation time, but may also be modified in the course of running an agent.
+  - name: Phone Numbers
+    description: |-
+      Phone Numbers represent the telephone numbers available to an organization for use with agents.
+      These numbers can be assigned to agent instances to handle incoming calls.
+  - name: Listeners
+    description: |-
+      Listener operations manage agent listener instances, including activation, join, originate, and deletion.
 
 components:
   schemas:
@@ -270,7 +277,9 @@ components:
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the metadata for the call, returning a JSON object with the requested metadata keys and values. 
                      Keys are specified as a comma separated list in the `keys` parameter.
-                  * `transfer` will transfer the call to a number specified in the `number` parameter
+                  * `transfer` will transfer the call to a number specified in the `number` parameter. Optionally, you may also supply:
+                    - `callerId` (string): override the caller ID used for the transfer
+                    - `operation` (string): specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default), `consult_start`, `consult_finalise`, `consult_reject`
                 
                 Note that the transfer function will only be available to telephone agents, and the `number` parameter 
                 can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata.

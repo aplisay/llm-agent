@@ -1,37 +1,31 @@
 {
   "compilerOptions": {
     "rootDir": ".",
+    "outDir": "dist",
     "baseUrl": ".",
     "target": "es2022",
-    "module": "node16",
+    "module": "esnext",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "moduleResolution": "node16",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "verbatimModuleSyntax": true,
+    "verbatimModuleSyntax": false,
     "isolatedModules": true,
-    "noUncheckedIndexedAccess": true,
+    "noUncheckedIndexedAccess": false,
+    "allowJs": true,
+    "checkJs": false,
+    "noImplicitAny": false,
     "paths": {
       "@livekit/agents": ["agents/src"],
       "@livekit/agents-plugin-*": ["plugins/*/src"]
     }
   },
 
-  "typedocOptions": {
-    "entryPoints": ["agents", "plugins/*"],
-    "entryPointStrategy": "packages",
-    "name": "LiveKit Agents",
-    "exclude": ["plugins/test"],
-    "excludeInternal": true,
-    "excludePrivate": true,
-    "excludeProtected": true,
-    "excludeExternals": true,
-    "includeVersion": true,
-    "out": "docs",
-    "theme": "default"
-  }
+  "include": ["realtime.ts", "lib/**/*.ts"],
+  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts", "agent-lib", "temp-livekit-agents"]
 }

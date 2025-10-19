@@ -8,3 +8,9 @@ JAMBONZ_API_KEY=<JAMBONZ API SERVER HOSTNAME>
 JAMBONZ_AGENT_NAME=<THIS SERVER DNS NAME>
 # this will generate an open source build which doesn't authenticate
 AUTHENTICATE_USERS=NO
+
+# Shared token for internal API communication between services
+SHARED_API_TOKEN=your_secure_shared_token_here
+
+# Base URI for the main LLM agent API service
+SERVICE_BASE_URI=http://localhost:5000/api

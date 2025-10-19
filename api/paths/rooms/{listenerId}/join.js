@@ -1,11 +1,10 @@
-const cors = require("cors");
-const { Agent, Instance } = require('../../../../lib/database');
-const handlers = require('../../../../lib/handlers');
+import cors from 'cors';;
+import { Agent, Instance  } from '../../../../lib/database.js';;
+import handlers from '../../../../lib/handlers/index.js';;
 
 let appParameters, log;
 
-module.exports =
-  function () {
+export default function () {
     const join = (async (req, res) => {
       let { listenerId } = req.params;
       req.log.debug({ listenerId, body: req.body }, 'join called');
@@ -20,8 +19,9 @@ module.exports =
           req.log.info('Join called on telephony room!');
           throw new Error('bad listener');
         }
-        let Handler = handlers.getHandler(agent.modelName);
+        let Handler = (await handlers()).getHandler(agent.modelName);
         let handler = new Handler({ agent, instance, logger: req.log });
+        req.log.debug({ handler }, 'handler');
         let room = await handler.join({ options });
         res.send(room);
       }
@@ -34,7 +34,8 @@ module.exports =
     join.apiDoc = {
       summary: 'Gets join information for a realtime room connected to an agent.',
       operationId: 'join',
-      tags: ["Room"],
+      deprecated: true,
+      tags: ["Listeners"],
       description: `Gets room joining information for the room connected to an instance of an agent.`,
       parameters: [
         {

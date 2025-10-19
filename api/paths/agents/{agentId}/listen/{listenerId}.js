@@ -1,8 +1,8 @@
-const { Instance } = require('../../../../../lib/database');
+import { Instance  } from '../../../../../lib/database.js';;
 
 let log;
 
-module.exports = function (logger) {
+export default function (logger) {
   log = logger;
   return {
     DELETE: listenerDelete,
@@ -30,7 +30,8 @@ const listenerDelete = async (req, res) => {
 listenerDelete.apiDoc = {
   summary: 'Deletes a listener',
   operationId: 'deleteListener',
-  tags: ["Agent"],
+  deprecated: true,
+  tags: ["Listeners"],
   parameters: [
     {
       description: "Agent ID of the listener to delete",
@@ -53,7 +54,7 @@ listenerDelete.apiDoc = {
   ],
   responses: {
     200: {
-      description: 'Deleted Listener.',
+      description: 'Deleted Listener. Deprecated - use DELETE /listener/{listenerId}',
     },
     default: {
       description: 'An error occurred',

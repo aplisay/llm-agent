@@ -2,12 +2,13 @@
   "name": "aplisay-jambonz-handler",
   "version": "0.0.2",
   "description": "Aplisay Jambonz Handler",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon index",
     "start": "NODE_ENV=production node index",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index",
-    "test": "LOGLEVEL=error jest"
+    "test": "LOGLEVEL=error node --experimental-vm-modules node_modules/.bin/jest"
   },
   "author": "",
   "license": "MIT",
@@ -21,7 +22,7 @@
     "@jambonz/node-client-ws": "https://github.com/rjp44/node-client-ws.git#main",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
-    "dotenv": "https://github.com/rjp44/secretenv",
+    "dotenv": "github:rjp44/secretenv#v1.0.5",
     "elevenlabs": "^0.4.0",
     "js-yaml": "^4.1.0",
     "link": "^2.1.1",
@@ -34,7 +35,7 @@
     "sequelize": "^6.37.4",
     "swagger-sequelize": "^0.1.5",
     "uuid": "^9.0.0",
-    "ws": "^8.13.0"
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "gulp": "^4.0.2",

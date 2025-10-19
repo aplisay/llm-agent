@@ -1,8 +1,8 @@
-const { Agent, Instance, PhoneNumber } = require('../../lib/database');
+import { Agent, Instance, PhoneNumber } from '../../lib/database.js';
 
 let appParameters, log;
 
-module.exports = function (logger, voices, wsServer) {
+export default function (logger, voices, wsServer) {
   (appParameters = {
     logger,
     voices,

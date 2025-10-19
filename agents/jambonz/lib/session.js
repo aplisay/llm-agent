@@ -1,6 +1,6 @@
-const uuid = require('uuid').v4;
-const Voices = require('../agent-lib/voices');
-const { functionHandler } = require('../agent-lib/function-handler.js');
+import {v4 as uuid} from 'uuid';
+import Voices from '../agent-lib/voices/index.js';
+import { functionHandler } from '../agent-lib/function-handler.js';
 
 const { JAMBONZ_AGENT_NAME: server } = process.env;
 const wsPath = `wss://${server}/audio`
@@ -17,7 +17,7 @@ const wsPath = `wss://${server}/audio`
  * @param {Object} params.session Jambonz WebSocket session object
  * @param {Object} params.options Options object containing combined STT, TTS and model options
  */
-class JambonzSession {
+export default class JambonzSession {
   constructor({ path, model, progress, logger, session, options, instanceId, streamUrl }) {
     Object.assign(this, {
       path,
@@ -351,6 +351,3 @@ class JambonzSession {
   };
 }
 
-
-
-module.exports = JambonzSession;

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-const path = require('node:path');
-const fs = require('node:fs/promises');
-const WebSocket = require('ws');
-const axios = require('axios');
-const commandLineArgs = require('command-line-args');
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import WebSocket from 'ws';
+import axios from 'axios';
+import commandLineArgs from 'command-line-args';
 const optionDefinitions = [
   { name: 'command', defaultOption: true },
   { name: 'file', alias: 'f', type: String, defaultValue: "agent.json" },
@@ -50,13 +50,13 @@ if (!command || command === 'help' || options.help) {
   console.log(`          ${progName} start --file agent.json`);
   console.log(`          ${progName} dev --file agent.json --number 1234567890 --key NCmQg2Pgd3bCBssUPzEPJToREPt4Upqgm6UmU52C9uM9gI19`);
   !command && !options.help && console.error("Please specify a command");
-  exit(1);
+  process.exit(1);
 }
 else {
   run(command, options)
     .catch((err) => {
       console.error(err.message);
-      exit(1);
+      process.exit(1);
     });
 }
 
@@ -144,7 +144,8 @@ async function start(file, { number, webrtc, trace, server, environment }) {
   let agent = await JSON.parse(agentData);
   let { name, description, prompt: { value: prompt }, modelName, functions: functionSpec, keys, options } = agent;
   webrtc && (number = undefined);
-  functions = transformFunctions(functionSpec);
+  let socket, listenerId, key;
+  const functions = transformFunctions(functionSpec);
   ({ data: { id: agentId } } = await api.post('/agents', { name, description, modelName, prompt, options, functions, keys }));
   ({ data: { socket, id: listenerId, number, key } } = await api.post(`/agents/${agentId}/listen`, { number, options: { streamLog: !!trace } }));
   let accessInfo = number ? `on ${number}` : `webrtc key ${key}`;
@@ -252,9 +253,6 @@ function debugTrace({ socket: url, listenerId }, server) {
   });
 }
 
-function exit(code) {
-  process.exitCode = code;
-}
 
 
 process.on('SIGINT', cleanupAndExit);

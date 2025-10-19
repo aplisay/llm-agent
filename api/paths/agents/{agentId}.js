@@ -1,8 +1,8 @@
-const { Agent, Instance, PhoneNumber } = require('../../../lib/database');
+import { Agent, Instance, PhoneNumber  } from '../../../lib/database.js';;
 
 let log;
 
-module.exports = function (logger) {
+export default function (logger) {
   log = logger;
   return {
     GET: agentGet,

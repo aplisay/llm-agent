@@ -1,0 +1,6 @@
+[submodule "agents/livekit/temp-livekit-agents"]
+	path = agents/livekit/temp-livekit-agents
+	url = https://github.com/livekit/agents-js.git
+[submodule "uk-number-validator"]
+	path = uk-number-validator
+	url = https://github.com/aplisay/uk-number-validator.git
