@@ -13,7 +13,6 @@ import { cleanHandlers } from './lib/handlers/index.js';
 
 logger.info('starting up');
 dotenv.config();
-logger.info({ env: process.env }, 'config done');
 
 
 const server = express();

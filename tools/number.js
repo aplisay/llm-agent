@@ -4,7 +4,7 @@ import axios from 'axios';
 import commandLineArgs from 'command-line-args';
 import logger from '../lib/logger.js';
 
-logger.info({ env: process.env }, 'initial dotenv');
+
 
 const optionDefinitions = [
   { name: 'path', alias: 'p', type: String },
@@ -29,7 +29,6 @@ const configArgs = options.path && { path: dir.resolve(process.cwd(), options.pa
 import('dotenv').then(dotenv => {
   logger.info({ configArgs }, 'configArgs');
   const parsed = dotenv.config(configArgs);
-  logger.info({ parsed, env: process.env }, 'parsed');
 
 })
   .then(() => import('../lib/database.js'))
