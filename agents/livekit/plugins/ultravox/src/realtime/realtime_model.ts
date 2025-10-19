@@ -600,6 +600,11 @@ export class RealtimeSession extends llm.RealtimeSession {
       }
     } else {
       this.#logger.warn("WebSocket not ready, buffering audio frame");
+      if (!this.#task) {
+        this.#logger.debug("No tools calls seem to have been pushed, but we are talking so starting the session anyway");
+        this.#task = this.#start();
+      }
+
       // Buffer the frame for later sending when WebSocket is ready
       this.#audioBuffer.push(
         Buffer.from(
@@ -707,6 +712,7 @@ export class RealtimeSession extends llm.RealtimeSession {
 
         this.#logger.info({ modelData }, "Creating Ultravox call");
         const callResponse = await this.#client.createCall(modelData);
+        this.#logger.info({ callResponse }, "Creating Ultravox call");
         this.#callId = callResponse.callId;
 
         if (
