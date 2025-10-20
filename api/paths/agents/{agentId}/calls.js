@@ -36,7 +36,7 @@ export default function (logger) {
         offset: parseInt(offset)
       });
       req.log.debug({ where, count, calls, limit, offset });
-      next = count > (offset + limit) ? offset + limit : false;
+      const next = count > (offset + limit) ? offset + limit : false;
       res.send({ calls, next });
     } catch (error) {
       req.log.error(error);
