@@ -1,9 +1,11 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { Agent, Call, PhoneNumber } from '../agent-lib/database.js';
 import JambonzSession from './session.js';
 import logger from '../agent-lib/logger.js';
 import Jambonz from '../agent-lib/jambonz.js';
-import handlers from '../agent-lib/handlers/index.js';
+import { getHandler } from '../agent-lib/handlers/index.js';
+
+dotenv.config();
 
 /**
  *
@@ -27,7 +29,7 @@ export default class Application {
           let { userId, organisationId, modelName, options = {} } = agent;
           const { fallback: { number: fallbackNumbers } = {} } = options;
           logger.info({ number, agent, instance, session, callId }, 'Found instance for call');
-          let Handler = handlers.getHandler(agent.modelName);
+          let Handler = await getHandler(agent.modelName);
           let handler = new Handler({ logger, agent, instance });
           handler.callId = callId;
           let { model } = handler;
