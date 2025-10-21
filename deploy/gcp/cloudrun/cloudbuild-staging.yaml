@@ -1,6 +1,27 @@
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
+      - compose
+      - '-f'
+      - 'docker-compose.ci.yml'
+      - 'up'
+      - '--abort-on-container-exit'
+      - '--exit-code-from'
+      - 'test-runner'
+    id: Test
+    secretEnv:
+      - SECRETENV_BUNDLE
+      - SECRETENV_KEY
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - compose
+      - '-f'
+      - 'docker-compose.ci.yml'
+      - 'down'
+      - '-v'
+    id: Test-Cleanup
+  - name: gcr.io/cloud-builders/docker
+    args:
       - build
       - '--no-cache'
       - '--build-arg'
