@@ -1,13 +1,13 @@
 steps:
   - name: gcr.io/cloud-builders/docker
-    entrypoint: bash
     args:
-      - -lc
-      - |
-        echo $(SECRETENV_BUNDLE=$$SECRETENV_BUNDLE > .env) && \
-        echo $(SECRETENV_KEY=$$SECRETENV_KEY >> .env) && \
-        cat .env && \
-        docker compose -f docker-compose.ci.yml --env-file .env up --abort-on-container-exit --exit-code-from test-runner
+      - compose
+      - '-f'
+      - 'docker-compose.ci.yml'
+      - 'up'
+      - '--abort-on-container-exit'
+      - '--exit-code-from'
+      - 'test-runner'
     id: Test
     secretEnv:
       - SECRETENV_BUNDLE

@@ -20,6 +20,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+      args:
+        SECRETENV_BUNDLE: ${SECRETENV_BUNDLE}
+        SECRETENV_KEY: ${SECRETENV_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,6 +43,10 @@ services:
     command: >
       sh -c "
         echo '🚀 Starting comprehensive tests...' && \
+        echo SECRETENV_BUNDLE=$SECRETENV_BUNDLE && \
+        echo SECRETENV_KEY=$SECRETENV_KEY && \
+        export SECRETENV_BUNDLE=$SECRETENV_BUNDLE && \
+        export SECRETENV_KEY=$SECRETENV_KEY && \
         node --experimental-vm-modules node_modules/.bin/jest --config jest.config.comprehensive.js && \
         echo '✅ All comprehensive tests passed!' && \
         exit 0
