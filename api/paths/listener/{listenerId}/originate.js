@@ -118,15 +118,6 @@ originateCall.apiDoc = {
               type: "string",
               description: "The phone number to call from (must exist in phoneNumbers table and belong to the organization)",
               example: "+442080996945"
-            },
-            metadata: {
-              type: "object",
-              description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
-              example: {
-                myapp: {
-                  mykey: "mydata"
-                }
-              }
             }
           },
           required: ['calledId', 'callerId']
