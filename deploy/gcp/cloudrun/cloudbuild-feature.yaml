@@ -4,18 +4,21 @@ steps:
     args:
       - -lc
       - |
-        echo "Running comprehensive tests via docker compose" && \
-        docker compose -f docker-compose.ci.yml up --abort-on-container-exit --exit-code-from test-runner
+        echo $(SECRETENV_BUNDLE=$$SECRETENV_BUNDLE > .env) && \
+        echo $(SECRETENV_KEY=$$SECRETENV_KEY >> .env) && \
+        cat .env && \
+        docker compose -f docker-compose.ci.yml --env-file .env up --abort-on-container-exit --exit-code-from test-runner
     id: Test
     secretEnv:
       - SECRETENV_BUNDLE
       - SECRETENV_KEY
   - name: gcr.io/cloud-builders/docker
-    entrypoint: bash
     args:
-      - -lc
-      - |
-        docker compose -f docker-compose.ci.yml down -v
+      - compose
+      - '-f'
+      - 'docker-compose.ci.yml'
+      - 'down'
+      - '-v'
     id: Test-Cleanup
   - name: gcr.io/cloud-builders/docker
     args:
