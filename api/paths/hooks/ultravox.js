@@ -19,15 +19,17 @@ const recordHook = (async (req, res) => {
   let { call } = req.body;
   try {
     let callRecord = await Call.findOne({ where: { platformCallId: call.callId, platform: 'ultravox' }, include: [Agent] });
-    let { Agent: agent } = callRecord;
+    let { Agent: agent } = callRecord || {};
     req.log.debug({ callRecord, agent, call }, 'running ultravox webhook');
     if (!agent) {
       res.status(404).send('call not found');
+      return;
     }
     else {
       let handler = new Handler({ agent });
       await handler.callEnded(call, callRecord);
       res.send({});
+      return;
     }
   }
   catch (err) {

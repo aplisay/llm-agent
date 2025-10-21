@@ -54,10 +54,10 @@ tags:
     description: |-
       Voices are the list of text to speach (TTS) voices which are available in the engine, again they are
       set at agent creation time, but may also be modified in the course of running an agent.
-  - name: Phone Numbers
+  - name: Phone Endpoints
     description: |-
-      Phone Numbers represent the telephone numbers available to an organization for use with agents.
-      These numbers can be assigned to agent instances to handle incoming calls.
+      Phone Endpoints represent routed telephone numbers and other SIP user fields available to an organization for use with agents.
+      These endpoints can be assigned to agent instances to handle incoming calls to the DDI or SIP registration ID
   - name: Listeners
     description: |-
       Listener operations manage agent listener instances, including activation, join, originate, and deletion.
