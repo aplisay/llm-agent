@@ -14,15 +14,9 @@ RUN yarn install --frozen-lockfile
 # Copy source code
 COPY . .
 RUN mkdir -p credentials
+RUN echo BUNDLE $SECRETENV_BUNDLE
+RUN npx secretenv -r GOOGLE_CREDENTIAL
 RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
-
-# Create non-root user for security
-RUN addgroup -g 1001 -S nodejsgroup  && \
-    adduser -S nodejstest -u 1001 -G nodejsgroup
-
-# Change ownership of the app directory
-RUN chown -R nodejstest:nodejsgroup /app
-USER nodejstest
 
 # Default command (can be overridden in docker-compose)
 CMD ["yarn", "test:comprehensive"]
