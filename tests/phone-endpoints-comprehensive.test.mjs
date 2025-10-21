@@ -18,6 +18,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   let deletePhoneEndpoint;
   let activateRegistration;
   let disableRegistration;
+  let registrationSimulator;
 
   // Mock objects for API endpoints
   let mockLogger;
@@ -37,6 +38,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     const getPhoneEndpointModule = await import('../api/paths/phone-endpoints/{identifier}.js');
     const activateModule = await import('../api/paths/phone-endpoints/{identifier}/activate.js');
     const disableModule = await import('../api/paths/phone-endpoints/{identifier}/disable.js');
+    const registrationSimulationModule = await import('../lib/registration-simulation.js');
     
     // Create mock logger and other dependencies
     mockLogger = { 
@@ -66,9 +68,21 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     deletePhoneEndpoint = phoneEndpoints.DELETE;
     activateRegistration = activateHandler.POST;
     disableRegistration = disableHandler.POST;
+    registrationSimulator = registrationSimulationModule.registrationSimulator;
   }, 30000);
 
   afterAll(async () => {
+    // Stop all active simulations to prevent database connection errors
+    try {
+      // Stop regular simulations
+      const allSimulations = registrationSimulator.getAllSimulations();
+      for (const sim of allSimulations) {
+        registrationSimulator.stopSimulation(sim.registrationId);
+      }
+    } catch (err) {
+      console.warn('Simulation cleanup warning:', err.message);
+    }
+    
     // Disconnect from real database
     await teardownRealDatabase();
   }, 60000);
@@ -1006,6 +1020,335 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // disableRegistration returns 403 for missing authentication
       expect(res._status).toBe(403);
       expect(res._body).toHaveProperty('error');
+    });
+  });
+
+  describe('Registration Simulation', () => {
+    let testRegId;
+    let testOrgId;
+
+    beforeEach(async () => {
+      const { PhoneRegistration, Organisation } = models;
+      
+      // Create test organization
+      testOrgId = randomUUID();
+      const testOrg = await Organisation.create({
+        id: testOrgId,
+        name: 'Test Organisation for Simulation'
+      });
+
+      // Create test registration
+      const testReg = await PhoneRegistration.create({
+        name: 'Test Registration for Simulation',
+        registrar: 'sip:test.example.com:5060',
+        username: 'testuser',
+        password: 'testpass',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+      testRegId = testReg.id;
+    });
+
+    afterEach(async () => {
+      try {
+        const { PhoneRegistration, Organisation } = models;
+        // Stop any active simulations
+        registrationSimulator.stopSimulation(testRegId);
+        
+        // Also stop fast simulation if it exists
+        try {
+          const { registrationSimulatorFast } = await import('../lib/registration-simulation-fast.js');
+          registrationSimulatorFast.stopSimulation(testRegId);
+        } catch (err) {
+          // Fast simulation might not be imported, ignore
+        }
+        
+        // Wait a moment for any pending timeouts to complete
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
+        await Organisation.destroy({ where: { id: testOrgId } });
+      } catch (err) {
+        console.warn('Simulation cleanup warning:', err.message);
+      }
+    });
+
+    test('should start simulation when registration is activated', async () => {
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      // Activate the registration
+      await activateRegistration(req, res);
+
+      expect(res._status).toBe(200);
+      expect(res._body).toHaveProperty('success', true);
+      expect(res._body).toHaveProperty('status', 'active');
+      expect(res._body).toHaveProperty('state', 'initial');
+
+      // Check that simulation started
+      const simulationStatus = registrationSimulator.getSimulationStatus(testRegId);
+      expect(simulationStatus).not.toBe(null);
+      expect(simulationStatus.registrationId).toBe(testRegId);
+    });
+
+    test('should update registration state through simulation lifecycle', async () => {
+      const { PhoneRegistration } = models;
+      
+      // Activate the registration to start simulation
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await activateRegistration(req, res);
+      expect(res._status).toBe(200);
+
+      // Wait a short time for the first state transition (initial)
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Check that the registration was updated to initial state
+      const updatedReg = await PhoneRegistration.findByPk(testRegId);
+      expect(updatedReg.status).toBe('active');
+      expect(updatedReg.state).toBe('initial');
+    });
+
+    test('should handle multiple activation calls gracefully', async () => {
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      // First activation
+      await activateRegistration(req, res);
+      expect(res._status).toBe(200);
+
+      const firstSimulation = registrationSimulator.getSimulationStatus(testRegId);
+      expect(firstSimulation).not.toBe(null);
+
+      // Second activation should replace the first simulation
+      await activateRegistration(req, res);
+      expect(res._status).toBe(200);
+
+      const secondSimulation = registrationSimulator.getSimulationStatus(testRegId);
+      expect(secondSimulation).not.toBe(null);
+      // Should be a different simulation object (replaced)
+      expect(secondSimulation.startTime).toBeGreaterThanOrEqual(firstSimulation.startTime);
+    });
+
+    test('should stop simulation when registration is disabled', async () => {
+      const { PhoneRegistration } = models;
+      
+      // First activate to start simulation
+      const activateReq = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const activateRes = createMockResponse();
+      activateRes.locals.user = { organisationId: testOrgId };
+
+      await activateRegistration(activateReq, activateRes);
+      expect(activateRes._status).toBe(200);
+
+      // Check simulation is running
+      expect(registrationSimulator.getSimulationStatus(testRegId)).not.toBe(null);
+
+      // Now disable the registration
+      const disableReq = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const disableRes = createMockResponse();
+      disableRes.locals.user = { organisationId: testOrgId };
+
+      await disableRegistration(disableReq, disableRes);
+      expect(disableRes._status).toBe(200);
+
+      // Check that the registration was disabled
+      const disabledReg = await PhoneRegistration.findByPk(testRegId);
+      expect(disabledReg.status).toBe('disabled');
+      expect(disabledReg.state).toBe('initial');
+    });
+
+    test('should handle simulation cleanup on registration deletion', async () => {
+      const { PhoneRegistration } = models;
+      
+      // Activate to start simulation
+      const activateReq = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const activateRes = createMockResponse();
+      activateRes.locals.user = { organisationId: testOrgId };
+
+      await activateRegistration(activateReq, activateRes);
+      expect(activateRes._status).toBe(200);
+
+      // Check simulation is running
+      expect(registrationSimulator.getSimulationStatus(testRegId)).not.toBe(null);
+
+      // Delete the registration (force delete)
+      const deleteReq = createMockRequest({
+        params: { identifier: testRegId },
+        query: { force: 'true' },
+        headers: {}
+      });
+      const deleteRes = createMockResponse();
+      deleteRes.locals.user = { organisationId: testOrgId };
+
+      await deletePhoneEndpoint(deleteReq, deleteRes);
+      expect(deleteRes._status).toBe(200);
+
+      // Verify registration is deleted
+      const deletedReg = await PhoneRegistration.findByPk(testRegId);
+      expect(deletedReg).toBe(null);
+    });
+
+    test('should track simulation status correctly', async () => {
+      // No simulation initially
+      expect(registrationSimulator.getSimulationStatus(testRegId)).toBe(null);
+
+      // Activate to start simulation
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await activateRegistration(req, res);
+      expect(res._status).toBe(200);
+
+      // Check simulation status
+      const status = registrationSimulator.getSimulationStatus(testRegId);
+      expect(status).not.toBe(null);
+      expect(status.registrationId).toBe(testRegId);
+      expect(status.startTime).toBeGreaterThan(0);
+      expect(status.duration).toBeGreaterThanOrEqual(0);
+      expect(status.activeTimeouts).toBeGreaterThan(0);
+    });
+
+    test('should handle simulation with multiple registrations', async () => {
+      const { PhoneRegistration } = models;
+      
+      // Create second registration
+      const secondReg = await PhoneRegistration.create({
+        name: 'Second Test Registration',
+        registrar: 'sip:test2.example.com:5060',
+        username: 'testuser2',
+        password: 'testpass2',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+
+      try {
+        // Activate first registration
+        const req1 = createMockRequest({
+          params: { identifier: testRegId },
+          headers: {}
+        });
+        const res1 = createMockResponse();
+        res1.locals.user = { organisationId: testOrgId };
+
+        await activateRegistration(req1, res1);
+        expect(res1._status).toBe(200);
+
+        // Activate second registration
+        const req2 = createMockRequest({
+          params: { identifier: secondReg.id },
+          headers: {}
+        });
+        const res2 = createMockResponse();
+        res2.locals.user = { organisationId: testOrgId };
+
+        await activateRegistration(req2, res2);
+        expect(res2._status).toBe(200);
+
+        // Check both simulations are running
+        expect(registrationSimulator.getSimulationStatus(testRegId)).not.toBe(null);
+        expect(registrationSimulator.getSimulationStatus(secondReg.id)).not.toBe(null);
+
+        // Check all simulations
+        const allSimulations = registrationSimulator.getAllSimulations();
+        expect(allSimulations.length).toBeGreaterThanOrEqual(2);
+        
+        const simulationIds = allSimulations.map(sim => sim.registrationId);
+        expect(simulationIds).toContain(testRegId);
+        expect(simulationIds).toContain(secondReg.id);
+
+      } finally {
+        // Clean up second registration
+        registrationSimulator.stopSimulation(secondReg.id);
+        await PhoneRegistration.destroy({ where: { id: secondReg.id } });
+      }
+    });
+
+    test('should complete full simulation lifecycle with state transitions (fast mode)', async () => {
+      const { PhoneRegistration } = models;
+      
+      // Mock setTimeout to run at 15x speed for this test
+      const originalSetTimeout = global.setTimeout;
+      const originalClearTimeout = global.clearTimeout;
+      const speedMultiplier = 15;
+      
+      global.setTimeout = (callback, delay) => {
+        const fastDelay = Math.max(1, Math.floor(delay / speedMultiplier));
+        return originalSetTimeout(callback, fastDelay);
+      };
+      
+      global.clearTimeout = originalClearTimeout;
+      
+      try {
+        // Activate the registration to start the real simulation (but with fast timing)
+        const req = createMockRequest({
+          params: { identifier: testRegId },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await activateRegistration(req, res);
+        expect(res._status).toBe(200);
+
+        // Wait for the first state transition (initial)
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        let reg = await PhoneRegistration.findByPk(testRegId);
+        expect(reg.status).toBe('active');
+        expect(reg.state).toBe('initial');
+
+        // Wait for the simulation to complete the lifecycle (15x faster)
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        
+        reg = await PhoneRegistration.findByPk(testRegId);
+        expect(reg.status).toBe('active');
+        // The simulation should have reached a final state
+        expect(['registered', 'failed']).toContain(reg.state);
+
+        // The simulation should still be running
+        const simulationStatus = registrationSimulator.getSimulationStatus(testRegId);
+        expect(simulationStatus).not.toBe(null);
+        
+        // Cleanup simulation
+        registrationSimulator.stopSimulation(testRegId);
+      } finally {
+        // Restore original setTimeout
+        global.setTimeout = originalSetTimeout;
+        global.clearTimeout = originalClearTimeout;
+      }
     });
   });
 

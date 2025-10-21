@@ -1,5 +1,6 @@
 import { PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
+import { registrationSimulator } from '../../../../lib/registration-simulation.js';
 
 let log;
 
@@ -39,8 +40,8 @@ const activateRegistration = async (req, res) => {
       error: null
     });
 
-    // TODO: Emit worker signal for registration activation
-    // This could be a database event, message queue, or webhook
+    // Start simulation for testing purposes
+    await registrationSimulator.startSimulation(identifier);
 
     return res.send({ 
       success: true, 

@@ -21,4 +21,4 @@ RUN mkdir -p credentials
 RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
 
 # Default command (can be overridden in docker-compose)
-CMD ["yarn", "test:comprehensive"]
+CMD ["yarn", "test"]

@@ -191,7 +191,7 @@ const createPhoneEndpoint = async (req, res) => {
         password: data.password,
         options: data.options || null,
         organisationId,
-        status: 'active',
+        status: 'disabled',
         state: 'initial'
       });
 
