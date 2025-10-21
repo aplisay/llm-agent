@@ -301,10 +301,11 @@ async function main() {
               c.duration_s = Math.round(c.duration / 1000);
               c.billingDuration = Math.max(1, Math.ceil(c.duration / 1000 / 10) / 6);
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
-              c.maxDuration = parseInt(c.maxDuration.replace(/s$/, ''))/60;
+              c.maxDuration = Math.max(1, Math.ceil(parseInt(c.maxDuration.replace(/s$/, '')) / 10) / 6);
 
-              if (c.maxDuration + 1 < c.billingDuration) {
-                console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration + 1);
+              if (c.maxDuration + 0.5 < c.billingDuration) {
+                console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration);
+                c.billingDuration = c.maxDuration;
                 corrected++;
               }
               c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
@@ -397,7 +398,6 @@ async function main() {
           console.log(summaryOutput);
           console.log('--------------------------------');
           console.log(`dropped ${data.length - cdrs.length} calls with no duration`);
-          console.log(`corrected ${corrected} calls where billingDuration > requested maxDuration`);
           console.log(`corrected ${corrected} calls where billingDuration > requested maxDuration`);
           exit(0);
         } catch (err) {

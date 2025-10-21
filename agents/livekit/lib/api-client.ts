@@ -151,11 +151,11 @@ export async function getInstanceByNumber(number: string): Promise<any> {
 // Get phone numbers from the API
 export async function getPhoneNumbers(handler?: string): Promise<any[]> {
   const query = handler ? `?handler=${encodeURIComponent(handler)}` : '';
-  return makeApiRequest(`/api/agent-db/phone-endpoints${query}`);
+  return makeApiRequest(`/api/agent-db/phone-numbers${query}`);
 }
 
 export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
-  const results = await makeApiRequest<PhoneNumberInfo[]>(`/api/agent-db/phone-endpoints?number=${encodeURIComponent(number)}`);
+  const results = await makeApiRequest<PhoneNumberInfo[]>(`/api/agent-db/phone-numbers?number=${encodeURIComponent(number)}`);
   return results?.[0] || null;
 }
 
