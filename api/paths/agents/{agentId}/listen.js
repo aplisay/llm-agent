@@ -1,4 +1,4 @@
-import { Agent, PhoneNumber } from '../../../../lib/database.js';
+import { Agent } from '../../../../lib/database.js';
 import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -6,23 +6,13 @@ let appParameters, log;
 export default function (wsServer) {
   const activate = (async (req, res) => {
     let { agentId } = req.params;
-    let { number, options, websocket, id } = req.body;
+    let { number, options, websocket } = req.body;
     let agent, handler, activation;
     try {
       agent = await Agent.findByPk(agentId);
       if (!agent?.id) {
         throw new Error(`no agent`);
       }
-      
-      // If id is provided, look up the phone endpoint and use its number
-      if (id) {
-        const phoneEndpoint = await PhoneNumber.findByPk(id);
-        if (!phoneEndpoint) {
-          throw new Error(`Phone endpoint with id ${id} not found`);
-        }
-        number = phoneEndpoint.number;
-      }
-      
       let Handler = (await handlers()).getHandler(agent.modelName);
       handler = new Handler({ agent, wsServer, logger: req.log });
       activation = await handler.activate({ number, options, websocket });
@@ -72,78 +62,41 @@ export default function (wsServer) {
       content: {
         'application/json': {
           schema: {
-            allOf: [
-              {
-                type: "object",
-                properties: {
-                  options: {
-                    type: "object",
-                    description: "Options for this activation instance",
-                    properties: {
-                      streamLog: {
-                        type: "boolean",
-                        description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
-                      },
-                      metadata: {
-                        type: "object",
-                        description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
-                        example: {
-                          myapp: {
-                            mykey: "mydata"
-                          }
-                        }
-                      }
-                    },
-                    required: [],
-                  }
-                }
+            type: "object",
+            properties: {
+              number: {
+                type: "string",
+                description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.
+                              If this field is not present then the session will be assumed to be a WebRTC session.`,
+                example: "+442080996945"
               },
-              {
-                oneOf: [
-                  {
+              websocket: {
+                type: "boolean",
+                description: "If true, then this is a websocket session, mutually exclusive with number",
+                example: true
+              },
+              options: {
+                type: "object",
+                description: "Options for this activation instance",
+                properties: {
+                  streamLog: {
+                    type: "boolean",
+                    description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                  },
+                  metadata: {
                     type: "object",
-                    description: "Use a direct phone number",
-                    required: ["number"],
-                    properties: {
-                      number: {
-                        type: "string",
-                        description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.`,
-                        example: "+442080996945"
+                    description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
+                    example: {
+                      myapp: {
+                        mykey: "mydata"
                       }
                     }
-                  },
-                  {
-                    type: "object",
-                    description: "Use a phone endpoint by ID",
-                    required: ["id"],
-                    properties: {
-                      id: {
-                        type: "string",
-                        description: "ID of a phone endpoint to use instead of specifying number directly.",
-                        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-                      }
-                    }
-                  },
-                  {
-                    type: "object",
-                    description: "Use websocket connection",
-                    required: ["websocket"],
-                    properties: {
-                      websocket: {
-                        type: "boolean",
-                        description: "If true, then this is a websocket session",
-                        example: true
-                      }
-                    }
-                  },
-                  {
-                    type: "object",
-                    description: "Default WebRTC session when none of number/id/websocket are provided",
-                    properties: {}
                   }
-                ]
+                },
+                required: [],
               }
-            ]
+            },
+            required: [],
           }
         }
       }

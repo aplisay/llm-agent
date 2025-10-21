@@ -8,4 +8,5 @@ RUN yarn install
 RUN mkdir -p credentials
 RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
 COPY . .
+RUN yarn test
 CMD [ "yarn", "start"]
