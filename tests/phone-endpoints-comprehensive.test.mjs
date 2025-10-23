@@ -9,7 +9,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   let testOrgId;
   let testRegId;
   let testPhoneId;
-  
+
   // API endpoint handlers - will be imported after database setup
   let phoneEndpointList;
   let getPhoneEndpoint;
@@ -32,35 +32,35 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     await setupRealDatabase();
     const realDb = getRealDatabase();
     models = realDb.models;
-    
+
     // Import API endpoints after database is set up
     const phoneEndpointsModule = await import('../api/paths/phone-endpoints.js');
     const getPhoneEndpointModule = await import('../api/paths/phone-endpoints/{identifier}.js');
     const activateModule = await import('../api/paths/phone-endpoints/{identifier}/activate.js');
     const disableModule = await import('../api/paths/phone-endpoints/{identifier}/disable.js');
     const registrationSimulationModule = await import('../lib/registration-simulation.js');
-    
+
     // Create mock logger and other dependencies
-    mockLogger = { 
-      info: () => {}, 
-      error: () => {}, 
-      warn: () => {}, 
-      debug: () => {},
+    mockLogger = {
+      info: () => { },
+      error: () => { },
+      warn: () => { },
+      debug: () => { },
       child: () => mockLogger
     };
     mockVoices = {};
     mockWsServer = {
-      emit: () => {},
-      on: () => {},
-      off: () => {}
+      emit: () => { },
+      on: () => { },
+      off: () => { }
     };
-    
+
     // Initialize the API endpoints
     const phoneEndpoints = phoneEndpointsModule.default(mockLogger, mockVoices, mockWsServer);
     const getPhoneEndpointHandler = getPhoneEndpointModule.default(mockLogger, mockVoices, mockWsServer);
     const activateHandler = activateModule.default(mockLogger, mockVoices, mockWsServer);
     const disableHandler = disableModule.default(mockLogger, mockVoices, mockWsServer);
-    
+
     phoneEndpointList = phoneEndpoints.GET;
     getPhoneEndpoint = getPhoneEndpointHandler.GET;
     createPhoneEndpoint = phoneEndpoints.POST;
@@ -82,14 +82,14 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     } catch (err) {
       console.warn('Simulation cleanup warning:', err.message);
     }
-    
+
     // Disconnect from real database
     await teardownRealDatabase();
   }, 60000);
 
   beforeEach(async () => {
     const { PhoneRegistration, PhoneNumber, Organisation } = models;
-    
+
     // Create test organization
     testOrgId = randomUUID();
     const testOrg = await Organisation.create({
@@ -139,10 +139,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     query: data.query || {},
     headers: data.headers || {},
     log: {
-      info: () => {},
-      error: () => {},
-      warn: () => {},
-      debug: () => {}
+      info: () => { },
+      error: () => { },
+      warn: () => { },
+      debug: () => { }
     },
     ...data
   });
@@ -153,34 +153,34 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       _status: null,
       _body: null,
       _headers: {},
-      
+
       status(code) {
         this._status = code;
         return this;
       },
-      
+
       send(body) {
         this._body = body;
         this._status = this._status || 200;
         return this;
       },
-      
+
       json(body) {
         this._body = body;
         this._status = this._status || 200;
         return this;
       },
-      
+
       setHeader(name, value) {
         this._headers[name] = value;
         return this;
       },
-      
+
       getHeader(name) {
         return this._headers[name];
       }
     };
-    
+
     return res;
   };
 
@@ -200,10 +200,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._status).toBe(200);
       expect(res._body).toHaveProperty('items');
       expect(res._body).toHaveProperty('nextOffset');
-      
+
       const endpoints = res._body.items;
       expect(endpoints.length).toBeGreaterThan(0);
-      
+
       // Should include both phone numbers and registrations
       const phoneNumbers = endpoints.filter(ep => ep.number);
       const registrations = endpoints.filter(ep => ep.id);
@@ -448,7 +448,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         body: {
           type: 'e164-ddi',
           phoneNumber: '1555999999', // Use phoneNumber field and normalized format
-          trunkId: 'test-trunk-123', // Required field
+          trunkId: 'test-trunk-123', // This will fail trunk validation
           handler: 'livekit',
           outbound: true
         },
@@ -459,9 +459,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await createPhoneEndpoint(req, res);
 
-      expect(res._status).toBe(201);
-      expect(res._body).toHaveProperty('success', true);
-      expect(res._body).toHaveProperty('number', '1555999999');
+      // Since trunk validation is implemented, this should fail with trunk not found
+      expect(res._status).toBe(400);
+      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
     });
 
     test('should create phone registration endpoint', async () => {
@@ -564,6 +564,27 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._status).toBe(400);
       expect(res._body).toHaveProperty('error');
     });
+
+    test('should return 400 for non-existent trunk', async () => {
+      const req = createMockRequest({
+        body: {
+          type: 'e164-ddi',
+          phoneNumber: '1555999998',
+          trunkId: 'non-existent-trunk',
+          handler: 'livekit',
+          outbound: true
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(400);
+      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
+    });
+
 
     test('should handle missing authentication', async () => {
       const req = createMockRequest({
@@ -1029,7 +1050,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     beforeEach(async () => {
       const { PhoneRegistration, Organisation } = models;
-      
+
       // Create test organization
       testOrgId = randomUUID();
       const testOrg = await Organisation.create({
@@ -1057,7 +1078,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         const { PhoneRegistration, Organisation } = models;
         // Stop any active simulations
         registrationSimulator.stopSimulation(testRegId);
-        
+
         // Also stop fast simulation if it exists
         try {
           const { registrationSimulatorFast } = await import('../lib/registration-simulation-fast.js');
@@ -1065,10 +1086,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         } catch (err) {
           // Fast simulation might not be imported, ignore
         }
-        
+
         // Wait a moment for any pending timeouts to complete
         await new Promise(resolve => setTimeout(resolve, 100));
-        
+
         await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
         await Organisation.destroy({ where: { id: testOrgId } });
       } catch (err) {
@@ -1100,7 +1121,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should update registration state through simulation lifecycle', async () => {
       const { PhoneRegistration } = models;
-      
+
       // Activate the registration to start simulation
       const req = createMockRequest({
         params: { identifier: testRegId },
@@ -1148,7 +1169,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should stop simulation when registration is disabled', async () => {
       const { PhoneRegistration } = models;
-      
+
       // First activate to start simulation
       const activateReq = createMockRequest({
         params: { identifier: testRegId },
@@ -1182,7 +1203,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should handle simulation cleanup on registration deletion', async () => {
       const { PhoneRegistration } = models;
-      
+
       // Activate to start simulation
       const activateReq = createMockRequest({
         params: { identifier: testRegId },
@@ -1240,7 +1261,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should handle simulation with multiple registrations', async () => {
       const { PhoneRegistration } = models;
-      
+
       // Create second registration
       const secondReg = await PhoneRegistration.create({
         name: 'Second Test Registration',
@@ -1284,7 +1305,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         // Check all simulations
         const allSimulations = registrationSimulator.getAllSimulations();
         expect(allSimulations.length).toBeGreaterThanOrEqual(2);
-        
+
         const simulationIds = allSimulations.map(sim => sim.registrationId);
         expect(simulationIds).toContain(testRegId);
         expect(simulationIds).toContain(secondReg.id);
@@ -1298,19 +1319,19 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should complete full simulation lifecycle with state transitions (fast mode)', async () => {
       const { PhoneRegistration } = models;
-      
+
       // Mock setTimeout to run at 15x speed for this test
       const originalSetTimeout = global.setTimeout;
       const originalClearTimeout = global.clearTimeout;
       const speedMultiplier = 15;
-      
+
       global.setTimeout = (callback, delay) => {
         const fastDelay = Math.max(1, Math.floor(delay / speedMultiplier));
         return originalSetTimeout(callback, fastDelay);
       };
-      
+
       global.clearTimeout = originalClearTimeout;
-      
+
       try {
         // Activate the registration to start the real simulation (but with fast timing)
         const req = createMockRequest({
@@ -1325,14 +1346,14 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
         // Wait for the first state transition (initial)
         await new Promise(resolve => setTimeout(resolve, 100));
-        
+
         let reg = await PhoneRegistration.findByPk(testRegId);
         expect(reg.status).toBe('active');
         expect(reg.state).toBe('initial');
 
         // Wait for the simulation to complete the lifecycle (15x faster)
         await new Promise(resolve => setTimeout(resolve, 10000));
-        
+
         reg = await PhoneRegistration.findByPk(testRegId);
         expect(reg.status).toBe('active');
         // The simulation should have reached a final state
@@ -1341,7 +1362,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         // The simulation should still be running
         const simulationStatus = registrationSimulator.getSimulationStatus(testRegId);
         expect(simulationStatus).not.toBe(null);
-        
+
         // Cleanup simulation
         registrationSimulator.stopSimulation(testRegId);
       } finally {
@@ -1355,52 +1376,93 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   describe('End-to-End Integration Flow', () => {
     let testAgentId;
     let testUserId;
-
+    let testTrunkId;
+    let testOrgId;
     beforeEach(async () => {
-      const { Agent, User } = models;
-      
-      // Create test user
-      testUserId = randomUUID();
-      const testUser = await User.create({
-        id: testUserId,
-        name: 'Test User',
-        email: 'test@example.com',
-        emailVerified: true,
-        phone: '+1234567890',
-        phoneVerified: true,
-        picture: 'https://example.com/pic.jpg',
-        role: { admin: true }
-      });
+      const { Agent, User, Trunk, Organisation } = models;
 
-      // Create test agent with minimal fields to avoid validation issues
-      // Use build + save to bypass validation
-      const testAgent = Agent.build({
-        name: 'Test Agent',
-        description: 'Test agent for integration flow',
-        modelName: 'gpt-3.5-turbo',
-        prompt: 'You are a helpful assistant.',
-        userId: testUserId,
-        organisationId: testOrgId,
-        options: {},
-        functions: {}
-      });
-      
-      // Save without validation
-      await testAgent.save({ validate: false });
-      testAgentId = testAgent.id;
+      // Jest is bad at outputting error messages so we need to wrap everything in a try/catch
+      try {
+        // Create test organisation
+        testOrgId = randomUUID();
+        const testOrg = await Organisation.create({
+          id: testOrgId,
+          name: 'Test Organisation for Integration Flow'
+        });
+
+        // Create test user
+        testUserId = randomUUID();
+        const testUser = await User.create({
+          id: testUserId,
+          name: 'Test User',
+          email: 'test@example.com',
+          emailVerified: true,
+          phone: '+1234567890',
+          phoneVerified: true,
+          picture: 'https://example.com/pic.jpg',
+          role: { admin: true }
+        });
+        testUserId = testUser.id;
+
+        // Create test trunk
+        const testTrunk = await Trunk.create({
+          id: 'test-trunk-123',
+          name: 'Test Trunk',
+          outbound: false
+        });
+        testTrunkId = testTrunk.id;
+
+        // Associate trunk with organisation through many-to-many relationship
+        await testTrunk.addOrganisation(testOrgId);
+
+
+        // Create test agent with minimal fields to avoid validation issues
+        // Use build + save to bypass validation
+        const testAgent = Agent.build({
+          name: 'Test Agent',
+          description: 'Test agent for integration flow',
+          modelName: 'gpt-3.5-turbo',
+          prompt: 'You are a helpful assistant.',
+          userId: testUserId,
+          organisationId: testOrgId,
+          options: {}
+        });
+
+        // Save without validation
+        await testAgent.save({ validate: false });
+        testAgentId = testAgent.id;
+      } catch (err) {
+        console.error('beforeAll error:', err.message, { err });
+        testAgentId && await Agent.destroy({ where: { id: testAgentId } });
+        testUserId && await User.destroy({ where: { id: testUserId } });
+        testTrunkId && await Trunk.destroy({ where: { id: testTrunkId } });
+        throw err;
+      }
     });
 
     afterEach(async () => {
       try {
+        const { Agent, User, Instance, Trunk, Organisation, PhoneNumber } = models;
+        // Clean up phone numbers for this organisation
+        if (testOrgId) {
+          await PhoneNumber.destroy({ where: { organisationId: testOrgId } });
+        }
+        // Clean up instances first (they have foreign key to agent)
         if (testAgentId) {
-          const { Agent, User, Instance } = models;
-          // Clean up instances first (they have foreign key to agent)
-          await Instance.destroy({ where: { agentId: testAgentId } });
           await Agent.destroy({ where: { id: testAgentId } });
+        }
+        if (testUserId) {
           await User.destroy({ where: { id: testUserId } });
         }
+        if (testTrunkId) {
+          await Trunk.destroy({ where: { id: testTrunkId } });
+        }
+        if (testOrgId) {
+          await Organisation.destroy({ where: { id: testOrgId } });
+        }
       } catch (err) {
-        console.warn('Cleanup warning:', err.message);
+        console.error('afterEach error:', err.message, { err });
+        throw err;
       }
     });
 
@@ -1461,18 +1523,18 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // Import listener creation function
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
-      
+
       await listenHandler.POST(listenerReq, listenerRes);
-      
+
       // Debug: Check what error we're getting
       if (listenerRes._status !== 200) {
         console.log('Listener creation failed:', listenerRes._status, listenerRes._body);
       }
-      
+
       // The listener creation should fail with expected error (no handler for model in test environment)
       expect(listenerRes._status).toBe(400);
       expect(listenerRes._body).toContain('no handler for');
-      
+
       // This demonstrates that the full workflow works up to the handler limitation:
       // 1. ✅ Agent created successfully
       // 2. ✅ Registration endpoint created successfully  
@@ -1483,7 +1545,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should handle registration endpoint not found when creating listener', async () => {
       const nonExistentRegistrationId = randomUUID();
-      
+
       const listenerReq = createMockRequest({
         params: { agentId: testAgentId },
         body: {
@@ -1499,9 +1561,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // Import listener creation function
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
-      
+
       await listenHandler.POST(listenerReq, listenerRes);
-      
+
       // Should return an error for non-existent registration
       expect(listenerRes._status).toBe(400); // The handler returns 400 for validation error
       expect(listenerRes._body).toContain('Phone endpoint with id');
@@ -1509,7 +1571,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     test('should handle agent not found when creating listener', async () => {
       const nonExistentAgentId = randomUUID();
-      
+
       // First create a valid registration endpoint
       const registrationReq = createMockRequest({
         body: {
@@ -1545,9 +1607,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // Import listener creation function
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
-      
+
       await listenHandler.POST(listenerReq, listenerRes);
-      
+
       // Should return 404 for non-existent agent
       expect(listenerRes._status).toBe(404);
       expect(listenerRes._body).toContain('no agent');
@@ -1672,78 +1734,47 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(verifyDeleteRes._status).toBe(404);
     });
 
-    test('should handle registration endpoint lifecycle with E.164 DDI', async () => {
-      // Step 1: Create an E.164 DDI endpoint
-      const ddiReq = createMockRequest({
+    test('should create E.164 DDI endpoint with trunk validation', async () => {
+      // Use a unique phone number for this test
+      const uniquePhoneNumber = `1555999${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+      
+      // Test 1: Create E.164 DDI endpoint with valid trunk (should succeed)
+      const validDdiReq = createMockRequest({
         body: {
           type: 'e164-ddi',
-          phoneNumber: '1555999888',
-          trunkId: 'test-trunk-integration',
+          phoneNumber: uniquePhoneNumber,
+          trunkId: 'test-trunk-123', // Use the valid trunk created in beforeEach
           handler: 'livekit',
           outbound: true
         },
         headers: {}
       });
-      const ddiRes = createMockResponse();
-      ddiRes.locals.user = { organisationId: testOrgId };
+      const validDdiRes = createMockResponse();
+      validDdiRes.locals.user = { organisationId: testOrgId };
 
-      await createPhoneEndpoint(ddiReq, ddiRes);
-      expect(ddiRes._status).toBe(201);
-      expect(ddiRes._body).toHaveProperty('success', true);
-      expect(ddiRes._body).toHaveProperty('number', '1555999888');
-      const ddiNumber = ddiRes._body.number;
+      await createPhoneEndpoint(validDdiReq, validDdiRes);
+      console.log('validDdiRes:', validDdiRes._body);
+      expect(validDdiRes._status).toBe(201);
+      expect(validDdiRes._body).toHaveProperty('success', true);
+      expect(validDdiRes._body).toHaveProperty('number', uniquePhoneNumber);
 
-      // Step 2: Verify the DDI endpoint exists
-      const verifyReq = createMockRequest({
-        params: { identifier: ddiNumber },
-        headers: {}
-      });
-      const verifyRes = createMockResponse();
-      verifyRes.locals.user = { organisationId: testOrgId };
-
-      await getPhoneEndpoint(verifyReq, verifyRes);
-      expect(verifyRes._status).toBe(200);
-      expect(verifyRes._body).toHaveProperty('number', '1555999888');
-      expect(verifyRes._body).toHaveProperty('handler', 'livekit');
-      expect(verifyRes._body).toHaveProperty('outbound', true);
-
-      // Step 3: Update the DDI endpoint
-      const updateReq = createMockRequest({
-        params: { identifier: ddiNumber },
+      // Test 2: Create E.164 DDI endpoint with invalid trunk (should fail)
+      const invalidDdiReq = createMockRequest({
         body: {
-          name: 'Updated DDI Endpoint'
+          type: 'e164-ddi',
+          phoneNumber: '1555999889',
+          trunkId: 'non-existent-trunk',
+          handler: 'livekit',
+          outbound: true
         },
         headers: {}
       });
-      const updateRes = createMockResponse();
-      updateRes.locals.user = { organisationId: testOrgId };
+      const invalidDdiRes = createMockResponse();
+      invalidDdiRes.locals.user = { organisationId: testOrgId };
 
-      await updatePhoneEndpoint(updateReq, updateRes);
-      expect(updateRes._status).toBe(200);
-      expect(updateRes._body).toHaveProperty('success', true);
-
-      // Step 4: Delete the DDI endpoint
-      const deleteReq = createMockRequest({
-        params: { identifier: ddiNumber },
-        headers: {}
-      });
-      const deleteRes = createMockResponse();
-      deleteRes.locals.user = { organisationId: testOrgId };
-
-      await deletePhoneEndpoint(deleteReq, deleteRes);
-      expect(deleteRes._status).toBe(200);
-      expect(deleteRes._body).toHaveProperty('success', true);
-
-      // Step 5: Verify the DDI endpoint is gone
-      const verifyDeleteReq = createMockRequest({
-        params: { identifier: ddiNumber },
-        headers: {}
-      });
-      const verifyDeleteRes = createMockResponse();
-      verifyDeleteRes.locals.user = { organisationId: testOrgId };
-
-      await getPhoneEndpoint(verifyDeleteReq, verifyDeleteRes);
-      expect(verifyDeleteRes._status).toBe(404);
+      await createPhoneEndpoint(invalidDdiReq, invalidDdiRes);
+      expect(invalidDdiRes._status).toBe(400);
+      expect(invalidDdiRes._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
     });
   });
 });

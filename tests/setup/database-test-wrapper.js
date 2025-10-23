@@ -8,21 +8,21 @@ if (!process.env.POSTGRES_HOST) {
   // If no POSTGRES_HOST is set, assume we're on the host
   process.env.POSTGRES_HOST = 'localhost';
   process.env.POSTGRES_PORT = '5433';
-  process.env.POSTGRES_DB = 'llmvoicetest';
-  process.env.POSTGRES_USER = 'testuser';
-  process.env.POSTGRES_PASSWORD = 'testpass';
-  process.env.CREDENTIALS_KEY = process.env.CREDENTIALS_KEY || 'test-secret-key-for-encryption';
 }
+
+process.env.POSTGRES_DB = 'llmvoicetest';
+process.env.POSTGRES_USER = 'testuser';
+process.env.POSTGRES_PASSWORD = 'testpass';
+process.env.CREDENTIALS_KEY = process.env.CREDENTIALS_KEY || 'test-secret-key-for-encryption';
+
 // If environment variables are already set (e.g., in Docker), don't override them
 // Only set DB_FORCE_SYNC if it's not already set
 if (!process.env.DB_FORCE_SYNC) {
   process.env.DB_FORCE_SYNC = 'true';
 }
 
-// Force local docker-compose Postgres connection, ignoring SECRETENV-provided URLs
-delete process.env.DATABASE_URL;
-delete process.env.POSTGRES_URL;
-delete process.env.POSTGRES_CONNECTION_URL;
+// Force database sync by setting NODE_ENV to development
+process.env.NODE_ENV = 'development';
 
 // Disable SSL for test database
 delete process.env.POSTGRES_CA;
@@ -53,16 +53,12 @@ export async function setupRealDatabase() {
     POSTGRES_RO_SERVER_NAME: process.env.POSTGRES_RO_SERVER_NAME
   };
 
-  // Import the real database module with the correct environment
+  // Lazy import the real database module AFTER environment variables are set
+  // This ensures database.js uses the correct test environment variables
   const dbModule = await import('../../lib/database.js');
-  
+
   // Wait for database to be ready
   await dbModule.databaseStarted;
-  
-  // Sync the database schema to ensure all tables exist
-  // We need to get the sequelize instance from the models
-  const { Organisation } = dbModule;
-  await Organisation.sequelize.sync({ force: true });
 
   realDb = {
     models: {
@@ -90,10 +86,10 @@ export async function teardownRealDatabase() {
   if (realDb && isInitialized) {
     // Stop the real database
     await realDb.stopDatabase();
-    
+
     // Restore original environment variables
     Object.assign(process.env, realDb.originalEnv);
-    
+
     isInitialized = false;
     realDb = null;
   }

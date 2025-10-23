@@ -9,10 +9,11 @@
     "start": "NODE_ENV=production node index.mjs",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
     "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js",
-    "test:db": "docker-compose -f tests/docker-compose.test.yml up -d && yarn test && docker-compose -f tests/docker-compose.test.yml down -v",
+    "test:db": "yarn test:setup && yarn test && yarn test:cleanup",
     "test:no-db": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.no-db.js",
     "test:ci": "docker-compose -f docker-compose.ci.yml build --no-cache test-runner && docker-compose -f docker-compose.ci.yml up --abort-on-container-exit --exit-code-from test-runner",
     "test:cleanup": "docker-compose -f tests/docker-compose.test.yml down -v",
+    "test:setup": "docker-compose -f tests/docker-compose.test.yml up -d",
     "livekit-dev": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml agents/livekit/realtime.mjs dev"
   },
   "author": "",

@@ -66,7 +66,7 @@ Request body uses a base-and-union shape:
 **Parameters:**
 - `type` (string, required): Must be "e164-ddi"
 - `phoneNumber` (string, required): E.164 phone number (with or without +)
-- `trunkId` (string, required): Trunk identifier
+- `trunkId` (string, required): Trunk identifier (must exist and be associated with your organization)
 - `outbound` (boolean, required): Whether this endpoint supports outbound calls
 
 #### Phone Registration Endpoints
@@ -268,7 +268,7 @@ curl -X DELETE "https://llm-agent.aplisay.com/api/phone-endpoints/+1234567890" \
 
 ## Error Responses
 
-- `400 Bad Request`: Invalid request data or validation failed
+- `400 Bad Request`: Invalid request data, validation failed, or trunk not found/not associated with organization
 - `401 Unauthorized`: Invalid or missing authentication
 - `403 Forbidden`: Access denied (for PUT/DELETE operations)
 - `404 Not Found`: Phone endpoint not found (for PUT/DELETE operations)

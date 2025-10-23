@@ -1,4 +1,4 @@
-import { PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Op } from '../../lib/database.js';
 import { getTelephonyHandler } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
 
@@ -158,6 +158,21 @@ const createPhoneEndpoint = async (req, res) => {
       if (existingNumber) {
         return res.status(409).send({
           error: 'Phone number already exists'
+        });
+      }
+
+      // Validate that the trunk exists and is associated with the organization
+      const trunk = await Trunk.findByPk(data.trunkId, {
+        include: [{
+          model: Organisation,
+          where: { id: organisationId },
+          required: true
+        }]
+      });
+      
+      if (!trunk) {
+        return res.status(400).send({
+          error: 'Trunk not found or not associated with your organization'
         });
       }
 
@@ -621,14 +636,15 @@ createPhoneEndpoint.apiDoc = {
       }
     },
     400: {
-      description: 'Bad request - validation failed',
+      description: 'Bad request - validation failed or trunk not found',
       content: {
         'application/json': {
           schema: {
             type: 'object',
             properties: {
               error: {
-                type: 'string'
+                type: 'string',
+                example: 'Validation failed'
               },
               details: {
                 type: 'array',
