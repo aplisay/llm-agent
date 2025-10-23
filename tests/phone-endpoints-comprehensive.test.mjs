@@ -337,6 +337,154 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         expect(error.message).toContain('Cannot destructure property');
       }
     });
+
+    test('should ensure organization isolation - organizations cannot see each others endpoints', async () => {
+      const { PhoneNumber, PhoneRegistration, Organisation, Trunk } = models;
+      
+      // Create two separate organizations
+      const org1Id = randomUUID();
+      const org2Id = randomUUID();
+      
+      const org1 = await Organisation.create({
+        id: org1Id,
+        name: 'Organization 1'
+      });
+      
+      const org2 = await Organisation.create({
+        id: org2Id,
+        name: 'Organization 2'
+      });
+
+      // Create trunks for each organization
+      const trunk1 = await Trunk.create({
+        id: 'org1-trunk-123',
+        name: 'Org 1 Trunk',
+        outbound: false
+      });
+      await trunk1.addOrganisation(org1Id);
+
+      const trunk2 = await Trunk.create({
+        id: 'org2-trunk-456',
+        name: 'Org 2 Trunk',
+        outbound: false
+      });
+      await trunk2.addOrganisation(org2Id);
+
+      try {
+        // Create E.164 DDI endpoints for each organization
+        const phone1 = await PhoneNumber.create({
+          number: '1555111111',
+          handler: 'livekit',
+          outbound: true,
+          organisationId: org1Id
+        });
+
+        const phone2 = await PhoneNumber.create({
+          number: '1555222222',
+          handler: 'livekit',
+          outbound: true,
+          organisationId: org2Id
+        });
+
+        // Create phone registrations for each organization
+        const reg1 = await PhoneRegistration.create({
+          name: 'Org 1 Registration',
+          handler: 'livekit',
+          outbound: true,
+          organisationId: org1Id,
+          status: 'disabled',
+          state: 'initial',
+          registrar: 'sip.example.com',
+          username: 'org1user',
+          password: 'org1pass'
+        });
+
+        const reg2 = await PhoneRegistration.create({
+          name: 'Org 2 Registration',
+          handler: 'livekit',
+          outbound: true,
+          organisationId: org2Id,
+          status: 'disabled',
+          state: 'initial',
+          registrar: 'sip.example.com',
+          username: 'org2user',
+          password: 'org2pass'
+        });
+
+        // Test that Organization 1 only sees its own endpoints
+        const req1 = createMockRequest({
+          query: {},
+          headers: {}
+        });
+        const res1 = createMockResponse();
+        res1.locals.user = { organisationId: org1Id };
+
+        await phoneEndpointList(req1, res1);
+
+        expect(res1._status).toBe(200);
+        expect(res1._body).toHaveProperty('items');
+        
+        const org1Endpoints = res1._body.items;
+        expect(org1Endpoints.length).toBeGreaterThan(0);
+
+        // Verify Organization 1 only sees its own phone number
+        const org1PhoneNumbers = org1Endpoints.filter(ep => ep.number);
+        expect(org1PhoneNumbers).toHaveLength(1);
+        expect(org1PhoneNumbers[0].number).toBe('1555111111');
+
+        // Verify Organization 1 only sees its own registrations
+        const org1Registrations = org1Endpoints.filter(ep => ep.id);
+        expect(org1Registrations).toHaveLength(1);
+        expect(org1Registrations[0].name).toBe('Org 1 Registration');
+
+        // Test that Organization 2 only sees its own endpoints
+        const req2 = createMockRequest({
+          query: {},
+          headers: {}
+        });
+        const res2 = createMockResponse();
+        res2.locals.user = { organisationId: org2Id };
+
+        await phoneEndpointList(req2, res2);
+
+        expect(res2._status).toBe(200);
+        expect(res2._body).toHaveProperty('items');
+        
+        const org2Endpoints = res2._body.items;
+        expect(org2Endpoints.length).toBeGreaterThan(0);
+
+        // Verify Organization 2 only sees its own phone number
+        const org2PhoneNumbers = org2Endpoints.filter(ep => ep.number);
+        expect(org2PhoneNumbers).toHaveLength(1);
+        expect(org2PhoneNumbers[0].number).toBe('1555222222');
+
+        // Verify Organization 2 only sees its own registrations
+        const org2Registrations = org2Endpoints.filter(ep => ep.id);
+        expect(org2Registrations).toHaveLength(1);
+        expect(org2Registrations[0].name).toBe('Org 2 Registration');
+
+        // Verify cross-contamination: Organization 1 should NOT see Organization 2's endpoints
+        const org1PhoneNumbersList = org1Endpoints.map(ep => ep.number).filter(Boolean);
+        expect(org1PhoneNumbersList).not.toContain('1555222222');
+
+        const org1RegistrationNames = org1Endpoints.map(ep => ep.name).filter(Boolean);
+        expect(org1RegistrationNames).not.toContain('Org 2 Registration');
+
+        // Verify cross-contamination: Organization 2 should NOT see Organization 1's endpoints
+        const org2PhoneNumbersList = org2Endpoints.map(ep => ep.number).filter(Boolean);
+        expect(org2PhoneNumbersList).not.toContain('1555111111');
+
+        const org2RegistrationNames = org2Endpoints.map(ep => ep.name).filter(Boolean);
+        expect(org2RegistrationNames).not.toContain('Org 1 Registration');
+
+      } finally {
+        // Cleanup
+        await PhoneNumber.destroy({ where: { organisationId: [org1Id, org2Id] } });
+        await PhoneRegistration.destroy({ where: { organisationId: [org1Id, org2Id] } });
+        await Trunk.destroy({ where: { id: ['org1-trunk-123', 'org2-trunk-456'] } });
+        await Organisation.destroy({ where: { id: [org1Id, org2Id] } });
+      }
+    });
   });
 
   describe('GET /api/phone-endpoints/{identifier}', () => {
