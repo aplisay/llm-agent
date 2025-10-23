@@ -62,7 +62,8 @@ phoneNumberList.apiDoc = {
   summary: 'DEPRECATED: Returns a list of all phone numbers for the organisation of the requestor. Optionally filter to only return numbers that can be used for outbound calling. Use /api/phone-endpoints instead.',
   description: '⚠️ DEPRECATED: This endpoint is deprecated and will be removed in a future version. Please use the Phone Endpoints API (/api/phone-endpoints) instead, which provides all the functionality of this API plus additional features like pagination, CRUD operations, and support for SIP registration endpoints.',
   operationId: 'listPhoneNumbers',
-  tags: ["Phone Numbers", "Deprecated"],
+  deprecated: true,
+  tags: ["Phone Endpoints"],
   parameters: [
     {
       description: "Filter to only return numbers that can be used for outbound calling (outbound=true and aplisayId is not null)",
