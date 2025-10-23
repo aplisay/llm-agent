@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Phone Endpoints API provides access to telephone endpoints (numbers) available to an organization for use with agents. These endpoints can be assigned to agent instances to handle incoming calls.
+The Phone Endpoints API provides access to telephone endpoints (numbers) available to an organisation for use with agents. These endpoints can be assigned to agent instances to handle incoming calls.
 
 ## Endpoints
 
 ### GET /api/phone-endpoints
 
-Returns a paginated list of phone endpoints for the caller's organization.
+Returns a paginated list of phone endpoints for the caller's organisation.
 
 Query Parameters:
 - `originate` (boolean, optional): When `true`, return only endpoints that can be used for outbound calling
@@ -66,7 +66,7 @@ Request body uses a base-and-union shape:
 **Parameters:**
 - `type` (string, required): Must be "e164-ddi"
 - `phoneNumber` (string, required): E.164 phone number (with or without +)
-- `trunkId` (string, required): Trunk identifier (must exist and be associated with your organization)
+- `trunkId` (string, required): Trunk identifier (must exist and be associated with your organisation)
 - `outbound` (boolean, required): Whether this endpoint supports outbound calls
 
 #### Phone Registration Endpoints
@@ -268,7 +268,7 @@ curl -X DELETE "https://llm-agent.aplisay.com/api/phone-endpoints/+1234567890" \
 
 ## Error Responses
 
-- `400 Bad Request`: Invalid request data, validation failed, or trunk not found/not associated with organization
+- `400 Bad Request`: Invalid request data, validation failed, or trunk not found/not associated with organisation
 - `401 Unauthorized`: Invalid or missing authentication
 - `403 Forbidden`: Access denied (for PUT/DELETE operations)
 - `404 Not Found`: Phone endpoint not found (for PUT/DELETE operations)
@@ -284,12 +284,12 @@ Phone endpoints are stored in the `phone_numbers` table with the following struc
 - `reservation`: Boolean flag for reservation status
 - `outbound`: Boolean flag for outbound capability
 - `aplisayId`: Optional Aplisay identifier
-- `organisationId`: Foreign key to the organization (automatically filtered by requestor's organization)
+- `organisationId`: Foreign key to the organisation (automatically filtered by requestor's organisation)
 - `createdAt`: Timestamp of creation
 - `updatedAt`: Timestamp of last update
 
 ## Security
 
-- Phone endpoints are automatically filtered by the authenticated user's organization
-- Users can only see endpoints belonging to their organization
+- Phone endpoints are automatically filtered by the authenticated user's organisation
+- Users can only see endpoints belonging to their organisation
 - The endpoint requires valid authentication

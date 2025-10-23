@@ -30,7 +30,7 @@ const originateCall = (async (req, res) => {
       });
     }
 
-    // Check if agent exists and belongs to the organization
+    // Check if agent exists and belongs to the organisation
     const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
     const agent = instance?.Agent;
 
@@ -38,7 +38,7 @@ const originateCall = (async (req, res) => {
       return res.status(404).send({ error: `Agent ${listenerId} not found` });
     }
 
-    // Check if callerId is present in phoneNumbers table and belongs to the organization
+    // Check if callerId is present in phoneNumbers table and belongs to the organisation
     let callerPhoneNumber = await PhoneNumber.findByPk(callerId);
     if (!callerPhoneNumber || callerPhoneNumber.organisationId !== organisationId) {
       return res.status(404).send({
@@ -116,7 +116,7 @@ originateCall.apiDoc = {
             },
             callerId: {
               type: "string",
-              description: "The phone number to call from (must exist in phoneNumbers table and belong to the organization)",
+              description: "The phone number to call from (must exist in phoneNumbers table and belong to the organisation)",
               example: "+442080996945"
             },
             metadata: {

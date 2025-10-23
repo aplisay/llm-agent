@@ -161,7 +161,7 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      // Validate that the trunk exists and is associated with the organization
+      // Validate that the trunk exists and is associated with the organisation
       const trunk = await Trunk.findByPk(data.trunkId, {
         include: [{
           model: Organisation,
@@ -172,7 +172,7 @@ const createPhoneEndpoint = async (req, res) => {
       
       if (!trunk) {
         return res.status(400).send({
-          error: 'Trunk not found or not associated with your organization'
+          error: 'Trunk not found or not associated with your organisation'
         });
       }
 
@@ -372,7 +372,7 @@ const deletePhoneEndpoint = async (req, res) => {
 };
 
 phoneEndpointList.apiDoc = {
-  summary: 'Returns a list of all phone endpoints for the organization of the requestor. Optionally filter to only certain endpoint types.',
+  summary: 'Returns a list of all phone endpoints for the organisation of the requestor. Optionally filter to only certain endpoint types.',
   description: `Returns a paginated list of phone endpoints for the caller\'s organisation. 
                 Phone endpoints are used to assign numbers that then route via handlers and listeners to agents.
                 Both E.164 DDI number and phone SIPregistration endpoints are supported.

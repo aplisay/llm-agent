@@ -68,7 +68,7 @@ callCreate.apiDoc = {
             },
             organisationId: {
               type: 'string',
-              description: 'Organization ID'
+              description: 'Organisation ID'
             },
             instanceId: {
               type: 'string',

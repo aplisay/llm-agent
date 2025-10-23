@@ -29,6 +29,8 @@ delete process.env.POSTGRES_CA;
 delete process.env.POSTGRES_KEY;
 delete process.env.POSTGRES_CERT;
 delete process.env.POSTGRES_RO_SERVER_NAME;
+delete process.env.SECRETENV_KEY;
+delete process.env.SECRETENV_BUNDLE;
 
 let realDb;
 let isInitialized = false;

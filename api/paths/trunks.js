@@ -1,4 +1,4 @@
-import { Trunk, Op } from '../../lib/database.js';
+import { Trunk, Organisation, Op } from '../../lib/database.js';
 
 let log;
 
@@ -13,15 +13,21 @@ const listTrunks = async (req, res) => {
   const { organisationId } = res.locals.user || {};
   const { offset, pageSize } = req.query || {};
   try {
-    const where = {
-      [Op.or]: [
-        { organisationId },
-        { organisationId: { [Op.eq]: null } }
-      ]
-    };
     const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
     const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
-    const rows = await Trunk.findAll({ where, attributes: ['trunkId', 'name', 'outbound'], limit: size, offset: startOffset });
+    
+    // Find trunks associated with the organisation through the many-to-many relationship
+    const rows = await Trunk.findAll({
+      include: [{
+        model: Organisation,
+        where: { id: organisationId },
+        required: true
+      }],
+      attributes: ['id', 'name', 'outbound'],
+      limit: size,
+      offset: startOffset
+    });
+    
     const nextOffset = rows.length === size ? startOffset + size : null;
     res.send({ items: rows, nextOffset });
   }
@@ -64,9 +70,9 @@ listTrunks.apiDoc = {
                 type: 'array',
                 items: {
                   type: 'object',
-                  required: ['trunkId', 'outbound'],
+                  required: ['id', 'outbound'],
                   properties: {
-                    trunkId: { type: 'string', description: 'Unique identifier for the trunk' },
+                    id: { type: 'string', description: 'Unique identifier for the trunk' },
                     name: { type: 'string', nullable: true, description: 'Free-form human name that identifies the trunk\'s purpose' },
                     outbound: { type: 'boolean', description: 'Whether this trunk can be used for outbound calls' }
                   }

@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Phone Numbers API provides access to telephone numbers available to an organization for use with agents. These numbers can be assigned to agent instances to handle incoming calls.
+The Phone Numbers API provides access to telephone numbers available to an organisation for use with agents. These numbers can be assigned to agent instances to handle incoming calls.
 
 **Migration Guide**: To migrate from this API to the Phone Endpoints API:
 
@@ -17,7 +17,7 @@ The Phone Numbers API provides access to telephone numbers available to an organ
 
 ### GET /api/phone-numbers
 
-Returns a list of all phone numbers for the organization of the requestor.
+Returns a list of all phone numbers for the organisation of the requestor.
 
 #### Query Parameters
 
@@ -86,12 +86,12 @@ Phone numbers are stored in the `phone_numbers` table with the following structu
 - `reservation`: Boolean flag for reservation status
 - `outbound`: Boolean flag for outbound capability
 - `aplisayId`: Optional Aplisay identifier
-- `organisationId`: Foreign key to the organization (automatically filtered by requestor's organization)
+- `organisationId`: Foreign key to the organisation (automatically filtered by requestor's organisation)
 - `createdAt`: Timestamp of creation
 - `updatedAt`: Timestamp of last update
 
 ## Security
 
-- Phone numbers are automatically filtered by the authenticated user's organization
-- Users can only see phone numbers belonging to their organization
+- Phone numbers are automatically filtered by the authenticated user's organisation
+- Users can only see phone numbers belonging to their organisation
 - The endpoint requires valid authentication

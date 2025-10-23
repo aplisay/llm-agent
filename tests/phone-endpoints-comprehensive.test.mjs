@@ -90,7 +90,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   beforeEach(async () => {
     const { PhoneRegistration, PhoneNumber, Organisation } = models;
 
-    // Create test organization
+    // Create test organisation
     testOrgId = randomUUID();
     const testOrg = await Organisation.create({
       id: testOrgId,
@@ -187,7 +187,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   describe('GET /api/phone-endpoints', () => {
     // Use the actual API endpoint - will be assigned in beforeAll
 
-    test('should return all endpoints for organization', async () => {
+    test('should return all endpoints for organisation', async () => {
       const req = createMockRequest({
         query: {},
         headers: {}
@@ -303,7 +303,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body.nextOffset).toBeDefined();
     });
 
-    test('should return empty list for organization with no endpoints', async () => {
+    test('should return empty list for organisation with no endpoints', async () => {
       const req = createMockRequest({
         query: {},
         headers: {}
@@ -338,24 +338,24 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       }
     });
 
-    test('should ensure organization isolation - organizations cannot see each others endpoints', async () => {
+    test('should ensure organisation isolation - organisations cannot see each others endpoints', async () => {
       const { PhoneNumber, PhoneRegistration, Organisation, Trunk } = models;
       
-      // Create two separate organizations
+      // Create two separate organisations
       const org1Id = randomUUID();
       const org2Id = randomUUID();
       
       const org1 = await Organisation.create({
         id: org1Id,
-        name: 'Organization 1'
+        name: 'Organisation 1'
       });
       
       const org2 = await Organisation.create({
         id: org2Id,
-        name: 'Organization 2'
+        name: 'Organisation 2'
       });
 
-      // Create trunks for each organization
+      // Create trunks for each organisation
       const trunk1 = await Trunk.create({
         id: 'org1-trunk-123',
         name: 'Org 1 Trunk',
@@ -371,7 +371,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       await trunk2.addOrganisation(org2Id);
 
       try {
-        // Create E.164 DDI endpoints for each organization
+        // Create E.164 DDI endpoints for each organisation
         const phone1 = await PhoneNumber.create({
           number: '1555111111',
           handler: 'livekit',
@@ -386,7 +386,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           organisationId: org2Id
         });
 
-        // Create phone registrations for each organization
+        // Create phone registrations for each organisation
         const reg1 = await PhoneRegistration.create({
           name: 'Org 1 Registration',
           handler: 'livekit',
@@ -411,7 +411,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           password: 'org2pass'
         });
 
-        // Test that Organization 1 only sees its own endpoints
+        // Test that Organisation 1 only sees its own endpoints
         const req1 = createMockRequest({
           query: {},
           headers: {}
@@ -427,17 +427,17 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         const org1Endpoints = res1._body.items;
         expect(org1Endpoints.length).toBeGreaterThan(0);
 
-        // Verify Organization 1 only sees its own phone number
+        // Verify Organisation 1 only sees its own phone number
         const org1PhoneNumbers = org1Endpoints.filter(ep => ep.number);
         expect(org1PhoneNumbers).toHaveLength(1);
         expect(org1PhoneNumbers[0].number).toBe('1555111111');
 
-        // Verify Organization 1 only sees its own registrations
+        // Verify Organisation 1 only sees its own registrations
         const org1Registrations = org1Endpoints.filter(ep => ep.id);
         expect(org1Registrations).toHaveLength(1);
         expect(org1Registrations[0].name).toBe('Org 1 Registration');
 
-        // Test that Organization 2 only sees its own endpoints
+        // Test that Organisation 2 only sees its own endpoints
         const req2 = createMockRequest({
           query: {},
           headers: {}
@@ -453,24 +453,24 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         const org2Endpoints = res2._body.items;
         expect(org2Endpoints.length).toBeGreaterThan(0);
 
-        // Verify Organization 2 only sees its own phone number
+        // Verify Organisation 2 only sees its own phone number
         const org2PhoneNumbers = org2Endpoints.filter(ep => ep.number);
         expect(org2PhoneNumbers).toHaveLength(1);
         expect(org2PhoneNumbers[0].number).toBe('1555222222');
 
-        // Verify Organization 2 only sees its own registrations
+        // Verify Organisation 2 only sees its own registrations
         const org2Registrations = org2Endpoints.filter(ep => ep.id);
         expect(org2Registrations).toHaveLength(1);
         expect(org2Registrations[0].name).toBe('Org 2 Registration');
 
-        // Verify cross-contamination: Organization 1 should NOT see Organization 2's endpoints
+        // Verify cross-contamination: Organisation 1 should NOT see Organisation 2's endpoints
         const org1PhoneNumbersList = org1Endpoints.map(ep => ep.number).filter(Boolean);
         expect(org1PhoneNumbersList).not.toContain('1555222222');
 
         const org1RegistrationNames = org1Endpoints.map(ep => ep.name).filter(Boolean);
         expect(org1RegistrationNames).not.toContain('Org 2 Registration');
 
-        // Verify cross-contamination: Organization 2 should NOT see Organization 1's endpoints
+        // Verify cross-contamination: Organisation 2 should NOT see Organisation 1's endpoints
         const org2PhoneNumbersList = org2Endpoints.map(ep => ep.number).filter(Boolean);
         expect(org2PhoneNumbersList).not.toContain('1555111111');
 
@@ -544,7 +544,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organization', async () => {
+    test('should return 403 for endpoint from different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         headers: {}
@@ -609,7 +609,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       // Since trunk validation is implemented, this should fail with trunk not found
       expect(res._status).toBe(400);
-      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
+      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
     });
 
     test('should create phone registration endpoint', async () => {
@@ -730,7 +730,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       await createPhoneEndpoint(req, res);
 
       expect(res._status).toBe(400);
-      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
+      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
     });
 
 
@@ -835,7 +835,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organization', async () => {
+    test('should return 403 for endpoint from different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         body: {
@@ -956,7 +956,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organization', async () => {
+    test('should return 403 for endpoint from different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         query: {},
@@ -1056,7 +1056,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for registration from different organization', async () => {
+    test('should return 403 for registration from different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testRegId },
         headers: {}
@@ -1148,7 +1148,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for registration from different organization', async () => {
+    test('should return 403 for registration from different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testRegId },
         headers: {}
@@ -1199,7 +1199,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     beforeEach(async () => {
       const { PhoneRegistration, Organisation } = models;
 
-      // Create test organization
+      // Create test organisation
       testOrgId = randomUUID();
       const testOrg = await Organisation.create({
         id: testOrgId,
@@ -1922,7 +1922,98 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await createPhoneEndpoint(invalidDdiReq, invalidDdiRes);
       expect(invalidDdiRes._status).toBe(400);
-      expect(invalidDdiRes._body).toHaveProperty('error', 'Trunk not found or not associated with your organization');
+      expect(invalidDdiRes._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+    });
+  });
+
+  describe('GET /api/trunks', () => {
+    // Use the actual API endpoint - will be assigned in beforeAll
+    let listTrunks;
+
+    beforeAll(async () => {
+      // Import the trunks API handler
+      const trunksModule = await import('../api/paths/trunks.js');
+      const trunksHandler = trunksModule.default(mockLogger);
+      listTrunks = trunksHandler.GET;
+    });
+
+    test('should return all trunks for organisation', async () => {
+      const { Trunk, Organisation } = models;
+      
+      // Create a test organisation
+      const testOrgId = randomUUID();
+      const testOrg = await Organisation.create({
+        id: testOrgId,
+        name: 'Test Organisation for Trunks'
+      });
+
+      // Create a trunk for a different organisation (should not appear)
+      let otherOrgId = randomUUID();
+      const otherOrg = await Organisation.create({
+        id: otherOrgId,
+        name: 'Other Organisation'
+      });
+
+      const otherTrunk = await Trunk.create({
+        id: 'other-trunk',
+        name: 'Other Trunk',
+        outbound: true
+      });
+      await otherTrunk.addOrganisation(otherOrgId);
+      
+      try {
+        // Create test trunks
+        const trunk1 = await Trunk.create({
+          id: 'trunk-1',
+          name: 'Test Trunk 1',
+          outbound: true
+        });
+        await trunk1.addOrganisation(testOrgId);
+
+        const trunk2 = await Trunk.create({
+          id: 'trunk-2',
+          name: 'Test Trunk 2',
+          outbound: false
+        });
+        await trunk2.addOrganisation(testOrgId);
+
+        // Test the API
+        const req = createMockRequest({
+          query: {},
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await listTrunks(req, res);
+
+        expect(res._status).toBe(200);
+        expect(res._body).toHaveProperty('items');
+        expect(res._body).toHaveProperty('nextOffset');
+
+        const trunks = res._body.items;
+        expect(trunks).toHaveLength(2);
+
+        // Verify the trunks belong to the test organisation
+        const trunkIds = trunks.map(t => t.id);
+        expect(trunkIds).toContain('trunk-1');
+        expect(trunkIds).toContain('trunk-2');
+        expect(trunkIds).not.toContain('other-trunk');
+
+        // Verify trunk properties
+        const trunk1Data = trunks.find(t => t.id === 'trunk-1');
+        expect(trunk1Data).toHaveProperty('name', 'Test Trunk 1');
+        expect(trunk1Data).toHaveProperty('outbound', true);
+
+        const trunk2Data = trunks.find(t => t.id === 'trunk-2');
+        expect(trunk2Data).toHaveProperty('name', 'Test Trunk 2');
+        expect(trunk2Data).toHaveProperty('outbound', false);
+
+      } finally {
+        // Cleanup
+        await Trunk.destroy({ where: { id: ['trunk-1', 'trunk-2', 'other-trunk'] } });
+        await Organisation.destroy({ where: { id: [testOrgId, otherOrgId] } });
+      }
     });
   });
 });

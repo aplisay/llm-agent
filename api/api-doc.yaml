@@ -56,7 +56,7 @@ tags:
       set at agent creation time, but may also be modified in the course of running an agent.
   - name: Phone Endpoints
     description: |-
-      Phone Endpoints represent routed telephone numbers and other SIP user fields available to an organization for use with agents.
+      Phone Endpoints represent routed telephone numbers and other SIP user fields available to an organisation for use with agents.
       These endpoints can be assigned to agent instances to handle incoming calls to the DDI or SIP registration ID
   - name: Listeners
     description: |-

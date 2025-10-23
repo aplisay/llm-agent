@@ -57,7 +57,7 @@ transactionLogCreate.apiDoc = {
             },
             organisationId: {
               type: 'string',
-              description: 'Organization ID'
+              description: 'Organisation ID'
             },
             callId: {
               type: 'string',

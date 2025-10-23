@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Originate Call API allows you to validate and originate outbound calls from an agent using a caller number to a called number. This endpoint performs comprehensive validation including organization access control and UK phone number validation.
+The Originate Call API allows you to validate and originate outbound calls from an agent using a caller number to a called number. This endpoint performs comprehensive validation including organisation access control and UK phone number validation.
 
 ## Endpoints
 
@@ -28,12 +28,12 @@ This endpoint requires authentication. The user's `organisationId` is automatica
 ```
 
 - `calledId` (string, required): The phone number to call (must be a valid UK geographic or mobile number)
-- `callerId` (string, required): The phone number to call from (must exist in phoneNumbers table and belong to the organization)
+- `callerId` (string, required): The phone number to call from (must exist in phoneNumbers table and belong to the organisation)
 
 #### Validation Rules
 
-1. **Agent Validation**: The agent must exist and belong to the authenticated user's organization
-2. **Caller Number Validation**: The `callerId` must exist in the phoneNumbers table and belong to the authenticated user's organization
+1. **Agent Validation**: The agent must exist and belong to the authenticated user's organisation
+2. **Caller Number Validation**: The `callerId` must exist in the phoneNumbers table and belong to the authenticated user's organisation
 3. **Called Number Validation**: The `calledId` must be a valid UK geographic or mobile number
 
 #### UK Phone Number Validation
@@ -80,7 +80,7 @@ The endpoint validates UK phone numbers according to the following rules:
 - `403 Forbidden`: Access denied
   ```json
   {
-    "error": "Access denied: Agent does not belong to your organization"
+    "error": "Access denied: Agent does not belong to your organisation"
   }
   ```
 
@@ -112,7 +112,7 @@ curl -X POST "https://llm-agent.aplisay.com/api/agents/agent-123/originate" \
 
 #### Security
 
-- **Organization Isolation**: Users can only originate calls from agents and phone numbers belonging to their organization
+- **Organisation Isolation**: Users can only originate calls from agents and phone numbers belonging to their organisation
 - **Authentication Required**: Valid authentication is required to access this endpoint
 - **Input Validation**: Comprehensive validation of all input parameters
 - **UK Number Validation**: Strict validation of UK phone number formats
@@ -131,7 +131,7 @@ The endpoint provides detailed error messages for different failure scenarios:
 
 1. **Missing Parameters**: Clear indication of which required parameters are missing
 2. **Invalid UK Numbers**: Specific validation errors for UK phone number format
-3. **Access Control**: Clear access denied messages for organization mismatches
+3. **Access Control**: Clear access denied messages for organisation mismatches
 4. **Not Found**: Specific error messages for missing agents or phone numbers
 
 #### Integration Notes
@@ -139,4 +139,4 @@ The endpoint provides detailed error messages for different failure scenarios:
 - This endpoint is designed for validation and can be extended to actually initiate calls
 - The validation logic can be reused for other call-related endpoints
 - UK phone number validation follows standard UK numbering plan rules
-- Organization-based access control ensures data isolation between organizations
+- Organisation-based access control ensures data isolation between organisations
