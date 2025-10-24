@@ -4,11 +4,12 @@
 
 // Set environment variables immediately when this module is imported
 // This ensures they are available when database.js is imported
-if (!process.env.POSTGRES_HOST) {
+if (!process.env.POSTGRES_HOST || process.env.POSTGRES_HOST !== 'postgres') {
   // If no POSTGRES_HOST is set, assume we're on the host
   process.env.POSTGRES_HOST = 'localhost';
   process.env.POSTGRES_PORT = '5433';
 }
+
 
 process.env.POSTGRES_DB = 'llmvoicetest';
 process.env.POSTGRES_USER = 'testuser';
