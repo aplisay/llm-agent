@@ -1,7 +1,7 @@
 export default {
   testEnvironment: 'jest-environment-node',
   testMatch: [
-    '**/tests/phone-endpoints-comprehensive.test.mjs',
+    '**/tests/*.test.mjs',
   ],
   setupFilesAfterEnv: [],
   testTimeout: 60000,
