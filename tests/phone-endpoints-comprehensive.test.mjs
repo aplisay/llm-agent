@@ -2,7 +2,6 @@ import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, getRealDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
-dotenv.config();
 
 describe('Phone Endpoints API - Comprehensive Coverage', () => {
   let models;
@@ -30,7 +29,8 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
     // Connect to real database
     await setupRealDatabase();
-    const realDb = getRealDatabase();
+    const realDb = getRealDatabase(await setupRealDatabase());
+    dotenv.config();
     models = realDb.models;
 
     // Import API endpoints after database is set up
