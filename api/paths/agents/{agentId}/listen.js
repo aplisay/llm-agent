@@ -53,7 +53,7 @@ export default function (wsServer) {
     description: `Activates an agent. For telephone agents, this will allocate a number to the agent and wait for calls to the agent.
     For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.
     For websocket agents (currently only available for the Ultravox technology), this will start a listening agent that will await connects
-    from a websocket client.`,
+    from a websocket client. For WebRTC agents, omit number, id, and websocket parameters to activate a WebRTC room-based agent.`,
     summary: 'Activates an instance of an agent to listen for either calls, WebRTC rooms, or websocket connections.',
     operationId: 'activate',
     tags: ["Listeners"],
@@ -113,7 +113,32 @@ export default function (wsServer) {
               anyOf: [
                 { required: ["number"] },
                 { required: ["id"] },
-                { required: ["websocket"] }
+                { required: ["websocket"] },
+                { 
+                  properties: {
+                    options: {
+                      type: "object",
+                      description: "Options for this activation instance",
+                      properties: {
+                        streamLog: {
+                          type: "boolean",
+                          description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                        },
+                        metadata: {
+                          type: "object",
+                          description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
+                          example: {
+                            myapp: {
+                              mykey: "mydata"
+                            }
+                          }
+                        }
+                      },
+                      required: [],
+                    }
+                  },
+                  required: []
+                }
               ]
             }
         }
