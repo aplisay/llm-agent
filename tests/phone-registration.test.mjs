@@ -61,7 +61,7 @@ describe('PhoneRegistration Basic Tests', () => {
         await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
         await Organisation.destroy({ where: { id: testOrgId } });
       } catch (error) {
-        // Ignore cleanup errors to prevent test failures
+        console.error('Error cleaning up test data:', error);
       }
     }
   });
