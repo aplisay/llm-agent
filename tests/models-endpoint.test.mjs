@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { setupRealDatabase, teardownRealDatabase, getRealDatabase } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 
 describe('Models Endpoint Test', () => {
   let models;
@@ -11,9 +11,8 @@ describe('Models Endpoint Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    const realDb = getRealDatabase();
     dotenv.config();
-    models = realDb.models;
+    models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
     const modelsModule = await import('../api/paths/models.js');

@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { setupRealDatabase, teardownRealDatabase, getRealDatabase } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import aplisayTestAgentBase from './fixtures/aplisayTestAgentBase.js';
 
@@ -30,9 +30,8 @@ describe('Agent Registration Workflow Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    const realDb = getRealDatabase();
     dotenv.config();
-    models = realDb.models;
+    models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
     const agentsModule = await import('../api/paths/agents.js');

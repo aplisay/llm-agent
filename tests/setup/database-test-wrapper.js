@@ -81,6 +81,22 @@ export async function setupRealDatabase() {
     originalEnv
   };
 
+  // Populate the exported variables for drop-in replacement
+  Agent = dbModule.Agent;
+  Instance = dbModule.Instance;
+  PhoneNumber = dbModule.PhoneNumber;
+  PhoneRegistration = dbModule.PhoneRegistration;
+  Call = dbModule.Call;
+  TransactionLog = dbModule.TransactionLog;
+  User = dbModule.User;
+  Organisation = dbModule.Organisation;
+  AuthKey = dbModule.AuthKey;
+  Trunk = dbModule.Trunk;
+  Op = dbModule.Op;
+  Sequelize = dbModule.Sequelize;
+  databaseStarted = dbModule.databaseStarted;
+  stopDatabase = dbModule.stopDatabase;
+
   isInitialized = true;
   return realDb;
 }
@@ -93,6 +109,22 @@ export async function teardownRealDatabase() {
     // Restore original environment variables
     Object.assign(process.env, realDb.originalEnv);
 
+    // Clear the exported variables
+    Agent = undefined;
+    Instance = undefined;
+    PhoneNumber = undefined;
+    PhoneRegistration = undefined;
+    Call = undefined;
+    TransactionLog = undefined;
+    User = undefined;
+    Organisation = undefined;
+    AuthKey = undefined;
+    Trunk = undefined;
+    Op = undefined;
+    Sequelize = undefined;
+    databaseStarted = undefined;
+    stopDatabase = undefined;
+
     isInitialized = false;
     realDb = null;
   }
@@ -104,3 +136,9 @@ export function getRealDatabase() {
   }
   return realDb;
 }
+
+// Export the same objects as database.js for drop-in replacement
+// These will be populated after setupRealDatabase() is called
+export let Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk;
+export let Op, Sequelize;
+export let databaseStarted, stopDatabase;

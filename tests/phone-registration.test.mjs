@@ -1,7 +1,8 @@
 import 'dotenv/config';
 
+import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
+
 describe('PhoneRegistration Basic Tests', () => {
-  let db;
 
   const logger = {
     debug: () => {},
@@ -14,19 +15,15 @@ describe('PhoneRegistration Basic Tests', () => {
     // Ensure a credentials key is present for encryption tests
     process.env.CREDENTIALS_KEY = process.env.CREDENTIALS_KEY || 'test-secret-key';
     process.env.DB_FORCE_SYNC = 'true';
-    db = await import('../lib/database.js');
-    await db.databaseStarted;
+    await setupRealDatabase();
+    await databaseStarted;
   }, 30000);
 
   afterAll(async () => {
-    if (db?.stopDatabase) {
-      await db.stopDatabase();
-    }
+    await teardownRealDatabase();
   }, 60000);
 
   test('Model: creates and stores encrypted password at rest', async () => {
-    const { PhoneRegistration, Organisation } = db;
-
     // Create a test organisation first
     const testOrg = await Organisation.create({
       id: 'org-test-' + Date.now(),
@@ -65,8 +62,6 @@ describe('PhoneRegistration Basic Tests', () => {
   });
 
   test('API: POST /api/phone-endpoints persists registration and encrypts password', async () => {
-    const { Organisation } = db;
-    
     // Create a test organisation first
     const testOrg = await Organisation.create({
       id: 'org-api-' + Date.now(),
@@ -105,7 +100,6 @@ describe('PhoneRegistration Basic Tests', () => {
     expect(res._body?.id).toBeTruthy();
 
     // Verify it was persisted and password is encrypted at rest
-    const { PhoneRegistration } = db;
     const persisted = await PhoneRegistration.findByPk(res._body.id);
     expect(persisted).toBeTruthy();
     expect(persisted.username).toBe('api-user');

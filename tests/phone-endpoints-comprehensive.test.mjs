@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { setupRealDatabase, teardownRealDatabase, getRealDatabase } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
 
@@ -25,13 +25,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   let mockWsServer;
 
   beforeAll(async () => {
-
-
     // Connect to real database
     await setupRealDatabase();
-    const realDb = getRealDatabase(await setupRealDatabase());
     dotenv.config();
-    models = realDb.models;
+    models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
     const phoneEndpointsModule = await import('../api/paths/phone-endpoints.js');
