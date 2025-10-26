@@ -100,7 +100,6 @@ export function createTestPhoneEndpointList(models) {
         limit: parseInt(limit)
       });
     } catch (err) {
-      console.error('Error in phoneEndpointList:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -163,7 +162,6 @@ export function createTestGetPhoneEndpoint(models) {
         });
       }
     } catch (err) {
-      console.error('Error in getPhoneEndpoint:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -238,7 +236,6 @@ export function createTestCreatePhoneEndpoint(models) {
         return res.status(400).send({ error: 'Invalid endpoint type' });
       }
     } catch (err) {
-      console.error('Error in createPhoneEndpoint:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -321,7 +318,6 @@ export function createTestUpdatePhoneEndpoint(models) {
         return res.send({ success: true });
       }
     } catch (err) {
-      console.error('Error in updatePhoneEndpoint:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -383,7 +379,6 @@ export function createTestDeletePhoneEndpoint(models) {
         return res.send({ success: true });
       }
     } catch (err) {
-      console.error('Error in deletePhoneEndpoint:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -434,7 +429,6 @@ export function createTestActivateRegistration(models) {
         state: 'initial'
       });
     } catch (err) {
-      console.error('Error in activateRegistration:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -485,7 +479,6 @@ export function createTestDisableRegistration(models) {
         state: 'initial'
       });
     } catch (err) {
-      console.error('Error in disableRegistration:', err);
       return res.status(500).send({ error: 'Internal server error' });
     }
   };

@@ -1,9 +1,7 @@
-  import dotenv from 'dotenv';
   import { setupRealDatabase, teardownRealDatabase} from './setup/database-test-wrapper.js';
 
   beforeAll(async () => {
     await setupRealDatabase();
-    dotenv.config();
   }, 60000);
 
   afterAll(async () => {

@@ -28,6 +28,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      USE_CONTAINER_NETWORKING: "true"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: llmvoicetest

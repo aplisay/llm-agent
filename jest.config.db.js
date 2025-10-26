@@ -4,6 +4,7 @@ export default {
     '**/tests/*.test.mjs',
   ],
   setupFilesAfterEnv: [],
+  globalSetup: './tests/setup/global-setup.js',
   testTimeout: 60000,
   maxWorkers: 1, // Run tests sequentially to avoid database conflicts
   verbose: true,

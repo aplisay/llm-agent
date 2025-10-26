@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 
 import logger from '../lib/logger.js';
@@ -9,7 +8,6 @@ let list;
 
 beforeAll(async () => {
   await setupRealDatabase();
-  dotenv.config();
 }, 60000);
 
 afterAll(async () => {

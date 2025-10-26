@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 
 describe('Models Endpoint Test', () => {
@@ -11,7 +10,6 @@ describe('Models Endpoint Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    dotenv.config();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
@@ -67,7 +65,6 @@ describe('Models Endpoint Test', () => {
   };
 
   test('should return list of available models', async () => {
-    console.log('Testing models endpoint...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -83,11 +80,9 @@ describe('Models Endpoint Test', () => {
     const modelEntries = Object.entries(res._body);
     expect(modelEntries.length).toBeGreaterThan(0);
 
-    console.log(`Found ${modelEntries.length} available models:`);
 
     // Validate each model entry
     for (const [modelName, modelInfo] of modelEntries) {
-      console.log(`  - ${modelName}: ${modelInfo.description}`);
       
       // Each model should have required properties
       expect(modelInfo).toHaveProperty('description');
@@ -106,11 +101,9 @@ describe('Models Endpoint Test', () => {
       expect(modelName).toMatch(/^[a-zA-Z0-9]+:[a-zA-Z0-9\/\-\.]+$/);
     }
 
-    console.log('Models endpoint test completed successfully!');
   });
 
   test('should handle errors gracefully', async () => {
-    console.log('Testing models endpoint error handling...');
 
     // Create a request that might cause an error
     const req = createMockRequest();
@@ -123,11 +116,9 @@ describe('Models Endpoint Test', () => {
     expect(res._status === 200 || res._status === null).toBe(true);
     expect(res._body).toBeDefined();
     
-    console.log('Error handling test completed!');
   });
 
   test('should return consistent model structure', async () => {
-    console.log('Testing model structure consistency...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -152,11 +143,9 @@ describe('Models Endpoint Test', () => {
       expect(actualKeys).toEqual(expect.arrayContaining(requiredKeys));
     }
 
-    console.log('Model structure consistency test completed!');
   });
 
   test('should include expected handler types', async () => {
-    console.log('Testing for expected handler types...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -175,7 +164,6 @@ describe('Models Endpoint Test', () => {
       handlers.add(handler);
     });
 
-    console.log(`Found handlers: ${Array.from(handlers).join(', ')}`);
 
     // Should have at least one handler
     expect(handlers.size).toBeGreaterThan(0);
@@ -187,11 +175,9 @@ describe('Models Endpoint Test', () => {
     // At least one expected handler should be present
     expect(hasExpectedHandler).toBe(true);
 
-    console.log('Handler types test completed!');
   });
 
   test('should validate model capabilities', async () => {
-    console.log('Testing model capabilities...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -220,6 +206,5 @@ describe('Models Endpoint Test', () => {
       }
     }
 
-    console.log('Model capabilities validation completed!');
   });
 });

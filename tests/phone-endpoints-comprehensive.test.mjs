@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
@@ -27,7 +26,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    dotenv.config();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
@@ -77,7 +75,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         registrationSimulator.stopSimulation(sim.registrationId);
       }
     } catch (err) {
-      console.warn('Simulation cleanup warning:', err.message);
     }
 
     // Disconnect from real database
@@ -125,7 +122,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       await Organisation.destroy({ where: { id: testOrgId } });
     } catch (err) {
       // Ignore cleanup errors
-      console.warn('Cleanup warning:', err.message);
     }
   });
 
@@ -1238,7 +1234,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
         await Organisation.destroy({ where: { id: testOrgId } });
       } catch (err) {
-        console.warn('Simulation cleanup warning:', err.message);
       }
     });
 
@@ -1577,7 +1572,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         await testAgent.save({ validate: false });
         testAgentId = testAgent.id;
       } catch (err) {
-        console.error('beforeAll error:', err.message, { err });
         testAgentId && await Agent.destroy({ where: { id: testAgentId } });
         testUserId && await User.destroy({ where: { id: testUserId } });
         testTrunkId && await Trunk.destroy({ where: { id: testTrunkId } });
@@ -1606,7 +1600,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           await Organisation.destroy({ where: { id: testOrgId } });
         }
       } catch (err) {
-        console.error('afterEach error:', err.message, { err });
         throw err;
       }
     });
@@ -1673,7 +1666,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       // Debug: Check what error we're getting
       if (listenerRes._status !== 200) {
-        console.log('Listener creation failed:', listenerRes._status, listenerRes._body);
       }
 
       // The listener creation should fail with expected error (no handler for model in test environment)
@@ -1898,7 +1890,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       validDdiRes.locals.user = { organisationId: testOrgId };
 
       await createPhoneEndpoint(validDdiReq, validDdiRes);
-      console.log('validDdiRes:', validDdiRes._body);
       expect(validDdiRes._status).toBe(201);
       expect(validDdiRes._body).toHaveProperty('success', true);
       expect(validDdiRes._body).toHaveProperty('number', uniquePhoneNumber);

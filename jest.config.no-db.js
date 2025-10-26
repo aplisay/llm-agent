@@ -6,6 +6,7 @@ export default {
     '!**/tests/phone-registration.test.mjs'
   ],
   setupFilesAfterEnv: [],
+  globalSetup: './tests/setup/global-setup.js',
   testTimeout: 30000,
   maxWorkers: 1,
   verbose: true,

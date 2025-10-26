@@ -1,5 +1,3 @@
-import dotenv from 'dotenv';
-
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 
 describe('PhoneRegistration Basic Tests', () => {
@@ -17,7 +15,6 @@ describe('PhoneRegistration Basic Tests', () => {
     process.env.DB_FORCE_SYNC = 'true';
     await setupRealDatabase();
     await databaseStarted;
-    dotenv.config();
   }, 30000);
 
   afterAll(async () => {

@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 
 describe('Voices Endpoint Test', () => {
@@ -12,7 +11,6 @@ describe('Voices Endpoint Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    dotenv.config();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
@@ -69,7 +67,6 @@ describe('Voices Endpoint Test', () => {
   };
 
   test('should return list of available voices', async () => {
-    console.log('Testing voices endpoint...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -85,11 +82,9 @@ describe('Voices Endpoint Test', () => {
     const voiceEntries = Object.entries(res._body);
     expect(voiceEntries.length).toBeGreaterThan(0);
 
-    console.log(`Found ${voiceEntries.length} voice providers:`);
 
     // Validate each voice provider entry
     for (const [providerName, providerVoices] of voiceEntries) {
-      console.log(`  - ${providerName}:`);
       
       // Each provider should have voice data
       expect(providerVoices).toBeDefined();
@@ -100,7 +95,6 @@ describe('Voices Endpoint Test', () => {
       expect(providerEntries.length).toBeGreaterThan(0);
 
       for (const [providerType, languageVoices] of providerEntries) {
-        console.log(`    - ${providerType}:`);
         
         // Each provider type should have language-specific voices
         expect(languageVoices).toBeDefined();
@@ -110,7 +104,6 @@ describe('Voices Endpoint Test', () => {
         expect(languageEntries.length).toBeGreaterThan(0);
 
         for (const [language, voices] of languageEntries) {
-          console.log(`      - ${language}: ${voices.length} voices`);
           
           // Each language should have an array of voices
           expect(Array.isArray(voices)).toBe(true);
@@ -135,11 +128,9 @@ describe('Voices Endpoint Test', () => {
       }
     }
 
-    console.log('Voices endpoint test completed successfully!');
   });
 
   test('should return consistent voice structure', async () => {
-    console.log('Testing voice structure consistency...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -175,11 +166,9 @@ describe('Voices Endpoint Test', () => {
       }
     }
 
-    console.log('Voice structure consistency test completed!');
   });
 
   test('should include expected voice providers', async () => {
-    console.log('Testing for expected voice providers...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -191,7 +180,6 @@ describe('Voices Endpoint Test', () => {
 
     const providerNames = Object.keys(res._body);
     
-    console.log(`Found providers: ${providerNames.join(', ')}`);
 
     // Should have at least one provider
     expect(providerNames.length).toBeGreaterThan(0);
@@ -203,11 +191,9 @@ describe('Voices Endpoint Test', () => {
     // At least one expected provider should be present
     expect(hasExpectedProvider).toBe(true);
 
-    console.log('Voice providers test completed!');
   });
 
   test('should validate voice properties', async () => {
-    console.log('Testing voice properties validation...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -246,11 +232,9 @@ describe('Voices Endpoint Test', () => {
       }
     }
 
-    console.log('Voice properties validation completed!');
   });
 
   test('should handle errors gracefully', async () => {
-    console.log('Testing voices endpoint error handling...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -262,11 +246,9 @@ describe('Voices Endpoint Test', () => {
     expect(res._status === 200 || res._status === null).toBe(true);
     expect(res._body).toBeDefined();
     
-    console.log('Error handling test completed!');
   });
 
   test('should return voices for multiple languages', async () => {
-    console.log('Testing multiple language support...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -302,16 +284,13 @@ describe('Voices Endpoint Test', () => {
       if (hasMultipleLanguages) break;
     }
 
-    console.log(`Found languages: ${Array.from(languagesFound).join(', ')}`);
 
     // Should support at least one language
     expect(languagesFound.size).toBeGreaterThan(0);
 
-    console.log('Multiple language support test completed!');
   });
 
   test('should have reasonable voice counts', async () => {
-    console.log('Testing voice counts...');
 
     const req = createMockRequest();
     const res = createMockResponse();
@@ -334,11 +313,9 @@ describe('Voices Endpoint Test', () => {
           expect(voices.length).toBeGreaterThan(0);
           expect(voices.length).toBeLessThan(1000); // Reasonable upper limit
           
-          console.log(`${providerName}/${providerType}/${language}: ${voices.length} voices`);
         }
       }
     }
 
-    console.log('Voice counts test completed!');
   });
 });

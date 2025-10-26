@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import aplisayTestAgentBase from './fixtures/aplisayTestAgentBase.js';
@@ -30,7 +29,6 @@ describe('Agent Registration Workflow Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    dotenv.config();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
@@ -85,7 +83,6 @@ describe('Agent Registration Workflow Test', () => {
         registrationSimulator.stopSimulation(sim.registrationId);
       }
     } catch (err) {
-      console.warn('Simulation cleanup warning:', err.message);
     }
 
     // Disconnect from real database
@@ -138,7 +135,6 @@ describe('Agent Registration Workflow Test', () => {
         testOrgId = null;
       }
     } catch (err) {
-      console.warn('Cleanup warning:', err.message);
     }
   });
 
@@ -170,10 +166,8 @@ describe('Agent Registration Workflow Test', () => {
       const req = createMockRequest({ params: { identifier: registrationId } });
       const res = createMockResponse();
       res.locals.user = { organisationId: testOrgId };
-      console.log('Waiting for registration state...');
       await getPhoneEndpoint(req, res);
 
-      console.log('Registration state', { return: res._body });
       
       // Check if we got a valid response (status 200 or null with body)
       if ((res._status === 200 || res._status === null) && res._body && res._body.state) {
@@ -195,7 +189,6 @@ describe('Agent Registration Workflow Test', () => {
   };
 
   test('Complete Agent Registration Workflow', async () => {
-    console.log('Starting Agent Registration Workflow Test...');
 
     // Mock setTimeout to run at 15x speed for faster testing
     const originalSetTimeout = global.setTimeout;
@@ -211,7 +204,6 @@ describe('Agent Registration Workflow Test', () => {
 
     try {
       // Step 1: Create agent using aplisayTestAgentBase
-    console.log('Step 1: Creating agent...');
     // Convert functions from array format to object format with proper schema
     const convertedFunctions = {};
     aplisayTestAgentBase.functions.forEach(func => {
@@ -254,16 +246,13 @@ describe('Agent Registration Workflow Test', () => {
     // Agent creation succeeds if we have a body with an id, regardless of status
     if (agentRes._body && agentRes._body.id) {
       testAgentId = agentRes._body.id;
-      console.log(`Agent created with ID: ${testAgentId}`);
     } else {
-      console.log(`Agent creation failed with status ${agentRes._status}:`, agentRes._body);
       expect(agentRes._status).toBe(200);
     }
     
     expect(agentRes._body).toHaveProperty('id');
 
     // Step 2: Create phone registration endpoint
-    console.log('Step 2: Creating phone registration endpoint...');
     const registrationReq = createMockRequest({
       body: {
         type: 'phone-registration',
@@ -284,10 +273,8 @@ describe('Agent Registration Workflow Test', () => {
     expect(registrationRes._body).toHaveProperty('success', true);
     expect(registrationRes._body).toHaveProperty('id');
     testRegistrationId = registrationRes._body.id;
-    console.log(`Registration endpoint created with ID: ${testRegistrationId}`);
 
     // Step 3: Activate the registration
-    console.log('Step 3: Activating registration...');
     const activateReq = createMockRequest({
       params: { identifier: testRegistrationId }
     });
@@ -297,9 +284,7 @@ describe('Agent Registration Workflow Test', () => {
     
     // Activation succeeds if we have a body with success property
     if (activateRes._body && activateRes._body.success) {
-      console.log('Registration activated successfully');
     } else {
-      console.log(`Registration activation failed with status ${activateRes._status}:`, activateRes._body);
       expect(activateRes._status).toBe(200);
     }
     
@@ -308,20 +293,16 @@ describe('Agent Registration Workflow Test', () => {
     expect(activateRes._body).toHaveProperty('state', 'initial');
 
     // Step 4: Wait for registration to become registered (with fast simulation)
-    console.log('Step 4: Waiting for registration to become registered...');
     const registrationResult = await waitForRegistrationState(testRegistrationId, 'registered', 20000); // 20 seconds instead of 240
     
     if (!registrationResult.success) {
-      console.log(`Registration failed or timed out: ${registrationResult.error}`);
       // Exit with zero exit code as requested if registration fails
       expect(['failed', 'timeout']).toContain(registrationResult.state);
       return;
     }
     
-    console.log(`Registration successfully reached registered state: ${registrationResult.state}`);
 
     // Step 5: Create agent listener using the registered endpoint
-    console.log('Step 5: Creating agent listener...');
     const listenerReq = createMockRequest({
       params: { agentId: testAgentId },
       body: { id: testRegistrationId }
@@ -333,16 +314,13 @@ describe('Agent Registration Workflow Test', () => {
     // Listener creation succeeds if we have a body with an id
     if (listenerRes._body && listenerRes._body.id) {
       testListenerId = listenerRes._body.id;
-      console.log(`Agent listener created with ID: ${testListenerId}`);
     } else {
-      console.log(`Agent listener creation failed with status ${listenerRes._status}:`, listenerRes._body);
       expect(listenerRes._status).toBe(200);
     }
     
     expect(listenerRes._body).toHaveProperty('id');
 
     // Step 6: Monitor for failure or timeout (16 seconds instead of 240)
-    console.log('Step 6: Monitoring registration for 16 seconds...');
     const monitorStartTime = Date.now();
     const monitorTimeout = 16000; // 16 seconds instead of 240 seconds
     
@@ -361,7 +339,6 @@ describe('Agent Registration Workflow Test', () => {
         
         // If registration goes to failed state, break out of monitoring
         if (finalState === 'failed') {
-          console.log(`Registration went to failed state: ${checkRes._body.error}`);
           break;
         }
       }
@@ -370,10 +347,8 @@ describe('Agent Registration Workflow Test', () => {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
-    console.log(`Monitoring completed. Final state: ${finalState}, Final status: ${finalStatus}`);
 
     // Step 7: Cleanup - delete listener, agent, and registration
-    console.log('Step 7: Cleaning up resources...');
     
     // Delete listener
     if (testListenerId) {
@@ -382,7 +357,6 @@ describe('Agent Registration Workflow Test', () => {
       
       await deleteListener(deleteListenerReq, deleteListenerRes);
       expect(deleteListenerRes._status).toBe(200);
-      console.log('Listener deleted successfully');
     }
 
     // Delete agent
@@ -392,7 +366,6 @@ describe('Agent Registration Workflow Test', () => {
       
       await deleteAgent(deleteAgentReq, deleteAgentRes);
       expect(deleteAgentRes._status).toBe(200);
-      console.log('Agent deleted successfully');
     }
 
     // Delete registration
@@ -405,13 +378,10 @@ describe('Agent Registration Workflow Test', () => {
       
       await deletePhoneEndpoint(deleteRegistrationReq, deleteRegistrationRes);
       if (deleteRegistrationRes._body || deleteRegistrationRes._status === 200) {
-        console.log('Registration deleted successfully');
       } else {
-        console.log(`Registration deletion failed with status ${deleteRegistrationRes._status}:`, deleteRegistrationRes._body);
       }
     }
 
-    console.log('Agent Registration Workflow Test completed successfully!');
     
     } finally {
       // Restore original setTimeout

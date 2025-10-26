@@ -1,4 +1,3 @@
-import dotenv from 'dotenv';
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import aplisayTestAgentBase from './fixtures/aplisayTestAgentBase.js';
@@ -34,7 +33,6 @@ describe('Listener Join and Originate Endpoints Test', () => {
   beforeAll(async () => {
     // Connect to real database
     await setupRealDatabase();
-    dotenv.config();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
 
     // Import API endpoints after database is set up
@@ -257,7 +255,6 @@ describe('Listener Join and Originate Endpoints Test', () => {
   };
 
   test('should create WebRTC listener and allow join', async () => {
-    console.log('Testing WebRTC listener creation and join...');
 
     // Create agent
     await createTestAgent();
@@ -275,7 +272,6 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(listenerRes._body).toHaveProperty('id');
     testWebRTCListenerId = listenerRes._body.id;
 
-    console.log(`WebRTC listener created with ID: ${testWebRTCListenerId}`);
 
     // Test join endpoint - should work for WebRTC listener
     const joinReq = createMockRequest({
@@ -290,11 +286,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(joinRes._status === 200 || joinRes._status === null).toBe(true);
     expect(joinRes._body).toBeDefined();
 
-    console.log('WebRTC listener join test completed successfully!');
   });
 
   test('should create phone number listener and allow originate with phone number as caller', async () => {
-    console.log('Testing phone number listener creation and originate with phone number as caller...');
 
     // Create agent and phone number
     await createTestAgent();
@@ -313,7 +307,6 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(listenerRes._body).toHaveProperty('id');
     testPhoneListenerId = listenerRes._body.id;
 
-    console.log(`Phone listener created with ID: ${testPhoneListenerId}`);
 
     // Test originate endpoint - should work for phone listener using phone number as caller
     const originateReq = createMockRequest({
@@ -334,11 +327,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('success', true);
     expect(originateRes._body).toHaveProperty('data');
 
-    console.log('Phone listener originate test completed successfully!');
   });
 
   test('should create registration listener and allow originate with registration ID as caller', async () => {
-    console.log('Testing registration listener creation and originate with registration ID as caller...');
 
     // Create agent and registration
     await createTestAgent();
@@ -357,7 +348,6 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(listenerRes._body).toHaveProperty('id');
     testRegistrationListenerId = listenerRes._body.id;
 
-    console.log(`Registration listener created with ID: ${testRegistrationListenerId}`);
 
     // Test originate endpoint - should work for registration listener using registration ID as caller
     const originateReq = createMockRequest({
@@ -378,11 +368,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('success', true);
     expect(originateRes._body).toHaveProperty('data');
 
-    console.log('Registration listener originate test completed successfully!');
   });
 
   test('should allow join on phone number listener (current behavior)', async () => {
-    console.log('Testing join on phone number listener (current behavior)...');
 
     // Create agent and phone number
     await createTestAgent();
@@ -412,11 +400,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(joinRes._status === 200 || joinRes._status === null).toBe(true);
     expect(joinRes._body).toBeDefined();
 
-    console.log('Phone listener join test completed (current behavior)!');
   });
 
   test('should allow join on registration listener (current behavior)', async () => {
-    console.log('Testing join on registration listener (current behavior)...');
 
     // Create agent and registration
     await createTestAgent();
@@ -446,11 +432,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(joinRes._status === 200 || joinRes._status === null).toBe(true);
     expect(joinRes._body).toBeDefined();
 
-    console.log('Registration listener join test completed (current behavior)!');
   });
 
   test('should reject originate on WebRTC listener', async () => {
-    console.log('Testing originate rejection on WebRTC listener...');
 
     // Create agent
     await createTestAgent();
@@ -483,11 +467,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._status).toBe(500);
     expect(originateRes._body).toHaveProperty('error');
 
-    console.log('WebRTC listener originate rejection test completed successfully!');
   });
 
   test('should validate originate parameters', async () => {
-    console.log('Testing originate parameter validation...');
 
     // Create agent and phone number
     await createTestAgent();
@@ -537,11 +519,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes2._body).toHaveProperty('error');
     expect(originateRes2._body.error).toContain('Missing required parameters');
 
-    console.log('Originate parameter validation test completed successfully!');
   });
 
   test('should validate UK phone number format', async () => {
-    console.log('Testing UK phone number format validation...');
 
     // Create agent and phone number
     await createTestAgent();
@@ -574,6 +554,5 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('error');
     expect(originateRes._body.error).toContain('not a valid UK geographic or mobile number');
 
-    console.log('UK phone number format validation test completed successfully!');
   });
 });
