@@ -1,4 +1,10 @@
+import aplisayTestAgentBase from './aplisayTestAgentBase';
 export const testData = {
+
+  agents: [
+    aplisayTestAgentBase
+  ],
+
   organisations: [
     {
       id: 'test-org-1',

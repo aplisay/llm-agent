@@ -1,4 +1,4 @@
-import { Agent, PhoneNumber } from '../../../../lib/database.js';
+import { Agent, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -14,18 +14,38 @@ export default function (wsServer) {
         throw new Error(`no agent`);
       }
 
-      // If id is provided, look up the phone endpoint and use its number
+      // If id is provided, look up the PhoneRegistration record
       if (id) {
-        const phoneEndpoint = await PhoneNumber.findByPk(id);
-        if (!phoneEndpoint) {
+        const phoneRegistration = await PhoneRegistration.findByPk(id);
+        if (!phoneRegistration) {
           throw new Error(`Phone endpoint with id ${id} not found`);
         }
-        number = phoneEndpoint.number;
+        // For registration endpoints, we pass the id to the handler
+        // The handler should know how to work with registration endpoints
+      }
+      
+      // If number is provided, look up the PhoneNumber record
+      if (number) {
+        const phoneNumber = await PhoneNumber.findByPk(number);
+        if (!phoneNumber) {
+          throw new Error(`Phone number ${number} not found`);
+        }
+        // Use the number as provided
       }
 
       let Handler = (await handlers()).getHandler(agent.modelName);
       handler = new Handler({ agent, wsServer, logger: req.log });
-      activation = await handler.activate({ number, options, websocket });
+      
+      // Prepare activation parameters
+      const activationParams = { options, websocket };
+      if (number) {
+        activationParams.number = number;
+      }
+      if (id) {
+        activationParams.id = id;
+      }
+      
+      activation = await handler.activate(activationParams);
       res.send(activation);
     }
     catch (err) {
