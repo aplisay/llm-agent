@@ -87,7 +87,7 @@ export default function (Llm, prompt, modelName = undefined) {
     jest.setTimeout(30000);
 
     test('initial', async () => {
-      let greeting = model.initial();
+      let greeting = await model.initial();
       expect(greeting).resolves.toHaveProperty('text');
       return expect((await greeting).text).toMatch(/(hi|hello|help|welcome|thank|today|good day)/i);
     });
