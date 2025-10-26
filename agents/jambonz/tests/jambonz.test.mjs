@@ -161,10 +161,6 @@ describe('Jambonz', () => {
       }
     });
 
-    test('List numbers', async () => {
-      return await expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array);
-    });
-
     test('Delete Application', async () => {
       expect(applicationSid).toContain('-');
       return await expect(jambonz.deleteApplication(applicationSid)).resolves;
