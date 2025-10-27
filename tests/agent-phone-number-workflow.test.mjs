@@ -66,7 +66,7 @@ describe('Agent Phone Number Workflow Test', () => {
     createListener = listenHandler.POST;
     deleteListener = deleteListenerHandler.DELETE;
     deleteAgent = deleteAgentHandler.DELETE;
-    deletePhoneEndpoint = phoneEndpoints.DELETE;
+    deletePhoneEndpoint = getPhoneEndpointHandler.DELETE;
   }, 30000);
 
   afterAll(async () => {

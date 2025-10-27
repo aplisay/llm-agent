@@ -71,7 +71,7 @@ describe('Agent Registration Workflow Test', () => {
     createListener = listenHandler.POST;
     deleteListener = deleteListenerHandler.DELETE;
     deleteAgent = deleteAgentHandler.DELETE;
-    deletePhoneEndpoint = phoneEndpoints.DELETE;
+    deletePhoneEndpoint = getPhoneEndpointHandler.DELETE;
     registrationSimulator = registrationSimulationModule.registrationSimulator;
   }, 30000);
 

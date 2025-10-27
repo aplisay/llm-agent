@@ -8,7 +8,7 @@
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
     "start": "NODE_ENV=production node index.mjs",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
-    "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js",
+    "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --verbose",
     "test:db": "yarn test:setup && yarn test && yarn test:cleanup",
     "test:no-db": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.no-db.js",
     "test:ci": "docker-compose -f docker-compose.ci.yml build --no-cache test-runner && docker-compose -f docker-compose.ci.yml up --abort-on-container-exit --exit-code-from test-runner",
