@@ -197,6 +197,21 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // Check for duplicate registration (same registrar and username)
+      const existingRegistration = await PhoneRegistration.findOne({
+        where: {
+          registrar: data.registrar,
+          username: data.username,
+          organisationId: organisationId
+        }
+      });
+
+      if (existingRegistration) {
+        return res.status(409).send({
+          error: 'Phone registration with the same registrar and username already exists'
+        });
+      }
+
       const record = await PhoneRegistration.create({
         name: data.name,
         handler: data.handler ?? 'livekit',
@@ -307,7 +322,6 @@ const updatePhoneEndpoint = async (req, res) => {
 const deletePhoneEndpoint = async (req, res) => {
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
-  const { force } = req.query;
 
   try {
     if (!identifier) {
@@ -334,7 +348,7 @@ const deletePhoneEndpoint = async (req, res) => {
         message: 'Phone endpoint deleted successfully'
       });
     } else {
-      // Registration ID
+      // Registration ID - hard delete as per API spec
       const registration = await PhoneRegistration.findByPk(identifier);
       if (!registration) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -343,25 +357,12 @@ const deletePhoneEndpoint = async (req, res) => {
         return res.status(403).send({ error: 'Access denied' });
       }
 
-      if (force === 'true') {
-        // Hard delete
-        await registration.destroy();
-        return res.send({
-          success: true,
-          message: 'Phone registration deleted successfully'
-        });
-      } else {
-        // Soft disable
-        await registration.update({
-          status: 'disabled',
-          state: 'initial',
-          error: null
-        });
-        return res.send({
-          success: true,
-          message: 'Phone registration disabled successfully'
-        });
-      }
+      // Hard delete the registration
+      await registration.destroy();
+      return res.send({
+        success: true,
+        message: 'Phone registration deleted successfully'
+      });
     }
   } catch (err) {
     req.log.error(err, 'Error deleting phone endpoint');

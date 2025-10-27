@@ -609,9 +609,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const req = createMockRequest({
         body: {
           type: 'phone-registration',
-          name: 'Test Registration',
-          registrar: 'sip:test.example.com:5060',
-          username: 'testuser',
+          name: 'New Test Registration',
+          registrar: 'sip:new-test.example.com:5060', // Different registrar
+          username: 'newtestuser', // Different username
           password: 'testpass',
           handler: 'livekit',
           outbound: true
@@ -724,6 +724,151 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(400);
       expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+    });
+
+    test('should return 409 for duplicate phone registration (same registrar and username)', async () => {
+      const { PhoneRegistration } = models;
+      
+      // First, create a registration with specific registrar and username
+      const firstReg = await PhoneRegistration.create({
+        name: 'First Registration',
+        registrar: 'sip:duplicate.example.com:5060',
+        username: 'duplicateuser',
+        password: 'testpass',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+
+      try {
+        // Now try to create another registration with the same registrar and username
+        const req = createMockRequest({
+          body: {
+            type: 'phone-registration',
+            name: 'Duplicate Registration',
+            registrar: 'sip:duplicate.example.com:5060', // Same registrar
+            username: 'duplicateuser', // Same username
+            password: 'differentpass',
+            handler: 'livekit',
+            outbound: true
+          },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await createPhoneEndpoint(req, res);
+
+        // This should fail with 409 Conflict since we have the same registrar and username
+        expect(res._status).toBe(409);
+        expect(res._body).toHaveProperty('error');
+        expect(res._body.error).toContain('already exists');
+      } finally {
+        // Clean up the first registration
+        await PhoneRegistration.destroy({ where: { id: firstReg.id } });
+      }
+    });
+
+    test('should allow different username with same registrar', async () => {
+      const { PhoneRegistration } = models;
+      
+      // First, create a registration with specific registrar and username
+      const firstReg = await PhoneRegistration.create({
+        name: 'First Registration',
+        registrar: 'sip:same-registrar.example.com:5060',
+        username: 'user1',
+        password: 'testpass',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+
+      let secondRegId = null;
+      try {
+        // Now try to create another registration with the same registrar but different username
+        const req = createMockRequest({
+          body: {
+            type: 'phone-registration',
+            name: 'Different User Registration',
+            registrar: 'sip:same-registrar.example.com:5060', // Same registrar
+            username: 'user2', // Different username
+            password: 'differentpass',
+            handler: 'livekit',
+            outbound: true
+          },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await createPhoneEndpoint(req, res);
+
+        // This should succeed since username is different
+        expect(res._status).toBe(201);
+        expect(res._body).toHaveProperty('success', true);
+        expect(res._body).toHaveProperty('id');
+        secondRegId = res._body.id;
+      } finally {
+        // Clean up both registrations
+        await PhoneRegistration.destroy({ where: { id: firstReg.id } });
+        if (secondRegId) {
+          await PhoneRegistration.destroy({ where: { id: secondRegId } });
+        }
+      }
+    });
+
+    test('should allow same username with different registrar', async () => {
+      const { PhoneRegistration } = models;
+      
+      // First, create a registration with specific registrar and username
+      const firstReg = await PhoneRegistration.create({
+        name: 'First Registration',
+        registrar: 'sip:registrar1.example.com:5060',
+        username: 'sameuser',
+        password: 'testpass',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+
+      let secondRegId = null;
+      try {
+        // Now try to create another registration with different registrar but same username
+        const req = createMockRequest({
+          body: {
+            type: 'phone-registration',
+            name: 'Different Registrar Registration',
+            registrar: 'sip:registrar2.example.com:5060', // Different registrar
+            username: 'sameuser', // Same username
+            password: 'differentpass',
+            handler: 'livekit',
+            outbound: true
+          },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await createPhoneEndpoint(req, res);
+
+        // This should succeed since registrar is different
+        expect(res._status).toBe(201);
+        expect(res._body).toHaveProperty('success', true);
+        expect(res._body).toHaveProperty('id');
+        secondRegId = res._body.id;
+      } finally {
+        // Clean up both registrations
+        await PhoneRegistration.destroy({ where: { id: firstReg.id } });
+        if (secondRegId) {
+          await PhoneRegistration.destroy({ where: { id: secondRegId } });
+        }
+      }
     });
 
 
@@ -977,6 +1122,64 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(400);
       expect(res._body).toHaveProperty('error');
+    });
+
+    test('should verify deletion by ID - registration should not exist after deletion', async () => {
+      const { PhoneRegistration } = models;
+      
+      // Create a new registration for this test
+      const testReg = await PhoneRegistration.create({
+        name: 'Test Registration for Deletion',
+        registrar: 'sip:delete-test.example.com:5060',
+        username: 'deletetest',
+        password: 'testpass',
+        outbound: true,
+        handler: 'livekit',
+        organisationId: testOrgId,
+        status: 'disabled',
+        state: 'initial'
+      });
+
+      try {
+        // Verify the registration exists before deletion
+        const beforeDelete = await PhoneRegistration.findByPk(testReg.id);
+        expect(beforeDelete).not.toBe(null);
+        expect(beforeDelete.name).toBe('Test Registration for Deletion');
+
+        // Delete the registration (hard delete as per API spec)
+        const req = createMockRequest({
+          params: { identifier: testReg.id },
+          query: {}, // No query parameters as per API spec
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await deletePhoneEndpoint(req, res);
+
+        expect(res._status).toBe(200);
+        expect(res._body).toHaveProperty('success', true);
+
+        // Verify the registration no longer exists in the database
+        const afterDelete = await PhoneRegistration.findByPk(testReg.id);
+        expect(afterDelete).toBe(null);
+
+        // Also verify that trying to get the endpoint returns 404
+        const getReq = createMockRequest({
+          params: { identifier: testReg.id },
+          headers: {}
+        });
+        const getRes = createMockResponse();
+        getRes.locals.user = { organisationId: testOrgId };
+
+        await getPhoneEndpoint(getReq, getRes);
+        expect(getRes._status).toBe(404);
+        expect(getRes._body).toHaveProperty('error');
+      } catch (err) {
+        // Clean up if test fails
+        await PhoneRegistration.destroy({ where: { id: testReg.id } });
+        throw err;
+      }
     });
 
     test('should handle missing authentication', async () => {
