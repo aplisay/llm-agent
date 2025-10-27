@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import Jambonz from '../agent-lib/jambonz.js';
 import fs from 'fs';
 import logger from '../agent-lib/logger.js';

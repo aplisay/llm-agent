@@ -198,6 +198,7 @@ export default {
       useESM: true,
     },
   },
+  globalSetup: './tests/setup/global-setup.js',
   preset: undefined,
   testRunner: 'jest-circus/runner',
 };
