@@ -4,6 +4,7 @@
   "description": "Omni provider voice agent",
   "type": "module",
   "main": "index.mjs",
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
     "start": "NODE_ENV=production node index.mjs",
