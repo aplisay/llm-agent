@@ -31,6 +31,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
   let mockWsServer;
 
   beforeAll(async () => {
+    // Enable registration simulation for tests
+    process.env.REG_SIM_ENABLED = 'true';
+    
     // Connect to real database
     await setupRealDatabase();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };

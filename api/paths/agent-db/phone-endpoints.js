@@ -1,4 +1,4 @@
-import { PhoneNumber } from '../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration } from '../../../lib/database.js';
 import { normalizeE164 } from '../../../lib/validation.js';
 
 let appParameters, log;
@@ -16,35 +16,113 @@ export default function (logger, voices, wsServer) {
 };
 
 const phoneEndpointsList = (async (req, res) => {
-  let { handler, number, type, offset, pageSize } = req.query;
+  let { handler, number, id, type, offset, pageSize } = req.query;
   
   try {
-    let whereClause = {};
-    if (handler) {
-      whereClause.handler = handler;
-    }
-    if (number) {
-      // Database stores E.164 without a leading '+'
-      whereClause.number = String(number).replace(/^\+/, '');
-    }
-
-    if (type) {
-      if (type === 'e164-ddi') {
-        whereClause.number = whereClause.number || { };
-      }
-      else if (type === 'phone-registration') {
-        return res.send([]);
+    // Infer type from id or number if type is not specified
+    if (!type) {
+      if (id) {
+        type = 'phone-registration';
+      } else if (number) {
+        type = 'e164-ddi';
       }
     }
-
-    // Offset pagination
-    const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
-    const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
-
-    const rows = await PhoneNumber.findAll({ where: whereClause, limit: size, offset: startOffset });
-    const nextOffset = rows.length === size ? startOffset + size : null;
     
-    res.send({ items: rows, nextOffset });
+    // Validate parameter combinations based on type
+    if (type === 'e164-ddi') {
+      // ('e164-ddi', defined, defined): error - can't specify id for type ddi
+      if (id) {
+        return res.status(400).send({ error: "Cannot specify 'id' parameter for type 'e164-ddi'" });
+      }
+      
+      if (number) {
+        // ('e164-ddi', undefined, defined): return a single number matching the phone number (filtered by handler if defined)
+        const normalizedNumber = String(number).replace(/^\+/, '');
+        const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+        if (!phoneNumber) {
+          return res.status(404).send({ error: 'Phone endpoint not found' });
+        }
+        // Apply handler filter if provided
+        if (handler && phoneNumber.handler !== handler) {
+          return res.send({ items: [], nextOffset: null });
+        }
+        return res.send({
+          items: [phoneNumber.toJSON()],
+          nextOffset: null
+        });
+      } else {
+        // ('e164-ddi', undefined, undefined): list all numbers (filtered by handler if defined)
+        const whereClause = {};
+        if (handler) {
+          whereClause.handler = handler;
+        }
+        
+        const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
+        const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
+        
+        const rows = await PhoneNumber.findAll({ where: whereClause, limit: size, offset: startOffset });
+        const nextOffset = rows.length === size ? startOffset + size : null;
+        
+        return res.send({ items: rows, nextOffset });
+      }
+    }
+    
+    if (type === 'phone-registration') {
+      // ('phone-registration', undefined, defined): error - can't specify number for registration
+      if (number) {
+        return res.status(400).send({ error: "Cannot specify 'number' parameter for type 'phone-registration'" });
+      }
+      
+      if (id) {
+        // ('phone-registration', defined, undefined): return a single registration if exists (filtered by handler)
+        const registration = await PhoneRegistration.findByPk(id);
+        if (!registration) {
+          return res.status(404).send({ error: 'Phone endpoint not found' });
+        }
+        // Apply handler filter if provided
+        if (handler && registration.handler !== handler) {
+          return res.send({ items: [], nextOffset: null });
+        }
+        return res.send({
+          items: [{
+            id: registration.id,
+            name: registration.name,
+            handler: registration.handler,
+            status: registration.status,
+            state: registration.state,
+            outbound: !!registration.outbound,
+          }],
+          nextOffset: null
+        });
+      } else {
+        // ('phone-registration', undefined, undefined): return all phone registrations, filtered by handler if specified
+        const whereClause = {};
+        if (handler) {
+          whereClause.handler = handler;
+        }
+        
+        const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
+        const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
+        
+        const rows = await PhoneRegistration.findAll({ where: whereClause, limit: size, offset: startOffset });
+        const items = rows.map(r => ({
+          id: r.id,
+          name: r.name,
+          handler: r.handler,
+          status: r.status,
+          state: r.state,
+          outbound: !!r.outbound,
+        }));
+        const nextOffset = rows.length === size ? startOffset + size : null;
+        
+        return res.send({ items, nextOffset });
+      }
+    }
+    
+    // If type is still not specified after inference, return error (type is required for listing)
+    if (!type) {
+      return res.status(400).send({ error: "Either 'type', 'id', or 'number' parameter is required" });
+    }
   }
   catch (err) {
     log.error(err, 'error fetching phone endpoints');
@@ -73,6 +151,16 @@ phoneEndpointsList.apiDoc = {
       description: 'Filter phone endpoints by handler (e.g., livekit, jambonz)'
     },
     {
+      name: 'id',
+      in: 'query',
+      required: false,
+      schema: {
+        type: 'string',
+        format: 'uuid'
+      },
+      description: 'Lookup phone endpoint by ID (PhoneRegistration). If provided, returns a single PhoneRegistration endpoint.'
+    },
+    {
       name: 'type',
       in: 'query',
       required: false,
@@ -80,7 +168,7 @@ phoneEndpointsList.apiDoc = {
         type: 'string',
         enum: ['e164-ddi', 'phone-registration']
       },
-      description: 'Filter phone endpoints by endpoint type'
+      description: 'Filter phone endpoints by endpoint type. Required when listing all endpoints (when neither id nor number is specified).'
     },
     {
       name: 'offset',

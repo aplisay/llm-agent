@@ -30,8 +30,11 @@ import {
   type Call,
   type CallMetadata,
   type OutboundInfo,
+  getPhoneEndpointById,
+  getPhoneEndpointByNumber,
   getPhoneNumberByNumber,
   type PhoneNumberInfo,
+  type PhoneRegistrationInfo,
 } from "./api-client.js";
 
 // Types
@@ -315,14 +318,56 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
       
-      calledId = phoneRegistration || calledId;
-
-
-      logger.info(
-        { callerId, calledId, aplisayId },
-        "new Livekit inbound telephone call, looking up instance by number"
-      );
-      instance = calledId && (await getInstanceByNumber(calledId!));
+      // If we have a phoneRegistration ID, lookup the phone endpoint by ID
+      // Otherwise, use the calledId (phone number) to lookup by number
+      if (phoneRegistration) {
+        logger.info(
+          { callerId, phoneRegistration, aplisayId },
+          "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
+        );
+        const phoneEndpoint = await getPhoneEndpointById(phoneRegistration);
+        if (phoneEndpoint && 'id' in phoneEndpoint) {
+          const regInfo = phoneEndpoint as PhoneRegistrationInfo;
+          logger.info({ phoneEndpoint: regInfo }, "found phone registration endpoint");
+        }
+        // PhoneRegistration doesn't directly link to Instance, so try to find instance using calledId
+        // if we still have a calledId (phone number) available
+        if (calledId && !instance) {
+          const phoneEndpoint = await getPhoneEndpointByNumber(calledId);
+          if (phoneEndpoint && 'number' in phoneEndpoint) {
+            const numInfo = phoneEndpoint as PhoneNumberInfo;
+            logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint for instance lookup");
+            if (numInfo.instanceId) {
+              instance = await getInstanceById(numInfo.instanceId);
+            } else {
+              instance = await getInstanceByNumber(calledId);
+            }
+          } else {
+            // Fallback: try direct instance lookup by number
+            instance = await getInstanceByNumber(calledId);
+          }
+        }
+      } else if (calledId) {
+        logger.info(
+          { callerId, calledId, aplisayId },
+          "new Livekit inbound telephone call, looking up phone endpoint by number"
+        );
+        const phoneEndpoint = await getPhoneEndpointByNumber(calledId);
+        if (phoneEndpoint && 'number' in phoneEndpoint) {
+          const numInfo = phoneEndpoint as PhoneNumberInfo;
+          logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint");
+          // PhoneNumber has instanceId, so we can lookup the instance
+          if (numInfo.instanceId) {
+            instance = await getInstanceById(numInfo.instanceId);
+          } else {
+            // Fallback to old behavior
+            instance = await getInstanceByNumber(calledId);
+          }
+        } else {
+          // Fallback: try direct instance lookup by number
+          instance = await getInstanceByNumber(calledId);
+        }
+      }
     }
   }
   if (!instance) {
@@ -477,7 +522,7 @@ async function setupCallAndUtilities({
 
       // Validate overridden callerId if provided
       if (args.callerId) {
-        const pn: PhoneNumberInfo | null = await getPhoneNumberByNumber(
+        const pn: PhoneNumberInfo | null = await getPhoneEndpointByNumber(
           args.callerId
         );
         if (!pn) {

@@ -88,6 +88,19 @@ export interface PhoneNumberInfo {
   [key: string]: any;
 }
 
+export interface PhoneRegistrationInfo {
+  id: string;
+  name?: string | null;
+  handler: string;
+  status?: string;
+  state?: string;
+  outbound?: boolean;
+  organisationId?: string | null;
+  [key: string]: any;
+}
+
+export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
+
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
   const serviceBaseUri = process.env.SERVICE_BASE_URI;
@@ -154,9 +167,35 @@ export async function getPhoneNumbers(handler?: string): Promise<any[]> {
   return makeApiRequest(`/api/agent-db/phone-numbers${query}`);
 }
 
+// Get phone endpoint by ID (PhoneRegistration)
+export async function getPhoneEndpointById(id: string): Promise<PhoneRegistrationInfo | null> {
+  try {
+    const result = await makeApiRequest<{ items: PhoneRegistrationInfo[] }>(
+      `/api/agent-db/phone-endpoints?id=${encodeURIComponent(id)}`
+    );
+    return result?.items?.[0] || null;
+  } catch (error) {
+    logger.error({ id, error }, 'Failed to get phone endpoint by id');
+    return null;
+  }
+}
+
+// Get phone endpoint by number (PhoneNumber)
+export async function getPhoneEndpointByNumber(number: string): Promise<PhoneNumberInfo | null> {
+  try {
+    const result = await makeApiRequest<{ items: PhoneNumberInfo[] }>(
+      `/api/agent-db/phone-endpoints?number=${encodeURIComponent(number)}`
+    );
+    return result?.items?.[0] || null;
+  } catch (error) {
+    logger.error({ number, error }, 'Failed to get phone endpoint by number');
+    return null;
+  }
+}
+
+// Legacy function - kept for backward compatibility, now uses phone-endpoints endpoint
 export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
-  const results = await makeApiRequest<PhoneNumberInfo[]>(`/api/agent-db/phone-numbers?number=${encodeURIComponent(number)}`);
-  return results?.[0] || null;
+  return getPhoneEndpointByNumber(number);
 }
 
 // Create a new call record

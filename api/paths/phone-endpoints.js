@@ -195,10 +195,13 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // Strip sip:/sips: prefix from registrar if present before saving
+      const normalizedRegistrar = data.registrar?.replace(/^sips?:/i, '') || data.registrar;
+
       // Check for duplicate registration (same registrar and username)
       const existingRegistration = await PhoneRegistration.findOne({
         where: {
-          registrar: data.registrar,
+          registrar: normalizedRegistrar,
           username: data.username,
           organisationId: organisationId
         }
@@ -214,7 +217,7 @@ const createPhoneEndpoint = async (req, res) => {
         name: data.name,
         handler: data.handler ?? 'livekit',
         outbound: data.outbound ?? false,
-        registrar: data.registrar,
+        registrar: normalizedRegistrar,
         username: data.username,
         password: data.password,
         options: data.options || null,
@@ -370,89 +373,7 @@ createPhoneEndpoint.apiDoc = {
     content: {
       'application/json': {
         schema: {
-          allOf: [
-            {
-              type: 'object',
-              required: ['type'],
-              properties: {
-                type: {
-                  type: 'string',
-                  description: 'The type of phone endpoint',
-                  enum: ['e164-ddi', 'phone-registration']
-                },
-                name: {
-                  type: 'string',
-                  description: 'User-defined descriptive name',
-                  nullable: true
-                },
-                handler: {
-                  type: 'string',
-                  description: 'The handler type for this phone endpoint',
-                  enum: ['livekit', 'jambonz'],
-                  default: 'livekit'
-                },
-                outbound: {
-                  type: 'boolean',
-                  description: 'Whether this endpoint supports outbound calls',
-                  default: false
-                }
-              }
-            },
-            {
-              oneOf: [
-                {
-                  description: 'E.164 DDI endpoint',
-                  type: 'object',
-                  required: ['number', 'trunkId'],
-                  properties: {
-                    name: {
-                      type: 'string',
-                      description: 'User-defined descriptive name',
-                      nullable: true
-                    },
-                    number: {
-                      type: 'string',
-                      description: 'E.164 phone number (with or without +)',
-                      pattern: '^\\+?[1-9]\\d{6,14}$'
-                    },
-                    trunkId: {
-                      type: 'string',
-                      description: 'Trunk identifier for e164-ddi type'
-                    }
-                  }
-                },
-                {
-                  description: 'Phone registration endpoint',
-                  type: 'object',
-                  required: ['registrar', 'username', 'password'],
-                  properties: {
-                    name: {
-                      type: 'string',
-                      description: 'User-defined descriptive name',
-                      nullable: true
-                    },
-                    registrar: {
-                      type: 'string',
-                      description: 'SIP contact URI for phone-registration type',
-                      pattern: '^sips?:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?(?:;transport=(?:tcp|udp|tls|TCP|UDP|TLS))?$'
-                    },
-                    username: {
-                      type: 'string',
-                      description: 'Username for phone-registration type'
-                    },
-                    password: {
-                      type: 'string',
-                      description: 'Password for phone-registration type'
-                    },
-                    options: {
-                      type: 'object',
-                      description: 'Implementation-specific options (TBD)'
-                    }
-                  }
-                }
-              ]
-            }
-          ]
+          $ref: '#/components/schemas/PhoneEndpointCreateInput'
         }
       }
     }

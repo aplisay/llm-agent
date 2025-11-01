@@ -24,6 +24,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   let mockWsServer;
 
   beforeAll(async () => {
+    // Enable registration simulation for tests
+    process.env.REG_SIM_ENABLED = 'true';
+    
     // Connect to real database
     await setupRealDatabase();
     models = { Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk };
@@ -101,10 +104,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     });
     testPhoneId = testPhone.number;
 
-    // Create test registration
+    // Create test registration (without sip: prefix since it gets stripped on save)
     const testReg = await PhoneRegistration.create({
       name: 'Test Registration',
-      registrar: 'sip:test.example.com:5060',
+      registrar: 'test.example.com:5060',
       username: 'testuser',
       password: 'testpass',
       outbound: true,
@@ -610,7 +613,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         body: {
           type: 'phone-registration',
           name: 'New Test Registration',
-          registrar: 'sip:new-test.example.com:5060', // Different registrar
+          registrar: 'new-test.example.com:5060', // Different registrar (without prefix)
           username: 'newtestuser', // Different username
           password: 'testpass',
           handler: 'livekit',
@@ -626,6 +629,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._status).toBe(201);
       expect(res._body).toHaveProperty('success', true);
       expect(res._body).toHaveProperty('id');
+
+      // Verify the registrar was saved without prefix
+      const { PhoneRegistration } = models;
+      const created = await PhoneRegistration.findByPk(res._body.id);
+      expect(created.registrar).toBe('new-test.example.com:5060');
     });
 
     test('should return 400 for missing required fields', async () => {
@@ -729,10 +737,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     test('should return 409 for duplicate phone registration (same registrar and username)', async () => {
       const { PhoneRegistration } = models;
       
-      // First, create a registration with specific registrar and username
+      // First, create a registration with specific registrar and username (without prefix)
       const firstReg = await PhoneRegistration.create({
         name: 'First Registration',
-        registrar: 'sip:duplicate.example.com:5060',
+        registrar: 'duplicate.example.com:5060',
         username: 'duplicateuser',
         password: 'testpass',
         outbound: true,
@@ -744,11 +752,12 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       try {
         // Now try to create another registration with the same registrar and username
+        // Even with sip: prefix, it should be normalized and match
         const req = createMockRequest({
           body: {
             type: 'phone-registration',
             name: 'Duplicate Registration',
-            registrar: 'sip:duplicate.example.com:5060', // Same registrar
+            registrar: 'sip:duplicate.example.com:5060', // Same registrar with prefix (should be stripped)
             username: 'duplicateuser', // Same username
             password: 'differentpass',
             handler: 'livekit',
@@ -774,10 +783,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     test('should allow different username with same registrar', async () => {
       const { PhoneRegistration } = models;
       
-      // First, create a registration with specific registrar and username
+      // First, create a registration with specific registrar and username (without prefix)
       const firstReg = await PhoneRegistration.create({
         name: 'First Registration',
-        registrar: 'sip:same-registrar.example.com:5060',
+        registrar: 'same-registrar.example.com:5060',
         username: 'user1',
         password: 'testpass',
         outbound: true,
@@ -794,7 +803,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           body: {
             type: 'phone-registration',
             name: 'Different User Registration',
-            registrar: 'sip:same-registrar.example.com:5060', // Same registrar
+            registrar: 'same-registrar.example.com:5060', // Same registrar (without prefix)
             username: 'user2', // Different username
             password: 'differentpass',
             handler: 'livekit',
@@ -824,10 +833,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     test('should allow same username with different registrar', async () => {
       const { PhoneRegistration } = models;
       
-      // First, create a registration with specific registrar and username
+      // First, create a registration with specific registrar and username (without prefix)
       const firstReg = await PhoneRegistration.create({
         name: 'First Registration',
-        registrar: 'sip:registrar1.example.com:5060',
+        registrar: 'registrar1.example.com:5060',
         username: 'sameuser',
         password: 'testpass',
         outbound: true,
@@ -844,7 +853,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           body: {
             type: 'phone-registration',
             name: 'Different Registrar Registration',
-            registrar: 'sip:registrar2.example.com:5060', // Different registrar
+            registrar: 'registrar2.example.com:5060', // Different registrar (without prefix)
             username: 'sameuser', // Same username
             password: 'differentpass',
             handler: 'livekit',
@@ -869,6 +878,102 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           await PhoneRegistration.destroy({ where: { id: secondRegId } });
         }
       }
+    });
+
+    test('should strip sip: prefix from registrar on create', async () => {
+      const { PhoneRegistration } = models;
+      
+      const req = createMockRequest({
+        body: {
+          type: 'phone-registration',
+          name: 'Prefix Test Registration',
+          registrar: 'sip:prefix-test.example.com:5060', // With sip: prefix
+          username: 'prefixtest',
+          password: 'testpass',
+          handler: 'livekit',
+          outbound: false
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(201);
+      expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the prefix was stripped when saved
+      const created = await PhoneRegistration.findByPk(res._body.id);
+      expect(created.registrar).toBe('prefix-test.example.com:5060');
+      
+      // Clean up
+      await PhoneRegistration.destroy({ where: { id: res._body.id } });
+    });
+
+    test('should strip sips: prefix from registrar on create', async () => {
+      const { PhoneRegistration } = models;
+      
+      const req = createMockRequest({
+        body: {
+          type: 'phone-registration',
+          name: 'Secure Prefix Test Registration',
+          registrar: 'sips:secure-test.example.com:5060', // With sips: prefix
+          username: 'securetest',
+          password: 'testpass',
+          handler: 'livekit',
+          outbound: false
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(201);
+      expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the prefix was stripped when saved
+      const created = await PhoneRegistration.findByPk(res._body.id);
+      expect(created.registrar).toBe('secure-test.example.com:5060');
+      
+      // Clean up
+      await PhoneRegistration.destroy({ where: { id: res._body.id } });
+    });
+
+    test('should create phone registration with options.transport', async () => {
+      const { PhoneRegistration } = models;
+      
+      const req = createMockRequest({
+        body: {
+          type: 'phone-registration',
+          name: 'Transport Test Registration',
+          registrar: 'transport-test.example.com:5060',
+          username: 'transporttest',
+          password: 'testpass',
+          handler: 'livekit',
+          outbound: false,
+          options: {
+            transport: 'tls'
+          }
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(201);
+      expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the options were saved
+      const created = await PhoneRegistration.findByPk(res._body.id);
+      expect(created.options).toEqual({ transport: 'tls' });
+      
+      // Clean up
+      await PhoneRegistration.destroy({ where: { id: res._body.id } });
     });
 
 
@@ -938,10 +1043,12 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     });
 
     test('should handle credential rotation', async () => {
+      const { PhoneRegistration } = models;
+      
       const req = createMockRequest({
         params: { identifier: testRegId },
         body: {
-          registrar: 'sip:new.example.com:5060',
+          registrar: 'new.example.com:5060',
           username: 'newuser',
           password: 'newpass'
         },
@@ -954,6 +1061,59 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(200);
       expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the registrar was updated (and prefix stripped if provided)
+      const updated = await PhoneRegistration.findByPk(testRegId);
+      expect(updated.registrar).toBe('new.example.com:5060');
+      expect(updated.username).toBe('newuser');
+    });
+
+    test('should strip sip: prefix from registrar on update', async () => {
+      const { PhoneRegistration } = models;
+      
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        body: {
+          registrar: 'sip:updated-registrar.example.com:5060', // With sip: prefix
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await updatePhoneEndpoint(req, res);
+
+      expect(res._status).toBe(200);
+      expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the prefix was stripped when saved
+      const updated = await PhoneRegistration.findByPk(testRegId);
+      expect(updated.registrar).toBe('updated-registrar.example.com:5060');
+    });
+
+    test('should update phone registration with options.transport', async () => {
+      const { PhoneRegistration } = models;
+      
+      const req = createMockRequest({
+        params: { identifier: testRegId },
+        body: {
+          options: {
+            transport: 'udp'
+          }
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await updatePhoneEndpoint(req, res);
+
+      expect(res._status).toBe(200);
+      expect(res._body).toHaveProperty('success', true);
+      
+      // Verify the options were updated
+      const updated = await PhoneRegistration.findByPk(testRegId);
+      expect(updated.options).toEqual({ transport: 'udp' });
     });
 
     test('should return 404 for non-existent endpoint', async () => {
@@ -1127,10 +1287,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     test('should verify deletion by ID - registration should not exist after deletion', async () => {
       const { PhoneRegistration } = models;
       
-      // Create a new registration for this test
+      // Create a new registration for this test (without prefix)
       const testReg = await PhoneRegistration.create({
         name: 'Test Registration for Deletion',
-        registrar: 'sip:delete-test.example.com:5060',
+        registrar: 'delete-test.example.com:5060',
         username: 'deletetest',
         password: 'testpass',
         outbound: true,
@@ -1402,10 +1562,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         name: 'Test Organisation for Simulation'
       });
 
-      // Create test registration
+      // Create test registration (without prefix)
       const testReg = await PhoneRegistration.create({
         name: 'Test Registration for Simulation',
-        registrar: 'sip:test.example.com:5060',
+        registrar: 'test.example.com:5060',
         username: 'testuser',
         password: 'testpass',
         outbound: true,
@@ -1605,10 +1765,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     test('should handle simulation with multiple registrations', async () => {
       const { PhoneRegistration } = models;
 
-      // Create second registration
+      // Create second registration (without prefix)
       const secondReg = await PhoneRegistration.create({
         name: 'Second Test Registration',
-        registrar: 'sip:test2.example.com:5060',
+        registrar: 'test2.example.com:5060',
         username: 'testuser2',
         password: 'testpass2',
         outbound: true,
@@ -1816,7 +1976,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         body: {
           type: 'phone-registration',
           name: 'Integration Test Registration',
-          registrar: 'sip:test.example.com:5060',
+          registrar: 'test.example.com:5060', // Without prefix (will be stripped anyway)
           username: 'integration-test',
           password: 'test-password-123',
           outbound: true,
@@ -1845,7 +2005,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(verifyRes._status).toBe(200);
       expect(verifyRes._body).toHaveProperty('id', registrationId);
       expect(verifyRes._body).toHaveProperty('name', 'Integration Test Registration');
-      expect(verifyRes._body).toHaveProperty('registrar', 'sip:test.example.com:5060');
+      expect(verifyRes._body).toHaveProperty('registrar', 'test.example.com:5060'); // Without prefix (stripped on save)
       expect(verifyRes._body).toHaveProperty('username', 'integration-test');
 
       // Step 4: Create a listener on the agent using the registration endpoint ID
@@ -1917,7 +2077,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         body: {
           type: 'phone-registration',
           name: 'Test Registration for Agent Test',
-          registrar: 'sip:test.example.com:5060',
+          registrar: 'test.example.com:5060', // Without prefix (will be stripped anyway)
           username: 'test-user',
           password: 'test-pass',
           outbound: true,
@@ -1961,7 +2121,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         body: {
           type: 'phone-registration',
           name: 'Integration Test Registration',
-          registrar: 'sip:test.example.com:5060',
+          registrar: 'test.example.com:5060', // Without prefix (will be stripped anyway)
           username: 'integration-test',
           password: 'test-password-123',
           outbound: true,
@@ -1990,7 +2150,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(verifyRes._status).toBe(200);
       expect(verifyRes._body).toHaveProperty('id', registrationId);
       expect(verifyRes._body).toHaveProperty('name', 'Integration Test Registration');
-      expect(verifyRes._body).toHaveProperty('registrar', 'sip:test.example.com:5060');
+      expect(verifyRes._body).toHaveProperty('registrar', 'test.example.com:5060'); // Without prefix (stripped on save)
       expect(verifyRes._body).toHaveProperty('username', 'integration-test');
 
       // Step 3: Update the endpoint
@@ -1998,7 +2158,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         params: { identifier: registrationId },
         body: {
           name: 'Updated Integration Test Registration',
-          registrar: 'sip:updated.example.com:5060',
+          registrar: 'updated.example.com:5060', // Without prefix (will be stripped anyway)
           username: 'updated-integration-test',
           password: 'updated-password-456'
         },
@@ -2022,7 +2182,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       await getPhoneEndpoint(verifyUpdateReq, verifyUpdateRes);
       expect(verifyUpdateRes._status).toBe(200);
       expect(verifyUpdateRes._body).toHaveProperty('name', 'Updated Integration Test Registration');
-      expect(verifyUpdateRes._body).toHaveProperty('registrar', 'sip:updated.example.com:5060');
+      expect(verifyUpdateRes._body).toHaveProperty('registrar', 'updated.example.com:5060'); // Without prefix (stripped on save)
       expect(verifyUpdateRes._body).toHaveProperty('username', 'updated-integration-test');
 
       // Step 5: Activate the endpoint

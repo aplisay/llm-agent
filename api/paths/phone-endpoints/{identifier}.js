@@ -204,7 +204,7 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -224,6 +224,9 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.name !== undefined && typeof updateFields.name !== 'string') {
         return res.status(400).send({ error: 'name must be a string' });
       }
+      if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
+        return res.status(400).send({ error: 'options must be an object if provided' });
+      }
       
       // Handle credential rotation
       let credentialsChanged = false;
@@ -237,6 +240,11 @@ const updatePhoneEndpoint = async (req, res) => {
       // validate credentials if provided
       if (updateFields.registrar !== undefined && !validateSipUri(updateFields.registrar)) {
         return res.status(400).send({ error: 'registrar must be a valid SIP contact URI' });
+      }
+      
+      // Strip sip:/sips: prefix from registrar if present
+      if (updateFields.registrar !== undefined) {
+        updateFields.registrar = updateFields.registrar.replace(/^sips?:/i, '');
       }
       if (updateFields.username !== undefined && (typeof updateFields.username !== 'string' || updateFields.username.trim().length === 0)) {
         return res.status(400).send({ error: 'username must be a non-empty string' });
@@ -336,15 +344,7 @@ updatePhoneEndpoint.apiDoc = {
     content: {
       'application/json': {
         schema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'User-defined descriptive name' },
-            outbound: { type: 'boolean', description: 'Supports outbound' },
-            handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-            registrar: { type: 'string', description: 'SIP contact URI (for registrations)', pattern: '^sips?:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?(?:;transport=(?:tcp|udp|tls|TCP|UDP|TLS))?$' },
-            username: { type: 'string', description: 'Registration username (for registrations)' },
-            password: { type: 'string', description: 'Registration password (for registrations)' }
-          }
+          $ref: '#/components/schemas/PhoneEndpointUpdateInput'
         }
       }
     }
