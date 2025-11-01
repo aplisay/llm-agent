@@ -434,7 +434,7 @@ createPhoneEndpoint.apiDoc = {
                     registrar: {
                       type: 'string',
                       description: 'SIP contact URI for phone-registration type',
-                      pattern: '^sip:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
+                      pattern: '^sips?:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?(?:;transport=(?:tcp|udp|tls|TCP|UDP|TLS))?$'
                     },
                     username: {
                       type: 'string',

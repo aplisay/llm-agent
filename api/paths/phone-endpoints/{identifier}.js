@@ -1,5 +1,5 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164 } from '../../../lib/validation.js';
+import { normalizeE164, validateSipUri } from '../../../lib/validation.js';
 
 let log;
 
@@ -184,6 +184,13 @@ const updatePhoneEndpoint = async (req, res) => {
           updateFields[field] = updateData[field];
         }
       }
+      // basic validation for number updates
+      if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
+        return res.status(400).send({ error: 'outbound must be a boolean value' });
+      }
+      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
+        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      }
       await phoneNumber.update(updateFields);
       return res.send({ success: true });
     } else {
@@ -206,6 +213,17 @@ const updatePhoneEndpoint = async (req, res) => {
           updateFields[field] = updateData[field];
         }
       }
+
+      // field-level validation for registrations
+      if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
+        return res.status(400).send({ error: 'outbound must be a boolean value' });
+      }
+      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
+        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      }
+      if (updateFields.name !== undefined && typeof updateFields.name !== 'string') {
+        return res.status(400).send({ error: 'name must be a string' });
+      }
       
       // Handle credential rotation
       let credentialsChanged = false;
@@ -214,6 +232,17 @@ const updatePhoneEndpoint = async (req, res) => {
           updateFields[field] = updateData[field];
           credentialsChanged = true;
         }
+      }
+
+      // validate credentials if provided
+      if (updateFields.registrar !== undefined && !validateSipUri(updateFields.registrar)) {
+        return res.status(400).send({ error: 'registrar must be a valid SIP contact URI' });
+      }
+      if (updateFields.username !== undefined && (typeof updateFields.username !== 'string' || updateFields.username.trim().length === 0)) {
+        return res.status(400).send({ error: 'username must be a non-empty string' });
+      }
+      if (updateFields.password !== undefined && (typeof updateFields.password !== 'string' || updateFields.password.trim().length === 0)) {
+        return res.status(400).send({ error: 'password must be a non-empty string' });
       }
       
       // If credentials changed, reset state to initial for re-registration
@@ -312,7 +341,7 @@ updatePhoneEndpoint.apiDoc = {
             name: { type: 'string', description: 'User-defined descriptive name' },
             outbound: { type: 'boolean', description: 'Supports outbound' },
             handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-            registrar: { type: 'string', description: 'SIP contact URI (for registrations)' },
+            registrar: { type: 'string', description: 'SIP contact URI (for registrations)', pattern: '^sips?:(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?(?:;transport=(?:tcp|udp|tls|TCP|UDP|TLS))?$' },
             username: { type: 'string', description: 'Registration username (for registrations)' },
             password: { type: 'string', description: 'Registration password (for registrations)' }
           }

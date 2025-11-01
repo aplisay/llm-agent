@@ -82,7 +82,7 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const job = ctx.job;
     const room = job.room as unknown as Room;
-    logger.debug({ ctx, job, room }, "new call");
+    logger.info({ ctx, job, room }, "new call");
 
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
@@ -94,6 +94,7 @@ export default defineAgent({
 
     try {
       const scenario = await getCallInfo(ctx, room);
+      logger.info({ scenario }, "scenario");
 
       let {
         instance,
@@ -249,6 +250,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     "getting call info"
   );
 
+  let phoneRegistration: string | null = null;
   let instance: Instance | null = null;
   let agent: Agent | null = null;
   let participant: ParticipantInfo | null = null;
@@ -288,7 +290,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instanceId,
     };
   } else {
+    logger.info({ room }, "room name getting participants");
     const participants = await roomService.listParticipants(room.name!);
+    logger.info({ participants }, "participants");
     participant = participants[0] as ParticipantInfo;
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
@@ -304,11 +308,15 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipTrunkPhoneNumber: calledId,
           sipPhoneNumber: callerId,
           sipHXAplisayTrunk: aplisayId,
+          sipHXAplisayPhoneRegistration: phoneRegistration,
         } = participant.attributes);
       }
 
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
+      
+      calledId = phoneRegistration || calledId;
+
 
       logger.info(
         { callerId, calledId, aplisayId },
