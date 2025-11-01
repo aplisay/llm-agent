@@ -91,6 +91,7 @@ const phoneEndpointsList = (async (req, res) => {
             status: registration.status,
             state: registration.state,
             outbound: !!registration.outbound,
+            instanceId: registration.instanceId,
           }],
           nextOffset: null
         });
@@ -112,6 +113,7 @@ const phoneEndpointsList = (async (req, res) => {
           status: r.status,
           state: r.state,
           outbound: !!r.outbound,
+          instanceId: r.instanceId,
         }));
         const nextOffset = rows.length === size ? startOffset + size : null;
         

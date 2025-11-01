@@ -96,6 +96,7 @@ export interface PhoneRegistrationInfo {
   state?: string;
   outbound?: boolean;
   organisationId?: string | null;
+  instanceId?: string | null;
   [key: string]: any;
 }
 

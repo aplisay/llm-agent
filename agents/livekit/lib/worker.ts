@@ -311,7 +311,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipTrunkPhoneNumber: calledId,
           sipPhoneNumber: callerId,
           sipHXAplisayTrunk: aplisayId,
-          sipHXAplisayPhoneRegistration: phoneRegistration,
+          sipHXAplisayPhoneregistration: phoneRegistration,
         } = participant.attributes);
       }
 
@@ -329,22 +329,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
         if (phoneEndpoint && 'id' in phoneEndpoint) {
           const regInfo = phoneEndpoint as PhoneRegistrationInfo;
           logger.info({ phoneEndpoint: regInfo }, "found phone registration endpoint");
-        }
-        // PhoneRegistration doesn't directly link to Instance, so try to find instance using calledId
-        // if we still have a calledId (phone number) available
-        if (calledId && !instance) {
-          const phoneEndpoint = await getPhoneEndpointByNumber(calledId);
-          if (phoneEndpoint && 'number' in phoneEndpoint) {
-            const numInfo = phoneEndpoint as PhoneNumberInfo;
-            logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint for instance lookup");
-            if (numInfo.instanceId) {
-              instance = await getInstanceById(numInfo.instanceId);
-            } else {
-              instance = await getInstanceByNumber(calledId);
-            }
-          } else {
-            // Fallback: try direct instance lookup by number
-            instance = await getInstanceByNumber(calledId);
+          // PhoneRegistration now has instanceId, so we can lookup the instance
+          if (regInfo.instanceId) {
+            instance = await getInstanceById(regInfo.instanceId);
+            logger.info({ instanceId: regInfo.instanceId, instance }, "found instance from registration instanceId");
           }
         }
       } else if (calledId) {
