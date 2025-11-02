@@ -30,8 +30,11 @@ import {
   type Call,
   type CallMetadata,
   type OutboundInfo,
+  getPhoneEndpointById,
+  getPhoneEndpointByNumber,
   getPhoneNumberByNumber,
   type PhoneNumberInfo,
+  type PhoneRegistrationInfo,
 } from "./api-client.js";
 
 // Types
@@ -82,7 +85,7 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const job = ctx.job;
     const room = job.room as unknown as Room;
-    logger.debug({ ctx, job, room }, "new call");
+    logger.info({ ctx, job, room }, "new call");
 
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
@@ -94,6 +97,7 @@ export default defineAgent({
 
     try {
       const scenario = await getCallInfo(ctx, room);
+      logger.info({ scenario }, "scenario");
 
       let {
         instance,
@@ -249,6 +253,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     "getting call info"
   );
 
+  let phoneRegistration: string | null = null;
   let instance: Instance | null = null;
   let agent: Agent | null = null;
   let participant: ParticipantInfo | null = null;
@@ -288,7 +293,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       instanceId,
     };
   } else {
+    logger.info({ room }, "room name getting participants");
     const participants = await roomService.listParticipants(room.name!);
+    logger.info({ participants }, "participants");
     participant = participants[0] as ParticipantInfo;
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
@@ -304,17 +311,51 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipTrunkPhoneNumber: calledId,
           sipPhoneNumber: callerId,
           sipHXAplisayTrunk: aplisayId,
+          sipHXAplisayPhoneregistration: phoneRegistration,
         } = participant.attributes);
       }
 
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
-
-      logger.info(
-        { callerId, calledId, aplisayId },
-        "new Livekit inbound telephone call, looking up instance by number"
-      );
-      instance = calledId && (await getInstanceByNumber(calledId!));
+      
+      // If we have a phoneRegistration ID, lookup the phone endpoint by ID
+      // Otherwise, use the calledId (phone number) to lookup by number
+      if (phoneRegistration) {
+        logger.info(
+          { callerId, phoneRegistration, aplisayId },
+          "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
+        );
+        const phoneEndpoint = await getPhoneEndpointById(phoneRegistration);
+        if (phoneEndpoint && 'id' in phoneEndpoint) {
+          const regInfo = phoneEndpoint as PhoneRegistrationInfo;
+          logger.info({ phoneEndpoint: regInfo }, "found phone registration endpoint");
+          // PhoneRegistration now has instanceId, so we can lookup the instance
+          if (regInfo.instanceId) {
+            instance = await getInstanceById(regInfo.instanceId);
+            logger.info({ instanceId: regInfo.instanceId, instance }, "found instance from registration instanceId");
+          }
+        }
+      } else if (calledId) {
+        logger.info(
+          { callerId, calledId, aplisayId },
+          "new Livekit inbound telephone call, looking up phone endpoint by number"
+        );
+        const phoneEndpoint = await getPhoneEndpointByNumber(calledId);
+        if (phoneEndpoint && 'number' in phoneEndpoint) {
+          const numInfo = phoneEndpoint as PhoneNumberInfo;
+          logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint");
+          // PhoneNumber has instanceId, so we can lookup the instance
+          if (numInfo.instanceId) {
+            instance = await getInstanceById(numInfo.instanceId);
+          } else {
+            // Fallback to old behavior
+            instance = await getInstanceByNumber(calledId);
+          }
+        } else {
+          // Fallback: try direct instance lookup by number
+          instance = await getInstanceByNumber(calledId);
+        }
+      }
     }
   }
   if (!instance) {
@@ -469,7 +510,7 @@ async function setupCallAndUtilities({
 
       // Validate overridden callerId if provided
       if (args.callerId) {
-        const pn: PhoneNumberInfo | null = await getPhoneNumberByNumber(
+        const pn: PhoneNumberInfo | null = await getPhoneEndpointByNumber(
           args.callerId
         );
         if (!pn) {

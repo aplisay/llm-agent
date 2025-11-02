@@ -1,5 +1,5 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164 } from '../../../lib/validation.js';
+import { normalizeE164, validateSipUri } from '../../../lib/validation.js';
 
 let log;
 
@@ -184,6 +184,13 @@ const updatePhoneEndpoint = async (req, res) => {
           updateFields[field] = updateData[field];
         }
       }
+      // basic validation for number updates
+      if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
+        return res.status(400).send({ error: 'outbound must be a boolean value' });
+      }
+      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
+        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      }
       await phoneNumber.update(updateFields);
       return res.send({ success: true });
     } else {
@@ -197,7 +204,7 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -205,6 +212,20 @@ const updatePhoneEndpoint = async (req, res) => {
         if (updateData[field] !== undefined) {
           updateFields[field] = updateData[field];
         }
+      }
+
+      // field-level validation for registrations
+      if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
+        return res.status(400).send({ error: 'outbound must be a boolean value' });
+      }
+      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
+        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      }
+      if (updateFields.name !== undefined && typeof updateFields.name !== 'string') {
+        return res.status(400).send({ error: 'name must be a string' });
+      }
+      if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
+        return res.status(400).send({ error: 'options must be an object if provided' });
       }
       
       // Handle credential rotation
@@ -214,6 +235,22 @@ const updatePhoneEndpoint = async (req, res) => {
           updateFields[field] = updateData[field];
           credentialsChanged = true;
         }
+      }
+
+      // validate credentials if provided
+      if (updateFields.registrar !== undefined && !validateSipUri(updateFields.registrar)) {
+        return res.status(400).send({ error: 'registrar must be a valid SIP contact URI' });
+      }
+      
+      // Strip sip:/sips: prefix from registrar if present
+      if (updateFields.registrar !== undefined) {
+        updateFields.registrar = updateFields.registrar.replace(/^sips?:/i, '');
+      }
+      if (updateFields.username !== undefined && (typeof updateFields.username !== 'string' || updateFields.username.trim().length === 0)) {
+        return res.status(400).send({ error: 'username must be a non-empty string' });
+      }
+      if (updateFields.password !== undefined && (typeof updateFields.password !== 'string' || updateFields.password.trim().length === 0)) {
+        return res.status(400).send({ error: 'password must be a non-empty string' });
       }
       
       // If credentials changed, reset state to initial for re-registration
@@ -307,15 +344,7 @@ updatePhoneEndpoint.apiDoc = {
     content: {
       'application/json': {
         schema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'User-defined descriptive name' },
-            outbound: { type: 'boolean', description: 'Supports outbound' },
-            handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-            registrar: { type: 'string', description: 'SIP contact URI (for registrations)' },
-            username: { type: 'string', description: 'Registration username (for registrations)' },
-            password: { type: 'string', description: 'Registration password (for registrations)' }
-          }
+          $ref: '#/components/schemas/PhoneEndpointUpdateInput'
         }
       }
     }
