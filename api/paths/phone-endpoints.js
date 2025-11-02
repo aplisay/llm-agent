@@ -72,6 +72,8 @@ const phoneEndpointList = (async (req, res) => {
       const items = rows.map(r => ({
         id: r.id,
         name: r.name,
+        registrar: r.registrar,
+        username: r.username,
         status: r.status,
         state: r.state,
         handler: r.handler,
@@ -91,7 +93,7 @@ const phoneEndpointList = (async (req, res) => {
       }),
       PhoneRegistration.findAll({
         where: regWhere,
-        attributes: ['id', 'name', 'status', 'state', 'handler', 'outbound', 'createdAt'],
+        attributes: ['id', 'name', 'registrar', 'username', 'status', 'state', 'handler', 'outbound', 'createdAt'],
         limit: size,
         offset: startOffset
       })
@@ -106,6 +108,8 @@ const phoneEndpointList = (async (req, res) => {
     const mappedRegs = regRows.map(r => ({
       id: r.id,
       name: r.name,
+      registrar: r.registrar,
+      username: r.username,
       status: r.status,
       state: r.state,
       handler: r.handler,
@@ -330,6 +334,8 @@ phoneEndpointList.apiDoc = {
                       properties: {
                         name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                         id: { type: 'string', description: 'The registration ID' },
+                        registrar: { type: 'string', description: 'SIP contact URI (without sip:/sips: prefix)' },
+                        username: { type: 'string', description: 'Registration username' },
                         status: { type: 'string', description: 'High-level status of the endpoint', enum: ['active', 'failed', 'disabled'] },
                         state: { type: 'string', description: 'Registration state', enum: ['initial', 'registering', 'registered', 'failed'] },
                         handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },

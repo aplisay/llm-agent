@@ -8,35 +8,35 @@
  * 2. Prompts for registration endpoint details (or uses TEST_... env vars)
  * 3. Creates a registration endpoint and gets its ID
  * 4. Activates that endpoint
- * 5. Creates a listener instance of the agent using the registration endpoint ID
- * 6. Pauses for user input
- * 7. Cleans up: removes listener, deactivates endpoint, removes endpoint, deletes agent
+ * 5. Polls registration state until it becomes "registered"
+ * 6. Creates a listener instance of the agent using the registration endpoint ID
+ * 7. Pauses for user input
+ * 8. Cleans up: removes listener, deactivates endpoint, removes endpoint, deletes agent
  * 
  * Usage:
  *   node tests/manual-registration-test.mjs
  * 
  * Environment variables (required):
  *   API_KEY - API key for authentication (from .env file)
- * 
- * Environment variables (optional):
- *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
  *   TEST_REGISTRAR - SIP registrar URI (e.g., sip.example.com:5060)
  *   TEST_USERNAME - SIP username
  *   TEST_PASSWORD - SIP password
  *   TEST_TRANSPORT - Transport protocol (udp, tcp, tls) - defaults to tls
+ * 
+ * Environment variables (optional):
+ *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
  */
 
 import readline from 'readline';
 import dotenv from 'dotenv';
-import https from 'https';
-import http from 'http';
+import axios from 'axios';
 
 // Load environment variables from .env file
 dotenv.config();
 
 const API_KEY = process.env.API_KEY;
 // SERVICE_BASE_URI is the base host (e.g., http://localhost:5000), we need to append /api
-const SERVICE_BASE = process.env.SERVICE_BASE_URI || process.env.API_BASE_URL || 'http://localhost:4000';
+const SERVICE_BASE = process.env.TEST_API_SERVER || process.env.CONFIG_SERVER_BASE || process.env.API_BASE_URL || 'http://localhost:4000';
 const API_BASE_URL = SERVICE_BASE.endsWith('/api') ? SERVICE_BASE : `${SERVICE_BASE.replace(/\/$/, '')}/api`;
 
 if (!API_KEY) {
@@ -47,68 +47,32 @@ if (!API_KEY) {
 
 // Helper to make HTTP requests
 async function apiRequest(method, path, body = null) {
-  // Construct full URL - if path starts with /, append it to base (which should already end with /api)
-  // If base already ends with /api, path should start with /
-  let fullUrl;
-  if (path.startsWith('/')) {
-    fullUrl = API_BASE_URL.endsWith('/') 
-      ? `${API_BASE_URL.slice(0, -1)}${path}` 
-      : `${API_BASE_URL}${path}`;
-  } else {
-    fullUrl = API_BASE_URL.endsWith('/') 
-      ? `${API_BASE_URL}${path}` 
-      : `${API_BASE_URL}/${path}`;
+  const fullUrl = path.startsWith('/') 
+    ? `${API_BASE_URL.replace(/\/$/, '')}${path}` 
+    : `${API_BASE_URL.replace(/\/$/, '')}/${path}`;
+
+  const config = {
+    method,
+    url: fullUrl,
+    headers: {
+      'Authorization': `Bearer ${API_KEY}`
+    }
+  };
+
+  if (body !== null) {
+    config.headers['Content-Type'] = 'application/json';
+    config.data = body;
   }
-  const url = new URL(fullUrl);
-  
-  return new Promise((resolve, reject) => {
-    const options = {
-      method,
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    };
 
-    if (body) {
-      options.headers['Content-Length'] = Buffer.byteLength(JSON.stringify(body));
-    }
-
-    const client = url.protocol === 'https:' ? https : http;
-    
-    const req = client.request(url, options, (res) => {
-      let data = '';
-      
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      res.on('end', () => {
-        let parsedData;
-        try {
-          parsedData = data ? JSON.parse(data) : null;
-        } catch (e) {
-          parsedData = data;
-        }
-
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ status: res.statusCode, body: parsedData });
-        } else {
-          reject(new Error(`API request failed: ${res.statusCode} ${res.statusMessage}\n${JSON.stringify(parsedData, null, 2)}`));
-        }
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(new Error(`Request error: ${error.message}`));
-    });
-
-    if (body) {
-      req.write(JSON.stringify(body));
-    }
-    
-    req.end();
-  });
+  try {
+    const response = await axios(config);
+    return { status: response.status, body: response.data };
+  } catch (error) {
+    const message = error.response 
+      ? `API request failed: ${error.response.status} ${error.response.statusText}\n${JSON.stringify(error.response.data, null, 2)}`
+      : `Request error: ${error.message}`;
+    throw new Error(message);
+  }
 }
 
 // Helper to prompt for user input
@@ -224,7 +188,7 @@ async function main() {
 
     console.log(`Using transport: ${transport}`);
 
-    // Step 3: Create registration endpoint
+    // Step 3: Create or update registration endpoint
     console.log('\n=== Step 3: Creating registration endpoint ===');
     const registrationData = {
       type: 'phone-registration',
@@ -237,9 +201,77 @@ async function main() {
       options: transport ? { transport } : undefined
     };
 
-    const registrationRes = await apiRequest('POST', '/phone-endpoints', registrationData);
-    testRegistrationId = registrationRes.body.id;
-    console.log(`✓ Registration endpoint created with ID: ${testRegistrationId}`);
+    let registrationRes;
+    try {
+      registrationRes = await apiRequest('POST', '/phone-endpoints', registrationData);
+      testRegistrationId = registrationRes.body.id;
+      console.log(`✓ Registration endpoint created with ID: ${testRegistrationId}`);
+    } catch (error) {
+      // Check if it's a 409 Conflict (already exists)
+      if (error.message.includes('409') && error.message.includes('already exists')) {
+        console.log('⚠ Registration endpoint already exists. Finding existing endpoint...');
+        
+        // Fetch phone-registration endpoints (list now includes registrar and username)
+        const endpointsRes = await apiRequest('GET', '/phone-endpoints?type=phone-registration');
+        const endpoints = Array.isArray(endpointsRes.body) ? endpointsRes.body : endpointsRes.body.items || [];
+        
+        console.log(`Found ${endpoints.length} phone-registration endpoint(s)`);
+        
+        if (endpoints.length === 0) {
+          throw new Error('Conflict error received but no registration endpoints found');
+        }
+        
+        // Normalize registrar (strip sip:/sips: prefix) for comparison
+        const normalizedRegistrar = registrar.replace(/^sips?:/i, '');
+        
+        // Find matching endpoint by registrar and username
+        const existingEndpoint = endpoints.find(ep => {
+          if (ep.username !== username) {
+            return false;
+          }
+          
+          // Normalize endpoint registrar for comparison
+          const epRegistrar = (ep.registrar || '').replace(/^sips?:/i, '');
+          
+          // Try exact match
+          if (epRegistrar === normalizedRegistrar) {
+            return true;
+          }
+          
+          // Try matching host:port parts separately (in case format differs slightly)
+          const epParts = epRegistrar.split(':');
+          const searchParts = normalizedRegistrar.split(':');
+          if (epParts.length === 2 && searchParts.length === 2) {
+            return epParts[0] === searchParts[0] && epParts[1] === searchParts[1];
+          }
+          
+          return false;
+        });
+        
+        if (existingEndpoint) {
+          console.log(`✓ Found existing registration endpoint with ID: ${existingEndpoint.id}`);
+          console.log(`  Existing: registrar=${existingEndpoint.registrar}, username=${existingEndpoint.username}`);
+          testRegistrationId = existingEndpoint.id;
+          
+          // Update the existing endpoint with current password and options
+          console.log('Updating existing endpoint with current settings...');
+          const updateData = {
+            password: password,
+            options: transport ? { transport } : undefined
+          };
+          await apiRequest('PUT', `/phone-endpoints/${testRegistrationId}`, updateData);
+          console.log('✓ Endpoint updated');
+        } else {
+          console.error('Could not find matching endpoint. Available phone-registration endpoints:');
+          endpoints.forEach(ep => {
+            console.error(`  - ID: ${ep.id}, registrar: ${ep.registrar || '(none)'}, username: ${ep.username || '(none)'}`);
+          });
+          throw new Error('Conflict error received but could not find matching endpoint');
+        }
+      } else {
+        throw error;
+      }
+    }
 
     // Step 4: Activate the endpoint
     console.log('\n=== Step 4: Activating registration endpoint ===');
@@ -248,8 +280,8 @@ async function main() {
     console.log(`  Status: ${activateRes.body.status}`);
     console.log(`  State: ${activateRes.body.state}`);
 
-    // Step 4a: Poll registration state until it becomes "registered"
-    console.log('\n=== Step 4a: Waiting for registration to complete ===');
+    // Step 5: Poll registration state until it becomes "registered"
+    console.log('\n=== Step 5: Waiting for registration to complete ===');
     let registrationState = activateRes.body.state;
     let registrationStatus = activateRes.body.status;
     let pollCount = 0;
@@ -284,8 +316,8 @@ async function main() {
       console.log(`⚠ Registration polling ended. Final state: ${registrationState}, Status: ${registrationStatus}`);
     }
 
-    // Step 5: Create listener
-    console.log('\n=== Step 5: Creating listener ===');
+    // Step 6: Create listener
+    console.log('\n=== Step 6: Creating listener ===');
     const listenerData = {
       id: testRegistrationId
     };
@@ -294,15 +326,15 @@ async function main() {
     testListenerId = listenerRes.body.id;
     console.log(`✓ Listener created with ID: ${testListenerId}`);
 
-    // Step 6: Pause for user input
-    console.log('\n=== Step 6: Active session ===');
+    // Step 7: Pause for user input
+    console.log('\n=== Step 7: Active session ===');
     console.log(`Agent ID: ${testAgentId}`);
     console.log(`Registration ID: ${testRegistrationId}`);
     console.log(`Listener ID: ${testListenerId}`);
     await pause('Session is active. Press Enter when ready to cleanup...');
 
-    // Step 7: Cleanup
-    console.log('\n=== Step 7: Cleanup ===');
+    // Step 8: Cleanup
+    console.log('\n=== Step 8: Cleanup ===');
 
     // Delete listener
     if (testListenerId) {

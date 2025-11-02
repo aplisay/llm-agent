@@ -22,7 +22,7 @@ Response body:
 {
   "items": [
     { "name": "Sales UK", "number": "+442080996945", "handler": "jambonz", "outbound": true },
-    { "name": "SIP Reg A", "id": "reg-123", "status": "active", "state": "registered", "handler": "livekit", "outbound": false }
+    { "name": "SIP Reg A", "id": "reg-123", "registrar": "provider.example.com:5060", "username": "user123", "status": "active", "state": "registered", "handler": "livekit", "outbound": false }
   ],
   "nextOffset": 50
 }

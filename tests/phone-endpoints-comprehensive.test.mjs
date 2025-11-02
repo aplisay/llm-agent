@@ -205,6 +205,18 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const registrations = endpoints.filter(ep => ep.id);
       expect(phoneNumbers.length).toBeGreaterThan(0);
       expect(registrations.length).toBeGreaterThan(0);
+      
+      // Verify registrations include registrar and username
+      registrations.forEach(reg => {
+        expect(reg).toHaveProperty('registrar');
+        expect(reg).toHaveProperty('username');
+      });
+      
+      // Verify the test registration is included with correct values
+      const testReg = registrations.find(reg => reg.id === testRegId);
+      expect(testReg).toBeDefined();
+      expect(testReg.registrar).toBe('test.example.com:5060');
+      expect(testReg.username).toBe('testuser');
     });
 
     test('should filter by type=e164-ddi', async () => {
@@ -237,10 +249,19 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(200);
       const endpoints = res._body.items;
+      expect(endpoints.length).toBeGreaterThan(0);
       endpoints.forEach(ep => {
         expect(ep).toHaveProperty('id');
+        expect(ep).toHaveProperty('registrar');
+        expect(ep).toHaveProperty('username');
         expect(ep).not.toHaveProperty('number');
       });
+      
+      // Verify the test registration is included with correct values
+      const testEndpoint = endpoints.find(ep => ep.id === testRegId);
+      expect(testEndpoint).toBeDefined();
+      expect(testEndpoint.registrar).toBe('test.example.com:5060');
+      expect(testEndpoint.username).toBe('testuser');
     });
 
     test('should filter by handler', async () => {
