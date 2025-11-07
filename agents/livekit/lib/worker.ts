@@ -36,6 +36,10 @@ import {
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
 } from "./api-client.js";
+import {
+  handleTransfer,
+  type TransferContext,
+} from "./transfer-handler.js";
 
 // Types
 import type {
@@ -110,6 +114,7 @@ export default defineAgent({
         callMetadata,
         outboundCall,
         outboundInfo,
+        registrationOriginated,
       } = scenario;
 
       if (!agent) {
@@ -157,6 +162,7 @@ export default defineAgent({
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
+        registrationOriginated,
         
         requestHangup: () => {},
       });
@@ -259,6 +265,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let participant: ParticipantInfo | null = null;
   let outboundCall = false;
   let outboundInfo: OutboundInfo | null = null;
+  let registrationOriginated = false;
 
   /*
 
@@ -321,6 +328,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       // If we have a phoneRegistration ID, lookup the phone endpoint by ID
       // Otherwise, use the calledId (phone number) to lookup by number
       if (phoneRegistration) {
+        registrationOriginated = true;
         logger.info(
           { callerId, phoneRegistration, aplisayId },
           "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
@@ -381,6 +389,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     callMetadata: callMetadata || {},
     outboundCall,
     outboundInfo,
+    registrationOriginated,
   };
 }
 
@@ -403,6 +412,7 @@ async function setupCallAndUtilities({
   setBridgedParticipant,
   setConsultInProgress,
   getConsultInProgress,
+  registrationOriginated,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -414,6 +424,31 @@ async function setupCallAndUtilities({
   let wantHangup = false;
   let currentBridged: SipParticipant | null = null;
   let bridgedCallRecord: Call | null = null;
+  
+  // Consultation room state for warm transfers
+  let consultRoomName: string | null = null;
+  let transferSession: voice.AgentSession | null = null;
+  let consultRoom: Room | null = null;
+
+  const getCurrentBridged = () => currentBridged;
+  const setCurrentBridged = (p: SipParticipant | null) => {
+    currentBridged = p;
+  };
+  
+  const getConsultRoomName = () => consultRoomName;
+  const setConsultRoomName = (name: string | null) => {
+    consultRoomName = name;
+  };
+  
+  const getTransferSession = () => transferSession;
+  const setTransferSession = (session: voice.AgentSession | null) => {
+    transferSession = session;
+  };
+  
+  const getConsultRoom = () => consultRoom;
+  const setConsultRoom = (room: Room | null) => {
+    consultRoom = room;
+  };
 
   const call = await createCall({
     id: callId,
@@ -497,199 +532,36 @@ async function setupCallAndUtilities({
     args: TransferArgs;
     participant: ParticipantInfo;
   }) => {
-    if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      logger.info({ args }, "invalid number");
-      throw new Error(
-        "Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets"
-      );
-    }
     try {
-      const operation = args.operation || "blind";
-      let effectiveCallerId = args.callerId || calledId;
-      const session = sessionRef(null);
-
-      // Validate overridden callerId if provided
-      if (args.callerId) {
-        const pn: PhoneNumberInfo | null = await getPhoneEndpointByNumber(
-          args.callerId
-        );
-        if (!pn) {
-          throw new Error("Invalid callerId: number not found");
-        }
-        if (pn.organisationId && pn.organisationId !== agent.organisationId) {
-          throw new Error(
-            "Invalid callerId: number not owned by this organisation"
-          );
-        }
-        if (!pn.outbound) {
-          throw new Error(
-            "Invalid callerId: outbound not enabled on this number"
-          );
-        }
-        // If inbound has aplisayId, require match
-        if (aplisayId) {
-          if (pn.aplisayId && pn.aplisayId !== aplisayId) {
-            throw new Error("Invalid callerId: aplisayId mismatch");
-          }
-        } else {
-          // WebRTC: adopt aplisayId from outbound number if available
-          pn.aplisayId && (aplisayId = pn.aplisayId);
-        }
-        effectiveCallerId = pn.number;
-      }
-      logger.info(
-        {
-          args,
-          number: args.number,
-          operation,
-          identity: participant?.sid,
-          room,
-          aplisayId,
-          calledId,
-          effectiveCallerId,
-        },
-        "transfer participant"
-      );
-
-      // helper to end current call and create/start bridged call record
-      const finaliseBridgedCall = async () => {
-        // Close down the model for the agent leg
-        session?.llm && (session.llm as llm.RealtimeModel)?.close();
-        try {
-          const originalCallId = call.id;
-          bridgedCallRecord = await createCall({
-            parentId: originalCallId,
-            userId,
-            organisationId,
-            instanceId: instance.id,
-            agentId: agent.id,
-            platform: "livekit",
-            platformCallId: room?.name,
-            calledId,
-            callerId,
-            modelName: "telephony:bridged-call",
-            options,
-            metadata: { ...call.metadata },
-          });
-          if (bridgedCallRecord) {
-            await call.end(
-              `Agent left call, new bridged call: ${bridgedCallRecord.id}`
-            );
-            await bridgedCallRecord.start();
-          }
-        } catch (e) {
-          logger.error({ e }, "failed to create bridged call record");
-        }
+      const transferContext: TransferContext = {
+        ctx,
+        room,
+        participant,
+        args,
+        agent,
+        instance,
+        call,
+        callerId,
+        calledId,
+        aplisayId,
+        registrationOriginated: registrationOriginated || false,
+        options,
+        sessionRef,
+        setBridgedParticipant,
+        setConsultInProgress,
+        getConsultInProgress,
+        holdParticipant,
+        getCurrentBridged,
+        setCurrentBridged,
+        setConsultRoomName,
+        getConsultRoomName,
+        setTransferSession,
+        getTransferSession,
+        setConsultRoom,
+        getConsultRoom,
       };
 
-      switch (operation) {
-        case "blind":
-        default:
-          const p = await bridgeParticipant(
-            room.name!,
-            args.number,
-            aplisayId!,
-            effectiveCallerId
-          );
-          logger.info({ p }, "new participant created (blind)");
-          setBridgedParticipant(p);
-          await finaliseBridgedCall();
-          return {
-            status: "OK",
-            detail: `transfer completed, session is now closed`,
-          };
-          break;
-        case "consult_start":
-          try {
-            const p = await bridgeParticipant(
-              room.name!,
-              args.number,
-              aplisayId!,
-              effectiveCallerId
-            );
-            logger.debug({ p }, "bridged participant completed");
-            const rbp = await ctx.waitForParticipant(p.participantIdentity);
-            logger.debug(
-              { p, rbp },
-              "bridged participant, subscribing to tracks"
-            );
-            rbp.trackPublications?.forEach(async (t) => {
-              if (t.kind === TrackKind.KIND_AUDIO) {
-                logger.debug({ t }, "subscribing agent to track");
-                await t.setSubscribed(true);
-                logger.debug({ t }, "track subscribed");
-              }
-            });
-            logger.info({ p }, "new participant created (consult_start)");
-            setBridgedParticipant(p);
-            currentBridged = p;
-            await holdParticipant(participant.sid!, true);
-            setConsultInProgress(true);
-            return {
-              status: "OK",
-              detail: `Consult transfer started to the agent, you are now talking to the agent not the original caller!`,
-            };
-          } catch (e: any) {
-            let error = e as Error;
-            if (!(e instanceof Error)) {
-              error = new Error(e);
-            }
-            logger.error({ e }, "failed to initiate consult transfer");
-            return {
-              status: "ERROR",
-              detail: `Failed to initiate consult transfer`,
-              error: error,
-            };
-          }
-          break;
-        case "consult_finalise":
-          if (!getConsultInProgress() || !currentBridged) {
-            throw new Error("No consult transfer in progress to finalise");
-          }
-          await finaliseBridgedCall();
-          await holdParticipant(participant.sid!, false);
-          return {
-            status: "OK",
-            detail: `consult transfer completed, session is now closed`,
-          };
-          break;
-        case "consult_reject":
-          const bp = currentBridged;
-          logger.debug(
-            { roomName: room.name, identity: bp?.participantId },
-            "consult_reject"
-          );
-          if (bp && room?.name && bp.participantId) {
-            try {
-              // Use SIP hangup to ensure the outbound call is properly torn down
-              await roomService.removeParticipant(
-                room.name,
-                bp.participantIdentity
-              );
-              await holdParticipant(participant.sid!, false);
-              logger.debug({ bp }, "removed bridged participant");
-            } catch (e) {
-              logger.error(
-                { e, bp, roomName: room.name, room },
-                "failed to remove bridged participant"
-              );
-              roomService.listParticipants(room.name).then((participants) => {
-                logger.debug(
-                  { participants },
-                  "participants after failed remove"
-                );
-              });
-            }
-            setBridgedParticipant(null as unknown as SipParticipant);
-            currentBridged = null;
-          }
-          setConsultInProgress(false);
-          return {
-            status: "OK",
-            detail: `consult transfer rejected, session is now closed`,
-          };
-          break;
-      }
+      return await handleTransfer(transferContext);
     } catch (e: any) {
       let error = e as Error;
       if (!(e instanceof Error)) {

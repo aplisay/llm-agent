@@ -322,9 +322,30 @@ async function main() {
       id: testRegistrationId
     };
 
-    const listenerRes = await apiRequest('POST', `/agents/${testAgentId}/listen`, listenerData);
-    testListenerId = listenerRes.body.id;
-    console.log(`✓ Listener created with ID: ${testListenerId}`);
+    try {
+      const listenerRes = await apiRequest('POST', `/agents/${testAgentId}/listen`, listenerData);
+      testListenerId = listenerRes.body.id;
+      console.log(`✓ Listener created with ID: ${testListenerId}`);
+    } catch (err) {
+      // Handle case where registration is already linked to an instance
+      const msg = err.message || '';
+      const match = /already linked to instance ([0-9a-fA-F-]{36})/.exec(msg);
+      if (match && match[1]) {
+        const existingListenerId = match[1];
+        console.warn(`⚠ Registration already linked to listener ${existingListenerId}. Deleting and retrying...`);
+        try {
+          await apiRequest('DELETE', `/listener/${existingListenerId}`);
+          console.log('✓ Deleted existing listener');
+        } catch (delErr) {
+          console.warn(`⚠ Failed to delete existing listener ${existingListenerId}: ${delErr.message}`);
+        }
+        const retryRes = await apiRequest('POST', `/agents/${testAgentId}/listen`, listenerData);
+        testListenerId = retryRes.body.id;
+        console.log(`✓ Listener created after cleanup with ID: ${testListenerId}`);
+      } else {
+        throw err;
+      }
+    }
 
     // Step 7: Pause for user input
     console.log('\n=== Step 7: Active session ===');

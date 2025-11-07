@@ -35,6 +35,7 @@ export interface CallScenario {
   callMetadata: CallMetadata;
   outboundCall: boolean;
   outboundInfo: OutboundInfo | null;
+  registrationOriginated?: boolean;
 }
 
 export interface JobMetadata {
@@ -70,6 +71,7 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
+  registrationOriginated?: boolean;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
