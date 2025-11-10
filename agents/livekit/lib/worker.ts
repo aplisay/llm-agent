@@ -35,6 +35,7 @@ import {
   getPhoneNumberByNumber,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
+  type TrunkInfo,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -115,6 +116,9 @@ export default defineAgent({
         outboundCall,
         outboundInfo,
         registrationOriginated,
+        trunkInfo,
+        registrationRegistrar,
+        registrationTransport,
       } = scenario;
 
       if (!agent) {
@@ -163,6 +167,9 @@ export default defineAgent({
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
         registrationOriginated,
+        trunkInfo,
+        registrationRegistrar,
+        registrationTransport,
         
         requestHangup: () => {},
       });
@@ -266,6 +273,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let outboundCall = false;
   let outboundInfo: OutboundInfo | null = null;
   let registrationOriginated = false;
+  let trunkInfo: TrunkInfo | null = null;
+  let registrationRegistrar: string | null = null;
+  let registrationTransport: string | null = null;
 
   /*
 
@@ -337,6 +347,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
         if (phoneEndpoint && 'id' in phoneEndpoint) {
           const regInfo = phoneEndpoint as PhoneRegistrationInfo;
           logger.info({ phoneEndpoint: regInfo }, "found phone registration endpoint");
+          // Store registrar and transport for transfer operations
+          registrationRegistrar = regInfo.registrar || null;
+          registrationTransport = regInfo.options?.transport || null;
           // PhoneRegistration now has instanceId, so we can lookup the instance
           if (regInfo.instanceId) {
             instance = await getInstanceById(regInfo.instanceId);
@@ -348,10 +361,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           { callerId, calledId, aplisayId },
           "new Livekit inbound telephone call, looking up phone endpoint by number"
         );
-        const phoneEndpoint = await getPhoneEndpointByNumber(calledId);
+        // Pass trunkId (aplisayId) for validation - will throw error if mismatch
+        const phoneEndpoint = await getPhoneEndpointByNumber(calledId, aplisayId);
         if (phoneEndpoint && 'number' in phoneEndpoint) {
           const numInfo = phoneEndpoint as PhoneNumberInfo;
           logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint");
+          // Store trunk info if available
+          if (numInfo.trunk) {
+            trunkInfo = numInfo.trunk;
+            logger.info({ trunkInfo }, "trunk info retrieved from phone endpoint");
+          }
           // PhoneNumber has instanceId, so we can lookup the instance
           if (numInfo.instanceId) {
             instance = await getInstanceById(numInfo.instanceId);
@@ -390,6 +409,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     outboundCall,
     outboundInfo,
     registrationOriginated,
+    trunkInfo,
+    registrationRegistrar,
+    registrationTransport,
   };
 }
 
@@ -413,6 +435,9 @@ async function setupCallAndUtilities({
   setConsultInProgress,
   getConsultInProgress,
   registrationOriginated,
+  trunkInfo,
+  registrationRegistrar,
+  registrationTransport,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -545,6 +570,9 @@ async function setupCallAndUtilities({
         calledId,
         aplisayId,
         registrationOriginated: registrationOriginated || false,
+        trunkInfo,
+        registrationRegistrar,
+        registrationTransport,
         options,
         sessionRef,
         setBridgedParticipant,

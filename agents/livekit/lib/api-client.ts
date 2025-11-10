@@ -78,6 +78,16 @@ export interface OutboundInfo {
   instanceId: string;
 }
 
+export interface TrunkInfo {
+  id: string;
+  name?: string | null;
+  outbound: boolean;
+  flags?: {
+    canRefer?: boolean;
+    [key: string]: any;
+  } | null;
+}
+
 export interface PhoneNumberInfo {
   number: string;
   handler: string;
@@ -85,6 +95,7 @@ export interface PhoneNumberInfo {
   organisationId?: string | null;
   outbound?: boolean;
   aplisayId?: string | null;
+  trunk?: TrunkInfo | null;
   [key: string]: any;
 }
 
@@ -97,6 +108,11 @@ export interface PhoneRegistrationInfo {
   outbound?: boolean;
   organisationId?: string | null;
   instanceId?: string | null;
+  registrar?: string | null;
+  options?: {
+    transport?: string;
+    [key: string]: any;
+  } | null;
   [key: string]: any;
 }
 
@@ -182,14 +198,24 @@ export async function getPhoneEndpointById(id: string): Promise<PhoneRegistratio
 }
 
 // Get phone endpoint by number (PhoneNumber)
-export async function getPhoneEndpointByNumber(number: string): Promise<PhoneNumberInfo | null> {
+// If trunkId is provided, validates that the call arrived on the correct trunk
+export async function getPhoneEndpointByNumber(
+  number: string,
+  trunkId?: string | null
+): Promise<PhoneNumberInfo | null> {
   try {
-    const result = await makeApiRequest<{ items: PhoneNumberInfo[] }>(
-      `/api/agent-db/phone-endpoints?number=${encodeURIComponent(number)}`
-    );
+    let url = `/api/agent-db/phone-endpoints?number=${encodeURIComponent(number)}`;
+    if (trunkId) {
+      url += `&trunkId=${encodeURIComponent(trunkId)}`;
+    }
+    const result = await makeApiRequest<{ items: PhoneNumberInfo[] }>(url);
     return result?.items?.[0] || null;
-  } catch (error) {
-    logger.error({ number, error }, 'Failed to get phone endpoint by number');
+  } catch (error: any) {
+    // If it's a trunk mismatch error, re-throw it
+    if (error?.message?.includes('Trunk mismatch')) {
+      throw error;
+    }
+    logger.error({ number, trunkId, error }, 'Failed to get phone endpoint by number');
     return null;
   }
 }
@@ -198,6 +224,7 @@ export async function getPhoneEndpointByNumber(number: string): Promise<PhoneNum
 export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
   return getPhoneEndpointByNumber(number);
 }
+
 
 // Create a new call record
 export async function createCall(callData: {

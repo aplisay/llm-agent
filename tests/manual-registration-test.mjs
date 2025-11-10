@@ -25,6 +25,8 @@
  * 
  * Environment variables (optional):
  *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
+ *   TEST_AGENT_FIXTURE - Agent fixture to use (default: test-agent-base)
+ *                        Options: test-agent-base, blind-transfer-agent
  */
 
 import readline from 'readline';
@@ -95,8 +97,11 @@ function pause(message = 'Press Enter to continue with cleanup...') {
   return promptInput(`\n${message}\n`);
 }
 
-// Import test agent data
-import aplisayTestAgentBase from './fixtures/aplisayTestAgentBase.js';
+// Available agent fixtures
+const AGENT_FIXTURES = {
+  'test-agent-base': './fixtures/agents/test-agent-base.js',
+  'blind-transfer-agent': './fixtures/agents/blind-transfer-agent.js'
+};
 
 async function main() {
   let testAgentId;
@@ -107,12 +112,50 @@ async function main() {
     console.log('Using API:', API_BASE_URL);
     console.log('');
 
+    // Step 0: Select agent fixture
+    console.log('=== Step 0: Select agent fixture ===');
+    const agentNames = Object.keys(AGENT_FIXTURES);
+    console.log('Available agent fixtures:');
+    agentNames.forEach((name, idx) => {
+      const marker = name === 'test-agent-base' ? ' (default)' : '';
+      console.log(`  ${idx + 1}. ${name}${marker}`);
+    });
+    
+    const selectedAgentEnv = process.env.TEST_AGENT_FIXTURE;
+    let selectedAgentName;
+    if (selectedAgentEnv && AGENT_FIXTURES[selectedAgentEnv]) {
+      selectedAgentName = selectedAgentEnv;
+      console.log(`Using TEST_AGENT_FIXTURE: ${selectedAgentName}`);
+    } else {
+      const answer = await promptInput(`Select agent fixture [1-${agentNames.length}] (default: 1): `);
+      const selection = answer.trim() || '1';
+      const idx = parseInt(selection, 10) - 1;
+      if (idx >= 0 && idx < agentNames.length) {
+        selectedAgentName = agentNames[idx];
+      } else {
+        selectedAgentName = 'test-agent-base'; // Default
+      }
+    }
+    
+    console.log(`Selected: ${selectedAgentName}`);
+    const agentModule = await import(AGENT_FIXTURES[selectedAgentName]);
+    const selectedAgent = agentModule.default;
+    console.log(`  Name: ${selectedAgent.name}`);
+    console.log(`  Description: ${selectedAgent.description || '(none)'}`);
+    console.log('');
+
     // Step 1: Create agent using test data
     console.log('=== Step 1: Creating agent ===');
     // Transform functions array from test data format to API format
-    const convertedFunctions = aplisayTestAgentBase.functions.map(func => {
-      const properties = {};
-      if (func.parameters) {
+    const convertedFunctions = (selectedAgent.functions || []).map(func => {
+      // Handle both formats: functions with parameters or with input_schema already defined
+      let input_schema;
+      if (func.input_schema) {
+        // Already in API format
+        input_schema = func.input_schema;
+      } else if (func.parameters) {
+        // Convert from parameters format
+        const properties = {};
         func.parameters.forEach(param => {
           properties[param.name] = {
             type: param.type,
@@ -122,6 +165,9 @@ async function main() {
             in: param.in || 'query'
           };
         });
+        input_schema = { properties };
+      } else {
+        input_schema = { properties: {} };
       }
 
       return {
@@ -132,20 +178,23 @@ async function main() {
         url: func.url,
         method: func.method,
         key: func.key,
-        input_schema: {
-          properties: properties
-        }
+        input_schema: input_schema
       };
     });
 
+    // Handle both prompt formats: object with value property or string
+    const promptValue = typeof selectedAgent.prompt === 'string' 
+      ? selectedAgent.prompt 
+      : (selectedAgent.prompt?.value || '');
+
     const agentData = {
-      name: aplisayTestAgentBase.name,
-      description: aplisayTestAgentBase.description,
-      modelName: aplisayTestAgentBase.modelName,
-      prompt: aplisayTestAgentBase.prompt.value,
-      options: aplisayTestAgentBase.options,
+      name: selectedAgent.name,
+      description: selectedAgent.description,
+      modelName: selectedAgent.modelName,
+      prompt: promptValue,
+      options: selectedAgent.options || {},
       functions: convertedFunctions,
-      keys: aplisayTestAgentBase.keys
+      keys: selectedAgent.keys || []
     };
 
     const agentRes = await apiRequest('POST', '/agents', agentData);

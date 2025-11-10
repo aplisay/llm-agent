@@ -5,16 +5,35 @@ const logger = loggerModule.default;
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
-export async function transferParticipant(roomName: string, participant: string, transferTo: string, aplisayId: string): Promise<any> {
-  logger.info({ roomName, participant, transferTo }, "transfer participant initiated");
+export async function transferParticipant(
+  roomName: string, 
+  participant: string, 
+  transferTo: string, 
+  aplisayId: string,
+  registrar?: string | null,
+  transport?: string | null
+): Promise<any> {
+  logger.info({ roomName, participant, transferTo, registrar, transport }, "transfer participant initiated");
+
+  // If registrar is provided, construct SIP URI for registration endpoint
+  let transferUri = `tel:${transferTo}`;
+  if (false && registrar) {
+    // Extract host from registrar (e.g., "sip:provider.example.com:5060" -> "provider.example.com:5060")
+    const registrarHost = registrar.replace(/^sip:/i, '').replace(/^tel:/i, '');
+    transferUri = `sip:${transferTo}@${registrarHost}`;
+    if (transport) {
+      transferUri += `;transport=${transport}`;
+    }
+  }
 
   const sipTransferOptions = {
     playDialtone: false
   };
 
   const sipClient = new SipClient(LIVEKIT_URL!, LIVEKIT_API_KEY!, LIVEKIT_API_SECRET!);
-  const result = await sipClient.transferSipParticipant(roomName, participant, transferTo, sipTransferOptions);
-  logger.info({ result }, 'transfer participant result');
+  logger.info({ transferUri, participant }, 'transfer URI');
+  const result = await sipClient.transferSipParticipant(roomName, participant, transferUri, sipTransferOptions);
+  logger.info({ result, transferUri }, 'transfer participant result');
   return result;
 }
 

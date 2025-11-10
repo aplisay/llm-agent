@@ -5,8 +5,11 @@ import logger from "../agent-lib/logger.js";
 import { bridgeParticipant, transferParticipant } from "./telephony.js";
 import {
   getPhoneEndpointByNumber,
+  getPhoneEndpointById,
   createCall,
   type PhoneNumberInfo,
+  type PhoneRegistrationInfo,
+  type TrunkInfo,
 } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
@@ -31,6 +34,9 @@ export interface TransferContext {
   calledId: string;
   aplisayId: string;
   registrationOriginated: boolean;
+  trunkInfo: TrunkInfo | null | undefined;
+  registrationRegistrar: string | null | undefined;
+  registrationTransport: string | null | undefined;
   options: any;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (p: SipParticipant | null) => void;
@@ -69,12 +75,16 @@ function isSipParticipant(participant: ParticipantInfo): boolean {
  * Determines if a participant can perform SIP REFER
  * canRefer defaults to:
  * - true for registration endpoint SIP calls
- * - false for trunk-based SIP calls (unless explicitly set to true in trunk definition)
+ * - false for trunk-based SIP calls (unless explicitly set to true in trunk flags)
  * - false for WebRTC participants
+ * - false if trunk doesn't exist
+ * 
+ * @param trunkInfo - Trunk information from phone endpoint lookup (may be null)
  */
 function canParticipantRefer(
   participant: ParticipantInfo,
-  registrationOriginated: boolean
+  registrationOriginated: boolean,
+  trunkInfo: TrunkInfo | null | undefined
 ): boolean {
   // WebRTC participants cannot REFER
   if (!isSipParticipant(participant)) {
@@ -86,11 +96,16 @@ function canParticipantRefer(
     return true;
   }
 
-  // Check if canRefer is explicitly set in participant attributes
-  // For trunk-based calls, this would need to be set when the call is established
-  // For now, we check the attribute; if not present, default to false for trunks
-  const canReferAttr: boolean = participant.attributes?.canRefer !== undefined && participant.attributes?.canRefer !== "false";
-  return canReferAttr;
+  // For trunk-based calls, check trunk flags
+  if (trunkInfo) {
+    const canRefer = trunkInfo.flags?.canRefer === true;
+    logger.debug({ trunkId: trunkInfo.id, canRefer, flags: trunkInfo.flags }, 'Checked canRefer from trunk flags');
+    return canRefer;
+  }
+
+  // No trunk info, default to false
+  logger.debug({}, 'No trunk info available, assuming canRefer=false');
+  return false;
 }
 
 /**
@@ -235,18 +250,32 @@ async function handleBlindReferTransfer(
   context: TransferContext,
   finaliseBridgedCallFn: () => Promise<Call | null>
 ): Promise<TransferResult> {
-  const { room, participant, args, aplisayId } = context;
+  const { room, participant, args, aplisayId, registrationOriginated, registrationRegistrar, registrationTransport } = context;
 
   logger.info(
-    { roomName: room.name, participant: participant.identity, number: args.number },
+    { roomName: room.name, participant: participant?.sid, number: args.number },
     "executing blind SIP REFER transfer"
   );
 
+  // Determine registrar and transport for the transfer
+  let registrar: string | null = null;
+  let transport: string | null = null;
+  
+  // If the original call was from a registration endpoint, use its registrar/transport
+  if (registrationOriginated && registrationRegistrar) {
+    registrar = registrationRegistrar;
+    transport = registrationTransport || null;
+    logger.info({ registrar, transport }, 
+      "Using registrar/transport from registration-originated call");
+  }
+  
   const tpResult = await transferParticipant(
     room.name!,
     participant.identity!,
     args.number,
-    aplisayId!
+    aplisayId!,
+    registrar,
+    transport
   );
 
   logger.info({ tpResult }, "transfer participant executed via SIP REFER");
@@ -901,6 +930,10 @@ export async function handleTransfer(
     aplisayId
   );
 
+  // Check canRefer capability (using trunk info from context)
+  const canRefer = canParticipantRefer(participant, registrationOriginated, context.trunkInfo);
+  const isSip = isSipParticipant(participant);
+
   logger.info(
     {
       args,
@@ -911,8 +944,9 @@ export async function handleTransfer(
       effectiveAplisayId,
       calledId,
       effectiveCallerId,
-      isSip: isSipParticipant(participant),
-      canRefer: canParticipantRefer(participant, registrationOriginated),
+      isSip,
+      canRefer,
+      aplisayId,
     },
     "handling transfer"
   );
@@ -934,9 +968,6 @@ export async function handleTransfer(
 
   // Route based on operation and participant capabilities
   if (operation === "blind") {
-    const canRefer = canParticipantRefer(participant, registrationOriginated);
-    const isSip = isSipParticipant(participant);
-
     if (isSip && canRefer) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context, finaliseBridgedCallFn);
@@ -950,9 +981,6 @@ export async function handleTransfer(
       );
     }
   } else if (operation === "consult_start") {
-    const canRefer = canParticipantRefer(participant, registrationOriginated);
-    const isSip = isSipParticipant(participant);
-
     if (isSip && canRefer) {
       // Case 4: Warm transfer with SIP REFER
       return handleWarmTransferWithRefer(
@@ -969,10 +997,11 @@ export async function handleTransfer(
       );
     }
   } else if (operation === "consult_finalise") {
-    const canRefer = canParticipantRefer(participant, registrationOriginated);
-    const isSip = isSipParticipant(participant);
+    // Re-check canRefer for finalise (using trunk info from context)
+    const finaliseCanRefer = canParticipantRefer(participant, registrationOriginated, context.trunkInfo);
+    const finaliseIsSip = isSipParticipant(participant);
 
-    if (isSip && canRefer) {
+    if (finaliseIsSip && finaliseCanRefer) {
       // Case 4: Finalise warm transfer with SIP REFER
       return finaliseWarmTransferWithRefer(context, finaliseBridgedCallFn);
     } else {
