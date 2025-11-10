@@ -1,4 +1,4 @@
-import aplisayTestAgentBase from './aplisayTestAgentBase';
+import aplisayTestAgentBase from './agents/test-agent-base.js';
 export const testData = {
 
   agents: [

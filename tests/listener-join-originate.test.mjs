@@ -1,6 +1,6 @@
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
-import aplisayTestAgentBase from './fixtures/aplisayTestAgentBase.js';
+import aplisayTestAgentBase from './fixtures/agents/test-agent-base.js';
 
 describe('Listener Join and Originate Endpoints Test', () => {
   let models;
