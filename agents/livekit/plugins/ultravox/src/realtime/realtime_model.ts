@@ -285,7 +285,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       firstSpeaker,
     };
 
-    this.#client = new UltravoxClient(apiKey, baseURL);
+    this.#client = new UltravoxClient(apiKey, baseURL, log());
   }
 
   get sessions(): RealtimeSession[] {
@@ -862,8 +862,8 @@ export class RealtimeSession extends llm.RealtimeSession {
     if (this.#callId) {
       try {
         await this.#client.deleteCall(this.#callId);
-      } catch (error) {
-        this.#logger.error("Error deleting call:", error);
+      } catch (error: any) {
+        this.#logger.error({ error, message: error?.message, stack: error?.stack }, "Error deleting call");
       }
     }
     this.#logger.debug({ callId: this.#callId }, "call deleted");

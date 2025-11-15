@@ -40,6 +40,7 @@ import {
 import {
   handleTransfer,
   type TransferContext,
+  destroyInProgressTransfer,
 } from "./transfer-handler.js";
 
 // Types
@@ -104,6 +105,8 @@ export default defineAgent({
     // Capture B2BUA gateway values for use in onTransfer closure
     let capturedB2buaIp: string | null = null;
     let capturedB2buaTransport: string | null = null;
+    // Function to end transfer activity - will be set by setupCallAndUtilities
+    let endTransferActivityIfNeeded: ((reason: string) => Promise<void>) | null = null;
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -153,6 +156,8 @@ export default defineAgent({
         modelRef,
         holdParticipant,
         getActiveCall,
+        endTransferActivityIfNeeded: endTransferActivityFn,
+        getTransferState,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -189,6 +194,7 @@ export default defineAgent({
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
         requestHangup: () => {},
+        participant: participant,
       });
 
       if (outboundCall && outboundInfo && !participant) {
@@ -244,11 +250,24 @@ export default defineAgent({
         getConsultInProgress: () => consultInProgress,
         holdParticipant,
         getActiveCall,
+        endTransferActivityIfNeeded: endTransferActivityFn,
+        getTransferState,
       });
+      // Store the function in outer scope for use in catch block
+      endTransferActivityIfNeeded = endTransferActivityFn;
     } catch (e) {
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`
       );
+      // End transfer activity if in progress
+      // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
+      if (endTransferActivityIfNeeded) {
+        try {
+          await endTransferActivityIfNeeded("Error occurred");
+        } catch (transferError) {
+          logger.error({ transferError }, "error ending transfer activity during error cleanup");
+        }
+      }
       room && room.name && (await roomService.deleteRoom(room.name));
     }
   },
@@ -492,7 +511,8 @@ async function setupCallAndUtilities({
   b2buaGatewayIp,
   b2buaGatewayTransport,
   requestHangup,
-}: SetupCallParams) {
+  participant: originalParticipant,
+}: SetupCallParams & { participant?: ParticipantInfo | null }) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
   logger.info(
     { agent, instance, aplisayId, calledId, callerId, ctx, room },
@@ -526,6 +546,22 @@ async function setupCallAndUtilities({
   const getConsultRoom = () => consultRoom;
   const setConsultRoom = (room: Room | null) => {
     consultRoom = room;
+  };
+  let consultCall: Call | null = null;
+  const getConsultCall = () => consultCall;
+  const setConsultCall = (call: Call | null) => {
+    consultCall = call;
+  };
+
+  // Transfer state tracking
+  let transferState: { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string } = {
+    state: "none",
+    description: "No transfer in progress"
+  };
+  const getTransferState = () => transferState;
+  const setTransferState = (state: "none" | "dialling" | "talking" | "rejected" | "failed", description: string) => {
+    transferState = { state, description };
+    logger.debug({ state, description }, "Transfer state updated");
   };
 
   const call = await createCall({
@@ -605,7 +641,7 @@ async function setupCallAndUtilities({
 
   const onTransfer = async ({
     args,
-    participant,
+    participant: transferParticipant,
   }: {
     args: TransferArgs;
     participant: ParticipantInfo;
@@ -614,7 +650,7 @@ async function setupCallAndUtilities({
       const transferContext: TransferContext = {
         ctx,
         room,
-        participant,
+        participant: transferParticipant,
         args,
         agent,
         instance,
@@ -641,8 +677,12 @@ async function setupCallAndUtilities({
         getConsultRoomName,
         setTransferSession,
         getTransferSession,
+        setConsultCall,
+        getConsultCall,
         setConsultRoom,
         getConsultRoom,
+        setTransferState,
+        getTransferState,
       };
 
       return await handleTransfer(transferContext);
@@ -671,6 +711,21 @@ async function setupCallAndUtilities({
     wantHangup = true;
   }
 
+  // Helper function to destroy any in-progress transfer when original caller disconnects
+  const endTransferActivityIfNeeded = async (reason: string) => {
+    await destroyInProgressTransfer(
+      getConsultInProgress,
+      getConsultRoomName,
+      getTransferSession,
+      getConsultRoom,
+      getConsultCall,
+      setConsultInProgress,
+      agent,
+      reason,
+      setTransferState
+    );
+  };
+
   return {
     call,
     metadata,
@@ -683,6 +738,8 @@ async function setupCallAndUtilities({
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || call,
     holdParticipant,
+    endTransferActivityIfNeeded,
+    getTransferState,
   };
 }
 
@@ -697,6 +754,7 @@ function createTools({
   metadata,
   onHangup,
   onTransfer,
+  getTransferState,
 }: {
   agent: Agent;
   room: Room;
@@ -711,6 +769,7 @@ function createTools({
     args: TransferArgs;
     participant: ParticipantInfo;
   }) => Promise<ParticipantInfo>;
+  getTransferState: () => { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string };
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -752,6 +811,14 @@ function createTools({
                   hangup: () => onHangup(),
                   transfer: async (a: TransferArgs) =>
                     await onTransfer({ args: a, participant: participant! }),
+                  transfer_status: async () => {
+                    const state = getTransferState();
+                    logger.debug({ state }, "transfer_status called");
+                    return {
+                      state: state.state,
+                      description: state.description,
+                    };
+                  },
                 }
               )) as FunctionResult;
               let { function_results } = result;
@@ -793,7 +860,12 @@ async function runAgentWorker({
   getConsultInProgress,
   holdParticipant,
   getActiveCall,
-}: RunAgentWorkerParams) {
+  endTransferActivityIfNeeded,
+  getTransferState,
+}: RunAgentWorkerParams & { 
+  endTransferActivityIfNeeded: (reason: string) => Promise<void>;
+  getTransferState: () => { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string };
+}) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
@@ -818,6 +890,7 @@ async function runAgentWorker({
     metadata,
     onHangup,
     onTransfer,
+    getTransferState,
   });
 
   const model = new voice.Agent({
@@ -871,6 +944,10 @@ async function runAgentWorker({
       sendMessage({ status: ev.newState });
       if (ev.newState === "listening" && checkForHangup() && room.name) {
         logger.debug({ room }, "room close inititiated");
+        // End transfer activity if in progress (fire and forget)
+        endTransferActivityIfNeeded("Agent initiated hangup").catch((transferError) => {
+          logger.error({ transferError }, "error ending transfer activity during hangup");
+        });
         getActiveCall().end("agent initiated hangup");
         roomService.deleteRoom(room.name);
       }
@@ -881,8 +958,14 @@ async function runAgentWorker({
     logger.error({ ev }, "error");
   });
 
-  session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+  session.on(voice.AgentSessionEventTypes.Close, async (ev: voice.CloseEvent) => {
     logger.info({ ev }, "session closed");
+    // End transfer activity if in progress
+    try {
+      await endTransferActivityIfNeeded("Session closed");
+    } catch (transferError) {
+      logger.error({ transferError }, "error ending transfer activity during session close");
+    }
     roomService.deleteRoom(room.name);
     getActiveCall().end("session closed");
   });
@@ -906,38 +989,32 @@ async function runAgentWorker({
         "participant disconnected"
       );
       if (bp?.participantId === p?.info?.sid) {
-        if (getConsultInProgress()) {
-          logger.debug(
-            "consult callee disconnected, treating as consult_reject"
-          );
-          // Unhold original participant
-          try {
-            const participants = await roomService.listParticipants(room.name);
-            const original = participants.find((pi) => pi.sid !== bp?.participantId);
-            if (original?.sid) {
-              await holdParticipant(original.sid, false);
-            }
-          } catch (e) {
-            logger.error({ e }, "failed to unhold participant on callee hangup");
-          }
-          // reset consult state
-          // remove bridged participant if still present in server state (it should be gone already)
-          try {
-            bp?.participantIdentity &&
-              (await roomService.removeParticipant(
-                room.name,
-                bp.participantId
-              ));
-          } catch {}
-          // underlying setters live in setup scope; remaining state will be reset on next transfer call
-        } else {
-          logger.debug("bridge participant disconnected, shutting down");
-          session.close();
-          getActiveCall().end("bridged participant disconnected");
-          await roomService.deleteRoom(room.name);
+        // This is a bridged participant (blind transfer)
+        logger.debug("bridge participant disconnected, shutting down");
+        // End transfer activity if in progress (shouldn't happen for blind transfers, but just in case)
+        try {
+          await endTransferActivityIfNeeded("Bridged participant disconnected");
+        } catch (transferError) {
+          logger.error({ transferError }, "error ending transfer activity during bridged participant disconnect");
         }
+        session.close();
+        getActiveCall().end("bridged participant disconnected");
+        await roomService.deleteRoom(room.name);
+      } else if (p?.info?.identity === "transfer-target") {
+        // This is a transfer target that was moved to the main room after a consultative transfer
+        // The transfer is complete, so if they disconnect, we should shut down the room
+        logger.debug("transfer target disconnected from main room after consultative transfer, shutting down");
+        session.close();
+        getActiveCall().end("transfer target disconnected");
+        await roomService.deleteRoom(room.name);
       } else if (p.info?.sid === participant?.sid) {
         logger.debug("participant disconnected, shutting down");
+        // End transfer activity if in progress
+        try {
+          await endTransferActivityIfNeeded("Original participant disconnected");
+        } catch (transferError) {
+          logger.error({ transferError }, "error ending transfer activity during original participant disconnect");
+        }
         session.close();
         getActiveCall().end("original participant disconnected");
         await roomService.deleteRoom(room.name);
@@ -961,8 +1038,14 @@ async function runAgentWorker({
       logger.info({ e }, "error generating timeout reply");
     }
     // 10 secs later, tear everything down
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
+        // End transfer activity if in progress
+        try {
+          await endTransferActivityIfNeeded("Session timeout");
+        } catch (transferError) {
+          logger.error({ transferError }, "error ending transfer activity during session timeout");
+        }
         getActiveCall().end("session timeout");
         session.close();
         roomService.deleteRoom(room.name);

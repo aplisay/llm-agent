@@ -271,7 +271,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "metadata"]
+            enum: ["hangup", "transfer", "transfer_status", "metadata"]
             description: >  
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `hangup` takes no parameters and will hang up the call
@@ -279,7 +279,12 @@ components:
                      Keys are specified as a comma separated list in the `keys` parameter.
                   * `transfer` will transfer the call to a number specified in the `number` parameter. Optionally, you may also supply:
                     - `callerId` (string): override the caller ID used for the transfer
-                    - `operation` (string): specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default), `consult_start`, `consult_finalise`, `consult_reject`
+                    - `operation` (string): specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default) or `consultative`
+                      - `blind`: Immediately transfers the call. Returns `OK` when complete or `FAILED` with a reason if it fails.
+                      - `consultative`: For "warm" transfers where the agent first speaks with the transfer target. Returns immediately after the consultation call is placed. The transfer continues in the background. Use the builtin `transfer_status` function to check progress.
+                  * `transfer_status` is a builtin function that is always available to telephone agents. It takes no parameters and returns the current state of any in-progress transfer:
+                    - Returns an object with `state` (one of: `none`, `dialling`, `talking`, `rejected`, `failed`) and `description` (a textual description of the current state)
+                    - Use this to monitor the progress of consultative transfers
                 
                 Note that the transfer function will only be available to telephone agents, and the `number` parameter 
                 can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata.
