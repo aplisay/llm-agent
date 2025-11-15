@@ -26,7 +26,7 @@
  * Environment variables (optional):
  *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
  *   TEST_AGENT_FIXTURE - Agent fixture to use (default: test-agent-base)
- *                        Options: test-agent-base, blind-transfer-agent
+ *                        Options: test-agent-base, blind-transfer-agent, consultative-transfer-agent
  */
 
 import readline from 'readline';
@@ -100,7 +100,8 @@ function pause(message = 'Press Enter to continue with cleanup...') {
 // Available agent fixtures
 const AGENT_FIXTURES = {
   'test-agent-base': './fixtures/agents/test-agent-base.js',
-  'blind-transfer-agent': './fixtures/agents/blind-transfer-agent.js'
+  'blind-transfer-agent': './fixtures/agents/blind-transfer-agent.js',
+  'consultative-transfer-agent': './fixtures/agents/consultative-transfer-agent.js'
 };
 
 async function main() {

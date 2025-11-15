@@ -99,6 +99,11 @@ export default defineAgent({
     let consultInProgress = false;
     let deafenedTrackSids: string[] = [];
     let mutedTrackSids: string[] = [];
+    let b2buaIp: string | null = null;
+    let b2buaTransport: string | null = null;
+    // Capture B2BUA gateway values for use in onTransfer closure
+    let capturedB2buaIp: string | null = null;
+    let capturedB2buaTransport: string | null = null;
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -119,7 +124,17 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationEndpointId,
+        b2buaGatewayIp = null,
+        b2buaGatewayTransport = null,
       } = scenario;
+
+      // Store B2BUA gateway info for use in onTransfer closure
+      b2buaIp = b2buaGatewayIp || null;
+      b2buaTransport = b2buaGatewayTransport || null;
+      // Capture values for onTransfer closure
+      capturedB2buaIp = b2buaIp;
+      capturedB2buaTransport = b2buaTransport;
 
       if (!agent) {
         throw new Error("Agent is required but not found");
@@ -170,7 +185,9 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
-        
+        registrationEndpointId,
+        b2buaGatewayIp: capturedB2buaIp,
+        b2buaGatewayTransport: capturedB2buaTransport,
         requestHangup: () => {},
       });
 
@@ -276,6 +293,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let trunkInfo: TrunkInfo | null = null;
   let registrationRegistrar: string | null = null;
   let registrationTransport: string | null = null;
+  let registrationEndpointId: string | null = null;
+  let b2buaGatewayIp: string | null = null;
+  let b2buaGatewayTransport: string | null = null;
 
   /*
 
@@ -324,12 +344,39 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
         "participants"
       );
       if (participant) {
-        ({
-          sipTrunkPhoneNumber: calledId,
-          sipPhoneNumber: callerId,
-          sipHXAplisayTrunk: aplisayId,
-          sipHXAplisayPhoneregistration: phoneRegistration,
-        } = participant.attributes);
+        const {
+          sipTrunkPhoneNumber: calledIdAttr,
+          sipPhoneNumber: callerIdAttr,
+          sipHXAplisayTrunk: aplisayIdAttr,
+          sipHXAplisayPhoneregistration: phoneRegistrationAttr,
+          sipHostname: sipHostnameAttr,
+          sipHXLkRealIp: b2buaGatewayIpAttr,
+          sipHXLkTransport: b2buaGatewayTransportAttr,
+        } = participant.attributes || {};
+        
+        calledId = calledIdAttr;
+        callerId = callerIdAttr;
+        aplisayId = aplisayIdAttr;
+        phoneRegistration = phoneRegistrationAttr;
+        
+        // Store registration endpoint ID for transfer operations
+        if (phoneRegistration) {
+          registrationEndpointId = phoneRegistration;
+        }
+        
+        // Store B2BUA gateway information for routing outbound calls
+        if (b2buaGatewayIpAttr) {
+          b2buaGatewayIp = b2buaGatewayIpAttr;
+          b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
+          logger.info({ b2buaGatewayIp, b2buaGatewayTransport }, "Extracted B2BUA gateway information from participant attributes");
+        }
+        
+        // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
+        // (sipHostname is the registrar hostname from the inbound call)
+        if (phoneRegistration && sipHostnameAttr && !registrationRegistrar) {
+          registrationRegistrar = sipHostnameAttr;
+          logger.info({ sipHostname: sipHostnameAttr }, "Using sipHostname as registrar from participant attributes");
+        }
       }
 
       calledId = calledId?.replace("+", "");
@@ -412,6 +459,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     trunkInfo,
     registrationRegistrar,
     registrationTransport,
+    registrationEndpointId,
+    b2buaGatewayIp,
+    b2buaGatewayTransport,
   };
 }
 
@@ -438,6 +488,9 @@ async function setupCallAndUtilities({
   trunkInfo,
   registrationRegistrar,
   registrationTransport,
+  registrationEndpointId,
+  b2buaGatewayIp,
+  b2buaGatewayTransport,
   requestHangup,
 }: SetupCallParams) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
@@ -573,6 +626,9 @@ async function setupCallAndUtilities({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationEndpointId,
+        b2buaGatewayIp: b2buaGatewayIp ?? null,
+        b2buaGatewayTransport: b2buaGatewayTransport ?? null,
         options,
         sessionRef,
         setBridgedParticipant,

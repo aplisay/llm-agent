@@ -41,6 +41,9 @@ export interface CallScenario {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
 }
 
 export interface JobMetadata {
@@ -80,6 +83,9 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -107,7 +113,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
 export interface TransferArgs {
   number: string;
   callerId?: string;
-  operation?: 'blind' | 'consult_start' | 'consult_finalise' | 'consult_reject';
+  operation?: 'blind' | 'consultative';
   [key: string]: any;
   session?: voice.AgentSession;
 }
