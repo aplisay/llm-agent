@@ -6,15 +6,13 @@ import type {
   UltravoxModelData,
   UltravoxVoicesResponse,
 } from './api_proto.js';
-import { Logger } from '@livekit/agents';
+
 export class UltravoxClient {
   private baseURL: string;
   private apiKey: string;
-  private logger: Logger;
-  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/', logger: Logger) {
+  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/',) {
     this.apiKey = apiKey;
     this.baseURL = baseURL;
-    this.logger = logger;
   }
 
   async createCall(modelData: UltravoxModelData): Promise<UltravoxCallResponse> {
@@ -42,10 +40,7 @@ export class UltravoxClient {
         'X-API-Key': this.apiKey,
       },
     });
-
-    if (!response.ok) {
-      this.logger.error({ response, callId }, "Failed to delete Ultravox call");
-    }
+  
   }
 
   async getVoices(): Promise<UltravoxVoicesResponse> {
