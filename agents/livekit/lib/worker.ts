@@ -173,7 +173,8 @@ export default defineAgent({
             room.name!,
             outboundInfo.toNumber,
             outboundInfo.aplisayId,
-            outboundInfo.fromNumber
+            outboundInfo.fromNumber, 
+            callerId || 'unknown'
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -548,7 +549,8 @@ async function setupCallAndUtilities({
             room.name!,
             args.number,
             aplisayId!,
-            effectiveCallerId
+            effectiveCallerId,
+            callerId || 'unknown'
           );
           logger.info({ p }, "new participant created (blind)");
           setBridgedParticipant(p);
@@ -564,7 +566,8 @@ async function setupCallAndUtilities({
               room.name!,
               args.number,
               aplisayId!,
-              effectiveCallerId
+              effectiveCallerId,
+              callerId || 'unknown'
             );
             logger.debug({ p }, "bridged participant completed");
             const rbp = await ctx.waitForParticipant(p.participantIdentity);

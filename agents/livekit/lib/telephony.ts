@@ -18,7 +18,7 @@ export async function transferParticipant(roomName: string, participant: string,
   return result;
 }
 
-export async function bridgeParticipant(roomName: string, bridgeTo: string, aplisayId: string, callerId: string): Promise<any> {
+export async function bridgeParticipant(roomName: string, bridgeTo: string, aplisayId: string, callerId: string, originCallerId: string): Promise<any> {
 
   if (!aplisayId?.length) {
     throw new Error('No inbound trunk or inbound trunk does not support bridging');
@@ -42,7 +42,8 @@ export async function bridgeParticipant(roomName: string, bridgeTo: string, apli
   const sipParticipantOptions = {
     participantIdentity: 'sip-outbound-call',
     headers: {
-      'X-Aplisay-Trunk': aplisayId
+      'X-Aplisay-Trunk': aplisayId,
+      'X-Aplisay-Origin-Caller-Id': originCallerId
     },
     participantName: 'Aplisay Bridged Transfer',
     fromNumber: origin,
