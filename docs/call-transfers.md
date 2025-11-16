@@ -37,6 +37,8 @@ The decision on which to use is transparent to the LLM tools call and the most a
 - Simple and reliable
 - Platform continues to carry the call even after the AI session has ended.
 
+**Caller ID behaviour:** When we create the new bridged leg, the Caller ID presented to the outbound trunk is the agent's identity. To preserve context, we also set the `X-Aplisay-Origin-Caller-Id` SIP header with the original Caller ID when it is available. Be aware that if the call reached the agent via a forward or divert, the upstream system may have regenerated the Caller ID, so the true original CLI may already be lost by the time we see it. If Caller ID provenance matters for your workflow, consult the telco architect who designed the redirect path to understand what information is preserved and what is rewritten in transit.
+
 #### 2. SIP REFER (Case 2)
 
 **When used:**
@@ -57,9 +59,11 @@ The decision on which to use is transparent to the LLM tools call and the most a
 - The caller's endpoint handles the new call setup
 - Better for registration-originated calls where the endpoint can handle REFER
 
+**Caller ID behaviour:** When SIP REFER (deflect) is used, the call is effectively handed back to the upstream system, which then redirects the caller to the target. The upstream PBX or carrier is responsible for generating the Caller ID that the transfer target sees. Because the call never re-enters our media path, we cannot attach custom headers such as `X-Aplisay-Origin-Caller-Id` and we have no control over which Caller ID the upstream system presents. If you need guarantees about Caller ID propagation in REFER flows, speak with the telco architect who designed the redirect path to understand the limitations imposed by that infrastructure.
+
 ### Consultative Transfers
 
-Consultative transfers always use the bridging mechanism, regardless of the original caller's connection type. SIP REFER for consultative transfers is currently not possible due to limitations in SIP signalling, although this is under investigation.
+Consultative transfers always use the bridging mechanism, regardless of the original caller's connection type. SIP REFER for consultative transfers is currently not possible due to limitations in SIP signalling in the architecture we use, although this is under investigation so may change in future.
 
 **How it works:**
 
@@ -325,10 +329,14 @@ Add the `outboundCallFilter` option to your agent definition:
 
 ### Security Considerations
 
-1. **Always use filters in production**: Without a filter, agents could potentially transfer calls to any number, including premium rate numbers
-2. **Test your patterns**: Ensure your regexp correctly matches all valid numbers and rejects invalid ones
-3. **Monitor transfer patterns**: Even with filters, monitor transfer destinations for unexpected patterns
-4. **Combine with metadata**: For dynamic numbers, use metadata sources (like CRM systems) that also validate numbers before storing them
+1. **Consider number injection attacks**: Telecommunications fraud is enormously lucrative, if you give potential attackers the ability to inject
+numbers to be dialled then it is possible for them to easilly create 5 figure losses in a little as a day of calls
+2. **Always use filters in production**: Without a filter, agents could potentially transfer calls to any number, including premium rate numbers
+3. **Test your patterns**: Ensure your regexp correctly matches all valid numbers and rejects invalid ones
+4. **Monitor transfer patterns**: Even with filters, monitor transfer destinations for unexpected patterns
+5. **Combine with metadata**: For dynamic numbers, use metadata sources (like CRM systems) that also validate numbers before storing them
+6. **Consider multi system attack vectors**: Look at the whole lifecycle of how a transfer number gets into the system you pull it from - if this can be injected or compromised then it creates an attack vector which can be monetised against your agent
+
 
 ## Transfer Flow Diagrams
 
@@ -382,7 +390,7 @@ If rejected:
 
 1. Agent calls `transfer` with `operation: "consultative"`
 2. Consultation room created
-3. Transfer target dialed into consultation room
+3. Transfer target dialled into consultation room
 4. TransferAgent joins consultation room
 5. TransferAgent explains caller's needs
 6. TransferAgent waits for accept/reject decision
@@ -396,11 +404,10 @@ If rejected:
 2. **Monitor transfer status**: For consultative transfers, always check `transfer_status` and keep callers informed
 3. **Use appropriate transfer types**: 
    - Use blind transfers for simple redirects
-   - Use consultative transfers when context needs to be explained
-4. **Set up outbound call filters**: Always configure `outboundCallFilter` in production
+   - Use consultative transfers when context needs to be explained and the transfer target needs to confirm acceptance of the call
+4. **Set up outbound call filters**: Always configure `outboundCallFilter` in production which is defined tightly to only allow numbers you expect to be used
 5. **Handle errors gracefully**: Instruct your agent to handle transfer failures and continue helping the caller
 6. **Test thoroughly**: Test both transfer types with your specific trunk configuration
-7. **Document transfer numbers**: Keep track of which numbers are used for transfers and why
 
 ## Limitations and Notes
 
@@ -418,11 +425,11 @@ the prompt which is used to ask for consent to transfer the call cannot be chang
 
 - Check that outbound calling is enabled for your trunk
 - Verify the destination number matches your `outboundCallFilter` pattern
-- Ensure the number format is correct (E.164 format recommended)
+- Ensure the number format is correct (E.164 format recommended for PSTN calls, but is specific to the trunk or registrar you are using for the outboud leg)
 
 ### Consultative transfer hangs
 
-- Check that `transfer_status` is being called periodically
+- Check that `transfer_status` is being called to keep the agent that initiated the transfer informed about the current status
 - Verify the transfer target is answering the call
 - Check logs for TransferAgent errors in the consultation room
 
