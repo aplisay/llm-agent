@@ -233,7 +233,7 @@ async function handleBlindBridgeTransfer(
   effectiveAplisayId: string,
   finaliseBridgedCallFn: () => Promise<Call | null>
 ): Promise<TransferResult> {
-  const { room, args, setBridgedParticipant, setConsultInProgress, setTransferState } = context;
+  const { room, args, setBridgedParticipant, setConsultInProgress, setTransferState, callerId } = context;
 
   logger.info(
     { roomName: room.name, number: args.number },
@@ -249,7 +249,8 @@ async function handleBlindBridgeTransfer(
       room.name!,
       args.number,
       effectiveAplisayId,
-      effectiveCallerId
+      effectiveCallerId,
+      callerId
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -279,7 +280,7 @@ async function handleBlindReferTransfer(
   context: TransferContext,
   finaliseBridgedCallFn: () => Promise<Call | null>
 ): Promise<TransferResult> {
-  const { room, participant, args, aplisayId, registrationOriginated, registrationRegistrar, registrationTransport, setConsultInProgress, setTransferState } = context;
+  const { room, participant, args, aplisayId, callerId, registrationOriginated, registrationRegistrar, registrationTransport, setConsultInProgress, setTransferState } = context;
 
   logger.info(
     { roomName: room.name, participant: participant?.sid, number: args.number },
@@ -309,7 +310,8 @@ async function handleBlindReferTransfer(
       args.number,
       aplisayId!,
       registrar,
-      transport
+      transport, 
+      callerId
     );
 
     logger.info({ tpResult }, "transfer participant executed via SIP REFER");
@@ -381,6 +383,7 @@ async function startConsultativeTransfer(
     setConsultRoomName,
     setTransferSession,
     setConsultRoom,
+    callerId,
   } = context;
 
   const session = sessionRef(null);
@@ -435,7 +438,8 @@ async function startConsultativeTransfer(
       context.registrationOriginated,
       context.b2buaGatewayIp,
       context.b2buaGatewayTransport,
-      context.registrationEndpointId
+      context.registrationEndpointId,
+      callerId
     );
 
     // Step 6: Create TransferAgent with conversation history
@@ -676,6 +680,7 @@ async function finaliseConsultativeTransfer(
     args,
     agent,
     aplisayId,
+    callerId,
     registrationOriginated,
     registrationRegistrar,
     registrationTransport,
@@ -727,7 +732,8 @@ async function finaliseConsultativeTransfer(
         args.number,
         aplisayId!,
         registrar,
-        transport
+        transport,
+        callerId
       );
 
       logger.info({}, "transfer executed via SIP REFER");

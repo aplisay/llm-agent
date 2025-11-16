@@ -213,7 +213,8 @@ export default defineAgent({
             room.name!,
             outboundInfo.toNumber,
             outboundInfo.aplisayId,
-            outboundInfo.fromNumber
+            outboundInfo.fromNumber,
+            callerId
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
