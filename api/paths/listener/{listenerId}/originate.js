@@ -63,11 +63,21 @@ const originateCall = (async (req, res) => {
       // but we can still use them for outbound calls
     }
 
-    // Validate that calledId is a valid UK geographic or mobile number
-    if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      return res.status(400).send({
-        error: `Called number ${calledId} is not a valid UK geographic or mobile number`
-      });
+    // Validate that calledId matches the agent's outboundCallFilter if specified
+    if (agent.options?.outboundCallFilter) {
+      const filterRegexp = new RegExp(agent.options.outboundCallFilter);
+      if (!filterRegexp.test(calledId)) {
+        return res.status(400).send({
+          error: `Called number ${calledId} does not match the agent's outbound call filter pattern`
+        });
+      }
+    } else {
+      // Fallback to default UK validation if no filter is specified
+      if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
+        return res.status(400).send({
+          error: `Called number ${calledId} is not a valid UK geographic or mobile number`
+        });
+      }
     }
 
     // Check if the handler for this model has a outbound handler

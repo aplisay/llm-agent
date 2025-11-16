@@ -175,7 +175,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
   };
 
   // Helper function to create agent
-  const createTestAgent = async () => {
+  const createTestAgent = async (options = {}) => {
     const convertedFunctions = {};
     aplisayTestAgentBase.functions.forEach(func => {
       const properties = {};
@@ -205,7 +205,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
         description: aplisayTestAgentBase.description,
         modelName: aplisayTestAgentBase.modelName,
         prompt: aplisayTestAgentBase.prompt.value,
-        options: aplisayTestAgentBase.options,
+        options: { ...aplisayTestAgentBase.options, ...options },
         functions: convertedFunctions,
         keys: aplisayTestAgentBase.keys
       }
@@ -559,5 +559,289 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('error');
     expect(originateRes._body.error).toContain('not a valid UK geographic or mobile number');
 
+  });
+
+  test('should allow originate with matching outboundCallFilter (UK numbers)', async () => {
+    // Create agent with UK filter
+    await createTestAgent({ outboundCallFilter: '^\\+44[1237]\\d{6,15}$' });
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test valid UK mobile number
+    const originateReq1 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+447911123456', // Valid UK mobile
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes1 = createMockResponse();
+    originateRes1.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq1, originateRes1);
+    expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
+    expect(originateRes1._body).toHaveProperty('success', true);
+
+    // Test valid UK geographic number
+    const originateReq2 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+442080996945', // Valid UK geographic
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes2 = createMockResponse();
+    originateRes2.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq2, originateRes2);
+    expect(originateRes2._status === 200 || originateRes2._status === null).toBe(true);
+    expect(originateRes2._body).toHaveProperty('success', true);
+  });
+
+  test('should reject originate with non-matching outboundCallFilter', async () => {
+    // Create agent with UK filter
+    await createTestAgent({ outboundCallFilter: '^\\+44[1237]\\d{6,15}$' });
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test invalid number (US number)
+    const originateReq1 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+1234567890', // US number, doesn't match UK filter
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes1 = createMockResponse();
+    originateRes1.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq1, originateRes1);
+    expect(originateRes1._status).toBe(400);
+    expect(originateRes1._body).toHaveProperty('error');
+    expect(originateRes1._body.error).toContain('does not match the agent\'s outbound call filter pattern');
+
+    // Test invalid UK number (wrong area code - starts with 0, not in [1237])
+    const originateReq2 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+4401234567890', // Starts with 0, doesn't match [1237] pattern
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes2 = createMockResponse();
+    originateRes2.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq2, originateRes2);
+    expect(originateRes2._status).toBe(400);
+    expect(originateRes2._body).toHaveProperty('error');
+    expect(originateRes2._body.error).toContain('does not match the agent\'s outbound call filter pattern');
+  });
+
+  test('should allow originate with Australian number filter', async () => {
+    // Create agent with Australian filter
+    await createTestAgent({ outboundCallFilter: '^\\+61[23456789]\\d{8}$' });
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test valid Australian number
+    const originateReq = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+61234567890', // Valid Australian number
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq, originateRes);
+    expect(originateRes._status === 200 || originateRes._status === null).toBe(true);
+    expect(originateRes._body).toHaveProperty('success', true);
+
+    // Test invalid Australian number (wrong area code)
+    const originateReq2 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+611234567890', // Invalid Australian area code
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes2 = createMockResponse();
+    originateRes2.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq2, originateRes2);
+    expect(originateRes2._status).toBe(400);
+    expect(originateRes2._body).toHaveProperty('error');
+    expect(originateRes2._body.error).toContain('does not match the agent\'s outbound call filter pattern');
+  });
+
+  test('should allow originate with extension number filter', async () => {
+    // Create agent with extension filter
+    await createTestAgent({ outboundCallFilter: '^\\d{3,6}$' });
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test valid extension numbers
+    const validExtensions = ['123', '4567', '123456'];
+    for (const ext of validExtensions) {
+      const originateReq = createMockRequest({
+        params: { listenerId: testPhoneListenerId },
+        body: {
+          calledId: ext,
+          callerId: testPhoneNumberId
+        }
+      });
+      const originateRes = createMockResponse();
+      originateRes.locals.user = { organisationId: testOrgId };
+      await originateCall(originateReq, originateRes);
+      expect(originateRes._status === 200 || originateRes._status === null).toBe(true);
+      expect(originateRes._body).toHaveProperty('success', true);
+    }
+
+    // Test invalid extension numbers
+    const invalidExtensions = ['12', '1234567', '+123'];
+    for (const ext of invalidExtensions) {
+      const originateReq = createMockRequest({
+        params: { listenerId: testPhoneListenerId },
+        body: {
+          calledId: ext,
+          callerId: testPhoneNumberId
+        }
+      });
+      const originateRes = createMockResponse();
+      originateRes.locals.user = { organisationId: testOrgId };
+      await originateCall(originateReq, originateRes);
+      expect(originateRes._status).toBe(400);
+      expect(originateRes._body).toHaveProperty('error');
+      expect(originateRes._body.error).toContain('does not match the agent\'s outbound call filter pattern');
+    }
+  });
+
+  test('should allow originate with combined filter (UK numbers or extensions)', async () => {
+    // Create agent with combined filter
+    await createTestAgent({ outboundCallFilter: '^(\\+44[1237]\\d{6,15}|\\d{3,6})$' });
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test valid UK number
+    const originateReq1 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+447911123456', // Valid UK mobile
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes1 = createMockResponse();
+    originateRes1.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq1, originateRes1);
+    expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
+    expect(originateRes1._body).toHaveProperty('success', true);
+
+    // Test valid extension
+    const originateReq2 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '1234', // Valid extension
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes2 = createMockResponse();
+    originateRes2.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq2, originateRes2);
+    expect(originateRes2._status === 200 || originateRes2._status === null).toBe(true);
+    expect(originateRes2._body).toHaveProperty('success', true);
+
+    // Test invalid number (doesn't match either pattern)
+    const originateReq3 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+1234567890', // US number, doesn't match
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes3 = createMockResponse();
+    originateRes3.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq3, originateRes3);
+    expect(originateRes3._status).toBe(400);
+    expect(originateRes3._body).toHaveProperty('error');
+    expect(originateRes3._body.error).toContain('does not match the agent\'s outbound call filter pattern');
+  });
+
+  test('should fall back to default UK validation when outboundCallFilter is not specified', async () => {
+    // Create agent without filter
+    await createTestAgent();
+    await createTestPhoneNumber();
+
+    // Create phone listener
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    testPhoneListenerId = listenerRes._body.id;
+
+    // Test valid UK number (should pass default validation)
+    const originateReq1 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+447911123456', // Valid UK mobile
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes1 = createMockResponse();
+    originateRes1.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq1, originateRes1);
+    expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
+    expect(originateRes1._body).toHaveProperty('success', true);
+
+    // Test invalid number (should fail default UK validation)
+    const originateReq2 = createMockRequest({
+      params: { listenerId: testPhoneListenerId },
+      body: {
+        calledId: '+1234567890', // US number, should fail default UK validation
+        callerId: testPhoneNumberId
+      }
+    });
+    const originateRes2 = createMockResponse();
+    originateRes2.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq2, originateRes2);
+    expect(originateRes2._status).toBe(400);
+    expect(originateRes2._body).toHaveProperty('error');
+    expect(originateRes2._body.error).toContain('not a valid UK geographic or mobile number');
   });
 });

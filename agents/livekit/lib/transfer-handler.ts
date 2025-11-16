@@ -132,10 +132,21 @@ async function validateTransferArgs(
   calledId: string,
   aplisayId: string
 ): Promise<{ effectiveCallerId: string; effectiveAplisayId: string }> {
-  if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-    throw new Error(
-      "Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets"
-    );
+  // Validate that transfer number matches the agent's outboundCallFilter if specified
+  if (agent.options?.outboundCallFilter) {
+    const filterRegexp = new RegExp(agent.options.outboundCallFilter);
+    if (!filterRegexp.test(args.number)) {
+      throw new Error(
+        `Invalid number: transfer target ${args.number} does not match the agent's outbound call filter pattern`
+      );
+    }
+  } else {
+    // Fallback to default UK validation if no filter is specified
+    if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
+      throw new Error(
+        "Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets"
+      );
+    }
   }
 
   let effectiveCallerId = args.callerId || calledId;

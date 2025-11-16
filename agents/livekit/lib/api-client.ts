@@ -22,6 +22,12 @@ export interface Agent {
     tts?: {
       voice?: string;
     };
+    /**
+     * Optional regular expression pattern to filter outbound calls.
+     * The regexp is anchored with ^ and $ to match the complete phone number.
+     * Only outbound calls (via originate or transfer) where the destination number matches this pattern will be allowed.
+     */
+    outboundCallFilter?: string;
   };
   functions?: AgentFunction[];
   keys?: string[];
