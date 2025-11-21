@@ -8,11 +8,10 @@ import {
   Queue,
   llm,
   log,
-  initializeLogger,
   stream,
   shortuuid,
 } from "@livekit/agents";
-import { AudioFrame, combineAudioFrames } from "@livekit/rtc-node";
+import { AudioFrame } from "@livekit/rtc-node";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 // import type { GenerationCreatedEvent } from '@livekit/agents';
@@ -81,6 +80,7 @@ interface MessageGeneration {
   textChannel: stream.StreamChannel<string>;
   audioChannel: stream.StreamChannel<AudioFrame>;
   audioTranscript: string;
+  modalities: Future<("text" | "audio")[]>;
 }
 
 interface ResponseGeneration {
@@ -261,6 +261,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: false,
       userTranscription: true,
       autoToolReplyGeneration: false,
+      audioOutput: true,
     });
     if (apiKey === "") {
       throw new Error(
@@ -1012,6 +1013,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             textChannel: stream.createStreamChannel<string>(),
             audioChannel: stream.createStreamChannel<AudioFrame>(),
             audioTranscript: "",
+            modalities: new Future<("text" | "audio")[]>(),
           };
 
           // Write to the message channel to make audio available to the agent
@@ -1019,6 +1021,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             messageId: output.itemId,
             textStream: itemGeneration.textChannel.stream(),
             audioStream: itemGeneration.audioChannel.stream(),
+            modalities: itemGeneration.modalities.await,
           });
 
           this.currentGeneration!.messages.set(output.itemId, itemGeneration);
@@ -1219,8 +1222,15 @@ export class RealtimeSession extends llm.RealtimeSession {
               content!.itemId
             );
             if (itemGeneration) {
+              this.#logger.debug({ itemGeneration, contentItemId: content!.itemId }, "Writing audio frame to item generation");
               itemGeneration.audioChannel.write(frame);
             }
+            else {
+              this.#logger.error({ itemGeneration, contentItemId: content!.itemId }, "No item generation for audio frame");
+            }
+          }
+          else {
+            this.#logger.error({ currentGeneration: this.currentGeneration }, "No current generation for audio frame");
           }
         });
       }
@@ -1386,6 +1396,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         textChannel: stream.createStreamChannel<string>(),
         audioChannel: stream.createStreamChannel<AudioFrame>(),
         audioTranscript: '',
+        modalities: new Future<("text" | "audio")[]>(),
       };
       
       this.currentGeneration.messages.set(messageId, itemGeneration);
