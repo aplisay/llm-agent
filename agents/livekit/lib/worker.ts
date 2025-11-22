@@ -35,10 +35,7 @@ import {
 } from "./api-client.js";
 
 // Types
-import type {
-  RemoteParticipant,
-  Room,
-} from "@livekit/rtc-node";
+import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent, TrackKind } from "@livekit/rtc-node";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type {
@@ -153,7 +150,7 @@ export default defineAgent({
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
-        
+
         requestHangup: () => {},
       });
 
@@ -173,8 +170,8 @@ export default defineAgent({
             room.name!,
             outboundInfo.toNumber,
             outboundInfo.aplisayId,
-            outboundInfo.fromNumber, 
-            callerId || 'unknown'
+            outboundInfo.fromNumber,
+            callerId || "unknown"
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -207,6 +204,7 @@ export default defineAgent({
         modelRef,
         sessionRef,
         getBridgedParticipant: () => bridgedParticipant,
+        setBridgedParticipant: (p) => (bridgedParticipant = p),
         checkForHangup,
         getConsultInProgress: () => consultInProgress,
         holdParticipant,
@@ -404,21 +402,29 @@ async function setupCallAndUtilities({
   metadata.aplisay.callId = call.id;
 
   const sendMessage = async (message: MessageData) => {
-    const entries = Object.entries(message);
-    if (entries.length > 0) {
-      const [type, data] = entries[0] as [string, unknown];
-      ctx.room.localParticipant?.publishData(
-        new TextEncoder().encode(JSON.stringify(message)),
-        { reliable: true }
+    try {
+      const entries = Object.entries(message);
+      if (entries.length > 0) {
+        const [type, data] = entries[0] as [string, unknown];
+        ctx.room.localParticipant?.publishData(
+          new TextEncoder().encode(JSON.stringify(message)),
+          { reliable: true }
+        );
+        await createTransactionLog({
+          userId,
+          organisationId,
+          callId: call.id,
+          type,
+          data: JSON.stringify(data),
+          isFinal: true,
+        });
+      }
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.error(
+        { error, message: error.message, stack: error.stack },
+        "error sending message"
       );
-      await createTransactionLog({
-        userId,
-        organisationId,
-        callId: call.id,
-        type,
-        data: JSON.stringify(data),
-        isFinal: true,
-      });
     }
   };
 
@@ -444,7 +450,14 @@ async function setupCallAndUtilities({
     } catch (e: any) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.error(
-        { error, message: error.message, stack: error.stack, identity, roomName: room.name, hold },
+        {
+          error,
+          message: error.message,
+          stack: error.stack,
+          identity,
+          roomName: room.name,
+          hold,
+        },
         "failed to update subscriptions"
       );
     }
@@ -550,7 +563,7 @@ async function setupCallAndUtilities({
             args.number,
             aplisayId!,
             effectiveCallerId,
-            callerId || 'unknown'
+            callerId || "unknown"
           );
           logger.info({ p }, "new participant created (blind)");
           setBridgedParticipant(p);
@@ -567,7 +580,7 @@ async function setupCallAndUtilities({
               args.number,
               aplisayId!,
               effectiveCallerId,
-              callerId || 'unknown'
+              callerId || "unknown"
             );
             logger.debug({ p }, "bridged participant completed");
             const rbp = await ctx.waitForParticipant(p.participantIdentity);
@@ -793,6 +806,7 @@ async function runAgentWorker({
   onHangup,
   onTransfer,
   getBridgedParticipant,
+  setBridgedParticipant,
   checkForHangup,
   sessionRef,
   modelRef,
@@ -801,6 +815,7 @@ async function runAgentWorker({
   getActiveCall,
 }: RunAgentWorkerParams) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
+  let timerId: NodeJS.Timeout | null = null;
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
   let initialMessage: string | null = "say hello";
@@ -835,151 +850,186 @@ async function runAgentWorker({
   const maxDuration =
     1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
-  const session = new voice.AgentSession({
-    llm: new realtime.RealtimeModel({
-      voice: agent?.options?.tts?.voice,
-      maxDuration: maxDurationString,
-      instructions: agent?.prompt || "You are a helpful assistant.",
-    }),
-  });
-  sessionRef(session);
+  let session: voice.AgentSession | null = null;
 
-  // Listen on all the things for now (debug)
-  Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
+  try {
+    session = new voice.AgentSession({
+      llm: new realtime.RealtimeModel({
+        voice: agent?.options?.tts?.voice,
+        maxDuration: maxDurationString,
+        instructions: agent?.prompt || "You are a helpful assistant.",
+      }),
+    });
+    sessionRef(session);
+
+    // Listen on all the things for now (debug)
+    Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
+      session.on(
+        voice.AgentSessionEventTypes[
+          event as keyof typeof voice.AgentSessionEventTypes
+        ],
+        (data: unknown) => {
+          logger.debug({ data }, `Got event ${event}`);
+        }
+      );
+    });
+
+    // Listen on the user input transcribed event
     session.on(
-      voice.AgentSessionEventTypes[
-        event as keyof typeof voice.AgentSessionEventTypes
-      ],
-      (data: unknown) => {
-        logger.debug({ data }, `Got event ${event}`);
+      voice.AgentSessionEventTypes.ConversationItemAdded,
+      ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
+        if (type === "message" && getConsultInProgress() === false) {
+          const text = content.join("");
+          if (role !== "user" || text !== initialMessage) {
+            sendMessage({
+              [role === "user" ? "user" : "agent"]: text,
+            });
+          }
+        }
       }
     );
-  });
 
-  // Listen on the user input transcribed event
-  session.on(
-    voice.AgentSessionEventTypes.ConversationItemAdded,
-    ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
-      if (type === "message" && getConsultInProgress() === false) {
-        const text = content.join("");
-        if (role !== "user" || text !== initialMessage) {
-          sendMessage({
-            [role === "user" ? "user" : "agent"]: text,
-          });
+    session.on(
+      voice.AgentSessionEventTypes.AgentStateChanged,
+      (ev: voice.AgentStateChangedEvent) => {
+        sendMessage({ status: ev.newState });
+        if (ev.newState === "listening" && checkForHangup() && room.name) {
+          logger.debug({ room }, "room close inititiated");
+          getActiveCall().end("agent initiated hangup");
+          roomService.deleteRoom(room.name);
         }
       }
-    }
-  );
+    );
 
-  session.on(
-    voice.AgentSessionEventTypes.AgentStateChanged,
-    (ev: voice.AgentStateChangedEvent) => {
-      sendMessage({ status: ev.newState });
-      if (ev.newState === "listening" && checkForHangup() && room.name) {
-        logger.debug({ room }, "room close inititiated");
-        getActiveCall().end("agent initiated hangup");
-        roomService.deleteRoom(room.name);
-      }
-    }
-  );
+    session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+      logger.error({ ev }, "error");
+    });
 
-  session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
-    logger.error({ ev }, "error");
-  });
+    session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+      logger.info({ ev }, "session closed");
+      roomService.deleteRoom(room.name);
+      getActiveCall().end("session closed");
+    });
 
-  session.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
-    logger.info({ ev }, "session closed");
-    roomService.deleteRoom(room.name);
-    getActiveCall().end("session closed");
-  });
+    //
+    await session.start({
+      room: ctx.room,
+      agent: model,
+    });
 
-  //
-  await session.start({
-    room: ctx.room,
-    agent: model,
-  });
+    await ctx.connect();
 
-  await ctx.connect();
+    logger.debug({ room }, "connected got room");
 
-  logger.debug({ room }, "connected got room");
-
-  ctx.room.on(
-    RoomEvent.ParticipantDisconnected,
-    async (p: RemoteParticipant) => {
-      const bp = getBridgedParticipant();
-      logger.debug(
-        { p, bridgedParticipant: bp, participant },
-        "participant disconnected"
-      );
-      if (bp?.participantId === p?.info?.sid) {
-        if (getConsultInProgress()) {
-          logger.debug(
-            "consult callee disconnected, treating as consult_reject"
-          );
-          // Unhold original participant
-          try {
-            const participants = await roomService.listParticipants(room.name);
-            const original = participants.find((pi) => pi.sid !== bp?.participantId);
-            if (original?.sid) {
-              await holdParticipant(original.sid, false);
+    ctx.room.on(
+      RoomEvent.ParticipantDisconnected,
+      async (p: RemoteParticipant) => {
+        const bp = getBridgedParticipant();
+        logger.debug(
+          { p, bridgedParticipant: bp, participant },
+          "participant disconnected"
+        );
+        if (bp?.participantId === p?.info?.sid) {
+          if (getConsultInProgress()) {
+            logger.debug(
+              "consult callee disconnected, treating as consult_reject"
+            );
+            // Unhold original participant
+            try {
+              const participants = await roomService.listParticipants(
+                room.name
+              );
+              const original = participants.find(
+                (pi) => pi.sid !== bp?.participantId
+              );
+              if (original?.sid) {
+                await holdParticipant(original.sid, false);
+              }
+            } catch (e) {
+              logger.error(
+                { e },
+                "failed to unhold participant on callee hangup"
+              );
             }
-          } catch (e) {
-            logger.error({ e }, "failed to unhold participant on callee hangup");
+            // reset consult state
+            // remove bridged participant if still present in server state (it should be gone already)
+            try {
+              bp?.participantIdentity &&
+                (await roomService.removeParticipant(
+                  room.name,
+                  bp.participantId
+                ));
+            } catch {}
+            // underlying setters live in setup scope; remaining state will be reset on next transfer call
+          } else {
+            logger.debug("bridge participant disconnected, shutting down");
+            await cleanupAndClose("bridged participant disconnected");
+            setBridgedParticipant(null as unknown as SipParticipant);
           }
-          // reset consult state
-          // remove bridged participant if still present in server state (it should be gone already)
-          try {
-            bp?.participantIdentity &&
-              (await roomService.removeParticipant(
-                room.name,
-                bp.participantId
-              ));
-          } catch {}
-          // underlying setters live in setup scope; remaining state will be reset on next transfer call
-        } else {
-          logger.debug("bridge participant disconnected, shutting down");
-          session.close();
-          getActiveCall().end("bridged participant disconnected");
-          await roomService.deleteRoom(room.name);
+        } else if (p.info?.sid === participant?.sid) {
+          logger.debug("participant disconnected, shutting down", true);
+          await cleanupAndClose("original participant disconnected");
         }
-      } else if (p.info?.sid === participant?.sid) {
-        logger.debug("participant disconnected, shutting down");
-        session.close();
-        getActiveCall().end("original participant disconnected");
-        await roomService.deleteRoom(room.name);
       }
-    }
-  );
+    );
 
-  // Hard stop timeout on the session which is 5 seconds after the AI agent maxDuration
-  // This is to ensure that the session is closed and the room is deleted even if the
-  // AI agent fails to close the session (e.g OpenAI has no maxDuration parameter)
-  setTimeout(() => {
-    // If the bridged participant is present, we have transferred out, ignore the session timeout.
-    if (getBridgedParticipant()) {
-      logger.debug("bridged participant present, ignoring session timeout");
-      return;
-    }
-    logger.debug("session timeout, generating reply");
-    try {
-      session.generateReply({ userInput: "The session has timed out." });
-    } catch (e) {
-      logger.info({ e }, "error generating timeout reply");
-    }
-    // 10 secs later, tear everything down
-    setTimeout(() => {
+    // Hard stop timeout on the session which is 5 seconds after the AI agent maxDuration
+    // This is to ensure that the session is closed and the room is deleted even if the
+    // AI agent fails to close the session (e.g OpenAI has no maxDuration parameter)
+    timerId = setTimeout(() => {
+      // If the bridged participant is present, we have transferred out, ignore the session timeout.
+      if (getBridgedParticipant()) {
+        logger.debug("bridged participant present, ignoring session timeout");
+        return;
+      }
+      logger.debug("session timeout, generating reply");
       try {
-        getActiveCall().end("session timeout");
-        session.close();
-        roomService.deleteRoom(room.name);
+        session.generateReply({ userInput: "The session has timed out." });
       } catch (e) {
-        logger.info({ e }, "error tearing down call on timeout");
+        logger.info({ e }, "error generating timeout reply");
       }
-    }, 10 * 1000);
-  }, maxDuration + 5 * 1000);
+      // 10 secs later, tear everything down
+      setTimeout(() => {
+        try {
+          getActiveCall().end("session timeout");
+          session.close();
+          roomService.deleteRoom(room.name);
+        } catch (e) {
+          logger.info({ e }, "error tearing down call on timeout");
+        }
+      }, 10 * 1000);
+    }, maxDuration + 5 * 1000);
 
-  logger.debug("session started, generating reply");
-  session.generateReply({ userInput: initialMessage });
-  call.start();
-  sendMessage({ call: `${callerId} => ${calledId}` });
+    logger.debug("session started, generating reply");
+    session.generateReply({ userInput: initialMessage });
+    await call.start();
+    sendMessage({ call: `${callerId} => ${calledId}` });
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    logger.error(
+      { error, message: error.message, stack: error.stack },
+      "error running agent worker"
+    );
+    await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
+  }
+
+  async function cleanupAndClose(reason: string, logEndCall: boolean = false) {
+    try {
+      session && session.close();
+      getActiveCall().end(reason);
+      await roomService.deleteRoom(room.name);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.info({ message: error.message, error }, "error cleaning up and closing");
+    } finally {
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      ctx.shutdown(reason);
+      setTimeout(() => {
+        process.exit(-1);
+      }, 10 * 1000);
+    }
+  }
 }

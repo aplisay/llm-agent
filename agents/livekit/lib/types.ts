@@ -88,6 +88,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
   getBridgedParticipant: () => SipParticipant | null;
+  setBridgedParticipant: (p: SipParticipant | null) => void;
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;

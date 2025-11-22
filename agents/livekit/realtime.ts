@@ -17,7 +17,7 @@ if (process.argv[2] === 'setup') {
     agentName: 'realtime',
     port: 8081,
     logLevel: 'debug',
-    production: false
+    production: true
   }));
 }
 
