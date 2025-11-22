@@ -1090,7 +1090,7 @@
   resolved "https://registry.yarnpkg.com/@js-sdsl/ordered-map/-/ordered-map-4.4.2.tgz#9299f82874bab9e4c7f9c48d865becbfe8d6907c"
   integrity sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==
 
-"@livekit/agents-plugin-google@^1.0.6":
+"@livekit/agents-plugin-google@^1.0.20":
   version "1.0.20"
   resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-google/-/agents-plugin-google-1.0.20.tgz#06675c1e6a5c3c2bda23fe38d2cc224369425074"
   integrity sha512-Ui0i1Cfp7UCyB1k6cZKI3O9e09QaLEilDeBUwQk61XB75lpYPpsRy/Nx8oT0rjzQJTpgCoeQ/6IHcMjkqP7Y/Q==
@@ -1100,7 +1100,7 @@
     "@types/json-schema" "^7.0.15"
     json-schema "^0.4.0"
 
-"@livekit/agents-plugin-openai@^1.0.6":
+"@livekit/agents-plugin-openai@^1.0.10":
   version "1.0.20"
   resolved "https://registry.yarnpkg.com/@livekit/agents-plugin-openai/-/agents-plugin-openai-1.0.20.tgz#29e699d55f0c34e30ca4b4eff2e400ec3a595dc2"
   integrity sha512-K/OMyPRsigkm2Ddd6bODPhQ8iHPHRqrrpd+6bssnHqoGWcqit10j4vlrqES6MPRAl4QM/tPl0VX01fGMU8ydNA==
@@ -1109,7 +1109,7 @@
     openai "^6.8.1"
     ws "^8.18.0"
 
-"@livekit/agents@^1.0.6":
+"@livekit/agents@^1.0.20":
   version "1.0.20"
   resolved "https://registry.yarnpkg.com/@livekit/agents/-/agents-1.0.20.tgz#5f8aafd65052ad80cdf65669bcc936732678ab40"
   integrity sha512-c0JHyUFusOAacfmDh8L50ySDR33Qld1Wa9HP0O3/5bmHu4m52vAAHDJTgoKtRxy9WuTyXYVnNCV8/8W/N389vg==
