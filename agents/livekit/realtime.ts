@@ -16,7 +16,6 @@ if (process.argv[2] === 'setup') {
     agent: fileURLToPath(import.meta.url),
     agentName: 'realtime',
     port: 8081,
-    logLevel: 'debug',
     production: true
   }));
 }
