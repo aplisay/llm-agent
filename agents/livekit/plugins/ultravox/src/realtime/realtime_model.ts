@@ -1117,7 +1117,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       "Emitting generation_created event - this should trigger speech handle creation and authorization"
     );
     this.emit("generation_created", generationEvent);
-    this.#logger.info(
+    this.#logger.debug(
       { 
         messageId: responseId,
         hasMessageStream: !!generationEvent.messageStream,
@@ -1143,7 +1143,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
-    this.#logger.info(
+    this.#logger.debug(
       { event },
       "handleTranscript - received transcript event"
     );
@@ -1166,7 +1166,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           transcript: event.text,
           isFinal: event.final,
         };
-        this.#logger.info(
+        this.#logger.debug(
           { transcriptionEvent, event },
           "Emitting input_audio_transcription_completed event"
         );
