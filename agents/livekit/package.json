@@ -27,9 +27,9 @@
   "license": "MIT",
   "dependencies": {
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
-    "@livekit/agents": "1.0.6",
-    "@livekit/agents-plugin-google": "1.0.6",
-    "@livekit/agents-plugin-openai": "1.0.6",
+    "@livekit/agents": "^1.0.20",
+    "@livekit/agents-plugin-google": "^1.0.20",
+    "@livekit/agents-plugin-openai": "^1.0.10",
     "@livekit/noise-cancellation-node": "^0.1.9",
     "@livekit/rtc-node": "^0.13.18",
     "async-mutex": "^0.4.1",
@@ -47,7 +47,8 @@
     "pino-pretty": "^13.0.0",
     "sequelize": "^6.37.7",
     "uuid": "^9.0.1",
-    "ws": "^8.18.2"
+    "ws": "^8.18.2",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

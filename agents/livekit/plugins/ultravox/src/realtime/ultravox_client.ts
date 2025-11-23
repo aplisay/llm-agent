@@ -34,19 +34,6 @@ export class UltravoxClient {
     return response.json();
   }
 
-  async deleteCall(callId: string): Promise<void> {
-    const response = await fetch(`${this.baseURL}calls/${callId}`, {
-      method: 'DELETE',
-      headers: {
-        'X-API-Key': this.apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to delete Ultravox call: ${response.status} ${response.statusText}`);
-    }
-  }
-
   async getVoices(): Promise<UltravoxVoicesResponse> {
     const response = await fetch(`${this.baseURL}voices`, {
       method: 'GET',

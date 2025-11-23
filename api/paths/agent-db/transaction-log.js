@@ -15,21 +15,28 @@ export default function (logger, voices, wsServer) {
 };
 
 const transactionLogCreate = (async (req, res) => {
-  let { userId, organisationId, callId, type, data, isFinal } = req.body;
+  let { userId, organisationId, callId, type, data, isFinal, createdAt } = req.body;
   
   if (!userId || !organisationId || !callId || !type) {
     return res.status(400).send({ error: 'Missing required fields: userId, organisationId, callId, type' });
   }
 
   try {
-    let transactionLog = await TransactionLog.create({
+    const createData = {
       userId,
       organisationId,
       callId,
       type,
       data,
       isFinal: isFinal || false
-    });
+    };
+    
+    // Preserve createdAt timestamp if provided (from client-side capture time)
+    if (createdAt) {
+      createData.createdAt = new Date(createdAt);
+    }
+    
+    let transactionLog = await TransactionLog.create(createData);
 
     res.status(201).send(transactionLog);
   }
@@ -78,6 +85,11 @@ transactionLogCreate.apiDoc = {
               type: 'boolean',
               description: 'Whether this is a final transaction',
               default: false
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Timestamp when the log was captured (preserved from client-side)'
             }
           }
         }
