@@ -1,4 +1,4 @@
-import { Call } from '../../../../../lib/database.js';
+import { Call, TransactionLog } from '../../../../../lib/database.js';
 
 let appParameters, log;
 
@@ -16,6 +16,7 @@ export default function (logger, voices, wsServer) {
 
 const callStart = (async (req, res) => {
   let { callId } = req.params;
+  let { userId, organisationId } = req.body;
   
   if (!callId) {
     return res.status(400).send({ error: 'callId parameter is required' });
@@ -28,7 +29,22 @@ const callStart = (async (req, res) => {
       return res.status(404).send({ error: 'Call not found' });
     }
 
+    // Use provided userId/organisationId or fall back to call record values
+    const finalUserId = userId || call.userId;
+    const finalOrganisationId = organisationId || call.organisationId;
+
     await call.start();
+    
+    // Create start transaction log with userId and organisationId
+    if (finalUserId && finalOrganisationId) {
+      await TransactionLog.create({
+        userId: finalUserId,
+        organisationId: finalOrganisationId,
+        callId,
+        type: 'start',
+        data: null
+      });
+    }
     
     res.send({ message: 'Call started successfully', callId });
   }
@@ -54,6 +70,26 @@ callStart.apiDoc = {
       description: 'The ID of the call to start'
     }
   ],
+  requestBody: {
+    required: false,
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          properties: {
+            userId: {
+              type: 'string',
+              description: 'User ID for transaction log creation'
+            },
+            organisationId: {
+              type: 'string',
+              description: 'Organisation ID for transaction log creation'
+            }
+          }
+        }
+      }
+    }
+  },
   responses: {
     200: {
       description: 'Call started successfully.',

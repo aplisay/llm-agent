@@ -401,6 +401,17 @@ async function setupCallAndUtilities({
   metadata.aplisay = metadata.aplisay || {};
   metadata.aplisay.callId = call.id;
 
+  // Array to batch transaction logs when streamLog is false
+  const batchedTransactionLogs: Array<{
+    userId: string;
+    organisationId: string;
+    callId: string;
+    type: string;
+    data?: string;
+    isFinal?: boolean;
+    createdAt?: Date;
+  }> = [];
+
   const sendMessage = async (message: MessageData) => {
     try {
       const entries = Object.entries(message);
@@ -410,14 +421,30 @@ async function setupCallAndUtilities({
           new TextEncoder().encode(JSON.stringify(message)),
           { reliable: true }
         );
-        await createTransactionLog({
+
+        if(type === "status") {
+          return;
+        }
+        
+        // Capture the timestamp when the log was created
+        const createdAt = new Date();
+        
+        const transactionLogData = {
           userId,
           organisationId,
           callId: call.id,
           type,
           data: JSON.stringify(data),
           isFinal: true,
-        });
+          createdAt,
+        };
+
+        // If streamLog is enabled, push immediately; otherwise batch for end call
+        if (instance.streamLog === true) {
+          await createTransactionLog(transactionLogData);
+        } else {
+          batchedTransactionLogs.push(transactionLogData);
+        }
       }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
@@ -690,6 +717,9 @@ async function setupCallAndUtilities({
     wantHangup = true;
   }
 
+  // Attach batched transaction logs to the call object for access during end()
+  (call as any).batchedTransactionLogs = batchedTransactionLogs;
+
   return {
     call,
     metadata,
@@ -864,7 +894,7 @@ async function runAgentWorker({
 
     // Listen on all the things for now (debug)
     Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
-      session.on(
+      session?.on(
         voice.AgentSessionEventTypes[
           event as keyof typeof voice.AgentSessionEventTypes
         ],
@@ -967,8 +997,8 @@ async function runAgentWorker({
             setBridgedParticipant(null as unknown as SipParticipant);
           }
         } else if (p.info?.sid === participant?.sid) {
-          logger.debug("participant disconnected, shutting down", true);
-          await cleanupAndClose("original participant disconnected");
+          logger.debug("participant disconnected, shutting down");
+          await cleanupAndClose("original participant disconnected", true);
         }
       }
     );
@@ -984,16 +1014,14 @@ async function runAgentWorker({
       }
       logger.debug("session timeout, generating reply");
       try {
-        session.generateReply({ userInput: "The session has timed out." });
+        session?.generateReply({ userInput: "The session has timed out." });
       } catch (e) {
         logger.info({ e }, "error generating timeout reply");
       }
       // 10 secs later, tear everything down
       setTimeout(() => {
         try {
-          getActiveCall().end("session timeout");
-          session.close();
-          roomService.deleteRoom(room.name);
+          cleanupAndClose("session timeout");
         } catch (e) {
           logger.info({ e }, "error tearing down call on timeout");
         }
@@ -1027,9 +1055,6 @@ async function runAgentWorker({
         timerId = null;
       }
       ctx.shutdown(reason);
-      setTimeout(() => {
-        process.exit(-1);
-      }, 10 * 1000);
     }
   }
 }

@@ -16,7 +16,7 @@ export default function (logger, voices, wsServer) {
 
 const callEnd = (async (req, res) => {
   let { callId } = req.params;
-  let { reason } = req.body;
+  let { reason, transactionLogs, userId, organisationId } = req.body;
   
   if (!callId) {
     return res.status(400).send({ error: 'callId parameter is required' });
@@ -29,7 +29,26 @@ const callEnd = (async (req, res) => {
       return res.status(404).send({ error: 'Call not found' });
     }
 
+    // Use provided userId/organisationId or fall back to call record values
+    const finalUserId = userId || call.userId;
+    const finalOrganisationId = organisationId || call.organisationId;
+
+    // If transactionLogs array is provided, batch create them
+    if (transactionLogs && Array.isArray(transactionLogs) && transactionLogs.length > 0) {
+      // Ensure all logs have the correct callId and preserve createdAt timestamps
+      const logsToCreate = transactionLogs.map(log => ({
+        ...log,
+        callId: callId,
+        // Preserve createdAt if provided, otherwise Sequelize will use current timestamp
+        createdAt: log.createdAt ? new Date(log.createdAt) : undefined
+      }));
+      await TransactionLog.bulkCreate(logsToCreate);
+    }
+
+    // Always create the hangup log with userId and organisationId
     await TransactionLog.create({
+      userId: finalUserId,
+      organisationId: finalOrganisationId,
       callId,
       type: 'hangup',
       data: reason || 'unknown'
@@ -67,7 +86,38 @@ callEnd.apiDoc = {
         schema: {
           type: 'object',
           properties: {
-            reason: { type: 'string' }
+            reason: { 
+              type: 'string',
+              description: 'Reason for ending the call'
+            },
+            userId: {
+              type: 'string',
+              description: 'User ID for transaction log creation'
+            },
+            organisationId: {
+              type: 'string',
+              description: 'Organisation ID for transaction log creation'
+            },
+            transactionLogs: {
+              type: 'array',
+              description: 'Array of transaction logs to batch create when ending the call (used when streamLog is false)',
+              items: {
+                type: 'object',
+                properties: {
+                  userId: { type: 'string' },
+                  organisationId: { type: 'string' },
+                  callId: { type: 'string' },
+                  type: { type: 'string' },
+                  data: { type: 'string' },
+                  isFinal: { type: 'boolean' },
+                  createdAt: { 
+                    type: 'string',
+                    format: 'date-time',
+                    description: 'Timestamp when the log was captured (preserved from client-side)'
+                  }
+                }
+              }
+            }
           }
         }
       }
