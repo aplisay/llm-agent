@@ -298,7 +298,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       firstSpeaker,
     };
 
-    this.#client = new UltravoxClient(apiKey, baseURL);
+    this.#client = new UltravoxClient(apiKey, baseURL, log());
   }
 
   get sessions(): RealtimeSession[] {

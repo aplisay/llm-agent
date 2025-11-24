@@ -1,10 +1,18 @@
-import 'dotenv/config';
+import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 
 import logger from '../lib/logger.js';
 import Voices from '../lib/voices/index.js';
 
 let voices;
 let list;
+
+beforeAll(async () => {
+  await setupRealDatabase();
+}, 60000);
+
+afterAll(async () => {
+  await teardownRealDatabase();
+}, 60000);
 
 describe(`voices`, () => {
   test('Instatiate', async () => {

@@ -1,4 +1,4 @@
-import { Agent, Instance, PhoneNumber } from '../../../../lib/database.js';
+import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -30,7 +30,7 @@ const originateCall = (async (req, res) => {
       });
     }
 
-    // Check if agent exists and belongs to the organization
+    // Check if agent exists and belongs to the organisation
     const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
     const agent = instance?.Agent;
 
@@ -38,27 +38,48 @@ const originateCall = (async (req, res) => {
       return res.status(404).send({ error: `Agent ${listenerId} not found` });
     }
 
-    // Check if callerId is present in phoneNumbers table and belongs to the organization
+    // Check if callerId is present in phoneNumbers table or phoneRegistrations table and belongs to the organisation
     let callerPhoneNumber = await PhoneNumber.findByPk(callerId);
-    if (!callerPhoneNumber || callerPhoneNumber.organisationId !== organisationId) {
-      return res.status(404).send({
-        error: `Caller phone number ${callerId} not found in phone numbers table`
-      });
+    let callerPhoneRegistration = null;
+    let aplisayId = null;
+    
+    if (callerPhoneNumber && callerPhoneNumber.organisationId === organisationId) {
+      // Found in phone numbers table
+      if (!callerPhoneNumber.outbound) {
+        return res.status(400).send({
+          error: `Caller phone number ${callerId} is not enabled for outbound calling`
+        });
+      }
+      aplisayId = callerPhoneNumber.aplisayId;
+    } else {
+      // Try phone registrations table
+      callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
+      if (!callerPhoneRegistration || callerPhoneRegistration.organisationId !== organisationId) {
+        return res.status(404).send({
+          error: `Caller ${callerId} not found in phone numbers or registrations table`
+        });
+      }
+      // For registrations, we don't check outbound flag as they're typically for inbound
+      // but we can still use them for outbound calls
     }
 
-    if (!callerPhoneNumber.outbound) {
-      return res.status(400).send({
-        error: `Caller phone number ${callerId} is not enabled for outbound calling`
-      });
+    // Validate that calledId matches the agent's outboundCallFilter if specified
+    if (agent.options?.outboundCallFilter) {
+      const filterRegexp = new RegExp(agent.options.outboundCallFilter);
+      if (!filterRegexp.test(calledId)) {
+        return res.status(400).send({
+          error: `Called number ${calledId} does not match the agent's outbound call filter pattern`
+        });
+      }
+    } else {
+      // Fallback to default UK validation if no filter is specified
+      if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
+        return res.status(400).send({
+          error: `Called number ${calledId} is not a valid UK geographic or mobile number`
+        });
+      }
     }
 
-    // Validate that calledId is a valid UK geographic or mobile number
-    if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      return res.status(400).send({
-        error: `Called number ${calledId} is not a valid UK geographic or mobile number`
-      });
-    }
-    const aplisayId = callerPhoneNumber.aplisayId;
     // Check if the handler for this model has a outbound handler
     let handler = await getHandler(agent.modelName);
     if (!handler?.outbound) {
@@ -116,8 +137,17 @@ originateCall.apiDoc = {
             },
             callerId: {
               type: "string",
-              description: "The phone number to call from (must exist in phoneNumbers table and belong to the organization)",
+              description: "The phone number or registration ID to call from (must exist in phoneNumbers or phoneRegistrations table and belong to the organisation)",
               example: "+442080996945"
+            },
+            metadata: {
+              type: "object",
+              description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
+              example: {
+                myapp: {
+                  mykey: "mydata"
+                }
+              }
             }
           },
           required: ['calledId', 'callerId']

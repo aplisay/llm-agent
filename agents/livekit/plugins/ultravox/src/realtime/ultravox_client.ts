@@ -10,8 +10,7 @@ import type {
 export class UltravoxClient {
   private baseURL: string;
   private apiKey: string;
-
-  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/') {
+  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/',) {
     this.apiKey = apiKey;
     this.baseURL = baseURL;
   }

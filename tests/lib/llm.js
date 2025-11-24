@@ -87,8 +87,8 @@ export default function (Llm, prompt, modelName = undefined) {
     jest.setTimeout(30000);
 
     test('initial', async () => {
-      let greeting = model.initial();
-      expect(greeting).resolves.toHaveProperty('text');
+      let greeting = await model.initial();
+      expect(greeting).toHaveProperty('text');
       return expect((await greeting).text).toMatch(/(hi|hello|help|welcome|thank|today|good day)/i);
     });
 
@@ -136,7 +136,7 @@ export default function (Llm, prompt, modelName = undefined) {
         expect(calls[0].name).toBe('hangup');
         let f = functions.find(entry => entry.name === calls[0].name);
         let completion = model.callResult([{ id: calls[0].id, name: f.name, result: f.implementation(calls[0].input) }]);
-        completion.catch(e => { console.error({ e: JSON.stringify(e, null, 4), call: calls[0] }, 'error'); });
+        completion.catch(e => { /* Error handled silently */ });
         return expect(completion).resolves.toHaveProperty('text');
       }
     });

@@ -24,6 +24,8 @@ import { voice } from "@livekit/agents";
 
 
 
+import type { TrunkInfo } from './api-client.js';
+
 export interface CallScenario {
   instance: Instance;
   agent: Agent | null;
@@ -35,6 +37,13 @@ export interface CallScenario {
   callMetadata: CallMetadata;
   outboundCall: boolean;
   outboundInfo: OutboundInfo | null;
+  registrationOriginated?: boolean;
+  trunkInfo?: TrunkInfo | null;
+  registrationRegistrar?: string | null;
+  registrationTransport?: string | null;
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
 }
 
 export interface JobMetadata {
@@ -70,6 +79,13 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
+  registrationOriginated?: boolean;
+  trunkInfo?: TrunkInfo | null;
+  registrationRegistrar?: string | null;
+  registrationTransport?: string | null;
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -98,7 +114,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
 export interface TransferArgs {
   number: string;
   callerId?: string;
-  operation?: 'blind' | 'consult_start' | 'consult_finalise' | 'consult_reject';
+  operation?: 'blind' | 'consultative';
   [key: string]: any;
   session?: voice.AgentSession;
 }

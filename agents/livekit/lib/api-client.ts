@@ -23,6 +23,12 @@ export interface Agent {
     tts?: {
       voice?: string;
     };
+    /**
+     * Optional regular expression pattern to filter outbound calls.
+     * The regexp is anchored with ^ and $ to match the complete phone number.
+     * Only outbound calls (via originate or transfer) where the destination number matches this pattern will be allowed.
+     */
+    outboundCallFilter?: string;
   };
   functions?: AgentFunction[];
   keys?: string[];
@@ -79,6 +85,16 @@ export interface OutboundInfo {
   instanceId: string;
 }
 
+export interface TrunkInfo {
+  id: string;
+  name?: string | null;
+  outbound: boolean;
+  flags?: {
+    canRefer?: boolean;
+    [key: string]: any;
+  } | null;
+}
+
 export interface PhoneNumberInfo {
   number: string;
   handler: string;
@@ -86,8 +102,28 @@ export interface PhoneNumberInfo {
   organisationId?: string | null;
   outbound?: boolean;
   aplisayId?: string | null;
+  trunk?: TrunkInfo | null;
   [key: string]: any;
 }
+
+export interface PhoneRegistrationInfo {
+  id: string;
+  name?: string | null;
+  handler: string;
+  status?: string;
+  state?: string;
+  outbound?: boolean;
+  organisationId?: string | null;
+  instanceId?: string | null;
+  registrar?: string | null;
+  options?: {
+    transport?: string;
+    [key: string]: any;
+  } | null;
+  [key: string]: any;
+}
+
+export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
 
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
@@ -155,10 +191,47 @@ export async function getPhoneNumbers(handler?: string): Promise<any[]> {
   return makeApiRequest(`/api/agent-db/phone-numbers${query}`);
 }
 
-export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
-  const results = await makeApiRequest<PhoneNumberInfo[]>(`/api/agent-db/phone-numbers?number=${encodeURIComponent(number)}`);
-  return results?.[0] || null;
+// Get phone endpoint by ID (PhoneRegistration)
+export async function getPhoneEndpointById(id: string): Promise<PhoneRegistrationInfo | null> {
+  try {
+    const result = await makeApiRequest<{ items: PhoneRegistrationInfo[] }>(
+      `/api/agent-db/phone-endpoints?id=${encodeURIComponent(id)}`
+    );
+    return result?.items?.[0] || null;
+  } catch (error) {
+    logger.error({ id, error }, 'Failed to get phone endpoint by id');
+    return null;
+  }
 }
+
+// Get phone endpoint by number (PhoneNumber)
+// If trunkId is provided, validates that the call arrived on the correct trunk
+export async function getPhoneEndpointByNumber(
+  number: string,
+  trunkId?: string | null
+): Promise<PhoneNumberInfo | null> {
+  try {
+    let url = `/api/agent-db/phone-endpoints?number=${encodeURIComponent(number)}`;
+    if (trunkId) {
+      url += `&trunkId=${encodeURIComponent(trunkId)}`;
+    }
+    const result = await makeApiRequest<{ items: PhoneNumberInfo[] }>(url);
+    return result?.items?.[0] || null;
+  } catch (error: any) {
+    // If it's a trunk mismatch error, re-throw it
+    if (error?.message?.includes('Trunk mismatch')) {
+      throw error;
+    }
+    logger.error({ number, trunkId, error }, 'Failed to get phone endpoint by number');
+    return null;
+  }
+}
+
+// Legacy function - kept for backward compatibility, now uses phone-endpoints endpoint
+export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
+  return getPhoneEndpointByNumber(number);
+}
+
 
 // Create a new call record
 export async function createCall(callData: {
