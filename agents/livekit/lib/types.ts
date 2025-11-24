@@ -28,6 +28,7 @@ export interface CallScenario {
   instance: Instance;
   agent: Agent | null;
   participant: ParticipantInfo | null;
+  existingBridge: ParticipantInfo | null;
   callerId: string;
   calledId: string;
   aplisayId: string;

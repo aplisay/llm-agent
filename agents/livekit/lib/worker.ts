@@ -32,6 +32,7 @@ import {
   type OutboundInfo,
   getPhoneNumberByNumber,
   type PhoneNumberInfo,
+  endCallById,
 } from "./api-client.js";
 
 // Types
@@ -96,6 +97,7 @@ export default defineAgent({
         instance,
         agent,
         participant,
+        existingBridge,
         callerId,
         calledId,
         aplisayId,
@@ -107,6 +109,17 @@ export default defineAgent({
 
       if (!agent) {
         throw new Error("Agent is required but not found");
+      }
+
+      // If the room already has a bridged participant, we don't want to get involved in it
+      //  but we must wait for it to finish before throwing an error or we will clear down the call.
+      if (existingBridge) {
+        let reason = await waitForExistingBridgedParticipant(
+          ctx,
+          room,
+          existingBridge
+        );
+        throw new Error(`Bridged call already existed: ${reason}, ended call`);
       }
 
       const { userId, modelName, organisationId, options = {} } = agent;
@@ -214,7 +227,19 @@ export default defineAgent({
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`
       );
-      room && room.name && (await roomService.deleteRoom(room.name));
+      try {
+        room && room.name && (await roomService.deleteRoom(room.name));
+      } catch (e) {
+        logger.error({ e }, "error deleting room");
+      }
+      try {
+        await ctx.shutdown((e as Error).message);
+      } catch (e) {
+        logger.error({ e }, "error shutting down");
+      }
+      finally {
+        process.exit(0);
+      }
     }
   },
 });
@@ -251,6 +276,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let instance: Instance | null = null;
   let agent: Agent | null = null;
   let participant: ParticipantInfo | null = null;
+  let bridgedParticipant: ParticipantInfo | null = null;
   let outboundCall = false;
   let outboundInfo: OutboundInfo | null = null;
 
@@ -288,7 +314,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     };
   } else {
     const participants = await roomService.listParticipants(room.name!);
-    participant = participants[0] as ParticipantInfo;
+    participant = participants.find(
+      (p) => p.identity !== "sip-outbound-call"
+    ) as ParticipantInfo;
+    bridgedParticipant = participants.find(
+      (p) => p.identity === "sip-outbound-call"
+    ) as ParticipantInfo | null;
+    logger.debug(
+      { participants: participants.length, participant, bridgedParticipant },
+      "have bridged participant?"
+    );
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
@@ -332,6 +367,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     instance: instance!,
     agent,
     participant,
+    existingBridge: bridgedParticipant,
     callerId: callerId!,
     calledId: calledId!,
     aplisayId: aplisayId!,
@@ -340,6 +376,60 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     outboundCall,
     outboundInfo,
   };
+}
+
+
+  /*
+   * This is a hack to give a decent customer experience in the case where a previous agent worker has crashed,
+   * but there were bridged conversations in progress in it's rooms.
+   *
+   * If we don't do this then we would fall through and create a new agent in the room which then starts talking to the customer
+   * participants who are already in the room.
+   *
+   * Instead we stall all processing here until the participant disconnects, or 10 minutes passes.
+   *
+   * It is not a perfect solution, but it is a better experience for the customer.
+   * 
+   */
+async function waitForExistingBridgedParticipant(
+  ctx: JobContext,
+  room: Room,
+  bridgedParticipant: ParticipantInfo
+): Promise<string> {
+
+  if (!bridgedParticipant) {
+    return "no bridged participant found";
+  }
+  // We have already bridged this call, so we need to get the bridged participant
+  const roomInfo = await roomService.listRooms([room.name!]);
+  const metadata = roomInfo[0]?.metadata as any;
+  const bridgedCallId = JSON.parse(metadata)?.bridgedCallId || null;
+  logger.info(
+    { metadata, bridgedCallId, bridgedParticipant },
+    "got existing bridged call room metadata"
+  );
+  ctx.connect();
+  const disconnected = new Promise<string>((resolve, reject) => {
+    ctx.room.on(
+      RoomEvent.ParticipantDisconnected,
+      async (p: RemoteParticipant) => {
+        logger.info({ p }, "participant of already bridged call disconnected");
+        resolve("participant of already bridged call disconnected");
+      }
+    );
+    setTimeout(() => {
+      resolve(
+        "Participant of already bridged call did not disconnect after 10 minutes"
+      );
+    }, 10 * 60 * 1000);
+  });
+  let reason = await disconnected;
+  bridgedCallId &&
+    (await endCallById(
+      bridgedCallId,
+      `Bridged call already existed: ${reason}`
+    ));
+  return reason;
 }
 
 async function setupCallAndUtilities({
@@ -422,13 +512,13 @@ async function setupCallAndUtilities({
           { reliable: true }
         );
 
-        if(type === "status") {
+        if (type === "status") {
           return;
         }
-        
+
         // Capture the timestamp when the log was created
         const createdAt = new Date();
-        
+
         const transactionLogData = {
           userId,
           organisationId,
@@ -575,6 +665,11 @@ async function setupCallAndUtilities({
             await call.end(
               `Agent left call, new bridged call: ${bridgedCallRecord.id}`
             );
+            bridgedCallRecord &&
+              (await roomService.updateRoomMetadata(
+                room.name!,
+                JSON.stringify({ bridgedCallId: bridgedCallRecord.id })
+              ));
             await bridgedCallRecord.start();
           }
         } catch (e) {
@@ -1043,18 +1138,30 @@ async function runAgentWorker({
 
   async function cleanupAndClose(reason: string, logEndCall: boolean = false) {
     try {
-      session && session.close();
-      getActiveCall().end(reason);
-      await roomService.deleteRoom(room.name);
-    } catch (e) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      logger.info({ message: error.message, error }, "error cleaning up and closing");
-    } finally {
       if (timerId) {
         clearTimeout(timerId);
         timerId = null;
       }
-      ctx.shutdown(reason);
+      session && session.close();
+      try {
+        await getActiveCall().end(reason);
+      } catch (e) {
+        logger.error({ e }, "error ending call");
+      }
+      try {
+        await roomService.deleteRoom(room.name);
+      } catch (e) {
+        logger.error({ e }, "error deleting room");
+      }
+      await ctx.shutdown(reason);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.info(
+        { message: error.message, error },
+        "error cleaning up and closing"
+      );
+    } finally {
+      process.exit(0);
     }
   }
 }

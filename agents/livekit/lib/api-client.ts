@@ -247,6 +247,13 @@ export async function createCall(callData: {
   return call;
 }
 
+export async function endCallById(callId: string, reason?: string): Promise<any> {
+  return makeApiRequest(`/api/agent-db/call/${callId}/end`, {
+    method: 'POST',
+    body: JSON.stringify({ reason })
+  });
+}
+
 // Create a new transaction log record
 export async function createTransactionLog(transactionData: {
   userId: string;

@@ -947,7 +947,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             reject(new Error(errorMsg));
           }
           this.#ws = null;
-          this.close();
+          !this.#closing && this.close();
           resolve();
         };
       } catch (error) {
@@ -960,12 +960,12 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
     if (!this.#ws) return;
     this.#closing = true;
-
+    await this.#ws.close();
     this.#logger.debug({ callId: this.#callId }, "ws closed, deleting call");
     this.emit("close", { callId: this.#callId });
     this.#logger.debug({ callId: this.#callId }, "call close");
-    super.close();
-    this.#ws.close();
+    await super.close();
+
     this.#logger.debug({ callId: this.#callId }, "call closed");
   }
 
