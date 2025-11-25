@@ -236,8 +236,7 @@ export default defineAgent({
         await ctx.shutdown((e as Error).message);
       } catch (e) {
         logger.error({ e }, "error shutting down");
-      }
-      finally {
+      } finally {
         process.exit(0);
       }
     }
@@ -328,18 +327,16 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
       logger.debug({ instance }, "instance found?");
-    } else if (room.name) {
+    } else if (room.name && participant?.attributes) {
       logger.debug(
         { participants, attributes: participant.attributes },
         "participants"
       );
-      if (participant) {
-        ({
-          sipTrunkPhoneNumber: calledId,
-          sipPhoneNumber: callerId,
-          sipHXAplisayTrunk: aplisayId,
-        } = participant.attributes);
-      }
+      ({
+        sipTrunkPhoneNumber: calledId,
+        sipPhoneNumber: callerId,
+        sipHXAplisayTrunk: aplisayId,
+      } = participant.attributes);
 
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
@@ -378,25 +375,23 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   };
 }
 
-
-  /*
-   * This is a hack to give a decent customer experience in the case where a previous agent worker has crashed,
-   * but there were bridged conversations in progress in it's rooms.
-   *
-   * If we don't do this then we would fall through and create a new agent in the room which then starts talking to the customer
-   * participants who are already in the room.
-   *
-   * Instead we stall all processing here until the participant disconnects, or 10 minutes passes.
-   *
-   * It is not a perfect solution, but it is a better experience for the customer.
-   * 
-   */
+/*
+ * This is a hack to give a decent customer experience in the case where a previous agent worker has crashed,
+ * but there were bridged conversations in progress in it's rooms.
+ *
+ * If we don't do this then we would fall through and create a new agent in the room which then starts talking to the customer
+ * participants who are already in the room.
+ *
+ * Instead we stall all processing here until the participant disconnects, or 10 minutes passes.
+ *
+ * It is not a perfect solution, but it is a better experience for the customer.
+ *
+ */
 async function waitForExistingBridgedParticipant(
   ctx: JobContext,
   room: Room,
   bridgedParticipant: ParticipantInfo
 ): Promise<string> {
-
   if (!bridgedParticipant) {
     return "no bridged participant found";
   }
