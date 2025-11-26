@@ -74,7 +74,8 @@ export type UltravoxMessageType =
   | 'experimental_message'
   | 'audio'
   | 'client_tool_invocation'
-  | 'client_tool_result';
+  | 'client_tool_result'
+  | 'call_started';
 
 export interface UltravoxStatusMessage {
   type: 'state';
@@ -121,13 +122,19 @@ export interface UltravoxFunctionResultMessage {
   errorMessage?: string;
 }
 
+export interface UltravoxCallStartedMessage {
+  type: 'call_started';
+  callId: string;
+}
+
 export type UltravoxMessage =
   | UltravoxStatusMessage
   | UltravoxTranscriptMessage
   | UltravoxExperimentalMessage
   | UltravoxAudioMessage
   | UltravoxFunctionCallMessage
-  | UltravoxFunctionResultMessage;
+  | UltravoxFunctionResultMessage
+  | UltravoxCallStartedMessage;
 
 // Ultravox API response types
 export interface UltravoxCallResponse {

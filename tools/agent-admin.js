@@ -303,7 +303,7 @@ async function main() {
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
               c.maxDuration = Math.max(1, Math.ceil(parseInt(c.maxDuration.replace(/s$/, '')) / 10) / 6);
 
-              if (c.maxDuration + 0.5 < c.billingDuration) {
+              if (c.maxDuration + 0.5 < c.billingDuration && c.modelName !== 'telephony:bridged-call') {
                 console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration);
                 c.billingDuration = c.maxDuration;
                 corrected++;

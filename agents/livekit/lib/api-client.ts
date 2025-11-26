@@ -5,6 +5,7 @@ export interface Instance {
   id: string;
   metadata?: Record<string, any>;
   Agent?: Agent;
+  streamLog?: boolean;
 }
 
 export interface Agent {
@@ -257,19 +258,73 @@ export async function createCall(callData: {
   call.start = async () => {
     logger.debug({ call }, "logging starting call");
     return makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({
+        userId: call.userId,
+        organisationId: call.organisationId
+      })
     });
   };
   
-  call.end = async (reason?: string) => {
-    logger.debug({ call, reason }, "logging ending call");
-    return makeApiRequest(`/api/agent-db/call/${call.id}/end`, {
+  call.end = async (reason?: string, transactionLogs?: Array<{
+    userId: string;
+    organisationId: string;
+    callId: string;
+    type: string;
+    data?: string;
+    isFinal?: boolean;
+    createdAt?: Date;
+  }>) => {
+    // Make this function idempotent - if already called, return the existing promise
+    if ((call as any)._endCalled) {
+      logger.debug({ callId: call.id, reason }, "call.end() already called, returning existing promise");
+      return (call as any)._endPromise;
+    }
+
+    // Mark as called and store the promise
+    (call as any)._endCalled = true;
+    
+    logger.debug({ call, reason, transactionLogCount: transactionLogs?.length }, "logging ending call");
+    const body: any = { 
+      reason,
+      userId: call.userId,
+      organisationId: call.organisationId
+    };
+    // Use provided transactionLogs, or fall back to batched logs on call object
+    const logsToSend = transactionLogs || (call as any).batchedTransactionLogs;
+    if (logsToSend && logsToSend.length > 0) {
+      // Convert Date objects to ISO strings for JSON serialization
+      body.transactionLogs = logsToSend.map((log: any) => ({
+        ...log,
+        createdAt: log.createdAt instanceof Date 
+          ? log.createdAt.toISOString() 
+          : log.createdAt ? new Date(log.createdAt).toISOString() : undefined
+      }));
+    }
+    
+    // Create and store the promise
+    const endPromise = makeApiRequest(`/api/agent-db/call/${call.id}/end`, {
       method: 'POST',
-      body: JSON.stringify({ reason })
+      body: JSON.stringify(body)
+    });
+    
+    (call as any)._endPromise = endPromise;
+    
+    // Handle errors to ensure the promise is still stored even on failure
+    return endPromise.catch((error) => {
+      logger.error({ callId: call.id, error }, "error in call.end(), but keeping promise for idempotency");
+      throw error;
     });
   };
   
   return call;
+}
+
+export async function endCallById(callId: string, reason?: string): Promise<any> {
+  return makeApiRequest(`/api/agent-db/call/${callId}/end`, {
+    method: 'POST',
+    body: JSON.stringify({ reason })
+  });
 }
 
 // Create a new transaction log record
@@ -280,11 +335,25 @@ export async function createTransactionLog(transactionData: {
   type: string;
   data?: string;
   isFinal?: boolean;
+  createdAt?: Date;
 }): Promise<any> {
   // we don't log status change events
-  return transactionData.type === 'status' ? null : makeApiRequest('/api/agent-db/transaction-log', {
+  if (transactionData.type === 'status') {
+    return null;
+  }
+  
+  // Prepare the request body, converting Date to ISO string if present
+  const requestBody: any = { ...transactionData };
+  if (requestBody.createdAt instanceof Date) {
+    requestBody.createdAt = requestBody.createdAt.toISOString();
+  } else if (requestBody.createdAt) {
+    // If it's already a string or other format, ensure it's a valid ISO string
+    requestBody.createdAt = new Date(requestBody.createdAt).toISOString();
+  }
+  
+  return makeApiRequest('/api/agent-db/transaction-log', {
     method: 'POST',
-    body: JSON.stringify(transactionData)
+    body: JSON.stringify(requestBody)
   });
 }
 
