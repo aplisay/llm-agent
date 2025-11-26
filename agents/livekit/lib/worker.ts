@@ -36,6 +36,7 @@ import {
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
+  endCallById,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -44,10 +45,7 @@ import {
 } from "./transfer-handler.js";
 
 // Types
-import type {
-  RemoteParticipant,
-  Room,
-} from "@livekit/rtc-node";
+import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent, TrackKind } from "@livekit/rtc-node";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type {
@@ -116,6 +114,7 @@ export default defineAgent({
         instance,
         agent,
         participant,
+        existingBridge,
         callerId,
         calledId,
         aplisayId,
@@ -141,6 +140,17 @@ export default defineAgent({
 
       if (!agent) {
         throw new Error("Agent is required but not found");
+      }
+
+      // If the room already has a bridged participant, we don't want to get involved in it
+      //  but we must wait for it to finish before throwing an error or we will clear down the call.
+      if (existingBridge) {
+        let reason = await waitForExistingBridgedParticipant(
+          ctx,
+          room,
+          existingBridge
+        );
+        throw new Error(`Bridged call already existed: ${reason}, ended call`);
       }
 
       const { userId, modelName, organisationId, options = {} } = agent;
@@ -214,7 +224,7 @@ export default defineAgent({
             outboundInfo.toNumber,
             outboundInfo.aplisayId,
             outboundInfo.fromNumber,
-            callerId
+            callerId || "unknown"
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -247,6 +257,7 @@ export default defineAgent({
         modelRef,
         sessionRef,
         getBridgedParticipant: () => bridgedParticipant,
+        setBridgedParticipant: (p) => (bridgedParticipant = p),
         checkForHangup,
         getConsultInProgress: () => consultInProgress,
         holdParticipant,
@@ -269,7 +280,18 @@ export default defineAgent({
           logger.error({ transferError }, "error ending transfer activity during error cleanup");
         }
       }
-      room && room.name && (await roomService.deleteRoom(room.name));
+      try {
+        room && room.name && (await roomService.deleteRoom(room.name));
+      } catch (e) {
+        logger.error({ e }, "error deleting room");
+      }
+      try {
+        await ctx.shutdown((e as Error).message);
+      } catch (e) {
+        logger.error({ e }, "error shutting down");
+      } finally {
+        process.exit(0);
+      }
     }
   },
 });
@@ -307,6 +329,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let instance: Instance | null = null;
   let agent: Agent | null = null;
   let participant: ParticipantInfo | null = null;
+  let bridgedParticipant: ParticipantInfo | null = null;
   let outboundCall = false;
   let outboundInfo: OutboundInfo | null = null;
   let registrationOriginated = false;
@@ -352,13 +375,21 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   } else {
     logger.info({ room }, "room name getting participants");
     const participants = await roomService.listParticipants(room.name!);
-    logger.info({ participants }, "participants");
-    participant = participants[0] as ParticipantInfo;
+    participant = participants.find(
+      (p) => p.identity !== "sip-outbound-call"
+    ) as ParticipantInfo;
+    bridgedParticipant = participants.find(
+      (p) => p.identity === "sip-outbound-call"
+    ) as ParticipantInfo | null;
+    logger.debug(
+      { participants: participants.length, participant, bridgedParticipant },
+      "have bridged participant?"
+    );
     if (identity) {
       logger.debug({ identity }, "getting instance by identity");
       instance = await getInstanceById(identity);
       logger.debug({ instance }, "instance found?");
-    } else if (room.name) {
+    } else if (room.name && participant?.attributes) {
       logger.debug(
         { participants, attributes: participant.attributes },
         "participants"
@@ -468,6 +499,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     instance: instance!,
     agent,
     participant,
+    existingBridge: bridgedParticipant,
     callerId: callerId!,
     calledId: calledId!,
     aplisayId: aplisayId!,
@@ -483,6 +515,58 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     b2buaGatewayIp,
     b2buaGatewayTransport,
   };
+}
+
+/*
+ * This is a hack to give a decent customer experience in the case where a previous agent worker has crashed,
+ * but there were bridged conversations in progress in it's rooms.
+ *
+ * If we don't do this then we would fall through and create a new agent in the room which then starts talking to the customer
+ * participants who are already in the room.
+ *
+ * Instead we stall all processing here until the participant disconnects, or 10 minutes passes.
+ *
+ * It is not a perfect solution, but it is a better experience for the customer.
+ *
+ */
+async function waitForExistingBridgedParticipant(
+  ctx: JobContext,
+  room: Room,
+  bridgedParticipant: ParticipantInfo
+): Promise<string> {
+  if (!bridgedParticipant) {
+    return "no bridged participant found";
+  }
+  // We have already bridged this call, so we need to get the bridged participant
+  const roomInfo = await roomService.listRooms([room.name!]);
+  const metadata = roomInfo[0]?.metadata as any;
+  const bridgedCallId = JSON.parse(metadata)?.bridgedCallId || null;
+  logger.info(
+    { metadata, bridgedCallId, bridgedParticipant },
+    "got existing bridged call room metadata"
+  );
+  ctx.connect();
+  const disconnected = new Promise<string>((resolve, reject) => {
+    ctx.room.on(
+      RoomEvent.ParticipantDisconnected,
+      async (p: RemoteParticipant) => {
+        logger.info({ p }, "participant of already bridged call disconnected");
+        resolve("participant of already bridged call disconnected");
+      }
+    );
+    setTimeout(() => {
+      resolve(
+        "Participant of already bridged call did not disconnect after 10 minutes"
+      );
+    }, 10 * 60 * 1000);
+  });
+  let reason = await disconnected;
+  bridgedCallId &&
+    (await endCallById(
+      bridgedCallId,
+      `Bridged call already existed: ${reason}`
+    ));
+  return reason;
 }
 
 async function setupCallAndUtilities({
@@ -593,22 +677,57 @@ async function setupCallAndUtilities({
   metadata.aplisay = metadata.aplisay || {};
   metadata.aplisay.callId = call.id;
 
+  // Array to batch transaction logs when streamLog is false
+  const batchedTransactionLogs: Array<{
+    userId: string;
+    organisationId: string;
+    callId: string;
+    type: string;
+    data?: string;
+    isFinal?: boolean;
+    createdAt?: Date;
+  }> = [];
+
   const sendMessage = async (message: MessageData) => {
-    const entries = Object.entries(message);
-    if (entries.length > 0) {
-      const [type, data] = entries[0] as [string, unknown];
-      ctx.room.localParticipant?.publishData(
-        new TextEncoder().encode(JSON.stringify(message)),
-        { reliable: true }
+    try {
+      const entries = Object.entries(message);
+      if (entries.length > 0) {
+        const [type, data] = entries[0] as [string, unknown];
+        ctx.room.localParticipant?.publishData(
+          new TextEncoder().encode(JSON.stringify(message)),
+          { reliable: true }
+        );
+
+        if (type === "status") {
+          return;
+        }
+
+        // Capture the timestamp when the log was created
+        const createdAt = new Date();
+
+        const transactionLogData = {
+          userId,
+          organisationId,
+          callId: call.id,
+          type,
+          data: JSON.stringify(data),
+          isFinal: true,
+          createdAt,
+        };
+
+        // If streamLog is enabled, push immediately; otherwise batch for end call
+        if (instance.streamLog === true) {
+          await createTransactionLog(transactionLogData);
+        } else {
+          batchedTransactionLogs.push(transactionLogData);
+        }
+      }
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.error(
+        { error, message: error.message, stack: error.stack },
+        "error sending message"
       );
-      await createTransactionLog({
-        userId,
-        organisationId,
-        callId: call.id,
-        type,
-        data: JSON.stringify(data),
-        isFinal: true,
-      });
     }
   };
 
@@ -634,7 +753,14 @@ async function setupCallAndUtilities({
     } catch (e: any) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.error(
-        { error, message: error.message, stack: error.stack, identity, roomName: room.name, hold },
+        {
+          error,
+          message: error.message,
+          stack: error.stack,
+          identity,
+          roomName: room.name,
+          hold,
+        },
         "failed to update subscriptions"
       );
     }
@@ -726,6 +852,8 @@ async function setupCallAndUtilities({
       setTransferState
     );
   };
+  // Attach batched transaction logs to the call object for access during end()
+  (call as any).batchedTransactionLogs = batchedTransactionLogs;
 
   return {
     call,
@@ -855,6 +983,7 @@ async function runAgentWorker({
   onHangup,
   onTransfer,
   getBridgedParticipant,
+  setBridgedParticipant,
   checkForHangup,
   sessionRef,
   modelRef,
@@ -868,6 +997,7 @@ async function runAgentWorker({
   getTransferState: () => { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string };
 }) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
+  let timerId: NodeJS.Timeout | null = null;
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
   let initialMessage: string | null = "say hello";
@@ -903,161 +1033,280 @@ async function runAgentWorker({
   const maxDuration =
     1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
-  const session = new voice.AgentSession({
-    llm: new realtime.RealtimeModel({
-      voice: agent?.options?.tts?.voice,
-      maxDuration: maxDurationString,
-      instructions: agent?.prompt || "You are a helpful assistant.",
-    }),
-  });
-  sessionRef(session);
+  let session: voice.AgentSession | null = null;
 
-  // Listen on all the things for now (debug)
-  Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
+  try {
+    session = new voice.AgentSession({
+      llm: new realtime.RealtimeModel({
+        voice: agent?.options?.tts?.voice,
+        maxDuration: maxDurationString,
+        instructions: agent?.prompt || "You are a helpful assistant.",
+      }),
+    });
+    sessionRef(session);
+
+    // Listen on all the things for now (debug)
+    Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
+      session?.on(
+        voice.AgentSessionEventTypes[
+          event as keyof typeof voice.AgentSessionEventTypes
+        ],
+        (data: unknown) => {
+          logger.debug({ data }, `Got event ${event}`);
+        }
+      );
+    });
+
+    // Listen on the user input transcribed event
     session.on(
-      voice.AgentSessionEventTypes[
-        event as keyof typeof voice.AgentSessionEventTypes
-      ],
-      (data: unknown) => {
-        logger.debug({ data }, `Got event ${event}`);
+      voice.AgentSessionEventTypes.ConversationItemAdded,
+      ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
+        if (type === "message" && getConsultInProgress() === false) {
+          const text = content.join("");
+          if (role !== "user" || text !== initialMessage) {
+            sendMessage({
+              [role === "user" ? "user" : "agent"]: text,
+            });
+          }
+        }
       }
     );
-  });
 
-  // Listen on the user input transcribed event
-  session.on(
-    voice.AgentSessionEventTypes.ConversationItemAdded,
-    ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
-      if (type === "message" && getConsultInProgress() === false) {
-        const text = content.join("");
-        if (role !== "user" || text !== initialMessage) {
-          sendMessage({
-            [role === "user" ? "user" : "agent"]: text,
+    session.on(
+      voice.AgentSessionEventTypes.AgentStateChanged,
+      (ev: voice.AgentStateChangedEvent) => {
+        sendMessage({ status: ev.newState });
+        if (ev.newState === "listening" && checkForHangup() && room.name) {
+          logger.debug({ room }, "room close inititiated");
+          getActiveCall().end("agent initiated hangup");
+          roomService.deleteRoom(room.name);
+        }
+      }
+    );
+
+    session.on(
+      voice.AgentSessionEventTypes.AgentStateChanged,
+      (ev: voice.AgentStateChangedEvent) => {
+        sendMessage({ status: ev.newState });
+        if (ev.newState === "listening" && checkForHangup() && room.name) {
+          logger.debug({ room }, "room close inititiated");
+          // End transfer activity if in progress (fire and forget)
+          endTransferActivityIfNeeded("Agent initiated hangup").catch((transferError) => {
+            logger.error({ transferError }, "error ending transfer activity during hangup");
           });
+          getActiveCall().end("agent initiated hangup");
+          roomService.deleteRoom(room.name);
         }
       }
-    }
-  );
+    );
 
-  session.on(
-    voice.AgentSessionEventTypes.AgentStateChanged,
-    (ev: voice.AgentStateChangedEvent) => {
-      sendMessage({ status: ev.newState });
-      if (ev.newState === "listening" && checkForHangup() && room.name) {
-        logger.debug({ room }, "room close inititiated");
-        // End transfer activity if in progress (fire and forget)
-        endTransferActivityIfNeeded("Agent initiated hangup").catch((transferError) => {
-          logger.error({ transferError }, "error ending transfer activity during hangup");
-        });
-        getActiveCall().end("agent initiated hangup");
-        roomService.deleteRoom(room.name);
-      }
-    }
-  );
+    session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+      logger.error({ ev }, "error");
+    });
 
-  session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
-    logger.error({ ev }, "error");
-  });
-
-  session.on(voice.AgentSessionEventTypes.Close, async (ev: voice.CloseEvent) => {
-    logger.info({ ev }, "session closed");
-    // End transfer activity if in progress
-    try {
-      await endTransferActivityIfNeeded("Session closed");
-    } catch (transferError) {
-      logger.error({ transferError }, "error ending transfer activity during session close");
-    }
-    roomService.deleteRoom(room.name);
-    getActiveCall().end("session closed");
-  });
-
-  //
-  await session.start({
-    room: ctx.room,
-    agent: model,
-  });
-
-  await ctx.connect();
-
-  logger.debug({ room }, "connected got room");
-
-  ctx.room.on(
-    RoomEvent.ParticipantDisconnected,
-    async (p: RemoteParticipant) => {
-      const bp = getBridgedParticipant();
-      logger.debug(
-        { p, bridgedParticipant: bp, participant },
-        "participant disconnected"
-      );
-      if (bp?.participantId === p?.info?.sid) {
-        // This is a bridged participant (blind transfer)
-        logger.debug("bridge participant disconnected, shutting down");
-        // End transfer activity if in progress (shouldn't happen for blind transfers, but just in case)
-        try {
-          await endTransferActivityIfNeeded("Bridged participant disconnected");
-        } catch (transferError) {
-          logger.error({ transferError }, "error ending transfer activity during bridged participant disconnect");
-        }
-        session.close();
-        getActiveCall().end("bridged participant disconnected");
-        await roomService.deleteRoom(room.name);
-      } else if (p?.info?.identity === "transfer-target") {
-        // This is a transfer target that was moved to the main room after a consultative transfer
-        // The transfer is complete, so if they disconnect, we should shut down the room
-        logger.debug("transfer target disconnected from main room after consultative transfer, shutting down");
-        session.close();
-        getActiveCall().end("transfer target disconnected");
-        await roomService.deleteRoom(room.name);
-      } else if (p.info?.sid === participant?.sid) {
-        logger.debug("participant disconnected, shutting down");
-        // End transfer activity if in progress
-        try {
-          await endTransferActivityIfNeeded("Original participant disconnected");
-        } catch (transferError) {
-          logger.error({ transferError }, "error ending transfer activity during original participant disconnect");
-        }
-        session.close();
-        getActiveCall().end("original participant disconnected");
-        await roomService.deleteRoom(room.name);
-      }
-    }
-  );
-
-  // Hard stop timeout on the session which is 5 seconds after the AI agent maxDuration
-  // This is to ensure that the session is closed and the room is deleted even if the
-  // AI agent fails to close the session (e.g OpenAI has no maxDuration parameter)
-  setTimeout(() => {
-    // If the bridged participant is present, we have transferred out, ignore the session timeout.
-    if (getBridgedParticipant()) {
-      logger.debug("bridged participant present, ignoring session timeout");
-      return;
-    }
-    logger.debug("session timeout, generating reply");
-    try {
-      session.generateReply({ userInput: "The session has timed out." });
-    } catch (e) {
-      logger.info({ e }, "error generating timeout reply");
-    }
-    // 10 secs later, tear everything down
-    setTimeout(async () => {
+    session.on(voice.AgentSessionEventTypes.Close, async (ev: voice.CloseEvent) => {
+      logger.info({ ev }, "session closed");
+      // End transfer activity if in progress
       try {
-        // End transfer activity if in progress
-        try {
-          await endTransferActivityIfNeeded("Session timeout");
-        } catch (transferError) {
-          logger.error({ transferError }, "error ending transfer activity during session timeout");
-        }
-        getActiveCall().end("session timeout");
-        session.close();
-        roomService.deleteRoom(room.name);
-      } catch (e) {
-        logger.info({ e }, "error tearing down call on timeout");
+        await endTransferActivityIfNeeded("Session closed");
+      } catch (transferError) {
+        logger.error({ transferError }, "error ending transfer activity during session close");
       }
-    }, 10 * 1000);
-  }, maxDuration + 5 * 1000);
+      roomService.deleteRoom(room.name);
+      getActiveCall().end("session closed");
+    });
 
-  logger.debug("session started, generating reply");
-  session.generateReply({ userInput: initialMessage });
-  call.start();
-  sendMessage({ call: `${callerId} => ${calledId}` });
+    await session.start({
+      room: ctx.room,
+      agent: model,
+    });
+
+    await ctx.connect();
+
+    logger.debug({ room }, "connected got room");
+
+    ctx.room.on(
+      RoomEvent.ParticipantDisconnected,
+      async (p: RemoteParticipant) => {
+        const bp = getBridgedParticipant();
+        logger.debug(
+          { p, bridgedParticipant: bp, participant },
+          "participant disconnected"
+        );
+        if (bp?.participantId === p?.info?.sid) {
+          if (getConsultInProgress()) {
+            logger.debug(
+              "consult callee disconnected, treating as consult_reject"
+            );
+            // Unhold original participant
+            try {
+              const participants = await roomService.listParticipants(
+                room.name
+              );
+              const original = participants.find(
+                (pi) => pi.sid !== bp?.participantId
+              );
+              if (original?.sid) {
+                await holdParticipant(original.sid, false);
+              }
+            } catch (e) {
+              logger.error(
+                { e },
+                "failed to unhold participant on callee hangup"
+              );
+            }
+            // reset consult state
+            // remove bridged participant if still present in server state (it should be gone already)
+            try {
+              bp?.participantIdentity &&
+                (await roomService.removeParticipant(
+                  room.name,
+                  bp.participantId
+                ));
+            } catch {}
+            // underlying setters live in setup scope; remaining state will be reset on next transfer call
+          } else {
+            logger.debug("bridge participant disconnected, shutting down");
+            // End transfer activity if in progress
+            try {
+              await endTransferActivityIfNeeded("Bridged participant disconnected");
+            } catch (transferError) {
+              logger.error({ transferError }, "error ending transfer activity during bridged participant disconnect");
+            }
+            await cleanupAndClose("bridged participant disconnected");
+            setBridgedParticipant(null as unknown as SipParticipant);
+          }
+        } else if (p.info?.sid === participant?.sid) {
+          logger.debug("participant disconnected, shutting down");
+          // End transfer activity if in progress
+          try {
+            await endTransferActivityIfNeeded("Original participant disconnected");
+          } catch (transferError) {
+            logger.error({ transferError }, "error ending transfer activity during original participant disconnect");
+          }
+          await cleanupAndClose("original participant disconnected", true);
+    ctx.room.on(
+      RoomEvent.ParticipantDisconnected,
+      async (p: RemoteParticipant) => {
+        const bp = getBridgedParticipant();
+        logger.debug(
+          { p, bridgedParticipant: bp, participant },
+          "participant disconnected"
+        );
+        if (bp?.participantId === p?.info?.sid) {
+          if (getConsultInProgress()) {
+            logger.debug(
+              "consult callee disconnected, treating as consult_reject"
+            );
+            // Unhold original participant
+            try {
+              const participants = await roomService.listParticipants(
+                room.name
+              );
+              const original = participants.find(
+                (pi) => pi.sid !== bp?.participantId
+              );
+              if (original?.sid) {
+                await holdParticipant(original.sid, false);
+              }
+            } catch (e) {
+              logger.error(
+                { e },
+                "failed to unhold participant on callee hangup"
+              );
+            }
+            // reset consult state
+            // remove bridged participant if still present in server state (it should be gone already)
+            try {
+              bp?.participantIdentity &&
+                (await roomService.removeParticipant(
+                  room.name,
+                  bp.participantId
+                ));
+            } catch {}
+            // underlying setters live in setup scope; remaining state will be reset on next transfer call
+          } else {
+            logger.debug("bridge participant disconnected, shutting down");
+            await cleanupAndClose("bridged participant disconnected");
+            setBridgedParticipant(null as unknown as SipParticipant);
+          }
+        } else if (p.info?.sid === participant?.sid) {
+          logger.debug("participant disconnected, shutting down");
+          await cleanupAndClose("original participant disconnected", true);
+        }
+      }
+    );
+
+    // Hard stop timeout on the session which is 5 seconds after the AI agent maxDuration
+    // This is to ensure that the session is closed and the room is deleted even if the
+    // AI agent fails to close the session (e.g OpenAI has no maxDuration parameter)
+    timerId = setTimeout(() => {
+      // If the bridged participant is present, we have transferred out, ignore the session timeout.
+      if (getBridgedParticipant()) {
+        logger.debug("bridged participant present, ignoring session timeout");
+        return;
+      }
+      logger.debug("session timeout, generating reply");
+      try {
+        session?.generateReply({ userInput: "The session has timed out." });
+      } catch (e) {
+        logger.info({ e }, "error generating timeout reply");
+      }
+      // 10 secs later, tear everything down
+      setTimeout(async () => {
+        try {
+          // End transfer activity if in progress
+          try {
+            await endTransferActivityIfNeeded("Session timeout");
+          } catch (transferError) {
+            logger.error({ transferError }, "error ending transfer activity during session timeout");
+          }
+          cleanupAndClose("session timeout");
+        } catch (e) {
+          logger.info({ e }, "error tearing down call on timeout");
+        }
+      }, 10 * 1000);
+    }, maxDuration + 5 * 1000);
+
+    logger.debug("session started, generating reply");
+    session.generateReply({ userInput: initialMessage });
+    await call.start();
+    sendMessage({ call: `${callerId} => ${calledId}` });
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    logger.error(
+      { error, message: error.message, stack: error.stack },
+      "error running agent worker"
+    );
+    await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
+  }
+
+  async function cleanupAndClose(reason: string, logEndCall: boolean = false) {
+    try {
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      session && session.close();
+      try {
+        await getActiveCall().end(reason);
+      } catch (e) {
+        logger.error({ e }, "error ending call");
+      }
+      try {
+        await roomService.deleteRoom(room.name);
+      } catch (e) {
+        logger.error({ e }, "error deleting room");
+      }
+      await ctx.shutdown(reason);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.info(
+        { message: error.message, error },
+        "error cleaning up and closing"
+      );
+    } finally {
+      process.exit(0);
+    }
+  }
 }

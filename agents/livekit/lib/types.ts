@@ -30,6 +30,7 @@ export interface CallScenario {
   instance: Instance;
   agent: Agent | null;
   participant: ParticipantInfo | null;
+  existingBridge: ParticipantInfo | null;
   callerId: string;
   calledId: string;
   aplisayId: string;
@@ -104,6 +105,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
   getBridgedParticipant: () => SipParticipant | null;
+  setBridgedParticipant: (p: SipParticipant | null) => void;
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
