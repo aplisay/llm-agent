@@ -203,7 +203,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
-        requestHangup: () => {},
+        requestHangup: () => { },
         participant: participant,
       });
 
@@ -289,12 +289,11 @@ export default defineAgent({
         await ctx.shutdown((e as Error).message);
       } catch (e) {
         logger.error({ e }, "error shutting down");
-      } finally {
-        process.exit(0);
       }
     }
   },
 });
+
 
 // ---- Helpers ----
 
@@ -1035,6 +1034,33 @@ async function runAgentWorker({
 
   let session: voice.AgentSession | null = null;
 
+  const cleanupAndClose = async (reason: string, logEndCall: boolean = false) => {
+    try {
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      session && session.close();
+      try {
+        await getActiveCall().end(reason);
+      } catch (e) {
+        logger.error({ e }, "error ending call");
+      }
+      try {
+        await roomService.deleteRoom(room.name);
+      } catch (e) {
+        logger.error({ e }, "error deleting room");
+      }
+      await ctx.shutdown(reason);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.info(
+        { message: error.message, error },
+        "error cleaning up and closing"
+      );
+    } 
+  };
+
   try {
     session = new voice.AgentSession({
       llm: new realtime.RealtimeModel({
@@ -1185,54 +1211,6 @@ async function runAgentWorker({
             logger.error({ transferError }, "error ending transfer activity during original participant disconnect");
           }
           await cleanupAndClose("original participant disconnected", true);
-    ctx.room.on(
-      RoomEvent.ParticipantDisconnected,
-      async (p: RemoteParticipant) => {
-        const bp = getBridgedParticipant();
-        logger.debug(
-          { p, bridgedParticipant: bp, participant },
-          "participant disconnected"
-        );
-        if (bp?.participantId === p?.info?.sid) {
-          if (getConsultInProgress()) {
-            logger.debug(
-              "consult callee disconnected, treating as consult_reject"
-            );
-            // Unhold original participant
-            try {
-              const participants = await roomService.listParticipants(
-                room.name
-              );
-              const original = participants.find(
-                (pi) => pi.sid !== bp?.participantId
-              );
-              if (original?.sid) {
-                await holdParticipant(original.sid, false);
-              }
-            } catch (e) {
-              logger.error(
-                { e },
-                "failed to unhold participant on callee hangup"
-              );
-            }
-            // reset consult state
-            // remove bridged participant if still present in server state (it should be gone already)
-            try {
-              bp?.participantIdentity &&
-                (await roomService.removeParticipant(
-                  room.name,
-                  bp.participantId
-                ));
-            } catch {}
-            // underlying setters live in setup scope; remaining state will be reset on next transfer call
-          } else {
-            logger.debug("bridge participant disconnected, shutting down");
-            await cleanupAndClose("bridged participant disconnected");
-            setBridgedParticipant(null as unknown as SipParticipant);
-          }
-        } else if (p.info?.sid === participant?.sid) {
-          logger.debug("participant disconnected, shutting down");
-          await cleanupAndClose("original participant disconnected", true);
         }
       }
     );
@@ -1269,7 +1247,7 @@ async function runAgentWorker({
     }, maxDuration + 5 * 1000);
 
     logger.debug("session started, generating reply");
-    session.generateReply({ userInput: initialMessage });
+    session?.generateReply({ userInput: initialMessage });
     await call.start();
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {
@@ -1279,34 +1257,5 @@ async function runAgentWorker({
       "error running agent worker"
     );
     await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
-  }
-
-  async function cleanupAndClose(reason: string, logEndCall: boolean = false) {
-    try {
-      if (timerId) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-      session && session.close();
-      try {
-        await getActiveCall().end(reason);
-      } catch (e) {
-        logger.error({ e }, "error ending call");
-      }
-      try {
-        await roomService.deleteRoom(room.name);
-      } catch (e) {
-        logger.error({ e }, "error deleting room");
-      }
-      await ctx.shutdown(reason);
-    } catch (e) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      logger.info(
-        { message: error.message, error },
-        "error cleaning up and closing"
-      );
-    } finally {
-      process.exit(0);
-    }
   }
 }

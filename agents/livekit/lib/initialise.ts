@@ -11,8 +11,6 @@ const logger = loggerModule.default;
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
   LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
-  logger.debug({ LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD }, 'LIVEKIT_SIP_OUTBOUND');
-
 
 export async function setupSIPClients(): Promise<any> {
   const sipClient = new SipClient(process.env.LIVEKIT_URL!, process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!);
