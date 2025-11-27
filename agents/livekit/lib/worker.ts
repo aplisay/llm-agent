@@ -104,7 +104,9 @@ export default defineAgent({
     let capturedB2buaIp: string | null = null;
     let capturedB2buaTransport: string | null = null;
     // Function to end transfer activity - will be set by setupCallAndUtilities
-    let endTransferActivityIfNeeded: ((reason: string) => Promise<void>) | null = null;
+    let endTransferActivityIfNeeded:
+      | ((reason: string) => Promise<void>)
+      | null = null;
 
     try {
       const scenario = await getCallInfo(ctx, room);
@@ -203,7 +205,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
-        requestHangup: () => { },
+        requestHangup: () => {},
         participant: participant,
       });
 
@@ -277,7 +279,10 @@ export default defineAgent({
         try {
           await endTransferActivityIfNeeded("Error occurred");
         } catch (transferError) {
-          logger.error({ transferError }, "error ending transfer activity during error cleanup");
+          logger.error(
+            { transferError },
+            "error ending transfer activity during error cleanup"
+          );
         }
       }
       try {
@@ -293,7 +298,6 @@ export default defineAgent({
     }
   },
 });
-
 
 // ---- Helpers ----
 
@@ -403,35 +407,41 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           sipHXLkRealIp: b2buaGatewayIpAttr,
           sipHXLkTransport: b2buaGatewayTransportAttr,
         } = participant.attributes || {};
-        
+
         calledId = calledIdAttr;
         callerId = callerIdAttr;
         aplisayId = aplisayIdAttr;
         phoneRegistration = phoneRegistrationAttr;
-        
+
         // Store registration endpoint ID for transfer operations
         if (phoneRegistration) {
           registrationEndpointId = phoneRegistration;
         }
-        
+
         // Store B2BUA gateway information for routing outbound calls
         if (b2buaGatewayIpAttr) {
           b2buaGatewayIp = b2buaGatewayIpAttr;
           b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
-          logger.info({ b2buaGatewayIp, b2buaGatewayTransport }, "Extracted B2BUA gateway information from participant attributes");
+          logger.info(
+            { b2buaGatewayIp, b2buaGatewayTransport },
+            "Extracted B2BUA gateway information from participant attributes"
+          );
         }
-        
+
         // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
         // (sipHostname is the registrar hostname from the inbound call)
         if (phoneRegistration && sipHostnameAttr && !registrationRegistrar) {
           registrationRegistrar = sipHostnameAttr;
-          logger.info({ sipHostname: sipHostnameAttr }, "Using sipHostname as registrar from participant attributes");
+          logger.info(
+            { sipHostname: sipHostnameAttr },
+            "Using sipHostname as registrar from participant attributes"
+          );
         }
       }
 
       calledId = calledId?.replace("+", "");
       callerId = callerId?.replace("+", "");
-      
+
       // If we have a phoneRegistration ID, lookup the phone endpoint by ID
       // Otherwise, use the calledId (phone number) to lookup by number
       if (phoneRegistration) {
@@ -441,16 +451,22 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
         );
         const phoneEndpoint = await getPhoneEndpointById(phoneRegistration);
-        if (phoneEndpoint && 'id' in phoneEndpoint) {
+        if (phoneEndpoint && "id" in phoneEndpoint) {
           const regInfo = phoneEndpoint as PhoneRegistrationInfo;
-          logger.info({ phoneEndpoint: regInfo }, "found phone registration endpoint");
+          logger.info(
+            { phoneEndpoint: regInfo },
+            "found phone registration endpoint"
+          );
           // Store registrar and transport for transfer operations
           registrationRegistrar = regInfo.registrar || null;
           registrationTransport = regInfo.options?.transport || null;
           // PhoneRegistration now has instanceId, so we can lookup the instance
           if (regInfo.instanceId) {
             instance = await getInstanceById(regInfo.instanceId);
-            logger.info({ instanceId: regInfo.instanceId, instance }, "found instance from registration instanceId");
+            logger.info(
+              { instanceId: regInfo.instanceId, instance },
+              "found instance from registration instanceId"
+            );
           }
         }
       } else if (calledId) {
@@ -459,14 +475,23 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           "new Livekit inbound telephone call, looking up phone endpoint by number"
         );
         // Pass trunkId (aplisayId) for validation - will throw error if mismatch
-        const phoneEndpoint = await getPhoneEndpointByNumber(calledId, aplisayId);
-        if (phoneEndpoint && 'number' in phoneEndpoint) {
+        const phoneEndpoint = await getPhoneEndpointByNumber(
+          calledId,
+          aplisayId
+        );
+        if (phoneEndpoint && "number" in phoneEndpoint) {
           const numInfo = phoneEndpoint as PhoneNumberInfo;
-          logger.info({ phoneEndpoint: numInfo }, "found phone number endpoint");
+          logger.info(
+            { phoneEndpoint: numInfo },
+            "found phone number endpoint"
+          );
           // Store trunk info if available
           if (numInfo.trunk) {
             trunkInfo = numInfo.trunk;
-            logger.info({ trunkInfo }, "trunk info retrieved from phone endpoint");
+            logger.info(
+              { trunkInfo },
+              "trunk info retrieved from phone endpoint"
+            );
           }
           // PhoneNumber has instanceId, so we can lookup the instance
           if (numInfo.instanceId) {
@@ -606,7 +631,7 @@ async function setupCallAndUtilities({
   let wantHangup = false;
   let currentBridged: SipParticipant | null = null;
   let bridgedCallRecord: Call | null = null;
-  
+
   // Consultation room state for warm transfers
   let consultRoomName: string | null = null;
   let transferSession: voice.AgentSession | null = null;
@@ -616,17 +641,17 @@ async function setupCallAndUtilities({
   const setCurrentBridged = (p: SipParticipant | null) => {
     currentBridged = p;
   };
-  
+
   const getConsultRoomName = () => consultRoomName;
   const setConsultRoomName = (name: string | null) => {
     consultRoomName = name;
   };
-  
+
   const getTransferSession = () => transferSession;
   const setTransferSession = (session: voice.AgentSession | null) => {
     transferSession = session;
   };
-  
+
   const getConsultRoom = () => consultRoom;
   const setConsultRoom = (room: Room | null) => {
     consultRoom = room;
@@ -638,12 +663,18 @@ async function setupCallAndUtilities({
   };
 
   // Transfer state tracking
-  let transferState: { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string } = {
+  let transferState: {
+    state: "none" | "dialling" | "talking" | "rejected" | "failed";
+    description: string;
+  } = {
     state: "none",
-    description: "No transfer in progress"
+    description: "No transfer in progress",
   };
   const getTransferState = () => transferState;
-  const setTransferState = (state: "none" | "dialling" | "talking" | "rejected" | "failed", description: string) => {
+  const setTransferState = (
+    state: "none" | "dialling" | "talking" | "rejected" | "failed",
+    description: string
+  ) => {
     transferState = { state, description };
     logger.debug({ state, description }, "Transfer state updated");
   };
@@ -696,6 +727,8 @@ async function setupCallAndUtilities({
           new TextEncoder().encode(JSON.stringify(message)),
           { reliable: true }
         );
+
+        logger.debug({ message, type: typeof message }, "sending message");
 
         if (type === "status") {
           return;
@@ -825,7 +858,7 @@ async function setupCallAndUtilities({
         { error, message: error.message, stack: error.stack },
         `error transferring participant`
       );
-      throw error;
+      return { error: error.message };
     }
   };
 
@@ -897,7 +930,10 @@ function createTools({
     args: TransferArgs;
     participant: ParticipantInfo;
   }) => Promise<ParticipantInfo>;
-  getTransferState: () => { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string };
+  getTransferState: () => {
+    state: "none" | "dialling" | "talking" | "rejected" | "failed";
+    description: string;
+  };
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -955,10 +991,11 @@ function createTools({
                 { data },
                 `function execute returning ${JSON.stringify(data)}`
               );
-              return JSON.stringify(data);
+              return data;
             } catch (e) {
-              logger.error({ e }, "error executing function");
-              throw e;
+              const message = (e as Error).message;
+              logger.info({ error: message }, "error executing function");
+              throw new Error(`error executing function: ${message}`);
             }
           },
         }),
@@ -991,9 +1028,12 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
-}: RunAgentWorkerParams & { 
+}: RunAgentWorkerParams & {
   endTransferActivityIfNeeded: (reason: string) => Promise<void>;
-  getTransferState: () => { state: "none" | "dialling" | "talking" | "rejected" | "failed"; description: string };
+  getTransferState: () => {
+    state: "none" | "dialling" | "talking" | "rejected" | "failed";
+    description: string;
+  };
 }) {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   let timerId: NodeJS.Timeout | null = null;
@@ -1034,7 +1074,10 @@ async function runAgentWorker({
 
   let session: voice.AgentSession | null = null;
 
-  const cleanupAndClose = async (reason: string, logEndCall: boolean = false) => {
+  const cleanupAndClose = async (
+    reason: string,
+    logEndCall: boolean = false
+  ) => {
     try {
       if (timerId) {
         clearTimeout(timerId);
@@ -1058,7 +1101,7 @@ async function runAgentWorker({
         { message: error.message, error },
         "error cleaning up and closing"
       );
-    } 
+    }
   };
 
   try {
@@ -1117,9 +1160,14 @@ async function runAgentWorker({
         if (ev.newState === "listening" && checkForHangup() && room.name) {
           logger.debug({ room }, "room close inititiated");
           // End transfer activity if in progress (fire and forget)
-          endTransferActivityIfNeeded("Agent initiated hangup").catch((transferError) => {
-            logger.error({ transferError }, "error ending transfer activity during hangup");
-          });
+          endTransferActivityIfNeeded("Agent initiated hangup").catch(
+            (transferError) => {
+              logger.error(
+                { transferError },
+                "error ending transfer activity during hangup"
+              );
+            }
+          );
           getActiveCall().end("agent initiated hangup");
           roomService.deleteRoom(room.name);
         }
@@ -1130,17 +1178,23 @@ async function runAgentWorker({
       logger.error({ ev }, "error");
     });
 
-    session.on(voice.AgentSessionEventTypes.Close, async (ev: voice.CloseEvent) => {
-      logger.info({ ev }, "session closed");
-      // End transfer activity if in progress
-      try {
-        await endTransferActivityIfNeeded("Session closed");
-      } catch (transferError) {
-        logger.error({ transferError }, "error ending transfer activity during session close");
+    session.on(
+      voice.AgentSessionEventTypes.Close,
+      async (ev: voice.CloseEvent) => {
+        logger.info({ ev }, "session closed");
+        // End transfer activity if in progress
+        try {
+          await endTransferActivityIfNeeded("Session closed");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during session close"
+          );
+        }
+        roomService.deleteRoom(room.name);
+        getActiveCall().end("session closed");
       }
-      roomService.deleteRoom(room.name);
-      getActiveCall().end("session closed");
-    });
+    );
 
     await session.start({
       room: ctx.room,
@@ -1195,9 +1249,14 @@ async function runAgentWorker({
             logger.debug("bridge participant disconnected, shutting down");
             // End transfer activity if in progress
             try {
-              await endTransferActivityIfNeeded("Bridged participant disconnected");
+              await endTransferActivityIfNeeded(
+                "Bridged participant disconnected"
+              );
             } catch (transferError) {
-              logger.error({ transferError }, "error ending transfer activity during bridged participant disconnect");
+              logger.error(
+                { transferError },
+                "error ending transfer activity during bridged participant disconnect"
+              );
             }
             await cleanupAndClose("bridged participant disconnected");
             setBridgedParticipant(null as unknown as SipParticipant);
@@ -1206,9 +1265,14 @@ async function runAgentWorker({
           logger.debug("participant disconnected, shutting down");
           // End transfer activity if in progress
           try {
-            await endTransferActivityIfNeeded("Original participant disconnected");
+            await endTransferActivityIfNeeded(
+              "Original participant disconnected"
+            );
           } catch (transferError) {
-            logger.error({ transferError }, "error ending transfer activity during original participant disconnect");
+            logger.error(
+              { transferError },
+              "error ending transfer activity during original participant disconnect"
+            );
           }
           await cleanupAndClose("original participant disconnected", true);
         }
@@ -1237,7 +1301,10 @@ async function runAgentWorker({
           try {
             await endTransferActivityIfNeeded("Session timeout");
           } catch (transferError) {
-            logger.error({ transferError }, "error ending transfer activity during session timeout");
+            logger.error(
+              { transferError },
+              "error ending transfer activity during session timeout"
+            );
           }
           cleanupAndClose("session timeout");
         } catch (e) {

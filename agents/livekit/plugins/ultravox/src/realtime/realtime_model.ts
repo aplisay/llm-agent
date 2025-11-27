@@ -1536,11 +1536,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         const functionResult: api_proto.UltravoxFunctionResultMessage = {
           type: "client_tool_result",
           invocationId: event.invocationId,
-          result: JSON.stringify(result),
+          result
         };
         this.#ws.send(JSON.stringify(functionResult));
       }
-    }).catch((error: any) => {
+    }).catch((e: any) => {
+      const error = e as Error
       this.#logger.error({ error, toolName: event.toolName }, 'Error executing function');
 
       // Send error back to Ultravox
