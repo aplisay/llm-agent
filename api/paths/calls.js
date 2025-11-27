@@ -25,13 +25,18 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'index', 'agentId', 'callerId', 'calledId', 'startedAt', 'endedAt'],
+        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt'],
         where,
         order: [['index', 'ASC']],
         limit: parseInt(limit),
       });
       req.log.debug({ where, count, calls, limit, lastIndex });
-      res.send({ calls });
+      // Paginate using the last index returned in this page; if there are no more
+      // rows beyond this page then `next` will be false.
+      const next = (count > calls.length && calls.length)
+        ? calls[calls.length - 1].index
+        : false;
+      res.send({ calls, next });
     } catch (error) {
       req.log.error(error);
       res.status(500).send({ error: error.message });
@@ -63,9 +68,30 @@ export default function (logger) {
               },
               example: {
                 calls: [
-                  { id: "648aa45d-204a-4c0c-a1e1-419406254134", index: 1, agentId: "648aa45d-204a-4c0c-a1e1-419406252234", callerId: "+443300889471", calledId: "+442080996945", startedAt: "2025-06-04T12:00:00.000Z", endedAt: "2025-06-04T12:01:00.000Z" },
-                  { id: "632555d87-948e-48f2-a53d-fc5f261daa7", index: 2, agentId: "632555d87-948e-48f2-a53d-fc5f261df2a", callerId: "+443300889470", calledId: "+442080996945", startedAt: "2025-06-04T12:01:00.000Z", endedAt: "2025-06-04T12:02:00.000Z" },
+                  {
+                    id: "648aa45d-204a-4c0c-a1e1-419406254134",
+                    index: 1,
+                    agentId: "648aa45d-204a-4c0c-a1e1-419406252234",
+                    parentId: null,
+                    modelName: "livekit:ultravox:ultravox-70b",
+                    callerId: "+443300889471",
+                    calledId: "+442080996945",
+                    startedAt: "2025-06-04T12:00:00.000Z",
+                    endedAt: "2025-06-04T12:01:00.000Z"
+                  },
+                  {
+                    id: "632555d87-948e-48f2-a53d-fc5f261daa7",
+                    index: 2,
+                    agentId: "632555d87-948e-48f2-a53d-fc5f261df2a",
+                    parentId: "648aa45d-204a-4c0c-a1e1-419406254134",
+                    modelName: "telephony:bridged-call",
+                    callerId: "+443300889470",
+                    calledId: "+442080996945",
+                    startedAt: "2025-06-04T12:01:00.000Z",
+                    endedAt: "2025-06-04T12:02:00.000Z"
+                  },
                 ],
+                next: 2
               }
             }
           }

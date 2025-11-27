@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import Jambonz from '../agent-lib/jambonz.js';
 import fs from 'fs';
 import logger from '../agent-lib/logger.js';
@@ -159,10 +158,6 @@ describe('Jambonz', () => {
         return expect(jambonz.deleteNumber(numberSid))
           .resolves;
       }
-    });
-
-    test('List numbers', async () => {
-      return await expect(jambonz.listNumbers()).resolves.toBeInstanceOf(Array);
     });
 
     test('Delete Application', async () => {

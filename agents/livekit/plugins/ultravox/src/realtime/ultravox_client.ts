@@ -10,8 +10,7 @@ import type {
 export class UltravoxClient {
   private baseURL: string;
   private apiKey: string;
-
-  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/') {
+  constructor(apiKey: string, baseURL: string = 'https://api.ultravox.ai/api/',) {
     this.apiKey = apiKey;
     this.baseURL = baseURL;
   }
@@ -32,6 +31,16 @@ export class UltravoxClient {
     }
 
     return response.json();
+  }
+
+  async deleteCall(callId: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}calls/${callId}`, {
+      method: 'DELETE',
+      headers: {
+        'X-API-Key': this.apiKey,
+      },
+    });
+  
   }
 
   async getVoices(): Promise<UltravoxVoicesResponse> {

@@ -1,4 +1,4 @@
-import { Agent } from '../../../../lib/database.js';
+import { Agent, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -6,16 +6,46 @@ let appParameters, log;
 export default function (wsServer) {
   const activate = (async (req, res) => {
     let { agentId } = req.params;
-    let { number, options, websocket } = req.body;
+    let { number, options, websocket, id } = req.body;
     let agent, handler, activation;
     try {
       agent = await Agent.findByPk(agentId);
       if (!agent?.id) {
         throw new Error(`no agent`);
       }
+
+      // If id is provided, look up the PhoneRegistration record
+      if (id) {
+        const phoneRegistration = await PhoneRegistration.findByPk(id);
+        if (!phoneRegistration) {
+          throw new Error(`Phone endpoint with id ${id} not found`);
+        }
+        // For registration endpoints, we pass the id to the handler
+        // The handler should know how to work with registration endpoints
+      }
+      
+      // If number is provided, look up the PhoneNumber record
+      if (number) {
+        const phoneNumber = await PhoneNumber.findByPk(number);
+        if (!phoneNumber) {
+          throw new Error(`Phone number ${number} not found`);
+        }
+        // Use the number as provided
+      }
+
       let Handler = (await handlers()).getHandler(agent.modelName);
       handler = new Handler({ agent, wsServer, logger: req.log });
-      activation = await handler.activate({ number, options, websocket });
+      
+      // Prepare activation parameters
+      const activationParams = { options, websocket };
+      if (number) {
+        activationParams.number = number;
+      }
+      if (id) {
+        activationParams.id = id;
+      }
+      
+      activation = await handler.activate(activationParams);
       res.send(activation);
     }
     catch (err) {
@@ -43,7 +73,7 @@ export default function (wsServer) {
     description: `Activates an agent. For telephone agents, this will allocate a number to the agent and wait for calls to the agent.
     For Ultravox or Livekit realtime agents, this will start a listening agent based on that technology.
     For websocket agents (currently only available for the Ultravox technology), this will start a listening agent that will await connects
-    from a websocket client.`,
+    from a websocket client. For WebRTC agents, omit number, id, and websocket parameters to activate a WebRTC room-based agent.`,
     summary: 'Activates an instance of an agent to listen for either calls, WebRTC rooms, or websocket connections.',
     operationId: 'activate',
     tags: ["Listeners"],
@@ -61,43 +91,76 @@ export default function (wsServer) {
     requestBody: {
       content: {
         'application/json': {
-          schema: {
-            type: "object",
-            properties: {
-              number: {
-                type: "string",
-                description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.
-                              If this field is not present then the session will be assumed to be a WebRTC session.`,
-                example: "+442080996945"
-              },
-              websocket: {
-                type: "boolean",
-                description: "If true, then this is a websocket session, mutually exclusive with number",
-                example: true
-              },
-              options: {
-                type: "object",
-                description: "Options for this activation instance",
-                properties: {
-                  streamLog: {
-                    type: "boolean",
-                    description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
-                  },
-                  metadata: {
-                    type: "object",
-                    description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
-                    example: {
-                      myapp: {
-                        mykey: "mydata"
+            schema: {
+              type: "object",
+              properties: {
+                number: {
+                  type: "string",
+                  description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.`,
+                  example: "+442080996945"
+                },
+                id: {
+                  type: "string",
+                  description: "ID of a phone endpoint to use instead of specifying number directly.",
+                  example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                },
+                websocket: {
+                  type: "boolean",
+                  description: "If true, then this is a websocket session",
+                  example: true
+                },
+                options: {
+                  type: "object",
+                  description: "Options for this activation instance",
+                  properties: {
+                    streamLog: {
+                      type: "boolean",
+                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                    },
+                    metadata: {
+                      type: "object",
+                      description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
+                      example: {
+                        myapp: {
+                          mykey: "mydata"
+                        }
                       }
                     }
-                  }
-                },
-                required: [],
-              }
-            },
-            required: [],
-          }
+                  },
+                  required: [],
+                }
+              },
+              anyOf: [
+                { required: ["number"] },
+                { required: ["id"] },
+                { required: ["websocket"] },
+                { 
+                  properties: {
+                    options: {
+                      type: "object",
+                      description: "Options for this activation instance",
+                      properties: {
+                        streamLog: {
+                          type: "boolean",
+                          description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                        },
+                        metadata: {
+                          type: "object",
+                          description: "Metadata to be associated with this activation instance, can be overriden by the agent join for finer, per user control",
+                          example: {
+                            myapp: {
+                              mykey: "mydata"
+                            }
+                          }
+                        }
+                      },
+                      required: [],
+                    }
+                  },
+                  required: []
+                }
+              ]
+            }
         }
       }
     },

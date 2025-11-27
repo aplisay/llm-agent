@@ -298,7 +298,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       firstSpeaker,
     };
 
-    this.#client = new UltravoxClient(apiKey, baseURL);
+    this.#client = new UltravoxClient(apiKey, baseURL, log());
   }
 
   get sessions(): RealtimeSession[] {
@@ -962,6 +962,14 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#closing = true;
     await this.#ws.close();
     this.#logger.debug({ callId: this.#callId }, "ws closed, deleting call");
+    if (this.#callId) {
+      try {
+        await this.#client.deleteCall(this.#callId);
+      } catch (error: any) {
+        this.#logger.error({ error, message: error?.message, stack: error?.stack }, "Error deleting call");
+      }
+    }
+    this.#logger.debug({ callId: this.#callId }, "call deleted");
     this.emit("close", { callId: this.#callId });
     this.#logger.debug({ callId: this.#callId }, "call close");
     await super.close();
@@ -1528,11 +1536,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         const functionResult: api_proto.UltravoxFunctionResultMessage = {
           type: "client_tool_result",
           invocationId: event.invocationId,
-          result: JSON.stringify(result),
+          result
         };
         this.#ws.send(JSON.stringify(functionResult));
       }
-    }).catch((error: any) => {
+    }).catch((e: any) => {
+      const error = e as Error
       this.#logger.error({ error, toolName: event.toolName }, 'Error executing function');
 
       // Send error back to Ultravox

@@ -1,9 +1,12 @@
-import 'dotenv/config';
-import { stopDatabase } from '../lib/database.js';
+import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import handlers from '../lib/handlers/index.js';
 
+beforeAll(async () => {
+  await setupRealDatabase();
+}, 60000);
+
 afterAll(async () => {
-  await stopDatabase();
+  await teardownRealDatabase();
 }, 60000);
 
 describe(`handlers`, () => {

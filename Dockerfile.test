@@ -1,0 +1,24 @@
+FROM node:22-alpine
+ARG SECRETENV_BUNDLE
+ARG SECRETENV_KEY
+ENV SECRETENV_BUNDLE ${SECRETENV_BUNDLE}
+ENV SECRETENV_KEY ${SECRETENV_KEY}
+
+# Set working directory
+WORKDIR /app
+
+RUN echo BUNDLE $SECRETENV_BUNDLE
+
+# Copy package files
+COPY package.json yarn.lock ./
+
+# Install dependencies
+RUN yarn install --frozen-lockfile
+
+# Copy source code
+COPY . .
+RUN mkdir -p credentials
+RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
+
+# Default command (can be overridden in docker-compose)
+CMD ["yarn", "test"]
