@@ -67,8 +67,8 @@ describe('Calls Endpoint Test', () => {
 
   test('should return calls including parentId and modelName', async () => {
     // Ensure an organisation and user exist that match res.locals.user
-        expect(Organisation.upsert({ id: 'test-org-id', name: 'Test Org' })).resolves.toBeDefined();
-        expect(User.upsert({
+    await Organisation.upsert({ id: 'test-org-id', name: 'Test Org' });
+    await User.upsert({
       id: 'test-user-id',
       name: 'Test User',
       email: 'test@example.com',
@@ -77,7 +77,7 @@ describe('Calls Endpoint Test', () => {
       phoneVerified: false,
       picture: '',
       role: { admin: true }
-    })).resolves.toBeDefined();
+    });
         // Seed a couple of calls for this organisation.
     // We disable hooks and set index explicitly to avoid the custom beforeCreate
     // logic interfering with the test while still hitting the real database.
