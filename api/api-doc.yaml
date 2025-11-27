@@ -425,10 +425,19 @@ components:
           type: string
           description: unique ID of this call
           example: 648aa45d-204a-4c0c-a1e1-419406254134
+        parentId:
+          type: string
+          nullable: true
+          description: ID of the parent call if this call was created as part of a transfer or bridge
+          example: 632555d87-948e-48f2-a53d-fc5f261daa7
         agentId:
           type: string
           description: The ID of the agent that this call is associated with
           example: 648aa45d-204a-4c0c-a1e1-419406252234
+        modelName:
+          type: string
+          description: The name of the model used for this call, if specified
+          example: gpt-4.1-mini
         from:
           type: string
           description: Caller number (as received, no format guaranteed)
