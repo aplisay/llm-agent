@@ -631,6 +631,9 @@ async function setupCallAndUtilities({
   let wantHangup = false;
   let currentBridged: SipParticipant | null = null;
   let bridgedCallRecord: Call | null = null;
+  const setBridgedCallRecord = (call: Call | null) => {
+    bridgedCallRecord = call;
+  };
 
   // Consultation room state for warm transfers
   let consultRoomName: string | null = null;
@@ -842,6 +845,7 @@ async function setupCallAndUtilities({
         getConsultRoom,
         setTransferState,
         getTransferState,
+        setBridgedCallRecord,
       };
 
       return await handleTransfer(transferContext);

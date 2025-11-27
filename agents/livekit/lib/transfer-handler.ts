@@ -72,6 +72,8 @@ export interface TransferContext {
   // Transfer state tracking
   setTransferState: (state: TransferState, description: string) => void;
   getTransferState: () => { state: TransferState; description: string };
+  // Bridged call record setter
+  setBridgedCallRecord: (call: Call | null) => void;
   // Promise resolvers for consultative transfer decision
   resolveConsultativeDecision?: (
     accepted: boolean,
@@ -211,7 +213,8 @@ async function finaliseBridgedCall(
   callerId: string,
   calledId: string,
   options: any,
-  session: voice.AgentSession | null
+  session: voice.AgentSession | null,
+  setBridgedCallRecord?: (call: Call | null) => void
 ): Promise<Call | null> {
   // Close down the model for the agent leg
   if (session?.llm) {
@@ -244,6 +247,10 @@ async function finaliseBridgedCall(
         room.name!,
         JSON.stringify({ bridgedCallId: bridgedCallRecord.id })
       );
+      // Update the bridged call record in the worker
+      if (setBridgedCallRecord) {
+        setBridgedCallRecord(bridgedCallRecord);
+      }
     }
 
     return bridgedCallRecord;
@@ -1438,7 +1445,8 @@ export async function handleTransfer(
       context.callerId,
       calledId,
       options,
-      session
+      session,
+      context.setBridgedCallRecord
     );
   };
 
