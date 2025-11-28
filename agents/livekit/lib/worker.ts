@@ -1089,16 +1089,23 @@ async function runAgentWorker({
       }
       session && session.close();
       try {
+        logger.debug("sending end call request");
         await getActiveCall().end(reason);
+        logger.debug("sent call end request");
       } catch (e) {
         logger.error({ e }, "error ending call");
       }
       try {
+        logger.debug("deleting room");
         await roomService.deleteRoom(room.name);
+        logger.debug("deleted room");
       } catch (e) {
         logger.error({ e }, "error deleting room");
       }
+      logger.debug("shutting down context");
       await ctx.shutdown(reason);
+      logger.debug("shutdown context");
+      process.exit(0);
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
