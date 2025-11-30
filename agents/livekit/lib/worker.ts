@@ -1136,8 +1136,8 @@ async function runAgentWorker({
 
       await ctx.shutdown(reason);
       exitStatus.contextShutdown = true;
-      
       logger.info({ exitStatus, reason }, "cleanup and close completed");
+      process.exit(0);
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
