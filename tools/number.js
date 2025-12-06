@@ -15,7 +15,7 @@ const optionDefinitions = [
   { name: 'reservation', alias: 'r', type: Boolean },
   { name: 'organisation', alias: 'o', type: String },
   { name: 'outbound', alias: 'b', type: Boolean },
-  { name: 'aplisayId', alias: 'i', type: String },
+  { name: 'trunk', alias: 't', type: String },
   { name: 'noMap', alias: 'n', type: Boolean },
 ];
 const options = commandLineArgs(optionDefinitions);
@@ -80,15 +80,15 @@ import('dotenv').then(dotenv => {
   .then(({ PhoneNumber, stopDatabase }) => {
     logger.info({ options }, 'options');
     (options.add ? PhoneNumber.upsert({
-      number: options.number.replace(/^0/, '44'),
+      number: options.number.replace(/^0/, '44').replace(/^\+/, ''),
       handler: options.handler,
       reservation: options.reservation,
       organisationId: options.organisation,
       outbound: options.outbound,
-      aplisayId: options.aplisayId
+      aplisayId: options.trunk
     }) : PhoneNumber.destroy({
       where: {
-        number: options.number.replace(/^0/, '44'),
+        number: options.number.replace(/^0/, '44').replace(/^\+/, ''),
         handler: options.handler,
       }
     })
