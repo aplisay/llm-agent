@@ -208,7 +208,7 @@ async function main() {
     let username = process.env.TEST_USERNAME;
     let password = process.env.TEST_PASSWORD;
     let transport = process.env.TEST_TRANSPORT || 'tls';
-
+    let auth_username = process.env.TEST_AUTH_USERNAME || undefined;
     if (!registrar) {
       registrar = await promptInput('Enter SIP registrar (e.g., sip.example.com:5060): ');
       if (!registrar) {
@@ -233,10 +233,10 @@ async function main() {
         throw new Error('Password is required');
       }
     } else {
-      console.log(`Using TEST_PASSWORD: ${'*'.repeat(password.length)}`);
+      console.log(`Using TEST_PASSWORD: ${password} ${'*'.repeat(password.length)}`);
     }
 
-    console.log(`Using transport: ${transport}`);
+    console.log(`Using transport: ${transport}, auth_username: ${auth_username}`);
 
     // Step 3: Create or update registration endpoint
     console.log('\n=== Step 3: Creating registration endpoint ===');
@@ -248,7 +248,11 @@ async function main() {
       registrar: registrar,
       username: username,
       password: password,
-      options: transport ? { transport } : undefined
+      options: {
+        transport: transport ? transport : undefined,
+        auth_username: auth_username ? auth_username : undefined,
+        extension_in_contact: true
+      }
     };
 
     let registrationRes;

@@ -29,6 +29,14 @@ export interface Agent {
      * Only outbound calls (via originate or transfer) where the destination number matches this pattern will be allowed.
      */
     outboundCallFilter?: string;
+    /**
+     * Custom prompt to be used by the TransferAgent during consultative transfers.
+     * This allows customization of how the TransferAgent introduces the call and interacts with the transfer target.
+     * The prompt can include the placeholder ${parentTranscript} which will be replaced with the conversation history.
+     * If not specified, a default prompt will be used.
+     * This can be overridden on a per-transfer basis by providing transferPrompt as a parameter to the transfer function call.
+     */
+    transferPrompt?: string;
   };
   functions?: AgentFunction[];
   keys?: string[];

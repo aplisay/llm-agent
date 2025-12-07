@@ -511,16 +511,16 @@ async function startConsultativeTransfer(
       excludeFunctionCall: true,
     });
 
-    let prevConvo = "";
+    let parentTranscript = "";
     try {
       for (const msg of ctxCopy.items) {
         if (msg.type === "message") {
           const role = msg.role;
           const textContent = msg.textContent || "";
           if (role === "user") {
-            prevConvo += `Customer: ${textContent}\n`;
+            parentTranscript += `Customer: ${textContent}\n`;
           } else if (role === "assistant") {
-            prevConvo += `Assistant: ${textContent}\n`;
+            parentTranscript += `Assistant: ${textContent}\n`;
           }
         }
       }
@@ -528,9 +528,11 @@ async function startConsultativeTransfer(
       logger.error({ error }, "Error copying chat context");
     }
 
-    // Create TransferAgent with conversation history and tools to accept/reject transfer
-    const transferAgent = new voice.Agent({
-      instructions: `You are a transfer assistant helping with a call transfer. Here is the conversation history with the caller: ${prevConvo}
+    // Determine the transfer prompt to use:
+    // 1. Check for transferPrompt in args (specific transfer override)
+    // 2. Fall back to agent.options.transferPrompt (agent-level option)
+    // 3. Fall back to default hardwired prompt
+    const defaultTransferPromptTemplate = `You are a transfer assistant helping with a call transfer. Here is the conversation history with the caller: ${parentTranscript}
 
 You are now speaking with the person that it has been decided to transfer the call to based on the previous Conversation, and you should act as if you were 
 the agent involved in this conversation with full knowledge of the conversation history.
@@ -540,7 +542,21 @@ Your role is to:
 3. If they accept, call the accept_transfer function
 4. If they decline, call the reject_transfer function
 
-Be helpful, informal, but respectful and concise as if talking to a colleague in a company.`,
+Be helpful, informal, but respectful and concise as if talking to a colleague in a company.`;
+
+    // Get the prompt from args, agent options, or use default
+    const transferPrompt = 
+      args.transferPrompt || 
+      context.agent.options?.transferPrompt ||
+      defaultTransferPromptTemplate;
+
+    // If a custom prompt is provided, replace ${parentTranscript} placeholder if present
+    // Otherwise use the default template which already has parentTranscript embedded
+    const finalTransferPrompt = transferPrompt.replace(/\$\{parentTranscript\}/g, parentTranscript)
+
+    // Create TransferAgent with conversation history and tools to accept/reject transfer
+    const transferAgent = new voice.Agent({
+      instructions: finalTransferPrompt,
       tools: {
         accept_transfer: llm.tool({
           description:
@@ -607,6 +623,8 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     await transferSession.start({
       room: consultRoom,
       agent: transferAgent,
+      // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
+      record: false
     });
 
     logger.info({}, "transfer agent started in consultation room");

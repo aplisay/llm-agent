@@ -116,6 +116,7 @@ export interface TransferArgs {
   number: string;
   callerId?: string;
   operation?: 'blind' | 'consultative';
+  transferPrompt?: string;
   [key: string]: any;
   session?: voice.AgentSession;
 }

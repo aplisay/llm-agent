@@ -253,6 +253,29 @@ components:
             - `^(\+44[1237]\d{6,15}|\d{3,6})$` - UK numbers or extensions
           type: string
           example: "^\\+44[1237]\\d{6,15}$"
+        transferPrompt:
+          description: |-
+            Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
+            how the TransferAgent introduces the call and interacts with the transfer target.
+            
+            The prompt can include the placeholder `${parentTranscript}` which will be replaced with the conversation history
+            between the caller and the original agent.
+            
+            If not specified at the agent level, a default prompt will be used. This can also be overridden on a
+            per-transfer basis by providing `transferPrompt` as a parameter to the transfer function call.
+            
+            This option only applies to consultative transfers (when `operation: "consultative"` is specified in the
+            transfer function call).
+          type: string
+          example: |-
+            You are a transfer assistant. Here is the conversation history: ${parentTranscript}
+            
+            You are now speaking with the person who will take over this call. Please:
+            1. Briefly summarize why the caller needs help
+            2. Ask if they can take the call
+            3. If yes, call accept_transfer. If no, call reject_transfer.
+            
+            Be professional and concise.
     CallbackUrl:
       type: string
       description: A callback URL to be used for status updates
@@ -295,6 +318,7 @@ components:
                     - `operation` (string): specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default) or `consultative`
                       - `blind`: Immediately transfers the call. Returns `OK` when complete or `FAILED` with a reason if it fails.
                       - `consultative`: For "warm" transfers where the agent first speaks with the transfer target. Returns immediately after the consultation call is placed. The transfer continues in the background. Use the builtin `transfer_status` function to check progress.
+                    - `transferPrompt` (string): Custom prompt to be used by the TransferAgent during consultative transfers. This overrides any `transferPrompt` set at the agent level (see `AgentOptions.transferPrompt`). The prompt can include the placeholder `${parentTranscript}` which will be replaced with the conversation history. If not specified, the agent-level `transferPrompt` option will be used, or a default prompt if neither is provided.
                   * `transfer_status` is a builtin function that is always available to telephone agents. It takes no parameters and returns the current state of any in-progress transfer:
                     - Returns an object with `state` (one of: `none`, `dialling`, `talking`, `rejected`, `failed`) and `description` (a textual description of the current state)
                     - Use this to monitor the progress of consultative transfers
@@ -574,8 +598,24 @@ components:
             - tls
           default: tls
           description: Transport protocol for SIP registration
+        auth_username:
+          type: string
+          description: |-
+            The authentication username for an outbound registration. This will be used as the authentication 
+            username when registering with the SIP registrar, if this differa from the username used in the From field.
+            Not required for most registrars where auth and from usernames are the same, but may be required for systems
+            where they are different.
+          example: "authuser123"
+        extension_in_contact:
+          type: boolean
+          description: |-
+            When set to true, will send the extension user in the SIP Contact header. This is useful when the remote 
+            gateway needs the extension user to be included in the Contact header for proper routing or authentication.
+          example: true
       example:
         transport: tls
+        auth_username: "authuser123"
+        extension_in_contact: true
     PhoneEndpointCreateInput:
       description: |-
         Schema for creating a new phone endpoint. Supports two types of endpoints:

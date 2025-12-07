@@ -303,7 +303,9 @@ async function main() {
               c.maxDuration = c.Agent?.options?.maxDuration || '305s';
               c.maxDuration = Math.max(1, Math.ceil(parseInt(c.maxDuration.replace(/s$/, '')) / 10) / 6);
 
-              if (c.maxDuration + 0.5 < c.billingDuration && c.modelName !== 'telephony:bridged-call') {
+              // We've fixed the bug that caused the issue, but this correction now allows manipulation when maxDuration is wound down on an agent
+              //   some time after the call has ended. So we'll only correct if the maxDuration is at least 10 minutes.
+              if ((Math.max(10, c.maxDuration) + 0.5 < c.billingDuration && c.modelName !== 'telephony:bridged-call')) {
                 console.log('correcting call', c.id, 'where billingDuration', c.billingDuration, '> maxDuration', c.maxDuration);
                 c.billingDuration = c.maxDuration;
                 corrected++;

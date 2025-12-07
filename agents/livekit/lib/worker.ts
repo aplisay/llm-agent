@@ -1082,29 +1082,61 @@ async function runAgentWorker({
     reason: string,
     logEndCall: boolean = false
   ) => {
+    const exitStatus: {
+      callEnded: boolean;
+      roomDeleted: boolean;
+      contextShutdown: boolean;
+      error: string | null;
+    } = {
+      callEnded: false,
+      roomDeleted: false,
+      contextShutdown: false,
+      error: null,
+    };
+
+    // The room delete and ctx.shutdown should drain all processing and cause the process to exit,
+    // but there is evidence in high load environments of zombie process buildup.
+    // Force a hard exit after 120 seconds to avoid this until we figure out why.
+    setTimeout(() => {
+      logger.info(
+        { exitStatus, reason },
+        "timeout whilst closing room, forcing a hard process exit after 120 seconds"
+      );
+      process.exit(0);
+    }, 120 * 1000).unref(); // Ensure *this* timer doesn't block process exit.
+
     try {
       if (timerId) {
         clearTimeout(timerId);
         timerId = null;
       }
-      session && session.close();
       try {
-        logger.debug("sending end call request");
-        await getActiveCall().end(reason);
-        logger.debug("sent call end request");
+        // dont wait for this to complete, it may block logging the call end
+        //  if the LLM interface has outstanding actions let it happen in the background
+        session && session.close();
       } catch (e) {
-        logger.error({ e }, "error ending call");
+        logger.info(
+          { e },
+          "error closing session (may have already been called)"
+        );
       }
-      try {
-        logger.debug("deleting room");
-        await roomService.deleteRoom(room.name);
-        logger.debug("deleted room");
-      } catch (e) {
-        logger.error({ e }, "error deleting room");
-      }
-      logger.debug("shutting down context");
+
+      await getActiveCall()
+        .end(reason)
+        .catch((e) => {
+          logger.error({ e }, "error ending call");
+        });
+      exitStatus.callEnded = true;
+
+      await roomService.deleteRoom(room.name)
+        .catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+      exitStatus.roomDeleted = true;
+
       await ctx.shutdown(reason);
-      logger.debug("shutdown context");
+      exitStatus.contextShutdown = true;
+      logger.info({ exitStatus, reason }, "cleanup and close completed");
       process.exit(0);
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
@@ -1112,6 +1144,7 @@ async function runAgentWorker({
         { message: error.message, error },
         "error cleaning up and closing"
       );
+      exitStatus.error = error.message || "unknown error caught during cleanup and close";
     }
   };
 
