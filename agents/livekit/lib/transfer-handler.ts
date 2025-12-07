@@ -623,6 +623,8 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     await transferSession.start({
       room: consultRoom,
       agent: transferAgent,
+      // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
+      record: false
     });
 
     logger.info({}, "transfer agent started in consultation room");
