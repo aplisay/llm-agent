@@ -178,7 +178,7 @@ async function validateTransferArgs(
     if (!pn) {
       throw new Error("Invalid callerId: number not found");
     }
-    if (pn.organisationId && pn.organisationId !== agent.organisationId) {
+    if (pn?.organisationId !== agent.organisationId) {
       throw new Error(
         "Invalid callerId: number not owned by this organisation"
       );
@@ -587,8 +587,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       context.agent.options?.transferPrompt ||
       defaultTransferPromptTemplate;
 
-    // If a custom prompt is provided, replace ${parentTranscript} placeholder if present
-    // Otherwise use the default template which already has parentTranscript embedded
+    // Replace ${parentTranscript} placeholder if present
     const finalTransferPrompt = transferPrompt.replace(
       /\$\{parentTranscript\}/g,
       parentTranscript
@@ -1085,14 +1084,16 @@ export async function destroyInProgressTransfer(
     }
 
     // Step 4: Clear the in-progress flag and reset state
-    setConsultInProgress(false);
-    if (setTransferState) {
-      setTransferState(
-        "none",
-        "Transfer cancelled due to original caller disconnect"
-      );
+    if (getConsultInProgress()) {
+      setConsultInProgress(false);
+      if (setTransferState) {
+        setTransferState(
+          "none",
+          "Transfer cancelled due to original caller disconnect"
+        );
+      }
+      logger.info({}, "in-progress transfer destroyed");
     }
-    logger.info({}, "in-progress transfer destroyed");
   } catch (e) {
     logger.error({ e }, "error during transfer destruction");
     // Still clear the flag even if cleanup fails
@@ -1148,7 +1149,10 @@ export async function rejectWarmTransfer(
   );
 
   try {
-    // Step 4: End consultation call and create transaction logs for transcript
+    // Step 1: End consultation call and create transaction logs for transcript
+    //         we do this first because later steps will likely cause an async
+    //         hangup which will cause the consultation call to be ended through
+    //         a different path.
 
     if (!finalSummary) {
       // If no transcript available, use default message
