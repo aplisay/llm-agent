@@ -678,6 +678,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
 
     logger.info({}, "transfer agent started in consultation room");
+    transferSession?.generateReply({ userInput: 'announce yourself and explain why you are calling' });
 
     // Step 8: Create call record for consultation leg
     const { agent, instance, call } = context;
