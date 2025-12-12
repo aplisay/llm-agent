@@ -1151,9 +1151,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
-    this.#logger.debug(
+    event.final && this.#logger.debug(
       { event },
-      "handleTranscript - received transcript event"
+      "handleTranscript - received final transcript event"
     );
 
     if (event.role === "user") {

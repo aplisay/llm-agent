@@ -117,6 +117,8 @@ export interface TransferArgs {
   callerId?: string;
   operation?: 'blind' | 'consultative';
   transferPrompt?: string;
+  confidentialConsult?: boolean;
+  forceBridged?: boolean;
   [key: string]: any;
   session?: voice.AgentSession;
 }

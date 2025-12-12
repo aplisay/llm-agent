@@ -1162,8 +1162,18 @@ export async function rejectWarmTransfer(
 
     setConsultInProgress(false);
 
-    logger.debug({ finalSummary }, "Setting transfer state to rejected");
-    setTransferState("rejected", finalSummary);
+    // If confidentialConsult is enabled, suppress the detailed rejection summary
+    // to prevent confidential information from the transfer target reaching the original agent
+    const isConfidential = context.args?.confidentialConsult === true;
+    const stateDescription = isConfidential
+      ? "Transfer failed"
+      : finalSummary;
+
+    logger.debug(
+      { finalSummary, stateDescription, isConfidential },
+      "Setting transfer state to rejected"
+    );
+    setTransferState("rejected", stateDescription);
 
     // Step 1: Remove transfer target from consultation room (hangs up call)
     if (consultRoomName) {
@@ -1521,6 +1531,7 @@ export async function handleTransfer(
       effectiveCallerId,
       isSip,
       canRefer,
+      forceBridged: args.forceBridged,
       aplisayId,
     },
     "handling transfer"
@@ -1543,12 +1554,15 @@ export async function handleTransfer(
   };
 
   // Route based on operation and participant capabilities
+  // Check if forceBridged is set to override REFER capability
+  const useBridged = args.forceBridged === true;
+  
   if (operation === "blind") {
-    if (isSip && canRefer) {
+    if (isSip && canRefer && !useBridged) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context, finaliseBridgedCallFn);
     } else {
-      // Case 1: Blind transfer by bridging
+      // Case 1: Blind transfer by bridging (forced or when REFER not available)
       return handleBlindBridgeTransfer(
         context,
         effectiveCallerId,
