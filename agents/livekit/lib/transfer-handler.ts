@@ -57,7 +57,6 @@ export interface TransferContext {
   setBridgedParticipant: (p: SipParticipant | null) => void;
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
-  holdParticipant: (identity: string, hold: boolean) => Promise<void>;
   getCurrentBridged: () => SipParticipant | null;
   setCurrentBridged: (p: SipParticipant | null) => void;
   // Consultation room state for warm transfers
@@ -471,11 +470,10 @@ async function startConsultativeTransfer(
 ): Promise<TransferResult> {
   const {
     room,
-    participant,
     args,
     sessionRef,
+    setBridgedParticipant,
     setConsultInProgress,
-    holdParticipant,
     setConsultRoomName,
     setTransferSession,
     setConsultRoom,
@@ -495,15 +493,13 @@ async function startConsultativeTransfer(
   );
 
   try {
-    // Step 1: Place caller on hold (disable audio input and output)
-    await holdParticipant(participant.sid!, true);
 
-    // Step 2: Create consultation room
+    // Step 1: Create consultation room
     const consultRoomName = `consult-${room.name}-${Date.now()}`;
     const transferAgentIdentity = "transfer-agent";
     const transferTargetIdentity = "transfer-target";
 
-    // Step 3: Generate token for TransferAgent
+    // Step 2: Generate token for TransferAgent
     const accessToken = new AccessToken(LIVEKIT_API_KEY!, LIVEKIT_API_SECRET!, {
       identity: transferAgentIdentity,
     });
@@ -518,7 +514,7 @@ async function startConsultativeTransfer(
     accessToken.addGrant(videoGrant);
     const token = await accessToken.toJwt();
 
-    // Step 4: Create and connect consultation room
+    // Step 3: Create and connect consultation room
     const consultRoom = new Room();
     await consultRoom.connect(LIVEKIT_URL!, token);
     setConsultRoomName(consultRoomName);
@@ -526,7 +522,7 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 5: Dial transfer target into consultation room
+    // Step 4: Dial transfer target into consultation room
     const transferTargetParticipant = await dialTransferTargetToConsultation(
       consultRoomName,
       args.number,
@@ -539,8 +535,8 @@ async function startConsultativeTransfer(
       context.registrationEndpointId,
       callerId
     );
-
-    // Step 6: Create TransferAgent with conversation history
+    setBridgedParticipant(transferTargetParticipant);
+    // Step 5: Create TransferAgent with conversation history
     const prevCtx = session.chatCtx;
     const ctxCopy = prevCtx.copy({
       excludeEmptyMessage: true,
@@ -664,7 +660,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       },
     });
 
-    // Step 7: Create TransferAgent session and connect to consultation room
+    // Step 6: Create TransferAgent session and connect to consultation room
     const transferSession = new voice.AgentSession({
       llm: session.llm, // Reuse the same LLM instance
     });
@@ -680,7 +676,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     logger.info({}, "transfer agent started in consultation room");
     transferSession?.generateReply({ userInput: 'announce yourself and explain why you are calling' });
 
-    // Step 8: Create call record for consultation leg
+    // Step 7: Create call record for consultation leg
     const { agent, instance, call } = context;
     const { userId, organisationId } = agent;
     const consultCallRecord = await createCall({
@@ -711,25 +707,32 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       "created consultation call record"
     );
 
-    // Step 9: Update state to dialling
+    // Step 8: Update state to dialling
     context.setTransferState("dialling", "Dialling transfer target...");
 
-    // Step 10: Start the consultation call (transfer target has answered)
+    // Step 9: Start the consultation call (transfer target has answered)
     await consultCallRecord.start();
     logger.info(
       { consultCallId: consultCallRecord.id },
       "started consultation call"
     );
 
-    // Step 11: Update state to talking (transfer target has answered)
+    // Update state to talking (transfer target has answered)
     context.setTransferState("talking", "Speaking with transfer target...");
 
-    // Step 12: Listen for transfer target disconnect in consultation room
+    // Step 11: Listen for transfer target disconnect in consultation room
     consultRoom.on(RoomEvent.ParticipantDisconnected, async (p: any) => {
       // Check if the disconnected participant is the transfer target
       if (p?.info?.identity === transferTargetIdentity) {
+        // Sometimes callback fires while we are already in the process of closing. Do nothing.
+        if (!context.getConsultInProgress()) {
+          return;
+        }
         logger.info(
-          { participant: p?.info },
+          {
+            participant: p?.info,
+            context_resolve_decision: context.resolveConsultativeDecision,
+           },
           "Transfer target disconnected from consultation room"
         );
 
@@ -764,7 +767,6 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
     logger.error({ e, useRefer }, "failed to initiate warm transfer");
-    await holdParticipant(participant.sid!, false);
     // Clean up consultation room if it was created
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
@@ -797,26 +799,6 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   }
 }
 
-/**
- * Case 3: Consultative warm transfer (LiveKit pattern)
- * Uses separate consultation room with TransferAgent
- * Follows: https://docs.livekit.io/sip/transfer-warm/
- *
- * This function starts the consultation and waits for TransferAgent decision.
- * It's used internally by handleConsultativeTransfer.
- */
-async function handleWarmTransfer(
-  context: TransferContext,
-  effectiveCallerId: string,
-  effectiveAplisayId: string
-): Promise<TransferResult> {
-  return startConsultativeTransfer(
-    context,
-    effectiveCallerId,
-    effectiveAplisayId,
-    false
-  );
-}
 
 /**
  * Common function to finalize a consultative transfer
@@ -842,6 +824,7 @@ async function finaliseConsultativeTransfer(
     getTransferSession,
     getConsultRoom,
     getConsultCall,
+    setBridgedParticipant,
     setConsultInProgress,
     setTransferState,
     holdParticipant,
@@ -866,6 +849,10 @@ async function finaliseConsultativeTransfer(
 
   try {
     const transferTargetIdentity = "transfer-target";
+
+    // Clear the in-progress flag and update state
+    setConsultInProgress(false);
+    setTransferState("none", "Transfer completed successfully");
 
     if (useRefer) {
       // Case 4: Use SIP REFER to transfer the original caller to the transfer target
@@ -906,51 +893,26 @@ async function finaliseConsultativeTransfer(
       logger.info({}, "transfer target moved to caller room");
     }
 
-    // Step 2: Unhold the caller so they can hear the introduction
-    await holdParticipant(participant.sid!, false);
-
     // Step 3: Close TransferAgent session and disconnect from consultation room
     if (transferSession) {
-      await transferSession.close();
-    }
-    if (consultRoom) {
-      await consultRoom.disconnect();
+      transferSession.close();
     }
 
     // Step 4: Delete consultation room
     await roomService.deleteRoom(consultRoomName);
 
+
     logger.info({}, "consultation room cleaned up");
 
     // Step 5: End consultation call and create transaction logs for transcript
     const consultCall = getConsultCall();
-    if (consultCall && transferSession) {
-      const transcript = getTransferAgentTranscript(transferSession);
-      if (transcript) {
-        const { userId, organisationId } = agent;
-        await createTransactionLog({
-          userId,
-          organisationId,
-          callId: consultCall.id,
-          type: "agent",
-          data: transcript,
-          isFinal: true,
-        });
-        logger.info(
-          { consultCallId: consultCall.id },
-          "created transaction log for consultation transcript"
-        );
-      }
+    if (consultCall) {
       await consultCall.end("Transfer completed");
       logger.info({ consultCallId: consultCall.id }, "ended consultation call");
     }
 
     // Step 6: Finalize the call record
     await finaliseBridgedCallFn();
-
-    // Step 7: Clear the in-progress flag and update state
-    setConsultInProgress(false);
-    setTransferState("none", "Transfer completed successfully");
 
     return {
       status: "OK",
@@ -1110,7 +1072,7 @@ export async function destroyInProgressTransfer(
  * @param context - Transfer context
  * @param rejectionSummary - Optional summary of why the transfer was rejected (will be generated from transcript if not provided)
  */
-export async function rejectWarmTransfer(
+export async function rejectConsultativeTransfer(
   context: TransferContext,
   rejectionSummary?: string
 ): Promise<TransferResult> {
@@ -1146,7 +1108,7 @@ export async function rejectWarmTransfer(
   let finalSummary = rejectionSummary;
   logger.debug(
     { rejectionSummary, finalSummary },
-    "rejectWarmTransfer: initialized finalSummary"
+    "rejectConsultativeTransfer: initialized finalSummary"
   );
 
   try {
@@ -1217,8 +1179,6 @@ export async function rejectWarmTransfer(
       }
     }
 
-    // Step 5: Unhold the caller
-    await holdParticipant(participant.sid!, false);
   } catch (e) {
     logger.error({ e }, "error during consult rejection cleanup");
   }
@@ -1229,34 +1189,7 @@ export async function rejectWarmTransfer(
   };
 }
 
-/**
- * Case 4: Consultative warm transfer with SIP REFER (LiveKit pattern)
- * Uses separate consultation room with TransferAgent, then SIP REFER for transfer
- * Follows: https://docs.livekit.io/sip/transfer-warm/ but uses REFER instead of bridging
- */
-async function handleWarmTransferWithRefer(
-  context: TransferContext,
-  effectiveCallerId: string,
-  effectiveAplisayId: string
-): Promise<TransferResult> {
-  return startConsultativeTransfer(
-    context,
-    effectiveCallerId,
-    effectiveAplisayId,
-    true
-  );
-}
 
-/**
- * Finalizes a warm transfer (LiveKit pattern for case 4)
- * Uses SIP REFER to transfer the original caller to the transfer target
- */
-export async function finaliseWarmTransferWithRefer(
-  context: TransferContext,
-  finaliseBridgedCallFn: () => Promise<Call | null>
-): Promise<TransferResult> {
-  return finaliseConsultativeTransfer(context, finaliseBridgedCallFn, true);
-}
 
 /**
  * Handles consultative transfer - starts consultation, waits for decision, then finalizes or rejects
@@ -1313,20 +1246,12 @@ async function handleConsultativeTransfer(
     // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
     // When fixed, restore: if (isSip && canRefer) to use Case 4 (REFER) for registration-originated calls
     let startResult: TransferResult;
-    // Temporarily always use bridged method (Case 3) even for registration-originated calls
-    // if (isSip && canRefer) {
-    //   // Case 4: Warm transfer with SIP REFER
-    //   startResult = await handleWarmTransferWithRefer(
-    //     consultativeContext,
-    //     effectiveCallerId,
-    //     effectiveAplisayId
-    //   );
-    // } else {
-    // Case 3: Warm transfer (LiveKit approach)
-    startResult = await handleWarmTransfer(
+
+    startResult = await startConsultativeTransfer(
       consultativeContext,
       effectiveCallerId,
-      effectiveAplisayId
+      effectiveAplisayId,
+      false // canRefer && isSip && !useBridged
     );
     // }
 
@@ -1350,7 +1275,7 @@ async function handleConsultativeTransfer(
     (async () => {
       try {
         // Wait for TransferAgent decision (with timeout)
-        const timeout = 300000; // 5 minutes
+        const timeout = 180000; //  minutes
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(
             () =>
@@ -1364,15 +1289,8 @@ async function handleConsultativeTransfer(
         if (decision.accepted) {
           // Finalize the transfer
           // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-          // When fixed, restore: if (finaliseIsSip && finaliseCanRefer) to use REFER for finalization
-          // const finaliseCanRefer = canParticipantRefer(participant, registrationOriginated, trunkInfo);
-          // const finaliseIsSip = isSipParticipant(participant);
 
           let finaliseResult: TransferResult;
-          // Temporarily always use bridged method (Case 3) even for registration-originated calls
-          // if (finaliseIsSip && finaliseCanRefer) {
-          //   finaliseResult = await finaliseWarmTransferWithRefer(consultativeContext, finaliseBridgedCallFn);
-          // } else {
           finaliseResult = await finaliseConsultativeTransfer(
             consultativeContext,
             finaliseBridgedCallFn,
@@ -1409,9 +1327,9 @@ async function handleConsultativeTransfer(
               rejectionSummary,
               hasTranscript: !!decision.transcript,
             },
-            "About to call rejectWarmTransfer with rejection summary"
+            "About to call rejectConsultativeTransfer with rejection summary"
           );
-          await rejectWarmTransfer(consultativeContext, rejectionSummary);
+          await rejectConsultativeTransfer(consultativeContext, rejectionSummary);
           logger.info(
             {
               transcript: decision.transcript,
@@ -1431,7 +1349,7 @@ async function handleConsultativeTransfer(
         // Clean up on error
         try {
           if (context.getConsultInProgress()) {
-            await rejectWarmTransfer(consultativeContext);
+            await rejectConsultativeTransfer(consultativeContext);
           }
         } catch (cleanupError) {
           logger.error({ cleanupError }, "Error during cleanup");

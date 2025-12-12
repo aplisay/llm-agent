@@ -109,7 +109,6 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
-  holdParticipant: (identity: string, hold: boolean) => Promise<void>;
 }
 
 export interface TransferArgs {
