@@ -598,7 +598,7 @@ numbers to be dialled then it is possible for them to easilly create 5 figure lo
 3. Caller's endpoint initiates new call to transfer target
 4. Original call leg ends
 5. Agent session closes
-6. New bridged call record created
+6. New bridged call record NOT created
 
 ### Consultative Transfer Flow
 
@@ -624,8 +624,9 @@ If rejected:
 4. TransferAgent joins consultation room
 5. TransferAgent explains caller's needs
 6. TransferAgent waits for accept/reject decision
-7. If accepted: Transfer target moved to main room
-8. If rejected: Consultation room cleaned up
+7. Reject decision may include a summary of the reject target conversation to pass back to agent.
+7. If accepted: Status set and transfer target moved to main room
+8. If rejected: Status set and consultation room cleaned up
 9. Consultation call record created with transcript
 
 ## Best Practices
@@ -648,7 +649,7 @@ If rejected:
 5. **Transfer status is only relevant for consultative transfers**: For blind transfers, the function returns immediately when the transfer completes
 6. **Telephone agents only**: Transfer functionality is only available for telephone agents, not other agent types
 7. **Caller ID validation**: When using the `callerId` parameter, the number must be owned by your organisation and have outbound calling enabled
-8. **Confidential consult limitations**: The `confidentialConsult` parameter only affects the rejection summary returned via `transfer_status`. It does not affect other failure messages or accepted transfers
+8. **Confidential consult limitations**: The `confidentialConsult` parameter supresses any summary information about rejection reasons being passed from the transfer agent back to the main agent to prevent it giving the caller details derived from this conversation. This parameter only affects the rejection summary returned via `transfer_status`. It does not affect other failure messages or accepted transfers
 
 ## Troubleshooting
 
@@ -661,6 +662,7 @@ If rejected:
 ### Consultative transfer hangs
 
 - Check that `transfer_status` is being called to keep the agent that initiated the transfer informed about the current status
+- Ensure the main agent is prompted to continue responding to the caller until the consult ends
 - Verify the transfer target is answering the call
 - Check logs for TransferAgent errors in the consultation room
 
