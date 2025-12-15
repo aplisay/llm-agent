@@ -4,6 +4,7 @@ import JambonzSession from './session.js';
 import logger from '../agent-lib/logger.js';
 import Jambonz from '../agent-lib/jambonz.js';
 import { getHandler } from '../agent-lib/handlers/index.js';
+import { maybeSendCallHook } from '../agent-lib/call-hook.js';
 
 dotenv.config();
 
@@ -80,7 +81,22 @@ export default class Application {
             progress: {
               send: async (data, isFinal = true) => {
                 try {
-                  data.call && call.start();
+                  if (data.call) {
+                    call.start();
+                    // Fire callHook start callback once per call (non-blocking)
+                    if (!call._callHookStartSent) {
+                      call._callHookStartSent = true;
+                      maybeSendCallHook({
+                        event: 'start',
+                        call,
+                        agent,
+                        listenerOrInstance: instance,
+                        logger
+                      }).catch((err) => {
+                        logger?.warn?.(err, 'error sending Jambonz callHook start callback');
+                      });
+                    }
+                  }
                   await handler.transcript({
                     callId, type: Object.keys(data)?.[0], data: JSON.stringify(Object.values(data)?.[0])
                   });
@@ -95,6 +111,16 @@ export default class Application {
           await sessionHandler.handler();
           logger.debug({ callId }, 'session ended');
           call.end();
+          // Fire callHook end callback (non-blocking, rely on lazy transcript fetch)
+          maybeSendCallHook({
+            event: 'end',
+            call,
+            agent,
+            listenerOrInstance: instance,
+            logger
+          }).catch((err) => {
+            logger?.warn?.(err, 'error sending Jambonz callHook end callback');
+          });
         }
         else {
           logger.info({ calledId }, 'No instance for call');
@@ -103,7 +129,20 @@ export default class Application {
       catch (err) {
         logger.info(err, 'error in call progress');
         this.sessionHandler && await this.sessionHandler.forceClose();
-        this.call && this.call.end();
+        if (this.call) {
+          this.call.end();
+          // Best-effort end callback with generic error reason
+          maybeSendCallHook({
+            event: 'end',
+            call: this.call,
+            agent: null,
+            listenerOrInstance: null,
+            reason: 'error',
+            logger
+          }).catch((e) => {
+            logger?.warn?.(e, 'error sending Jambonz callHook end callback (error path)');
+          });
+        }
       }
     });
   }

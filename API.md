@@ -32,6 +32,8 @@
 <dl>
 <dt><a href="#Completion">Completion</a> : <code>Object</code></dt>
 <dd></dd>
+<dt><a href="#CallHook">CallHook</a> : <code>Object</code></dt>
+<dd>Configuration for external callbacks on call start/end.</dd>
 </dl>
 
 <a name="JambonzSession"></a>
@@ -1096,4 +1098,19 @@ Creates an instance of Palm2.
 | text | <code>string</code> | parsed text string with \n's translated to breaks and directives removed |
 | data | <code>Object</code> | returned inline data object (or null of no returned data) |
 | hangup | <code>boolean</code> | true if a @HANGUP inline directive is present in the raw completion |
+
+<a name="CallHook"></a>
+
+## CallHook : <code>Object</code>
+**Kind**: global typedef  
+**Description**: Configuration attached to an Agent (`agent.options.callHook`) or Listener (`listener.options.callHook`) to invoke an external URL when calls start and/or end.  
+**Properties**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| url | <code>string</code> | Required. URL to POST to when the hook is triggered. |
+| hashKey | <code>string</code> | Optional shared secret used to compute a request body hash (`hashKey \| callId \| listenerId \| agentId`). |
+| includeTranscript | <code>boolean</code> | Optional. If true, the `end` event payload will include a transcript where available. |
+| events | <code>Array.&lt;string&gt;</code> | Optional. Subset of `['start','end']` specifying which events should trigger the callback. Defaults to both when omitted. |
+
 

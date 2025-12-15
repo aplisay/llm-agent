@@ -1,4 +1,5 @@
 import { Call , TransactionLog } from '../../../../../lib/database.js';
+import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
 
 let appParameters, log;
 
@@ -54,6 +55,27 @@ const callEnd = (async (req, res) => {
       data: reason || 'unknown'
     });
     await call.end();
+
+    // Build transcript from provided transactionLogs if present
+    let transcript = null;
+    if (transactionLogs && Array.isArray(transactionLogs) && transactionLogs.length > 0) {
+      transcript = {
+        entries: transactionLogs
+      };
+    }
+
+    // Fire callHook end callback (non-blocking)
+    maybeSendCallHook({
+      event: 'end',
+      call,
+      agent: null,
+      listenerOrInstance: null,
+      reason,
+      transcript,
+      logger: log
+    }).catch((err) => {
+      log?.warn?.(err, 'error sending callHook end callback');
+    });
     
     res.send({ message: 'Call ended successfully', callId });
   }

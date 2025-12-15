@@ -210,6 +210,8 @@ components:
           description: Agent LLM temperature
           type: number
           example: 0.2
+        callHook:
+          $ref: "#/components/schemas/CallHookConfig"
         tts:
           type: object
           properties:
@@ -276,6 +278,105 @@ components:
             3. If yes, call accept_transfer. If no, call reject_transfer.
             
             Be professional and concise.
+    CallHookConfig:
+      type: object
+      description: |-
+        Configuration for external callbacks on call start and end events.
+        Can be set on the agent (`agent.options.callHook`) and/or the listener (`listener.options.callHook`).
+        The effective configuration for a call is resolved by taking the listener-level `callHook` if present,
+        otherwise the agent-level `callHook`, otherwise no callback is made.
+      properties:
+        url:
+          type: string
+          description: |-
+            URL to POST a JSON payload to when the hook is triggered.
+            Called for each configured event (start/end).
+          example: https://app.example.com/call-hook
+        hashKey:
+          type: string
+          description: |-
+            Optional shared secret used to compute a request body hash.
+            The hash is computed as an HMAC-SHA256 over the canonical string:
+            `hashKey|callId|listenerId|agentId` and exposed in the JSON body as the `hash` property.
+          example: "super-secret-key"
+        includeTranscript:
+          type: boolean
+          description: |-
+            When true, the `end` event callback will include a `transcript` field if available.
+            For some flows, the transcript is passed to the call end API; otherwise it is lazily fetched
+            from the transaction log for the callId (preferring final logs where available).
+          default: false
+        events:
+          type: array
+          description: |-
+            The set of events that should trigger callbacks.
+            When omitted or empty, the default is to send callbacks for both `start` and `end`.
+          items:
+            type: string
+            enum: ["start", "end"]
+          example: ["start", "end"]
+    CallHookPayload:
+      type: object
+      description: |-
+        JSON payload POSTed to the configured `callHook.url` on call start and end events.
+        The payload always contains identifiers for the call, agent and listener (instance),
+        along with caller/called information and an event type.
+        On `end` events, optional duration, reason and transcript information may be included.
+      properties:
+        event:
+          type: string
+          description: The event type that triggered the callback.
+          enum: ["start", "end"]
+          example: "end"
+        callId:
+          type: string
+          description: Unique ID of the call.
+          example: "648aa45d-204a-4c0c-a1e1-419406254134"
+        agentId:
+          type: string
+          description: ID of the agent associated with the call (if available).
+          example: "648aa45d-204a-4c0c-a1e1-419406252234"
+        listenerId:
+          type: string
+          description: ID of the listener/instance associated with the call (if available).
+          example: "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777"
+        callerId:
+          type: string
+          description: Caller number for the call.
+          example: "+443300889471"
+        calledId:
+          type: string
+          description: Called number for the call.
+          example: "+442080996945"
+        timestamp:
+          type: string
+          format: date-time
+          description: Time at which the callback was generated on the server.
+          example: "2025-06-04T12:00:01.000Z"
+        reason:
+          type: string
+          nullable: true
+          description: Optional reason for call end, when `event` is `end`.
+          example: "normal_hangup"
+        durationSeconds:
+          type: number
+          nullable: true
+          description: |-
+            Optional call duration in seconds, when `event` is `end` and the information is available.
+          example: 60
+        transcript:
+          type: object
+          nullable: true
+          description: |-
+            Optional transcript object for `end` events when `includeTranscript` is enabled.
+            The exact structure is implementation-specific but typically contains an `entries` array
+            with per-turn logs (role, text/data, timestamps).
+        hash:
+          type: string
+          description: |-
+            Optional request integrity hash when `hashKey` is configured on the callHook.
+            Computed as HMAC-SHA256 over `hashKey|callId|listenerId|agentId` and represented as a hex string.
+          example: "aef1f2e6d3c9..."
     CallbackUrl:
       type: string
       description: A callback URL to be used for status updates

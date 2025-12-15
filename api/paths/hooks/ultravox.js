@@ -1,5 +1,6 @@
-import { Agent, Instance, Call  } from '../../../lib/database.js';;
-import Handler from '../../../lib/handlers/ultravox.js';;
+import { Agent, Instance, Call  } from '../../../lib/database.js';
+import Handler from '../../../lib/handlers/ultravox.js';
+import { maybeSendCallHook } from '../../../lib/call-hook.js';
 
 let appParameters, log;
 
@@ -28,6 +29,25 @@ const recordHook = (async (req, res) => {
     else {
       let handler = new Handler({ agent });
       await handler.callEnded(call, callRecord);
+
+      // Resolve instance for callback payload (listenerId)
+      let instance = null;
+      if (callRecord?.instanceId) {
+        instance = await Instance.findByPk(callRecord.instanceId);
+      }
+
+      // Fire callHook end callback for Ultravox WebRTC calls (non-blocking)
+      maybeSendCallHook({
+        event: 'end',
+        call: callRecord,
+        agent,
+        listenerOrInstance: instance,
+        reason: call?.reason,
+        logger: req.log || log
+      }).catch((err) => {
+        (req.log || log)?.warn?.(err, 'error sending Ultravox callHook end callback');
+      });
+
       res.send({});
       return;
     }
