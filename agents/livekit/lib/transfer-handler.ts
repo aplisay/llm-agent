@@ -1124,15 +1124,15 @@ export async function rejectConsultativeTransfer(
 
     setConsultInProgress(false);
 
-    // If confidentialConsult is enabled, suppress the detailed rejection summary
-    // to prevent confidential information from the transfer target reaching the original agent
-    const isConfidential = context.args?.confidentialConsult === true;
-    const stateDescription = isConfidential
-      ? "Transfer failed"
-      : finalSummary;
+    // By default, do NOT share detailed rejection feedback with the original agent.
+    // The new consultFeedback flag, when true, enables sharing the detailed summary.
+    const shareFeedback = context.args?.consultFeedback === true;
+    const stateDescription = shareFeedback
+      ? finalSummary
+      : "Transfer failed";
 
     logger.debug(
-      { finalSummary, stateDescription, isConfidential },
+      { finalSummary, stateDescription, consultFeedback: shareFeedback },
       "Setting transfer state to rejected"
     );
     setTransferState("rejected", stateDescription);
