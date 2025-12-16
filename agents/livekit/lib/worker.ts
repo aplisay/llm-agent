@@ -166,7 +166,6 @@ export default defineAgent({
         checkForHangup,
         sessionRef,
         modelRef,
-        holdParticipant,
         getActiveCall,
         endTransferActivityIfNeeded: endTransferActivityFn,
         getTransferState,
@@ -232,10 +231,39 @@ export default defineAgent({
             throw new Error("Outbound call failed to create participant");
           }
         } catch (err) {
-          logger.error({ err }, "Outbound call failed");
+          const failureReason = (err as Error).message.replace(
+            /^twirp [^:]*: /,
+            ""
+          );
+          logger.error({ err, failureReason }, "Outbound call failed");
+          // Notify listeners in-room about the failure
           sendMessage({
-            call_failed: (err as Error).message.replace(/^twirp [^:]*: /, ""),
+            call_failed: failureReason,
           });
+          // For failed outbound calls we still want to emit
+          // a call start and end so downstream systems see a
+          // complete call lifecycle with a clearing reason.
+          try {
+            const failureTimestamp = new Date();
+            // Best effort: log an immediate start then end. The
+            // timestamps will be near-identical and represent a
+            // call that failed to connect.
+            await call.start();
+            await call.end(`Outbound call failed: ${failureReason}`);
+            logger.info(
+              {
+                callId: call.id,
+                failureReason,
+                failureTimestamp,
+              },
+              "Logged start and immediate end for failed outbound call"
+            );
+          } catch (loggingError) {
+            logger.error(
+              { loggingError, failureReason, callId: call?.id },
+              "Failed to log start/end for failed outbound call"
+            );
+          }
           throw err;
         }
       }
@@ -262,7 +290,6 @@ export default defineAgent({
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         checkForHangup,
         getConsultInProgress: () => consultInProgress,
-        holdParticipant,
         getActiveCall,
         endTransferActivityIfNeeded: endTransferActivityFn,
         getTransferState,
@@ -766,40 +793,6 @@ async function setupCallAndUtilities({
     }
   };
 
-  // This is a bit of a hack, what we really want to do is move the caller into
-  //  an isolated "hold" room, but the agent framework gets upset when we remove it
-  //  from the main room.
-  const holdParticipant = async (identity: string, hold: boolean) => {
-    const participants = await roomService.listParticipants(room.name!);
-    const targetParticipant = participants.find((p) => p.sid === identity);
-    logger.debug({ identity, participants, hold }, "holding participant");
-    try {
-      // unsubscribe from all tracks when holding; resubscribe to none, agent will still hear callee
-      await roomService.updateSubscriptions(
-        room.name!,
-        targetParticipant?.identity!,
-        [],
-        !hold
-      );
-      logger.debug(
-        { identity: targetParticipant?.sid, hold },
-        "updated subscriptions for hold"
-      );
-    } catch (e: any) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      logger.error(
-        {
-          error,
-          message: error.message,
-          stack: error.stack,
-          identity,
-          roomName: room.name,
-          hold,
-        },
-        "failed to update subscriptions"
-      );
-    }
-  };
 
   const onTransfer = async ({
     args,
@@ -832,7 +825,6 @@ async function setupCallAndUtilities({
         setBridgedParticipant,
         setConsultInProgress,
         getConsultInProgress,
-        holdParticipant,
         getCurrentBridged,
         setCurrentBridged,
         setConsultRoomName,
@@ -902,7 +894,6 @@ async function setupCallAndUtilities({
     sessionRef,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || call,
-    holdParticipant,
     endTransferActivityIfNeeded,
     getTransferState,
   };
@@ -1028,7 +1019,6 @@ async function runAgentWorker({
   sessionRef,
   modelRef,
   getConsultInProgress,
-  holdParticipant,
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
@@ -1257,28 +1247,11 @@ async function runAgentWorker({
           { p, bridgedParticipant: bp, participant },
           "participant disconnected"
         );
-        if (bp?.participantId === p?.info?.sid) {
+        if (bp?.participantId === p?.info?.sid || bp?.participantIdentity === p?.info?.identity) {
           if (getConsultInProgress()) {
             logger.debug(
               "consult callee disconnected, treating as consult_reject"
             );
-            // Unhold original participant
-            try {
-              const participants = await roomService.listParticipants(
-                room.name
-              );
-              const original = participants.find(
-                (pi) => pi.sid !== bp?.participantId
-              );
-              if (original?.sid) {
-                await holdParticipant(original.sid, false);
-              }
-            } catch (e) {
-              logger.error(
-                { e },
-                "failed to unhold participant on callee hangup"
-              );
-            }
             // reset consult state
             // remove bridged participant if still present in server state (it should be gone already)
             try {

@@ -908,7 +908,6 @@ export class RealtimeSession extends llm.RealtimeSession {
             const event: api_proto.UltravoxMessage = JSON.parse(
               message.data as string
             );
-            this.#logger.debug({ event }, "onmessage");
 
             this.#handleMessage(event);
           }
@@ -978,7 +977,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleMessage(event: api_proto.UltravoxMessage): void {
-    this.#logger.debug({ event }, "handleMessage");
+    //this.#logger.debug({ event }, "handleMessage");
     switch (event.type) {
       case "state":
         this.#handleStatus(event);
@@ -1151,9 +1150,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
-    this.#logger.debug(
+    event.final && this.#logger.debug(
       { event },
-      "handleTranscript - received transcript event"
+      "handleTranscript - received final transcript event"
     );
 
     if (event.role === "user") {

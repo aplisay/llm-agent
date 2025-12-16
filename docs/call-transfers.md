@@ -16,12 +16,13 @@ Both transfer types are implemented using the builtin `transfer` platform functi
 ### Blind Transfers
 
 Blind transfers may be implemented using two different mechanisms, depending on the capabilities of the original caller's connection.
-The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation:
+The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation. However, you can force bridging by setting the `forceBridged` parameter to `true`, which will override the automatic selection and always use bridging even when SIP REFER is available.
 
 #### 1. Bridging (Case 1)
 
 **When used:**
 - The original caller is a SIP participant but `canRefer` is not available or disabled
+- The `forceBridged` parameter is set to `true` (overrides REFER capability)
 
 **How it works:**
 - The system creates a new SIP participant in the same LiveKit room
@@ -121,6 +122,34 @@ All transfer functions use the `transfer` platform function with the following s
         "source": "static",
         "required": false,
         "description": "The transfer operation type: 'blind' or 'consultative'"
+      },
+      "callerId": {
+        "in": "query",
+        "type": "string",
+        "source": "static",
+        "required": false,
+        "description": "Optional caller ID to use for the transfer. Must be a phone number owned by your organisation with outbound calling enabled. If not specified, uses the original called number."
+      },
+      "transferPrompt": {
+        "in": "query",
+        "type": "string",
+        "source": "static",
+        "required": false,
+        "description": "Custom prompt for the TransferAgent in consultative transfers. Only applies when operation is 'consultative'. Can use ${parentTranscript} placeholder."
+      },
+      "consultFeedback": {
+        "in": "query",
+        "type": "boolean",
+        "source": "static",
+        "required": false,
+        "description": "When true, enables returning detailed rejection feedback from consultative transfers in the transfer_status description. When omitted or false, only a generic 'Transfer failed' message is returned. Defaults to false."
+      },
+      "forceBridged": {
+        "in": "query",
+        "type": "boolean",
+        "source": "static",
+        "required": false,
+        "description": "When true, forces a bridged transfer even when the trunk or registration endpoint supports SIP REFER. Defaults to false. Only applies to blind transfers."
       }
     }
   },
@@ -168,6 +197,8 @@ export default {
 - The function returns `OK` when the transfer completes
 - The agent session ends immediately after the transfer
 - The system automatically chooses between SIP REFER and bridging based on capabilities
+- Optional `callerId` can be specified to override the caller ID presented to the transfer target
+- Optional `forceBridged` can be set to `true` to force bridging even when REFER is available
 
 ### Example 2: Consultative Transfer Agent
 
@@ -231,6 +262,8 @@ export default {
 - The `transfer` function returns immediately with status `OK` and a message indicating the consultation has started
 - The agent must call `transfer_status` periodically to check progress
 - The agent should keep the caller informed about the transfer status
+- Optional `transferPrompt` can customize how the TransferAgent introduces the call
+- Optional `consultFeedback` can enable returning detailed rejection feedback from the consultation when the transfer is rejected
 
 ## Transfer Status Monitoring
 
@@ -271,8 +304,8 @@ For consultative transfers, the recommended pattern is:
 
 ### Example Agent Prompt for Status Monitoring
 
-```
-You are a helpful assistant. When you receive a call, greet the caller and determine the nature of their enquiry. Once you understand what they need, call the transfer function to initiate a consultative transfer. 
+```text
+You are a helpful assistant. When you receive a call, greet the caller and determine the nature of their enquiry. Once you understand what they need, call the transfer function to initiate a consultative transfer.
 
 After calling transfer, periodically call transfer_status to check the progress of the transfer and keep the caller informed about what's happening. Let them know:
 - When the transfer target is being called ("I'm calling them now...")
@@ -280,6 +313,202 @@ After calling transfer, periodically call transfer_status to check the progress 
 - When the transfer is completed ("You should now be connected to them.")
 - If there are any issues ("I'm sorry, but they're not available. Let me help you instead.")
 ```
+
+## Transfer Parameters
+
+### Caller ID Override
+
+You can specify a custom caller ID to be presented to the transfer target using the `callerId` parameter:
+
+```json
+{
+  "functions": [
+    {
+      "name": "transfer",
+      "platform": "transfer",
+      "input_schema": {
+        "properties": {
+          "number": {
+            "type": "string",
+            "source": "static",
+            "from": "+44123456789"
+          },
+          "callerId": {
+            "type": "string",
+            "source": "static",
+            "from": "+44123456780",
+            "description": "The caller ID to present to the transfer target"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**Requirements:**
+- The `callerId` must be a phone number owned by your organisation
+- The number must have outbound calling enabled
+- If the original call comes in on a telephony trunk, the caller ID number must use a matching egress trunk.
+- For WebRTC calls, the caller ID trunk, it will be used for the outbound transfer
+
+**Use cases:**
+- Presenting a department-specific number instead of the agent number
+- Using a dedicated transfer number for tracking purposes
+- Maintaining consistent caller ID across multiple transfers
+
+### Custom Transfer Prompts
+
+For consultative transfers, you can customize the prompt used by the TransferAgent that speaks with the transfer target. This allows you to control how the call is introduced and what information is shared.
+
+#### Agent-Level Configuration
+
+You can set a default `transferPrompt` for all consultative transfers by an agent in the agent's options:
+
+```json
+{
+  "name": "My Agent",
+  "options": {
+    "transferPrompt": "You are a transfer assistant. Here is the conversation history: ${parentTranscript}\n\nYou are now speaking with the person who will take over this call. Please:\n1. Briefly summarize why the caller needs help\n2. Ask if they can take the call\n3. If yes, call accept_transfer. If no, call reject_transfer.\n\nBe professional and concise."
+  }
+}
+```
+
+The `${parentTranscript}` placeholder will be automatically replaced with the conversation history between the caller and the original agent.
+
+#### Per-Transfer Override
+
+You can also override the prompt for a specific transfer by including `transferPrompt` as a parameter in the transfer function call. This takes precedence over the agent-level setting:
+
+```json
+{
+  "functions": [
+    {
+      "name": "transfer_to_specialist",
+      "description": "Transfer to a specialist with detailed context",
+      "platform": "transfer",
+      "input_schema": {
+        "properties": {
+          "number": {
+            "type": "string",
+            "source": "static",
+            "from": "+44123456789"
+          },
+          "operation": {
+            "type": "string",
+            "source": "static",
+            "from": "consultative"
+          },
+          "transferPrompt": {
+            "type": "string",
+            "source": "static",
+            "from": "You are transferring a high-priority call. The caller has been waiting and needs immediate assistance. Conversation: ${parentTranscript}\n\nPlease accept this transfer urgently by calling accept_transfer."
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**Priority order:**
+1. `transferPrompt` parameter in the transfer function call (highest priority)
+2. `options.transferPrompt` in agent configuration
+3. Default system prompt (lowest priority)
+
+**Note:** The `transferPrompt` parameter only applies to consultative transfers (`operation: "consultative"`). It is ignored for blind transfers. When used in function calls, `transferPrompt` can only be specified as `static` - it cannot be generated by the LLM or sourced from metadata.
+
+### Consultative Transfer Feedback
+
+When performing consultative transfers, the TransferAgent may provide detailed rejection reasons explaining why the transfer target declined the call. By default, these detailed reasons are **not** shared with the original agent to keep the consultation confidential.
+
+Use the `consultFeedback` parameter to enable returning detailed rejection feedback:
+
+```json
+{
+  "functions": [
+    {
+      "name": "transfer",
+      "platform": "transfer",
+      "input_schema": {
+        "properties": {
+          "number": {
+            "type": "string",
+            "source": "static",
+            "from": "+44123456789"
+          },
+          "operation": {
+            "type": "string",
+            "source": "static",
+            "from": "consultative"
+          },
+          "consultFeedback": {
+            "type": "boolean",
+            "source": "static",
+            "from": true,
+            "description": "Enable returning detailed rejection feedback in transfer_status"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**Behavior:**
+- When `consultFeedback: true`:
+  - If the transfer is rejected, `transfer_status` returns `{ state: "rejected", description: "<detailed rejection feedback>" }` including the detailed rejection summary from the consultation
+  - The original agent can see and use this feedback to explain the outcome to the caller
+- When `consultFeedback: false` or omitted:
+  - If the transfer is rejected, `transfer_status` returns `{ state: "rejected", description: "Transfer failed" }` without any detailed rejection reasons
+  - Detailed rejection information from the TransferAgent is kept confidential and not shared with the original agent
+
+**Use cases:**
+- Opting in to share detailed consultative feedback with the original agent when appropriate
+- Keeping the default behavior privacy-preserving unless feedback is explicitly enabled
+
+### Force Bridged Transfers
+
+By default, the system automatically selects the most appropriate transfer method (bridging or SIP REFER) based on the capabilities of the trunk or registration endpoint. However, you can force the system to use bridging even when SIP REFER is available by setting the `forceBridged` parameter to `true`.
+
+```json
+{
+  "functions": [
+    {
+      "name": "transfer",
+      "platform": "transfer",
+      "input_schema": {
+        "properties": {
+          "number": {
+            "type": "string",
+            "source": "static",
+            "from": "+44123456789"
+          },
+          "operation": {
+            "type": "string",
+            "source": "static",
+            "from": "blind"
+          },
+          "forceBridged": {
+            "type": "boolean",
+            "source": "static",
+            "from": true,
+            "description": "Force bridged transfer even when REFER is available"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**When to use:**
+- When you need to maintain control over the call path and ensure the platform continues to carry the call
+- When you need to preserve custom SIP headers (like `X-Aplisay-Origin-Caller-Id`) that are not available with REFER
+- When you need consistent billing behavior (bridged calls continue to incur platform charges)
+- When the upstream system's REFER implementation has limitations or issues
+
+**Note:** The `forceBridged` parameter only applies to blind transfers. Consultative transfers always use bridging regardless of this setting.
 
 ## Outbound Call Filter
 
@@ -368,7 +597,7 @@ numbers to be dialled then it is possible for them to easilly create 5 figure lo
 3. Caller's endpoint initiates new call to transfer target
 4. Original call leg ends
 5. Agent session closes
-6. New bridged call record created
+6. New bridged call record NOT created
 
 ### Consultative Transfer Flow
 
@@ -394,15 +623,16 @@ If rejected:
 4. TransferAgent joins consultation room
 5. TransferAgent explains caller's needs
 6. TransferAgent waits for accept/reject decision
-7. If accepted: Transfer target moved to main room
-8. If rejected: Consultation room cleaned up
-9. Consultation call record created with transcript
+7. Reject decision may include a summary of the reject target conversation to pass back to agent.
+8. If accepted: Status set and transfer target moved to main room
+9. If rejected: Status set and consultation room cleaned up
+10. Consultation call record created with transcript
 
 ## Best Practices
 
 1. **Always provide clear prompts**: Instruct your agent when and how to use transfers
 2. **Monitor transfer status**: For consultative transfers, always check `transfer_status` and keep callers informed
-3. **Use appropriate transfer types**: 
+3. **Use appropriate transfer types**:
    - Use blind transfers for simple redirects
    - Use consultative transfers when context needs to be explained and the transfer target needs to confirm acceptance of the call
 4. **Set up outbound call filters**: Always configure `outboundCallFilter` in production which is defined tightly to only allow numbers you expect to be used
@@ -414,10 +644,11 @@ If rejected:
 1. **Only one transfer at a time**: The system prevents concurrent transfers. If a transfer is already in progress, subsequent transfer requests will return `FAILED`
 2. **Transfer numbers must be static or from metadata**: For security, transfer numbers cannot be generated by the LLM - they must come from static values or metadata
 3. **Consultative transfers always use bridging**: SIP REFER for consultative transfers is currently disabled because, whilst theoretically possible, it isn't clear how to do this through current components (getting `Replaces:` through Livekit to the B2BUA)
-4. **TransferAgent prompt is not configurable**: in this initial implemantation,
-the prompt which is used to ask for consent to transfer the call cannot be changed - a mechanism to allow this to be done in a more sophisticated way needs o be implemented in due course
-4. **Transfer status is only relevant for consultative transfers**: For blind transfers, the function returns immediately when the transfer completes
-5. **Telephone agents only**: Transfer functionality is only available for telephone agents, not other agent types
+4. **TransferAgent prompt is configurable**: The prompt used by the TransferAgent can be customized via `options.transferPrompt` at the agent level or via the `transferPrompt` parameter per transfer call. See the [Custom Transfer Prompts](#custom-transfer-prompts) section for details.
+5. **Transfer status is only relevant for consultative transfers**: For blind transfers, the function returns immediately when the transfer completes
+6. **Telephone agents only**: Transfer functionality is only available for telephone agents, not other agent types
+7. **Caller ID validation**: When using the `callerId` parameter, the number must be owned by your organisation and have outbound calling enabled
+8. **Consultative feedback control**: The `consultFeedback` parameter controls whether detailed rejection reasons from consultative transfers are shared back to the main agent via the `transfer_status` description. By default (when omitted or false), only a generic "Transfer failed" message is returned and detailed rejection information remains confidential. Setting `consultFeedback` to true opts in to sharing the detailed rejection feedback.
 
 ## Troubleshooting
 
@@ -430,6 +661,7 @@ the prompt which is used to ask for consent to transfer the call cannot be chang
 ### Consultative transfer hangs
 
 - Check that `transfer_status` is being called to keep the agent that initiated the transfer informed about the current status
+- Ensure the main agent is prompted to continue responding to the caller until the consult ends
 - Verify the transfer target is answering the call
 - Check logs for TransferAgent errors in the consultation room
 

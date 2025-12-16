@@ -57,7 +57,6 @@ export interface TransferContext {
   setBridgedParticipant: (p: SipParticipant | null) => void;
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
-  holdParticipant: (identity: string, hold: boolean) => Promise<void>;
   getCurrentBridged: () => SipParticipant | null;
   setCurrentBridged: (p: SipParticipant | null) => void;
   // Consultation room state for warm transfers
@@ -77,7 +76,8 @@ export interface TransferContext {
   // Promise resolvers for consultative transfer decision
   resolveConsultativeDecision?: (
     accepted: boolean,
-    transcript?: string
+    transcript?: string,
+    reason?: string
   ) => void;
   rejectConsultativeDecision?: (error: Error) => void;
 }
@@ -177,7 +177,7 @@ async function validateTransferArgs(
     if (!pn) {
       throw new Error("Invalid callerId: number not found");
     }
-    if (pn.organisationId && pn.organisationId !== agent.organisationId) {
+    if (pn?.organisationId !== agent.organisationId) {
       throw new Error(
         "Invalid callerId: number not owned by this organisation"
       );
@@ -423,6 +423,42 @@ function getTransferAgentTranscript(
 }
 
 /**
+ * Helper function to generate a summary from transcript for rejection reason
+ * Extracts key information about why the transfer was rejected
+ */
+function generateRejectionSummary(
+  transcript: string,
+  explicitReason?: string
+): string {
+  // If there's an explicit reason provided, use it
+  if (explicitReason && explicitReason.trim()) {
+    return explicitReason.trim();
+  }
+
+  // If transcript is empty, return generic message
+  if (!transcript || !transcript.trim()) {
+    return "Transfer target declined the transfer";
+  }
+
+  // If transcript is short (less than 200 chars), use it directly
+  if (transcript.length <= 200) {
+    return transcript;
+  }
+
+  // For longer transcripts, try to extract the last few exchanges
+  // which likely contain the rejection reason
+  const lines = transcript.split("\n");
+  const lastLines = lines.slice(-6).join("\n"); // Last 6 lines (roughly last 3 exchanges)
+
+  // If the last lines are still too long, truncate
+  if (lastLines.length > 300) {
+    return lastLines.substring(0, 297) + "...";
+  }
+
+  return lastLines;
+}
+
+/**
  * Common function to start a consultative transfer consultation
  * Sets up consultation room, TransferAgent, and dials transfer target
  */
@@ -434,11 +470,10 @@ async function startConsultativeTransfer(
 ): Promise<TransferResult> {
   const {
     room,
-    participant,
     args,
     sessionRef,
+    setBridgedParticipant,
     setConsultInProgress,
-    holdParticipant,
     setConsultRoomName,
     setTransferSession,
     setConsultRoom,
@@ -458,15 +493,13 @@ async function startConsultativeTransfer(
   );
 
   try {
-    // Step 1: Place caller on hold (disable audio input and output)
-    await holdParticipant(participant.sid!, true);
 
-    // Step 2: Create consultation room
+    // Step 1: Create consultation room
     const consultRoomName = `consult-${room.name}-${Date.now()}`;
     const transferAgentIdentity = "transfer-agent";
     const transferTargetIdentity = "transfer-target";
 
-    // Step 3: Generate token for TransferAgent
+    // Step 2: Generate token for TransferAgent
     const accessToken = new AccessToken(LIVEKIT_API_KEY!, LIVEKIT_API_SECRET!, {
       identity: transferAgentIdentity,
     });
@@ -481,7 +514,7 @@ async function startConsultativeTransfer(
     accessToken.addGrant(videoGrant);
     const token = await accessToken.toJwt();
 
-    // Step 4: Create and connect consultation room
+    // Step 3: Create and connect consultation room
     const consultRoom = new Room();
     await consultRoom.connect(LIVEKIT_URL!, token);
     setConsultRoomName(consultRoomName);
@@ -489,7 +522,7 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 5: Dial transfer target into consultation room
+    // Step 4: Dial transfer target into consultation room
     const transferTargetParticipant = await dialTransferTargetToConsultation(
       consultRoomName,
       args.number,
@@ -502,8 +535,8 @@ async function startConsultativeTransfer(
       context.registrationEndpointId,
       callerId
     );
-
-    // Step 6: Create TransferAgent with conversation history
+    setBridgedParticipant(transferTargetParticipant);
+    // Step 5: Create TransferAgent with conversation history
     const prevCtx = session.chatCtx;
     const ctxCopy = prevCtx.copy({
       excludeEmptyMessage: true,
@@ -540,19 +573,21 @@ Your role is to:
 1. Summarize the call history for the transfer target
 2. Ask if they want to accept the transfer and speak with the caller
 3. If they accept, call the accept_transfer function
-4. If they decline, call the reject_transfer function
+4. If they decline, call the reject_transfer function with a detailed reason parameter that summarizes your conversation with the transfer target and explains why they declined. This summary will be provided to the original agent, so make it informative and clear.
 
 Be helpful, informal, but respectful and concise as if talking to a colleague in a company.`;
 
     // Get the prompt from args, agent options, or use default
-    const transferPrompt = 
-      args.transferPrompt || 
+    const transferPrompt =
+      args.transferPrompt ||
       context.agent.options?.transferPrompt ||
       defaultTransferPromptTemplate;
 
-    // If a custom prompt is provided, replace ${parentTranscript} placeholder if present
-    // Otherwise use the default template which already has parentTranscript embedded
-    const finalTransferPrompt = transferPrompt.replace(/\$\{parentTranscript\}/g, parentTranscript)
+    // Replace ${parentTranscript} placeholder if present
+    const finalTransferPrompt = transferPrompt.replace(
+      /\$\{parentTranscript\}/g,
+      parentTranscript
+    );
 
     // Create TransferAgent with conversation history and tools to accept/reject transfer
     const transferAgent = new voice.Agent({
@@ -584,25 +619,36 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
         }),
         reject_transfer: llm.tool({
           description:
-            "Reject the transfer and return the caller to the original agent. Use this when the transfer target declines to take the call.",
+            "Reject the transfer and return the caller to the original agent. Use this when the transfer target declines to take the call. IMPORTANT: The reason parameter should include a summary of your conversation with the transfer target explaining why they declined the transfer. This summary will be provided to the original agent.",
           parameters: {
             type: "object",
             properties: {
               reason: {
                 type: "string",
-                description: "The reason for rejecting the transfer if any",
+                description:
+                  "A summary of the conversation with the transfer target explaining why they declined the transfer. This should include key points from your discussion and the specific reason(s) they gave for not accepting the transfer.",
               },
             },
+            required: ["reason"],
           },
-          execute: async () => {
-            logger.info({}, "TransferAgent called reject_transfer");
-            // Get transcript before resolving
+          execute: async (args: { reason: string }) => {
+            logger.info(
+              { reason: args.reason },
+              "TransferAgent called reject_transfer"
+            );
+            // Get transcript for logging/transaction records, but use the explicit reason for the summary
             const transferSession = context.getTransferSession();
             const transcript = transferSession
               ? getTransferAgentTranscript(transferSession)
               : "";
             if (context.resolveConsultativeDecision) {
-              context.resolveConsultativeDecision(false, transcript);
+              logger.debug("resolving consultative decision");
+              // Use the explicit reason from the transfer agent - it should already contain a summary
+              context.resolveConsultativeDecision(
+                false,
+                transcript,
+                args.reason
+              );
             }
             return JSON.stringify({
               success: true,
@@ -614,7 +660,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       },
     });
 
-    // Step 7: Create TransferAgent session and connect to consultation room
+    // Step 6: Create TransferAgent session and connect to consultation room
     const transferSession = new voice.AgentSession({
       llm: session.llm, // Reuse the same LLM instance
     });
@@ -624,12 +670,13 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       room: consultRoom,
       agent: transferAgent,
       // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
-      record: false
+      record: false,
     });
 
     logger.info({}, "transfer agent started in consultation room");
+    transferSession?.generateReply({ userInput: 'announce yourself and explain why you are calling' });
 
-    // Step 8: Create call record for consultation leg
+    // Step 7: Create call record for consultation leg
     const { agent, instance, call } = context;
     const { userId, organisationId } = agent;
     const consultCallRecord = await createCall({
@@ -660,36 +707,51 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       "created consultation call record"
     );
 
-    // Step 9: Update state to dialling
+    // Step 8: Update state to dialling
     context.setTransferState("dialling", "Dialling transfer target...");
 
-    // Step 10: Start the consultation call (transfer target has answered)
+    // Step 9: Start the consultation call (transfer target has answered)
     await consultCallRecord.start();
     logger.info(
       { consultCallId: consultCallRecord.id },
       "started consultation call"
     );
 
-    // Step 11: Update state to talking (transfer target has answered)
+    // Update state to talking (transfer target has answered)
     context.setTransferState("talking", "Speaking with transfer target...");
 
-    // Step 12: Listen for transfer target disconnect in consultation room
+    // Step 11: Listen for transfer target disconnect in consultation room
     consultRoom.on(RoomEvent.ParticipantDisconnected, async (p: any) => {
       // Check if the disconnected participant is the transfer target
       if (p?.info?.identity === transferTargetIdentity) {
+        // Sometimes callback fires while we are already in the process of closing. Do nothing.
+        if (!context.getConsultInProgress()) {
+          return;
+        }
         logger.info(
-          { participant: p?.info },
+          {
+            participant: p?.info,
+            context_resolve_decision: context.resolveConsultativeDecision,
+           },
           "Transfer target disconnected from consultation room"
         );
 
         // Reject the transfer if decision hasn't been made yet
+        // Note: If the transfer target disconnects before the transfer agent can call reject_transfer,
+        // we use a simple disconnect message. The transfer agent should normally call reject_transfer
+        // with a detailed reason before the target disconnects.
         if (context.resolveConsultativeDecision) {
           const transferSession = context.getTransferSession();
           const transcript = transferSession
             ? getTransferAgentTranscript(transferSession)
             : "";
-          context.setTransferState("rejected", "Transfer target disconnected");
-          context.resolveConsultativeDecision(false, transcript);
+          // Use simple disconnect message - no transcript processing here
+          // The transfer agent should have called reject_transfer with a reason before disconnect
+          context.resolveConsultativeDecision(
+            false,
+            transcript,
+            "Transfer target disconnected"
+          );
         }
       }
     });
@@ -705,7 +767,6 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
     logger.error({ e, useRefer }, "failed to initiate warm transfer");
-    await holdParticipant(participant.sid!, false);
     // Clean up consultation room if it was created
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
@@ -738,26 +799,6 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   }
 }
 
-/**
- * Case 3: Consultative warm transfer (LiveKit pattern)
- * Uses separate consultation room with TransferAgent
- * Follows: https://docs.livekit.io/sip/transfer-warm/
- *
- * This function starts the consultation and waits for TransferAgent decision.
- * It's used internally by handleConsultativeTransfer.
- */
-async function handleWarmTransfer(
-  context: TransferContext,
-  effectiveCallerId: string,
-  effectiveAplisayId: string
-): Promise<TransferResult> {
-  return startConsultativeTransfer(
-    context,
-    effectiveCallerId,
-    effectiveAplisayId,
-    false
-  );
-}
 
 /**
  * Common function to finalize a consultative transfer
@@ -783,6 +824,7 @@ async function finaliseConsultativeTransfer(
     getTransferSession,
     getConsultRoom,
     getConsultCall,
+    setBridgedParticipant,
     setConsultInProgress,
     setTransferState,
     holdParticipant,
@@ -807,6 +849,10 @@ async function finaliseConsultativeTransfer(
 
   try {
     const transferTargetIdentity = "transfer-target";
+
+    // Clear the in-progress flag and update state
+    setConsultInProgress(false);
+    setTransferState("none", "Transfer completed successfully");
 
     if (useRefer) {
       // Case 4: Use SIP REFER to transfer the original caller to the transfer target
@@ -847,51 +893,26 @@ async function finaliseConsultativeTransfer(
       logger.info({}, "transfer target moved to caller room");
     }
 
-    // Step 2: Unhold the caller so they can hear the introduction
-    await holdParticipant(participant.sid!, false);
-
     // Step 3: Close TransferAgent session and disconnect from consultation room
     if (transferSession) {
-      await transferSession.close();
-    }
-    if (consultRoom) {
-      await consultRoom.disconnect();
+      transferSession.close();
     }
 
     // Step 4: Delete consultation room
     await roomService.deleteRoom(consultRoomName);
 
+
     logger.info({}, "consultation room cleaned up");
 
     // Step 5: End consultation call and create transaction logs for transcript
     const consultCall = getConsultCall();
-    if (consultCall && transferSession) {
-      const transcript = getTransferAgentTranscript(transferSession);
-      if (transcript) {
-        const { userId, organisationId } = agent;
-        await createTransactionLog({
-          userId,
-          organisationId,
-          callId: consultCall.id,
-          type: "agent",
-          data: transcript,
-          isFinal: true,
-        });
-        logger.info(
-          { consultCallId: consultCall.id },
-          "created transaction log for consultation transcript"
-        );
-      }
+    if (consultCall) {
       await consultCall.end("Transfer completed");
       logger.info({ consultCallId: consultCall.id }, "ended consultation call");
     }
 
     // Step 6: Finalize the call record
     await finaliseBridgedCallFn();
-
-    // Step 7: Clear the in-progress flag and update state
-    setConsultInProgress(false);
-    setTransferState("none", "Transfer completed successfully");
 
     return {
       status: "OK",
@@ -1026,14 +1047,16 @@ export async function destroyInProgressTransfer(
     }
 
     // Step 4: Clear the in-progress flag and reset state
-    setConsultInProgress(false);
-    if (setTransferState) {
-      setTransferState(
-        "none",
-        "Transfer cancelled due to original caller disconnect"
-      );
+    if (getConsultInProgress()) {
+      setConsultInProgress(false);
+      if (setTransferState) {
+        setTransferState(
+          "none",
+          "Transfer cancelled due to original caller disconnect"
+        );
+      }
+      logger.info({}, "in-progress transfer destroyed");
     }
-    logger.info({}, "in-progress transfer destroyed");
   } catch (e) {
     logger.error({ e }, "error during transfer destruction");
     // Still clear the flag even if cleanup fails
@@ -1046,9 +1069,12 @@ export async function destroyInProgressTransfer(
 
 /**
  * Rejects a warm transfer (hangs up transfer target, cleans up consultation room, returns to caller)
+ * @param context - Transfer context
+ * @param rejectionSummary - Optional summary of why the transfer was rejected (will be generated from transcript if not provided)
  */
-export async function rejectWarmTransfer(
-  context: TransferContext
+export async function rejectConsultativeTransfer(
+  context: TransferContext,
+  rejectionSummary?: string
 ): Promise<TransferResult> {
   const {
     room,
@@ -1077,7 +1103,40 @@ export async function rejectWarmTransfer(
     "rejecting consultative transfer"
   );
 
+  // Initialize summary - will be generated from transcript if not provided
+  // If a summary is provided, use it directly (it should already be a proper summary from the transfer agent)
+  let finalSummary = rejectionSummary;
+  logger.debug(
+    { rejectionSummary, finalSummary },
+    "rejectConsultativeTransfer: initialized finalSummary"
+  );
+
   try {
+    // Step 1: End consultation call and create transaction logs for transcript
+    //         we do this first because later steps will likely cause an async
+    //         hangup which will cause the consultation call to be ended through
+    //         a different path.
+
+    if (!finalSummary) {
+      // If no transcript available, use default message
+      finalSummary = "Transfer target declined the transfer";
+    }
+
+    setConsultInProgress(false);
+
+    // By default, do NOT share detailed rejection feedback with the original agent.
+    // The new consultFeedback flag, when true, enables sharing the detailed summary.
+    const shareFeedback = context.args?.consultFeedback === true;
+    const stateDescription = shareFeedback
+      ? finalSummary
+      : "Transfer failed";
+
+    logger.debug(
+      { finalSummary, stateDescription, consultFeedback: shareFeedback },
+      "Setting transfer state to rejected"
+    );
+    setTransferState("rejected", stateDescription);
+
     // Step 1: Remove transfer target from consultation room (hangs up call)
     if (consultRoomName) {
       try {
@@ -1120,44 +1179,9 @@ export async function rejectWarmTransfer(
       }
     }
 
-    // Step 4: End consultation call and create transaction logs for transcript
-    const consultCall = getConsultCall();
-    if (consultCall && transferSession) {
-      try {
-        const transcript = getTransferAgentTranscript(transferSession);
-        if (transcript) {
-          const { userId, organisationId } = agent;
-          await createTransactionLog({
-            userId,
-            organisationId,
-            callId: consultCall.id,
-            type: "agent",
-            data: transcript,
-            isFinal: true,
-          });
-          logger.info(
-            { consultCallId: consultCall.id },
-            "created transaction log for consultation transcript"
-          );
-        }
-        await consultCall.end("Transfer rejected");
-        logger.info(
-          { consultCallId: consultCall.id },
-          "ended consultation call"
-        );
-      } catch (e) {
-        logger.error({ e }, "error ending consultation call");
-      }
-    }
-
-    // Step 5: Unhold the caller
-    await holdParticipant(participant.sid!, false);
   } catch (e) {
     logger.error({ e }, "error during consult rejection cleanup");
   }
-
-  setConsultInProgress(false);
-  setTransferState("rejected", "Transfer target declined the transfer");
 
   return {
     status: "OK",
@@ -1165,34 +1189,7 @@ export async function rejectWarmTransfer(
   };
 }
 
-/**
- * Case 4: Consultative warm transfer with SIP REFER (LiveKit pattern)
- * Uses separate consultation room with TransferAgent, then SIP REFER for transfer
- * Follows: https://docs.livekit.io/sip/transfer-warm/ but uses REFER instead of bridging
- */
-async function handleWarmTransferWithRefer(
-  context: TransferContext,
-  effectiveCallerId: string,
-  effectiveAplisayId: string
-): Promise<TransferResult> {
-  return startConsultativeTransfer(
-    context,
-    effectiveCallerId,
-    effectiveAplisayId,
-    true
-  );
-}
 
-/**
- * Finalizes a warm transfer (LiveKit pattern for case 4)
- * Uses SIP REFER to transfer the original caller to the transfer target
- */
-export async function finaliseWarmTransferWithRefer(
-  context: TransferContext,
-  finaliseBridgedCallFn: () => Promise<Call | null>
-): Promise<TransferResult> {
-  return finaliseConsultativeTransfer(context, finaliseBridgedCallFn, true);
-}
 
 /**
  * Handles consultative transfer - starts consultation, waits for decision, then finalizes or rejects
@@ -1214,14 +1211,23 @@ async function handleConsultativeTransfer(
   const isSip = isSipParticipant(participant);
 
   // Set up promise to wait for TransferAgent decision
-  let resolveDecision: (accepted: boolean, transcript?: string) => void;
+  let resolveDecision: (
+    accepted: boolean,
+    transcript?: string,
+    reason?: string
+  ) => void;
   let rejectDecision: (error: Error) => void;
   const decisionPromise = new Promise<{
     accepted: boolean;
     transcript?: string;
+    reason?: string;
   }>((resolve, reject) => {
-    resolveDecision = (accepted: boolean, transcript?: string) => {
-      resolve({ accepted, transcript });
+    resolveDecision = (
+      accepted: boolean,
+      transcript?: string,
+      reason?: string
+    ) => {
+      resolve({ accepted, transcript, reason });
     };
     rejectDecision = (error: Error) => {
       reject(error);
@@ -1240,20 +1246,12 @@ async function handleConsultativeTransfer(
     // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
     // When fixed, restore: if (isSip && canRefer) to use Case 4 (REFER) for registration-originated calls
     let startResult: TransferResult;
-    // Temporarily always use bridged method (Case 3) even for registration-originated calls
-    // if (isSip && canRefer) {
-    //   // Case 4: Warm transfer with SIP REFER
-    //   startResult = await handleWarmTransferWithRefer(
-    //     consultativeContext,
-    //     effectiveCallerId,
-    //     effectiveAplisayId
-    //   );
-    // } else {
-    // Case 3: Warm transfer (LiveKit approach)
-    startResult = await handleWarmTransfer(
+
+    startResult = await startConsultativeTransfer(
       consultativeContext,
       effectiveCallerId,
-      effectiveAplisayId
+      effectiveAplisayId,
+      false // canRefer && isSip && !useBridged
     );
     // }
 
@@ -1277,7 +1275,7 @@ async function handleConsultativeTransfer(
     (async () => {
       try {
         // Wait for TransferAgent decision (with timeout)
-        const timeout = 300000; // 5 minutes
+        const timeout = 180000; //  minutes
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(
             () =>
@@ -1291,15 +1289,8 @@ async function handleConsultativeTransfer(
         if (decision.accepted) {
           // Finalize the transfer
           // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-          // When fixed, restore: if (finaliseIsSip && finaliseCanRefer) to use REFER for finalization
-          // const finaliseCanRefer = canParticipantRefer(participant, registrationOriginated, trunkInfo);
-          // const finaliseIsSip = isSipParticipant(participant);
 
           let finaliseResult: TransferResult;
-          // Temporarily always use bridged method (Case 3) even for registration-originated calls
-          // if (finaliseIsSip && finaliseCanRefer) {
-          //   finaliseResult = await finaliseWarmTransferWithRefer(consultativeContext, finaliseBridgedCallFn);
-          // } else {
           finaliseResult = await finaliseConsultativeTransfer(
             consultativeContext,
             finaliseBridgedCallFn,
@@ -1326,14 +1317,25 @@ async function handleConsultativeTransfer(
             );
           }
         } else {
-          // Transfer was rejected - clean up and update state
-          await rejectWarmTransfer(consultativeContext);
-          context.setTransferState(
-            "rejected",
-            "Transfer target declined the transfer"
+          // Transfer was rejected - use explicit reason from transfer agent's reject_transfer call
+          // The transfer agent should have provided a detailed reason summarizing the conversation
+          const rejectionSummary =
+            decision.reason || "Transfer target declined the transfer";
+          logger.debug(
+            {
+              decisionReason: decision.reason,
+              rejectionSummary,
+              hasTranscript: !!decision.transcript,
+            },
+            "About to call rejectConsultativeTransfer with rejection summary"
           );
+          await rejectConsultativeTransfer(consultativeContext, rejectionSummary);
           logger.info(
-            { transcript: decision.transcript },
+            {
+              transcript: decision.transcript,
+              reason: decision.reason,
+              summary: rejectionSummary,
+            },
             "Consultative transfer rejected in background"
           );
         }
@@ -1347,7 +1349,7 @@ async function handleConsultativeTransfer(
         // Clean up on error
         try {
           if (context.getConsultInProgress()) {
-            await rejectWarmTransfer(consultativeContext);
+            await rejectConsultativeTransfer(consultativeContext);
           }
         } catch (cleanupError) {
           logger.error({ cleanupError }, "Error during cleanup");
@@ -1447,6 +1449,7 @@ export async function handleTransfer(
       effectiveCallerId,
       isSip,
       canRefer,
+      forceBridged: args.forceBridged,
       aplisayId,
     },
     "handling transfer"
@@ -1469,12 +1472,15 @@ export async function handleTransfer(
   };
 
   // Route based on operation and participant capabilities
+  // Check if forceBridged is set to override REFER capability
+  const useBridged = args.forceBridged === true;
+  
   if (operation === "blind") {
-    if (isSip && canRefer) {
+    if (isSip && canRefer && !useBridged) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context, finaliseBridgedCallFn);
     } else {
-      // Case 1: Blind transfer by bridging
+      // Case 1: Blind transfer by bridging (forced or when REFER not available)
       return handleBlindBridgeTransfer(
         context,
         effectiveCallerId,

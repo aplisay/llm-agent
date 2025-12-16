@@ -1,4 +1,5 @@
 import { Call, TransactionLog } from '../../../../../lib/database.js';
+import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
 
 let appParameters, log;
 
@@ -34,6 +35,17 @@ const callStart = (async (req, res) => {
     const finalOrganisationId = organisationId || call.organisationId;
 
     await call.start();
+
+    // Fire callHook start callback (non-blocking)
+    maybeSendCallHook({
+      event: 'start',
+      call,
+      agent: null,
+      listenerOrInstance: null,
+      logger: log
+    }).catch((err) => {
+      log?.warn?.(err, 'error sending callHook start callback');
+    });
     
     // Create start transaction log with userId and organisationId
     if (finalUserId && finalOrganisationId) {

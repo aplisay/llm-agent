@@ -109,7 +109,6 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
-  holdParticipant: (identity: string, hold: boolean) => Promise<void>;
 }
 
 export interface TransferArgs {
@@ -117,6 +116,8 @@ export interface TransferArgs {
   callerId?: string;
   operation?: 'blind' | 'consultative';
   transferPrompt?: string;
+  consultFeedback?: boolean;
+  forceBridged?: boolean;
   [key: string]: any;
   session?: voice.AgentSession;
 }
