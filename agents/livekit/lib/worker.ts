@@ -231,10 +231,39 @@ export default defineAgent({
             throw new Error("Outbound call failed to create participant");
           }
         } catch (err) {
-          logger.error({ err }, "Outbound call failed");
+          const failureReason = (err as Error).message.replace(
+            /^twirp [^:]*: /,
+            ""
+          );
+          logger.error({ err, failureReason }, "Outbound call failed");
+          // Notify listeners in-room about the failure
           sendMessage({
-            call_failed: (err as Error).message.replace(/^twirp [^:]*: /, ""),
+            call_failed: failureReason,
           });
+          // For failed outbound calls we still want to emit
+          // a call start and end so downstream systems see a
+          // complete call lifecycle with a clearing reason.
+          try {
+            const failureTimestamp = new Date();
+            // Best effort: log an immediate start then end. The
+            // timestamps will be near-identical and represent a
+            // call that failed to connect.
+            await call.start();
+            await call.end(`Outbound call failed: ${failureReason}`);
+            logger.info(
+              {
+                callId: call.id,
+                failureReason,
+                failureTimestamp,
+              },
+              "Logged start and immediate end for failed outbound call"
+            );
+          } catch (loggingError) {
+            logger.error(
+              { loggingError, failureReason, callId: call?.id },
+              "Failed to log start/end for failed outbound call"
+            );
+          }
           throw err;
         }
       }
