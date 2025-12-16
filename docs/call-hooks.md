@@ -1,7 +1,7 @@
 # Call Hooks
 
 This document describes how to configure and use call hooks to receive notifications when calls start and end. 
-Call hooks allow you to collect and disseminate information with other systems when new calls asynchronously arrive at your listeners or get started outbound and end.
+Call hooks allow you to collect and disseminate information with other systems when new calls asynchronously arrive at your listeners or get started outbound.
 They allow you to be alerted when new conversations start, and close the loop when they end.
 
 ## Overview
