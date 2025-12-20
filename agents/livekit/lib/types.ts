@@ -45,6 +45,7 @@ export interface CallScenario {
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  forceBridged?: boolean;
 }
 
 export interface JobMetadata {
@@ -87,6 +88,7 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  forceBridged?: boolean;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {

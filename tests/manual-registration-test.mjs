@@ -27,6 +27,9 @@
  *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
  *   TEST_AGENT_FIXTURE - Agent fixture to use (default: test-agent-base)
  *                        Options: test-agent-base, blind-transfer-agent, consultative-transfer-agent
+ *   TEST_REGISTER_PROXY - Register proxy setting (if set, will be added to registration options)
+ *   TEST_REALM - SIP realm setting (if set, will be added to registration options)
+ *   TEST_FORCE_BRIDGED - Force bridged setting (default: false, set to "true" or "1" to enable)
  */
 
 import readline from 'readline';
@@ -209,6 +212,14 @@ async function main() {
     let password = process.env.TEST_PASSWORD;
     let transport = process.env.TEST_TRANSPORT || 'tls';
     let auth_username = process.env.TEST_AUTH_USERNAME || undefined;
+    let register_proxy = process.env.TEST_REGISTER_PROXY || undefined;
+    let realm = process.env.TEST_REALM || undefined;
+    // Parse forceBridged: default to false, but allow explicit true via env var
+    let forceBridged = false;
+    if (process.env.TEST_FORCE_BRIDGED !== undefined) {
+      const forceBridgedValue = process.env.TEST_FORCE_BRIDGED.toLowerCase().trim();
+      forceBridged = forceBridgedValue === 'true' || forceBridgedValue === '1';
+    }
     if (!registrar) {
       registrar = await promptInput('Enter SIP registrar (e.g., sip.example.com:5060): ');
       if (!registrar) {
@@ -236,7 +247,7 @@ async function main() {
       console.log(`Using TEST_PASSWORD: ${password} ${'*'.repeat(password.length)}`);
     }
 
-    console.log(`Using transport: ${transport}, auth_username: ${auth_username}`);
+    console.log(`Using transport: ${transport}, auth_username: ${auth_username}, register_proxy: ${register_proxy || '(not set)'}, realm: ${realm || '(not set)'}, forceBridged: ${forceBridged}`);
 
     // Step 3: Create or update registration endpoint
     console.log('\n=== Step 3: Creating registration endpoint ===');
@@ -251,6 +262,9 @@ async function main() {
       options: {
         transport: transport ? transport : undefined,
         auth_username: auth_username ? auth_username : undefined,
+        register_proxy: register_proxy ? register_proxy : undefined,
+        realm: realm ? realm : undefined,
+        forceBridged: forceBridged,
         extension_in_contact: true
       }
     };
@@ -309,9 +323,15 @@ async function main() {
           
           // Update the existing endpoint with current password and options
           console.log('Updating existing endpoint with current settings...');
+          const updateOptions = {};
+          if (transport) updateOptions.transport = transport;
+          if (auth_username) updateOptions.auth_username = auth_username;
+          if (register_proxy) updateOptions.register_proxy = register_proxy;
+          if (realm) updateOptions.realm = realm;
+          updateOptions.forceBridged = forceBridged;
           const updateData = {
             password: password,
-            options: transport ? { transport } : undefined
+            options: Object.keys(updateOptions).length > 0 ? updateOptions : undefined
           };
           await apiRequest('PUT', `/phone-endpoints/${testRegistrationId}`, updateData);
           console.log('✓ Endpoint updated');

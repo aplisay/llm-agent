@@ -131,6 +131,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp = null,
         b2buaGatewayTransport = null,
+        forceBridged,
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -204,6 +205,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
+        forceBridged,
         requestHangup: () => {},
         participant: participant,
       });
@@ -369,6 +371,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
+  let forceBridged: boolean | undefined = undefined;
 
   /*
 
@@ -487,6 +490,14 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           // Store registrar and transport for transfer operations
           registrationRegistrar = regInfo.registrar || null;
           registrationTransport = regInfo.options?.transport || null;
+          // Store forceBridged option from phone registration endpoint
+          if (regInfo.options?.forceBridged !== undefined) {
+            forceBridged = regInfo.options.forceBridged === true;
+            logger.info(
+              { forceBridged, phoneRegistration },
+              "Extracted forceBridged from phone registration options"
+            );
+          }
           // PhoneRegistration now has instanceId, so we can lookup the instance
           if (regInfo.instanceId) {
             instance = await getInstanceById(regInfo.instanceId);
@@ -565,6 +576,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     registrationEndpointId,
     b2buaGatewayIp,
     b2buaGatewayTransport,
+    forceBridged,
   };
 }
 
@@ -646,6 +658,7 @@ async function setupCallAndUtilities({
   registrationEndpointId,
   b2buaGatewayIp,
   b2buaGatewayTransport,
+  forceBridged,
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -820,6 +833,7 @@ async function setupCallAndUtilities({
         registrationEndpointId,
         b2buaGatewayIp: b2buaGatewayIp ?? null,
         b2buaGatewayTransport: b2buaGatewayTransport ?? null,
+        forceBridged,
         options,
         sessionRef,
         setBridgedParticipant,

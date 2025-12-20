@@ -52,6 +52,7 @@ export interface TransferContext {
   registrationEndpointId: string | null | undefined; // Registration endpoint ID from sipHXAplisayPhoneregistration
   b2buaGatewayIp: string | null | undefined; // B2BUA gateway IP from sipHXLkRealIp
   b2buaGatewayTransport: string | null | undefined; // B2BUA gateway transport from sipHXLkTransport
+  forceBridged?: boolean; // Force bridged transfer from phone registration endpoint options
   options: any;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (p: SipParticipant | null) => void;
@@ -277,6 +278,10 @@ async function handleBlindBridgeTransfer(
     setConsultInProgress,
     setTransferState,
     callerId,
+    registrationOriginated,
+    b2buaGatewayIp,
+    b2buaGatewayTransport,
+    registrationEndpointId,
   } = context;
 
   logger.info(
@@ -294,7 +299,11 @@ async function handleBlindBridgeTransfer(
       args.number,
       effectiveAplisayId,
       effectiveCallerId,
-      callerId
+      callerId,
+      registrationOriginated || false,
+      b2buaGatewayIp,
+      b2buaGatewayTransport,
+      registrationEndpointId
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -827,7 +836,6 @@ async function finaliseConsultativeTransfer(
     setBridgedParticipant,
     setConsultInProgress,
     setTransferState,
-    holdParticipant,
   } = context;
 
   if (!getConsultInProgress()) {
@@ -1086,8 +1094,7 @@ export async function rejectConsultativeTransfer(
     getConsultRoom,
     getConsultCall,
     setConsultInProgress,
-    setTransferState,
-    holdParticipant,
+    setTransferState
   } = context;
 
   if (!getConsultInProgress()) {
@@ -1437,6 +1444,11 @@ export async function handleTransfer(
   );
   const isSip = isSipParticipant(participant);
 
+  // Check if forceBridged is set from phone registration endpoint options
+  // This overrides args.forceBridged if set to true
+  const forceBridgedFromEndpoint = context.forceBridged === true;
+  const effectiveForceBridged = forceBridgedFromEndpoint || args.forceBridged === true;
+
   logger.info(
     {
       args,
@@ -1450,6 +1462,8 @@ export async function handleTransfer(
       isSip,
       canRefer,
       forceBridged: args.forceBridged,
+      forceBridgedFromEndpoint,
+      effectiveForceBridged,
       aplisayId,
     },
     "handling transfer"
@@ -1473,7 +1487,8 @@ export async function handleTransfer(
 
   // Route based on operation and participant capabilities
   // Check if forceBridged is set to override REFER capability
-  const useBridged = args.forceBridged === true;
+  // Use effectiveForceBridged which considers both endpoint options and args
+  const useBridged = effectiveForceBridged;
   
   if (operation === "blind") {
     if (isSip && canRefer && !useBridged) {
