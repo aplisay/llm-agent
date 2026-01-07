@@ -1253,6 +1253,20 @@ async function runAgentWorker({
 
     logger.debug({ room }, "connected got room");
 
+    ctx.room.on(RoomEvent.DtmfReceived, (code, digit, participant) => {
+      logger.debug(
+        {
+          identity:participant.identity,
+          code,
+          digit
+        },
+        "DTMF received from participant"
+
+      );
+      session && session.generateReply({ userInput: `${digit}` });
+    });
+    logger.debug("DTMF listener registered");
+
     ctx.room.on(
       RoomEvent.ParticipantDisconnected,
       async (p: RemoteParticipant) => {
