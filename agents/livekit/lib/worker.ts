@@ -6,7 +6,7 @@ import {
   defineAgent,
   getJobContext,
   voice,
-  llm,
+  llm
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
@@ -806,7 +806,6 @@ async function setupCallAndUtilities({
     }
   };
 
-
   const onTransfer = async ({
     args,
     participant: transferParticipant,
@@ -1132,10 +1131,9 @@ async function runAgentWorker({
         });
       exitStatus.callEnded = true;
 
-      await roomService.deleteRoom(room.name)
-        .catch((e) => {
-          logger.error({ e }, "error deleting room");
-        });
+      await roomService.deleteRoom(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room");
+      });
       exitStatus.roomDeleted = true;
 
       await ctx.shutdown(reason);
@@ -1148,7 +1146,8 @@ async function runAgentWorker({
         { message: error.message, error },
         "error cleaning up and closing"
       );
-      exitStatus.error = error.message || "unknown error caught during cleanup and close";
+      exitStatus.error =
+        error.message || "unknown error caught during cleanup and close";
     }
   };
 
@@ -1253,17 +1252,52 @@ async function runAgentWorker({
 
     logger.debug({ room }, "connected got room");
 
-    ctx.room.on(RoomEvent.DtmfReceived, (code, digit, participant) => {
+    ctx.room.on(RoomEvent.DtmfReceived, async (code, digit, participant) => {
       logger.debug(
         {
-          identity:participant.identity,
+          identity: participant.identity,
           code,
-          digit
+          digit,
         },
         "DTMF received from participant"
-
       );
-      session && session.generateReply({ userInput: `${digit}` });
+      const realtimeModel = session?.llm as llm.RealtimeModel | undefined;
+      // Get the active session using the proper API method
+      // This avoids creating a new session and ensures we use the one running sendTask
+      let realtimeSession: llm.RealtimeSession | undefined;
+      if (realtimeModel && typeof (realtimeModel as any).getActiveSession === 'function') {
+        realtimeSession = (realtimeModel as any).getActiveSession() as llm.RealtimeSession | undefined;
+        if (realtimeSession) {
+          const instanceId = (realtimeSession as any).instanceId;
+          logger.debug({ 
+            instanceId: instanceId || 'not available'
+          }, "Using existing realtime session for DTMF");
+        } else {
+          logger.warn("No active realtime session found - session may not be started yet");
+        }
+      } else {
+        logger.warn("RealtimeModel doesn't have getActiveSession method, cannot send DTMF");
+      }
+      
+      if (realtimeSession && 'sendUserMessage' in realtimeSession) {
+        const instanceId = (realtimeSession as any).instanceId;
+        const message = new llm.ChatMessage({
+          role: "user",
+          content: `${digit}`,
+        });
+        logger.debug({ 
+          instanceId: instanceId || 'not available',
+          digit 
+        }, "Calling sendUserMessage on realtime session");
+        (realtimeSession as any).sendUserMessage(message).catch((e: Error) => {
+          logger.error({ error: e, instanceId: instanceId || 'not available' }, "Failed to send DTMF user message");
+        });
+      } else {
+        logger.warn({ 
+          hasRealtimeSession: !!realtimeSession,
+          hasSendUserMessage: realtimeSession && 'sendUserMessage' in realtimeSession
+        }, "Cannot send DTMF - realtime session or sendUserMessage not available");
+      }
     });
     logger.debug("DTMF listener registered");
 
@@ -1275,7 +1309,10 @@ async function runAgentWorker({
           { p, bridgedParticipant: bp, participant },
           "participant disconnected"
         );
-        if (bp?.participantId === p?.info?.sid || bp?.participantIdentity === p?.info?.identity) {
+        if (
+          bp?.participantId === p?.info?.sid ||
+          bp?.participantIdentity === p?.info?.identity
+        ) {
           if (getConsultInProgress()) {
             logger.debug(
               "consult callee disconnected, treating as consult_reject"
