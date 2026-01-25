@@ -110,3 +110,4 @@ dist
 # TernJS port file
 .tern-port
 llm-agent.code-workspace
+tests/fixtures/agents/test-agent.js
