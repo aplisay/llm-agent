@@ -26,7 +26,7 @@
  * Environment variables (optional):
  *   API_BASE_URL - Base URL for the API (default: http://localhost:4000/api)
  *   TEST_AGENT_FIXTURE - Agent fixture to use (default: test-agent-base)
- *                        Options: test-agent-base, blind-transfer-agent, consultative-transfer-agent
+ *                        Options: test-agent-base, test-agent, blind-transfer-agent, consultative-transfer-agent
  *   TEST_REGISTER_PROXY - Register proxy setting (if set, will be added to registration options)
  *   TEST_REALM - SIP realm setting (if set, will be added to registration options)
  *   TEST_FORCE_BRIDGED - Force bridged setting (default: false, set to "true" or "1" to enable)
@@ -100,9 +100,104 @@ function pause(message = 'Press Enter to continue with cleanup...') {
   return promptInput(`\n${message}\n`);
 }
 
+// Helper to convert agent fixture to API format
+function convertAgentToApiFormat(selectedAgent) {
+  // Transform functions array from test data format to API format
+  const convertedFunctions = (selectedAgent.functions || []).map(func => {
+    // If function already has input_schema, pass it through verbatim
+    if (func.input_schema) {
+      return func;
+    }
+    
+    // If function has parameters, convert from parameters format
+    if (func.parameters) {
+      const properties = {};
+      func.parameters.forEach(param => {
+        properties[param.name] = {
+          type: param.type,
+          source: param.source,
+          from: param.from,
+          description: param.description,
+          in: param.in || 'query'
+        };
+      });
+      
+      return {
+        implementation: func.implementation,
+        platform: func.platform,
+        name: func.name,
+        description: func.description,
+        url: func.url,
+        method: func.method,
+        key: func.key,
+        input_schema: { properties }
+      };
+    }
+    
+    // If neither input_schema nor parameters, create empty input_schema
+    return {
+      implementation: func.implementation,
+      platform: func.platform,
+      name: func.name,
+      description: func.description,
+      url: func.url,
+      method: func.method,
+      key: func.key,
+      input_schema: { properties: {} }
+    };
+  });
+
+  // Handle both prompt formats: object with value property or string
+  const promptValue = typeof selectedAgent.prompt === 'string' 
+    ? selectedAgent.prompt 
+    : (selectedAgent.prompt?.value || '');
+
+  return {
+    name: selectedAgent.name,
+    description: selectedAgent.description,
+    modelName: selectedAgent.modelName,
+    prompt: promptValue,
+    options: selectedAgent.options || {},
+    functions: convertedFunctions,
+    keys: selectedAgent.keys || []
+  };
+}
+
+// Helper to wait for keystroke input
+function waitForKeystroke(message) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+
+    console.log(message);
+    process.stdout.write('> ');
+
+    const handler = (char) => {
+      if (char === '\u0003') { // Ctrl+C
+        stdin.setRawMode(wasRaw);
+        stdin.pause();
+        process.exit(0);
+      }
+      
+      const key = char.toLowerCase();
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+      stdin.removeListener('data', handler);
+      resolve(key);
+    };
+
+    stdin.on('data', handler);
+  });
+}
+
 // Available agent fixtures
 const AGENT_FIXTURES = {
   'test-agent-base': './fixtures/agents/test-agent-base.js',
+  'test-agent': './fixtures/agents/test-agent.js',
   'blind-transfer-agent': './fixtures/agents/blind-transfer-agent.js',
   'consultative-transfer-agent': './fixtures/agents/consultative-transfer-agent.js'
 };
@@ -150,56 +245,7 @@ async function main() {
 
     // Step 1: Create agent using test data
     console.log('=== Step 1: Creating agent ===');
-    // Transform functions array from test data format to API format
-    const convertedFunctions = (selectedAgent.functions || []).map(func => {
-      // Handle both formats: functions with parameters or with input_schema already defined
-      let input_schema;
-      if (func.input_schema) {
-        // Already in API format
-        input_schema = func.input_schema;
-      } else if (func.parameters) {
-        // Convert from parameters format
-        const properties = {};
-        func.parameters.forEach(param => {
-          properties[param.name] = {
-            type: param.type,
-            source: param.source,
-            from: param.from,
-            description: param.description,
-            in: param.in || 'query'
-          };
-        });
-        input_schema = { properties };
-      } else {
-        input_schema = { properties: {} };
-      }
-
-      return {
-        implementation: func.implementation,
-        platform: func.platform,
-        name: func.name,
-        description: func.description,
-        url: func.url,
-        method: func.method,
-        key: func.key,
-        input_schema: input_schema
-      };
-    });
-
-    // Handle both prompt formats: object with value property or string
-    const promptValue = typeof selectedAgent.prompt === 'string' 
-      ? selectedAgent.prompt 
-      : (selectedAgent.prompt?.value || '');
-
-    const agentData = {
-      name: selectedAgent.name,
-      description: selectedAgent.description,
-      modelName: selectedAgent.modelName,
-      prompt: promptValue,
-      options: selectedAgent.options || {},
-      functions: convertedFunctions,
-      keys: selectedAgent.keys || []
-    };
+    const agentData = convertAgentToApiFormat(selectedAgent);
 
     const agentRes = await apiRequest('POST', '/agents', agentData);
     testAgentId = agentRes.body.id;
@@ -264,6 +310,7 @@ async function main() {
         auth_username: auth_username ? auth_username : undefined,
         register_proxy: register_proxy ? register_proxy : undefined,
         realm: realm ? realm : undefined,
+        caller_id_in_from: false,
         forceBridged: forceBridged,
         extension_in_contact: true
       }
@@ -421,12 +468,45 @@ async function main() {
       }
     }
 
-    // Step 7: Pause for user input
+    // Step 7: Active session with keystroke controls
     console.log('\n=== Step 7: Active session ===');
     console.log(`Agent ID: ${testAgentId}`);
     console.log(`Registration ID: ${testRegistrationId}`);
     console.log(`Listener ID: ${testListenerId}`);
-    await pause('Session is active. Press Enter when ready to cleanup...');
+    
+    let sessionActive = true;
+    while (sessionActive) {
+      const key = await waitForKeystroke('\nSession is active. Press [U] to update agent, [X] to exit:');
+      
+      if (key === 'u') {
+        console.log('\nUpdating agent from file...');
+        try {
+          // Re-read the agent fixture file with cache busting
+          // Resolve relative path and append timestamp query to bust ES module cache
+          const fixturePath = AGENT_FIXTURES[selectedAgentName];
+          const fileUrl = new URL(fixturePath, import.meta.url).href + `?t=${Date.now()}`;
+          
+          // Import with cache-busting query parameter
+          const agentModule = await import(fileUrl);
+          const updatedAgent = agentModule.default;
+          
+          // Convert to API format
+          const updatedAgentData = convertAgentToApiFormat(updatedAgent);
+          
+          // Update the agent via PUT request
+          await apiRequest('PUT', `/agents/${testAgentId}`, updatedAgentData);
+          console.log(`✓ Agent updated successfully`);
+          console.log(`  Name: ${updatedAgent.name}`);
+        } catch (error) {
+          console.error(`❌ Failed to update agent: ${error.message}`);
+        }
+      } else if (key === 'x') {
+        console.log('\nExiting session...');
+        sessionActive = false;
+      } else {
+        console.log(`\nUnknown key: ${key}. Press [U] to update, [X] to exit.`);
+      }
+    }
 
     // Step 8: Cleanup
     console.log('\n=== Step 8: Cleanup ===');
