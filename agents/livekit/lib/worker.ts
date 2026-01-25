@@ -6,7 +6,7 @@ import {
   defineAgent,
   getJobContext,
   voice,
-  llm,
+  llm
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";

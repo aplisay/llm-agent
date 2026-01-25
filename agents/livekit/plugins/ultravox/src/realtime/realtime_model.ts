@@ -17,6 +17,7 @@ import { WebSocket } from "ws";
 // import type { GenerationCreatedEvent } from '@livekit/agents';
 import * as api_proto from "./api_proto.js";
 import { UltravoxClient } from "./ultravox_client.js";
+import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
 
@@ -305,6 +306,15 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#sessions;
   }
 
+  /**
+   * Get the active (first) session if one exists, without creating a new one.
+   * This is useful when you need to access the existing session that's already running.
+   * @returns The active RealtimeSession, or undefined if no session exists yet
+   */
+  getActiveSession(): RealtimeSession | undefined {
+    return this.#sessions.length > 0 ? this.#sessions[0] : undefined;
+  }
+
   session(): RealtimeSession {
     const opts: ModelOptions = { ...this.#defaultOpts };
 
@@ -341,6 +351,12 @@ export class RealtimeSession extends llm.RealtimeSession {
   #closing = true;
   #sessionFailed = false;
   #sendQueue = new Queue<any>();
+  #sendTaskRunning = false;
+  #instanceId: string; // Unique ID for this instance to help debug
+  // Expose instanceId as a getter for debugging
+  get instanceId(): string {
+    return this.#instanceId;
+  }
   #callId: string | null = null;
   #currentResponseId: string | null = null;
   #currentOutputIndex = 0;
@@ -379,6 +395,8 @@ export class RealtimeSession extends llm.RealtimeSession {
     { fncCtx, chatCtx }: { fncCtx?: llm.ToolContext; chatCtx?: llm.ChatContext }
   ) {
     super(realtimeModel);
+    // Generate unique instance ID for debugging (after super call)
+    this.#instanceId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     this.#opts = opts;
     this.#client = client;
@@ -500,6 +518,8 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
     
     this.#chatCtx = mergedCtx;
+
+
     this.#logger.debug(
       { 
         currentItemsCount: currentCtx.items.length,
@@ -689,6 +709,54 @@ export class RealtimeSession extends llm.RealtimeSession {
     } catch (err) {
       this.#logger.warn({ err }, "error handling client event locally");
     }
+  }
+
+  async sendUserMessage(message: llm.ChatMessage): Promise<void> {
+    // Log instance information to verify we're using the same instance as sendTask
+    this.#logger.debug({ 
+      instanceId: this.#instanceId,
+      sendQueueInstanceId: this.#sendQueue.constructor.name,
+      sendQueueItemsLength: this.#sendQueue.items.length,
+      sendTaskRunning: this.#sendTaskRunning,
+      ws: this.#ws,
+      wsReadyState: this.#ws?.readyState,
+      closing: this.#closing
+    }, "sendUserMessage called");
+    
+    // Check if sendTask is running - if not, log a warning
+    if (!this.#sendTaskRunning) {
+      this.#logger.warn(
+        { 
+          instanceId: this.#instanceId,
+          sendTaskRunning: this.#sendTaskRunning,
+          ws: this.#ws,
+          wsReadyState: this.#ws?.readyState,
+          closing: this.#closing,
+          queueLength: this.#sendQueue.items.length
+        },
+        "sendUserMessage called but sendTask is not running - message may not be sent"
+      );
+    }
+    
+    const userTextMessage = {
+      type: "user_text_message",
+      text: message.textContent as string,
+      urgency: "soon",
+    };
+    this.#logger.debug({ message, userTextMessage, instanceId: this.#instanceId }, "queueinguser message to Ultravox");
+    // Queue.put() is async but we don't need to await it - it will resolve after the item is added
+    // However, we should handle any errors to prevent unhandled promise rejections
+    await this.#sendQueue.put(userTextMessage).catch((error) => {
+      this.#logger.error({ error, message: userTextMessage, instanceId: this.#instanceId }, "Failed to queue user message");
+    });
+    this.#logger.debug({ 
+      message, 
+      userTextMessage, 
+      instanceId: this.#instanceId,
+      sendQueueInstanceId: this.#sendQueue.constructor.name,
+      queueLength: this.#sendQueue.items.length,
+      sendTaskRunning: this.#sendTaskRunning
+    }, "queued user message to Ultravox");
   }
 
   sendAudioFrame(frame: AudioFrame): void {
@@ -958,22 +1026,88 @@ export class RealtimeSession extends llm.RealtimeSession {
         };
 
         const sendTask = async () => {
+          this.#sendTaskRunning = true;
+          this.#logger.debug({ 
+            instanceId: this.#instanceId,
+            sendQueueInstanceId: this.#sendQueue.constructor.name,
+            sendQueueItemsLength: this.#sendQueue.items.length
+          }, "sendTask started");
           while (
             this.#ws &&
             !this.#closing &&
             this.#ws.readyState === WebSocket.OPEN
           ) {
             try {
+              // Log queue state before waiting
+              const queueLength = this.#sendQueue.items.length;
+              this.#logger.debug({ 
+                sendQueueLength: queueLength,
+                wsReadyState: this.#ws?.readyState,
+                closing: this.#closing
+              }, "sendTask loop - waiting for item");
+              
+              // Check if we should exit before waiting on the queue
+              // This prevents getting stuck in get() if WebSocket closes while waiting
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                this.#logger.debug("sendTask: WebSocket closed before queue get(), exiting");
+                break;
+              }
+              
+              // If there are items in the queue, get() should return immediately
+              // If queue is empty, get() will wait for 'put' event
               const event = await this.#sendQueue.get();
-              this.#logger.debug(`-> ${JSON.stringify(event)}`);
-              this.#ws.send(JSON.stringify(event));
+              
+              // Check for close sentinel - this is put in the queue when WebSocket closes
+              if (event && typeof event === 'object' && 'type' in event && event.type === '__CLOSE_SENTINEL__') {
+                this.#logger.debug("sendTask: Received close sentinel, exiting");
+                break;
+              }
+              
+              // Check again after get() returns - conditions may have changed
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                this.#logger.debug("sendTask: WebSocket closed during queue get(), exiting");
+                break;
+              }
+              this.#logger.debug({ 
+                event, 
+                sendQueueLength: this.#sendQueue.items.length,
+                eventType: event?.type
+              }, "sendTask loop - deQueuing event");
+              // Check WebSocket state again before sending, as it may have changed during await
+              if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+                try {
+                  this.#ws.send(JSON.stringify(event));
+                } catch (sendError) {
+                  this.#logger.error({ sendError, event }, "Error sending event to WebSocket");
+                  // If send fails, the WebSocket is likely closed, so break the loop
+                  break;
+                }
+              } else {
+                this.#logger.warn("WebSocket closed while waiting for queue item");
+                // Don't re-queue - if WebSocket is closed, we can't send it anyway
+                break;
+              }
             } catch (error) {
-              this.#logger.error("Error sending event:", error);
+              this.#logger.error({ error }, "Error in sendTask loop");
+              // Queue.get() shouldn't normally throw, but if it does, we should still try to continue
+              // Only break if WebSocket is closed or we're closing
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                break;
+              }
+              // Otherwise, continue the loop - the error might be transient
+              // Add a small delay to prevent tight error loops
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
           }
+          this.#sendTaskRunning = false;
+          this.#logger.debug({ ws: this.#ws, closing: this.#closing, readyState: this.#ws?.readyState }, "sendTask finished");
         };
 
-        sendTask();
+        // Start sendTask and handle any unhandled rejections
+        sendTask().catch((error) => {
+          this.#logger.error({ error }, "Unhandled error in sendTask");
+          this.emitError({ error, recoverable: true });
+        });
 
         this.#ws.onclose = () => {
           if (this.#expiresAt && Date.now() >= this.#expiresAt) {
@@ -989,7 +1123,13 @@ export class RealtimeSession extends llm.RealtimeSession {
             this.emitError({ error: new Error(errorMsg), recoverable: false });
             reject(new Error(errorMsg));
           }
+          this.#closing = true;
           this.#ws = null;
+          // Wake up sendTask if it's waiting on the queue by putting a sentinel value
+          // This ensures sendTask can exit its loop even if it's stuck in get()
+          this.#sendQueue.put({ type: '__CLOSE_SENTINEL__' }).catch(() => {
+            // Ignore errors - queue might be in a bad state, but we're closing anyway
+          });
           !this.#closing && this.close();
           resolve();
         };
