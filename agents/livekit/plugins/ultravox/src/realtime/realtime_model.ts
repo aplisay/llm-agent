@@ -298,7 +298,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       firstSpeaker,
     };
 
-    this.#client = new UltravoxClient(apiKey, baseURL, log());
+    this.#client = new UltravoxClient(apiKey, baseURL);
   }
 
   get sessions(): RealtimeSession[] {
@@ -368,6 +368,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   #agentTranscriptBuffer: string = "";
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
+  // Track message IDs that have been sent to Ultravox (to avoid duplicates)
+  #sentMessageIds: Set<string> = new Set();
+  // Track message IDs that came from audio transcription (don't send as text)
+  #audioMessageIds: Set<string> = new Set();
   constructor(
     realtimeModel: llm.RealtimeModel,
     opts: ModelOptions,
@@ -452,6 +456,46 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.remoteChatCtx.insert(previousItemId ?? undefined, item);
         // Update lastItemId for proper insertion order
         this.#lastItemId = itemId;
+
+        // Handle new user messages (Ultravox text input)
+        // Only send if it's NOT an audio transcription (audio messages are tracked in _audioMessageIds)
+        if (
+          item.type === "message" &&
+          item.role === "user" &&
+          item.id && !this.#sentMessageIds.has(item.id)
+        ) {
+          // Check if this is an audio message (already transcribed by Ultravox)
+          if (!this.#audioMessageIds.has(item.id)) {
+            if (item.textContent) {
+              this.#logger.debug(
+                { itemId: item.id, textContent: item.textContent },
+                "Sending user message as interactive text to Ultravox"
+              );
+              // Send interactive text to Ultravox (triggers generation)
+              // This is the flow for generate_reply(user_input=...) from the framework
+              try {
+                const message = llm.ChatMessage.create({
+                  id: item.id,
+                  role: "user",
+                  content: [item.textContent],
+                });
+                await this.sendUserMessage(message);
+                this.#sentMessageIds.add(item.id);
+              } catch (error) {
+                this.#logger.error(
+                  { error, itemId: item.id },
+                  "Failed to send user message to Ultravox"
+                );
+              }
+            }
+          } else {
+            this.#logger.debug(
+              { itemId: item.id, textContent: item.textContent },
+              "Skipping user message (already in context from audio)"
+            );
+            this.#sentMessageIds.add(item.id);
+          }
+        }
       }
     }
     
