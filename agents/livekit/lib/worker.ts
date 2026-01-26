@@ -1084,6 +1084,12 @@ async function runAgentWorker({
   let session: voice.AgentSession | null = null;
   let maxDuration: number = 305000; // Default value
 
+  // DTMF buffering: accumulate digits and send as a single input after timeout
+  let dtmfBuffer: string = "";
+  let dtmfTimeout: NodeJS.Timeout | null = null;
+  const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
+  const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
+
   const cleanupAndClose = async (
     reason: string,
     logEndCall: boolean = false
@@ -1115,6 +1121,24 @@ async function runAgentWorker({
       if (timerId) {
         clearTimeout(timerId);
         timerId = null;
+      }
+      // Clean up DTMF timeout if active
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+        dtmfTimeout = null;
+      }
+      // Flush any pending DTMF buffer before closing
+      if (dtmfBuffer.length > 0 && session) {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "Flushing remaining DTMF buffer during cleanup"
+        );
+        try {
+          session.generateReply({ userInput: dtmfBuffer });
+        } catch (e) {
+          logger.debug({ e }, "Failed to flush DTMF buffer during cleanup");
+        }
+        dtmfBuffer = "";
       }
       try {
         // dont wait for this to complete, it may block logging the call end
@@ -1289,52 +1313,71 @@ async function runAgentWorker({
 
     logger.debug({ room }, "connected got room");
 
+    const flushDtmfBuffer = () => {
+      if (dtmfBuffer.length > 0 && session) {
+        const digitsToSend = dtmfBuffer;
+        dtmfBuffer = ""; // Clear buffer before sending
+        logger.debug(
+          { digits: digitsToSend },
+          "Flushing accumulated DTMF digits to LLM"
+        );
+        try {
+          session.generateReply({ userInput: digitsToSend });
+        } catch (e) {
+          logger.error(
+            { error: e, digits: digitsToSend },
+            "Failed to inject DTMF digits via generate_reply"
+          );
+        }
+      }
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+        dtmfTimeout = null;
+      }
+    };
+
     ctx.room.on(RoomEvent.DtmfReceived, async (code, digit, participant) => {
       logger.debug(
         {
           identity: participant.identity,
           code,
           digit,
+          currentBuffer: dtmfBuffer,
         },
         "DTMF received from participant"
       );
-      const realtimeModel = session?.llm as llm.RealtimeModel | undefined;
-      // Get the active session using the proper API method
-      // This avoids creating a new session and ensures we use the one running sendTask
-      let realtimeSession: llm.RealtimeSession | undefined;
-      if (realtimeModel && typeof (realtimeModel as any).getActiveSession === 'function') {
-        realtimeSession = (realtimeModel as any).getActiveSession() as llm.RealtimeSession | undefined;
-        if (realtimeSession) {
-          const instanceId = (realtimeSession as any).instanceId;
-          logger.debug({ 
-            instanceId: instanceId || 'not available'
-          }, "Using existing realtime session for DTMF");
-        } else {
-          logger.warn("No active realtime session found - session may not be started yet");
-        }
-      } else {
-        logger.warn("RealtimeModel doesn't have getActiveSession method, cannot send DTMF");
+
+      if (!session) {
+        logger.warn("Session not available, cannot buffer DTMF digit");
+        return;
       }
-      
-      if (realtimeSession && 'sendUserMessage' in realtimeSession) {
-        const instanceId = (realtimeSession as any).instanceId;
-        const message = new llm.ChatMessage({
-          role: "user",
-          content: `${digit}`,
-        });
-        logger.debug({ 
-          instanceId: instanceId || 'not available',
-          digit 
-        }, "Calling sendUserMessage on realtime session");
-        (realtimeSession as any).sendUserMessage(message).catch((e: Error) => {
-          logger.error({ error: e, instanceId: instanceId || 'not available' }, "Failed to send DTMF user message");
-        });
-      } else {
-        logger.warn({ 
-          hasRealtimeSession: !!realtimeSession,
-          hasSendUserMessage: realtimeSession && 'sendUserMessage' in realtimeSession
-        }, "Cannot send DTMF - realtime session or sendUserMessage not available");
+
+      // If terminator is pressed, send immediately (don't add terminator to buffer)
+      if (digit === DTMF_TERMINATOR) {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "DTMF terminator pressed, sending immediately"
+        );
+        flushDtmfBuffer();
+        return;
       }
+
+      // Add digit to buffer
+      dtmfBuffer += digit;
+
+      // Clear existing timeout and set a new one
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+      }
+
+      // Set timeout to flush buffer after period of inactivity
+      dtmfTimeout = setTimeout(() => {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "DTMF timeout reached, flushing buffer"
+        );
+        flushDtmfBuffer();
+      }, DTMF_TIMEOUT_MS);
     });
     logger.debug("DTMF listener registered");
 
