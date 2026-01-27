@@ -36,6 +36,16 @@ interface ModelOptions {
   timeExceededMessage: string;
   transcriptOptional: boolean;
   firstSpeaker: string;
+  vendorSpecific?: {
+    ultravox?: {
+      experimentalSettings?: {
+        transcriptionProvider?: string;
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
 }
 
 export interface RealtimeResponse {
@@ -253,6 +263,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage = "It has been great chatting with you, but we have exceeded our time now.",
     transcriptOptional = false,
     firstSpeaker = "FIRST_SPEAKER_AGENT",
+    vendorSpecific,
   }: {
     modalities?: ["text", "audio"] | ["text"];
     instructions?: string;
@@ -268,6 +279,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage?: string;
     transcriptOptional?: boolean;
     firstSpeaker?: string;
+    vendorSpecific?: {
+      ultravox?: {
+        experimentalSettings?: {
+          transcriptionProvider?: string;
+          [key: string]: any;
+        };
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
   }) {
     super({
       messageTruncation: false,
@@ -297,6 +318,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       timeExceededMessage,
       transcriptOptional,
       firstSpeaker,
+      vendorSpecific,
     };
 
     this.#client = new UltravoxClient(apiKey, baseURL);
@@ -915,6 +937,15 @@ export class RealtimeSession extends llm.RealtimeSession {
           },
           firstSpeaker: this.#opts.firstSpeaker,
         };
+
+        // Add vendor-specific options (e.g., experimentalSettings)
+        if (this.#opts.vendorSpecific?.ultravox?.experimentalSettings) {
+          modelData.experimentalSettings = this.#opts.vendorSpecific.ultravox.experimentalSettings;
+          this.#logger.debug(
+            { experimentalSettings: modelData.experimentalSettings },
+            "Added experimental settings from vendor-specific options"
+          );
+        }
 
         this.#logger.info({ modelData }, "Creating Ultravox call");
         const callResponse = await this.#client.createCall(modelData);

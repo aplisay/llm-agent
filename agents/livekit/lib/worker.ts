@@ -1533,6 +1533,10 @@ async function runAgentWorker({
             "Using provider model for realtime LLM"
           );
         }
+        // Pass vendor-specific options if present
+        if (agent?.options?.vendorSpecific) {
+          llmOptions.vendorSpecific = agent.options.vendorSpecific;
+        }
         session = new voice.AgentSession({
           llm: new realtime.RealtimeModel(llmOptions),
         });

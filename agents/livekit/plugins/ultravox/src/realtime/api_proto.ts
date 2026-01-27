@@ -65,6 +65,10 @@ export interface UltravoxModelData {
     };
   };
   firstSpeaker?: string;
+  experimentalSettings?: {
+    transcriptionProvider?: string;
+    [key: string]: any;
+  };
 }
 
 // Ultravox WebSocket message types
