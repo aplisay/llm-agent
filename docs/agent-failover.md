@@ -63,7 +63,20 @@ If the Aplisay platform itself is degraded by e.g. a Livekit failure then it is 
 
 Failover only operates on Livekit agents, it does not operate on legacy Jambonz agents, nor does it work on platform specific (e.g. Ultravox) WebRTC agents.
 
+#### Voices
 
+When using model-level fallback (`options.fallback.model`), the voice configuration from the primary agent is preserved. However, if the fallback model uses a different vendor, the same voice may not be available on that vendor's platform. In such cases, the vendor's default voice will be used instead.
+
+For example:
+- Primary agent uses `livekit:ultravox/ultravox-v0.7` with voice `"Svetlana"`
+- Fallback model is `livekit:openai/gpt-realtime`
+- OpenAI's realtime API doesn't have a voice named `"Svetlana"`, so it will use OpenAI's default voice
+
+**Workaround:** To maintain voice consistency across failover, use agent-level fallback (`options.fallback.agent`) instead of model-level fallback. Each agent can be configured with a voice appropriate for its model vendor.
+
+**Future improvements:** This limitation may be resolved in future versions by:
+- Supporting the same custom voice across vendors
+- Allowing fallback-specific voice options in the `options.fallback` configuration
 
 ## Configuration
 
