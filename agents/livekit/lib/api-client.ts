@@ -60,6 +60,28 @@ export interface Agent {
        */
       number?: string;
     };
+    /**
+     * Vendor-specific options for different providers.
+     * Each vendor can have its own set of options that are passed through to the provider.
+     */
+    vendorSpecific?: {
+      /**
+       * Ultravox-specific options.
+       * These options are passed directly to the Ultravox API when creating calls.
+       */
+      ultravox?: {
+        /**
+         * Experimental settings for Ultravox calls.
+         * Example: { transcriptionProvider: "deepgram-nova-3" } or { transcriptionProvider: "ultravox" }
+         */
+        experimentalSettings?: {
+          transcriptionProvider?: string;
+          [key: string]: any;
+        };
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
   };
   functions?: AgentFunction[];
   keys?: string[];

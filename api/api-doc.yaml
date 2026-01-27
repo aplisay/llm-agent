@@ -313,6 +313,32 @@ components:
             3. If yes, call accept_transfer. If no, call reject_transfer.
             
             Be professional and concise.
+        vendorSpecific:
+          description: |-
+            Vendor-specific options for different providers. This is an opaque object that allows passing
+            provider-specific configuration options that are not part of the standard agent options.
+            
+            Each vendor can have its own set of options under a vendor-specific key (e.g., `ultravox`).
+            These options are passed through to the vendor's implementation without validation at the API level.
+            
+            Example for Ultravox:
+              ```json
+              {
+                "ultravox": {
+                  "experimentalSettings": {
+                    "transcriptionProvider": "deepgram-nova-3"
+                  }
+                }
+              }
+              ```
+            
+            The structure and allowed values are vendor-specific and should be documented by each vendor.
+          type: object
+          additionalProperties: true
+          example:
+            ultravox:
+              experimentalSettings:
+                transcriptionProvider: "deepgram-nova-3"
     CallHookConfig:
       type: object
       description: |-
