@@ -352,19 +352,14 @@ export default defineAgent({
                 "Retrying with fallback agent after failure"
               );
               const nextAgent = await getAgentById(fallbackConfig.agent);
+              if (!nextAgent) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} not found`);
+              }
+              if (nextAgent.userId !== activeAgent.userId && nextAgent.organisationId !== activeAgent.organisationId) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} does not belong to the same user or organization as the primary agent`);
+              }
               // Ensure nextAgent.options is parsed if needed
               let nextAgentOptions = nextAgent.options || {};
-              if (typeof nextAgentOptions === 'string') {
-                try {
-                  nextAgentOptions = JSON.parse(nextAgentOptions);
-                } catch (e) {
-                  logger.warn(
-                    { error: e, options: nextAgent.options },
-                    "Failed to parse nextAgent.options as JSON"
-                  );
-                  nextAgentOptions = {};
-                }
-              }
               // Switch active agent and model; subsequent fallback decisions will
               // be driven by the new agent's options.fallback.
               activeAgent = { ...nextAgent, options: nextAgentOptions };
