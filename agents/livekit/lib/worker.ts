@@ -37,6 +37,7 @@ import {
   type PhoneRegistrationInfo,
   type TrunkInfo,
   endCallById,
+  getAgentById,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -274,29 +275,213 @@ export default defineAgent({
       // Record the appropriate transaction at the top level
       sendMessage({ answer: callerId });
 
-      await runAgentWorker({
-        ctx,
-        room,
-        agent,
-        participant,
-        callerId,
-        calledId,
-        modelName,
-        metadata,
-        sendMessage,
-        call,
-        onHangup,
-        onTransfer,
-        modelRef,
-        sessionRef,
-        getBridgedParticipant: () => bridgedParticipant,
-        setBridgedParticipant: (p) => (bridgedParticipant = p),
-        checkForHangup,
-        getConsultInProgress: () => consultInProgress,
-        getActiveCall,
-        endTransferActivityIfNeeded: endTransferActivityFn,
-        getTransferState,
-      });
+      /**
+       * Fallback loop around the core agent worker.
+       *
+       * Behaviour:
+       *  - First attempt runs with the primary modelName from the agent.
+       *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
+       *    we consult the current agent's options.fallback with precedence:
+       *      1. fallback.agent  – fetch and substitute a different agent, then retry.
+       *      2. fallback.model  – retry the same agent with a different modelName.
+       *      3. fallback.number – perform a blind transfer to this number and exit.
+       *
+       * Once we have switched to a fallback agent, any further fallback decisions are
+       * controlled by that agent's own options.fallback.
+       */
+      let activeAgent = agent;
+      let activeModelName = modelName;
+      let usedFallbackModel = false;
+      let usedFallbackAgent = false;
+
+      // Try primary and any configured model/agent fallbacks until we either succeed
+      // or exhaust the configured options and fall back to a transfer/propagated error.
+      fallbackLoop: while (true) {
+        const fallbackConfig = activeAgent.options?.fallback;
+
+        try {
+          await runAgentWorker({
+            ctx,
+            room,
+            agent: activeAgent,
+            participant,
+            callerId,
+            calledId,
+            modelName: activeModelName,
+            metadata,
+            sendMessage,
+            call,
+            onHangup,
+            onTransfer,
+            modelRef,
+            sessionRef,
+            getBridgedParticipant: () => bridgedParticipant,
+            setBridgedParticipant: (p) => (bridgedParticipant = p),
+            checkForHangup,
+            getConsultInProgress: () => consultInProgress,
+            getActiveCall,
+            endTransferActivityIfNeeded: endTransferActivityFn,
+            getTransferState,
+          });
+          // Successful run – break out of fallback loop
+          break fallbackLoop;
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          logger.error(
+            { error, message: error.message, fallbackConfig },
+            "runAgentWorker failed, evaluating fallback options"
+          );
+
+          // If there is no fallback configuration on the current agent, propagate the error
+          if (!fallbackConfig) {
+            throw error;
+          }
+
+          // 1. Agent-level fallback: fetch and substitute a different agent
+          if (
+            !usedFallbackAgent &&
+            fallbackConfig.agent &&
+            fallbackConfig.agent !== activeAgent.id
+          ) {
+            try {
+              logger.info(
+                {
+                  previousAgentId: activeAgent.id,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Retrying with fallback agent after failure"
+              );
+              const nextAgent = await getAgentById(fallbackConfig.agent);
+              if (!nextAgent) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} not found`);
+              }
+              if (nextAgent.userId !== activeAgent.userId && nextAgent.organisationId !== activeAgent.organisationId) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} does not belong to the same user or organization as the primary agent`);
+              }
+              // Ensure nextAgent.options is parsed if needed
+              let nextAgentOptions = nextAgent.options || {};
+              // Switch active agent and model; subsequent fallback decisions will
+              // be driven by the new agent's options.fallback.
+              activeAgent = { ...nextAgent, options: nextAgentOptions };
+              activeModelName = nextAgent.modelName;
+              usedFallbackAgent = true;
+              usedFallbackModel = false; // reset model fallback when switching agent
+              continue fallbackLoop;
+            } catch (agentError) {
+              const aErr =
+                agentError instanceof Error
+                  ? agentError
+                  : new Error(String(agentError));
+              logger.error(
+                {
+                  error: aErr,
+                  message: aErr.message,
+                  stack: aErr.stack,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Failed to fetch or use fallback agent; continuing to other fallbacks"
+              );
+              // Fall through to model/number fallbacks
+            }
+          }
+
+          // 2. Model-level fallback (restart with a different modelName)
+          if (
+            !usedFallbackModel &&
+            fallbackConfig.model &&
+            activeModelName !== fallbackConfig.model
+          ) {
+            logger.info(
+              {
+                previousModelName: activeModelName,
+                fallbackModelName: fallbackConfig.model,
+              },
+              "Retrying agent with fallback model after failure"
+            );
+            usedFallbackModel = true;
+            activeModelName = fallbackConfig.model;
+            // Loop again with updated modelName
+            continue fallbackLoop;
+          }
+
+          // 3. Number-level fallback (transfer to a phone number / endpoint)
+          if (fallbackConfig.number) {
+            try {
+              logger.info(
+                {
+                  fallbackNumber: fallbackConfig.number,
+                  error: error.message,
+                },
+                "Invoking fallback transfer after agent/model failure"
+              );
+
+              if (participant) {
+                // Use runAgentWorker in transfer-only mode to set up proper handlers
+                // This ensures we can detect when the transfer completes
+                await runAgentWorker({
+                  ctx,
+                  room,
+                  agent: activeAgent,
+                  participant,
+                  callerId,
+                  calledId,
+                  modelName: activeModelName, // Not used in transfer-only mode
+                  metadata,
+                  sendMessage,
+                  call,
+                  onHangup,
+                  onTransfer,
+                  modelRef,
+                  sessionRef,
+                  getBridgedParticipant: () => bridgedParticipant,
+                  setBridgedParticipant: (p) => (bridgedParticipant = p),
+                  checkForHangup,
+                  getConsultInProgress: () => consultInProgress,
+                  getActiveCall,
+                  endTransferActivityIfNeeded: endTransferActivityFn,
+                  getTransferState,
+                  transferOnly: true,
+                  transferArgs: {
+                    number: fallbackConfig.number,
+                    operation: "blind",
+                  },
+                });
+              } else {
+                logger.warn(
+                  {
+                    fallbackNumber: fallbackConfig.number,
+                  },
+                  "No participant available for fallback transfer"
+                );
+                throw new Error("No participant available for fallback transfer");
+              }
+            } catch (transferError) {
+              const tErr =
+                transferError instanceof Error
+                  ? transferError
+                  : new Error(String(transferError));
+              logger.error(
+                {
+                  error: tErr,
+                  message: tErr.message,
+                  stack: tErr.stack,
+                  fallbackNumber: fallbackConfig.number,
+                },
+                "Fallback transfer failed"
+              );
+              // Re-throw to trigger outer error handling
+              throw tErr;
+            }
+
+            // After attempting fallback transfer, break – call lifecycle will be
+            // controlled by the transfer handler from this point on.
+            break fallbackLoop;
+          }
+
+          // No applicable fallback path left; rethrow to outer handler
+          throw error;
+        }
+      }
       // Store the function in outer scope for use in catch block
       endTransferActivityIfNeeded = endTransferActivityFn;
     } catch (e) {
@@ -1056,6 +1241,8 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
+  transferOnly = false,
+  transferArgs,
 }: RunAgentWorkerParams & {
   endTransferActivityIfNeeded: (reason: string) => Promise<void>;
   getTransferState: () => {
@@ -1063,11 +1250,139 @@ async function runAgentWorker({
     description: string;
   };
 }) {
+  // If transferOnly mode, skip agent setup and go straight to transfer handling
+  if (transferOnly && transferArgs && participant) {
+    logger.info(
+      { transferArgs, fallbackTransfer: true },
+      "Running in transfer-only mode for fallback transfer"
+    );
+
+    // Set up participant disconnect handlers BEFORE transfer to ensure they're ready
+    const disconnectHandler = async (p: RemoteParticipant) => {
+      const bp = getBridgedParticipant();
+      logger.info(
+        { 
+          p: { sid: p?.info?.sid, identity: p?.info?.identity },
+          bridgedParticipant: bp,
+          originalParticipant: { sid: participant?.sid, identity: participant?.identity },
+          roomParticipants: (await roomService.listParticipants(room.name)).map(pp => ({ sid: pp.sid, identity: pp.identity }))
+        },
+        "participant disconnected (transfer-only mode)"
+      );
+      
+      // Check if this is the bridged participant (transfer target)
+      if (
+        bp &&
+        (bp.participantId === p?.info?.sid || bp.participantIdentity === p?.info?.identity)
+      ) {
+        logger.info("bridged participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Bridged participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during bridged participant disconnect"
+          );
+        }
+        await call.end("Bridged participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Bridged participant disconnected");
+        process.exit(0);
+      } 
+      // Check if this is the original participant (caller)
+      else if (p.info?.sid === participant?.sid || p.info?.identity === participant?.identity) {
+        logger.info("original participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Original participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during original participant disconnect"
+          );
+        }
+        await call.end("Original participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Original participant disconnected");
+        process.exit(0);
+      } else {
+        logger.debug(
+          { 
+            disconnectedParticipant: { sid: p?.info?.sid, identity: p?.info?.identity },
+            bridgedParticipant: bp,
+            originalParticipant: { sid: participant?.sid, identity: participant?.identity }
+          },
+          "Unknown participant disconnected, ignoring"
+        );
+      }
+    };
+
+    ctx.room.on(RoomEvent.ParticipantDisconnected, disconnectHandler);
+
+    // Connect to the room and start the call
+    await ctx.connect();
+    await call.start();
+    sendMessage({ call: `${callerId} => ${calledId}` });
+    sendMessage({ 
+      agent: `Transferring call to ${transferArgs.number} due to agent failure` 
+    });
+
+    // Perform the transfer
+    try {
+      await onTransfer({
+        args: transferArgs,
+        participant,
+      });
+      logger.info(
+        { transferArgs },
+        "Fallback transfer initiated successfully in transfer-only mode"
+      );
+    } catch (transferError) {
+      const tErr =
+        transferError instanceof Error
+          ? transferError
+          : new Error(String(transferError));
+      logger.error(
+        {
+          error: tErr,
+          message: tErr.message,
+          stack: tErr.stack,
+          transferArgs,
+        },
+        "Fallback transfer failed in transfer-only mode"
+      );
+      await call.end(`Fallback transfer failed: ${tErr.message}`);
+      await roomService.deleteRoom(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room");
+      });
+      await ctx.shutdown(tErr.message);
+      return;
+    }
+
+    // In transfer-only mode, we just wait for the transfer to complete
+    // The ParticipantDisconnected handler above will clean up when done
+    // Don't return - let the function continue to keep the process alive
+    // The handler will call process.exit(0) when cleanup is done
+    return;
+  }
+
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   let timerId: NodeJS.Timeout | null = null;
   let operation: string | null = null;
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  // Extract the underlying provider model name (e.g. "gpt-4o", "fixie-ai/ultravox-70B")
+  // from a LiveKit-style modelName such as "livekit:openai/gpt-4o" or
+  // "livekit:ultravox/fixie-ai/ultravox-70B".
+  // If parsing fails we fall back to each plugin's internal default.
+  const providerModelNameMatch = modelName.match(/^livekit:[^/]+\/(.+)$/);
+  const providerModelName = providerModelNameMatch
+    ? providerModelNameMatch[1]
+    : undefined;
+
   let initialMessage: string | null = "say hello";
   if (!realtime) {
     logger.error(
@@ -1083,6 +1398,7 @@ async function runAgentWorker({
 
   let session: voice.AgentSession | null = null;
   let maxDuration: number = 305000; // Default value
+  let callStarted = false;
 
   // DTMF buffering: accumulate digits and send as a single input after timeout
   let dtmfBuffer: string = "";
@@ -1205,12 +1521,20 @@ async function runAgentWorker({
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
         operation = "createSession";
+        const llmOptions: Record<string, unknown> = {
+          voice: agent?.options?.tts?.voice,
+          maxDuration: maxDurationString,
+          instructions: agent?.prompt || "You are a helpful assistant.",
+        };
+        if (providerModelName) {
+          llmOptions.model = providerModelName;
+          logger.info(
+            { modelName, providerModelName },
+            "Using provider model for realtime LLM"
+          );
+        }
         session = new voice.AgentSession({
-          llm: new realtime.RealtimeModel({
-            voice: agent?.options?.tts?.voice,
-            maxDuration: maxDurationString,
-            instructions: agent?.prompt || "You are a helpful assistant.",
-          }),
+          llm: new realtime.RealtimeModel(llmOptions),
         });
         sessionRef(session);
 
@@ -1301,8 +1625,7 @@ async function runAgentWorker({
           room: ctx.room,
           agent: model,
         });
-     
-
+        callStarted = true;
         operation = "connect";
         await ctx.connect();
       },
@@ -1487,6 +1810,15 @@ async function runAgentWorker({
       { error, message: error.message, stack: error.stack },
       "error running agent worker"
     );
+
+    // If the call has not yet started, treat this as a setup failure and let the
+    // caller decide whether to invoke fallback behaviour. We deliberately do NOT
+    // clean up the call/room here so that the outer loop can retry with a different
+    // model/agent on the same LiveKit room.
+    if (!callStarted) {
+      throw error;
+    }
+
     await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
   }
 }

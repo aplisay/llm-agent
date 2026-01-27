@@ -37,9 +37,40 @@ export interface Agent {
      * This can be overridden on a per-transfer basis by providing transferPrompt as a parameter to the transfer function call.
      */
     transferPrompt?: string;
+    /**
+     * Fallback configuration for this agent. Used by the LiveKit worker to decide
+     * how to recover when the primary model fails to connect or run.
+     *
+     * Precedence:
+     *  1. agent  - restart with a different agent (not yet implemented in worker).
+     *  2. model  - restart the session with a different modelName.
+     *  3. number - transfer the call to this number using the builtin transfer function.
+     */
+    fallback?: {
+      /**
+       * Identifier of an alternative agent to use if the primary agent fails.
+       */
+      agent?: string;
+      /**
+       * Fallback model name to use if the primary model fails.
+       */
+      model?: string;
+      /**
+       * Fallback transfer destination (phone number or endpoint ID).
+       */
+      number?: string;
+    };
   };
   functions?: AgentFunction[];
   keys?: string[];
+}
+
+/**
+ * Fetch an agent definition by ID from the main API.
+ * Note: this is distinct from the /agent-db/* internal APIs used for calls.
+ */
+export async function getAgentById(agentId: string): Promise<Agent> {
+  return makeApiRequest<Agent>(`/api/agents/${encodeURIComponent(agentId)}`);
 }
 
 export interface AgentFunction {
