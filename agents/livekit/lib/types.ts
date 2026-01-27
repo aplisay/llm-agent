@@ -111,6 +111,15 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
+  /**
+   * If true, skip agent setup and go straight to transfer mode.
+   * Used for fallback transfers where the agent failed to start.
+   */
+  transferOnly?: boolean;
+  /**
+   * Transfer arguments to use when transferOnly is true.
+   */
+  transferArgs?: TransferArgs;
 }
 
 export interface TransferArgs {

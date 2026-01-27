@@ -49,8 +49,6 @@ export interface Agent {
     fallback?: {
       /**
        * Identifier of an alternative agent to use if the primary agent fails.
-       * NOTE: Declaration only – LiveKit worker currently does not yet implement
-       * full agent-level restart semantics.
        */
       agent?: string;
       /**

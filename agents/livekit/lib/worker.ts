@@ -328,7 +328,7 @@ export default defineAgent({
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
           logger.error(
-            { error, message: error.message, stack: error.stack },
+            { error, message: error.message, fallbackConfig },
             "runAgentWorker failed, evaluating fallback options"
           );
 
@@ -352,9 +352,22 @@ export default defineAgent({
                 "Retrying with fallback agent after failure"
               );
               const nextAgent = await getAgentById(fallbackConfig.agent);
+              // Ensure nextAgent.options is parsed if needed
+              let nextAgentOptions = nextAgent.options || {};
+              if (typeof nextAgentOptions === 'string') {
+                try {
+                  nextAgentOptions = JSON.parse(nextAgentOptions);
+                } catch (e) {
+                  logger.warn(
+                    { error: e, options: nextAgent.options },
+                    "Failed to parse nextAgent.options as JSON"
+                  );
+                  nextAgentOptions = {};
+                }
+              }
               // Switch active agent and model; subsequent fallback decisions will
               // be driven by the new agent's options.fallback.
-              activeAgent = nextAgent;
+              activeAgent = { ...nextAgent, options: nextAgentOptions };
               activeModelName = nextAgent.modelName;
               usedFallbackAgent = true;
               usedFallbackModel = false; // reset model fallback when switching agent
@@ -408,12 +421,35 @@ export default defineAgent({
               );
 
               if (participant) {
-                await onTransfer({
-                  args: {
+                // Use runAgentWorker in transfer-only mode to set up proper handlers
+                // This ensures we can detect when the transfer completes
+                await runAgentWorker({
+                  ctx,
+                  room,
+                  agent: activeAgent,
+                  participant,
+                  callerId,
+                  calledId,
+                  modelName: activeModelName, // Not used in transfer-only mode
+                  metadata,
+                  sendMessage,
+                  call,
+                  onHangup,
+                  onTransfer,
+                  modelRef,
+                  sessionRef,
+                  getBridgedParticipant: () => bridgedParticipant,
+                  setBridgedParticipant: (p) => (bridgedParticipant = p),
+                  checkForHangup,
+                  getConsultInProgress: () => consultInProgress,
+                  getActiveCall,
+                  endTransferActivityIfNeeded: endTransferActivityFn,
+                  getTransferState,
+                  transferOnly: true,
+                  transferArgs: {
                     number: fallbackConfig.number,
                     operation: "blind",
                   },
-                  participant,
                 });
               } else {
                 logger.warn(
@@ -422,6 +458,7 @@ export default defineAgent({
                   },
                   "No participant available for fallback transfer"
                 );
+                throw new Error("No participant available for fallback transfer");
               }
             } catch (transferError) {
               const tErr =
@@ -437,6 +474,8 @@ export default defineAgent({
                 },
                 "Fallback transfer failed"
               );
+              // Re-throw to trigger outer error handling
+              throw tErr;
             }
 
             // After attempting fallback transfer, break – call lifecycle will be
@@ -1207,6 +1246,8 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
+  transferOnly = false,
+  transferArgs,
 }: RunAgentWorkerParams & {
   endTransferActivityIfNeeded: (reason: string) => Promise<void>;
   getTransferState: () => {
@@ -1214,6 +1255,125 @@ async function runAgentWorker({
     description: string;
   };
 }) {
+  // If transferOnly mode, skip agent setup and go straight to transfer handling
+  if (transferOnly && transferArgs && participant) {
+    logger.info(
+      { transferArgs, fallbackTransfer: true },
+      "Running in transfer-only mode for fallback transfer"
+    );
+
+    // Set up participant disconnect handlers BEFORE transfer to ensure they're ready
+    const disconnectHandler = async (p: RemoteParticipant) => {
+      const bp = getBridgedParticipant();
+      logger.info(
+        { 
+          p: { sid: p?.info?.sid, identity: p?.info?.identity },
+          bridgedParticipant: bp,
+          originalParticipant: { sid: participant?.sid, identity: participant?.identity },
+          roomParticipants: (await roomService.listParticipants(room.name)).map(pp => ({ sid: pp.sid, identity: pp.identity }))
+        },
+        "participant disconnected (transfer-only mode)"
+      );
+      
+      // Check if this is the bridged participant (transfer target)
+      if (
+        bp &&
+        (bp.participantId === p?.info?.sid || bp.participantIdentity === p?.info?.identity)
+      ) {
+        logger.info("bridged participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Bridged participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during bridged participant disconnect"
+          );
+        }
+        await call.end("Bridged participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Bridged participant disconnected");
+        process.exit(0);
+      } 
+      // Check if this is the original participant (caller)
+      else if (p.info?.sid === participant?.sid || p.info?.identity === participant?.identity) {
+        logger.info("original participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Original participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during original participant disconnect"
+          );
+        }
+        await call.end("Original participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Original participant disconnected");
+        process.exit(0);
+      } else {
+        logger.debug(
+          { 
+            disconnectedParticipant: { sid: p?.info?.sid, identity: p?.info?.identity },
+            bridgedParticipant: bp,
+            originalParticipant: { sid: participant?.sid, identity: participant?.identity }
+          },
+          "Unknown participant disconnected, ignoring"
+        );
+      }
+    };
+
+    ctx.room.on(RoomEvent.ParticipantDisconnected, disconnectHandler);
+
+    // Connect to the room and start the call
+    await ctx.connect();
+    await call.start();
+    sendMessage({ call: `${callerId} => ${calledId}` });
+    sendMessage({ 
+      agent: `Transferring call to ${transferArgs.number} due to agent failure` 
+    });
+
+    // Perform the transfer
+    try {
+      await onTransfer({
+        args: transferArgs,
+        participant,
+      });
+      logger.info(
+        { transferArgs },
+        "Fallback transfer initiated successfully in transfer-only mode"
+      );
+    } catch (transferError) {
+      const tErr =
+        transferError instanceof Error
+          ? transferError
+          : new Error(String(transferError));
+      logger.error(
+        {
+          error: tErr,
+          message: tErr.message,
+          stack: tErr.stack,
+          transferArgs,
+        },
+        "Fallback transfer failed in transfer-only mode"
+      );
+      await call.end(`Fallback transfer failed: ${tErr.message}`);
+      await roomService.deleteRoom(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room");
+      });
+      await ctx.shutdown(tErr.message);
+      return;
+    }
+
+    // In transfer-only mode, we just wait for the transfer to complete
+    // The ParticipantDisconnected handler above will clean up when done
+    // Don't return - let the function continue to keep the process alive
+    // The handler will call process.exit(0) when cleanup is done
+    return;
+  }
+
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   let timerId: NodeJS.Timeout | null = null;
   let operation: string | null = null;
