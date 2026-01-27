@@ -37,6 +37,7 @@ import {
   type PhoneRegistrationInfo,
   type TrunkInfo,
   endCallById,
+  getAgentById,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -274,29 +275,179 @@ export default defineAgent({
       // Record the appropriate transaction at the top level
       sendMessage({ answer: callerId });
 
-      await runAgentWorker({
-        ctx,
-        room,
-        agent,
-        participant,
-        callerId,
-        calledId,
-        modelName,
-        metadata,
-        sendMessage,
-        call,
-        onHangup,
-        onTransfer,
-        modelRef,
-        sessionRef,
-        getBridgedParticipant: () => bridgedParticipant,
-        setBridgedParticipant: (p) => (bridgedParticipant = p),
-        checkForHangup,
-        getConsultInProgress: () => consultInProgress,
-        getActiveCall,
-        endTransferActivityIfNeeded: endTransferActivityFn,
-        getTransferState,
-      });
+      /**
+       * Fallback loop around the core agent worker.
+       *
+       * Behaviour:
+       *  - First attempt runs with the primary modelName from the agent.
+       *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
+       *    we consult the current agent's options.fallback with precedence:
+       *      1. fallback.agent  – fetch and substitute a different agent, then retry.
+       *      2. fallback.model  – retry the same agent with a different modelName.
+       *      3. fallback.number – perform a blind transfer to this number and exit.
+       *
+       * Once we have switched to a fallback agent, any further fallback decisions are
+       * controlled by that agent's own options.fallback.
+       */
+      let activeAgent = agent;
+      let activeModelName = modelName;
+      let usedFallbackModel = false;
+      let usedFallbackAgent = false;
+
+      // Try primary and any configured model/agent fallbacks until we either succeed
+      // or exhaust the configured options and fall back to a transfer/propagated error.
+      fallbackLoop: while (true) {
+        const fallbackConfig = activeAgent.options?.fallback;
+
+        try {
+          await runAgentWorker({
+            ctx,
+            room,
+            agent: activeAgent,
+            participant,
+            callerId,
+            calledId,
+            modelName: activeModelName,
+            metadata,
+            sendMessage,
+            call,
+            onHangup,
+            onTransfer,
+            modelRef,
+            sessionRef,
+            getBridgedParticipant: () => bridgedParticipant,
+            setBridgedParticipant: (p) => (bridgedParticipant = p),
+            checkForHangup,
+            getConsultInProgress: () => consultInProgress,
+            getActiveCall,
+            endTransferActivityIfNeeded: endTransferActivityFn,
+            getTransferState,
+          });
+          // Successful run – break out of fallback loop
+          break fallbackLoop;
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          logger.error(
+            { error, message: error.message, stack: error.stack },
+            "runAgentWorker failed, evaluating fallback options"
+          );
+
+          // If there is no fallback configuration on the current agent, propagate the error
+          if (!fallbackConfig) {
+            throw error;
+          }
+
+          // 1. Agent-level fallback: fetch and substitute a different agent
+          if (
+            !usedFallbackAgent &&
+            fallbackConfig.agent &&
+            fallbackConfig.agent !== activeAgent.id
+          ) {
+            try {
+              logger.info(
+                {
+                  previousAgentId: activeAgent.id,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Retrying with fallback agent after failure"
+              );
+              const nextAgent = await getAgentById(fallbackConfig.agent);
+              // Switch active agent and model; subsequent fallback decisions will
+              // be driven by the new agent's options.fallback.
+              activeAgent = nextAgent;
+              activeModelName = nextAgent.modelName;
+              usedFallbackAgent = true;
+              usedFallbackModel = false; // reset model fallback when switching agent
+              continue fallbackLoop;
+            } catch (agentError) {
+              const aErr =
+                agentError instanceof Error
+                  ? agentError
+                  : new Error(String(agentError));
+              logger.error(
+                {
+                  error: aErr,
+                  message: aErr.message,
+                  stack: aErr.stack,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Failed to fetch or use fallback agent; continuing to other fallbacks"
+              );
+              // Fall through to model/number fallbacks
+            }
+          }
+
+          // 2. Model-level fallback (restart with a different modelName)
+          if (
+            !usedFallbackModel &&
+            fallbackConfig.model &&
+            activeModelName !== fallbackConfig.model
+          ) {
+            logger.info(
+              {
+                previousModelName: activeModelName,
+                fallbackModelName: fallbackConfig.model,
+              },
+              "Retrying agent with fallback model after failure"
+            );
+            usedFallbackModel = true;
+            activeModelName = fallbackConfig.model;
+            // Loop again with updated modelName
+            continue fallbackLoop;
+          }
+
+          // 3. Number-level fallback (transfer to a phone number / endpoint)
+          if (fallbackConfig.number) {
+            try {
+              logger.info(
+                {
+                  fallbackNumber: fallbackConfig.number,
+                  error: error.message,
+                },
+                "Invoking fallback transfer after agent/model failure"
+              );
+
+              if (participant) {
+                await onTransfer({
+                  args: {
+                    number: fallbackConfig.number,
+                    operation: "blind",
+                  },
+                  participant,
+                });
+              } else {
+                logger.warn(
+                  {
+                    fallbackNumber: fallbackConfig.number,
+                  },
+                  "No participant available for fallback transfer"
+                );
+              }
+            } catch (transferError) {
+              const tErr =
+                transferError instanceof Error
+                  ? transferError
+                  : new Error(String(transferError));
+              logger.error(
+                {
+                  error: tErr,
+                  message: tErr.message,
+                  stack: tErr.stack,
+                  fallbackNumber: fallbackConfig.number,
+                },
+                "Fallback transfer failed"
+              );
+            }
+
+            // After attempting fallback transfer, break – call lifecycle will be
+            // controlled by the transfer handler from this point on.
+            break fallbackLoop;
+          }
+
+          // No applicable fallback path left; rethrow to outer handler
+          throw error;
+        }
+      }
       // Store the function in outer scope for use in catch block
       endTransferActivityIfNeeded = endTransferActivityFn;
     } catch (e) {
@@ -1068,6 +1219,15 @@ async function runAgentWorker({
   let operation: string | null = null;
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  // Extract the underlying provider model name (e.g. "gpt-4o", "fixie-ai/ultravox-70B")
+  // from a LiveKit-style modelName such as "livekit:openai/gpt-4o" or
+  // "livekit:ultravox/fixie-ai/ultravox-70B".
+  // If parsing fails we fall back to each plugin's internal default.
+  const providerModelNameMatch = modelName.match(/^livekit:[^/]+\/(.+)$/);
+  const providerModelName = providerModelNameMatch
+    ? providerModelNameMatch[1]
+    : undefined;
+
   let initialMessage: string | null = "say hello";
   if (!realtime) {
     logger.error(
@@ -1083,6 +1243,7 @@ async function runAgentWorker({
 
   let session: voice.AgentSession | null = null;
   let maxDuration: number = 305000; // Default value
+  let callStarted = false;
 
   // DTMF buffering: accumulate digits and send as a single input after timeout
   let dtmfBuffer: string = "";
@@ -1205,12 +1366,20 @@ async function runAgentWorker({
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
         operation = "createSession";
+        const llmOptions: Record<string, unknown> = {
+          voice: agent?.options?.tts?.voice,
+          maxDuration: maxDurationString,
+          instructions: agent?.prompt || "You are a helpful assistant.",
+        };
+        if (providerModelName) {
+          llmOptions.model = providerModelName;
+          logger.info(
+            { modelName, providerModelName },
+            "Using provider model for realtime LLM"
+          );
+        }
         session = new voice.AgentSession({
-          llm: new realtime.RealtimeModel({
-            voice: agent?.options?.tts?.voice,
-            maxDuration: maxDurationString,
-            instructions: agent?.prompt || "You are a helpful assistant.",
-          }),
+          llm: new realtime.RealtimeModel(llmOptions),
         });
         sessionRef(session);
 
@@ -1301,8 +1470,7 @@ async function runAgentWorker({
           room: ctx.room,
           agent: model,
         });
-     
-
+        callStarted = true;
         operation = "connect";
         await ctx.connect();
       },
@@ -1487,6 +1655,15 @@ async function runAgentWorker({
       { error, message: error.message, stack: error.stack },
       "error running agent worker"
     );
+
+    // If the call has not yet started, treat this as a setup failure and let the
+    // caller decide whether to invoke fallback behaviour. We deliberately do NOT
+    // clean up the call/room here so that the outer loop can retry with a different
+    // model/agent on the same LiveKit room.
+    if (!callStarted) {
+      throw error;
+    }
+
     await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
   }
 }
