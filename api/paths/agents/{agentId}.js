@@ -126,7 +126,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { prompt, options, functions, keys } = req.body;
+  let { prompt, options, functions, keys, modelName } = req.body;
   let { agentId } = req.params;
 
   try {
@@ -134,7 +134,7 @@ const agentUpdate = async (req, res) => {
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    await agent.update({ prompt, options, functions, keys });
+    await agent.update({ prompt, options, functions, keys, modelName });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -145,8 +145,7 @@ const agentUpdate = async (req, res) => {
 };
 agentUpdate.apiDoc = {
   summary: 'Updates an existing agent',
-  description: `All fields on an agent, except for the \`id\` and \`modelName\` may be mutated using this method.
-                To change the \`modelName\`, create a new Agent instance.`,
+  description: `All fields on an agent, except for the \`id\` may be mutated using this method.`,
   operationId: 'updateAgent',
   tags: ["Agent"],
   parameters: [
@@ -166,6 +165,9 @@ agentUpdate.apiDoc = {
         schema: {
           type: "object",
           properties: {
+            modelName: {
+              $ref: '#/components/schemas/ModelName',
+            },
             prompt: {
               $ref: '#/components/schemas/Prompt',
             },

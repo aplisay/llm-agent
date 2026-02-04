@@ -303,6 +303,11 @@ export class RealtimeModel extends llm.RealtimeModel {
       );
     }
 
+    // Hack to catch all attempts to use a llama 70b model to force backward compatibility
+    if (model.match(/ultravox-70b/i)) {
+      model = "ultravox-v0.6";
+    }
+
     this.#defaultOpts = {
       modalities,
       instructions,
