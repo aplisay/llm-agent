@@ -862,8 +862,9 @@ export class RealtimeSession extends llm.RealtimeSession {
     error: Error;
     recoverable: boolean;
   }): void {
-    // IMPORTANT: only emit error if there are listeners; otherwise emit will throw an error
+    // Emit a standard RealtimeModelError so AgentSession can react generically.
     this.emit("error", {
+      type: "realtime_model_error",
       timestamp: Date.now(),
       label: "ultravox-connection",
       error,
@@ -962,7 +963,11 @@ export class RealtimeSession extends llm.RealtimeSession {
           !callResponse.callId ||
           !callResponse.joinUrl
         ) {
-          throw new Error("Failed to create Ultravox call");
+          const error = new Error("Failed to create Ultravox call");
+          this.#sessionFailed = true;
+          this.emitError({ error, recoverable: false });
+          reject(error);
+          return;
         }
 
         // Connect to Ultravox WebSocket
@@ -1156,8 +1161,9 @@ export class RealtimeSession extends llm.RealtimeSession {
               "Ultravox WebSocket closed unexpectedly"
             );
             this.#sessionFailed = true;
-            this.emitError({ error: new Error(errorMsg), recoverable: false });
-            reject(new Error(errorMsg));
+            const error = new Error(errorMsg);
+            this.emitError({ error, recoverable: false });
+            reject(error);
           }
           this.#closing = true;
           this.#ws = null;
@@ -1170,7 +1176,11 @@ export class RealtimeSession extends llm.RealtimeSession {
           resolve();
         };
       } catch (error) {
-        reject(error);
+        const err =
+          error instanceof Error ? error : new Error(String(error));
+        this.#sessionFailed = true;
+        this.emitError({ error: err, recoverable: false });
+        reject(err);
       }
     });
   }

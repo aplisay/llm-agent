@@ -310,9 +310,7 @@ async function main() {
         auth_username: auth_username ? auth_username : undefined,
         register_proxy: register_proxy ? register_proxy : undefined,
         realm: realm ? realm : undefined,
-        caller_id_in_from: false,
-        forceBridged: forceBridged,
-        extension_in_contact: true
+        forceBridged: forceBridged || undefined,
       }
     };
 

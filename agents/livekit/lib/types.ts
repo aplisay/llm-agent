@@ -100,7 +100,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   calledId: string;
   modelName: string;
   metadata: any;
-  sendMessage: (message: any) => Promise<void>;
+  sendMessage: (message: any, createdAt?: Date) => Promise<void>;
   call: Call;
   onHangup: () => Promise<void>;
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;

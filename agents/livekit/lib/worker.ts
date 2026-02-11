@@ -967,7 +967,7 @@ async function setupCallAndUtilities({
     createdAt?: Date;
   }> = [];
 
-  const sendMessage = async (message: MessageData) => {
+  const sendMessage = async (message: MessageData, createdAt?: Date) => {
     try {
       const entries = Object.entries(message);
       if (entries.length > 0) {
@@ -983,8 +983,9 @@ async function setupCallAndUtilities({
           return;
         }
 
-        // Capture the timestamp when the log was created
-        const createdAt = new Date();
+        // Use provided createdAt timestamp if available, otherwise use current time
+        // This preserves the original event timestamp from ConversationItemAdded events
+        const logCreatedAt = createdAt || new Date();
 
         const transactionLogData = {
           userId,
@@ -993,7 +994,7 @@ async function setupCallAndUtilities({
           type,
           data: JSON.stringify(data),
           isFinal: true,
-          createdAt,
+          createdAt: logCreatedAt,
         };
 
         // If streamLog is enabled, push immediately; otherwise batch for end call
@@ -1134,7 +1135,7 @@ function createTools({
   agent: Agent;
   room: Room;
   participant: ParticipantInfo | null;
-  sendMessage: (message: MessageData) => Promise<void>;
+  sendMessage: (message: MessageData, createdAt?: Date) => Promise<void>;
   metadata: CallMetadata;
   onHangup: () => Promise<void>;
   onTransfer: ({
@@ -1511,6 +1512,7 @@ async function runAgentWorker({
         });
 
         operation = "createModel";
+        logger.debug({ tools }, "Creating model");
         const model = new voice.Agent({
           instructions: agent?.prompt || "You are a helpful assistant.",
           tools,
@@ -1537,6 +1539,7 @@ async function runAgentWorker({
         if (agent?.options?.vendorSpecific) {
           llmOptions.vendorSpecific = agent.options.vendorSpecific;
         }
+        logger.debug({ llmOptions }, "Creating session");
         session = new voice.AgentSession({
           llm: new realtime.RealtimeModel(llmOptions),
         });
@@ -1557,13 +1560,16 @@ async function runAgentWorker({
         // Listen on the user input transcribed event
         session.on(
           voice.AgentSessionEventTypes.ConversationItemAdded,
-          ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
+          ({ item: { type, role, content }, createdAt }: voice.ConversationItemAddedEvent) => {
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
               if (role !== "user" || text !== initialMessage) {
-                sendMessage({
-                  [role === "user" ? "user" : "agent"]: text,
-                });
+                sendMessage(
+                  {
+                    [role === "user" ? "user" : "agent"]: text,
+                  },
+                  createdAt ? new Date(createdAt) : undefined
+                );
               }
             }
           }
@@ -1606,6 +1612,77 @@ async function runAgentWorker({
           logger.error({ ev }, "error");
         });
 
+        // Watch for any non-recoverable model/STT/TTS errors that occur while
+        // the session is still starting. If we see one before callStarted is
+        // set, we treat it as a setup failure so the outer fallback loop can
+        // switch models/agents or perform a transfer.
+        let startupErrorUnsubscribe: (() => void) | null = null;
+        const startupErrorPromise = new Promise<never>((_, reject) => {
+          const sessionForStartup = session;
+          if (!sessionForStartup) {
+            // Should not happen, but fail fast if it does.
+            reject(
+              new Error(
+                "Agent session not available during startup error monitoring"
+              )
+            );
+            return;
+          }
+
+          const handler = (ev: voice.ErrorEvent) => {
+            // If the call has already been marked as started, this is a
+            // runtime error and should not influence startup / fallback logic.
+            if (callStarted) {
+              return;
+            }
+
+            const errAny: any = ev.error;
+            const errType = errAny?.type;
+            const isRealtimeModelError = errType === "realtime_model_error";
+            const isRecoverable = !!errAny?.recoverable;
+
+            // Ignore explicitly recoverable realtime model errors during startup.
+            if (isRealtimeModelError && isRecoverable) {
+              return;
+            }
+
+            // For any other error type (or non‑recoverable realtime model
+            // error), treat this as a fatal startup failure.
+            if (startupErrorUnsubscribe) {
+              startupErrorUnsubscribe();
+            }
+
+            const underlyingError: Error =
+              isRealtimeModelError && errAny?.error instanceof Error
+                ? errAny.error
+                : errAny instanceof Error
+                ? errAny
+                : new Error(
+                    String(
+                      errAny?.message ||
+                        "Agent session startup error (realtime model / STT / TTS)"
+                    )
+                  );
+
+            reject(underlyingError);
+          };
+
+          sessionForStartup.on(
+            voice.AgentSessionEventTypes.Error,
+            handler as any
+          );
+          startupErrorUnsubscribe = () => {
+            const unsubscribeSession = sessionForStartup;
+            if (unsubscribeSession) {
+              unsubscribeSession.off(
+                voice.AgentSessionEventTypes.Error,
+                handler as any
+              );
+            }
+            startupErrorUnsubscribe = null;
+          };
+        });
+
         session.on(
           voice.AgentSessionEventTypes.Close,
           async (ev: voice.CloseEvent) => {
@@ -1625,11 +1702,19 @@ async function runAgentWorker({
         );
 
         operation = "sessionStart";
-        await session.start({
-          room: ctx.room,
-          agent: model,
-        });
+        await Promise.race([
+          session.start({
+            room: ctx.room,
+            agent: model,
+          }),
+          startupErrorPromise,
+        ]);
         callStarted = true;
+
+        // Once startup has succeeded, we no longer need the startup-specific
+        // error watcher; subsequent errors are treated as runtime failures.
+        (startupErrorUnsubscribe as (() => void) | null)?.();
+
         operation = "connect";
         await ctx.connect();
       },
