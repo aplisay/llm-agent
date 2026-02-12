@@ -20,8 +20,8 @@ export async function transferParticipant(
 
   // If registrar is provided, construct SIP URI for registration endpoint
   let transferUri = `tel:${transferTo}`;
-  // Note: This code is currently disabled (false condition) but kept for future use
-  if (false && registrar) {
+
+  if (registrar) {
     // Extract host from registrar (e.g., "sip:provider.example.com:5060" -> "provider.example.com:5060")
     const registrarHost = (registrar as string).replace(/^sip:/i, '').replace(/^tel:/i, '');
     transferUri = `sip:${transferTo}@${registrarHost}`;
