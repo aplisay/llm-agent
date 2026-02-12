@@ -1888,9 +1888,6 @@ async function runAgentWorker({
     }, maxDuration + 5 * 1000);
 
     logger.debug("session started, generating reply");
-    if (session) {
-      (session as voice.AgentSession).generateReply({ userInput: initialMessage });
-    }
     await call.start();
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {
