@@ -11,4 +11,5 @@ RUN npm install -g pnpm@latest-10
 RUN yarn install --development
 RUN yarn build
 ENV NODE_ENV production
-ENTRYPOINT node dist/realtime.mjs start
+ENTRYPOINT ["node", "dist/realtime.mjs"]
+CMD ["start"]

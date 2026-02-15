@@ -6,7 +6,7 @@ import {
   defineAgent,
   getJobContext,
   voice,
-  llm,
+  llm
 } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
@@ -37,12 +37,14 @@ import {
   type PhoneRegistrationInfo,
   type TrunkInfo,
   endCallById,
+  getAgentById,
 } from "./api-client.js";
 import {
   handleTransfer,
   type TransferContext,
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
+import { withTimeout } from "./utils.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -131,6 +133,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp = null,
         b2buaGatewayTransport = null,
+        forceBridged,
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -204,6 +207,7 @@ export default defineAgent({
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
+        forceBridged,
         requestHangup: () => {},
         participant: participant,
       });
@@ -271,29 +275,213 @@ export default defineAgent({
       // Record the appropriate transaction at the top level
       sendMessage({ answer: callerId });
 
-      await runAgentWorker({
-        ctx,
-        room,
-        agent,
-        participant,
-        callerId,
-        calledId,
-        modelName,
-        metadata,
-        sendMessage,
-        call,
-        onHangup,
-        onTransfer,
-        modelRef,
-        sessionRef,
-        getBridgedParticipant: () => bridgedParticipant,
-        setBridgedParticipant: (p) => (bridgedParticipant = p),
-        checkForHangup,
-        getConsultInProgress: () => consultInProgress,
-        getActiveCall,
-        endTransferActivityIfNeeded: endTransferActivityFn,
-        getTransferState,
-      });
+      /**
+       * Fallback loop around the core agent worker.
+       *
+       * Behaviour:
+       *  - First attempt runs with the primary modelName from the agent.
+       *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
+       *    we consult the current agent's options.fallback with precedence:
+       *      1. fallback.agent  – fetch and substitute a different agent, then retry.
+       *      2. fallback.model  – retry the same agent with a different modelName.
+       *      3. fallback.number – perform a blind transfer to this number and exit.
+       *
+       * Once we have switched to a fallback agent, any further fallback decisions are
+       * controlled by that agent's own options.fallback.
+       */
+      let activeAgent = agent;
+      let activeModelName = modelName;
+      let usedFallbackModel = false;
+      let usedFallbackAgent = false;
+
+      // Try primary and any configured model/agent fallbacks until we either succeed
+      // or exhaust the configured options and fall back to a transfer/propagated error.
+      fallbackLoop: while (true) {
+        const fallbackConfig = activeAgent.options?.fallback;
+
+        try {
+          await runAgentWorker({
+            ctx,
+            room,
+            agent: activeAgent,
+            participant,
+            callerId,
+            calledId,
+            modelName: activeModelName,
+            metadata,
+            sendMessage,
+            call,
+            onHangup,
+            onTransfer,
+            modelRef,
+            sessionRef,
+            getBridgedParticipant: () => bridgedParticipant,
+            setBridgedParticipant: (p) => (bridgedParticipant = p),
+            checkForHangup,
+            getConsultInProgress: () => consultInProgress,
+            getActiveCall,
+            endTransferActivityIfNeeded: endTransferActivityFn,
+            getTransferState,
+          });
+          // Successful run – break out of fallback loop
+          break fallbackLoop;
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          logger.error(
+            { error, message: error.message, fallbackConfig },
+            "runAgentWorker failed, evaluating fallback options"
+          );
+
+          // If there is no fallback configuration on the current agent, propagate the error
+          if (!fallbackConfig) {
+            throw error;
+          }
+
+          // 1. Agent-level fallback: fetch and substitute a different agent
+          if (
+            !usedFallbackAgent &&
+            fallbackConfig.agent &&
+            fallbackConfig.agent !== activeAgent.id
+          ) {
+            try {
+              logger.info(
+                {
+                  previousAgentId: activeAgent.id,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Retrying with fallback agent after failure"
+              );
+              const nextAgent = await getAgentById(fallbackConfig.agent);
+              if (!nextAgent) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} not found`);
+              }
+              if (nextAgent.userId !== activeAgent.userId && nextAgent.organisationId !== activeAgent.organisationId) {
+                throw new Error(`Fallback agent ${fallbackConfig.agent} does not belong to the same user or organization as the primary agent`);
+              }
+              // Ensure nextAgent.options is parsed if needed
+              let nextAgentOptions = nextAgent.options || {};
+              // Switch active agent and model; subsequent fallback decisions will
+              // be driven by the new agent's options.fallback.
+              activeAgent = { ...nextAgent, options: nextAgentOptions };
+              activeModelName = nextAgent.modelName;
+              usedFallbackAgent = true;
+              usedFallbackModel = false; // reset model fallback when switching agent
+              continue fallbackLoop;
+            } catch (agentError) {
+              const aErr =
+                agentError instanceof Error
+                  ? agentError
+                  : new Error(String(agentError));
+              logger.error(
+                {
+                  error: aErr,
+                  message: aErr.message,
+                  stack: aErr.stack,
+                  fallbackAgentId: fallbackConfig.agent,
+                },
+                "Failed to fetch or use fallback agent; continuing to other fallbacks"
+              );
+              // Fall through to model/number fallbacks
+            }
+          }
+
+          // 2. Model-level fallback (restart with a different modelName)
+          if (
+            !usedFallbackModel &&
+            fallbackConfig.model &&
+            activeModelName !== fallbackConfig.model
+          ) {
+            logger.info(
+              {
+                previousModelName: activeModelName,
+                fallbackModelName: fallbackConfig.model,
+              },
+              "Retrying agent with fallback model after failure"
+            );
+            usedFallbackModel = true;
+            activeModelName = fallbackConfig.model;
+            // Loop again with updated modelName
+            continue fallbackLoop;
+          }
+
+          // 3. Number-level fallback (transfer to a phone number / endpoint)
+          if (fallbackConfig.number) {
+            try {
+              logger.info(
+                {
+                  fallbackNumber: fallbackConfig.number,
+                  error: error.message,
+                },
+                "Invoking fallback transfer after agent/model failure"
+              );
+
+              if (participant) {
+                // Use runAgentWorker in transfer-only mode to set up proper handlers
+                // This ensures we can detect when the transfer completes
+                await runAgentWorker({
+                  ctx,
+                  room,
+                  agent: activeAgent,
+                  participant,
+                  callerId,
+                  calledId,
+                  modelName: activeModelName, // Not used in transfer-only mode
+                  metadata,
+                  sendMessage,
+                  call,
+                  onHangup,
+                  onTransfer,
+                  modelRef,
+                  sessionRef,
+                  getBridgedParticipant: () => bridgedParticipant,
+                  setBridgedParticipant: (p) => (bridgedParticipant = p),
+                  checkForHangup,
+                  getConsultInProgress: () => consultInProgress,
+                  getActiveCall,
+                  endTransferActivityIfNeeded: endTransferActivityFn,
+                  getTransferState,
+                  transferOnly: true,
+                  transferArgs: {
+                    number: fallbackConfig.number,
+                    operation: "blind",
+                  },
+                });
+              } else {
+                logger.warn(
+                  {
+                    fallbackNumber: fallbackConfig.number,
+                  },
+                  "No participant available for fallback transfer"
+                );
+                throw new Error("No participant available for fallback transfer");
+              }
+            } catch (transferError) {
+              const tErr =
+                transferError instanceof Error
+                  ? transferError
+                  : new Error(String(transferError));
+              logger.error(
+                {
+                  error: tErr,
+                  message: tErr.message,
+                  stack: tErr.stack,
+                  fallbackNumber: fallbackConfig.number,
+                },
+                "Fallback transfer failed"
+              );
+              // Re-throw to trigger outer error handling
+              throw tErr;
+            }
+
+            // After attempting fallback transfer, break – call lifecycle will be
+            // controlled by the transfer handler from this point on.
+            break fallbackLoop;
+          }
+
+          // No applicable fallback path left; rethrow to outer handler
+          throw error;
+        }
+      }
       // Store the function in outer scope for use in catch block
       endTransferActivityIfNeeded = endTransferActivityFn;
     } catch (e) {
@@ -369,7 +557,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
-
+  let forceBridged: boolean | undefined = undefined;
   /*
 
   Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
@@ -380,159 +568,188 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                       we use this to extract the called number, and then lookup which agent instance we should answer with.
   
   */
-
-  if (outbound) {
-    if (!calledId || !callerId || !aplisayId || !instanceId) {
-      logger.error({ ctx }, "missing metadata for outbound call");
-      throw new Error("Missing metadata for outbound call");
-    }
-    instance = await getInstanceById(instanceId);
-    if (!instance) {
-      logger.error(
-        { ctx },
-        `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`
-      );
-      throw new Error("No instance found for outbound call");
-    }
-    // Do not perform side-effects here; signal to the caller to bridge
-    outboundCall = true;
-    outboundInfo = {
-      toNumber: calledId,
-      fromNumber: callerId,
-      aplisayId,
-      instanceId,
-    };
-  } else {
-    logger.info({ room }, "room name getting participants");
-    const participants = await roomService.listParticipants(room.name!);
-    participant = participants.find(
-      (p) => p.identity !== "sip-outbound-call"
-    ) as ParticipantInfo;
-    bridgedParticipant = participants.find(
-      (p) => p.identity === "sip-outbound-call"
-    ) as ParticipantInfo | null;
-    logger.debug(
-      { participants: participants.length, participant, bridgedParticipant },
-      "have bridged participant?"
-    );
-    if (identity) {
-      logger.debug({ identity }, "getting instance by identity");
-      instance = await getInstanceById(identity);
-      logger.debug({ instance }, "instance found?");
-    } else if (room.name && participant?.attributes) {
-      logger.debug(
-        { participants, attributes: participant.attributes },
-        "participants"
-      );
-      if (participant) {
-        const {
-          sipTrunkPhoneNumber: calledIdAttr,
-          sipPhoneNumber: callerIdAttr,
-          sipHXAplisayTrunk: aplisayIdAttr,
-          sipHXAplisayPhoneregistration: phoneRegistrationAttr,
-          sipHostname: sipHostnameAttr,
-          sipHXLkRealIp: b2buaGatewayIpAttr,
-          sipHXLkTransport: b2buaGatewayTransportAttr,
-        } = participant.attributes || {};
-
-        calledId = calledIdAttr;
-        callerId = callerIdAttr;
-        aplisayId = aplisayIdAttr;
-        phoneRegistration = phoneRegistrationAttr;
-
-        // Store registration endpoint ID for transfer operations
-        if (phoneRegistration) {
-          registrationEndpointId = phoneRegistration;
-        }
-
-        // Store B2BUA gateway information for routing outbound calls
-        if (b2buaGatewayIpAttr) {
-          b2buaGatewayIp = b2buaGatewayIpAttr;
-          b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
-          logger.info(
-            { b2buaGatewayIp, b2buaGatewayTransport },
-            "Extracted B2BUA gateway information from participant attributes"
-          );
-        }
-
-        // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
-        // (sipHostname is the registrar hostname from the inbound call)
-        if (phoneRegistration && sipHostnameAttr && !registrationRegistrar) {
-          registrationRegistrar = sipHostnameAttr;
-          logger.info(
-            { sipHostname: sipHostnameAttr },
-            "Using sipHostname as registrar from participant attributes"
-          );
-        }
-      }
-
-      calledId = calledId?.replace("+", "");
-      callerId = callerId?.replace("+", "");
-
-      // If we have a phoneRegistration ID, lookup the phone endpoint by ID
-      // Otherwise, use the calledId (phone number) to lookup by number
-      if (phoneRegistration) {
-        registrationOriginated = true;
-        logger.info(
-          { callerId, phoneRegistration, aplisayId },
-          "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
-        );
-        const phoneEndpoint = await getPhoneEndpointById(phoneRegistration);
-        if (phoneEndpoint && "id" in phoneEndpoint) {
-          const regInfo = phoneEndpoint as PhoneRegistrationInfo;
-          logger.info(
-            { phoneEndpoint: regInfo },
-            "found phone registration endpoint"
-          );
-          // Store registrar and transport for transfer operations
-          registrationRegistrar = regInfo.registrar || null;
-          registrationTransport = regInfo.options?.transport || null;
-          // PhoneRegistration now has instanceId, so we can lookup the instance
-          if (regInfo.instanceId) {
-            instance = await getInstanceById(regInfo.instanceId);
-            logger.info(
-              { instanceId: regInfo.instanceId, instance },
-              "found instance from registration instanceId"
+  try {
+    // Various APIs may timeout here, so we need to set a timeout to avoid blocking the job.
+    await withTimeout(
+      async () => {
+        if (outbound) {
+          if (!calledId || !callerId || !aplisayId || !instanceId) {
+            logger.error({ ctx }, "missing metadata for outbound call");
+            throw new Error("Missing metadata for outbound call");
+          }
+          instance = await getInstanceById(instanceId);
+          if (!instance) {
+            logger.error(
+              { ctx },
+              `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`
             );
+            throw new Error("No instance found for outbound call");
           }
-        }
-      } else if (calledId) {
-        logger.info(
-          { callerId, calledId, aplisayId },
-          "new Livekit inbound telephone call, looking up phone endpoint by number"
-        );
-        // Pass trunkId (aplisayId) for validation - will throw error if mismatch
-        const phoneEndpoint = await getPhoneEndpointByNumber(
-          calledId,
-          aplisayId
-        );
-        if (phoneEndpoint && "number" in phoneEndpoint) {
-          const numInfo = phoneEndpoint as PhoneNumberInfo;
-          logger.info(
-            { phoneEndpoint: numInfo },
-            "found phone number endpoint"
-          );
-          // Store trunk info if available
-          if (numInfo.trunk) {
-            trunkInfo = numInfo.trunk;
-            logger.info(
-              { trunkInfo },
-              "trunk info retrieved from phone endpoint"
-            );
-          }
-          // PhoneNumber has instanceId, so we can lookup the instance
-          if (numInfo.instanceId) {
-            instance = await getInstanceById(numInfo.instanceId);
-          } else {
-            // Fallback to old behavior
-            instance = await getInstanceByNumber(calledId);
-          }
+          // Do not perform side-effects here; signal to the caller to bridge
+          outboundCall = true;
+          outboundInfo = {
+            toNumber: calledId,
+            fromNumber: callerId,
+            aplisayId,
+            instanceId,
+          };
         } else {
-          // Fallback: try direct instance lookup by number
-          instance = await getInstanceByNumber(calledId);
+          logger.info({ room }, "room name getting participants");
+          const participants = await roomService.listParticipants(room.name!);
+             participant = participants.find(
+            (p) => p.identity !== "sip-outbound-call"
+          ) as ParticipantInfo;
+          bridgedParticipant = participants.find(
+            (p) => p.identity === "sip-outbound-call"
+          ) as ParticipantInfo | null;
+          logger.debug(
+            {
+              participants: participants.length,
+              participant,
+              bridgedParticipant,
+            },
+            "have bridged participant?"
+          );
+          if (identity) {
+            logger.debug({ identity }, "getting instance by identity");
+            instance = await getInstanceById(identity);
+            logger.debug({ instance }, "instance found?");
+          } else if (room.name && participant?.attributes) {
+            logger.debug(
+              { participants, attributes: participant.attributes },
+              "participants"
+            );
+            if (participant) {
+              const {
+                sipTrunkPhoneNumber: calledIdAttr,
+                sipPhoneNumber: callerIdAttr,
+                sipHXAplisayTrunk: aplisayIdAttr,
+                sipHXAplisayPhoneregistration: phoneRegistrationAttr,
+                sipHostname: sipHostnameAttr,
+                sipHXLkRealIp: b2buaGatewayIpAttr,
+                sipHXLkTransport: b2buaGatewayTransportAttr,
+              } = participant.attributes || {};
+
+              calledId = calledIdAttr;
+              callerId = callerIdAttr;
+              aplisayId = aplisayIdAttr;
+              phoneRegistration = phoneRegistrationAttr;
+
+              // Store registration endpoint ID for transfer operations
+              if (phoneRegistration) {
+                registrationEndpointId = phoneRegistration;
+              }
+
+              // Store B2BUA gateway information for routing outbound calls
+              if (b2buaGatewayIpAttr) {
+                b2buaGatewayIp = b2buaGatewayIpAttr;
+                b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
+                logger.info(
+                  { b2buaGatewayIp, b2buaGatewayTransport },
+                  "Extracted B2BUA gateway information from participant attributes"
+                );
+              }
+
+              // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
+              // (sipHostname is the registrar hostname from the inbound call)
+              if (
+                phoneRegistration &&
+                sipHostnameAttr &&
+                !registrationRegistrar
+              ) {
+                registrationRegistrar = sipHostnameAttr;
+                logger.info(
+                  { sipHostname: sipHostnameAttr },
+                  "Using sipHostname as registrar from participant attributes"
+                );
+              }
+            }
+
+            calledId = calledId?.replace("+", "");
+            callerId = callerId?.replace("+", "");
+
+            // If we have a phoneRegistration ID, lookup the phone endpoint by ID
+            // Otherwise, use the calledId (phone number) to lookup by number
+            if (phoneRegistration) {
+              registrationOriginated = true;
+              logger.info(
+                { callerId, phoneRegistration, aplisayId },
+                "new Livekit inbound telephone call, looking up phone endpoint by registration ID"
+              );
+              const phoneEndpoint = await getPhoneEndpointById(
+                phoneRegistration
+              );
+              if (phoneEndpoint && "id" in phoneEndpoint) {
+                const regInfo = phoneEndpoint as PhoneRegistrationInfo;
+                logger.info(
+                  { phoneEndpoint: regInfo },
+                  "found phone registration endpoint"
+                );
+                // Store registrar and transport for transfer operations
+                registrationRegistrar = regInfo.registrar || null;
+                registrationTransport = regInfo.options?.transport || null;
+                // Store forceBridged option from phone registration endpoint
+                if (regInfo.options?.forceBridged !== undefined) {
+                  forceBridged = regInfo.options.forceBridged === true;
+                  logger.info(
+                    { forceBridged, phoneRegistration },
+                    "Extracted forceBridged from phone registration options"
+                  );
+                }
+                // PhoneRegistration now has instanceId, so we can lookup the instance
+                if (regInfo.instanceId) {
+                  instance = await getInstanceById(regInfo.instanceId);
+                  logger.info(
+                    { instanceId: regInfo.instanceId, instance },
+                    "found instance from registration instanceId"
+                  );
+                }
+              }
+            } else if (calledId) {
+              logger.info(
+                { callerId, calledId, aplisayId },
+                "new Livekit inbound telephone call, looking up phone endpoint by number"
+              );
+              // Pass trunkId (aplisayId) for validation - will throw error if mismatch
+              const phoneEndpoint = await getPhoneEndpointByNumber(
+                calledId,
+                aplisayId
+              );
+              if (phoneEndpoint && "number" in phoneEndpoint) {
+                const numInfo = phoneEndpoint as PhoneNumberInfo;
+                logger.info(
+                  { phoneEndpoint: numInfo },
+                  "found phone number endpoint"
+                );
+                // Store trunk info if available
+                if (numInfo.trunk) {
+                  trunkInfo = numInfo.trunk;
+                  logger.info(
+                    { trunkInfo },
+                    "trunk info retrieved from phone endpoint"
+                  );
+                }
+                // PhoneNumber has instanceId, so we can lookup the instance
+                if (numInfo.instanceId) {
+                  instance = await getInstanceById(numInfo.instanceId);
+                } else {
+                  // Fallback to old behavior
+                  instance = await getInstanceByNumber(calledId);
+                }
+              } else {
+                // Fallback: try direct instance lookup by number
+                instance = await getInstanceByNumber(calledId);
+              }
+            }
+          }
         }
-      }
-    }
+      },
+      5000,
+      new Error("Call setup timeout (getCallInfo)"),
+      () => logger.error({ ctx }, "info timeout")
+    );
+  } catch (e) {
+    logger.error({ e }, "error getting call info");
   }
   if (!instance) {
     logger.error(
@@ -542,7 +759,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     throw new Error("No instance found");
   }
 
-  agent = agent || instance?.Agent || null;
+  agent = agent || (instance as Instance)?.Agent || null;
   calledId = calledId || "WebRTC";
   callerId = callerId || "WebRTC";
 
@@ -565,6 +782,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     registrationEndpointId,
     b2buaGatewayIp,
     b2buaGatewayTransport,
+    forceBridged,
   };
 }
 
@@ -646,6 +864,7 @@ async function setupCallAndUtilities({
   registrationEndpointId,
   b2buaGatewayIp,
   b2buaGatewayTransport,
+  forceBridged,
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -748,7 +967,7 @@ async function setupCallAndUtilities({
     createdAt?: Date;
   }> = [];
 
-  const sendMessage = async (message: MessageData) => {
+  const sendMessage = async (message: MessageData, createdAt?: Date) => {
     try {
       const entries = Object.entries(message);
       if (entries.length > 0) {
@@ -764,8 +983,9 @@ async function setupCallAndUtilities({
           return;
         }
 
-        // Capture the timestamp when the log was created
-        const createdAt = new Date();
+        // Use provided createdAt timestamp if available, otherwise use current time
+        // This preserves the original event timestamp from ConversationItemAdded events
+        const logCreatedAt = createdAt || new Date();
 
         const transactionLogData = {
           userId,
@@ -774,7 +994,7 @@ async function setupCallAndUtilities({
           type,
           data: JSON.stringify(data),
           isFinal: true,
-          createdAt,
+          createdAt: logCreatedAt,
         };
 
         // If streamLog is enabled, push immediately; otherwise batch for end call
@@ -792,7 +1012,6 @@ async function setupCallAndUtilities({
       );
     }
   };
-
 
   const onTransfer = async ({
     args,
@@ -820,6 +1039,7 @@ async function setupCallAndUtilities({
         registrationEndpointId,
         b2buaGatewayIp: b2buaGatewayIp ?? null,
         b2buaGatewayTransport: b2buaGatewayTransport ?? null,
+        forceBridged,
         options,
         sessionRef,
         setBridgedParticipant,
@@ -915,7 +1135,7 @@ function createTools({
   agent: Agent;
   room: Room;
   participant: ParticipantInfo | null;
-  sendMessage: (message: MessageData) => Promise<void>;
+  sendMessage: (message: MessageData, createdAt?: Date) => Promise<void>;
   metadata: CallMetadata;
   onHangup: () => Promise<void>;
   onTransfer: ({
@@ -1022,6 +1242,8 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
+  transferOnly = false,
+  transferArgs,
 }: RunAgentWorkerParams & {
   endTransferActivityIfNeeded: (reason: string) => Promise<void>;
   getTransferState: () => {
@@ -1029,10 +1251,139 @@ async function runAgentWorker({
     description: string;
   };
 }) {
+  // If transferOnly mode, skip agent setup and go straight to transfer handling
+  if (transferOnly && transferArgs && participant) {
+    logger.info(
+      { transferArgs, fallbackTransfer: true },
+      "Running in transfer-only mode for fallback transfer"
+    );
+
+    // Set up participant disconnect handlers BEFORE transfer to ensure they're ready
+    const disconnectHandler = async (p: RemoteParticipant) => {
+      const bp = getBridgedParticipant();
+      logger.info(
+        { 
+          p: { sid: p?.info?.sid, identity: p?.info?.identity },
+          bridgedParticipant: bp,
+          originalParticipant: { sid: participant?.sid, identity: participant?.identity },
+          roomParticipants: (await roomService.listParticipants(room.name)).map(pp => ({ sid: pp.sid, identity: pp.identity }))
+        },
+        "participant disconnected (transfer-only mode)"
+      );
+      
+      // Check if this is the bridged participant (transfer target)
+      if (
+        bp &&
+        (bp.participantId === p?.info?.sid || bp.participantIdentity === p?.info?.identity)
+      ) {
+        logger.info("bridged participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Bridged participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during bridged participant disconnect"
+          );
+        }
+        await call.end("Bridged participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Bridged participant disconnected");
+        process.exit(0);
+      } 
+      // Check if this is the original participant (caller)
+      else if (p.info?.sid === participant?.sid || p.info?.identity === participant?.identity) {
+        logger.info("original participant disconnected, shutting down (transfer-only mode)");
+        try {
+          await endTransferActivityIfNeeded("Original participant disconnected");
+        } catch (transferError) {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during original participant disconnect"
+          );
+        }
+        await call.end("Original participant disconnected");
+        await roomService.deleteRoom(room.name).catch((e) => {
+          logger.error({ e }, "error deleting room");
+        });
+        await ctx.shutdown("Original participant disconnected");
+        process.exit(0);
+      } else {
+        logger.debug(
+          { 
+            disconnectedParticipant: { sid: p?.info?.sid, identity: p?.info?.identity },
+            bridgedParticipant: bp,
+            originalParticipant: { sid: participant?.sid, identity: participant?.identity }
+          },
+          "Unknown participant disconnected, ignoring"
+        );
+      }
+    };
+
+    ctx.room.on(RoomEvent.ParticipantDisconnected, disconnectHandler);
+
+    // Connect to the room and start the call
+    await ctx.connect();
+    await call.start();
+    sendMessage({ call: `${callerId} => ${calledId}` });
+    sendMessage({ 
+      agent: `Transferring call to ${transferArgs.number} due to agent failure` 
+    });
+
+    // Perform the transfer
+    try {
+      await onTransfer({
+        args: transferArgs,
+        participant,
+      });
+      logger.info(
+        { transferArgs },
+        "Fallback transfer initiated successfully in transfer-only mode"
+      );
+    } catch (transferError) {
+      const tErr =
+        transferError instanceof Error
+          ? transferError
+          : new Error(String(transferError));
+      logger.error(
+        {
+          error: tErr,
+          message: tErr.message,
+          stack: tErr.stack,
+          transferArgs,
+        },
+        "Fallback transfer failed in transfer-only mode"
+      );
+      await call.end(`Fallback transfer failed: ${tErr.message}`);
+      await roomService.deleteRoom(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room");
+      });
+      await ctx.shutdown(tErr.message);
+      return;
+    }
+
+    // In transfer-only mode, we just wait for the transfer to complete
+    // The ParticipantDisconnected handler above will clean up when done
+    // Don't return - let the function continue to keep the process alive
+    // The handler will call process.exit(0) when cleanup is done
+    return;
+  }
+
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
   let timerId: NodeJS.Timeout | null = null;
+  let operation: string | null = null;
   const realtime =
     plugin && (realtimeModels as Record<string, any>)[plugin]?.realtime;
+  // Extract the underlying provider model name (e.g. "gpt-4o", "fixie-ai/ultravox-70B")
+  // from a LiveKit-style modelName such as "livekit:openai/gpt-4o" or
+  // "livekit:ultravox/fixie-ai/ultravox-70B".
+  // If parsing fails we fall back to each plugin's internal default.
+  const providerModelNameMatch = modelName.match(/^livekit:[^/]+\/(.+)$/);
+  const providerModelName = providerModelNameMatch
+    ? providerModelNameMatch[1]
+    : undefined;
+
   let initialMessage: string | null = "say hello";
   if (!realtime) {
     logger.error(
@@ -1046,27 +1397,15 @@ async function runAgentWorker({
     "got realtime"
   );
 
-  const tools = createTools({
-    agent,
-    room: room!,
-    participant,
-    sendMessage,
-    metadata,
-    onHangup,
-    onTransfer,
-    getTransferState,
-  });
-
-  const model = new voice.Agent({
-    instructions: agent?.prompt || "You are a helpful assistant.",
-    tools,
-  });
-  modelRef(model);
-  const maxDurationString: string = agent?.options?.maxDuration || "305s";
-  const maxDuration =
-    1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
-
   let session: voice.AgentSession | null = null;
+  let maxDuration: number = 305000; // Default value
+  let callStarted = false;
+
+  // DTMF buffering: accumulate digits and send as a single input after timeout
+  let dtmfBuffer: string = "";
+  let dtmfTimeout: NodeJS.Timeout | null = null;
+  const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
+  const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
 
   const cleanupAndClose = async (
     reason: string,
@@ -1100,6 +1439,24 @@ async function runAgentWorker({
         clearTimeout(timerId);
         timerId = null;
       }
+      // Clean up DTMF timeout if active
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+        dtmfTimeout = null;
+      }
+      // Flush any pending DTMF buffer before closing
+      if (dtmfBuffer.length > 0 && session) {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "Flushing remaining DTMF buffer during cleanup"
+        );
+        try {
+          session.generateReply({ userInput: dtmfBuffer });
+        } catch (e) {
+          logger.debug({ e }, "Failed to flush DTMF buffer during cleanup");
+        }
+        dtmfBuffer = "";
+      }
       try {
         // dont wait for this to complete, it may block logging the call end
         //  if the LLM interface has outstanding actions let it happen in the background
@@ -1118,10 +1475,9 @@ async function runAgentWorker({
         });
       exitStatus.callEnded = true;
 
-      await roomService.deleteRoom(room.name)
-        .catch((e) => {
-          logger.error({ e }, "error deleting room");
-        });
+      await roomService.deleteRoom(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room");
+      });
       exitStatus.roomDeleted = true;
 
       await ctx.shutdown(reason);
@@ -1134,110 +1490,308 @@ async function runAgentWorker({
         { message: error.message, error },
         "error cleaning up and closing"
       );
-      exitStatus.error = error.message || "unknown error caught during cleanup and close";
+      exitStatus.error =
+        error.message || "unknown error caught during cleanup and close";
     }
   };
 
   try {
-    session = new voice.AgentSession({
-      llm: new realtime.RealtimeModel({
-        voice: agent?.options?.tts?.voice,
-        maxDuration: maxDurationString,
-        instructions: agent?.prompt || "You are a helpful assistant.",
-      }),
-    });
-    sessionRef(session);
+    // Wrap setup operations with timeout
+    await withTimeout(
+      async () => {
+        operation = "createTools";
+        const tools = createTools({
+          agent,
+          room: room!,
+          participant,
+          sendMessage,
+          metadata,
+          onHangup,
+          onTransfer,
+          getTransferState,
+        });
 
-    // Listen on all the things for now (debug)
-    Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
-      session?.on(
-        voice.AgentSessionEventTypes[
-          event as keyof typeof voice.AgentSessionEventTypes
-        ],
-        (data: unknown) => {
-          logger.debug({ data }, `Got event ${event}`);
+        operation = "createModel";
+        logger.debug({ tools }, "Creating model");
+        const model = new voice.Agent({
+          instructions: agent?.prompt || "You are a helpful assistant.",
+          tools,
+        });
+        modelRef(model);
+        const maxDurationString: string = agent?.options?.maxDuration || "305s";
+        maxDuration =
+          1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
+
+        operation = "createSession";
+        const llmOptions: Record<string, unknown> = {
+          voice: agent?.options?.tts?.voice,
+          maxDuration: maxDurationString,
+          instructions: agent?.prompt || "You are a helpful assistant.",
+        };
+        if (providerModelName) {
+          llmOptions.model = providerModelName;
+          logger.info(
+            { modelName, providerModelName },
+            "Using provider model for realtime LLM"
+          );
         }
-      );
-    });
-
-    // Listen on the user input transcribed event
-    session.on(
-      voice.AgentSessionEventTypes.ConversationItemAdded,
-      ({ item: { type, role, content } }: voice.ConversationItemAddedEvent) => {
-        if (type === "message" && getConsultInProgress() === false) {
-          const text = content.join("");
-          if (role !== "user" || text !== initialMessage) {
-            sendMessage({
-              [role === "user" ? "user" : "agent"]: text,
-            });
-          }
+        // Pass vendor-specific options if present
+        if (agent?.options?.vendorSpecific) {
+          llmOptions.vendorSpecific = agent.options.vendorSpecific;
         }
-      }
-    );
+        logger.debug({ llmOptions }, "Creating session");
+        session = new voice.AgentSession({
+          llm: new realtime.RealtimeModel(llmOptions),
+        });
+        sessionRef(session);
 
-    session.on(
-      voice.AgentSessionEventTypes.AgentStateChanged,
-      (ev: voice.AgentStateChangedEvent) => {
-        sendMessage({ status: ev.newState });
-        if (ev.newState === "listening" && checkForHangup() && room.name) {
-          logger.debug({ room }, "room close inititiated");
-          getActiveCall().end("agent initiated hangup");
-          roomService.deleteRoom(room.name);
-        }
-      }
-    );
-
-    session.on(
-      voice.AgentSessionEventTypes.AgentStateChanged,
-      (ev: voice.AgentStateChangedEvent) => {
-        sendMessage({ status: ev.newState });
-        if (ev.newState === "listening" && checkForHangup() && room.name) {
-          logger.debug({ room }, "room close inititiated");
-          // End transfer activity if in progress (fire and forget)
-          endTransferActivityIfNeeded("Agent initiated hangup").catch(
-            (transferError) => {
-              logger.error(
-                { transferError },
-                "error ending transfer activity during hangup"
-              );
+        // Listen on all the things for now (debug)
+        Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
+          session?.on(
+            voice.AgentSessionEventTypes[
+              event as keyof typeof voice.AgentSessionEventTypes
+            ],
+            (data: unknown) => {
+              logger.debug({ data }, `Got event ${event}`);
             }
           );
-          getActiveCall().end("agent initiated hangup");
-          roomService.deleteRoom(room.name);
-        }
-      }
-    );
+        });
 
-    session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
-      logger.error({ ev }, "error");
-    });
+        // Listen on the user input transcribed event
+        session.on(
+          voice.AgentSessionEventTypes.ConversationItemAdded,
+          ({ item: { type, role, content }, createdAt }: voice.ConversationItemAddedEvent) => {
+            if (type === "message" && getConsultInProgress() === false) {
+              const text = content.join("");
+              if (role !== "user" || text !== initialMessage) {
+                sendMessage(
+                  {
+                    [role === "user" ? "user" : "agent"]: text,
+                  },
+                  createdAt ? new Date(createdAt) : undefined
+                );
+              }
+            }
+          }
+        );
 
-    session.on(
-      voice.AgentSessionEventTypes.Close,
-      async (ev: voice.CloseEvent) => {
-        logger.info({ ev }, "session closed");
-        // End transfer activity if in progress
-        try {
-          await endTransferActivityIfNeeded("Session closed");
-        } catch (transferError) {
-          logger.error(
-            { transferError },
-            "error ending transfer activity during session close"
+        session.on(
+          voice.AgentSessionEventTypes.AgentStateChanged,
+          (ev: voice.AgentStateChangedEvent) => {
+            sendMessage({ status: ev.newState });
+            if (ev.newState === "listening" && checkForHangup() && room.name) {
+              logger.debug({ room }, "room close inititiated");
+              getActiveCall().end("agent initiated hangup");
+              roomService.deleteRoom(room.name);
+            }
+          }
+        );
+
+        session.on(
+          voice.AgentSessionEventTypes.AgentStateChanged,
+          (ev: voice.AgentStateChangedEvent) => {
+            sendMessage({ status: ev.newState });
+            if (ev.newState === "listening" && checkForHangup() && room.name) {
+              logger.debug({ room }, "room close inititiated");
+              // End transfer activity if in progress (fire and forget)
+              endTransferActivityIfNeeded("Agent initiated hangup").catch(
+                (transferError) => {
+                  logger.error(
+                    { transferError },
+                    "error ending transfer activity during hangup"
+                  );
+                }
+              );
+              getActiveCall().end("agent initiated hangup");
+              roomService.deleteRoom(room.name);
+            }
+          }
+        );
+
+        session.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+          logger.error({ ev }, "error");
+        });
+
+        // Watch for any non-recoverable model/STT/TTS errors that occur while
+        // the session is still starting. If we see one before callStarted is
+        // set, we treat it as a setup failure so the outer fallback loop can
+        // switch models/agents or perform a transfer.
+        let startupErrorUnsubscribe: (() => void) | null = null;
+        const startupErrorPromise = new Promise<never>((_, reject) => {
+          const sessionForStartup = session;
+          if (!sessionForStartup) {
+            // Should not happen, but fail fast if it does.
+            reject(
+              new Error(
+                "Agent session not available during startup error monitoring"
+              )
+            );
+            return;
+          }
+
+          const handler = (ev: voice.ErrorEvent) => {
+            // If the call has already been marked as started, this is a
+            // runtime error and should not influence startup / fallback logic.
+            if (callStarted) {
+              return;
+            }
+
+            const errAny: any = ev.error;
+            const errType = errAny?.type;
+            const isRealtimeModelError = errType === "realtime_model_error";
+            const isRecoverable = !!errAny?.recoverable;
+
+            // Ignore explicitly recoverable realtime model errors during startup.
+            if (isRealtimeModelError && isRecoverable) {
+              return;
+            }
+
+            // For any other error type (or non‑recoverable realtime model
+            // error), treat this as a fatal startup failure.
+            if (startupErrorUnsubscribe) {
+              startupErrorUnsubscribe();
+            }
+
+            const underlyingError: Error =
+              isRealtimeModelError && errAny?.error instanceof Error
+                ? errAny.error
+                : errAny instanceof Error
+                ? errAny
+                : new Error(
+                    String(
+                      errAny?.message ||
+                        "Agent session startup error (realtime model / STT / TTS)"
+                    )
+                  );
+
+            reject(underlyingError);
+          };
+
+          sessionForStartup.on(
+            voice.AgentSessionEventTypes.Error,
+            handler as any
           );
-        }
-        roomService.deleteRoom(room.name);
-        getActiveCall().end("session closed");
-      }
+          startupErrorUnsubscribe = () => {
+            const unsubscribeSession = sessionForStartup;
+            if (unsubscribeSession) {
+              unsubscribeSession.off(
+                voice.AgentSessionEventTypes.Error,
+                handler as any
+              );
+            }
+            startupErrorUnsubscribe = null;
+          };
+        });
+
+        session.on(
+          voice.AgentSessionEventTypes.Close,
+          async (ev: voice.CloseEvent) => {
+            logger.info({ ev }, "session closed");
+            // End transfer activity if in progress
+            try {
+              await endTransferActivityIfNeeded("Session closed");
+            } catch (transferError) {
+              logger.error(
+                { transferError },
+                "error ending transfer activity during session close"
+              );
+            }
+            roomService.deleteRoom(room.name);
+            getActiveCall().end("session closed");
+          }
+        );
+
+        operation = "sessionStart";
+        await Promise.race([
+          session.start({
+            room: ctx.room,
+            agent: model,
+          }),
+          startupErrorPromise,
+        ]);
+        callStarted = true;
+
+        // Once startup has succeeded, we no longer need the startup-specific
+        // error watcher; subsequent errors are treated as runtime failures.
+        (startupErrorUnsubscribe as (() => void) | null)?.();
+
+        operation = "connect";
+        await ctx.connect();
+      },
+      15000,
+      new Error("Call setup timeout (runAgentWorker)"),
+      () => logger.error({ ctx, operation }, `info timeout during ${operation || "unknown"}`)
     );
-
-    await session.start({
-      room: ctx.room,
-      agent: model,
-    });
-
-    await ctx.connect();
 
     logger.debug({ room }, "connected got room");
+
+    const flushDtmfBuffer = () => {
+      if (dtmfBuffer.length > 0 && session) {
+        const digitsToSend = dtmfBuffer;
+        dtmfBuffer = ""; // Clear buffer before sending
+        logger.debug(
+          { digits: digitsToSend },
+          "Flushing accumulated DTMF digits to LLM"
+        );
+        try {
+          session.generateReply({ userInput: digitsToSend });
+        } catch (e) {
+          logger.error(
+            { error: e, digits: digitsToSend },
+            "Failed to inject DTMF digits via generate_reply"
+          );
+        }
+      }
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+        dtmfTimeout = null;
+      }
+    };
+
+    ctx.room.on(RoomEvent.DtmfReceived, async (code, digit, participant) => {
+      logger.debug(
+        {
+          identity: participant.identity,
+          code,
+          digit,
+          currentBuffer: dtmfBuffer,
+        },
+        "DTMF received from participant"
+      );
+
+      if (!session) {
+        logger.warn("Session not available, cannot buffer DTMF digit");
+        return;
+      }
+
+      // If terminator is pressed, send immediately (don't add terminator to buffer)
+      if (digit === DTMF_TERMINATOR) {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "DTMF terminator pressed, sending immediately"
+        );
+        flushDtmfBuffer();
+        return;
+      }
+
+      // Add digit to buffer
+      dtmfBuffer += digit;
+
+      // Clear existing timeout and set a new one
+      if (dtmfTimeout) {
+        clearTimeout(dtmfTimeout);
+      }
+
+      // Set timeout to flush buffer after period of inactivity
+      dtmfTimeout = setTimeout(() => {
+        logger.debug(
+          { buffer: dtmfBuffer },
+          "DTMF timeout reached, flushing buffer"
+        );
+        flushDtmfBuffer();
+      }, DTMF_TIMEOUT_MS);
+    });
+    logger.debug("DTMF listener registered");
 
     ctx.room.on(
       RoomEvent.ParticipantDisconnected,
@@ -1247,7 +1801,10 @@ async function runAgentWorker({
           { p, bridgedParticipant: bp, participant },
           "participant disconnected"
         );
-        if (bp?.participantId === p?.info?.sid || bp?.participantIdentity === p?.info?.identity) {
+        if (
+          bp?.participantId === p?.info?.sid ||
+          bp?.participantIdentity === p?.info?.identity
+        ) {
           if (getConsultInProgress()) {
             logger.debug(
               "consult callee disconnected, treating as consult_reject"
@@ -1331,7 +1888,6 @@ async function runAgentWorker({
     }, maxDuration + 5 * 1000);
 
     logger.debug("session started, generating reply");
-    session?.generateReply({ userInput: initialMessage });
     await call.start();
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {
@@ -1340,6 +1896,15 @@ async function runAgentWorker({
       { error, message: error.message, stack: error.stack },
       "error running agent worker"
     );
+
+    // If the call has not yet started, treat this as a setup failure and let the
+    // caller decide whether to invoke fallback behaviour. We deliberately do NOT
+    // clean up the call/room here so that the outer loop can retry with a different
+    // model/agent on the same LiveKit room.
+    if (!callStarted) {
+      throw error;
+    }
+
     await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
   }
 }

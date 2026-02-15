@@ -17,6 +17,7 @@ import { WebSocket } from "ws";
 // import type { GenerationCreatedEvent } from '@livekit/agents';
 import * as api_proto from "./api_proto.js";
 import { UltravoxClient } from "./ultravox_client.js";
+import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
 
@@ -35,6 +36,16 @@ interface ModelOptions {
   timeExceededMessage: string;
   transcriptOptional: boolean;
   firstSpeaker: string;
+  vendorSpecific?: {
+    ultravox?: {
+      experimentalSettings?: {
+        transcriptionProvider?: string;
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
 }
 
 export interface RealtimeResponse {
@@ -252,6 +263,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage = "It has been great chatting with you, but we have exceeded our time now.",
     transcriptOptional = false,
     firstSpeaker = "FIRST_SPEAKER_AGENT",
+    vendorSpecific,
   }: {
     modalities?: ["text", "audio"] | ["text"];
     instructions?: string;
@@ -267,6 +279,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage?: string;
     transcriptOptional?: boolean;
     firstSpeaker?: string;
+    vendorSpecific?: {
+      ultravox?: {
+        experimentalSettings?: {
+          transcriptionProvider?: string;
+          [key: string]: any;
+        };
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
   }) {
     super({
       messageTruncation: false,
@@ -279,6 +301,11 @@ export class RealtimeModel extends llm.RealtimeModel {
       throw new Error(
         "Ultravox API key is required, either using the argument or by setting the ULTRAVOX_API_KEY environmental variable"
       );
+    }
+
+    // Hack to catch all attempts to use a llama 70b model to force backward compatibility
+    if (model.match(/ultravox-70b/i)) {
+      model = "ultravox-v0.6";
     }
 
     this.#defaultOpts = {
@@ -296,13 +323,23 @@ export class RealtimeModel extends llm.RealtimeModel {
       timeExceededMessage,
       transcriptOptional,
       firstSpeaker,
+      vendorSpecific,
     };
 
-    this.#client = new UltravoxClient(apiKey, baseURL, log());
+    this.#client = new UltravoxClient(apiKey, baseURL);
   }
 
   get sessions(): RealtimeSession[] {
     return this.#sessions;
+  }
+
+  /**
+   * Get the active (first) session if one exists, without creating a new one.
+   * This is useful when you need to access the existing session that's already running.
+   * @returns The active RealtimeSession, or undefined if no session exists yet
+   */
+  getActiveSession(): RealtimeSession | undefined {
+    return this.#sessions.length > 0 ? this.#sessions[0] : undefined;
   }
 
   session(): RealtimeSession {
@@ -341,6 +378,12 @@ export class RealtimeSession extends llm.RealtimeSession {
   #closing = true;
   #sessionFailed = false;
   #sendQueue = new Queue<any>();
+  #sendTaskRunning = false;
+  #instanceId: string; // Unique ID for this instance to help debug
+  // Expose instanceId as a getter for debugging
+  get instanceId(): string {
+    return this.#instanceId;
+  }
   #callId: string | null = null;
   #currentResponseId: string | null = null;
   #currentOutputIndex = 0;
@@ -368,6 +411,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   #agentTranscriptBuffer: string = "";
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
+  // Track message IDs that have been sent to Ultravox (to avoid duplicates)
+  #sentMessageIds: Set<string> = new Set();
+  // Track message IDs that came from audio transcription (don't send as text)
+  #audioMessageIds: Set<string> = new Set();
   constructor(
     realtimeModel: llm.RealtimeModel,
     opts: ModelOptions,
@@ -375,6 +422,8 @@ export class RealtimeSession extends llm.RealtimeSession {
     { fncCtx, chatCtx }: { fncCtx?: llm.ToolContext; chatCtx?: llm.ChatContext }
   ) {
     super(realtimeModel);
+    // Generate unique instance ID for debugging (after super call)
+    this.#instanceId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     this.#opts = opts;
     this.#client = client;
@@ -452,10 +501,52 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.remoteChatCtx.insert(previousItemId ?? undefined, item);
         // Update lastItemId for proper insertion order
         this.#lastItemId = itemId;
+
+        // Handle new user messages (Ultravox text input)
+        // Only send if it's NOT an audio transcription (audio messages are tracked in _audioMessageIds)
+        if (
+          item.type === "message" &&
+          item.role === "user" &&
+          item.id && !this.#sentMessageIds.has(item.id)
+        ) {
+          // Check if this is an audio message (already transcribed by Ultravox)
+          if (!this.#audioMessageIds.has(item.id)) {
+            if (item.textContent) {
+              this.#logger.debug(
+                { itemId: item.id, textContent: item.textContent },
+                "Sending user message as interactive text to Ultravox"
+              );
+              // Send interactive text to Ultravox (triggers generation)
+              // This is the flow for generate_reply(user_input=...) from the framework
+              try {
+                const message = llm.ChatMessage.create({
+                  id: item.id,
+                  role: "user",
+                  content: [item.textContent],
+                });
+                await this.sendUserMessage(message);
+                this.#sentMessageIds.add(item.id);
+              } catch (error) {
+                this.#logger.error(
+                  { error, itemId: item.id },
+                  "Failed to send user message to Ultravox"
+                );
+              }
+            }
+          } else {
+            this.#logger.debug(
+              { itemId: item.id, textContent: item.textContent },
+              "Skipping user message (already in context from audio)"
+            );
+            this.#sentMessageIds.add(item.id);
+          }
+        }
       }
     }
     
     this.#chatCtx = mergedCtx;
+
+
     this.#logger.debug(
       { 
         currentItemsCount: currentCtx.items.length,
@@ -647,6 +738,54 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
   }
 
+  async sendUserMessage(message: llm.ChatMessage): Promise<void> {
+    // Log instance information to verify we're using the same instance as sendTask
+    this.#logger.debug({ 
+      instanceId: this.#instanceId,
+      sendQueueInstanceId: this.#sendQueue.constructor.name,
+      sendQueueItemsLength: this.#sendQueue.items.length,
+      sendTaskRunning: this.#sendTaskRunning,
+      ws: this.#ws,
+      wsReadyState: this.#ws?.readyState,
+      closing: this.#closing
+    }, "sendUserMessage called");
+    
+    // Check if sendTask is running - if not, log a warning
+    if (!this.#sendTaskRunning) {
+      this.#logger.warn(
+        { 
+          instanceId: this.#instanceId,
+          sendTaskRunning: this.#sendTaskRunning,
+          ws: this.#ws,
+          wsReadyState: this.#ws?.readyState,
+          closing: this.#closing,
+          queueLength: this.#sendQueue.items.length
+        },
+        "sendUserMessage called but sendTask is not running - message may not be sent"
+      );
+    }
+    
+    const userTextMessage = {
+      type: "user_text_message",
+      text: message.textContent as string,
+      urgency: "soon",
+    };
+    this.#logger.debug({ message, userTextMessage, instanceId: this.#instanceId }, "queueinguser message to Ultravox");
+    // Queue.put() is async but we don't need to await it - it will resolve after the item is added
+    // However, we should handle any errors to prevent unhandled promise rejections
+    await this.#sendQueue.put(userTextMessage).catch((error) => {
+      this.#logger.error({ error, message: userTextMessage, instanceId: this.#instanceId }, "Failed to queue user message");
+    });
+    this.#logger.debug({ 
+      message, 
+      userTextMessage, 
+      instanceId: this.#instanceId,
+      sendQueueInstanceId: this.#sendQueue.constructor.name,
+      queueLength: this.#sendQueue.items.length,
+      sendTaskRunning: this.#sendTaskRunning
+    }, "queued user message to Ultravox");
+  }
+
   sendAudioFrame(frame: AudioFrame): void {
     // Don't send audio if session has failed
     if (this.#sessionFailed) {
@@ -723,8 +862,9 @@ export class RealtimeSession extends llm.RealtimeSession {
     error: Error;
     recoverable: boolean;
   }): void {
-    // IMPORTANT: only emit error if there are listeners; otherwise emit will throw an error
+    // Emit a standard RealtimeModelError so AgentSession can react generically.
     this.emit("error", {
+      type: "realtime_model_error",
       timestamp: Date.now(),
       label: "ultravox-connection",
       error,
@@ -804,6 +944,15 @@ export class RealtimeSession extends llm.RealtimeSession {
           firstSpeaker: this.#opts.firstSpeaker,
         };
 
+        // Add vendor-specific options (e.g., experimentalSettings)
+        if (this.#opts.vendorSpecific?.ultravox?.experimentalSettings) {
+          modelData.experimentalSettings = this.#opts.vendorSpecific.ultravox.experimentalSettings;
+          this.#logger.debug(
+            { experimentalSettings: modelData.experimentalSettings },
+            "Added experimental settings from vendor-specific options"
+          );
+        }
+
         this.#logger.info({ modelData }, "Creating Ultravox call");
         const callResponse = await this.#client.createCall(modelData);
         this.#logger.info({ callResponse }, "Created Ultravox call");
@@ -814,7 +963,11 @@ export class RealtimeSession extends llm.RealtimeSession {
           !callResponse.callId ||
           !callResponse.joinUrl
         ) {
-          throw new Error("Failed to create Ultravox call");
+          const error = new Error("Failed to create Ultravox call");
+          this.#sessionFailed = true;
+          this.emitError({ error, recoverable: false });
+          reject(error);
+          return;
         }
 
         // Connect to Ultravox WebSocket
@@ -914,22 +1067,88 @@ export class RealtimeSession extends llm.RealtimeSession {
         };
 
         const sendTask = async () => {
+          this.#sendTaskRunning = true;
+          this.#logger.debug({ 
+            instanceId: this.#instanceId,
+            sendQueueInstanceId: this.#sendQueue.constructor.name,
+            sendQueueItemsLength: this.#sendQueue.items.length
+          }, "sendTask started");
           while (
             this.#ws &&
             !this.#closing &&
             this.#ws.readyState === WebSocket.OPEN
           ) {
             try {
+              // Log queue state before waiting
+              const queueLength = this.#sendQueue.items.length;
+              this.#logger.debug({ 
+                sendQueueLength: queueLength,
+                wsReadyState: this.#ws?.readyState,
+                closing: this.#closing
+              }, "sendTask loop - waiting for item");
+              
+              // Check if we should exit before waiting on the queue
+              // This prevents getting stuck in get() if WebSocket closes while waiting
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                this.#logger.debug("sendTask: WebSocket closed before queue get(), exiting");
+                break;
+              }
+              
+              // If there are items in the queue, get() should return immediately
+              // If queue is empty, get() will wait for 'put' event
               const event = await this.#sendQueue.get();
-              this.#logger.debug(`-> ${JSON.stringify(event)}`);
-              this.#ws.send(JSON.stringify(event));
+              
+              // Check for close sentinel - this is put in the queue when WebSocket closes
+              if (event && typeof event === 'object' && 'type' in event && event.type === '__CLOSE_SENTINEL__') {
+                this.#logger.debug("sendTask: Received close sentinel, exiting");
+                break;
+              }
+              
+              // Check again after get() returns - conditions may have changed
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                this.#logger.debug("sendTask: WebSocket closed during queue get(), exiting");
+                break;
+              }
+              this.#logger.debug({ 
+                event, 
+                sendQueueLength: this.#sendQueue.items.length,
+                eventType: event?.type
+              }, "sendTask loop - deQueuing event");
+              // Check WebSocket state again before sending, as it may have changed during await
+              if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+                try {
+                  this.#ws.send(JSON.stringify(event));
+                } catch (sendError) {
+                  this.#logger.error({ sendError, event }, "Error sending event to WebSocket");
+                  // If send fails, the WebSocket is likely closed, so break the loop
+                  break;
+                }
+              } else {
+                this.#logger.warn("WebSocket closed while waiting for queue item");
+                // Don't re-queue - if WebSocket is closed, we can't send it anyway
+                break;
+              }
             } catch (error) {
-              this.#logger.error("Error sending event:", error);
+              this.#logger.error({ error }, "Error in sendTask loop");
+              // Queue.get() shouldn't normally throw, but if it does, we should still try to continue
+              // Only break if WebSocket is closed or we're closing
+              if (!this.#ws || this.#closing || this.#ws.readyState !== WebSocket.OPEN) {
+                break;
+              }
+              // Otherwise, continue the loop - the error might be transient
+              // Add a small delay to prevent tight error loops
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
           }
+          this.#sendTaskRunning = false;
+          this.#logger.debug({ ws: this.#ws, closing: this.#closing, readyState: this.#ws?.readyState }, "sendTask finished");
         };
 
-        sendTask();
+        // Start sendTask and handle any unhandled rejections
+        sendTask().catch((error) => {
+          this.#logger.error({ error }, "Unhandled error in sendTask");
+          this.emitError({ error, recoverable: true });
+        });
 
         this.#ws.onclose = () => {
           if (this.#expiresAt && Date.now() >= this.#expiresAt) {
@@ -942,15 +1161,26 @@ export class RealtimeSession extends llm.RealtimeSession {
               "Ultravox WebSocket closed unexpectedly"
             );
             this.#sessionFailed = true;
-            this.emitError({ error: new Error(errorMsg), recoverable: false });
-            reject(new Error(errorMsg));
+            const error = new Error(errorMsg);
+            this.emitError({ error, recoverable: false });
+            reject(error);
           }
+          this.#closing = true;
           this.#ws = null;
+          // Wake up sendTask if it's waiting on the queue by putting a sentinel value
+          // This ensures sendTask can exit its loop even if it's stuck in get()
+          this.#sendQueue.put({ type: '__CLOSE_SENTINEL__' }).catch(() => {
+            // Ignore errors - queue might be in a bad state, but we're closing anyway
+          });
           !this.#closing && this.close();
           resolve();
         };
       } catch (error) {
-        reject(error);
+        const err =
+          error instanceof Error ? error : new Error(String(error));
+        this.#sessionFailed = true;
+        this.emitError({ error: err, recoverable: false });
+        reject(err);
       }
     });
   }

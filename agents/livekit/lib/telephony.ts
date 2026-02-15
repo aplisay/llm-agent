@@ -20,8 +20,8 @@ export async function transferParticipant(
 
   // If registrar is provided, construct SIP URI for registration endpoint
   let transferUri = `tel:${transferTo}`;
-  // Note: This code is currently disabled (false condition) but kept for future use
-  if (false && registrar) {
+
+  if (registrar) {
     // Extract host from registrar (e.g., "sip:provider.example.com:5060" -> "provider.example.com:5060")
     const registrarHost = (registrar as string).replace(/^sip:/i, '').replace(/^tel:/i, '');
     transferUri = `sip:${transferTo}@${registrarHost}`;
@@ -136,25 +136,89 @@ async function findOrCreateRegistrationTrunk(
   return registrationTrunk.sipTrunkId;
 }
 
-export async function bridgeParticipant(roomName: string, bridgeTo: string, aplisayId: string, callerId: string, originCallerId: string): Promise<any> {
+/**
+ * Bridges a participant into a room (for blind transfers)
+ * @param roomName - Name of the room to bridge into
+ * @param bridgeTo - Phone number to dial
+ * @param aplisayId - Aplisay trunk ID (optional, not needed for registration-originated calls)
+ * @param callerId - Caller ID to use for the call
+ * @param originCallerId - Original caller ID
+ * @param registrationOriginated - Whether the inbound call originated from a registration endpoint
+ * @param b2buaGatewayIp - B2BUA gateway IP address (from sipHXLkRealIp) for registration-originated calls
+ * @param b2buaGatewayTransport - B2BUA gateway transport (from sipHXLkTransport) for registration-originated calls
+ * @param registrationEndpointId - Registration endpoint ID for registration-originated calls
+ * @returns The created SIP participant
+ */
+export async function bridgeParticipant(
+  roomName: string,
+  bridgeTo: string,
+  aplisayId: string,
+  callerId: string,
+  originCallerId: string,
+  registrationOriginated: boolean = false,
+  b2buaGatewayIp: string | null | undefined = null,
+  b2buaGatewayTransport: string | null | undefined = null,
+  registrationEndpointId: string | null | undefined = null
+): Promise<any> {
+  const sipClient = new SipClient(
+    LIVEKIT_URL!,
+    LIVEKIT_API_KEY!,
+    LIVEKIT_API_SECRET!
+  );
+
+  const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+  const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+
+  // For registration-originated calls, dial through the B2BUA gateway that the call came through
+  // Use the B2BUA gateway IP and transport from participant attributes (sipHXLkRealIp, sipHXLkTransport)
+  if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
+    logger.info(
+      { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
+      "bridging participant through B2BUA gateway for registration-originated call"
+    );
+
+    // Find or create a trunk for this B2BUA gateway
+    const registrationTrunkId = await findOrCreateRegistrationTrunk(
+      b2buaGatewayIp,
+      b2buaGatewayTransport
+    );
+
+    // For registration endpoints, we dial the destination number directly
+    // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
+    const sipParticipantOptions = {
+      participantIdentity: 'sip-outbound-call',
+      headers: {
+        "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
+        "X-Aplisay-Origin-Caller-Id": originCallerId || 'unknown'
+      },
+      participantName: 'Aplisay Bridged Transfer',
+      fromNumber: origin,
+      krispEnabled: true,
+      waitUntilAnswered: true
+    };
+
+    logger.info({ roomName, destination, origin, callerId, sipParticipantOptions, registrationTrunkId }, "bridge participant initiated (registration endpoint)");
+
+    const newParticipant = await sipClient.createSipParticipant(
+      registrationTrunkId,
+      bridgeTo, // Use phone number, trunk routes to registrar
+      roomName,
+      sipParticipantOptions
+    );
+    logger.info({ newParticipant, registrationTrunkId }, 'new participant result (registration endpoint)');
+    return newParticipant;
+  }
 
   if (!aplisayId?.length) {
     throw new Error('No inbound trunk or inbound trunk does not support bridging');
   }
 
-  const sipClient = new SipClient(LIVEKIT_URL!,
-    LIVEKIT_API_KEY!,
-    LIVEKIT_API_SECRET!);
-
   const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
-  let outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
-  const { sipTrunkId } = outboundSipTrunk!;
+  const outboundSipTrunk = outboundSipTrunks.find(t => t.name === 'Aplisay Outbound');
 
   if (!outboundSipTrunk) {
     throw new Error('No livekit outbound SIP trunk found');
   }
-  const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-  const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
   // Outbound trunk to use for the call
   const sipParticipantOptions = {
@@ -169,15 +233,15 @@ export async function bridgeParticipant(roomName: string, bridgeTo: string, apli
     waitUntilAnswered: true
   };
 
-  logger.info({ roomName, destination, origin, callerId, sipParticipantOptions }, "bridge participant initiated");
+  logger.info({ roomName, destination, origin, callerId, sipParticipantOptions }, "bridge participant initiated (trunk-based)");
 
   const newParticipant = await sipClient.createSipParticipant(
-    sipTrunkId,
-    destination,
+    outboundSipTrunk.sipTrunkId,
+    bridgeTo,
     roomName,
     sipParticipantOptions
   );
-  logger.info({ newParticipant }, 'new participant result');
+  logger.info({ newParticipant }, 'new participant result (trunk-based)');
   return newParticipant;
 }
 

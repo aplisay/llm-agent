@@ -45,6 +45,7 @@ export interface CallScenario {
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  forceBridged?: boolean;
 }
 
 export interface JobMetadata {
@@ -87,6 +88,7 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  forceBridged?: boolean;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
@@ -98,7 +100,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   calledId: string;
   modelName: string;
   metadata: any;
-  sendMessage: (message: any) => Promise<void>;
+  sendMessage: (message: any, createdAt?: Date) => Promise<void>;
   call: Call;
   onHangup: () => Promise<void>;
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
@@ -109,6 +111,15 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
+  /**
+   * If true, skip agent setup and go straight to transfer mode.
+   * Used for fallback transfers where the agent failed to start.
+   */
+  transferOnly?: boolean;
+  /**
+   * Transfer arguments to use when transferOnly is true.
+   */
+  transferArgs?: TransferArgs;
 }
 
 export interface TransferArgs {
