@@ -119,6 +119,26 @@ export default function (logger) {
     const objectName = call.recordingId;
     const file = storage.bucket(bucket).file(objectName);
 
+    // Diagnostics: log recording metadata and GCS object size to debug empty recordings
+    let objectSize = null;
+    try {
+      const [metadata] = await file.getMetadata();
+      objectSize = metadata?.size != null ? Number(metadata.size) : null;
+    } catch (err) {
+      logger.warn({ err, callId: call.id, objectName, bucket }, 'getCallRecording: could not get recording object metadata (object may not exist yet)');
+    }
+    logger.info({
+      callId: call.id,
+      recordingId: call.recordingId,
+      bucket,
+      objectName,
+      hasEncryptionKey: Boolean(call.encryptionKey),
+      objectSizeBytes: objectSize,
+    }, 'getCallRecording: serving recording');
+    if (objectSize === 0 || (objectSize == null && call.encryptionKey)) {
+      logger.warn({ callId: call.id, objectName, objectSizeBytes: objectSize }, 'getCallRecording: GCS object is missing or zero length');
+    }
+
     // If we have a server-stored encryptionKey, decrypt and stream plaintext audio
     if (call.encryptionKey) {
       try {
