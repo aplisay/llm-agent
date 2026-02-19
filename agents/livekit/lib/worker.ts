@@ -60,7 +60,11 @@ import type {
   MessageData,
   FunctionResult,
 } from "./types.js";
-import { startRoomRecording, type RoomRecordingHandle } from "./call-recording.js";
+import {
+  startRoomRecording,
+  uploadRecorderIOToGcs,
+  type RoomRecordingHandle,
+} from "./call-recording.js";
 
 dotenv.config();
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
@@ -1260,6 +1264,8 @@ async function runAgentWorker({
 }) {
   let recordingHandle: RoomRecordingHandle | null = null;
   let recordingServerKey: string | undefined;
+  /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
+  let useRecorderIO = false;
 
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
@@ -1496,6 +1502,23 @@ async function runAgentWorker({
         } finally {
           recordingHandle = null;
         }
+      } else if (useRecorderIO) {
+        try {
+          const sessionDir = (ctx as { sessionDirectory?: string }).sessionDirectory;
+          if (sessionDir) {
+            const { gcsObject } = await uploadRecorderIOToGcs(sessionDir, getActiveCall().id);
+            await setCallRecordingData(getActiveCall().id, gcsObject, undefined);
+            logger.info({ callId: getActiveCall().id, gcsObject }, "uploaded RecorderIO recording to GCS");
+          } else {
+            logger.warn({ callId: getActiveCall().id }, "RecorderIO used but no session directory; recording not persisted");
+          }
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          logger.error(
+            { error, message: error.message, callId: getActiveCall().id },
+            "error uploading RecorderIO recording or saving recording metadata during cleanup",
+          );
+        }
       }
 
       await getActiveCall()
@@ -1731,11 +1754,22 @@ async function runAgentWorker({
           }
         );
 
+        // Recording: use RecorderIO (pipeline tee) when recording is enabled; otherwise no recording.
+        // RecorderIO writes OGG to the job session directory; we upload it to GCS in cleanup.
+        if (!transferOnly && recordingOptions && recordingOptions.enabled) {
+          useRecorderIO = true;
+          logger.info(
+            { callId: call.id },
+            "recording enabled via RecorderIO (pipeline tee); will upload OGG in cleanup",
+          );
+        }
+
         operation = "sessionStart";
         await Promise.race([
           session.start({
             room: ctx.room,
             agent: model,
+            record: recordingOptions?.enabled ?? false,
           }),
           startupErrorPromise,
         ]);
@@ -1919,33 +1953,6 @@ async function runAgentWorker({
 
     logger.debug("session started, generating reply");
     await call.start();
-
-    // Start recording after the call has formally started
-    if (!transferOnly && recordingOptions && recordingOptions.enabled) {
-      try {
-        const handle = await startRoomRecording(ctx.room as Room, call.id, {
-          stereo: recordingOptions.stereo ?? false,
-          encryptionKey: recordingOptions.key,
-        });
-        recordingHandle = handle;
-        recordingServerKey = handle.serverGeneratedKey;
-        logger.info(
-          {
-            callId: call.id,
-            bucket: handle.gcsBucket,
-            object: handle.gcsObject,
-            serverGeneratedKey: !!handle.serverGeneratedKey,
-          },
-          "started call recording",
-        );
-      } catch (e) {
-        const error = e instanceof Error ? e : new Error(String(e));
-        logger.error(
-          { error, message: error.message, callId: call.id },
-          "failed to start call recording",
-        );
-      }
-    }
 
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {

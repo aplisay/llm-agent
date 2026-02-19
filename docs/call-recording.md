@@ -8,12 +8,8 @@ This document describes how to enable call recording for agents and listeners, h
 
 Call recording is implemented entirely in the LLM Agent backend:
 
-- Audio is captured from the LiveKit room in the LiveKit worker.
-- Audio is **streamed directly** into a storage bucket (configured via env).
-- Recordings are **always encrypted**, even if you do not specify a key.
-- Decryption is handled either:
-  - server‑side (when the server generated the key), or
-  - client‑side (when you provided the key).
+- When recording is enabled, the worker uses the **RecorderIO** pipeline (SDK tee of agent input/output). Audio is recorded as **stereo OGG/Opus** to a per-call session directory, then uploaded to the configured storage bucket (GCS). This path does **not** use encryption; the file is stored as plain OGG.
+- Recording is controlled at agent and instance level (see below). The current RecorderIO path stores OGG only (no encryption). The `key` and `stereo` options are reserved for a possible future encrypted or room-listener path.
 
 You control recording behaviour at:
 
@@ -76,7 +72,9 @@ with the same shape:
 
 ## Encryption behaviour
 
-Every recording is encrypted using AES‑256‑GCM. There are two modes:
+The **current** implementation (RecorderIO → OGG) does **not** encrypt recordings; the file in GCS is plain OGG. The following describes behaviour if/when we support an encrypted recording path (e.g. room-listener or encrypted RecorderIO).
+
+When encryption is supported, every recording would be encrypted using AES‑256‑GCM. There are two modes:
 
 ### 1. Client‑provided key
 

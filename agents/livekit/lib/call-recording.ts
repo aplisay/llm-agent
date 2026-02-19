@@ -1,7 +1,9 @@
 import { Storage } from '@google-cloud/storage';
 import { randomBytes, createCipheriv } from 'crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Room, RemoteTrack, RemoteTrackPublication, RemoteParticipant } from '@livekit/rtc-node';
-import { RoomEvent, TrackKind, AudioStream } from '@livekit/rtc-node';
+import { RoomEvent, TrackKind, TrackSource, AudioStream } from '@livekit/rtc-node';
 import logger from '../agent-lib/logger.js';
 
 const { RECORDING_STORAGE_PATH, NODE_ENV } = process.env;
@@ -79,10 +81,24 @@ export async function startRoomRecording(
     contentType: 'application/octet-stream',
   });
 
+  let bytesWritten = iv.length;
+  const originalWrite = writeStream.write.bind(writeStream);
+  writeStream.write = function (chunk: Buffer | string, ...args: any[]): boolean {
+    const len = typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk as Buffer).length;
+    bytesWritten += len;
+    return originalWrite(chunk as any, ...args);
+  };
+
   // First write the IV so the decryptor can reconstruct it later.
   writeStream.write(iv);
 
+  logger.info({ callId, bucket, objectName }, 'startRoomRecording: started writing recording to GCS');
+
   let stopping = false;
+  let firstChunkLogged = false;
+  // Per-track chunk counts for debug (participantIdentity -> count)
+  const chunkCountByParticipant: Record<string, number> = {};
+  let totalChunksReceived = 0;
 
   const onTrackSubscribed = async (
     track: RemoteTrack,
@@ -93,10 +109,29 @@ export async function startRoomRecording(
       if (track.kind !== TrackKind.KIND_AUDIO) {
         return;
       }
+      // Record only microphone source (same as agent pipeline) so we capture user + agent output consistently
+      const source = (publication as { source?: number }).source;
+      if (source !== undefined && source !== TrackSource.SOURCE_MICROPHONE) {
+        logger.debug(
+          { callId, trackSid: track.sid, source },
+          'startRoomRecording: skipping non-microphone track',
+        );
+        return;
+      }
 
-      logger.debug(
+      const participantKey = participant.identity ?? track.sid;
+      if (chunkCountByParticipant[participantKey] !== undefined) {
+        logger.debug(
+          { callId, trackSid: track.sid, participantIdentity: participant.identity },
+          'startRoomRecording: already recording this participant, skipping duplicate track',
+        );
+        return;
+      }
+      chunkCountByParticipant[participantKey] = 0;
+
+      logger.info(
         { callId, trackSid: track.sid, participantIdentity: participant.identity },
-        'subscribed to audio track for recording',
+        'startRoomRecording: subscribed to audio track for recording',
       );
 
       const stream = new AudioStream(track);
@@ -112,14 +147,61 @@ export async function startRoomRecording(
         const encryptedChunk = cipher.update(buf);
         if (encryptedChunk.length > 0) {
           writeStream.write(encryptedChunk);
+          totalChunksReceived += 1;
+          chunkCountByParticipant[participantKey] = (chunkCountByParticipant[participantKey] ?? 0) + 1;
+          logger.debug(
+            {
+              callId,
+              participantIdentity: participant.identity,
+              trackSid: track.sid,
+              chunkBytes: encryptedChunk.length,
+              frameBytes: buf.length,
+              chunkIndex: chunkCountByParticipant[participantKey],
+              totalChunksFromAllTracks: totalChunksReceived,
+            },
+            'startRoomRecording: participant audio chunk received and written',
+          );
+          if (!firstChunkLogged) {
+            firstChunkLogged = true;
+            logger.info(
+              { callId, firstChunkBytes: encryptedChunk.length, participantIdentity: participant.identity },
+              'startRoomRecording: first audio chunk written',
+            );
+          }
         }
       }
+
+      logger.debug(
+        { callId, participantIdentity: participant.identity, trackSid: track.sid, totalChunks: chunkCountByParticipant[participantKey] },
+        'startRoomRecording: audio track stream ended',
+      );
     } catch (err) {
-      logger.error({ err, callId }, 'error recording audio track');
+      logger.error({ err, callId, participantIdentity: participant.identity, trackSid: track.sid }, 'startRoomRecording: error recording audio track');
     }
   };
 
   room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+
+  // Process already-subscribed tracks (session RoomIO may have subscribed before we attached,
+  // or tracks may have been subscribed on room connect). Same pattern as agents-js ParticipantAudioInputStream.
+  for (const participant of room.remoteParticipants.values()) {
+    for (const publication of participant.trackPublications.values()) {
+      const track = publication.track;
+      const pubSource = (publication as { source?: number }).source;
+      if (
+        !track ||
+        track.kind !== TrackKind.KIND_AUDIO ||
+        pubSource !== TrackSource.SOURCE_MICROPHONE
+      ) {
+        continue;
+      }
+      logger.info(
+        { callId, participantIdentity: participant.identity, trackSid: track.sid },
+        'startRoomRecording: processing already-subscribed audio track',
+      );
+      onTrackSubscribed(track, publication, participant);
+    }
+  }
 
   const stop = async () => {
     stopping = true;
@@ -139,7 +221,23 @@ export async function startRoomRecording(
         writeStream.on('error', (err) => reject(err));
       });
 
-      logger.info({ bucket, objectName, callId }, 'finished writing recording to GCS');
+      logger.info(
+        {
+          bucket,
+          objectName,
+          callId,
+          bytesWritten,
+          totalChunksReceived,
+          chunkCountByParticipant,
+        },
+        'startRoomRecording: finished writing recording to GCS',
+      );
+      if (bytesWritten <= iv.length + 16) {
+        logger.warn(
+          { callId, bytesWritten, objectName, totalChunksReceived, chunkCountByParticipant },
+          'startRoomRecording: recording is effectively empty (no or minimal audio data)',
+        );
+      }
     } catch (err) {
       logger.error({ err, callId }, 'error finalising recording stream');
     } finally {
@@ -155,5 +253,51 @@ export async function startRoomRecording(
     stop,
     serverGeneratedKey,
   };
+}
+
+const RECORDER_IO_FILENAME = 'audio.ogg';
+
+/**
+ * Upload the RecorderIO OGG file from the session directory to GCS and delete the local file.
+ * Used when recording via the agents SDK RecorderIO (pipeline tee) instead of room-listener.
+ */
+export async function uploadRecorderIOToGcs(
+  sessionDirectory: string,
+  callId: string,
+): Promise<{ gcsBucket: string; gcsObject: string }> {
+  const basePath =
+    RECORDING_STORAGE_PATH || `gs://llm-voice/${NODE_ENV || 'development'}-recordings`;
+  const { bucket, prefix } = parseGcsPath(basePath);
+  const objectName = `${prefix}${callId}.ogg`;
+  const localPath = path.join(sessionDirectory, RECORDER_IO_FILENAME);
+
+  if (!fs.existsSync(localPath)) {
+    logger.warn({ callId, sessionDirectory, localPath }, 'uploadRecorderIOToGcs: OGG file not found, skipping upload');
+    throw new Error(`RecorderIO recording file not found: ${localPath}`);
+  }
+
+  const storage = new Storage();
+  const file = storage.bucket(bucket).file(objectName);
+
+  await new Promise<void>((resolve, reject) => {
+    const writeStream = file.createWriteStream({
+      metadata: { contentType: 'audio/ogg' },
+      resumable: false,
+    });
+    const readStream = fs.createReadStream(localPath);
+    readStream.on('error', reject);
+    writeStream.on('error', reject);
+    writeStream.on('finish', () => resolve());
+    readStream.pipe(writeStream);
+  });
+
+  try {
+    await fs.promises.unlink(localPath);
+  } catch (err) {
+    logger.warn({ err, localPath, callId }, 'uploadRecorderIOToGcs: failed to delete local OGG file');
+  }
+
+  logger.info({ callId, bucket, objectName }, 'uploadRecorderIOToGcs: uploaded RecorderIO OGG to GCS');
+  return { gcsBucket: bucket, gcsObject: objectName };
 }
 
