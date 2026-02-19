@@ -212,6 +212,36 @@ components:
           example: 0.2
         callHook:
           $ref: "#/components/schemas/CallHookConfig"
+        recording:
+          type: object
+          description: |-
+            Call recording configuration for this agent.
+
+            When enabled, calls handled by this agent can be recorded to a storage bucket.
+            Recordings are always encrypted. If you provide a `key`, the recording will be
+            encrypted with a key derived from that value and the server will not be able
+            to decrypt it for you. If you omit `key`, a random per-call key will be
+            generated internally so that downloads from the API return plaintext audio.
+
+            Instance/listener-specific recording options (when supported) override these
+            agent-level defaults.
+          properties:
+            enabled:
+              type: boolean
+              description: Enable or disable call recording for this agent.
+            key:
+              type: string
+              nullable: true
+              description: |-
+                Optional client-provided encryption key. When set, recordings are encrypted
+                with a key derived from this value and the server cannot decrypt them for you.
+                You must decrypt them client-side after download.
+            stereo:
+              type: boolean
+              description: |-
+                When true, enables stereo recording (e.g. caller and agent in separate channels)
+                where supported. When false or omitted, recordings are mixed to mono.
+              default: false
         tts:
           type: object
           properties:

@@ -6,6 +6,11 @@ export interface Instance {
   metadata?: Record<string, any>;
   Agent?: Agent;
   streamLog?: boolean;
+  recording?: {
+    enabled: boolean;
+    key?: string;
+    stereo?: boolean;
+  };
 }
 
 export interface Agent {
@@ -81,6 +86,15 @@ export interface Agent {
         [key: string]: any;
       };
       [key: string]: any;
+    };
+    /**
+     * Recording configuration for this agent.
+     * Can be overridden at instance/listener level.
+     */
+    recording?: {
+      enabled: boolean;
+      key?: string;
+      stereo?: boolean;
     };
   };
   functions?: AgentFunction[];
@@ -385,6 +399,21 @@ export async function endCallById(callId: string, reason?: string): Promise<any>
   return makeApiRequest(`/api/agent-db/call/${callId}/end`, {
     method: 'POST',
     body: JSON.stringify({ reason })
+  });
+}
+
+export async function setCallRecordingData(
+  callId: string,
+  recordingId: string,
+  encryptionKey?: string,
+): Promise<void> {
+  const body: any = { recordingId };
+  if (encryptionKey) {
+    body.encryptionKey = encryptionKey;
+  }
+  await makeApiRequest(`/api/agent-db/call/${encodeURIComponent(callId)}/recording`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
   });
 }
 

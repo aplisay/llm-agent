@@ -38,6 +38,7 @@ import {
   type TrunkInfo,
   endCallById,
   getAgentById,
+  setCallRecordingData,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -59,6 +60,7 @@ import type {
   MessageData,
   FunctionResult,
 } from "./types.js";
+import { startRoomRecording, type RoomRecordingHandle } from "./call-recording.js";
 
 dotenv.config();
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
@@ -299,6 +301,9 @@ export default defineAgent({
       fallbackLoop: while (true) {
         const fallbackConfig = activeAgent.options?.fallback;
 
+        const activeRecordingOptions =
+          instance.recording ?? activeAgent.options?.recording;
+
         try {
           await runAgentWorker({
             ctx,
@@ -322,6 +327,7 @@ export default defineAgent({
             getActiveCall,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
+            recordingOptions: activeRecordingOptions,
           });
           // Successful run – break out of fallback loop
           break fallbackLoop;
@@ -1242,6 +1248,7 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
+  recordingOptions,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -1251,6 +1258,9 @@ async function runAgentWorker({
     description: string;
   };
 }) {
+  let recordingHandle: RoomRecordingHandle | null = null;
+  let recordingServerKey: string | undefined;
+
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
     logger.info(
@@ -1466,6 +1476,26 @@ async function runAgentWorker({
           { e },
           "error closing session (may have already been called)"
         );
+      }
+
+      // Stop recording (if active) and persist recording metadata
+      if (recordingHandle) {
+        try {
+          await recordingHandle.stop();
+          await setCallRecordingData(
+            getActiveCall().id,
+            recordingHandle.gcsObject,
+            recordingServerKey,
+          );
+        } catch (e) {
+          const error = e instanceof Error ? e : new Error(String(e));
+          logger.error(
+            { error, message: error.message },
+            "error stopping recording or saving recording metadata during cleanup",
+          );
+        } finally {
+          recordingHandle = null;
+        }
       }
 
       await getActiveCall()
@@ -1889,6 +1919,34 @@ async function runAgentWorker({
 
     logger.debug("session started, generating reply");
     await call.start();
+
+    // Start recording after the call has formally started
+    if (!transferOnly && recordingOptions && recordingOptions.enabled) {
+      try {
+        const handle = await startRoomRecording(ctx.room as Room, call.id, {
+          stereo: recordingOptions.stereo ?? false,
+          encryptionKey: recordingOptions.key,
+        });
+        recordingHandle = handle;
+        recordingServerKey = handle.serverGeneratedKey;
+        logger.info(
+          {
+            callId: call.id,
+            bucket: handle.gcsBucket,
+            object: handle.gcsObject,
+            serverGeneratedKey: !!handle.serverGeneratedKey,
+          },
+          "started call recording",
+        );
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        logger.error(
+          { error, message: error.message, callId: call.id },
+          "failed to start call recording",
+        );
+      }
+    }
+
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
