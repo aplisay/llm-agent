@@ -69,7 +69,7 @@ recording?: {
 
 ## 4. Custom recording implementation (no LiveKit Cloud / no agent built-in recording)
 
-Because we need **encryption**, **stereo/mono** control, and **direct storage to the bucket**, we implement our own recording pipeline instead of relying on LiveKit agent recording or LiveKit Egress.
+Because we need **encryption**, **stereo/mono** control, and **direct storage to the bucket**, we implement our own recording pipeline instead of relying on LiveKit agent recording or LiveKit Egress. For a pipeline-based alternative (teeing the agent’s input/output streams), see [RecorderIO investigation](recording-recorder-io-investigation.md).
 
 ### 4.1 Architecture
 
