@@ -34,7 +34,7 @@ const port = process.env.WS_PORT || 4000;
 if (process.env.NODE_ENV === 'development') {
   apiDoc.servers.unshift({ url: `http://localhost:${port}/api` });
 }
-else if (process.env.K_SERVICE === 'llm-agent-feature') {
+else if (process.env.NODE_ENV === 'feature') {
   apiDoc.servers.unshift({ url: `https://llm-agent-feature.aplisay.com/api` });
 }
 else if (process.env.NODE_ENV === 'staging') {
