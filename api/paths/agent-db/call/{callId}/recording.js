@@ -34,6 +34,11 @@ const setCallRecording = async (req, res) => {
 
     await call.save();
 
+    log?.info?.(
+      { callId: call.id, recordingId, hasEncryptionKey: Boolean(call.encryptionKey) },
+      'setCallRecording: stored recording metadata (worker wrote object to storage)',
+    );
+
     return res.send({ callId: call.id, recordingId: call.recordingId });
   }
   catch (err) {

@@ -99,7 +99,8 @@ function promptInput(question) {
   });
 }
 
-// Helper to fetch raw call recording audio for a given callId
+// Helper to fetch raw call recording audio for a given callId.
+// Returns { status, body, headers } so callers can debug empty or unexpected responses.
 async function fetchCallRecording(callId) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = `${base}/calls/${callId}/recording`;
@@ -117,7 +118,21 @@ async function fetchCallRecording(callId) {
       validateStatus: (status) => (status >= 200 && status < 300) || status === 404
     });
 
-    return { status: response.status, body: response.data };
+    const body = response.data;
+    const bodyLength = body instanceof ArrayBuffer ? body.byteLength : (body?.length ?? 0);
+    const headers = response.headers || {};
+    const debug = process.env.DEBUG_RECORDING_POLL || bodyLength === 0;
+    if (debug) {
+      console.log(
+        '[DEBUG] GET /calls/%s/recording -> status=%s bodyLength=%s content-type=%s content-length=%s',
+        callId,
+        response.status,
+        bodyLength,
+        headers['content-type'] ?? '(none)',
+        headers['content-length'] ?? '(none)'
+      );
+    }
+    return { status: response.status, body: response.data, headers };
   } catch (error) {
     const message = error.response
       ? `Recording request failed: ${error.response.status} ${error.response.statusText}\n${JSON.stringify(error.response.data, null, 2)}`
@@ -225,8 +240,13 @@ function waitForKeystroke(message) {
   });
 }
 
-// Helper to play a recording buffer using a system audio player
+// Helper to play a recording buffer using a system audio player.
+// Caller should skip calling this when buffer.length === 0.
 async function playAudioBuffer(buffer, callId) {
+  if (!buffer || buffer.length === 0) {
+    console.warn('playAudioBuffer: skipping play (empty buffer)');
+    return;
+  }
   const tmpDir = os.tmpdir();
   const filePath = path.join(tmpDir, `llm-agent-recording-${callId || Date.now()}.wav`);
 
@@ -236,7 +256,7 @@ async function playAudioBuffer(buffer, callId) {
   const player = process.platform === 'darwin' ? 'afplay' : 'ffplay';
   const args = player === 'afplay' ? [filePath] : ['-autoexit', '-nodisp', filePath];
 
-  console.log(`Playing recording for call ${callId} using ${player} from ${filePath}...`);
+  console.log(`Playing recording for call ${callId} using ${player} from ${filePath} (${buffer.length} bytes)...`);
 
   return new Promise((resolve, reject) => {
     const child = spawn(player, args, { stdio: 'inherit' });
@@ -268,9 +288,13 @@ function sleepUnref(ms) {
 }
 
 // Helper to poll for completed calls on an agent and play their recordings.
-// Accepts a shouldStop callback so callers can signal early termination.
-async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () => false) {
+// Accepts a shouldStop callback and an optional activatedAfter (ms): only consider
+// calls that ended at or after this time (so we only pick up calls from this run).
+async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () => false, activatedAfter = null) {
   console.log('\n=== Step 7b: Polling for completed calls and playing recordings ===');
+  if (activatedAfter != null) {
+    console.log(`Only considering calls that ended after listener activation (${new Date(activatedAfter).toISOString()})`);
+  }
 
   const processedCalls = new Set();
   const maxAttempts = 20; // up to ~10 minutes at 30s intervals
@@ -288,13 +312,30 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
     let calls = [];
     try {
       const callsRes = await apiRequest('GET', `/agents/${agentId}/calls`);
-      calls = Array.isArray(callsRes.body) ? callsRes.body : (callsRes.body.items || []);
+      // API returns { calls, next } (see api/paths/agents/{agentId}/calls.js)
+      calls = Array.isArray(callsRes.body) ? callsRes.body : (callsRes.body.calls || callsRes.body.items || []);
+      if (process.env.DEBUG_RECORDING_POLL) {
+        console.log('[DEBUG] GET /agents/%s/calls response keys: %s', agentId, Object.keys(callsRes.body || {}));
+        console.log('[DEBUG] calls count: %d, sample: %s', calls.length, JSON.stringify(calls[0] || null));
+      }
     } catch (error) {
       console.warn(`⚠ Failed to list calls for agent ${agentId}: ${error.message}`);
       break;
     }
 
-    const completed = calls.filter((call) => call && call.id && call.endedAt && !processedCalls.has(call.id));
+    const endedAtOrAfter = (call) => {
+      if (activatedAfter == null) return true;
+      const ended = call?.endedAt ? new Date(call.endedAt).getTime() : NaN;
+      return !Number.isNaN(ended) && ended >= activatedAfter;
+    };
+    const completed = calls.filter(
+      (call) =>
+        call && call.id && call.endedAt && !processedCalls.has(call.id) && endedAtOrAfter(call)
+    );
+    if (process.env.DEBUG_RECORDING_POLL) {
+      console.log('[DEBUG] completed (endedAt set, not yet processed): %d of %d calls', completed.length, calls.length);
+      calls.forEach((c, i) => console.log('[DEBUG] call[%d] id=%s endedAt=%s', i, c?.id, c?.endedAt));
+    }
 
     if (completed.length > 0) {
       for (const call of completed) {
@@ -309,6 +350,14 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
 
           const buffer = Buffer.from(recRes.body);
           console.log(`Fetched recording for call ${call.id} (${buffer.length} bytes).`);
+          if (buffer.length === 0) {
+            console.warn(
+              `Recording for call ${call.id} is 0 bytes. This may be the recording service not having written data yet, ` +
+              `or the call had no audio. Check DEBUG output above (or set DEBUG_RECORDING_POLL=1) for response details. Skipping play.`
+            );
+            processedCalls.add(call.id);
+            continue;
+          }
           await playAudioBuffer(buffer, call.id);
           processedCalls.add(call.id);
         } catch (error) {
@@ -610,6 +659,10 @@ async function main() {
       }
     }
 
+    // Timestamp so we only request/play recordings for calls that ended after
+    // this run's listener was activated (ignore calls from prior runs or other tests).
+    const listenerActivatedAt = Date.now();
+
     // Step 7: Active session with keystroke controls
     console.log('\n=== Step 7: Active session ===');
     console.log(`Agent ID: ${testAgentId}`);
@@ -622,9 +675,11 @@ async function main() {
     // Start polling for completed calls and playing their recordings in parallel
     // with the interactive session loop. We use server-managed encryption keys,
     // so /calls/{callId}/recording returns raw audio that we can play directly.
+    // Only consider calls that ended after the listener was activated above.
     const recordingPoller = waitForCompletedCallsAndPlayRecordings(
       testAgentId,
-      () => stopRecordingPoller
+      () => stopRecordingPoller,
+      listenerActivatedAt
     ).catch((err) => {
       console.warn(`⚠ Recording poller error: ${err.message}`);
     });
