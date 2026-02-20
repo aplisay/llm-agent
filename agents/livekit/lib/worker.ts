@@ -1124,6 +1124,7 @@ async function setupCallAndUtilities({
  */
 function createTools({
   agent,
+  call,
   room,
   participant,
   sendMessage,
@@ -1133,6 +1134,7 @@ function createTools({
   getTransferState,
 }: {
   agent: Agent;
+  call: Call;
   room: Room;
   participant: ParticipantInfo | null;
   sendMessage: (message: MessageData, createdAt?: Date) => Promise<void>;
@@ -1201,7 +1203,10 @@ function createTools({
                 }
               )) as FunctionResult;
               let { function_results } = result;
-              let [{ result: data }] = function_results;
+              let [{ result: data, error }] = function_results;
+              if (error) {
+                logger.info({ data, error, agentId: agent.id, callId: call.id }, "error executing function");
+              }
               logger.debug(
                 { data },
                 `function execute returning ${JSON.stringify(data)}`
@@ -1502,6 +1507,7 @@ async function runAgentWorker({
         operation = "createTools";
         const tools = createTools({
           agent,
+          call,
           room: room!,
           participant,
           sendMessage,
