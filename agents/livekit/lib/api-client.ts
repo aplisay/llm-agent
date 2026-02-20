@@ -9,7 +9,6 @@ export interface Instance {
   recording?: {
     enabled: boolean;
     key?: string;
-    stereo?: boolean;
   };
 }
 
@@ -94,7 +93,6 @@ export interface Agent {
     recording?: {
       enabled: boolean;
       key?: string;
-      stereo?: boolean;
     };
   };
   functions?: AgentFunction[];

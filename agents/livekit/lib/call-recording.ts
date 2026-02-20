@@ -1,27 +1,16 @@
 import { Storage } from '@google-cloud/storage';
-import { randomBytes, createCipheriv } from 'crypto';
+import { randomBytes, createCipheriv } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Room, RemoteTrack, RemoteTrackPublication, RemoteParticipant } from '@livekit/rtc-node';
-import { RoomEvent, TrackKind, TrackSource, AudioStream } from '@livekit/rtc-node';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import logger from '../agent-lib/logger.js';
 
+const GCM_IV_LENGTH = 12;
+const GCM_AUTH_TAG_LENGTH = 16;
+const KEY_LENGTH = 32;
+
 const { RECORDING_STORAGE_PATH, NODE_ENV } = process.env;
-
-export interface RecordingOptions {
-  stereo: boolean;
-  encryptionKey?: string; // client-provided key (optional)
-}
-
-export interface RoomRecordingHandle {
-  callId: string;
-  room: Room;
-  gcsBucket: string;
-  gcsObject: string;
-  stop: () => Promise<void>;
-  // When using a server-generated key, this will be set
-  serverGeneratedKey?: string;
-}
 
 function parseGcsPath(baseUrl: string): { bucket: string; prefix: string } {
   // Expect format: gs://bucket[/optional/prefix/]
@@ -43,228 +32,81 @@ function parseGcsPath(baseUrl: string): { bucket: string; prefix: string } {
   return { bucket, prefix };
 }
 
-export async function startRoomRecording(
-  room: Room,
-  callId: string,
-  options: RecordingOptions,
-): Promise<RoomRecordingHandle> {
-  const basePath =
-    RECORDING_STORAGE_PATH || `gs://llm-voice/${NODE_ENV || 'development'}-recordings`;
-
-  const { bucket, prefix } = parseGcsPath(basePath);
-  const storage = new Storage();
-  const objectName = `${prefix}${callId}.raw`;
-  const bucketRef = storage.bucket(bucket);
-  const fileRef = bucketRef.file(objectName);
-
-  // Determine effective encryption key:
-  // - If client provided `options.encryptionKey`, use it (but do not store it).
-  // - Otherwise, generate a random per-call key and return it in the handle for persistence.
-  let effectiveKey: Buffer;
-  let serverGeneratedKey: string | undefined;
-  if (options.encryptionKey) {
-    // Derive a 32-byte key from the provided string (simple hash-then-truncate approach).
-    const keyBytes = Buffer.from(options.encryptionKey, 'utf8');
-    effectiveKey = keyBytes.length >= 32 ? keyBytes.subarray(0, 32) : Buffer.concat([keyBytes, Buffer.alloc(32 - keyBytes.length, 0)]);
-  } else {
-    const randomKey = randomBytes(32);
-    effectiveKey = randomKey;
-    // Store as base64 so it can be persisted if desired.
-    serverGeneratedKey = randomKey.toString('base64');
-  }
-
-  const iv = randomBytes(12); // AES-GCM 96-bit IV
-  const cipher = createCipheriv('aes-256-gcm', effectiveKey, iv);
-
-  const writeStream = fileRef.createWriteStream({
-    resumable: true,
-    contentType: 'application/octet-stream',
-  });
-
-  let bytesWritten = iv.length;
-  const originalWrite = writeStream.write.bind(writeStream);
-  writeStream.write = function (chunk: Buffer | string, ...args: any[]): boolean {
-    const len = typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk as Buffer).length;
-    bytesWritten += len;
-    return originalWrite(chunk as any, ...args);
-  };
-
-  // First write the IV so the decryptor can reconstruct it later.
-  writeStream.write(iv);
-
-  logger.info({ callId, bucket, objectName }, 'startRoomRecording: started writing recording to GCS');
-
-  let stopping = false;
-  let firstChunkLogged = false;
-  // Per-track chunk counts for debug (participantIdentity -> count)
-  const chunkCountByParticipant: Record<string, number> = {};
-  let totalChunksReceived = 0;
-
-  const onTrackSubscribed = async (
-    track: RemoteTrack,
-    publication: RemoteTrackPublication,
-    participant: RemoteParticipant,
-  ) => {
-    try {
-      if (track.kind !== TrackKind.KIND_AUDIO) {
-        return;
-      }
-      // Record only microphone source (same as agent pipeline) so we capture user + agent output consistently
-      const source = (publication as { source?: number }).source;
-      if (source !== undefined && source !== TrackSource.SOURCE_MICROPHONE) {
-        logger.debug(
-          { callId, trackSid: track.sid, source },
-          'startRoomRecording: skipping non-microphone track',
-        );
-        return;
-      }
-
-      const participantKey = participant.identity ?? track.sid;
-      if (chunkCountByParticipant[participantKey] !== undefined) {
-        logger.debug(
-          { callId, trackSid: track.sid, participantIdentity: participant.identity },
-          'startRoomRecording: already recording this participant, skipping duplicate track',
-        );
-        return;
-      }
-      chunkCountByParticipant[participantKey] = 0;
-
-      logger.info(
-        { callId, trackSid: track.sid, participantIdentity: participant.identity },
-        'startRoomRecording: subscribed to audio track for recording',
-      );
-
-      const stream = new AudioStream(track);
-
-      for await (const frame of stream) {
-        if (stopping) {
-          break;
-        }
-
-        // For now, do not attempt complex mixing; just write raw PCM frames.
-        // Stereo/mono handling can be added here by reshaping frame.data.
-        const buf = Buffer.from(frame.data.buffer);
-        const encryptedChunk = cipher.update(buf);
-        if (encryptedChunk.length > 0) {
-          writeStream.write(encryptedChunk);
-          totalChunksReceived += 1;
-          chunkCountByParticipant[participantKey] = (chunkCountByParticipant[participantKey] ?? 0) + 1;
-          logger.debug(
-            {
-              callId,
-              participantIdentity: participant.identity,
-              trackSid: track.sid,
-              chunkBytes: encryptedChunk.length,
-              frameBytes: buf.length,
-              chunkIndex: chunkCountByParticipant[participantKey],
-              totalChunksFromAllTracks: totalChunksReceived,
-            },
-            'startRoomRecording: participant audio chunk received and written',
-          );
-          if (!firstChunkLogged) {
-            firstChunkLogged = true;
-            logger.info(
-              { callId, firstChunkBytes: encryptedChunk.length, participantIdentity: participant.identity },
-              'startRoomRecording: first audio chunk written',
-            );
-          }
-        }
-      }
-
-      logger.debug(
-        { callId, participantIdentity: participant.identity, trackSid: track.sid, totalChunks: chunkCountByParticipant[participantKey] },
-        'startRoomRecording: audio track stream ended',
-      );
-    } catch (err) {
-      logger.error({ err, callId, participantIdentity: participant.identity, trackSid: track.sid }, 'startRoomRecording: error recording audio track');
-    }
-  };
-
-  room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
-
-  // Process already-subscribed tracks (session RoomIO may have subscribed before we attached,
-  // or tracks may have been subscribed on room connect). Same pattern as agents-js ParticipantAudioInputStream.
-  for (const participant of room.remoteParticipants.values()) {
-    for (const publication of participant.trackPublications.values()) {
-      const track = publication.track;
-      const pubSource = (publication as { source?: number }).source;
-      if (
-        !track ||
-        track.kind !== TrackKind.KIND_AUDIO ||
-        pubSource !== TrackSource.SOURCE_MICROPHONE
-      ) {
-        continue;
-      }
-      logger.info(
-        { callId, participantIdentity: participant.identity, trackSid: track.sid },
-        'startRoomRecording: processing already-subscribed audio track',
-      );
-      onTrackSubscribed(track, publication, participant);
-    }
-  }
-
-  const stop = async () => {
-    stopping = true;
-
-    try {
-      // Finalize cipher and write authentication tag.
-      const finalChunk = cipher.final();
-      if (finalChunk.length > 0) {
-        writeStream.write(finalChunk);
-      }
-      const authTag = cipher.getAuthTag();
-      writeStream.write(authTag);
-      writeStream.end();
-
-      await new Promise<void>((resolve, reject) => {
-        writeStream.on('finish', () => resolve());
-        writeStream.on('error', (err) => reject(err));
-      });
-
-      logger.info(
-        {
-          bucket,
-          objectName,
-          callId,
-          bytesWritten,
-          totalChunksReceived,
-          chunkCountByParticipant,
-        },
-        'startRoomRecording: finished writing recording to GCS',
-      );
-      if (bytesWritten <= iv.length + 16) {
-        logger.warn(
-          { callId, bytesWritten, objectName, totalChunksReceived, chunkCountByParticipant },
-          'startRoomRecording: recording is effectively empty (no or minimal audio data)',
-        );
-      }
-    } catch (err) {
-      logger.error({ err, callId }, 'error finalising recording stream');
-    } finally {
-      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
-    }
-  };
-
-  return {
-    callId,
-    room,
-    gcsBucket: bucket,
-    gcsObject: objectName,
-    stop,
-    serverGeneratedKey,
-  };
-}
-
 const RECORDER_IO_FILENAME = 'audio.ogg';
 
+export interface UploadRecorderIOOptions {
+  /** When set, use this key for encryption (client-provided); server will not store the key. */
+  clientEncryptionKey?: string;
+}
+
 /**
- * Upload the RecorderIO OGG file from the session directory to GCS and delete the local file.
- * Used when recording via the agents SDK RecorderIO (pipeline tee) instead of room-listener.
+ * Derive a 32-byte key from a client-provided string (same as legacy room-listener).
+ */
+function deriveKey(clientKey: string): Buffer {
+  const keyBytes = Buffer.from(clientKey, 'utf8');
+  if (keyBytes.length >= KEY_LENGTH) {
+    return keyBytes.subarray(0, KEY_LENGTH);
+  }
+  return Buffer.concat([keyBytes, Buffer.alloc(KEY_LENGTH - keyBytes.length, 0)]);
+}
+
+/**
+ * Streaming encrypt Transform: outputs IV (12 bytes) then ciphertext then auth tag (16 bytes).
+ * Matches the format expected by the download API's GcmDecryptStream.
+ */
+class GcmEncryptStream extends Transform {
+  private readonly key: Buffer;
+  private readonly iv: Buffer;
+  private cipher: ReturnType<typeof createCipheriv> | null = null;
+  private ivPushed = false;
+
+  constructor(key: Buffer) {
+    super();
+    this.key = key;
+    this.iv = randomBytes(GCM_IV_LENGTH);
+  }
+
+  _transform(chunk: Buffer, _encoding: string, callback: (err?: Error | null, data?: never) => void): void {
+    try {
+      if (!this.ivPushed) {
+        this.ivPushed = true;
+        this.push(this.iv);
+        this.cipher = createCipheriv('aes-256-gcm', this.key, this.iv);
+      }
+      if (this.cipher && chunk.length > 0) {
+        const out = this.cipher.update(chunk);
+        if (out.length > 0) this.push(out);
+      }
+      callback();
+    } catch (err) {
+      callback(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  _flush(callback: (err?: Error | null) => void): void {
+    try {
+      if (!this.cipher) {
+        return callback();
+      }
+      const final = this.cipher.final();
+      if (final.length > 0) this.push(final);
+      this.push((this.cipher as import('node:crypto').CipherGCM).getAuthTag());
+      callback();
+    } catch (err) {
+      callback(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+}
+
+/**
+ * Upload the RecorderIO OGG file from the session directory to GCS, optionally encrypted.
+ * When clientEncryptionKey is omitted, a random key is generated and returned so the server can store it for decryption on download.
  */
 export async function uploadRecorderIOToGcs(
   sessionDirectory: string,
   callId: string,
-): Promise<{ gcsBucket: string; gcsObject: string }> {
+  options?: UploadRecorderIOOptions,
+): Promise<{ gcsBucket: string; gcsObject: string; serverGeneratedKey?: string }> {
   const basePath =
     RECORDING_STORAGE_PATH || `gs://llm-voice/${NODE_ENV || 'development'}-recordings`;
   const { bucket, prefix } = parseGcsPath(basePath);
@@ -276,28 +118,62 @@ export async function uploadRecorderIOToGcs(
     throw new Error(`RecorderIO recording file not found: ${localPath}`);
   }
 
+  let key: Buffer;
+  let serverGeneratedKey: string | undefined;
+
+  if (options?.clientEncryptionKey) {
+    key = deriveKey(options.clientEncryptionKey);
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: using client-provided encryption key');
+  } else {
+    const randomKey = randomBytes(KEY_LENGTH);
+    key = randomKey;
+    serverGeneratedKey = randomKey.toString('base64');
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: using server-generated encryption key');
+  }
+
   const storage = new Storage();
   const file = storage.bucket(bucket).file(objectName);
 
-  await new Promise<void>((resolve, reject) => {
-    const writeStream = file.createWriteStream({
-      metadata: { contentType: 'audio/ogg' },
-      resumable: false,
-    });
-    const readStream = fs.createReadStream(localPath);
-    readStream.on('error', reject);
-    writeStream.on('error', reject);
-    writeStream.on('finish', () => resolve());
-    readStream.pipe(writeStream);
+  const readStream = fs.createReadStream(localPath);
+  const encryptStream = new GcmEncryptStream(key);
+  const writeStream = file.createWriteStream({
+    metadata: { contentType: 'application/octet-stream' },
+    resumable: false,
+  });
+
+  const UPLOAD_TIMEOUT_MS = 30 * 1000; // 30 seconds
+  const timeoutError = new Error('RecorderIO upload to GCS timed out');
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      logger.warn({ callId }, 'uploadRecorderIOToGcs: timeout reached, destroying streams');
+      readStream.destroy(timeoutError);
+      encryptStream.destroy(timeoutError);
+      writeStream.destroy(timeoutError);
+      reject(timeoutError);
+    }, UPLOAD_TIMEOUT_MS);
   });
 
   try {
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: uploading encrypted RecorderIO recording to GCS');
+    await Promise.race([
+      pipeline(readStream, encryptStream, writeStream),
+      timeoutPromise,
+    ]);
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: uploaded encrypted RecorderIO recording to GCS');
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: deleting local OGG file');
     await fs.promises.unlink(localPath);
+    logger.debug({ callId }, 'uploadRecorderIOToGcs: deleted local OGG file');
   } catch (err) {
-    logger.warn({ err, localPath, callId }, 'uploadRecorderIOToGcs: failed to delete local OGG file');
+    logger.warn({ err, localPath, callId }, 'uploadRecorderIOToGcs: failed to upload or delete local OGG file');
+    throw err; // Rethrow so caller does not set recordingId on failed upload
+  } finally {
+    clearTimeout(timeoutId!);
   }
 
-  logger.info({ callId, bucket, objectName }, 'uploadRecorderIOToGcs: uploaded RecorderIO OGG to GCS');
-  return { gcsBucket: bucket, gcsObject: objectName };
+  logger.info(
+    { callId, bucket, objectName, hasServerKey: Boolean(serverGeneratedKey) },
+    'uploadRecorderIOToGcs: uploaded encrypted RecorderIO recording to GCS',
+  );
+  return { gcsBucket: bucket, gcsObject: objectName, serverGeneratedKey };
 }
-

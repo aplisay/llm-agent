@@ -22,18 +22,21 @@ function parseGcsPath(baseUrl) {
   return { bucket, prefix };
 }
 
+/**
+ * Streaming decrypt: expects IV (12 bytes) then ciphertext + auth tag (16 bytes).
+ * Only keeps a small trailing buffer (16 bytes) for the auth tag instead of buffering the whole stream.
+ */
 class GcmDecryptStream extends Transform {
   constructor(key) {
     super();
     this.key = key;
     this.ivBuffer = Buffer.alloc(0);
-    this.ciphertextBuffer = Buffer.alloc(0);
+    this.trailingBuffer = Buffer.alloc(0); // ciphertext we hold back (last 16 bytes = auth tag)
     this.decipher = null;
   }
 
   _transform(chunk, _encoding, callback) {
     try {
-      // Accumulate IV first (12 bytes)
       if (!this.decipher) {
         this.ivBuffer = Buffer.concat([this.ivBuffer, chunk]);
         if (this.ivBuffer.length < 12) {
@@ -42,12 +45,21 @@ class GcmDecryptStream extends Transform {
         const iv = this.ivBuffer.subarray(0, 12);
         const remaining = this.ivBuffer.subarray(12);
         this.decipher = createDecipheriv('aes-256-gcm', this.key, iv);
-        this.ciphertextBuffer = remaining;
+        this.trailingBuffer = remaining;
         return callback();
       }
 
-      // After IV, buffer ciphertext + tag
-      this.ciphertextBuffer = Buffer.concat([this.ciphertextBuffer, chunk]);
+      this.trailingBuffer = Buffer.concat([this.trailingBuffer, chunk]);
+      // Stream through all but the last 16 bytes (auth tag)
+      const authTagLen = 16;
+      while (this.trailingBuffer.length > authTagLen) {
+        const toDecrypt = this.trailingBuffer.subarray(0, this.trailingBuffer.length - authTagLen);
+        this.trailingBuffer = this.trailingBuffer.subarray(this.trailingBuffer.length - authTagLen);
+        const decrypted = this.decipher.update(toDecrypt);
+        if (decrypted.length > 0) {
+          this.push(decrypted);
+        }
+      }
       callback();
     } catch (err) {
       callback(err);
@@ -59,18 +71,10 @@ class GcmDecryptStream extends Transform {
       if (!this.decipher) {
         return callback();
       }
-      if (this.ciphertextBuffer.length < 16) {
-        return callback(new Error('Invalid ciphertext: not enough data for auth tag'));
+      if (this.trailingBuffer.length !== 16) {
+        return callback(new Error('Invalid ciphertext: auth tag must be 16 bytes'));
       }
-      const authTag = this.ciphertextBuffer.subarray(this.ciphertextBuffer.length - 16);
-      const ciphertext = this.ciphertextBuffer.subarray(0, this.ciphertextBuffer.length - 16);
-      this.decipher.setAuthTag(authTag);
-      if (ciphertext.length > 0) {
-        const decrypted = this.decipher.update(ciphertext);
-        if (decrypted.length > 0) {
-          this.push(decrypted);
-        }
-      }
+      this.decipher.setAuthTag(this.trailingBuffer);
       const finalData = this.decipher.final();
       if (finalData.length > 0) {
         this.push(finalData);
@@ -146,7 +150,7 @@ export default function (logger) {
         const decryptStream = new GcmDecryptStream(key);
         const readStream = file.createReadStream();
 
-        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Type', 'audio/ogg');
         readStream
           .on('error', (err) => {
             logger.error({ err, callId: call.id }, 'error reading recording from GCS');
@@ -173,16 +177,22 @@ export default function (logger) {
       }
     }
 
-    // Otherwise, client provided the key; generate a short-lived signed URL and redirect
+    // No server-stored key: file is either encrypted (client-provided key) or legacy plain.
+    // Stream the file as-is so the client can decrypt when they provided the key.
     try {
-      const [signedUrl] = await file.getSignedUrl({
-        action: 'read',
-        expires: Date.now() + 60 * 1000, // 60 seconds
+      res.setHeader('Content-Type', 'application/octet-stream');
+      const readStream = file.createReadStream();
+      readStream.on('error', (err) => {
+        logger.error({ err, callId: call.id }, 'error reading recording from GCS');
+        if (!res.headersSent) {
+          res.status(500).end('Error reading recording');
+        } else {
+          res.end();
+        }
       });
-      logger.debug({ callId: call.id, signedUrl }, 'redirecting to signed GCS URL for encrypted recording');
-      return res.redirect(302, signedUrl);
+      readStream.pipe(res);
     } catch (err) {
-      logger.error({ err, callId: call.id }, 'failed to generate signed URL for recording');
+      logger.error({ err, callId: call.id }, 'failed to stream recording');
       return res.status(500).send({ error: 'Internal server error' });
     }
   };
@@ -190,7 +200,7 @@ export default function (logger) {
   getCallRecording.apiDoc = {
     summary: 'Stream or redirect to a call recording',
     description:
-      'Streams decrypted audio when the server holds a per-call encryption key, or redirects to a short-lived signed GCS URL when the client provided the encryption key.',
+      'Streams decrypted audio when the server holds a per-call encryption key, or redirects to a short-lived signed URL when the client provided the encryption key.',
     tags: ['Calls'],
     operationId: 'getCallRecording',
     parameters: [
@@ -206,7 +216,7 @@ export default function (logger) {
     ],
     responses: {
       200: {
-        description: 'Streaming plaintext audio when decrypted on the server.',
+        description: 'Streaming raw audio when decrypted on the server.',
       },
       302: {
         description: 'Redirect to a short-lived signed URL for the encrypted recording.',

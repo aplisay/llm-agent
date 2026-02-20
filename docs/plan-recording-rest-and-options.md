@@ -2,8 +2,8 @@
 
 This document plans the addition of:
 1. A REST endpoint to return a call recording by `callId`
-2. Recording configuration on **agents** and **instances** (listeners), including optional encryption key and stereo/mono flag
-3. **Custom recording implementation**: direct capture from the LiveKit room, encode (mono/stereo), optional encryption, and upload to GCP storage (S3-compatible path config), without using LiveKit Cloud or the LiveKit agent built-in recording.
+2. Recording configuration on **agents** and **instances** (listeners), including optional encryption key
+3. **Custom recording implementation**: direct capture from the LiveKit room, encode, optional encryption, and upload to GCP storage (S3-compatible path config), without using LiveKit Cloud or the LiveKit agent built-in recording.
 
 ---
 
@@ -15,7 +15,6 @@ Use a single `recording` object with the following shape:
 recording?: {
   enabled: boolean;
   key?: string;      // optional encryption key
-  stereo?: boolean;   // default false (mono)
 }
 ```
 
@@ -25,10 +24,10 @@ recording?: {
 **Where to add it**
 
 - **OpenAPI (api-doc.yaml)**  
-  - In `AgentOptions`, add a `recording` property: `enabled` (boolean, required), `key` (string), `stereo` (boolean, default false).
+  - In `AgentOptions`, add a `recording` property: `enabled` (boolean, required), `key` (string).
   - In the listener **join** request body (`options`), add an optional `recording` object with the same shape.
 - **Types (api-client.ts)**  
-  - In `Agent.options`, add: `recording?: { enabled: boolean; key?: string; stereo?: boolean };`
+  - In `Agent.options`, add: `recording?: { enabled: boolean; key?: string };`
 - **Instance / metadata**  
   - Resolve effective config from instance metadata (or listener options) then agent in the worker.
 
@@ -69,7 +68,7 @@ recording?: {
 
 ## 4. Custom recording implementation (no LiveKit Cloud / no agent built-in recording)
 
-Because we need **encryption**, **stereo/mono** control, and **direct storage to the bucket**, we implement our own recording pipeline instead of relying on LiveKit agent recording or LiveKit Egress. For a pipeline-based alternative (teeing the agent’s input/output streams), see [RecorderIO investigation](recording-recorder-io-investigation.md).
+Because we need **encryption** and **direct storage to the bucket**, we implement our own recording pipeline instead of relying on LiveKit agent recording or LiveKit Egress. For a pipeline-based alternative (teeing the agent’s input/output streams), see [RecorderIO investigation](recording-recorder-io-investigation.md).
 
 ### 4.1 Architecture
 
@@ -88,15 +87,13 @@ Because we need **encryption**, **stereo/mono** control, and **direct storage to
 1. **Inputs**
   - `room`: the LiveKit `Room` from the agent (`ctx.room` / `job.room` from `@livekit/rtc-node`).
   - `callId`: string (for naming the file and associating with the call).
-  - `options`: `{ stereo: boolean; encryptionKey?: string }` (stereo = dual-channel; mono = single mixed channel).
+  - `options`: `{ encryptionKey?: string }`.
   - Storage config: read from env `RECORDING_STORAGE_PATH` (or its default) inside the lib (or accept an options bag with base path).
 
 2. **Streaming capture and encode (no in-memory buffering)**
    - **GCS stream setup (first):** On `startRoomRecording`, immediately create a write stream using `file.createWriteStream()` from `@google-cloud/storage`, targeting an object path derived from `RECORDING_STORAGE_PATH` (or its default) and `callId` (e.g. `{prefix}{callId}.raw` or `{prefix}{callId}.enc`).
    - **Optional encryption transform:** If `encryptionKey` is provided, create a Node `Transform` stream using `crypto.createCipheriv` (e.g. AES-256-GCM) and pipe **GCS write stream ← cipher ← audio pipeline** so encryption is performed **on the fly**.
    - **Subscribe to room audio tracks:** use `RoomEvent.TrackSubscribed` (and handle `TrackUnsubscribed`). For each audio track, create an `AudioStream(track)` from `@livekit/rtc-node` and consume frames as an async iterator (pattern from the receive-audio example), writing each frame directly into the pipeline (no frame accumulation in memory).
-   - **Mono:** For each frame, mix all active participants’ audio to a single channel (e.g. sum and normalize samples) and write the resulting PCM chunk straight into the transform/GCS stream.
-   - **Stereo:** For each frame, map participants to left/right in real time (e.g. caller = left, agent = right). If only one side is present, either duplicate or leave the unused channel silent. The mixed stereo frame is then written straight into the transform/GCS stream.
    - **Format:** Use a streaming-friendly format that does not require a final-size header (e.g. raw 16‑bit PCM like LINEAR16, or an OGG/Opus container if you later want compression). The important point is: **no long-lived in-memory buffer, only streaming writes**. If a container like WAV is desired for some reason, it should be implemented either with a temp file on disk or a streaming header update strategy, but the default plan is raw PCM for simplicity and robustness.
 
 3. **Upload lifecycle**
@@ -117,7 +114,7 @@ The worker only calls `startRoomRecording` after the session has started and `st
 - After resolving scenario (instance, agent, call):
   - Compute effective recording: `effectiveRecording = instance.metadata?.recording ?? agent.options?.recording` (or listener options if passed through).
 - If `effectiveRecording?.enabled` and `process.env.RECORDING_STORAGE_PATH_URL`:
-  - Create recording handle: `const recordingHandle = await startRoomRecording(ctx.room, call.id, { stereo: effectiveRecording.stereo ?? false, encryptionKey: effectiveRecording.key })`. Use the same `Room` type the worker already uses (`job.room` / `ctx.room`).
+  - Create recording handle: `const recordingHandle = await startRoomRecording(ctx.room, call.id, { encryptionKey: effectiveRecording.key })`. Use the same `Room` type the worker already uses (`job.room` / `ctx.room`).
   - In the session shutdown callback (the same place we today call `getActiveCall().end()` and cleanup):
     - `const { recordingId } = await stopRoomRecording(recordingHandle)`.
     - Call new API `setCallRecordingId(call.id, recordingId)` (see 4.4).
@@ -142,7 +139,6 @@ The worker only calls `startRoomRecording` after the session has started and `st
 |--------|----------|--------|
 | `recording.enabled` | Agent options, instance/listener override | Turn recording on for this agent/instance. |
 | `recording.key` | Agent options, instance/listener override | Optional; if set, encrypt recording (AES-256) before upload; client decrypts with same key. |
-| `recording.stereo` | Agent options, instance/listener override | `false` = mono (default), `true` = stereo (e.g. caller L, agent R). |
 
 ---
 
@@ -153,7 +149,7 @@ The worker only calls `startRoomRecording` after the session has started and `st
   - Path `GET /calls/{callId}/recording` updated to document streaming behaviour and encryption modes.
   - Path `PUT /api/agent-db/call/{callId}/recording` (internal) with body `{ recordingId, encryptionKey? }`.
 - **agents/livekit/lib/api-client.ts**
-  - Add `recording?: { enabled: boolean; key?: string; stereo?: boolean }` to `Agent.options`.
+  - Add `recording?: { enabled: boolean; key?: string }` to `Agent.options`.
   - Add `setCallRecordingData(callId: string, recordingId: string, encryptionKey?: string): Promise<void>`.
 - **api/paths/calls/{callId}/recording.js**
   - Implement GET as a streaming endpoint that reads from the storage bucket and conditionally decrypts based on `Call.encryptionKey`.
@@ -163,7 +159,7 @@ The worker only calls `startRoomRecording` after the session has started and `st
   - Call model has nullable `recordingId` (already added) and nullable `encryptionKey` (new) to hold server-generated per-call keys.
 - **agents/livekit/lib/call-recording.ts** (new)
   - `startRoomRecording(room, callId, options)` / `stopRoomRecording(handle)`.
-  - Capture from room (TrackSubscribed, AudioStream), mono/stereo mix, streaming encode, optional AES encrypt, upload to the storage bucket using `RECORDING_STORAGE_PATH` (or its default), return recordingId.
+  - Capture from room (TrackSubscribed, AudioStream), streaming encode, optional AES encrypt, upload to the storage bucket using `RECORDING_STORAGE_PATH` (or its default), return recordingId.
 - **agents/livekit/lib/worker.ts**
   - Resolve effective `recording` from instance then agent.
   - If recording enabled: start recording pipeline after session start; in shutdown callback stop pipeline and call `setCallRecordingData(call.id, recordingId, encryptionKey?)` when a server-generated key is used.
@@ -174,10 +170,9 @@ The worker only calls `startRoomRecording` after the session has started and `st
 
 ---
 
-## 7. Encryption and stereo details
+## 7. Encryption details
 
 - **Encryption:** Application-level AES-256 (e.g. GCM). Key derived from `recording.key`. Store only the ciphertext in GCP; do not store the key. Document for API consumers that when `key` was set, the file at `recordingId` is encrypted and must be decrypted client-side with the same key.
-- **Stereo:** Two channels. Suggested mapping: left = first remote participant (e.g. caller), right = agent / second participant. If only one track, duplicate to both channels or leave one silent; document the convention.
 
 ---
 
