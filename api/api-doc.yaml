@@ -236,12 +236,6 @@ components:
                 Optional client-provided encryption key. When set, recordings are encrypted
                 with a key derived from this value and the server cannot decrypt them for you.
                 You must decrypt them client-side after download.
-            stereo:
-              type: boolean
-              description: |-
-                When true, enables stereo recording (e.g. caller and agent in separate channels)
-                where supported. When false or omitted, recordings are mixed to mono.
-              default: false
         tts:
           type: object
           properties:

@@ -1,10 +1,14 @@
 // External dependencies
 import dotenv from "dotenv";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { RoomServiceClient } from "livekit-server-sdk";
 import {
   type JobContext,
   defineAgent,
   getJobContext,
+  telemetry,
   voice,
   llm
 } from "@livekit/agents";
@@ -60,11 +64,7 @@ import type {
   MessageData,
   FunctionResult,
 } from "./types.js";
-import {
-  startRoomRecording,
-  uploadRecorderIOToGcs,
-  type RoomRecordingHandle,
-} from "./call-recording.js";
+import { uploadRecorderIOToGcs } from "./call-recording.js";
 
 dotenv.config();
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
@@ -86,6 +86,33 @@ const roomService = new RoomServiceClient(
 logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
 /**
+ * Suppress PinoCloudExporter flush errors when LiveKit Cloud rejects log export (e.g. 401 when
+ * "project data recording is disabled"). We keep record: true for RecorderIO (OGG); only the
+ * log export to LiveKit Cloud fails. Patch the SDK so we don't log that as an error.
+ */
+function pinoLogExporter(): void {
+  const Exporter = (telemetry as { PinoCloudExporter?: { prototype: { flush: () => Promise<void> } } })
+    .PinoCloudExporter;
+  if (!Exporter?.prototype?.flush) return;
+  Exporter.prototype.flush = async function (this: { flush: () => Promise<void> }) {
+    const self = this as unknown as {
+      flushTimer: NodeJS.Timeout | null;
+      pendingLogs: unknown[];
+      sendLogs: (r: unknown[]) => Promise<void>;
+    };
+    if (self.flushTimer) {
+      clearTimeout(self.flushTimer);
+      self.flushTimer = null;
+    }
+    if (self.pendingLogs.length === 0) return;
+    const logs = self.pendingLogs;
+    self.pendingLogs = [];
+    logger.debug({ logs }, 'pinoLogExporter: flushing logs');
+  };
+}
+pinoLogExporter();
+
+/**
  * Entry point for the Livekit agent, provides a function that takes a context object and starts the agent
  *
  *
@@ -98,6 +125,37 @@ export default defineAgent({
     const job = ctx.job;
     const room = job.room as unknown as Room;
     logger.info({ ctx, job, room }, "new call");
+
+    // Simulate standard Agents job environment so RecorderIO can write audio.ogg.
+    // The SDK reads sessionDirectory from getJobContext().sessionDirectory (getter backed by _sessionDirectory).
+    // Ensure that directory exists on disk and the SDK sees it so RecorderIO.start() runs and can write.
+    const jobCtx = getJobContext() as JobContext & { sessionDirectory?: string; _sessionDirectory?: string };
+    let sessionDir: string | undefined = jobCtx.sessionDirectory ?? (jobCtx as { _sessionDirectory?: string })._sessionDirectory;
+    if (!sessionDir) {
+      try {
+        const baseTmp = process.env.TMPDIR || os.tmpdir();
+        sessionDir = await fs.mkdtemp(path.join(baseTmp, "livekit-job-"));
+        (jobCtx as { _sessionDirectory?: string })._sessionDirectory = sessionDir;
+        logger.info({ sessionDirectory: sessionDir }, "created fallback session directory for RecorderIO");
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        logger.warn(
+          { error, message: error.message },
+          "failed to create fallback session directory; RecorderIO recordings may not be persisted",
+        );
+      }
+    }
+    if (sessionDir) {
+      try {
+        await fs.mkdir(sessionDir, { recursive: true });
+      } catch (e) {
+        logger.warn({ sessionDirectory: sessionDir, error: e }, "failed to ensure session directory exists on disk");
+      }
+      logger.info(
+        { sessionDirectory: sessionDir },
+        "[RecorderIO debug] sessionDirectory set for SDK; RecorderIO only runs if @livekit/agents@1.0.25+ (check node_modules/@livekit/agents/package.json)",
+      );
+    }
 
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
@@ -1262,8 +1320,6 @@ async function runAgentWorker({
     description: string;
   };
 }) {
-  let recordingHandle: RoomRecordingHandle | null = null;
-  let recordingServerKey: string | undefined;
   /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
   let useRecorderIO = false;
 
@@ -1473,52 +1529,64 @@ async function runAgentWorker({
         }
         dtmfBuffer = "";
       }
+      // Flush RecorderIO first (SDK internal: _recorderIO.close()), then upload, then session.close().
+      // session.close() tears down the job in a way that can prevent the GCS pipeline from completing,
+      // so we close only the recorder (to get a complete OGG file), upload, then close the session.
+      if (useRecorderIO && session) {
+        const recorderIO = (session as { _recorderIO?: { close(): Promise<void> } })._recorderIO;
+        if (recorderIO) {
+          try {
+            logger.debug("RecorderIO: flushing recorder (close) before upload");
+            await recorderIO.close();
+            logger.debug("RecorderIO: flush complete, OGG file ready");
+          } catch (e) {
+            logger.warn({ e }, "RecorderIO: error flushing recorder, continuing to upload");
+          }
+        }
+        const sessionDir = (ctx as { sessionDirectory?: string }).sessionDirectory;
+        if (sessionDir) {
+          try {
+            const { gcsObject, serverGeneratedKey } = await uploadRecorderIOToGcs(
+              sessionDir,
+              getActiveCall().id,
+              {
+                clientEncryptionKey: recordingOptions?.key,
+              },
+            );
+            await setCallRecordingData(getActiveCall().id, gcsObject, serverGeneratedKey);
+            logger.info(
+              { callId: getActiveCall().id, gcsObject, hasServerKey: Boolean(serverGeneratedKey) },
+              "uploaded RecorderIO recording to GCS",
+            );
+          } catch (e) {
+            const error = e instanceof Error ? e : new Error(String(e));
+            logger.warn(
+              { callId: getActiveCall().id, message: error.message },
+              "RecorderIO OGG not found or upload failed",
+            );
+          }
+        } else {
+          logger.warn({ callId: getActiveCall().id }, "RecorderIO used but no session directory; recording not persisted");
+        }
+      }
+
       try {
-        // dont wait for this to complete, it may block logging the call end
-        //  if the LLM interface has outstanding actions let it happen in the background
-        session && session.close();
+        if (session) {
+          await Promise.resolve(session.close()).catch((e: unknown) => {
+            const err = e instanceof Error ? e : new Error(String(e));
+            const code = (e as { code?: string })?.code;
+            if (code === "ERR_INVALID_STATE" || /already closed|invalid state/i.test(String(err.message))) {
+              logger.debug({ code, message: err.message }, "session already closed, skipping close");
+            } else {
+              logger.info({ error: err }, "error closing session (may have already been called)");
+            }
+          });
+        }
       } catch (e) {
         logger.info(
           { e },
           "error closing session (may have already been called)"
         );
-      }
-
-      // Stop recording (if active) and persist recording metadata
-      if (recordingHandle) {
-        try {
-          await recordingHandle.stop();
-          await setCallRecordingData(
-            getActiveCall().id,
-            recordingHandle.gcsObject,
-            recordingServerKey,
-          );
-        } catch (e) {
-          const error = e instanceof Error ? e : new Error(String(e));
-          logger.error(
-            { error, message: error.message },
-            "error stopping recording or saving recording metadata during cleanup",
-          );
-        } finally {
-          recordingHandle = null;
-        }
-      } else if (useRecorderIO) {
-        try {
-          const sessionDir = (ctx as { sessionDirectory?: string }).sessionDirectory;
-          if (sessionDir) {
-            const { gcsObject } = await uploadRecorderIOToGcs(sessionDir, getActiveCall().id);
-            await setCallRecordingData(getActiveCall().id, gcsObject, undefined);
-            logger.info({ callId: getActiveCall().id, gcsObject }, "uploaded RecorderIO recording to GCS");
-          } else {
-            logger.warn({ callId: getActiveCall().id }, "RecorderIO used but no session directory; recording not persisted");
-          }
-        } catch (e) {
-          const error = e instanceof Error ? e : new Error(String(e));
-          logger.error(
-            { error, message: error.message, callId: getActiveCall().id },
-            "error uploading RecorderIO recording or saving recording metadata during cleanup",
-          );
-        }
       }
 
       await getActiveCall()
@@ -1754,22 +1822,27 @@ async function runAgentWorker({
           }
         );
 
-        // Recording: use RecorderIO (pipeline tee) when recording is enabled; otherwise no recording.
-        // RecorderIO writes OGG to the job session directory; we upload it to GCS in cleanup.
+        // Recording: enable RecorderIO (SDK pipeline tee → audio.ogg) when session directory is set.
         if (!transferOnly && recordingOptions && recordingOptions.enabled) {
           useRecorderIO = true;
           logger.info(
             { callId: call.id },
-            "recording enabled via RecorderIO (pipeline tee); will upload OGG in cleanup",
+            "recording enabled via RecorderIO",
           );
         }
 
         operation = "sessionStart";
+        logger.debug(
+          { record: recordingOptions?.enabled ?? false },
+          "sessionStart with recording? enabled",
+        );
         await Promise.race([
           session.start({
             room: ctx.room,
             agent: model,
             record: recordingOptions?.enabled ?? false,
+            // Let our disconnect handler run cleanup (including RecorderIO upload) before session closes
+            inputOptions: { closeOnDisconnect: false },
           }),
           startupErrorPromise,
         ]);

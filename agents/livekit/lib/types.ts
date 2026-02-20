@@ -114,7 +114,6 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   recordingOptions?: {
     enabled: boolean;
     key?: string;
-    stereo?: boolean;
   };
   /**
    * If true, skip agent setup and go straight to transfer mode.

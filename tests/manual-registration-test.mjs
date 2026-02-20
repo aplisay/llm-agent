@@ -252,8 +252,8 @@ async function playAudioBuffer(buffer, callId) {
 
   await fs.promises.writeFile(filePath, buffer);
 
-  // On macOS use afplay, otherwise fall back to ffplay if available
-  const player = process.platform === 'darwin' ? 'afplay' : 'ffplay';
+  // On macOS use ffplay if available
+  const player  = 'ffplay';
   const args = player === 'afplay' ? [filePath] : ['-autoexit', '-nodisp', filePath];
 
   console.log(`Playing recording for call ${callId} using ${player} from ${filePath} (${buffer.length} bytes)...`);
@@ -297,17 +297,16 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
   }
 
   const processedCalls = new Set();
-  const maxAttempts = 20; // up to ~10 minutes at 30s intervals
   let attempt = 0;
 
-  while (attempt < maxAttempts) {
+  while (true) {
     if (shouldStop()) {
       console.log('Recording poller stopping due to exit request.');
       break;
     }
 
     attempt += 1;
-    console.log(`Polling for completed calls (attempt ${attempt}/${maxAttempts})...`);
+    console.log(`Polling for completed calls (attempt ${attempt})...`);
 
     let calls = [];
     try {
@@ -328,10 +327,9 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
       const ended = call?.endedAt ? new Date(call.endedAt).getTime() : NaN;
       return !Number.isNaN(ended) && ended >= activatedAfter;
     };
-    const completed = calls.filter(
-      (call) =>
-        call && call.id && call.endedAt && !processedCalls.has(call.id) && endedAtOrAfter(call)
-    );
+    const completed = calls.filter((call) => (
+      call && call.id && call.endedAt && !processedCalls.has(call.id) && endedAtOrAfter(call)
+    ));
     if (process.env.DEBUG_RECORDING_POLL) {
       console.log('[DEBUG] completed (endedAt set, not yet processed): %d of %d calls', completed.length, calls.length);
       calls.forEach((c, i) => console.log('[DEBUG] call[%d] id=%s endedAt=%s', i, c?.id, c?.endedAt));
@@ -365,11 +363,11 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
         }
       }
 
-      // After processing newly completed calls, stop polling
-      break;
+      console.log('Processed completed calls. Waiting 30 seconds before next poll...');
+    } else {
+      console.log('No new completed calls found yet. Waiting 30 seconds before next poll...');
     }
 
-    console.log('No new completed calls found yet. Waiting 30 seconds before next poll...');
     await sleepUnref(30000);
   }
 
