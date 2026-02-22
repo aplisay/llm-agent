@@ -154,5 +154,6 @@ export interface FunctionContext {
 export interface FunctionResult {
   function_results: Array<{
     result: any;
+    error?: string;
   }>;
 }
