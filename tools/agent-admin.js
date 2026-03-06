@@ -310,7 +310,7 @@ async function main() {
                 c.billingDuration = c.maxDuration;
                 corrected++;
               }
-              c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_]+).*/, '$1').toLowerCase() || 'ultravox-70b';
+              c.type = c.modelName?.replace(/.*\/([a-zA-Z0-9-_\.]+).*/, '$1').toLowerCase() || 'ultravox-70b';
               c.telephony = c.callerId.match(/^\+*[1-9]\d{1,14}$/) || c.calledId.match(/^\+*[1-9]\d{1,14}$/);
               return c;
             });
