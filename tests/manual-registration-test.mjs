@@ -141,6 +141,17 @@ async function fetchCallRecording(callId) {
   }
 }
 
+// Helper to fetch invocation logs for a call. Returns array of log records or null on error/404.
+async function fetchCallInvocationLog(callId) {
+  try {
+    const res = await apiRequest('GET', `/calls/${callId}/invocation-log`);
+    return Array.isArray(res.body) ? res.body : (res.body?.items ?? []);
+  } catch (error) {
+    if (error.message.includes('404')) return null;
+    throw error;
+  }
+}
+
 // Helper to pause and wait for user input
 function pause(message = 'Press Enter to continue with cleanup...') {
   return promptInput(`\n${message}\n`);
@@ -319,7 +330,9 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
       }
     } catch (error) {
       console.warn(`⚠ Failed to list calls for agent ${agentId}: ${error.message}`);
-      break;
+      console.log('Will retry polling for completed calls in 30 seconds...');
+      await sleepUnref(30000);
+      continue;
     }
 
     const endedAtOrAfter = (call) => {
@@ -342,25 +355,37 @@ async function waitForCompletedCallsAndPlayRecordings(agentId, shouldStop = () =
           const recRes = await fetchCallRecording(call.id);
           if (recRes.status === 404) {
             console.log(`No recording available for call ${call.id} (404 from /calls/{callId}/recording).`);
-            processedCalls.add(call.id);
-            continue;
+          } else {
+            const buffer = Buffer.from(recRes.body);
+            console.log(`Fetched recording for call ${call.id} (${buffer.length} bytes).`);
+            if (buffer.length === 0) {
+              console.warn(
+                `Recording for call ${call.id} is 0 bytes. This may be the recording service not having written data yet, ` +
+                `or the call had no audio. Check DEBUG output above (or set DEBUG_RECORDING_POLL=1) for response details. Skipping play.`
+              );
+            } else {
+              await playAudioBuffer(buffer, call.id);
+            }
           }
-
-          const buffer = Buffer.from(recRes.body);
-          console.log(`Fetched recording for call ${call.id} (${buffer.length} bytes).`);
-          if (buffer.length === 0) {
-            console.warn(
-              `Recording for call ${call.id} is 0 bytes. This may be the recording service not having written data yet, ` +
-              `or the call had no audio. Check DEBUG output above (or set DEBUG_RECORDING_POLL=1) for response details. Skipping play.`
-            );
-            processedCalls.add(call.id);
-            continue;
-          }
-          await playAudioBuffer(buffer, call.id);
-          processedCalls.add(call.id);
         } catch (error) {
           console.warn(`⚠ Failed to fetch/play recording for call ${call.id}: ${error.message}`);
         }
+
+        // Fetch and dump InvocationLog for this call
+        try {
+          const invocationLogs = await fetchCallInvocationLog(call.id);
+          if (invocationLogs == null || invocationLogs.length === 0) {
+            console.log(`No invocation log for call ${call.id}.`);
+          } else {
+            console.log(`\n--- InvocationLog for call ${call.id} (${invocationLogs.length} record(s)) ---`);
+            console.log(JSON.stringify(invocationLogs, null, 2));
+            console.log('---\n');
+          }
+        } catch (error) {
+          console.warn(`⚠ Failed to fetch invocation log for call ${call.id}: ${error.message}`);
+        }
+
+        processedCalls.add(call.id);
       }
 
       console.log('Processed completed calls. Waiting 30 seconds before next poll...');

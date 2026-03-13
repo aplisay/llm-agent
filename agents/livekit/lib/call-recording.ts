@@ -2,9 +2,9 @@ import { Storage } from '@google-cloud/storage';
 import { randomBytes, createCipheriv } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import logger from '../agent-lib/logger.js';
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import logger from "./logger.js";
 
 const GCM_IV_LENGTH = 12;
 const GCM_AUTH_TAG_LENGTH = 16;
@@ -116,6 +116,21 @@ export async function uploadRecorderIOToGcs(
   if (!fs.existsSync(localPath)) {
     logger.warn({ callId, sessionDirectory, localPath }, 'uploadRecorderIOToGcs: OGG file not found, skipping upload');
     throw new Error(`RecorderIO recording file not found: ${localPath}`);
+  }
+
+  let localSize = 0;
+  try {
+    const stat = await fs.promises.stat(localPath);
+    localSize = stat.size;
+    logger.info(
+      { callId, localPath, localSize },
+      'uploadRecorderIOToGcs: final local RecorderIO file size before upload',
+    );
+  } catch (err) {
+    logger.warn(
+      { callId, localPath, err },
+      'uploadRecorderIOToGcs: failed to stat local RecorderIO file before upload',
+    );
   }
 
   let key: Buffer;

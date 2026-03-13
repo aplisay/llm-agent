@@ -613,6 +613,43 @@ components:
       description: An array of log entries for this transaction
       items:
         $ref: "#/components/schemas/TransactionLogRow"
+    InvocationLog:
+      type: object
+      description: Invocation-level log entry containing compressed pino logs for a single call.
+      properties:
+        callId:
+          type: string
+          description: Unique ID of the call this invocation log is associated with
+          example: 648aa45d-204a-4c0c-a1e1-419406254134
+        agentId:
+          type: string
+          description: ID of the agent that handled this call
+          example: 648aa45d-204a-4c0c-a1e1-419406252234
+        instanceId:
+          type: string
+          description: ID of the listener/instance that handled this call
+          example: 5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777
+        organisationId:
+          type: string
+          description: Organisation ID that owns the agent/call
+        userId:
+          type: string
+          description: User ID that owns the agent/call
+        subsystem:
+          type: string
+          description: Subsystem that produced this log (currently always "livekit-agent")
+          enum:
+            - livekit-agent
+        log:
+          description: >
+            Decompressed invocation log payload for this call, reconstructed from the compressed JSONB
+            stored in the InvocationLog table. This typically contains an array of pino log entries
+            for the full lifetime of the agent run, with very large objects pruned to keep rows manageable.
+          anyOf:
+            - type: object
+            - type: array
+              items:
+                type: object
     TransactionLogRow:
       type: object
       properties:

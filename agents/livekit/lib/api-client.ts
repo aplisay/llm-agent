@@ -1,4 +1,4 @@
-import logger from '../agent-lib/logger.js';
+import logger from "./logger.js";
 
 // API-related type definitions
 export interface Instance {
@@ -197,6 +197,16 @@ export interface PhoneRegistrationInfo {
 }
 
 export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
+
+export interface InvocationLogPayload {
+  userId: string;
+  organisationId: string;
+  agentId: string;
+  instanceId: string;
+  callId: string;
+  subsystem?: string;
+  log: any;
+}
 
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
@@ -442,6 +452,14 @@ export async function createTransactionLog(transactionData: {
   return makeApiRequest('/api/agent-db/transaction-log', {
     method: 'POST',
     body: JSON.stringify(requestBody)
+  });
+}
+
+// Create a new invocation log record (compressed and stored server-side)
+export async function saveInvocationLog(payload: InvocationLogPayload): Promise<any> {
+  return makeApiRequest('/api/agent-db/invocation-log', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 

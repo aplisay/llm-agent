@@ -1,7 +1,7 @@
 import { RoomServiceClient, AccessToken, VideoGrant } from "livekit-server-sdk";
 import { Room, RoomEvent } from "@livekit/rtc-node";
 import { voice, llm } from "@livekit/agents";
-import logger from "../agent-lib/logger.js";
+import logger from "./logger.js";
 import {
   bridgeParticipant,
   transferParticipant,

@@ -1,9 +1,7 @@
-import { SipClient } from 'livekit-server-sdk';
-import { SIPTransport } from '@livekit/protocol';
-import * as loggerModule from '../agent-lib/logger.js';
-import { getPhoneNumbers } from './api-client.js';
-
-const logger = loggerModule.default;
+import { SipClient } from "livekit-server-sdk";
+import { SIPTransport } from "@livekit/protocol";
+import logger from "./logger.js";
+import { getPhoneNumbers } from "./api-client.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 

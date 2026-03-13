@@ -974,10 +974,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         const joinUrl = new URL(callResponse.joinUrl);
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
-        this.#logger.debug(
-          "Connecting to Ultravox WebSocket at",
-          joinUrl.toString()
-        );
+        this.#logger.debug({ joinUrl, callResponse }, "Connecting to Ultravox WebSocket");
         this.#ws = new WebSocket(joinUrl.toString());
 
         this.#ws.onerror = (error) => {

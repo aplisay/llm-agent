@@ -1,12 +1,10 @@
-import dotenv from 'dotenv';
-import { SipClient } from 'livekit-server-sdk';
-import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
-import * as loggerModule from '../agent-lib/logger.js';
-import { getPhoneNumbers } from './api-client.js';
+import dotenv from "dotenv";
+import { SipClient } from "livekit-server-sdk";
+import { SIPHeaderOptions, SIPTransport } from "@livekit/protocol";
+import logger from "./logger.js";
+import { getPhoneNumbers } from "./api-client.js";
 
 dotenv.config();
-
-const logger = loggerModule.default;
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
   LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
