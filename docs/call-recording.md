@@ -89,6 +89,17 @@ If you omit `options.recording.key`:
 
 ---
 
+## Listing calls and checking for recordings
+
+When listing calls (e.g. `GET /agents/{agentId}/calls` with optional `startDate` and `endDate`), each call object in the response includes a **`recordingId`** field:
+
+- **`recordingId` present (non-null):** a recording exists for this call. You can call `GET /calls/{callId}/recording` to stream or download it.
+- **`recordingId` null or absent:** no recording is available for this call; `GET /calls/{callId}/recording` will return 404.
+
+This lets UIs show a “play recording” control only for calls that have recordings, and avoid requesting the recording blob until the user chooses to play (e.g. on-demand fetch when the user clicks play).
+
+---
+
 ## Retrieving a recording
 
 ### Endpoint
@@ -213,12 +224,13 @@ Use this endpoint when you want to permanently remove the stored recording for a
 
 ## Summary of key points for API users
 
+- **To see which calls have recordings**: use `GET /agents/{agentId}/calls` (with optional date range). Each call in the response has a `recordingId` field; when non-null, a recording is available and you can fetch it on demand.
 - **To enable recording**: set `options.recording.enabled = true` on the agent and/or listener instance.
 - **To control encryption**:
   - Provide `options.recording.key` if you want to manage decryption yourself.
   - Omit `key` to let the server generate and manage per‑call keys and stream raw audio back to you.
 - **To fetch recordings**:
-  - Always use `GET /calls/{callId}/recording`.
+  - Use `GET /calls/{callId}/recording` only when the call has a `recordingId` (from the list response). You can defer this request until the user requests playback.
   - If you did **not** provide a key, you get a raw audio stream (encryption is handled for you).
   - If you **did** provide a key, you receive a stream of encrypted bytes and must decrypt it yourself using the same key.
 - **To delete recordings**:

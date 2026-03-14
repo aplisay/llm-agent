@@ -41,7 +41,7 @@ else if (process.env.NODE_ENV === 'staging') {
   apiDoc.servers.unshift({ url: `https://llm-agent-staging.aplisay.com/api` });
 }
 
-server.use(express.json());
+server.use(express.json({ limit: '5mb' }));
 
 server.use(cors({
   origin: [

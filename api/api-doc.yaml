@@ -714,6 +714,23 @@ components:
           type: string
           description: The time this call ended
           example: 2025-06-04T12:01:00.000Z
+        callerId:
+          type: string
+          nullable: true
+          description: Caller number or identifier (as received)
+          example: "+443300889471"
+        calledId:
+          type: string
+          nullable: true
+          description: Called number or identifier for this call
+          example: "+442080996945"
+        recordingId:
+          type: string
+          nullable: true
+          description: |-
+            When present, a recording is available for this call. Use `GET /calls/{callId}/recording`
+            to stream or download it. Omit or null when the call has no recording.
+          example: "development-recordings/648aa45d-204a-4c0c-a1e1-419406254134.enc"
     CallId:
       type: string
       description: The Call ID the event relates to

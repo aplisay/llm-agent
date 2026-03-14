@@ -49,6 +49,7 @@ recording?: {
 - **Database:** Call model has:
   - `recordingId` (STRING, nullable): GCP object path.
   - `encryptionKey` (STRING, nullable): random per-call encryption key **only when the client did not supply a key**. When the client does supply a key in `recording.key`, this column remains null and the server never stores that key.
+- **Call list:** The public call list `GET /agents/{agentId}/calls` includes `recordingId` in each call object so clients can show recording controls only for calls that have recordings and fetch the recording blob on demand (e.g. when the user clicks play). See [call-recording.md](call-recording.md#listing-calls-and-checking-for-recordings).
 
 ---
 

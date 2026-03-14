@@ -1584,18 +1584,15 @@ async function runAgentWorker({
   };
 
   const persistInvocationLogIfAvailable = async (reason: string) => {
-    logger.debug(
-      { reason, length: invocationLogs.length },
+    console.log(
       "persistInvocationLogIfAvailable: checking if invocation logs are available",
+      { reason, length: invocationLogs.length },
     );
     if (!invocationLogs.length) {
-      logger.warn(
-        { reason, length: invocationLogs.length },
+      console.log(
         "No invocation logs to persist",
+        { reason, length: invocationLogs.length },
       );
-      return;
-    }
-    if (invocationLogPersisted) {
       logger.warn(
         { reason, length: invocationLogs.length },
         "Invocation log already persisted",
@@ -1605,6 +1602,10 @@ async function runAgentWorker({
     invocationLogPersisted = true;
     const activeCall = getActiveCall();
     if (!activeCall) {
+      console.log(
+        "No active call found when attempting to persist invocation log",
+        { reason },
+      );
       logger.warn(
         { reason },
         "No active call found when attempting to persist invocation log",
@@ -1633,7 +1634,7 @@ async function runAgentWorker({
         return 0;
       };
       const sorted = [...invocationLogs].sort((a, b) => ts(a) - ts(b));
-      logger.debug(
+      console.log(
         { length: sorted.length },
         "persistInvocationLogIfAvailable: sorted invocation logs",
       );
@@ -1665,6 +1666,10 @@ async function runAgentWorker({
       );
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "Failed to persist InvocationLog; continuing cleanup",
+        { message: error.message, error, reason },
+      );
       logger.warn(
         { message: error.message, error, reason },
         "Failed to persist InvocationLog; continuing cleanup",
