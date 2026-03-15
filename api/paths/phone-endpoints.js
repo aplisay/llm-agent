@@ -64,7 +64,7 @@ const phoneEndpointList = (async (req, res) => {
     if (type === 'e164-ddi') {
       const rows = await PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt', 'instanceId', 'callId'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt', 'instanceId'],
         include: [
           {
             model: Instance,
@@ -86,10 +86,8 @@ const phoneEndpointList = (async (req, res) => {
         trunkId: r.aplisayId || null,
         createdAt: r.createdAt ? r.createdAt.toISOString() : null,
         inUse: !!r.instanceId,
-        hasLiveCall: !!r.callId,
         agentId: r.Instance?.Agent?.id ?? null,
-        agentName: r.Instance?.Agent?.name ?? null,
-        callId: r.callId ?? null
+        agentName: r.Instance?.Agent?.name ?? null
       }));
       const nextOffset = rows.length === size ? startOffset + size : null;
       return res.send({ items, nextOffset });
@@ -386,8 +384,7 @@ phoneEndpointList.apiDoc = {
                         outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false },
                         trunkId: { type: 'string', nullable: true, description: 'Trunk this number is assigned to' },
                         createdAt: { type: 'string', format: 'date-time', nullable: true, description: 'When the number was created' },
-                        inUse: { type: 'boolean', description: 'Whether the number is linked to an agent instance' },
-                        hasLiveCall: { type: 'boolean', description: 'Whether the number currently has an active call' }
+                        inUse: { type: 'boolean', description: 'Whether the number is linked to an agent instance' }
                       }
                     },
                     {
