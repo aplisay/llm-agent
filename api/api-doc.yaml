@@ -919,7 +919,7 @@ components:
                   pattern: '^\+?[1-9]\d{6,14}$'
                 trunkId:
                   type: string
-                  description: Trunk identifier for e164-ddi type
+                  description: Trunk identifier for e164-ddi type. The handler and outbound capabilities for the created number are inherited from this trunk; callers cannot request a handler that is incompatible with the trunk.
             - description: Phone registration endpoint
               type: object
               required:

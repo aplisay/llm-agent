@@ -21,8 +21,23 @@ Response body:
 ```json
 {
   "items": [
-    { "name": "Sales UK", "number": "+442080996945", "handler": "jambonz", "outbound": true },
-    { "name": "SIP Reg A", "id": "reg-123", "registrar": "provider.example.com:5060", "username": "user123", "status": "active", "state": "registered", "handler": "livekit", "outbound": false }
+    {
+      "name": "Sales UK",
+      "number": "+442080996945",
+      "handler": "jambonz",
+      "outbound": true,
+      "trunkId": "trunk-001"
+    },
+    {
+      "name": "SIP Reg A",
+      "id": "reg-123",
+      "registrar": "provider.example.com:5060",
+      "username": "user123",
+      "status": "active",
+      "state": "registered",
+      "handler": "livekit",
+      "outbound": false
+    }
   ],
   "nextOffset": 50
 }
@@ -37,11 +52,12 @@ Creates a new phone endpoint. Supports two types of endpoints:
 Creates a phone endpoint using an E.164 phone number with trunk configuration.
 
 Request body uses a base-and-union shape:
+
 - Always present:
   - `type` (string): `e164-ddi` | `phone-registration`
   - `name` (string, optional): free-form, user-defined descriptive name
-  - `handler` (string, optional, default `livekit`)
-  - `outbound` (boolean, optional, default `false`)
+  - `handler` (string, optional, default `livekit`) – **for DDI endpoints, the effective handler is inherited from the trunk; this field only has effect when the trunk does not specify a handler**
+  - `outbound` (boolean, optional, default `false`) – **for DDI endpoints, `outbound` can only be set to `true` if the selected trunk also has outbound enabled**
 - Plus one of:
   - For `e164-ddi`:
     - `number` (string): E.164 number (with or without '+')
@@ -53,6 +69,7 @@ Request body uses a base-and-union shape:
     - `options` (object, optional)
 
 **Request Body (e164-ddi):**
+
 ```json
 {
   "type": "e164-ddi",
@@ -64,10 +81,11 @@ Request body uses a base-and-union shape:
 ```
 
 **Parameters:**
+
 - `type` (string, required): Must be "e164-ddi"
 - `phoneNumber` (string, required): E.164 phone number (with or without +)
-- `trunkId` (string, required): Trunk identifier (must exist and be associated with your organisation)
-- `outbound` (boolean, required): Whether this endpoint supports outbound calls
+- `trunkId` (string, required): Trunk identifier (must exist and be associated with your organisation). The DDI’s handler and outbound capabilities are constrained by this trunk.
+- `outbound` (boolean, required): Whether this endpoint supports outbound calls. For DDI endpoints, this can only be `true` when the selected trunk also has outbound enabled.
 
 #### Phone Registration Endpoints
 
@@ -197,7 +215,7 @@ Success response always includes `success: true`, plus type-specific fields:
 
 ## Query Parameters (GET)
 
-- `originate` (boolean, optional): When set to `true`, filters the results to only return endpoints that can be used for outbound calling (where `outbound=true` and `aplisayId` is not null)
+- `originate` (boolean, optional): When set to `true`, filters the results to only return endpoints that can be used for outbound calling (where `outbound=true` and the number is assigned to a trunk)
 - `handler` (string, optional): Filter to only return endpoints using the specified handler ("livekit", "jambonz", "ultravox")
 
 ## Example Usage
@@ -277,13 +295,12 @@ curl -X DELETE "https://llm-agent.aplisay.com/api/phone-endpoints/+1234567890" \
 
 ## Database Schema
 
-Phone endpoints are stored in the `phone_numbers` table with the following structure:
+Phone endpoints are stored in the `phone_numbers` table with at least the following structure:
 
 - `number` (primary key): The phone number string
 - `handler`: The handler type ("livekit" or "jambonz")
 - `reservation`: Boolean flag for reservation status
 - `outbound`: Boolean flag for outbound capability
-- `aplisayId`: Optional Aplisay identifier
 - `organisationId`: Foreign key to the organisation (automatically filtered by requestor's organisation)
 - `createdAt`: Timestamp of creation
 - `updatedAt`: Timestamp of last update
