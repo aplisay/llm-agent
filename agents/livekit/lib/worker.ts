@@ -820,6 +820,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                   // Fallback to old behavior
                   instance = await getInstanceByNumber(calledId);
                 }
+                aplisayId = numInfo.aplisayId || aplisayId;
               } else {
                 // Fallback: try direct instance lookup by number
                 instance = await getInstanceByNumber(calledId);
