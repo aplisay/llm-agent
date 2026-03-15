@@ -64,7 +64,10 @@ const getPhoneEndpoint = async (req, res) => {
     return res.send({
       number: record.number,
       handler: record.handler,
-      outbound: !!record.outbound
+      outbound: !!record.outbound,
+      // Expose the associated trunk using the public trunkId field,
+      // while keeping aplisayId as an internal implementation detail.
+      trunkId: record.aplisayId || null
     });
   }
   catch (err) {
@@ -101,7 +104,8 @@ getPhoneEndpoint.apiDoc = {
                   name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                   number: { type: 'string', description: 'The phone number' },
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-                  outbound: { type: 'boolean', description: 'Supports outbound' }
+                  outbound: { type: 'boolean', description: 'Supports outbound' },
+                  trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' }
                 }
               },
               {

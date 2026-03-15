@@ -23,7 +23,7 @@ const listTrunks = async (req, res) => {
         where: { id: organisationId },
         required: true
       }],
-      attributes: ['id', 'name', 'outbound', 'flags'],
+      attributes: ['id', 'name', 'handler', 'outbound', 'flags'],
       limit: size,
       offset: startOffset
     });
@@ -74,6 +74,7 @@ listTrunks.apiDoc = {
                   properties: {
                     id: { type: 'string', description: 'Unique identifier for the trunk' },
                     name: { type: 'string', nullable: true, description: 'Free-form human name that identifies the trunk\'s purpose' },
+                    handler: { type: 'string', nullable: true, description: 'Telephony handler for this trunk (e.g. livekit, jambonz)' },
                     outbound: { type: 'boolean', description: 'Whether this trunk can be used for outbound calls' },
                     flags: { type: 'object', nullable: true, description: 'JSON object containing trunk flags (e.g., canRefer)' }
                   }

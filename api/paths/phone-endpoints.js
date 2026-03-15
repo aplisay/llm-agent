@@ -1,4 +1,4 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Op } from '../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
 import { getTelephonyHandler } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
 
@@ -19,7 +19,8 @@ export default function (logger, voices, wsServer) {
 
 const phoneEndpointList = (async (req, res) => {
   let { organisationId } = res.locals.user;
-  let { originate, handler, type, offset, pageSize } = req.query;
+  let { originate, handler, type, offset, pageSize, search, trunkId: rawTrunkId } = req.query;
+  const trunkIds = [].concat(rawTrunkId ?? []).map((id) => String(id).trim()).filter(Boolean);
 
   try {
     const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
@@ -41,6 +42,13 @@ const phoneEndpointList = (async (req, res) => {
     if (telephonyHandler) {
       numberWhere.handler = telephonyHandler;
     }
+    if (search && String(search).trim()) {
+      const digits = String(search).trim().replace(/^\+/, '');
+      numberWhere.number = { [Op.iLike]: `%${digits}%` };
+    }
+    if (trunkIds.length > 0) {
+      numberWhere.aplisayId = trunkIds.length === 1 ? trunkIds[0] : { [Op.in]: trunkIds };
+    }
 
     const regWhere = {
       organisationId
@@ -56,12 +64,35 @@ const phoneEndpointList = (async (req, res) => {
     if (type === 'e164-ddi') {
       const rows = await PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt', 'instanceId', 'callId'],
+        include: [
+          {
+            model: Instance,
+            required: false,
+            attributes: ['id'],
+            include: [
+              { model: Agent, required: false, attributes: ['id', 'name'] }
+            ]
+          }
+        ],
         limit: size,
         offset: startOffset
       });
+
+      const items = rows.map(r => ({
+        number: r.number,
+        handler: r.handler,
+        outbound: !!r.outbound,
+        trunkId: r.aplisayId || null,
+        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+        inUse: !!r.instanceId,
+        hasLiveCall: !!r.callId,
+        agentId: r.Instance?.Agent?.id ?? null,
+        agentName: r.Instance?.Agent?.name ?? null,
+        callId: r.callId ?? null
+      }));
       const nextOffset = rows.length === size ? startOffset + size : null;
-      return res.send({ items: rows, nextOffset });
+      return res.send({ items, nextOffset });
     }
     if (type === 'phone-registration') {
       const rows = await PhoneRegistration.findAll({
@@ -87,7 +118,7 @@ const phoneEndpointList = (async (req, res) => {
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'createdAt'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt'],
         limit: size,
         offset: startOffset
       }),
@@ -103,6 +134,7 @@ const phoneEndpointList = (async (req, res) => {
       number: n.number,
       handler: n.handler,
       outbound: !!n.outbound,
+      trunkId: n.aplisayId || null,
       _createdAt: n.createdAt
     }));
     const mappedRegs = regRows.map(r => ({
@@ -178,16 +210,29 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // Determine outbound behaviour: cannot exceed trunk's outbound capability
+      const requestedOutbound = data.outbound ?? false;
+      if (requestedOutbound && !trunk.outbound) {
+        return res.status(400).send({
+          error: 'Outbound calling is not enabled on the selected trunk'
+        });
+      }
+
       const phoneNumber = await PhoneNumber.create({
         number: normalizedNumber,
-        handler: data.handler ?? 'livekit',
-        outbound: data.outbound ?? false,
+        // Handler is always derived from the trunk (or defaulted) and cannot be chosen by the caller for DDI endpoints
+        handler: trunk.handler || 'livekit',
+        outbound: requestedOutbound,
         organisationId: organisationId,
-        // Store additional data in a JSON field if needed
-        trunkId: data.trunkId
+        // Internally store the trunk association using the aplisayId foreign key
+        aplisayId: data.trunkId
       });
 
-      return res.status(201).send({ success: true, number: phoneNumber.number });
+      return res.status(201).send({
+        success: true,
+        number: phoneNumber.number,
+        trunkId: data.trunkId
+      });
     }
 
     if (type === 'phone-registration') {
@@ -252,7 +297,7 @@ phoneEndpointList.apiDoc = {
   tags: ["Phone Endpoints"],
   parameters: [
     {
-      description: "Filter to only return endpoints that can be used for outbound calling (outbound=true and aplisayId is not null)",
+      description: "Filter to only return endpoints that can be used for outbound calling (outbound=true and assigned to a trunk)",
       in: 'query',
       name: 'originate',
       required: false,
@@ -279,6 +324,20 @@ phoneEndpointList.apiDoc = {
         type: 'string',
         enum: ['e164-ddi', 'phone-registration']
       }
+    },
+    {
+      description: "Filter E.164 DDI numbers by partial number match (digits only from search string)",
+      in: 'query',
+      name: 'search',
+      required: false,
+      schema: { type: 'string' }
+    },
+    {
+      description: "Filter E.164 DDI numbers to those assigned to these trunk ID(s). May be repeated for multiple trunks.",
+      in: 'query',
+      name: 'trunkId',
+      required: false,
+      schema: { type: 'array', items: { type: 'string' } }
     },
     {
       description: "Offset (0-based)",
@@ -324,7 +383,11 @@ phoneEndpointList.apiDoc = {
                         name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                         number: { type: 'string', description: 'The phone number' },
                         handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },
-                        outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false }
+                        outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false },
+                        trunkId: { type: 'string', nullable: true, description: 'Trunk this number is assigned to' },
+                        createdAt: { type: 'string', format: 'date-time', nullable: true, description: 'When the number was created' },
+                        inUse: { type: 'boolean', description: 'Whether the number is linked to an agent instance' },
+                        hasLiveCall: { type: 'boolean', description: 'Whether the number currently has an active call' }
                       }
                     },
                     {
