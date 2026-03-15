@@ -18,6 +18,8 @@ export default function (logger, voices, wsServer) {
 const phoneEndpointsList = (async (req, res) => {
   let { handler, number, id, type, offset, pageSize, trunkId } = req.query;
 
+  const trunkCandidates = trunkId ? trunkId.split(';') : [];
+
   try {
     // Infer type from id or number if type is not specified
     if (!type) {
@@ -56,8 +58,9 @@ const phoneEndpointsList = (async (req, res) => {
           return res.send({ items: [], nextOffset: null });
         }
 
+
         // Validate trunkId if provided (for inbound call validation)
-        if (trunkId && phoneNumber.aplisayId !== null && phoneNumber.aplisayId !== trunkId) {
+        if (trunkId && phoneNumber.aplisayId !== null && !trunkCandidates.includes(phoneNumber.aplisayId)) {
           return res.status(400).send({
             error: `Trunk mismatch: call arrived on trunk ${trunkId} but number is assigned to trunk ${phoneNumber.aplisayId || 'none'}`
           });

@@ -29,7 +29,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt'],
+        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId'],
         where,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),
@@ -45,7 +45,8 @@ export default function (logger) {
   });
 
   callsList.apiDoc = {
-    summary: 'Returns list of calls in progress to this agent',
+    summary: 'Returns list of calls for this agent',
+    description: 'Returns a paginated list of calls for the agent, optionally filtered by date range. Each call object includes `recordingId` when a recording is available; use `GET /calls/{callId}/recording` to stream the recording. When `recordingId` is null or absent, the call has no recording.',
     operationId: 'callsList',
     tags: ["Calls"],
     responses: {
@@ -69,8 +70,8 @@ export default function (logger) {
               },
               example: {
                 calls: [
-                  { id: "648aa45d-204a-4c0c-a1e1-419406254134", from: "+443300889471", to: "+442080996945" },
-                  { id: "632555d87-948e-48f2-a53d-fc5f261daa7", from: "+443300889470", to: "+442080996945" },
+                  { id: "648aa45d-204a-4c0c-a1e1-419406254134", callerId: "+443300889471", calledId: "+442080996945", startedAt: "2025-06-04T12:00:00.000Z", endedAt: "2025-06-04T12:01:00.000Z", recordingId: "development-recordings/648aa45d.enc" },
+                  { id: "632555d87-948e-48f2-a53d-fc5f261daa7", callerId: "+443300889470", calledId: "+442080996945", startedAt: "2025-06-04T12:05:00.000Z", endedAt: null, recordingId: null },
                 ],
                 next: 3
               }

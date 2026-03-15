@@ -126,7 +126,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { prompt, options, functions, keys, modelName } = req.body;
+  let { name, description, prompt, options, functions, keys, modelName } = req.body;
   let { agentId } = req.params;
 
   try {
@@ -134,7 +134,7 @@ const agentUpdate = async (req, res) => {
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    await agent.update({ prompt, options, functions, keys, modelName });
+    await agent.update({ name, description, prompt, options, functions, keys, modelName });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -165,6 +165,14 @@ agentUpdate.apiDoc = {
         schema: {
           type: "object",
           properties: {
+            name: {
+              description: 'Display name for the agent',
+              type: 'string',
+            },
+            description: {
+              description: 'Description of the agent',
+              type: 'string',
+            },
             modelName: {
               $ref: '#/components/schemas/ModelName',
             },
@@ -200,6 +208,17 @@ agentUpdate.apiDoc = {
                 type: "string",
                 format: "uuid",
                 example: "32555d87-948e-48f2-a53d-fc5f261daa79"
+              },
+              name: {
+                description: 'Display name for the agent',
+                type: 'string',
+              },
+              description: {
+                description: 'Description of the agent',
+                type: 'string',
+              },
+              modelName: {
+                $ref: '#/components/schemas/ModelName'
               },
               options: {
                 $ref: '#/components/schemas/AgentOptions'

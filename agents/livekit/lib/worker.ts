@@ -1,10 +1,14 @@
 // External dependencies
 import dotenv from "dotenv";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { RoomServiceClient } from "livekit-server-sdk";
 import {
   type JobContext,
   defineAgent,
   getJobContext,
+  telemetry,
   voice,
   llm
 } from "@livekit/agents";
@@ -16,7 +20,7 @@ import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 
 // Internal modules
-import logger from "../agent-lib/logger.js";
+import logger, { setInvocationLogBuffer, getCaptureStats } from "./logger.js";
 import * as functionHandlerModule from "../agent-lib/function-handler.js";
 import { bridgeParticipant } from "./telephony.js";
 import {
@@ -38,6 +42,8 @@ import {
   type TrunkInfo,
   endCallById,
   getAgentById,
+  setCallRecordingData,
+  saveInvocationLog,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -59,9 +65,19 @@ import type {
   MessageData,
   FunctionResult,
 } from "./types.js";
+import { uploadRecorderIOToGcs } from "./call-recording.js";
 
 dotenv.config();
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
+
+const DISCONNECT_REASONS = {
+  BRIDGED_PARTICIPANT: "Bridged participant disconnected",
+  ORIGINAL_PARTICIPANT: "Original participant disconnected",
+  SESSION_TIMEOUT: "Session timeout",
+  SESSION_CLOSED: "Session closed",
+  AGENT_INITIATED_HANGUP: "Agent initiated hangup",
+  UNCAUGHT_ERROR_RUNNING_AGENT: "UNCAUGHT ERROR: running agent worker",
+} as const;
 
 const realtimeModels = {
   openai,
@@ -79,6 +95,37 @@ const roomService = new RoomServiceClient(
 
 logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
+const invocationLogs: unknown[] = [];
+setInvocationLogBuffer(invocationLogs);
+function pinoLogExporter(): void {
+  const Exporter = (telemetry as { PinoCloudExporter?: { prototype: { flush: () => Promise<void> } } })
+    .PinoCloudExporter;
+  logger.debug({ invocationLogs }, "pinoLogExporter: initializing invocation logs buffer");
+  if (!Exporter?.prototype?.flush) return;
+  logger.debug({ Exporter }, "pinoLogExporter: initialized pino cloud exporter flush function");
+  Exporter.prototype.flush = async function (this: { flush: () => Promise<void> }) {
+    const self = this as unknown as {
+      flushTimer: NodeJS.Timeout | null;
+      pendingLogs: unknown[];
+      sendLogs: (r: unknown[]) => Promise<void>;
+    };
+    if (self.flushTimer) {
+      clearTimeout(self.flushTimer);
+      self.flushTimer = null;
+    }
+    if (self.pendingLogs.length === 0) return;
+    const logs = self.pendingLogs;
+    self.pendingLogs = [];
+    try {
+      invocationLogs.push(...logs);
+    } catch (e) {
+      logger.warn({ error: e }, "failed to buffer invocation logs from pino exporter");
+    }
+    logger.debug({ length: invocationLogs.length }, "pinoLogExporter: flushing combined invocation logs");
+  };
+}
+pinoLogExporter();
+
 /**
  * Entry point for the Livekit agent, provides a function that takes a context object and starts the agent
  *
@@ -92,6 +139,37 @@ export default defineAgent({
     const job = ctx.job;
     const room = job.room as unknown as Room;
     logger.info({ ctx, job, room }, "new call");
+
+    // Simulate standard Agents job environment so RecorderIO can write audio.ogg.
+    // The SDK reads sessionDirectory from getJobContext().sessionDirectory (getter backed by _sessionDirectory).
+    // Ensure that directory exists on disk and the SDK sees it so RecorderIO.start() runs and can write.
+    const jobCtx = getJobContext() as JobContext & { sessionDirectory?: string; _sessionDirectory?: string };
+    let sessionDir: string | undefined = jobCtx.sessionDirectory ?? (jobCtx as { _sessionDirectory?: string })._sessionDirectory;
+    if (!sessionDir) {
+      try {
+        const baseTmp = process.env.TMPDIR || os.tmpdir();
+        sessionDir = await fs.mkdtemp(path.join(baseTmp, "livekit-job-"));
+        (jobCtx as { _sessionDirectory?: string })._sessionDirectory = sessionDir;
+        logger.info({ sessionDirectory: sessionDir }, "created fallback session directory for RecorderIO");
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        logger.warn(
+          { error, message: error.message },
+          "failed to create fallback session directory; RecorderIO recordings may not be persisted",
+        );
+      }
+    }
+    if (sessionDir) {
+      try {
+        await fs.mkdir(sessionDir, { recursive: true });
+      } catch (e) {
+        logger.warn({ sessionDirectory: sessionDir, error: e }, "failed to ensure session directory exists on disk");
+      }
+      logger.info(
+        { sessionDirectory: sessionDir },
+        "[RecorderIO debug] sessionDirectory set for SDK; RecorderIO only runs if @livekit/agents@1.0.25+ (check node_modules/@livekit/agents/package.json)",
+      );
+    }
 
     // Local mutable state used across helpers
     let session: voice.AgentSession | null = null;
@@ -299,6 +377,9 @@ export default defineAgent({
       fallbackLoop: while (true) {
         const fallbackConfig = activeAgent.options?.fallback;
 
+        const activeRecordingOptions =
+          instance.recording ?? activeAgent.options?.recording;
+
         try {
           await runAgentWorker({
             ctx,
@@ -322,6 +403,7 @@ export default defineAgent({
             getActiveCall,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
+            recordingOptions: activeRecordingOptions,
           });
           // Successful run – break out of fallback loop
           break fallbackLoop;
@@ -505,6 +587,8 @@ export default defineAgent({
       } catch (e) {
         logger.error({ e }, "error deleting room");
       }
+      // Best-effort shutdown; invocation logs are only persisted when the agent
+      // session has started and the shutdown callback has been registered.
       try {
         await ctx.shutdown((e as Error).message);
       } catch (e) {
@@ -736,6 +820,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                   // Fallback to old behavior
                   instance = await getInstanceByNumber(calledId);
                 }
+                aplisayId = numInfo.aplisayId || aplisayId;
               } else {
                 // Fallback: try direct instance lookup by number
                 instance = await getInstanceByNumber(calledId);
@@ -1247,6 +1332,7 @@ async function runAgentWorker({
   getActiveCall,
   endTransferActivityIfNeeded,
   getTransferState,
+  recordingOptions,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -1256,6 +1342,9 @@ async function runAgentWorker({
     description: string;
   };
 }) {
+  /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
+  let useRecorderIO = false;
+
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
     logger.info(
@@ -1283,36 +1372,38 @@ async function runAgentWorker({
       ) {
         logger.info("bridged participant disconnected, shutting down (transfer-only mode)");
         try {
-          await endTransferActivityIfNeeded("Bridged participant disconnected");
+          await endTransferActivityIfNeeded(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
         } catch (transferError) {
           logger.error(
             { transferError },
             "error ending transfer activity during bridged participant disconnect"
           );
         }
-        await call.end("Bridged participant disconnected");
+        await call.end(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
         await roomService.deleteRoom(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
-        await ctx.shutdown("Bridged participant disconnected");
+        invocationLogReason = DISCONNECT_REASONS.BRIDGED_PARTICIPANT;
+        await ctx.shutdown(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
         process.exit(0);
       } 
       // Check if this is the original participant (caller)
       else if (p.info?.sid === participant?.sid || p.info?.identity === participant?.identity) {
         logger.info("original participant disconnected, shutting down (transfer-only mode)");
         try {
-          await endTransferActivityIfNeeded("Original participant disconnected");
+          await endTransferActivityIfNeeded(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT);
         } catch (transferError) {
           logger.error(
             { transferError },
             "error ending transfer activity during original participant disconnect"
           );
         }
-        await call.end("Original participant disconnected");
+        await call.end(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT);
         await roomService.deleteRoom(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
-        await ctx.shutdown("Original participant disconnected");
+        invocationLogReason = DISCONNECT_REASONS.ORIGINAL_PARTICIPANT;
+        await ctx.shutdown(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT);
         process.exit(0);
       } else {
         logger.debug(
@@ -1402,15 +1493,224 @@ async function runAgentWorker({
     "got realtime"
   );
 
+  // Marker log to verify worker logger capture is included in InvocationLog
+  logger.info(
+    { tag: "invocation-log-test", callId: call.id },
+    "worker app log test",
+  );
+
   let session: voice.AgentSession | null = null;
   let maxDuration: number = 305000; // Default value
   let callStarted = false;
+  // Guard to ensure RecorderIO finalization/upload runs only once per job
+  let recorderFinalized = false;
 
   // DTMF buffering: accumulate digits and send as a single input after timeout
   let dtmfBuffer: string = "";
   let dtmfTimeout: NodeJS.Timeout | null = null;
   const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
   const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
+
+  let invocationLogPersisted = false;
+  let invocationLogReason: string | null = null;
+
+  const finalizeRecorderRecording = async () => {
+    if (!useRecorderIO || !session || recorderFinalized) {
+      return;
+    }
+    recorderFinalized = true;
+
+    const activeCall = getActiveCall();
+    const recorderIO = (session as { _recorderIO?: { close(): Promise<void> } })._recorderIO;
+    if (recorderIO) {
+      try {
+        logger.debug(
+          { callId: activeCall.id },
+          "RecorderIO: flushing recorder (close) in shutdown callback before upload",
+        );
+        await recorderIO.close();
+        logger.debug(
+          { callId: activeCall.id },
+          "RecorderIO: flush complete in shutdown callback, OGG file ready",
+        );
+      } catch (e) {
+        logger.warn(
+          { e, callId: activeCall.id },
+          "RecorderIO: error flushing recorder in shutdown callback, continuing to upload",
+        );
+      }
+    } else {
+      logger.debug(
+        { callId: activeCall.id },
+        "RecorderIO: no _recorderIO instance found on session in shutdown callback",
+      );
+    }
+
+    const sessionDir = (ctx as { sessionDirectory?: string }).sessionDirectory;
+    if (!sessionDir) {
+      logger.warn(
+        { callId: activeCall.id },
+        "RecorderIO used but no session directory in shutdown callback; recording not persisted",
+      );
+      return;
+    }
+
+    try {
+      const { gcsObject, serverGeneratedKey } = await uploadRecorderIOToGcs(
+        sessionDir,
+        activeCall.id,
+        {
+          clientEncryptionKey: recordingOptions?.key,
+        },
+      );
+      await setCallRecordingData(activeCall.id, gcsObject, serverGeneratedKey);
+      logger.info(
+        {
+          callId: activeCall.id,
+          gcsObject,
+          hasServerKey: Boolean(serverGeneratedKey),
+        },
+        "uploaded RecorderIO recording to GCS from shutdown callback",
+      );
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.warn(
+        {
+          callId: activeCall.id,
+          message: error.message,
+        },
+        "RecorderIO OGG not found or upload failed in shutdown callback",
+      );
+    }
+  };
+
+  const persistInvocationLogIfAvailable = async (reason: string) => {
+    console.log(
+      "persistInvocationLogIfAvailable: checking if invocation logs are available",
+      { reason, length: invocationLogs.length },
+    );
+    if (!invocationLogs.length) {
+      console.log(
+        "No invocation logs to persist",
+        { reason, length: invocationLogs.length },
+      );
+      logger.warn(
+        { reason, length: invocationLogs.length },
+        "Invocation log already persisted",
+      );
+      return;
+    }
+    invocationLogPersisted = true;
+    const activeCall = getActiveCall();
+    if (!activeCall) {
+      console.log(
+        "No active call found when attempting to persist invocation log",
+        { reason },
+      );
+      logger.warn(
+        { reason },
+        "No active call found when attempting to persist invocation log",
+      );
+      return;
+    }
+
+    try {
+      // Debug snapshot of what we've actually captured before sorting/persisting
+      const captureStats = getCaptureStats();
+      logger.info(
+        {
+          reason,
+          invocationLogsLength: invocationLogs.length,
+          captureStats,
+          invocationLogHeadSample: invocationLogs.slice(0, 3),
+          invocationLogTailSample: invocationLogs.slice(-3),
+        },
+        "persistInvocationLogIfAvailable: debug snapshot before sort",
+      );
+
+      const ts = (e: unknown) => {
+        const t = (e as { time?: number | string })?.time;
+        if (typeof t === "number") return t;
+        if (typeof t === "string") return new Date(t).getTime();
+        return 0;
+      };
+      const sorted = [...invocationLogs].sort((a, b) => ts(a) - ts(b));
+      console.log(
+        { length: sorted.length },
+        "persistInvocationLogIfAvailable: sorted invocation logs",
+      );
+       await saveInvocationLog({
+        userId: activeCall.userId,
+        organisationId: activeCall.organisationId,
+        agentId: activeCall.agentId,
+        instanceId: activeCall.instanceId,
+        callId: activeCall.id,
+        subsystem: "livekit-agent",
+        log: {
+          reason,
+          logs: sorted,
+        },
+       });
+      console.log(
+        "InvocationLog persisted for call",
+        {
+          callId: activeCall.id,
+          entryCount: sorted.length,
+        },
+      );
+      logger.info(
+        {
+          callId: activeCall.id,
+          entryCount: invocationLogs.length,
+        },
+        "InvocationLog persisted for call",
+      );
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "Failed to persist InvocationLog; continuing cleanup",
+        { message: error.message, error, reason },
+      );
+      logger.warn(
+        { message: error.message, error, reason },
+        "Failed to persist InvocationLog; continuing cleanup",
+      );
+    }
+  };
+
+  try {
+    ctx.addShutdownCallback(async () => {
+      const reason = invocationLogReason || "shutdown";
+      const captureStats = getCaptureStats();
+      console.log(
+        "shutdown callback: starting finalization and InvocationLog persistence",
+        {
+          reason,
+          captureStats,
+          invocationLogsLength: invocationLogs.length,
+          invocationLogHeadSample: invocationLogs.slice(0, 3),
+          invocationLogTailSample: invocationLogs.slice(-3),
+        },
+      );
+
+      await finalizeRecorderRecording();
+      console.log(
+        "shutdown callback: recorder finalized, persisting InvocationLog",
+        { reason },
+      );
+
+      await persistInvocationLogIfAvailable(reason);
+      console.log(
+        "shutdown callback: InvocationLog persistence complete",
+        { reason },
+      );
+    });
+  } catch (e) {
+    console.log(
+      "shutdown callback: failed to register; RecorderIO upload or InvocationLog persistence may be skipped",
+      { error: e },
+    );
+  }
 
   const cleanupAndClose = async (
     reason: string,
@@ -1462,10 +1762,19 @@ async function runAgentWorker({
         }
         dtmfBuffer = "";
       }
+
       try {
-        // dont wait for this to complete, it may block logging the call end
-        //  if the LLM interface has outstanding actions let it happen in the background
-        session && session.close();
+        if (session) {
+          await Promise.resolve(session.close()).catch((e: unknown) => {
+            const err = e instanceof Error ? e : new Error(String(e));
+            const code = (e as { code?: string })?.code;
+            if (code === "ERR_INVALID_STATE" || /already closed|invalid state/i.test(String(err.message))) {
+              logger.debug({ code, message: err.message }, "session already closed, skipping close");
+            } else {
+              logger.info({ error: err }, "error closing session (may have already been called)");
+            }
+          });
+        }
       } catch (e) {
         logger.info(
           { e },
@@ -1473,11 +1782,9 @@ async function runAgentWorker({
         );
       }
 
-      await getActiveCall()
-        .end(reason)
-        .catch((e) => {
-          logger.error({ e }, "error ending call");
-        });
+      await getActiveCall().end(reason).catch((e) => {
+        logger.error({ e }, "error ending call");
+      });
       exitStatus.callEnded = true;
 
       await roomService.deleteRoom(room.name).catch((e) => {
@@ -1485,6 +1792,7 @@ async function runAgentWorker({
       });
       exitStatus.roomDeleted = true;
 
+      invocationLogReason = reason;
       await ctx.shutdown(reason);
       exitStatus.contextShutdown = true;
       logger.info({ exitStatus, reason }, "cleanup and close completed");
@@ -1587,7 +1895,7 @@ async function runAgentWorker({
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
               logger.debug({ room }, "room close inititiated");
-              getActiveCall().end("agent initiated hangup");
+            getActiveCall().end(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
               roomService.deleteRoom(room.name);
             }
           }
@@ -1600,7 +1908,7 @@ async function runAgentWorker({
             if (ev.newState === "listening" && checkForHangup() && room.name) {
               logger.debug({ room }, "room close inititiated");
               // End transfer activity if in progress (fire and forget)
-              endTransferActivityIfNeeded("Agent initiated hangup").catch(
+            endTransferActivityIfNeeded(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP).catch(
                 (transferError) => {
                   logger.error(
                     { transferError },
@@ -1608,7 +1916,7 @@ async function runAgentWorker({
                   );
                 }
               );
-              getActiveCall().end("agent initiated hangup");
+            getActiveCall().end(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
               roomService.deleteRoom(room.name);
             }
           }
@@ -1695,7 +2003,7 @@ async function runAgentWorker({
             logger.info({ ev }, "session closed");
             // End transfer activity if in progress
             try {
-              await endTransferActivityIfNeeded("Session closed");
+              await endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_CLOSED);
             } catch (transferError) {
               logger.error(
                 { transferError },
@@ -1703,15 +2011,35 @@ async function runAgentWorker({
               );
             }
             roomService.deleteRoom(room.name);
-            getActiveCall().end("session closed");
+            getActiveCall().end(DISCONNECT_REASONS.SESSION_CLOSED);
           }
         );
 
+        // Recording: enable RecorderIO (SDK pipeline tee → audio.ogg) when session directory is set.
+        if (!transferOnly && recordingOptions && recordingOptions.enabled) {
+          useRecorderIO = true;
+          logger.info(
+            { callId: call.id },
+            "recording enabled via RecorderIO",
+          );
+
+          // Defer RecorderIO finalization & upload to a shutdown callback so we only
+          // persist the recording after the entire AgentSession / Ultravox pipeline
+          // has finished and the job is shutting down.
+        }
+
         operation = "sessionStart";
+        logger.debug(
+          { record: recordingOptions?.enabled ?? false },
+          "sessionStart with recording? enabled",
+        );
         await Promise.race([
           session.start({
             room: ctx.room,
             agent: model,
+            record: recordingOptions?.enabled ?? false,
+            // Let our disconnect / shutdown handler run cleanup (RecorderIO upload) before session closes
+            inputOptions: { closeOnDisconnect: false },
           }),
           startupErrorPromise,
         ]);
@@ -1830,7 +2158,7 @@ async function runAgentWorker({
             // End transfer activity if in progress
             try {
               await endTransferActivityIfNeeded(
-                "Bridged participant disconnected"
+                DISCONNECT_REASONS.BRIDGED_PARTICIPANT
               );
             } catch (transferError) {
               logger.error(
@@ -1838,15 +2166,17 @@ async function runAgentWorker({
                 "error ending transfer activity during bridged participant disconnect"
               );
             }
-            await cleanupAndClose("bridged participant disconnected");
+            await cleanupAndClose(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
             setBridgedParticipant(null as unknown as SipParticipant);
           }
         } else if (p.info?.sid === participant?.sid) {
-          logger.debug("participant disconnected, shutting down");
+          logger.debug(
+            "participant disconnected, initiating graceful shutdown"
+          );
           // End transfer activity if in progress
           try {
             await endTransferActivityIfNeeded(
-              "Original participant disconnected"
+              DISCONNECT_REASONS.ORIGINAL_PARTICIPANT
             );
           } catch (transferError) {
             logger.error(
@@ -1854,7 +2184,22 @@ async function runAgentWorker({
               "error ending transfer activity during original participant disconnect"
             );
           }
-          await cleanupAndClose("original participant disconnected", true);
+
+          // Let the AgentSession finish and close; when the job shuts down,
+          // our shutdown callback will finalize and upload the RecorderIO file.
+          if (session) {
+            try {
+              await session.close();
+            } catch (e) {
+              logger.warn(
+                { e },
+                "error closing session after participant disconnect, falling back to hard cleanup"
+              );
+              await cleanupAndClose(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT, true);
+            }
+          } else {
+            await cleanupAndClose(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT, true);
+          }
         }
       }
     );
@@ -1879,14 +2224,14 @@ async function runAgentWorker({
         try {
           // End transfer activity if in progress
           try {
-            await endTransferActivityIfNeeded("Session timeout");
+            await endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_TIMEOUT);
           } catch (transferError) {
             logger.error(
               { transferError },
               "error ending transfer activity during session timeout"
             );
           }
-          cleanupAndClose("session timeout");
+          cleanupAndClose(DISCONNECT_REASONS.SESSION_TIMEOUT);
         } catch (e) {
           logger.info({ e }, "error tearing down call on timeout");
         }
@@ -1895,6 +2240,7 @@ async function runAgentWorker({
 
     logger.debug("session started, generating reply");
     await call.start();
+
     sendMessage({ call: `${callerId} => ${calledId}` });
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
@@ -1911,6 +2257,6 @@ async function runAgentWorker({
       throw error;
     }
 
-    await cleanupAndClose("UNCAUGHT ERROR: running agent worker");
+    await cleanupAndClose(DISCONNECT_REASONS.UNCAUGHT_ERROR_RUNNING_AGENT);
   }
 }

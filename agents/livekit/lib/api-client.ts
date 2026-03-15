@@ -1,4 +1,4 @@
-import logger from '../agent-lib/logger.js';
+import logger from "./logger.js";
 
 // API-related type definitions
 export interface Instance {
@@ -6,6 +6,10 @@ export interface Instance {
   metadata?: Record<string, any>;
   Agent?: Agent;
   streamLog?: boolean;
+  recording?: {
+    enabled: boolean;
+    key?: string;
+  };
 }
 
 export interface Agent {
@@ -81,6 +85,14 @@ export interface Agent {
         [key: string]: any;
       };
       [key: string]: any;
+    };
+    /**
+     * Recording configuration for this agent.
+     * Can be overridden at instance/listener level.
+     */
+    recording?: {
+      enabled: boolean;
+      key?: string;
     };
   };
   functions?: AgentFunction[];
@@ -185,6 +197,16 @@ export interface PhoneRegistrationInfo {
 }
 
 export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
+
+export interface InvocationLogPayload {
+  userId: string;
+  organisationId: string;
+  agentId: string;
+  instanceId: string;
+  callId: string;
+  subsystem?: string;
+  log: any;
+}
 
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
@@ -388,6 +410,21 @@ export async function endCallById(callId: string, reason?: string): Promise<any>
   });
 }
 
+export async function setCallRecordingData(
+  callId: string,
+  recordingId: string,
+  encryptionKey?: string,
+): Promise<void> {
+  const body: any = { recordingId };
+  if (encryptionKey) {
+    body.encryptionKey = encryptionKey;
+  }
+  await makeApiRequest(`/api/agent-db/call/${encodeURIComponent(callId)}/recording`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
 // Create a new transaction log record
 export async function createTransactionLog(transactionData: {
   userId: string;
@@ -415,6 +452,14 @@ export async function createTransactionLog(transactionData: {
   return makeApiRequest('/api/agent-db/transaction-log', {
     method: 'POST',
     body: JSON.stringify(requestBody)
+  });
+}
+
+// Create a new invocation log record (compressed and stored server-side)
+export async function saveInvocationLog(payload: InvocationLogPayload): Promise<any> {
+  return makeApiRequest('/api/agent-db/invocation-log', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 
