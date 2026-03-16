@@ -3,6 +3,9 @@ export default {
   testMatch: [
     '**/tests/*.test.mjs',
   ],
+  testPathIgnorePatterns: [
+    "/agents/"
+  ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',
   testTimeout: 60000,

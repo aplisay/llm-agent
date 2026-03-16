@@ -5,6 +5,9 @@ export default {
     '!**/tests/phone-endpoints-comprehensive.test.mjs',
     '!**/tests/phone-registration.test.mjs'
   ],
+  testPathIgnorePatterns: [
+    "/agents/"
+  ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',
   testTimeout: 30000,
