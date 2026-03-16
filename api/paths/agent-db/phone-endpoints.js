@@ -11,7 +11,8 @@ export default function (logger, voices, wsServer) {
   });
   log = logger;
   return {
-    GET: phoneEndpointsList
+    GET: phoneEndpointsList,
+    PATCH: updatePhoneEndpointProvisioning
   };
 };
 
@@ -166,6 +167,44 @@ const phoneEndpointsList = (async (req, res) => {
     res.status(500).send({ error: 'Internal server error' });
   }
 });
+
+/**
+ * Internal provisioning update endpoint used by LiveKit/Jambonz agents.
+ * Allows the platform to mark a phone number as provisioned (or not) after
+ * pushing configuration to the underlying telephony platform.
+ *
+ * This endpoint is not organisation-scoped and is intended for internal use only.
+ */
+export const updatePhoneEndpointProvisioning = async (req, res) => {
+  const { number } = req.params;
+  const { provisioned } = req.body || {};
+
+  if (!number) {
+    return res.status(400).send({ error: 'Phone number is required' });
+  }
+  if (typeof provisioned !== 'boolean') {
+    return res.status(400).send({ error: 'provisioned must be a boolean' });
+  }
+
+  try {
+    const normalizedNumber = String(number).replace(/^\+/, '');
+    const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+    if (!phoneNumber) {
+      return res.status(404).send({ error: 'Phone endpoint not found' });
+    }
+
+    await phoneNumber.update({ provisioned });
+
+    return res.send({
+      success: true,
+      number: phoneNumber.number,
+      provisioned: !!phoneNumber.provisioned
+    });
+  } catch (err) {
+    log.error(err, 'error updating phone endpoint provisioning');
+    res.status(500).send({ error: 'Internal server error' });
+  }
+};
 
 phoneEndpointsList.apiDoc = {
   summary: 'Returns a list of phone endpoints, optionally filtered by handler.',

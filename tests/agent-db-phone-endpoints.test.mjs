@@ -34,6 +34,7 @@ describe('Agent DB Phone Endpoints API', () => {
     // Initialize the API endpoint
     const handlers = phoneEndpointsModule.default(mockLogger, mockVoices, mockWsServer);
     phoneEndpointsList = handlers.GET;
+    updateProvisioning = handlers.PATCH;
   }, 30000);
 
   afterAll(async () => {
@@ -105,6 +106,8 @@ describe('Agent DB Phone Endpoints API', () => {
   // Test utility functions
   const createMockRequest = (query = {}) => ({
     query,
+    params: {},
+    body: {},
     log: mockLogger
   });
 
@@ -277,6 +280,47 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._status).toBe(200);
       expect(res._body.items.length).toBeLessThanOrEqual(1);
       expect(res._body.nextOffset).toBeDefined();
+    });
+  });
+
+  describe('Provisioning updates', () => {
+    test('should default provisioned=false for new phone numbers and allow internal update', async () => {
+      // Freshly created phone numbers should be unprovisioned by default
+      const number = testPhoneNumber.number;
+      const reqGet = createMockRequest({ type: 'e164-ddi', number });
+      const resGet = createMockResponse();
+
+      await phoneEndpointsList(reqGet, resGet);
+
+      expect(resGet._status).toBe(200);
+      expect(resGet._body.items).toHaveLength(1);
+      expect(resGet._body.items[0]).toHaveProperty('number', number);
+      expect(resGet._body.items[0].provisioned).toBe(false);
+
+      // Now update provisioning via internal PATCH
+      const reqPatch = {
+        params: { number },
+        body: { provisioned: true },
+        log: mockLogger
+      };
+      const resPatch = createMockResponse();
+
+      await updateProvisioning(reqPatch, resPatch);
+
+      expect(resPatch._status).toBe(200);
+      expect(resPatch._body).toHaveProperty('success', true);
+      expect(resPatch._body).toHaveProperty('provisioned', true);
+
+      // Re-read via agent-db API to confirm
+      const reqGet2 = createMockRequest({ type: 'e164-ddi', number });
+      const resGet2 = createMockResponse();
+
+      await phoneEndpointsList(reqGet2, resGet2);
+
+      expect(resGet2._status).toBe(200);
+      expect(resGet2._body.items).toHaveLength(1);
+      expect(resGet2._body.items[0]).toHaveProperty('number', number);
+      expect(resGet2._body.items[0].provisioned).toBe(true);
     });
   });
 

@@ -67,7 +67,8 @@ const getPhoneEndpoint = async (req, res) => {
       outbound: !!record.outbound,
       // Expose the associated trunk using the public trunkId field,
       // while keeping aplisayId as an internal implementation detail.
-      trunkId: record.aplisayId || null
+      trunkId: record.aplisayId || null,
+      provisioned: !!record.provisioned
     });
   }
   catch (err) {
@@ -105,7 +106,8 @@ getPhoneEndpoint.apiDoc = {
                   number: { type: 'string', description: 'The phone number' },
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
-                  trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' }
+                  trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' },
+                  provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' }
                 }
               },
               {

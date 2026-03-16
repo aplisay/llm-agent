@@ -164,6 +164,7 @@ export default class Application {
             let res = await jambonz.addNumber({ number, carrier, application });
             logger.info({ res }, 'created number on Jambonz');
           }
+          await phoneNumber.update({ provisioned: true });
           return number;
         })
       );

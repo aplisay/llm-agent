@@ -253,6 +253,8 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         // Public API should use trunkId and never expose aplisayId
         expect(ep).toHaveProperty('trunkId');
         expect(ep).not.toHaveProperty('aplisayId');
+        // Provisioned flag should always be present for numbers
+        expect(ep).toHaveProperty('provisioned');
       });
     });
 
@@ -542,6 +544,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('outbound');
       // Public surface should expose trunkId (if assigned), not aplisayId
       expect(res._body).toHaveProperty('trunkId');
+      expect(res._body).toHaveProperty('provisioned');
       expect(res._body).not.toHaveProperty('id');
       expect(res._body).not.toHaveProperty('name'); // Phone numbers don't have name field
     });

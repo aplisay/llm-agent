@@ -64,7 +64,7 @@ const phoneEndpointList = (async (req, res) => {
     if (type === 'e164-ddi') {
       const rows = await PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt', 'instanceId'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
         include: [
           {
             model: Instance,
@@ -87,7 +87,8 @@ const phoneEndpointList = (async (req, res) => {
         createdAt: r.createdAt ? r.createdAt.toISOString() : null,
         inUse: !!r.instanceId,
         agentId: r.Instance?.Agent?.id ?? null,
-        agentName: r.Instance?.Agent?.name ?? null
+        agentName: r.Instance?.Agent?.name ?? null,
+        provisioned: !!r.provisioned
       }));
       const nextOffset = rows.length === size ? startOffset + size : null;
       return res.send({ items, nextOffset });
@@ -116,7 +117,7 @@ const phoneEndpointList = (async (req, res) => {
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'createdAt'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt'],
         limit: size,
         offset: startOffset
       }),
@@ -133,6 +134,7 @@ const phoneEndpointList = (async (req, res) => {
       handler: n.handler,
       outbound: !!n.outbound,
       trunkId: n.aplisayId || null,
+      provisioned: !!n.provisioned,
       _createdAt: n.createdAt
     }));
     const mappedRegs = regRows.map(r => ({

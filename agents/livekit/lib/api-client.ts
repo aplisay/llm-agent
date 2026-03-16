@@ -176,6 +176,7 @@ export interface PhoneNumberInfo {
   outbound?: boolean;
   aplisayId?: string | null;
   trunk?: TrunkInfo | null;
+  provisioned?: boolean;
   [key: string]: any;
 }
 
@@ -313,6 +314,24 @@ export async function getPhoneEndpointByNumber(
 // Legacy function - kept for backward compatibility, now uses phone-endpoints endpoint
 export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
   return getPhoneEndpointByNumber(number);
+}
+
+// Mark a phone number as provisioned (or not) in the platform after LiveKit sync
+export async function setPhoneNumberProvisioned(
+  number: string,
+  provisioned: boolean
+): Promise<void> {
+  try {
+    await makeApiRequest<{ success: boolean }>(
+      `/api/agent-db/phone-endpoints/${encodeURIComponent(number)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ provisioned })
+      }
+    );
+  } catch (error) {
+    logger.error({ number, provisioned, error }, 'Failed to update phone number provisioning state');
+  }
 }
 
 
