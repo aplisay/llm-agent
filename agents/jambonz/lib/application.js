@@ -82,7 +82,9 @@ export default class Application {
               send: async (data, isFinal = true) => {
                 try {
                   if (data.call) {
-                    call.start();
+                    void call.start().catch((e) => {
+                      logger?.warn?.(e, 'call.start() failed (async)');
+                    });
                     // Fire callHook start callback once per call (non-blocking)
                     if (!call._callHookStartSent) {
                       call._callHookStartSent = true;
@@ -110,7 +112,9 @@ export default class Application {
           });
           await sessionHandler.handler();
           logger.debug({ callId }, 'session ended');
-          call.end();
+          void call.end().catch((e) => {
+            logger?.warn?.(e, 'call.end() failed (async)');
+          });
           // Fire callHook end callback (non-blocking, rely on lazy transcript fetch)
           maybeSendCallHook({
             event: 'end',
@@ -130,7 +134,9 @@ export default class Application {
         logger.info(err, 'error in call progress');
         this.sessionHandler && await this.sessionHandler.forceClose();
         if (this.call) {
-          this.call.end();
+          void this.call.end().catch((e) => {
+            logger?.warn?.(e, 'call.end() failed (async, error path)');
+          });
           // Best-effort end callback with generic error reason
           maybeSendCallHook({
             event: 'end',

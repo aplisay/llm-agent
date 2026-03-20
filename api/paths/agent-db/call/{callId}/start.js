@@ -1,5 +1,6 @@
 import { Call, TransactionLog } from '../../../../../lib/database.js';
 import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
+import { AgentConcurrencyLimitExceededError } from '../../../../../lib/concurrency/agent-concurrency-limits.js';
 
 let appParameters, log;
 
@@ -61,6 +62,14 @@ const callStart = (async (req, res) => {
     res.send({ message: 'Call started successfully', callId });
   }
   catch (err) {
+    if (err instanceof AgentConcurrencyLimitExceededError) {
+      return res.status(429).send({
+        error: err.message,
+        code: err.code,
+        scope: err.scope,
+        details: err.details,
+      });
+    }
     log.error(err, 'error starting call');
     res.status(500).send({ error: 'Internal server error' });
   }
@@ -151,6 +160,22 @@ callStart.apiDoc = {
           }
         }
       }
+    },
+    429: {
+      description: 'Agent concurrency limit exceeded (instance, user, or organisation)',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              code: { type: 'string' },
+              scope: { type: 'string', enum: ['instance', 'user', 'organisation'] },
+              details: { type: 'object' },
+            },
+          },
+        },
+      },
     },
     500: {
       description: 'Internal server error',
