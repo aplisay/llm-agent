@@ -499,6 +499,7 @@ components:
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
+                     References to `toolsCalls...` are only allowed on **LiveKit agents**.
                   * `transfer` will transfer the call to a number specified in the `number` parameter. The following optional parameters are available:
                     - `number` (string, required): The phone number or endpoint ID to transfer to. Must be specified as `static` or `metadata` source (cannot be `generated` for security reasons).
                     - `callerId` (string, optional): Override the caller ID used for the transfer. Must be a phone number owned by your organisation with outbound calling enabled. If the original call comes in on a telephony trunk, the caller ID number must use a matching egress trunk. For WebRTC calls, the caller ID trunk will be used for the outbound transfer. If not specified, uses the original called number.

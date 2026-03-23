@@ -32,6 +32,7 @@ describe('function-handler metadata deep paths', () => {
       messageHandler,
       metadata,
       {},
+      { allowToolsCallsMetadataPaths: true },
     );
 
     expect(function_results[0].result).toBe('call-123-x');
@@ -78,6 +79,7 @@ describe('function-handler metadata deep paths', () => {
       jest.fn(),
       metadata,
       {},
+      { allowToolsCallsMetadataPaths: true },
     );
 
     expect(function_results[0].result).toBe('{"name":"toolA-result"}');
@@ -117,11 +119,46 @@ describe('function-handler metadata deep paths', () => {
       jest.fn(),
       metadata,
       {},
+      { allowToolsCallsMetadataPaths: true },
     );
 
     const payload = JSON.parse(function_results[0].result);
     expect(payload['aplisay.callId']).toBe('call-abc');
     expect(payload['deep.nested.v']).toBe('123');
+  });
+
+  test('rejects toolsCalls.* metadata reads unless explicitly allowed', async () => {
+    const metadata = { toolsCalls: {} };
+
+    const functions = [
+      {
+        name: 'toolB',
+        implementation: 'stub',
+        input_schema: {
+          properties: {
+            nameSource: {
+              source: 'metadata',
+              from: 'toolsCalls.toolA.result.name',
+              type: 'string',
+            },
+          },
+        },
+        result: '{nameSource}',
+      },
+    ];
+
+    const function_calls = [{ name: 'toolB', input: {} }];
+
+    await expect(
+      functionHandler(
+        function_calls,
+        functions,
+        [],
+        jest.fn(),
+        metadata,
+        {},
+      )
+    ).rejects.toThrow('Access to metadata.toolsCalls is only allowed in LiveKit agents');
   });
 });
 

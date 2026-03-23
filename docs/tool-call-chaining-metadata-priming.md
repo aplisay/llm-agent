@@ -29,6 +29,12 @@ In particular, the built-in `transfer` function’s `number` parameter is only a
 - Use the result as server-side metadata input to `transfer`.
 - Prevent the LLM from ever supplying (or overriding) the transfer destination.
 
+## LiveKit-only enforcement
+
+For security reasons, references to `metadata.toolsCalls...` from tool inputs (`source: "metadata"`, with `from: "toolsCalls...."`) are only permitted on **LiveKit agents**.
+
+If you try to create a non-LiveKit agent whose function schemas reference `toolsCalls.*` via `source: "metadata"`, the API will reject the `/agents` POST request.
+
 ## Hypothetical example: receptionist transfer number (DB-backed, LLM-safe)
 
 Goal:
