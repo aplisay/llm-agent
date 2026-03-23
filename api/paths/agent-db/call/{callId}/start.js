@@ -1,4 +1,4 @@
-import { Call, TransactionLog } from '../../../../../lib/database.js';
+import { Call, Instance, User, Organisation, TransactionLog } from '../../../../../lib/database.js';
 import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../../lib/concurrency/agent-concurrency-limits.js';
 
@@ -25,7 +25,7 @@ const callStart = (async (req, res) => {
   }
 
   try {
-    let call = await Call.findByPk(callId);
+    let call = await Call.findByPk(callId, { include: [Instance, User, Organisation] });
     
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
@@ -35,7 +35,7 @@ const callStart = (async (req, res) => {
     const finalUserId = userId || call.userId;
     const finalOrganisationId = organisationId || call.organisationId;
 
-    await call.start();
+    await call.start({ instance: call.Instance, user: call.User, organisation: call.Organisation });
 
     // Fire callHook start callback (non-blocking)
     maybeSendCallHook({

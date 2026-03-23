@@ -81,8 +81,12 @@ export default class Application {
             progress: {
               send: async (data, isFinal = true) => {
                 try {
-                  if (data.call) {
-                    void call.start().catch((e) => {
+                    if (data.call) {
+                      void call.start({
+                        instance,
+                        user: instance?.User,
+                        organisation: instance?.Organisation,
+                      }).catch((e) => {
                       logger?.warn?.(e, 'call.start() failed (async)');
                     });
                     // Fire callHook start callback once per call (non-blocking)

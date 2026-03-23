@@ -11,9 +11,7 @@ import {
 import { AgentConcurrencyLimitExceededError } from '../lib/concurrency/agent-concurrency-limits.js';
 
 describe('Agent concurrency limits', () => {
-  let InstanceConcurrency;
-  let UserConcurrency;
-  let OrganisationConcurrency;
+  let CallConcurrency;
 
   const mockLogger = {
     info: () => {},
@@ -26,9 +24,7 @@ describe('Agent concurrency limits', () => {
   beforeAll(async () => {
     await setupRealDatabase();
     const db = await import('../lib/database.js');
-    InstanceConcurrency = db.InstanceConcurrency;
-    UserConcurrency = db.UserConcurrency;
-    OrganisationConcurrency = db.OrganisationConcurrency;
+    CallConcurrency = db.CallConcurrency;
   }, 30000);
 
   afterAll(async () => {
@@ -102,6 +98,48 @@ describe('Agent concurrency limits', () => {
     await Organisation.destroy({ where: {} }).catch(() => {});
   });
 
+  async function createOrglessUserAgentInstance(overrides = {}) {
+    const userId = overrides.userId ?? randomUUID();
+    const agentLimitUser = overrides.agentLimitUser ?? null;
+    const agentLimitInstance = overrides.agentLimitInstance ?? null;
+
+    await User.create({
+      id: userId,
+      organisationId: null,
+      name: 'Orgless Test User',
+      email: 'orgless@test.example.com',
+      emailVerified: true,
+      phone: '+10000000000',
+      phoneVerified: true,
+      picture: 'https://example.com/p.png',
+      role: { admin: true },
+      agentLimit: agentLimitUser,
+    });
+
+    const agent = await Agent.create({
+      name: 'Orgless Concurrency agent',
+      description: 't',
+      modelName: 'livekit:ultravox/ultravox-v0.7',
+      prompt: 'You are a test agent.',
+      options: { tts: { language: 'any', voice: 'Ciara' } },
+      functions: {},
+      keys: [],
+      userId,
+      organisationId: null,
+    });
+
+    const instance = await Instance.create({
+      agentId: agent.id,
+      type: 'livekit',
+      key: 'k',
+      userId,
+      organisationId: null,
+      agentLimit: agentLimitInstance,
+    });
+
+    return { userId, agentId: agent.id, instanceId: instance.id };
+  }
+
   test('A1 user.agentLimit=1 blocks second concurrent start', async () => {
     const ctx = await createOrgUserAgentInstance({ agentLimitUser: 1 });
     const c1 = await createCallRow(ctx);
@@ -119,11 +157,11 @@ describe('Agent concurrency limits', () => {
     await c1.end();
     await expect(c2.start()).resolves.toBeUndefined();
     expect(
-      await UserConcurrency.count({ where: { userId: ctx.userId } }),
+      await CallConcurrency.count({ where: { userId: ctx.userId } }),
     ).toBe(1);
     await c2.end();
     expect(
-      await UserConcurrency.count({ where: { userId: ctx.userId } }),
+      await CallConcurrency.count({ where: { userId: ctx.userId } }),
     ).toBe(0);
   });
 
@@ -224,7 +262,7 @@ describe('Agent concurrency limits', () => {
     await c1.start();
     await c2.start();
     expect(
-      await InstanceConcurrency.count({ where: { instanceId: ctx.instanceId } }),
+      await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(2);
     await c1.end();
     await c2.end();
@@ -242,48 +280,68 @@ describe('Agent concurrency limits', () => {
     await c1.start();
     await c1.start();
     expect(
-      await UserConcurrency.count({ where: { userId: ctx.userId } }),
+      await CallConcurrency.count({ where: { userId: ctx.userId } }),
     ).toBe(1);
     await c1.end();
   });
 
-  /** No userId / organisationId on call → SQL store skips user/org rows; instance limit still applies. */
-  test('A8 missing userId and organisationId enforces instance scope only', async () => {
-    const ctx = await createOrgUserAgentInstance({
+  test('A8 organisationId null enforces instance+user only', async () => {
+    const ctx = await createOrglessUserAgentInstance({
       agentLimitInstance: 1,
       agentLimitUser: 1,
     });
-    const c1 = await Call.create(
-      {
-        id: randomUUID(),
-        instanceId: ctx.instanceId,
-        agentId: ctx.agentId,
-        userId: null,
-        organisationId: null,
-        callerId: '+1',
-        calledId: '+2',
-        platform: 'livekit',
-        index: 1,
-      },
-      { hooks: false },
-    );
-    const c2 = await Call.create(
-      {
-        id: randomUUID(),
-        instanceId: ctx.instanceId,
-        agentId: ctx.agentId,
-        userId: null,
-        organisationId: null,
-        callerId: '+1',
-        calledId: '+2',
-        platform: 'livekit',
-        index: 2,
-      },
-      { hooks: false },
-    );
+    const c1 = await Call.create({
+      id: randomUUID(),
+      instanceId: ctx.instanceId,
+      agentId: ctx.agentId,
+      userId: ctx.userId,
+      organisationId: null,
+      callerId: '+1',
+      calledId: '+2',
+      platform: 'livekit',
+    }, { hooks: false });
+    const c2 = await Call.create({
+      id: randomUUID(),
+      instanceId: ctx.instanceId,
+      agentId: ctx.agentId,
+      userId: ctx.userId,
+      organisationId: null,
+      callerId: '+1',
+      calledId: '+2',
+      platform: 'livekit',
+    }, { hooks: false });
     await expect(c1.start()).resolves.toBeUndefined();
     await expect(c2.start()).rejects.toThrow(AgentConcurrencyLimitExceededError);
     await c1.end();
+  });
+
+  test('A9 skips organisation limits when call.organisationId is null', async () => {
+    // Even if an organisation exists with agentLimit=0, a call with organisationId=null
+    // must not be blocked by organisation-scoped limits.
+    const org = await Organisation.create({
+      id: randomUUID(),
+      name: 'Blocked org (should not apply)',
+      agentLimit: 0,
+    });
+
+    const ctx = await createOrglessUserAgentInstance({
+      // Unlimited for instance/user; only org is configured to 0 above.
+      agentLimitInstance: null,
+      agentLimitUser: null,
+    });
+
+    const c1 = await createCallRow(ctx);
+    const c2 = await createCallRow(ctx);
+
+    await expect(c1.start()).resolves.toBeUndefined();
+    await expect(c2.start()).resolves.toBeUndefined();
+
+    // Reservations exist, but under organisationId=null (not the blocked org).
+    expect(await CallConcurrency.count({ where: { organisationId: org.id } })).toBe(0);
+    expect(await CallConcurrency.count({ where: { organisationId: null } })).toBe(2);
+
+    await c1.end();
+    await c2.end();
   });
 
   test('B1 agent-db start returns 429 when limit exceeded', async () => {
@@ -346,7 +404,7 @@ describe('Agent concurrency limits', () => {
     expect(res._status === null || res._status === 200).toBe(true);
     expect(res._body).toMatchObject({ callId: c1.id });
     expect(
-      await InstanceConcurrency.count({ where: { instanceId: ctx.instanceId } }),
+      await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(1);
     await c1.end();
   });
@@ -356,7 +414,7 @@ describe('Agent concurrency limits', () => {
     const c1 = await createCallRow(ctx);
     await c1.start();
     expect(
-      await InstanceConcurrency.count({ where: { instanceId: ctx.instanceId } }),
+      await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(1);
 
     const endModule = await import('../api/paths/agent-db/call/{callId}/end.js');
@@ -387,7 +445,7 @@ describe('Agent concurrency limits', () => {
     expect(res._status === null || res._status === 200).toBe(true);
     expect(res._body).toMatchObject({ callId: c1.id });
     expect(
-      await InstanceConcurrency.count({ where: { instanceId: ctx.instanceId } }),
+      await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(0);
   });
 });
