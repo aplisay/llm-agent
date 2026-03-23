@@ -11,6 +11,8 @@ The LLM agent platform supports two types of call transfers:
 
 Both transfer types are implemented using the builtin `transfer` platform function, which is only available for telephone agents when outbound calling or SIP redirects are enabled for the provider trunk.
 
+The `transfer.number` parameter must be `static` or `metadata` (never `generated`). Because `metadata` supports arbitrary-depth dot paths, you can also source `transfer.number` from values written into `metadata.toolsCalls` by earlier tool calls (server-side tool result chaining) on **LiveKit agents only**. See [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md) for a DB-backed receptionist example.
+
 ## Transfer Mechanisms
 
 ### Blind Transfers

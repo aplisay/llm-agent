@@ -1285,7 +1285,8 @@ function createTools({
                       description: state.description,
                     };
                   },
-                }
+                },
+                { allowToolsCallsMetadataPaths: true }
               )) as FunctionResult;
               let { function_results } = result;
               let [{ result: data, error }] = function_results;

@@ -72,6 +72,7 @@ export default class Application {
             instanceId: instance.id,
             callId,
             streamUrl,
+            metadata: call.metadata,
             ...this,
             session,
             model,
