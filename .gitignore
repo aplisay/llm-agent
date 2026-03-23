@@ -111,3 +111,4 @@ dist
 .tern-port
 llm-agent.code-workspace
 tests/fixtures/agents/test-agent.js
+agent.json
