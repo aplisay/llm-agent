@@ -339,7 +339,7 @@ async function fetchUltravoxCalls(api, localCall, localTranscriptText) {
   };
 }
 
-function renderRecord({ callId, call, transactionLogs, localTranscript, correlation }) {
+function buildRecordObject({ callId, call, transactionLogs, localTranscript, correlation }) {
   const callJson = asPlain(call);
   const txJson = (transactionLogs || []).map(asPlain);
 
@@ -374,7 +374,86 @@ function renderRecord({ callId, call, transactionLogs, localTranscript, correlat
     };
   }
 
-  return JSON.stringify(output, null, 2);
+  return output;
+}
+
+/**
+ * Loads one call branch: DB row, transaction logs, Ultravox correlation, and
+ * recursive warm-transfer children (calls where parentId === this call id).
+ */
+async function buildEnrichedCall({ Call, TransactionLog, api, callId, visited }) {
+  if (visited.has(callId)) {
+    return {
+      callId,
+      error: 'circular parentId reference',
+      call: null,
+      transactionLog: [],
+      localTranscript: { entries: [], combinedText: '' },
+      ultravoxCorrelation: {
+        score: 0,
+        reason: 'circular parentId reference',
+        call: null,
+        transcript: [],
+      },
+    };
+  }
+  visited.add(callId);
+  try {
+    const call = await Call.findByPk(callId);
+    const transactionLogs = await TransactionLog.findAll({
+      where: { callId },
+      order: [['createdAt', 'ASC']],
+    });
+    const localTranscript = simplifyLocalTranscript(transactionLogs.map(asPlain));
+    const localTranscriptText = localTranscript.map((e) => e.text).join(' ');
+
+    let correlation = { candidates: [], best: null, reason: 'ULTRAVOX_API_KEY is not set' };
+    if (call && api) {
+      try {
+        correlation = await fetchUltravoxCalls(api, asPlain(call), localTranscriptText);
+      } catch (err) {
+        correlation = { candidates: [], best: null, reason: `Ultravox lookup failed: ${err.message}` };
+      }
+    } else if (!call) {
+      correlation = { candidates: [], best: null, reason: 'call not found in local database' };
+    }
+
+    const record = buildRecordObject({ callId, call, transactionLogs, localTranscript, correlation });
+
+    const children = await Call.findAll({
+      where: { parentId: callId },
+      order: [['startedAt', 'ASC']],
+    });
+    if (children.length) {
+      record.warmTransfer = [];
+      for (const child of children) {
+        try {
+          record.warmTransfer.push(
+            await buildEnrichedCall({ Call, TransactionLog, api, callId: child.id, visited })
+          );
+        } catch (err) {
+          debugLog('failed warm-transfer child; continuing', { parentId: callId, childId: child.id, error: err?.message });
+          record.warmTransfer.push({
+            callId: child.id,
+            error: err?.message || String(err),
+            call: null,
+            transactionLog: [],
+            localTranscript: { entries: [], combinedText: '' },
+            ultravoxCorrelation: {
+              score: 0,
+              reason: 'processing failed for warm-transfer child',
+              call: null,
+              transcript: [],
+            },
+          });
+        }
+      }
+    }
+
+    return record;
+  } finally {
+    visited.delete(callId);
+  }
 }
 
 async function main() {
@@ -402,28 +481,14 @@ async function main() {
   const outputRecords = [];
   for (const callId of uuids) {
     try {
-      const call = await Call.findByPk(callId);
-      const transactionLogs = await TransactionLog.findAll({
-        where: { callId },
-        order: [['createdAt', 'ASC']],
+      const enriched = await buildEnrichedCall({
+        Call,
+        TransactionLog,
+        api,
+        callId,
+        visited: new Set(),
       });
-      const localTranscript = simplifyLocalTranscript(transactionLogs.map(asPlain));
-      const localTranscriptText = localTranscript.map((e) => e.text).join(' ');
-
-      let correlation = { candidates: [], best: null, reason: 'ULTRAVOX_API_KEY is not set' };
-      if (call && api) {
-        try {
-          correlation = await fetchUltravoxCalls(api, asPlain(call), localTranscriptText);
-        } catch (err) {
-          correlation = { candidates: [], best: null, reason: `Ultravox lookup failed: ${err.message}` };
-        }
-      } else if (!call) {
-        correlation = { candidates: [], best: null, reason: 'call not found in local database' };
-      }
-
-      outputRecords.push(JSON.parse(
-        renderRecord({ callId, call, transactionLogs, localTranscript, correlation })
-      ));
+      outputRecords.push(enriched);
     } catch (err) {
       debugLog('failed processing callId; continuing', { callId, error: err?.message });
       const errorOutput = {
@@ -440,7 +505,6 @@ async function main() {
         },
       };
       outputRecords.push(errorOutput);
-      continue;
     }
   }
   process.stdout.write(`${JSON.stringify(outputRecords, null, 2)}\n`);
