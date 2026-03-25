@@ -373,6 +373,8 @@ describe('Agent concurrency limits', () => {
     await handler(req, res);
     expect(res._status).toBe(429);
     expect(res._body.code).toBe('AGENT_CONCURRENCY_LIMIT_EXCEEDED');
+    const failedCall = await Call.findByPk(c2.id);
+    expect(failedCall?.status).toBe('failed: user concurrency limit');
     await c1.end();
   });
 
@@ -403,6 +405,8 @@ describe('Agent concurrency limits', () => {
     await handler(req, res);
     expect(res._status === null || res._status === 200).toBe(true);
     expect(res._body).toMatchObject({ callId: c1.id });
+    const startedCall = await Call.findByPk(c1.id);
+    expect(startedCall?.status).toBe('in progress');
     expect(
       await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(1);
@@ -444,6 +448,8 @@ describe('Agent concurrency limits', () => {
     await endHandler(req, res);
     expect(res._status === null || res._status === 200).toBe(true);
     expect(res._body).toMatchObject({ callId: c1.id });
+    const endedCall = await Call.findByPk(c1.id);
+    expect(endedCall?.status).toBe('ended normally');
     expect(
       await CallConcurrency.count({ where: { instanceId: ctx.instanceId } }),
     ).toBe(0);

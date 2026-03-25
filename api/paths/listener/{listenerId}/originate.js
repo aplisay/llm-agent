@@ -1,4 +1,5 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -104,6 +105,14 @@ const originateCall = (async (req, res) => {
     });
 
   } catch (err) {
+    if (err instanceof AgentConcurrencyLimitExceededError) {
+      return res.status(429).send({
+        error: err.message,
+        code: err.code,
+        scope: err.scope,
+        details: err.details,
+      });
+    }
     req.log.error(err, 'Error in originate call endpoint');
     res.status(500).send({ error: 'Internal server error' });
   }
@@ -240,6 +249,22 @@ originateCall.apiDoc = {
           }
         }
       }
+    },
+    429: {
+      description: 'Agent concurrency limit exceeded',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              code: { type: 'string' },
+              scope: { type: 'string', enum: ['instance', 'user', 'organisation'] },
+              details: { type: 'object' },
+            },
+          },
+        },
+      },
     },
     500: {
       description: 'Internal server error',

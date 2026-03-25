@@ -31,6 +31,10 @@ const callStart = (async (req, res) => {
       return res.status(404).send({ error: 'Call not found' });
     }
 
+    const existingStartLog = await TransactionLog.findOne({
+      where: { callId, type: 'start' },
+    });
+
     // Use provided userId/organisationId or fall back to call record values
     const finalUserId = userId || call.userId;
     const finalOrganisationId = organisationId || call.organisationId;
@@ -48,8 +52,10 @@ const callStart = (async (req, res) => {
       log?.warn?.(err, 'error sending callHook start callback');
     });
     
-    // Create start transaction log with userId and organisationId
-    if (finalUserId && finalOrganisationId) {
+    // Create start transaction log with userId and organisationId.
+    // This is idempotent: if we pre-started the call elsewhere we may have
+    // startedAt set but not created the TransactionLog entry yet.
+    if (!existingStartLog && finalUserId && finalOrganisationId) {
       await TransactionLog.create({
         userId: finalUserId,
         organisationId: finalOrganisationId,

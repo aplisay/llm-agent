@@ -29,7 +29,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId'],
+        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
         where,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),
@@ -70,8 +70,8 @@ export default function (logger) {
               },
               example: {
                 calls: [
-                  { id: "648aa45d-204a-4c0c-a1e1-419406254134", callerId: "+443300889471", calledId: "+442080996945", startedAt: "2025-06-04T12:00:00.000Z", endedAt: "2025-06-04T12:01:00.000Z", recordingId: "development-recordings/648aa45d.enc" },
-                  { id: "632555d87-948e-48f2-a53d-fc5f261daa7", callerId: "+443300889470", calledId: "+442080996945", startedAt: "2025-06-04T12:05:00.000Z", endedAt: null, recordingId: null },
+                  { id: "648aa45d-204a-4c0c-a1e1-419406254134", callerId: "+443300889471", calledId: "+442080996945", startedAt: "2025-06-04T12:00:00.000Z", endedAt: "2025-06-04T12:01:00.000Z", status: "ended normally", recordingId: "development-recordings/648aa45d.enc" },
+                  { id: "632555d87-948e-48f2-a53d-fc5f261daa7", callerId: "+443300889470", calledId: "+442080996945", startedAt: "2025-06-04T12:05:00.000Z", endedAt: null, status: "in progress", recordingId: null },
                 ],
                 next: 3
               }

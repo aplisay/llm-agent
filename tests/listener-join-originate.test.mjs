@@ -122,9 +122,11 @@ describe('Listener Join and Originate Endpoints Test', () => {
 
   afterEach(async () => {
     // Clean up test data
-    const { Organisation, User, Agent, PhoneNumber, PhoneRegistration, Trunk, Instance } = models;
+    const { Organisation, User, Agent, PhoneNumber, PhoneRegistration, Trunk, Instance, Call } = models;
     
     if (testOrgId) {
+      // Calls may reference instances; delete them first to avoid FK constraint failures.
+      await Call.destroy({ where: { agentId: testAgentId } }).catch(() => {});
       await Instance.destroy({ where: { agentId: testAgentId } });
       await Agent.destroy({ where: { organisationId: testOrgId } });
       await PhoneNumber.destroy({ where: { organisationId: testOrgId } });
@@ -332,6 +334,56 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('success', true);
     expect(originateRes._body).toHaveProperty('data');
 
+  });
+
+  test('should reject originate with 429 when instance.options.agentLimit=0', async () => {
+
+    // Create agent and phone number
+    await createTestAgent();
+    await createTestPhoneNumber();
+
+    // Create phone number listener with a strict concurrency cap
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId, options: { agentLimit: 0 } }
+    });
+    const listenerRes = createMockResponse();
+
+    await createListener(listenerReq, listenerRes);
+    expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
+    expect(listenerRes._body).toHaveProperty('id');
+    const instanceId = listenerRes._body.id;
+
+    const { Instance } = models;
+    const instance = await Instance.findByPk(listenerRes._body.id);
+    expect(instance).toBeDefined();
+    expect(instance.agentLimit).toBe(0);
+
+    // Originate should fail immediately because we reserve concurrency at originate time.
+    const originateReq = createMockRequest({
+      params: { listenerId: listenerRes._body.id },
+      body: {
+        calledId: '+447911123456',
+        callerId: testPhoneNumberId, // Use the phone number as caller
+        metadata: { test: 'data' }
+      }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { organisationId: testOrgId };
+
+    await originateCall(originateReq, originateRes);
+
+    expect(originateRes._status).toBe(429);
+    expect(originateRes._body).toHaveProperty('code', 'AGENT_CONCURRENCY_LIMIT_EXCEEDED');
+    const failedCall = await Call.findOne({
+      where: {
+        instanceId,
+        callerId: testPhoneNumberId,
+        calledId: '+447911123456',
+        agentId: testAgentId,
+      },
+    });
+    expect(failedCall?.status).toBe('failed: instance concurrency limit');
   });
 
   test('should create registration listener and allow originate with registration ID as caller', async () => {

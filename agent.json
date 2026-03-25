@@ -1,0 +1,14 @@
+{
+  "primaryRepo": "llm-agent",
+  "primaryPath": "/Users/rob/Aplisay/code/llm-agent",
+  "doNotEditUnlessIntentional": [
+    "aplisay-b2bua/config-server/vendor/llm-agent"
+  ],
+  "testGuidelines": {
+    "avoidPatterns": [
+      "tests that only parse/regex-match source code (brittle; prefer behavioral tests)"
+    ]
+  },
+  "notes": "This repository is the authoritative runtime source. `aplisay-b2bua/.../vendor/llm-agent` is a vendored copy used by the consumer apps."
+}
+
