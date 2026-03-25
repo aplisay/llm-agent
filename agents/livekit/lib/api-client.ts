@@ -1,5 +1,43 @@
 import logger from "./logger.js";
 
+// Error types used by the LiveKit worker to decide how to signal failures.
+// Keep these provider-agnostic so they can be interpreted at higher layers.
+export class ApiRequestError extends Error {
+  status: number;
+  body: any;
+  code?: string;
+  scope?: string;
+  details?: any;
+
+  constructor(status: number, body: any, message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.body = body;
+    this.code = body?.code;
+    this.scope = body?.scope;
+    this.details = body?.details;
+  }
+}
+
+// Busy-oriented error thrown by call.start() when the agent concurrency limit is exceeded.
+// LiveKit uses the thrown error message to map to an intended SIP "busy" cause.
+export class AgentConcurrencyLimitExceededBusyError extends Error {
+  code = 'AGENT_CONCURRENCY_LIMIT_EXCEEDED';
+  status = 429;
+  scope?: string;
+  details?: any;
+
+  constructor(opts: { scope?: string; details?: any; originalError?: string } = {}) {
+    const scopeSuffix = opts.scope ? ` [${opts.scope}]` : '';
+    const original = opts.originalError ? ` - ${opts.originalError}` : '';
+    super(`busy: AGENT_CONCURRENCY_LIMIT_EXCEEDED${scopeSuffix}${original}`);
+    this.name = 'AgentConcurrencyLimitExceededBusyError';
+    this.scope = opts.scope;
+    this.details = opts.details;
+  }
+}
+
 // API-related type definitions
 export interface Instance {
   id: string;
@@ -241,13 +279,29 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error({ 
-        url, 
-        status: response.status, 
-        statusText: response.statusText, 
-        error: errorText 
-      }, 'API request failed');
-      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+      logger.error(
+        {
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+        },
+        'API request failed',
+      );
+
+      let body: any = null;
+      try {
+        body = JSON.parse(errorText);
+      } catch {
+        // If we can't parse JSON, keep a minimal structure.
+        body = { raw: errorText };
+      }
+
+      throw new ApiRequestError(
+        response.status,
+        body,
+        `API request failed: ${response.status} ${response.statusText}`,
+      );
     }
 
     const data = await response.json();
@@ -359,13 +413,28 @@ export async function createCall(callData: {
   // Add start() and end() methods to the call object
   call.start = async () => {
     logger.debug({ call }, "logging starting call");
-    return makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
-      method: 'POST',
-      body: JSON.stringify({
-        userId: call.userId,
-        organisationId: call.organisationId
-      })
-    });
+    try {
+      return await makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: call.userId,
+          organisationId: call.organisationId
+        })
+      });
+    } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        err.status === 429 &&
+        err.code === 'AGENT_CONCURRENCY_LIMIT_EXCEEDED'
+      ) {
+        throw new AgentConcurrencyLimitExceededBusyError({
+          scope: err.scope,
+          details: err.details,
+          originalError: err.body?.error ?? err.body?.raw,
+        });
+      }
+      throw err;
+    }
   };
   
   call.end = async (reason?: string, transactionLogs?: Array<{

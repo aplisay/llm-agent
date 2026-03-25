@@ -716,6 +716,14 @@ components:
           type: string
           description: The time this call ended
           example: 2025-06-04T12:01:00.000Z
+        status:
+          type: string
+          nullable: true
+          description: >
+            Status describing what happened to this call. For concurrency failures this is of the form
+            `failed: <instance|user|organisation> concurrency limit`. For in-progress calls it is `in progress`.
+            When the call ends normally it is `ended normally`.
+          example: 'failed: instance concurrency limit'
         callerId:
           type: string
           nullable: true

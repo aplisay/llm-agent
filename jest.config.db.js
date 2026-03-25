@@ -4,7 +4,8 @@ export default {
     '**/tests/*.test.mjs',
   ],
   testPathIgnorePatterns: [
-    "/agents/"
+    '/agents/',
+    'agent-concurrency-redis-skeleton\\.test\\.mjs',
   ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',

@@ -22,6 +22,30 @@ const callCreate = (async (req, res) => {
   }
 
   try {
+    if (id) {
+      // Idempotent behaviour: if a call with this ID already exists, update
+      // the fields we were passed and return the existing row.
+      let existing = await Call.findByPk(id);
+      if (existing) {
+        const updateData = {};
+        if (parentId !== undefined) updateData.parentId = parentId;
+        if (userId !== undefined) updateData.userId = userId;
+        if (organisationId !== undefined) updateData.organisationId = organisationId;
+        if (instanceId !== undefined) updateData.instanceId = instanceId;
+        if (agentId !== undefined) updateData.agentId = agentId;
+        if (platform !== undefined) updateData.platform = platform;
+        if (platformCallId !== undefined) updateData.platformCallId = platformCallId;
+        if (calledId !== undefined) updateData.calledId = calledId;
+        if (callerId !== undefined) updateData.callerId = callerId;
+        if (modelName !== undefined) updateData.modelName = modelName;
+        if (options !== undefined) updateData.options = options;
+        if (metadata !== undefined) updateData.metadata = metadata;
+
+        await existing.update(updateData);
+        return res.status(200).send(existing);
+      }
+    }
+
     let call = await Call.create({
       id,
       parentId,

@@ -1,5 +1,6 @@
-import { Call, TransactionLog } from '../../../../../lib/database.js';
+import { Call, Instance, User, Organisation, TransactionLog } from '../../../../../lib/database.js';
 import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
+import { AgentConcurrencyLimitExceededError } from '../../../../../lib/concurrency/agent-concurrency-limits.js';
 
 let appParameters, log;
 
@@ -24,17 +25,21 @@ const callStart = (async (req, res) => {
   }
 
   try {
-    let call = await Call.findByPk(callId);
+    let call = await Call.findByPk(callId, { include: [Instance, User, Organisation] });
     
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
     }
 
+    const existingStartLog = await TransactionLog.findOne({
+      where: { callId, type: 'start' },
+    });
+
     // Use provided userId/organisationId or fall back to call record values
     const finalUserId = userId || call.userId;
     const finalOrganisationId = organisationId || call.organisationId;
 
-    await call.start();
+    await call.start({ instance: call.Instance, user: call.User, organisation: call.Organisation });
 
     // Fire callHook start callback (non-blocking)
     maybeSendCallHook({
@@ -47,8 +52,10 @@ const callStart = (async (req, res) => {
       log?.warn?.(err, 'error sending callHook start callback');
     });
     
-    // Create start transaction log with userId and organisationId
-    if (finalUserId && finalOrganisationId) {
+    // Create start transaction log with userId and organisationId.
+    // This is idempotent: if we pre-started the call elsewhere we may have
+    // startedAt set but not created the TransactionLog entry yet.
+    if (!existingStartLog && finalUserId && finalOrganisationId) {
       await TransactionLog.create({
         userId: finalUserId,
         organisationId: finalOrganisationId,
@@ -61,6 +68,14 @@ const callStart = (async (req, res) => {
     res.send({ message: 'Call started successfully', callId });
   }
   catch (err) {
+    if (err instanceof AgentConcurrencyLimitExceededError) {
+      return res.status(429).send({
+        error: err.message,
+        code: err.code,
+        scope: err.scope,
+        details: err.details,
+      });
+    }
     log.error(err, 'error starting call');
     res.status(500).send({ error: 'Internal server error' });
   }
@@ -151,6 +166,22 @@ callStart.apiDoc = {
           }
         }
       }
+    },
+    429: {
+      description: 'Agent concurrency limit exceeded (instance, user, or organisation)',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              code: { type: 'string' },
+              scope: { type: 'string', enum: ['instance', 'user', 'organisation'] },
+              details: { type: 'object' },
+            },
+          },
+        },
+      },
     },
     500: {
       description: 'Internal server error',

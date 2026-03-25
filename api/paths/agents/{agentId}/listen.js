@@ -6,7 +6,7 @@ let appParameters, log;
 export default function (wsServer) {
   const activate = (async (req, res) => {
     let { agentId } = req.params;
-    let { number, options, websocket, id } = req.body;
+    let { number, options = {}, websocket, id } = req.body;
     let agent, handler, activation;
     try {
       agent = await Agent.findByPk(agentId);
@@ -113,6 +113,12 @@ export default function (wsServer) {
                   type: "object",
                   description: "Options for this activation instance",
                   properties: {
+                    agentLimit: {
+                      type: "integer",
+                      nullable: true,
+                      description: `Optional agent concurrency cap for the created listener instance (see \`docs/agent-concurrency-limits.md\` for semantics). For example: 0 disallows new concurrent calls; null means unlimited.`,
+                      example: 1
+                    },
                     streamLog: {
                       type: "boolean",
                       description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
@@ -140,6 +146,12 @@ export default function (wsServer) {
                       type: "object",
                       description: "Options for this activation instance",
                       properties: {
+                        agentLimit: {
+                          type: "integer",
+                          nullable: true,
+                          description: `Optional agent concurrency cap for the created listener instance (see \`docs/agent-concurrency-limits.md\` for semantics). For example: 0 disallows new concurrent calls; null means unlimited.`,
+                          example: 1
+                        },
                         streamLog: {
                           type: "boolean",
                           description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
