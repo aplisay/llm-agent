@@ -553,16 +553,18 @@ async function startConsultativeTransfer(
       excludeFunctionCall: true,
     });
 
-    let parentTranscript = "";
+    let parentTranscript = "\n";
     try {
       for (const msg of ctxCopy.items) {
         if (msg.type === "message") {
           const role = msg.role;
-          const textContent = msg.textContent || "";
+          const textContent = (msg.textContent || "")
+            .replace(/\\n/g, '')
+            .replace(/\r?\n/g, '');
           if (role === "user") {
-            parentTranscript += `Customer: ${textContent}\n`;
+            parentTranscript += `> caller: ${textContent}\n`;
           } else if (role === "assistant") {
-            parentTranscript += `Assistant: ${textContent}\n`;
+            parentTranscript += `> agent: ${textContent}\n`;
           }
         }
       }
