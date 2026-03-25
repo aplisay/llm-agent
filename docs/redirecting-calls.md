@@ -57,6 +57,14 @@ Additionally, a builtin `transfer_status` function is always available to check 
 }
 ```
 
+### Tool Result Chaining for Transfer Numbers (LLM-safe)
+
+The builtin `transfer` function’s `number` parameter can be sourced from call metadata using `source: "metadata"`.
+
+Metadata dot-notation supports arbitrary depth, including values primed from earlier tool calls and stored at `metadata.toolsCalls.<toolName>.parameter` or `metadata.toolsCalls.<toolName>.result` (for JSON tool results). References to `metadata.toolsCalls...` from tool inputs are permitted on **LiveKit agents only**.
+
+For a complete worked example (DB-backed receptionist transfer number), see [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md).
+
 ### Transfer Types
 
 The `transfer` function supports two types of transfers:
