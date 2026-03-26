@@ -21,13 +21,31 @@ You can reference either of these with `source: "metadata"` using arbitrary-dept
 
 ## Security model for “hardwiring” sensitive values
 
-The key safety property is this: if a tool parameter is defined with `source: "metadata"`, the LLM cannot “invent” or “prompt-inject” the value because that parameter is resolved server-side from metadata.
+The key safety property is this: if a tool parameter is defined with `source: "metadata"`, the LLM cannot “invent” or replace the value because that parameter is resolved algorithmically by the agent framework from metadata. This guards against, for example, prompt injection attacks being used to inject harmful values into critical function calls.
 
-In particular, the built-in `transfer` function’s `number` parameter is only allowed as `static` or `metadata` (never `generated`). That means you can:
+An example of this is the built-in `transfer` function, whose `number` parameter is only allowed as `static` or `metadata` (never `generated`). That means you can:
 
 - Load the correct transfer directory number from a database using a tool call.
 - Use the result as server-side metadata input to `transfer`.
 - Prevent the LLM from ever supplying (or overriding) the transfer destination.
+
+Other examples may include things like determining a `user ID` or token using a verification workflow and then using this as a bearer credential for later tools calls.
+
+## Redaction for absolute secrecy
+
+Metadata priming gives **integrity**: the LLM cannot modify the final value because the downstream tool input is resolved server-side from metadata.
+
+When you also need **confidentiality** (the LLM should not even see sensitive data), use `redact: true` on the producing function definition.
+
+With `redact: true` (for handlers with dynamic metadata support):
+
+1. The function still executes normally.
+2. The real result is still written to `metadata.toolsCalls.<function>.result`.
+3. The LLM does not receive the real payload:
+   - success response to LLM: `"OK - function completed"`
+   - failure response to LLM: `"FAILED - invocation failed"` (with `error` details, but result data redacted)
+
+This is the strongest pattern for sensitive handoff values such as transfer destinations, auth artifacts, account routing IDs, or policy decisions: the orchestration layer can use the real data, while the model never sees it.
 
 ## LiveKit-only enforcement
 
@@ -52,6 +70,7 @@ Define a tool (implemented as `rest` here) that looks up the directory number:
   "name": "lookup_receptionist_transfer_number",
   "description": "DB lookup for the receptionist transfer directory number",
   "implementation": "rest",
+  "redact": true,
   "key": "",
   "method": "get",
   "url": "https://crm.example.com/reception/transfer-number?department={department}",
@@ -68,6 +87,8 @@ Define a tool (implemented as `rest` here) that looks up the directory number:
   }
 }
 ```
+
+Because `redact` is `true`, the LLM sees only `"OK - function completed"` (or `"FAILED - invocation failed"`), while the real `transferNumber` is still written to `metadata.toolsCalls...`.
 
 Assume the REST API returns JSON like:
 
@@ -123,4 +144,4 @@ Concretely:
 
 ## Important limitation
 
-This pattern depends on dynamic metadata updates during the lifecycle of an agent. These are only implemented on agents where the tools call runtime is implemented within the Aplisay infrastructure (currently Jambonz and Livekit agents). This mechanism isn't available in other environments (e.g. native Ultravox WebRTC agents). If you are using this mechanism then you must must use the Aplisay `livekit:` variant of the Ultravox model string.
+This pattern depends on dynamic metadata updates during the lifecycle of an agent. These are only implemented on agents where the tools call runtime is implemented within the Aplisay infrastructure (currently Jambonz and Livekit agents). This mechanism isn't available in other environments (e.g. native Ultravox WebRTC agents). If you are using this mechanism then you must use the Aplisay `livekit:` variant of the Ultravox model string.

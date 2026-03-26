@@ -160,5 +160,59 @@ describe('function-handler metadata deep paths', () => {
       )
     ).rejects.toThrow('Access to metadata.toolsCalls is only allowed in LiveKit agents');
   });
+
+  test('redacts successful function result to LLM while storing real metadata result', async () => {
+    const metadata = {};
+    const functions = [
+      {
+        name: 'lookupSensitive',
+        implementation: 'stub',
+        redact: true,
+        input_schema: { properties: {} },
+        result: '{"transferNumber":"+44123456789"}',
+      },
+    ];
+
+    const { function_results } = await functionHandler(
+      [{ name: 'lookupSensitive', input: {} }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).toBe('OK - function completed');
+    expect(metadata.toolsCalls.lookupSensitive.result).toEqual({ transferNumber: '+44123456789' });
+  });
+
+  test('redacts failed function result to LLM while preserving error object', async () => {
+    const metadata = {};
+    const functions = [
+      {
+        name: 'brokenLookup',
+        implementation: 'rest',
+        redact: true,
+        method: 'get',
+        url: 'http://127.0.0.1:1/never-works',
+        input_schema: { properties: {} },
+      },
+    ];
+
+    const { function_results } = await functionHandler(
+      [{ name: 'brokenLookup', input: {} }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).toBe('FAILED - invocation failed');
+    expect(function_results[0].error).toBeDefined();
+    expect(metadata.toolsCalls.brokenLookup.result).toBeDefined();
+  });
 });
 

@@ -1,7 +1,7 @@
 import { validateToolsCallsMetadataUsage } from '../lib/handlers/toolsCalls-metadata-capability.js';
 
 describe('toolsCalls metadata capability enforcement', () => {
-  test('allows toolsCalls.* usage when Handler opts in via metadata.toolCalls', () => {
+  test('allows toolsCalls.* usage when Handler opts in via hasDynamicMetadata', () => {
     class FakeLivekitLikeHandler {
       static name = 'not-livekit';
       static hasDynamicMetadata = true;
@@ -62,6 +62,25 @@ describe('toolsCalls metadata capability enforcement', () => {
 
     expect(() => validateToolsCallsMetadataUsage({ Handler: FakeHandlerNoOptIn, functions }))
       .toThrow('Access to metadata.toolsCalls is only allowed in LiveKit agents');
+  });
+
+  test('rejects redact=true when Handler does not opt in', () => {
+    class FakeHandlerNoOptIn {
+      static name = 'whatever';
+      static hasDynamicMetadata = false;
+    }
+
+    const functions = {
+      sensitiveLookup: {
+        implementation: 'stub',
+        redact: true,
+        input_schema: { properties: {} },
+        result: '{"ok":true}',
+      },
+    };
+
+    expect(() => validateToolsCallsMetadataUsage({ Handler: FakeHandlerNoOptIn, functions }))
+      .toThrow('Function result redaction is only allowed in handlers with hasDynamicMetadata');
   });
 });
 

@@ -21,7 +21,7 @@ import * as ultravox from "../plugins/ultravox/src/index.js";
 
 // Internal modules
 import logger, { setInvocationLogBuffer, getCaptureStats } from "./logger.js";
-import * as functionHandlerModule from "../agent-lib/function-handler.js";
+import { functionHandler } from "../agent-lib/function-handler.js";
 import { bridgeParticipant } from "./telephony.js";
 import {
   getInstanceById,
@@ -1312,7 +1312,7 @@ function createTools({
                 { name: fnc.name, args, fnc },
                 `Got function call ${fnc.name}`,
               );
-              let result = (await functionHandlerModule.functionHandler(
+              let result = (await functionHandler(
                 [{ ...fnc, input: args }],
                 functions,
                 keys,
@@ -1331,7 +1331,10 @@ function createTools({
                     };
                   },
                 },
-                { allowToolsCallsMetadataPaths: true }
+                {
+                  allowToolsCallsMetadataPaths: true,
+                  allowRedactedFunctionResults: true,
+                },
               )) as FunctionResult;
               let { function_results } = result;
               let [{ result: data, error }] = function_results;
