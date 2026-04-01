@@ -24,6 +24,7 @@ type Modality = "text" | "audio";
 interface ModelOptions {
   modalities: Modality[];
   instructions: string;
+  callId?: string;
   voice?: api_proto.Voice;
   inputAudioFormat: api_proto.AudioFormat;
   outputAudioFormat: api_proto.AudioFormat;
@@ -244,6 +245,9 @@ export class RealtimeModel extends llm.RealtimeModel {
   numChannels = api_proto.NUM_CHANNELS;
   inFrameSize = api_proto.IN_FRAME_SIZE;
   outFrameSize = api_proto.OUT_FRAME_SIZE;
+  get model(): api_proto.Model {
+    return this.#defaultOpts.model;
+  }
 
   #defaultOpts: ModelOptions;
   #sessions: RealtimeSession[] = [];
@@ -251,6 +255,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   constructor({
     modalities = ["text", "audio"],
     instructions = "",
+    callId,
     voice,
     inputAudioFormat = "pcm16",
     outputAudioFormat = "pcm16",
@@ -267,6 +272,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   }: {
     modalities?: ["text", "audio"] | ["text"];
     instructions?: string;
+    callId?: string;
     voice?: api_proto.Voice;
     inputAudioFormat?: api_proto.AudioFormat;
     outputAudioFormat?: api_proto.AudioFormat;
@@ -311,6 +317,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     this.#defaultOpts = {
       modalities,
       instructions,
+      callId,
       voice,
       inputAudioFormat,
       outputAudioFormat,
@@ -377,6 +384,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #task: Promise<void> | undefined;
   #closing = true;
   #sessionFailed = false;
+  #callCorrelationId: string | null = null;
   #sendQueue = new Queue<any>();
   #sendTaskRunning = false;
   #instanceId: string; // Unique ID for this instance to help debug
@@ -429,6 +437,7 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#client = client;
     this.#fncCtx = fncCtx;
     this.#chatCtx = chatCtx;
+    this.#callCorrelationId = opts.callId ?? null;
 
     // Start the session immediately if tools are available, otherwise wait for updateTools
     if (fncCtx && Object.keys(fncCtx).length > 0) {
@@ -953,11 +962,11 @@ export class RealtimeSession extends llm.RealtimeSession {
           );
         }
 
-        this.#logger.info({ modelData }, "Creating Ultravox call");
+        this.#logger.info(
+          { callId: this.#callCorrelationId },
+          "Creating Ultravox call"
+        );
         const callResponse = await this.#client.createCall(modelData);
-        this.#logger.info({ callResponse }, "Created Ultravox call");
-        this.#callId = callResponse.callId;
-
         if (
           callResponse.ended ||
           !callResponse.callId ||
@@ -969,13 +978,24 @@ export class RealtimeSession extends llm.RealtimeSession {
           reject(error);
           return;
         }
+        this.#callId = callResponse.callId;
+        this.#logger.info(
+          {
+            ultravoxCallId: this.#callId,
+            callId: this.#callCorrelationId,
+          },
+          "Created Ultravox call"
+        );
+
+
 
         // Connect to Ultravox WebSocket
         const joinUrl = new URL(callResponse.joinUrl);
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
-        this.#logger.debug({ joinUrl, callResponse }, "Connecting to Ultravox WebSocket");
+        this.#logger.info({ joinUrl, ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "Connecting to Ultravox WebSocket");
         this.#ws = new WebSocket(joinUrl.toString());
+        this.#logger.info({ ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "WebSocket created");
 
         this.#ws.onerror = (error) => {
           const errorMsg = "Ultravox WebSocket error: " + error.message;

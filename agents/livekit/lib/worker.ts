@@ -1926,6 +1926,7 @@ async function runAgentWorker({
           voice: agent?.options?.tts?.voice,
           maxDuration: maxDurationString,
           instructions: agent?.prompt || "You are a helpful assistant.",
+          callId: call.id,
         };
         if (providerModelName) {
           llmOptions.model = providerModelName;
@@ -2130,8 +2131,8 @@ async function runAgentWorker({
         logger.debug({ call }, "concurrency reserved, starting session");
 
         operation = "sessionStart";
-        logger.debug(
-          { record: recordingOptions?.enabled ?? false },
+        logger.info(
+          { callId: call.id, record: recordingOptions?.enabled ?? false },
           "sessionStart with recording? enabled",
         );
         await Promise.race([
@@ -2144,6 +2145,7 @@ async function runAgentWorker({
           }),
           startupErrorPromise,
         ]);
+        logger.info({ callId: call.id }, "session started");
 
         // Once startup has succeeded, we no longer need the startup-specific
         // error watcher; subsequent errors are treated as runtime failures.
