@@ -953,9 +953,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           );
         }
 
-        this.#logger.info({ modelData }, "Creating Ultravox call");
+        this.#logger.info({}, "Creating Ultravox call");
         const callResponse = await this.#client.createCall(modelData);
-        this.#logger.info({ callResponse }, "Created Ultravox call");
         this.#callId = callResponse.callId;
 
         if (
@@ -969,16 +968,18 @@ export class RealtimeSession extends llm.RealtimeSession {
           reject(error);
           return;
         }
+        this.#logger.info({ ultravoxCallId: this.#callId }, "Created Ultravox call");
 
         // Connect to Ultravox WebSocket
         const joinUrl = new URL(callResponse.joinUrl);
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
-        this.#logger.debug(
-          "Connecting to Ultravox WebSocket at",
-          joinUrl.toString()
+        this.#logger.info(
+          { joinUrl: joinUrl?.toString(), ultravoxCallId: this.#callId },
+          "Connecting to Ultravox WebSocket"
         );
         this.#ws = new WebSocket(joinUrl.toString());
+
 
         this.#ws.onerror = (error) => {
           const errorMsg = "Ultravox WebSocket error: " + error.message;
@@ -992,6 +993,9 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#closing = false;
         this.#sessionId = this.#callId;
         this.#expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+        this.#logger.info({ ultravoxCallId: this.#callId, joinURL: joinUrl?.toString() },
+          "Connected to Ultravox WebSocket"
+        );
 
         // Flush any buffered audio frames now that WebSocket is ready
         this.#flushAudioBuffer();

@@ -79,6 +79,8 @@ const roomService = new RoomServiceClient(
 
 logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
+Error.stackTraceLimit = 40;
+
 /**
  * Entry point for the Livekit agent, provides a function that takes a context object and starts the agent
  *
@@ -1707,6 +1709,7 @@ async function runAgentWorker({
           }
         );
 
+        logger.info({ session }, "Starting session");
         operation = "sessionStart";
         await Promise.race([
           session.start({
@@ -1715,6 +1718,7 @@ async function runAgentWorker({
           }),
           startupErrorPromise,
         ]);
+        logger.info({ session }, "Session started");
         callStarted = true;
 
         // Once startup has succeeded, we no longer need the startup-specific
@@ -1723,6 +1727,7 @@ async function runAgentWorker({
 
         operation = "connect";
         await ctx.connect();
+        logger.info({ session }, "Connected to LiveKit");
       },
       15000,
       new Error("Call setup timeout (runAgentWorker)"),
