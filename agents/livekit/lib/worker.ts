@@ -1856,7 +1856,6 @@ async function runAgentWorker({
       logger.debug("cleanup and close: context shutdown complete");
       exitStatus.contextShutdown = true;
       logger.info({ exitStatus, reason }, "cleanup and close completed");
-      process.exit(0);
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
@@ -1956,6 +1955,7 @@ async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,
           async (ev: voice.AgentStateChangedEvent) => {
+            logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
               logger.debug({ room }, "room close inititiated");
