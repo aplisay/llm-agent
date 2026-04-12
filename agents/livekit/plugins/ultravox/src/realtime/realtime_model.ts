@@ -973,6 +973,7 @@ export class RealtimeSession extends llm.RealtimeSession {
           !callResponse.joinUrl
         ) {
           const error = new Error("Failed to create Ultravox call");
+          this.#logger.error({ callResponse }, "Failed to create Ultravox call");
           this.#sessionFailed = true;
           this.emitError({ error, recoverable: false });
           reject(error);
@@ -1009,6 +1010,9 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#closing = false;
         this.#sessionId = this.#callId;
         this.#expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+        this.#logger.info({ ultravoxCallId: this.#callId, joinURL: joinUrl?.toString() },
+          "Connected to Ultravox WebSocket"
+        );
 
         // Flush any buffered audio frames now that WebSocket is ready
         this.#flushAudioBuffer();
@@ -1195,6 +1199,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       } catch (error) {
         const err =
           error instanceof Error ? error : new Error(String(error));
+        this.#logger.error({ error: err, message: err.message, stack: err.stack }, "Error in session open");
         this.#sessionFailed = true;
         this.emitError({ error: err, recoverable: false });
         reject(err);

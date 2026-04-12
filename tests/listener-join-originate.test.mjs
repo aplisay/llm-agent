@@ -521,7 +521,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     await originateCall(originateReq, originateRes);
 
     // Originate should fail for WebRTC listener (no phone number associated)
-    expect(originateRes._status).toBe(500);
+    expect(originateRes._status).toBe(404);
     expect(originateRes._body).toHaveProperty('error');
 
   });

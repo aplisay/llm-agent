@@ -240,8 +240,6 @@ export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
 export interface InvocationLogPayload {
   userId: string;
   organisationId: string;
-  agentId: string;
-  instanceId: string;
   callId: string;
   subsystem?: string;
   log: any;

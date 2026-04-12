@@ -8,6 +8,7 @@ import { LogLevel } from 'node_modules/@livekit/rtc-node/dist/proto/ffi_pb.js';
 const logger = loggerModule.default;
 
 logger.info({ argv: process.argv }, 'worker started');
+Error.stackTraceLimit = 40;
 
 if (process.argv[2] === 'setup') {
   runSetup();

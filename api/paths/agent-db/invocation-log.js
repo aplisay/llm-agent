@@ -63,11 +63,11 @@ export default function (logger, voices, wsServer) {
 };
 
 const invocationLogCreate = (async (req, res) => {
-  const { userId, organisationId, agentId, instanceId, callId, log: logPayload, subsystem } = req.body;
+  const { userId, organisationId, callId, log: logPayload, subsystem } = req.body;
 
-  if (!userId || !organisationId || !agentId || !instanceId || !callId || !logPayload) {
+  if (!userId || !organisationId || !callId || !logPayload) {
     return res.status(400).send({
-      error: 'Missing required fields: userId, organisationId, agentId, instanceId, callId, log'
+      error: 'Missing required fields: userId, organisationId, callId, log'
     });
   }
 
@@ -86,8 +86,6 @@ const invocationLogCreate = (async (req, res) => {
     const record = await InvocationLog.create({
       userId,
       organisationId,
-      agentId,
-      instanceId,
       callId,
       subsystem: effectiveSubsystem,
       log: {
@@ -99,8 +97,6 @@ const invocationLogCreate = (async (req, res) => {
     res.status(201).send({
       id: record.id,
       callId: record.callId,
-      agentId: record.agentId,
-      instanceId: record.instanceId,
       organisationId: record.organisationId,
       userId: record.userId,
       subsystem: record.subsystem,
@@ -124,7 +120,7 @@ invocationLogCreate.apiDoc = {
       'application/json': {
         schema: {
           type: 'object',
-          required: ['userId', 'organisationId', 'agentId', 'instanceId', 'callId', 'log'],
+          required: ['userId', 'organisationId', 'callId', 'log'],
           properties: {
             userId: {
               type: 'string',
@@ -133,14 +129,6 @@ invocationLogCreate.apiDoc = {
             organisationId: {
               type: 'string',
               description: 'Organisation ID that owns the agent/call',
-            },
-            agentId: {
-              type: 'string',
-              description: 'Agent ID handling this call',
-            },
-            instanceId: {
-              type: 'string',
-              description: 'Instance/listener ID handling this call',
             },
             callId: {
               type: 'string',
@@ -173,8 +161,6 @@ invocationLogCreate.apiDoc = {
             properties: {
               id: { type: 'string', format: 'uuid' },
               callId: { type: 'string', format: 'uuid' },
-              agentId: { type: 'string', format: 'uuid' },
-              instanceId: { type: 'string', format: 'uuid' },
               organisationId: { type: 'string' },
               userId: { type: 'string' },
               subsystem: { type: 'string' },

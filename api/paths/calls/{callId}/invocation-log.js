@@ -36,8 +36,6 @@ export default function (logger) {
 
       return {
         callId: record.callId,
-        agentId: record.agentId,
-        instanceId: record.instanceId,
         organisationId: record.organisationId,
         userId: record.userId,
         subsystem: record.subsystem,

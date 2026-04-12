@@ -330,8 +330,7 @@ async function handleBlindBridgeTransfer(
  * Used for SIP participants with canRefer capability
  */
 async function handleBlindReferTransfer(
-  context: TransferContext,
-  finaliseBridgedCallFn: () => Promise<Call | null>
+  context: TransferContext
 ): Promise<TransferResult> {
   const {
     room,
@@ -381,8 +380,6 @@ async function handleBlindReferTransfer(
     );
 
     logger.info({ tpResult }, "transfer participant executed via SIP REFER");
-    await finaliseBridgedCallFn();
-
     setTransferState("none", "Transfer completed successfully");
     return {
       status: "OK",
@@ -1494,7 +1491,7 @@ export async function handleTransfer(
   if (operation === "blind") {
     if (isSip && canRefer && !useBridged) {
       // Case 2: Blind transfer using SIP REFER
-      return handleBlindReferTransfer(context, finaliseBridgedCallFn);
+      return handleBlindReferTransfer(context);
     } else {
       // Case 1: Blind transfer by bridging (forced or when REFER not available)
       return handleBlindBridgeTransfer(

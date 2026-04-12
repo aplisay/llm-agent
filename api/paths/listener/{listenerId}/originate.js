@@ -53,8 +53,12 @@ const originateCall = (async (req, res) => {
       }
       aplisayId = callerPhoneNumber.aplisayId;
     } else {
-      // Try phone registrations table
-      callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
+      // Try phone registrations table (PK is UUID; invalid UUID strings make Postgres throw)
+      const uuidRe =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (uuidRe.test(callerId)) {
+        callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
+      }
       if (!callerPhoneRegistration || callerPhoneRegistration.organisationId !== organisationId) {
         return res.status(404).send({
           error: `Caller ${callerId} not found in phone numbers or registrations table`

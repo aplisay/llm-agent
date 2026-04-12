@@ -143,6 +143,8 @@ function pinoLogExporter(): void {
 }
 pinoLogExporter();
 
+Error.stackTraceLimit = 40;
+
 /**
  * Entry point for the Livekit agent, provides a function that takes a context object and starts the agent
  *
@@ -1719,8 +1721,6 @@ async function runAgentWorker({
       await saveInvocationLog({
         userId: activeCall.userId,
         organisationId: activeCall.organisationId,
-        agentId: activeCall.agentId,
-        instanceId: activeCall.instanceId,
         callId: activeCall.id,
         subsystem: "livekit-agent",
         log: {
@@ -2130,6 +2130,7 @@ async function runAgentWorker({
         callStarted = true;
         logger.debug({ call }, "concurrency reserved, starting session");
 
+        logger.info({ session }, "Starting session");
         operation = "sessionStart";
         logger.info(
           { callId: call.id, record: recordingOptions?.enabled ?? false },
@@ -2152,6 +2153,7 @@ async function runAgentWorker({
         (startupErrorUnsubscribe as (() => void) | null)?.();
         operation = "connect";
         await ctx.connect();
+        logger.info({ session }, "Connected to LiveKit");
       },
       15000,
       new Error("Call setup timeout (runAgentWorker)"),

@@ -632,14 +632,6 @@ components:
           type: string
           description: Unique ID of the call this invocation log is associated with
           example: 648aa45d-204a-4c0c-a1e1-419406254134
-        agentId:
-          type: string
-          description: ID of the agent that handled this call
-          example: 648aa45d-204a-4c0c-a1e1-419406252234
-        instanceId:
-          type: string
-          description: ID of the listener/instance that handled this call
-          example: 5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777
         organisationId:
           type: string
           description: Organisation ID that owns the agent/call
