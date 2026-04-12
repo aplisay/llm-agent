@@ -1837,33 +1837,6 @@ async function runAgentWorker({
         dtmfBuffer = "";
       }
 
-      try {
-        if (session) {
-          await Promise.resolve(session.close()).catch((e: unknown) => {
-            const err = e instanceof Error ? e : new Error(String(e));
-            const code = (e as { code?: string })?.code;
-            if (
-              code === "ERR_INVALID_STATE" ||
-              /already closed|invalid state/i.test(String(err.message))
-            ) {
-              logger.debug(
-                { code, message: err.message },
-                "session already closed, skipping close",
-              );
-            } else {
-              logger.info(
-                { error: err },
-                "error closing session (may have already been called)",
-              );
-            }
-          });
-        }
-      } catch (e) {
-        logger.info(
-          { e },
-          "error closing session (may have already been called)",
-        );
-      }
 
       await getActiveCall()
         .end(reason)
@@ -1871,14 +1844,16 @@ async function runAgentWorker({
           logger.error({ e }, "error ending call");
         });
       exitStatus.callEnded = true;
-
+      logger.debug("cleanup and close: call ended, deleting room");
       await roomService.deleteRoom(room.name).catch((e) => {
         logger.error({ e }, "error deleting room");
       });
       exitStatus.roomDeleted = true;
 
       invocationLogReason = reason;
+      logger.debug("cleanup and close: shutting down context");
       await ctx.shutdown(reason);
+      logger.debug("cleanup and close: context shutdown complete");
       exitStatus.contextShutdown = true;
       logger.info({ exitStatus, reason }, "cleanup and close completed");
       process.exit(0);
@@ -1980,19 +1955,7 @@ async function runAgentWorker({
 
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,
-          (ev: voice.AgentStateChangedEvent) => {
-            sendMessage({ status: ev.newState });
-            if (ev.newState === "listening" && checkForHangup() && room.name) {
-              logger.debug({ room }, "room close inititiated");
-              getActiveCall().end(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
-              roomService.deleteRoom(room.name);
-            }
-          },
-        );
-
-        session.on(
-          voice.AgentSessionEventTypes.AgentStateChanged,
-          (ev: voice.AgentStateChangedEvent) => {
+          async (ev: voice.AgentStateChangedEvent) => {
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
               logger.debug({ room }, "room close inititiated");
@@ -2005,8 +1968,7 @@ async function runAgentWorker({
                   "error ending transfer activity during hangup",
                 );
               });
-              getActiveCall().end(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
-              roomService.deleteRoom(room.name);
+              await cleanupAndClose(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
             }
           },
         );
@@ -2273,7 +2235,10 @@ async function runAgentWorker({
                 "error ending transfer activity during bridged participant disconnect",
               );
             }
+            logger.debug("transfer activity ended, calling cleanup and close");
             await cleanupAndClose(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
+            logger.debug("cleanup and close done");
+
             setBridgedParticipant(null as unknown as SipParticipant);
           }
         } else if (p.info?.sid === participant?.sid) {

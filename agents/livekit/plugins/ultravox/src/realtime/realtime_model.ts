@@ -948,6 +948,7 @@ export class RealtimeSession extends llm.RealtimeSession {
               inputSampleRate: 24000,
               outputSampleRate: 24000,
               clientBufferSizeMs: 60,
+              mediaIdleTimeout: "30s",
             },
           },
           firstSpeaker: this.#opts.firstSpeaker,

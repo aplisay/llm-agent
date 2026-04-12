@@ -62,6 +62,7 @@ export interface UltravoxModelData {
       inputSampleRate: number;
       outputSampleRate: number;
       clientBufferSizeMs: number;
+      mediaIdleTimeout?: string;
     };
   };
   firstSpeaker?: string;
