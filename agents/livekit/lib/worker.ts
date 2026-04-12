@@ -95,6 +95,8 @@ const roomService = new RoomServiceClient(
 
 logger.debug({ events: voice.AgentSessionEventTypes }, "events");
 
+Error.stackTraceLimit = 40;
+
 const invocationLogs: unknown[] = [];
 setInvocationLogBuffer(invocationLogs);
 function pinoLogExporter(): void {
