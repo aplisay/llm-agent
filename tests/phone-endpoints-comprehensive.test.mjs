@@ -237,6 +237,27 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       });
     });
 
+    test('should expose trunkId and not aplisayId for e164-ddi endpoints', async () => {
+      const req = createMockRequest({
+        query: { type: 'e164-ddi' },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await phoneEndpointList(req, res);
+
+      expect(res._status).toBe(200);
+      const endpoints = res._body.items;
+      endpoints.forEach(ep => {
+        // Public API should use trunkId and never expose aplisayId
+        expect(ep).toHaveProperty('trunkId');
+        expect(ep).not.toHaveProperty('aplisayId');
+        // Provisioned flag should always be present for numbers
+        expect(ep).toHaveProperty('provisioned');
+      });
+    });
+
     test('should filter by type=phone-registration', async () => {
       const req = createMockRequest({
         query: { type: 'phone-registration' },
@@ -521,6 +542,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('number', '1555123456');
       expect(res._body).toHaveProperty('handler');
       expect(res._body).toHaveProperty('outbound');
+      // Public surface should expose trunkId (if assigned), not aplisayId
+      expect(res._body).toHaveProperty('trunkId');
+      expect(res._body).toHaveProperty('provisioned');
       expect(res._body).not.toHaveProperty('id');
       expect(res._body).not.toHaveProperty('name'); // Phone numbers don't have name field
     });
@@ -712,6 +736,108 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(409);
       expect(res._body).toHaveProperty('error');
+    });
+
+    test('should prevent creating number on trunk owned by different organisation', async () => {
+      const { Organisation, Trunk } = models;
+      
+      // Create two organisations
+      const org1Id = randomUUID();
+      const org2Id = randomUUID();
+      await Organisation.create({ id: org1Id, name: 'Org 1' });
+      await Organisation.create({ id: org2Id, name: 'Org 2' });
+
+      // Create a trunk associated only with org2
+      const foreignTrunk = await Trunk.create({
+        id: 'cross-org-trunk',
+        name: 'Cross Org Trunk',
+        outbound: true
+      });
+      await foreignTrunk.addOrganisation(org2Id);
+
+      try {
+        // As org1, attempt to create a number using org2's trunk
+        const req = createMockRequest({
+          body: {
+            type: 'e164-ddi',
+            phoneNumber: '15553334444',
+            trunkId: foreignTrunk.id,
+            handler: 'livekit',
+            outbound: true
+          },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: org1Id };
+
+        await createPhoneEndpoint(req, res);
+
+        expect(res._status).toBe(400);
+        expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+      } finally {
+        await Trunk.destroy({ where: { id: 'cross-org-trunk' } });
+        await Organisation.destroy({ where: { id: [org1Id, org2Id] } });
+      }
+    });
+
+    test('should inherit handler from trunk and reject outbound=true when trunk.outbound=false', async () => {
+      const { Organisation, Trunk, PhoneNumber } = models;
+
+      const orgId = randomUUID();
+      await Organisation.create({ id: orgId, name: 'Handler Test Org' });
+
+      // Create a trunk with a specific handler and outbound=false
+      const trunk = await Trunk.create({
+        id: 'handler-test-trunk',
+        name: 'Handler Test Trunk',
+        handler: 'jambonz',
+        outbound: false
+      });
+      await trunk.addOrganisation(orgId);
+
+      try {
+        // First, create a number with outbound=false and a conflicting handler; trunk handler should win
+        const createReq1 = createMockRequest({
+          body: {
+            type: 'e164-ddi',
+            phoneNumber: '15556667777',
+            trunkId: trunk.id,
+            outbound: false
+          },
+          headers: {}
+        });
+        const res1 = createMockResponse();
+        res1.locals.user = { organisationId: orgId };
+
+        await createPhoneEndpoint(createReq1, res1);
+        expect(res1._status).toBe(201);
+
+        const created = await PhoneNumber.findByPk('15556667777');
+        expect(created).not.toBeNull();
+        expect(created.handler).toBe('jambonz');
+        expect(created.outbound).toBe(false);
+
+        // Second, attempt to create another number with outbound=true on a non-outbound trunk
+        const createReq2 = createMockRequest({
+          body: {
+            type: 'e164-ddi',
+            phoneNumber: '15556668888',
+            trunkId: trunk.id,
+            outbound: true
+          },
+          headers: {}
+        });
+        const res2 = createMockResponse();
+        res2.locals.user = { organisationId: orgId };
+
+        await createPhoneEndpoint(createReq2, res2);
+        expect(res2._status).toBe(400);
+        expect(res2._body).toHaveProperty('error', 'Outbound calling is not enabled on the selected trunk');
+      } finally {
+        await PhoneNumber.destroy({ where: { number: ['15556667777', '15556668888'] } });
+        await Trunk.destroy({ where: { id: 'handler-test-trunk' } });
+        await Organisation.destroy({ where: { id: orgId } });
+      }
     });
 
     test('should return 400 for invalid SIP URI', async () => {
@@ -1171,6 +1297,33 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
+    test('should prevent updating shared-pool number (organisationId null)', async () => {
+      const { PhoneNumber } = models;
+      const sharedNumber = await PhoneNumber.create({
+        number: '1999888777',
+        handler: 'livekit',
+        outbound: true,
+        organisationId: null
+      });
+
+      try {
+        const req = createMockRequest({
+          params: { identifier: sharedNumber.number },
+          body: { outbound: false },
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await updatePhoneEndpoint(req, res);
+
+        expect(res._status).toBe(403);
+        expect(res._body).toHaveProperty('error');
+      } finally {
+        await PhoneNumber.destroy({ where: { number: '1999888777' } });
+      }
+    });
+
     test('should handle missing identifier', async () => {
       const req = createMockRequest({
         params: {},
@@ -1288,6 +1441,33 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(403);
       expect(res._body).toHaveProperty('error');
+    });
+
+    test('should prevent deleting shared-pool number (organisationId null)', async () => {
+      const { PhoneNumber } = models;
+      const sharedNumber = await PhoneNumber.create({
+        number: '1999777666',
+        handler: 'livekit',
+        outbound: true,
+        organisationId: null
+      });
+
+      try {
+        const req = createMockRequest({
+          params: { identifier: sharedNumber.number },
+          query: {},
+          headers: {}
+        });
+        const res = createMockResponse();
+        res.locals.user = { organisationId: testOrgId };
+
+        await deletePhoneEndpoint(req, res);
+
+        expect(res._status).toBe(403);
+        expect(res._body).toHaveProperty('error');
+      } finally {
+        await PhoneNumber.destroy({ where: { number: '1999777666' } });
+      }
     });
 
     test('should handle missing identifier', async () => {
@@ -1928,11 +2108,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         });
         testUserId = testUser.id;
 
-        // Create test trunk
+        // Create test trunk (outbound: true so DDI create with outbound works in integration tests)
         const testTrunk = await Trunk.create({
           id: 'test-trunk-123',
           name: 'Test Trunk',
-          outbound: false
+          outbound: true
         });
         testTrunkId = testTrunk.id;
 
@@ -2265,7 +2445,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           type: 'e164-ddi',
           phoneNumber: uniquePhoneNumber,
           trunkId: 'test-trunk-123', // Use the valid trunk created in beforeEach
-          handler: 'livekit',
           outbound: true
         },
         headers: {}
@@ -2284,7 +2463,6 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           type: 'e164-ddi',
           phoneNumber: '1555999889',
           trunkId: 'non-existent-trunk',
-          handler: 'livekit',
           outbound: true
         },
         headers: {}

@@ -11,5 +11,7 @@ RUN npm install -g pnpm@latest-10
 RUN yarn install --development
 RUN yarn build
 ENV NODE_ENV production
+RUN mkdir -p credentials
+RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
 ENTRYPOINT ["node", "dist/realtime.mjs"]
 CMD ["start"]

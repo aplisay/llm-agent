@@ -1,12 +1,10 @@
-import dotenv from 'dotenv';
-import { SipClient } from 'livekit-server-sdk';
-import { SIPHeaderOptions, SIPTransport } from '@livekit/protocol';
-import * as loggerModule from '../agent-lib/logger.js';
-import { getPhoneNumbers } from './api-client.js';
+import dotenv from "dotenv";
+import { SipClient } from "livekit-server-sdk";
+import { SIPHeaderOptions, SIPTransport, SIPMediaEncryption } from "@livekit/protocol";
+import logger from "./logger.js";
+import { getPhoneNumbers, setPhoneNumberProvisioned } from "./api-client.js";
 
 dotenv.config();
-
-const logger = loggerModule.default;
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
   LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
@@ -26,11 +24,12 @@ export async function setupSIPClients(): Promise<any> {
   let inboundSipTrunk = inboundSipTrunks.find(t => t.name === 'Aplisay');
   if (!inboundSipTrunk) {
     inboundSipTrunk = await sipClient.createSipInboundTrunk(
-      'Aplisay',
+      "Aplisay",
       phoneNumbers,
       {
-        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS
-      }
+        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS,
+        mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
+      },
     );
     logger.info({ inboundSipTrunk }, 'SIP trunk created');
   }
@@ -43,6 +42,7 @@ export async function setupSIPClients(): Promise<any> {
         numbers: phoneNumbers,
         includeHeaders: SIPHeaderOptions.SIP_X_HEADERS,
         krispEnabled: true,
+        mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
       } as any);
     }
     logger.info({ inboundSipTrunk }, 'SIP trunk updated');
@@ -93,6 +93,18 @@ export async function setupSIPClients(): Promise<any> {
   }
   if (!dispatchRule) {
     throw new Error('Livekit SIP dispatch rule not found and can\'t be created');
+  }
+
+  // At this point, phoneNumbers have been synced to LiveKit trunks.
+  // Mark only unprovisioned LiveKit phone numbers as provisioned in the platform.
+  try {
+    const unprovisionedNumbers = phoneNumbersData.filter((p: any) => !p.provisioned);
+    for (const p of unprovisionedNumbers) {
+      // phoneNumbersData entries have numbers without '+'; PATCH normalised number
+      await setPhoneNumberProvisioned(p.number, true);
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to mark some phone numbers as provisioned');
   }
 
   return { phoneNumbers, dispatchRule };

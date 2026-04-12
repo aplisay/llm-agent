@@ -18,7 +18,7 @@ const wsPath = `wss://${server}/audio`
  * @param {Object} params.options Options object containing combined STT, TTS and model options
  */
 export default class JambonzSession {
-  constructor({ path, model, progress, logger, session, options, instanceId, streamUrl }) {
+  constructor({ path, model, progress, logger, session, options, instanceId, streamUrl, metadata }) {
     Object.assign(this, {
       path,
       model,
@@ -29,6 +29,8 @@ export default class JambonzSession {
       instanceId,
       streamUrl
     });
+    // Per-call metadata used for tool parameter resolution (source: "metadata")
+    this.metadata = metadata;
     this.options = options;
     this.waiting = {};
   }
@@ -300,7 +302,7 @@ export default class JambonzSession {
       let waiting = this.#say(this.speak(text));
       this.watchdog();
       logger.debug({ text: this.speak(text), ...this.sayOptions, id: waiting }, 'sent text');
-      let { function_results } = await functionHandler(calls, functions, keys, progress?.send)
+      let { function_results } = await functionHandler(calls, functions, keys, progress?.send, this.metadata)
       logger.debug({ progress, function_results }, 'got function call results');
       try {
         ({ text, hangup, data, calls, error } = {});

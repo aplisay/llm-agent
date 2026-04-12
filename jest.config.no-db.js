@@ -3,7 +3,11 @@ export default {
   testMatch: [
     '**/tests/*.test.mjs',
     '!**/tests/phone-endpoints-comprehensive.test.mjs',
-    '!**/tests/phone-registration.test.mjs'
+    '!**/tests/phone-registration.test.mjs',
+    '!**/tests/agent-concurrency-limit.test.mjs',
+  ],
+  testPathIgnorePatterns: [
+    "/agents/"
   ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',

@@ -1,5 +1,6 @@
 import cors from 'cors';
 import { Agent, Instance } from '../../../../lib/database.js';
+import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -25,6 +26,14 @@ export default function () {
         res.send(room);
       }
       catch (err) {
+        if (err instanceof AgentConcurrencyLimitExceededError) {
+          return res.status(429).send({
+            error: err.message,
+            code: err.code,
+            scope: err.scope,
+            details: err.details,
+          });
+        }
         req.log.error({ message: err?.message, stack: err?.stack }, 'join error');
         res.status(404).send(`no agent ${listenerId}`);
       }

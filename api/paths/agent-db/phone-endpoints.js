@@ -11,12 +11,15 @@ export default function (logger, voices, wsServer) {
   });
   log = logger;
   return {
-    GET: phoneEndpointsList
+    GET: phoneEndpointsList,
+    PATCH: updatePhoneEndpointProvisioning
   };
 };
 
 const phoneEndpointsList = (async (req, res) => {
   let { handler, number, id, type, offset, pageSize, trunkId } = req.query;
+
+  const trunkCandidates = trunkId ? trunkId.split(';') : [];
 
   try {
     // Infer type from id or number if type is not specified
@@ -56,8 +59,9 @@ const phoneEndpointsList = (async (req, res) => {
           return res.send({ items: [], nextOffset: null });
         }
 
+
         // Validate trunkId if provided (for inbound call validation)
-        if (trunkId && phoneNumber.aplisayId !== null && phoneNumber.aplisayId !== trunkId) {
+        if (trunkId && phoneNumber.aplisayId !== null && !trunkCandidates.includes(phoneNumber.aplisayId)) {
           return res.status(400).send({
             error: `Trunk mismatch: call arrived on trunk ${trunkId} but number is assigned to trunk ${phoneNumber.aplisayId || 'none'}`
           });
@@ -163,6 +167,44 @@ const phoneEndpointsList = (async (req, res) => {
     res.status(500).send({ error: 'Internal server error' });
   }
 });
+
+/**
+ * Internal provisioning update endpoint used by LiveKit/Jambonz agents.
+ * Allows the platform to mark a phone number as provisioned (or not) after
+ * pushing configuration to the underlying telephony platform.
+ *
+ * This endpoint is not organisation-scoped and is intended for internal use only.
+ */
+export const updatePhoneEndpointProvisioning = async (req, res) => {
+  const { number } = req.params;
+  const { provisioned } = req.body || {};
+
+  if (!number) {
+    return res.status(400).send({ error: 'Phone number is required' });
+  }
+  if (typeof provisioned !== 'boolean') {
+    return res.status(400).send({ error: 'provisioned must be a boolean' });
+  }
+
+  try {
+    const normalizedNumber = String(number).replace(/^\+/, '');
+    const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+    if (!phoneNumber) {
+      return res.status(404).send({ error: 'Phone endpoint not found' });
+    }
+
+    await phoneNumber.update({ provisioned });
+
+    return res.send({
+      success: true,
+      number: phoneNumber.number,
+      provisioned: !!phoneNumber.provisioned
+    });
+  } catch (err) {
+    log.error(err, 'error updating phone endpoint provisioning');
+    res.status(500).send({ error: 'Internal server error' });
+  }
+};
 
 phoneEndpointsList.apiDoc = {
   summary: 'Returns a list of phone endpoints, optionally filtered by handler.',

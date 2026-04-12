@@ -1,7 +1,7 @@
 import { RoomServiceClient, AccessToken, VideoGrant } from "livekit-server-sdk";
 import { Room, RoomEvent } from "@livekit/rtc-node";
 import { voice, llm } from "@livekit/agents";
-import logger from "../agent-lib/logger.js";
+import logger from "./logger.js";
 import {
   bridgeParticipant,
   transferParticipant,
@@ -330,8 +330,7 @@ async function handleBlindBridgeTransfer(
  * Used for SIP participants with canRefer capability
  */
 async function handleBlindReferTransfer(
-  context: TransferContext,
-  finaliseBridgedCallFn: () => Promise<Call | null>
+  context: TransferContext
 ): Promise<TransferResult> {
   const {
     room,
@@ -381,8 +380,6 @@ async function handleBlindReferTransfer(
     );
 
     logger.info({ tpResult }, "transfer participant executed via SIP REFER");
-    await finaliseBridgedCallFn();
-
     setTransferState("none", "Transfer completed successfully");
     return {
       status: "OK",
@@ -553,16 +550,18 @@ async function startConsultativeTransfer(
       excludeFunctionCall: true,
     });
 
-    let parentTranscript = "";
+    let parentTranscript = "\n";
     try {
       for (const msg of ctxCopy.items) {
         if (msg.type === "message") {
           const role = msg.role;
-          const textContent = msg.textContent || "";
+          const textContent = (msg.textContent || "")
+            .replace(/\\n/g, '')
+            .replace(/\r?\n/g, '');
           if (role === "user") {
-            parentTranscript += `Customer: ${textContent}\n`;
+            parentTranscript += `> caller: ${textContent}\n`;
           } else if (role === "assistant") {
-            parentTranscript += `Assistant: ${textContent}\n`;
+            parentTranscript += `> agent: ${textContent}\n`;
           }
         }
       }
@@ -683,7 +682,6 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
 
     logger.info({}, "transfer agent started in consultation room");
-    transferSession?.generateReply({ userInput: 'announce yourself and explain why you are calling' });
 
     // Step 7: Create call record for consultation leg
     const { agent, instance, call } = context;
@@ -1493,7 +1491,7 @@ export async function handleTransfer(
   if (operation === "blind") {
     if (isSip && canRefer && !useBridged) {
       // Case 2: Blind transfer using SIP REFER
-      return handleBlindReferTransfer(context, finaliseBridgedCallFn);
+      return handleBlindReferTransfer(context);
     } else {
       // Case 1: Blind transfer by bridging (forced or when REFER not available)
       return handleBlindBridgeTransfer(

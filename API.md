@@ -61,6 +61,7 @@
 | params.logger | <code>Object</code> | Pino logger instance |
 | params.session | <code>Object</code> | Jambonz WebSocket session object |
 | params.options | <code>Object</code> | Options object containing combined STT, TTS and model options |
+| params.metadata | <code>Object</code> | Per-call metadata used to resolve `source: "metadata"` tool parameters |
 
 <a name="JambonzSession+handler"></a>
 

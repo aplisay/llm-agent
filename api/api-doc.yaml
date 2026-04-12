@@ -212,6 +212,30 @@ components:
           example: 0.2
         callHook:
           $ref: "#/components/schemas/CallHookConfig"
+        recording:
+          type: object
+          description: |-
+            Call recording configuration for this agent.
+
+            When enabled, calls handled by this agent can be recorded to a storage bucket.
+            Recordings are always encrypted. If you provide a `key`, the recording will be
+            encrypted with a key derived from that value and the server will not be able
+            to decrypt it for you. If you omit `key`, a random per-call key will be
+            generated internally so that downloads from the API return plaintext audio.
+
+            Instance/listener-specific recording options (when supported) override these
+            agent-level defaults.
+          properties:
+            enabled:
+              type: boolean
+              description: Enable or disable call recording for this agent.
+            key:
+              type: string
+              nullable: true
+              description: |-
+                Optional client-provided encryption key. When set, recordings are encrypted
+                with a key derived from this value and the server cannot decrypt them for you.
+                You must decrypt them client-side after download.
         tts:
           type: object
           properties:
@@ -473,8 +497,9 @@ components:
             description: >  
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `hangup` takes no parameters and will hang up the call
-                  * `metadata` interrogates the metadata for the call, returning a JSON object with the requested metadata keys and values. 
-                     Keys are specified as a comma separated list in the `keys` parameter.
+                  * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
+                     `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
+                     References to `toolsCalls...` are only allowed on **LiveKit agents**.
                   * `transfer` will transfer the call to a number specified in the `number` parameter. The following optional parameters are available:
                     - `number` (string, required): The phone number or endpoint ID to transfer to. Must be specified as `static` or `metadata` source (cannot be `generated` for security reasons).
                     - `callerId` (string, optional): Override the caller ID used for the transfer. Must be a phone number owned by your organisation with outbound calling enabled. If the original call comes in on a telephony trunk, the caller ID number must use a matching egress trunk. For WebRTC calls, the caller ID trunk will be used for the outbound transfer. If not specified, uses the original called number.
@@ -495,7 +520,8 @@ components:
                 
                 **Transfer Function Notes:**
                 - The transfer function will only be available to telephone agents when outbound calling or SIP redirects are enabled for the provider trunk
-                - The `number` parameter can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata)
+                - The `number` parameter can only be specified as either `static` or `metadata` (e.g. from `aplisay.transferNumber` metadata).
+                  `metadata` supports arbitrary-depth dot paths, so you can also reference tool call outputs primed into `metadata.toolsCalls` (e.g. `toolsCalls.lookupDirectory.result.transferNumber`).
                 - For anti-fraud reasons, it is not possible to use a LLM `generated` parameter as the number to transfer a call to
                 - Only one transfer can be in progress at a time. If a transfer is already in progress, subsequent transfer requests will return `FAILED`
                 - By default, blind transfers automatically choose between bridging and SIP REFER based on trunk/endpoint capabilities. Use `forceBridged: true` to override this and always use bridging
@@ -506,6 +532,15 @@ components:
                 can only be specified as a `static`. This ensures that the LLM can only work with metadata that the agent designer
                 has explicitly allowed it to which is a security feature to control the risk of data leakage.
 
+          redact:
+            type: boolean
+            description: >-
+              When set to `true`, the function still executes normally and the real result is stored in
+              `metadata.toolsCalls.<function>.result`. However, the LLM receives only a redacted acknowledgement:
+              `"OK - function completed"` on success, or `"FAILED - invocation failed"` on error (with the `error`
+              object still present, but the result payload redacted). This is intended for handlers with dynamic
+              metadata support (e.g. LiveKit agents).
+            example: true
           result:
             type: string
             description: The hardwired result of this function call, optional and only useful for `stub` or `client`
@@ -589,6 +624,35 @@ components:
       description: An array of log entries for this transaction
       items:
         $ref: "#/components/schemas/TransactionLogRow"
+    InvocationLog:
+      type: object
+      description: Invocation-level log entry containing compressed pino logs for a single call.
+      properties:
+        callId:
+          type: string
+          description: Unique ID of the call this invocation log is associated with
+          example: 648aa45d-204a-4c0c-a1e1-419406254134
+        organisationId:
+          type: string
+          description: Organisation ID that owns the agent/call
+        userId:
+          type: string
+          description: User ID that owns the agent/call
+        subsystem:
+          type: string
+          description: Subsystem that produced this log (currently always "livekit-agent")
+          enum:
+            - livekit-agent
+        log:
+          description: >
+            Decompressed invocation log payload for this call, reconstructed from the compressed JSONB
+            stored in the InvocationLog table. This typically contains an array of pino log entries
+            for the full lifetime of the agent run, with very large objects pruned to keep rows manageable.
+          anyOf:
+            - type: object
+            - type: array
+              items:
+                type: object
     TransactionLogRow:
       type: object
       properties:
@@ -653,6 +717,31 @@ components:
           type: string
           description: The time this call ended
           example: 2025-06-04T12:01:00.000Z
+        status:
+          type: string
+          nullable: true
+          description: >
+            Status describing what happened to this call. For concurrency failures this is of the form
+            `failed: <instance|user|organisation> concurrency limit`. For in-progress calls it is `in progress`.
+            When the call ends normally it is `ended normally`.
+          example: 'failed: instance concurrency limit'
+        callerId:
+          type: string
+          nullable: true
+          description: Caller number or identifier (as received)
+          example: "+443300889471"
+        calledId:
+          type: string
+          nullable: true
+          description: Called number or identifier for this call
+          example: "+442080996945"
+        recordingId:
+          type: string
+          nullable: true
+          description: |-
+            When present, a recording is available for this call. Use `GET /calls/{callId}/recording`
+            to stream or download it. Omit or null when the call has no recording.
+          example: "development-recordings/648aa45d-204a-4c0c-a1e1-419406254134.enc"
     CallId:
       type: string
       description: The Call ID the event relates to
@@ -841,7 +930,7 @@ components:
                   pattern: '^\+?[1-9]\d{6,14}$'
                 trunkId:
                   type: string
-                  description: Trunk identifier for e164-ddi type
+                  description: Trunk identifier for e164-ddi type. The handler and outbound capabilities for the created number are inherited from this trunk; callers cannot request a handler that is incompatible with the trunk.
             - description: Phone registration endpoint
               type: object
               required:

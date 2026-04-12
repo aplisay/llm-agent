@@ -1,4 +1,4 @@
-import { Agent, Instance, PhoneNumber  } from '../../../lib/database.js';;
+import { Agent, Instance, PhoneNumber, Op } from '../../../lib/database.js';
 
 let log;
 
@@ -12,15 +12,19 @@ export default function (logger) {
 };
 
 
+function agentWhere(req, res) {
+  const { id: userId, organisationId } = res.locals.user;
+  const { agentId } = req.params;
+  return organisationId
+    ? { id: agentId, [Op.or]: [{ userId }, { organisationId }] }
+    : { id: agentId, userId };
+}
+
 const agentGet = async (req, res) => {
-  let userId = res.locals.user.id;
   let { agentId } = req.params;
   try {
     let agent = await Agent.findOne({
-      where: {
-        id: agentId,
-        userId,
-      },
+      where: agentWhere(req, res),
       include: [
         {
           model: Instance,
@@ -34,6 +38,9 @@ const agentGet = async (req, res) => {
         }
       ]
     });
+    if (!agent) {
+      return res.status(404).send({ error: `Agent with ID ${agentId} not found` });
+    }
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent fetched');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -126,15 +133,15 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { prompt, options, functions, keys, modelName } = req.body;
+  let { name, description, prompt, options, functions, keys, modelName } = req.body;
   let { agentId } = req.params;
 
   try {
-    let agent = await Agent.findOne({ where: { id: agentId } });
+    let agent = await Agent.findOne({ where: agentWhere(req, res) });
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    await agent.update({ prompt, options, functions, keys, modelName });
+    await agent.update({ name, description, prompt, options, functions, keys, modelName });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -165,6 +172,14 @@ agentUpdate.apiDoc = {
         schema: {
           type: "object",
           properties: {
+            name: {
+              description: 'Display name for the agent',
+              type: 'string',
+            },
+            description: {
+              description: 'Description of the agent',
+              type: 'string',
+            },
             modelName: {
               $ref: '#/components/schemas/ModelName',
             },
@@ -201,6 +216,17 @@ agentUpdate.apiDoc = {
                 format: "uuid",
                 example: "32555d87-948e-48f2-a53d-fc5f261daa79"
               },
+              name: {
+                description: 'Display name for the agent',
+                type: 'string',
+              },
+              description: {
+                description: 'Description of the agent',
+                type: 'string',
+              },
+              modelName: {
+                $ref: '#/components/schemas/ModelName'
+              },
               options: {
                 $ref: '#/components/schemas/AgentOptions'
               },
@@ -232,14 +258,10 @@ agentUpdate.apiDoc = {
 
 const agentDelete = async (req, res) => {
   let { agentId } = req.params;
-  let userId = res.locals.user.id;
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
     let data = await Agent.destroy({
-      where: {
-        id: agentId,
-        userId
-      },
+      where: agentWhere(req, res),
     });
     if (data === 0)
       throw new Error(`Agent with ID ${agentId} not found`);

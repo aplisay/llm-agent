@@ -1,4 +1,5 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -52,8 +53,12 @@ const originateCall = (async (req, res) => {
       }
       aplisayId = callerPhoneNumber.aplisayId;
     } else {
-      // Try phone registrations table
-      callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
+      // Try phone registrations table (PK is UUID; invalid UUID strings make Postgres throw)
+      const uuidRe =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (uuidRe.test(callerId)) {
+        callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
+      }
       if (!callerPhoneRegistration || callerPhoneRegistration.organisationId !== organisationId) {
         return res.status(404).send({
           error: `Caller ${callerId} not found in phone numbers or registrations table`
@@ -104,6 +109,14 @@ const originateCall = (async (req, res) => {
     });
 
   } catch (err) {
+    if (err instanceof AgentConcurrencyLimitExceededError) {
+      return res.status(429).send({
+        error: err.message,
+        code: err.code,
+        scope: err.scope,
+        details: err.details,
+      });
+    }
     req.log.error(err, 'Error in originate call endpoint');
     res.status(500).send({ error: 'Internal server error' });
   }
@@ -240,6 +253,22 @@ originateCall.apiDoc = {
           }
         }
       }
+    },
+    429: {
+      description: 'Agent concurrency limit exceeded',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              code: { type: 'string' },
+              scope: { type: 'string', enum: ['instance', 'user', 'organisation'] },
+              details: { type: 'object' },
+            },
+          },
+        },
+      },
     },
     500: {
       description: 'Internal server error',

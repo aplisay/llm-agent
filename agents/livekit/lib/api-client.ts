@@ -1,4 +1,42 @@
-import logger from '../agent-lib/logger.js';
+import logger from "./logger.js";
+
+// Error types used by the LiveKit worker to decide how to signal failures.
+// Keep these provider-agnostic so they can be interpreted at higher layers.
+export class ApiRequestError extends Error {
+  status: number;
+  body: any;
+  code?: string;
+  scope?: string;
+  details?: any;
+
+  constructor(status: number, body: any, message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.body = body;
+    this.code = body?.code;
+    this.scope = body?.scope;
+    this.details = body?.details;
+  }
+}
+
+// Busy-oriented error thrown by call.start() when the agent concurrency limit is exceeded.
+// LiveKit uses the thrown error message to map to an intended SIP "busy" cause.
+export class AgentConcurrencyLimitExceededBusyError extends Error {
+  code = 'AGENT_CONCURRENCY_LIMIT_EXCEEDED';
+  status = 429;
+  scope?: string;
+  details?: any;
+
+  constructor(opts: { scope?: string; details?: any; originalError?: string } = {}) {
+    const scopeSuffix = opts.scope ? ` [${opts.scope}]` : '';
+    const original = opts.originalError ? ` - ${opts.originalError}` : '';
+    super(`busy: AGENT_CONCURRENCY_LIMIT_EXCEEDED${scopeSuffix}${original}`);
+    this.name = 'AgentConcurrencyLimitExceededBusyError';
+    this.scope = opts.scope;
+    this.details = opts.details;
+  }
+}
 
 // API-related type definitions
 export interface Instance {
@@ -6,6 +44,10 @@ export interface Instance {
   metadata?: Record<string, any>;
   Agent?: Agent;
   streamLog?: boolean;
+  recording?: {
+    enabled: boolean;
+    key?: string;
+  };
 }
 
 export interface Agent {
@@ -81,6 +123,14 @@ export interface Agent {
         [key: string]: any;
       };
       [key: string]: any;
+    };
+    /**
+     * Recording configuration for this agent.
+     * Can be overridden at instance/listener level.
+     */
+    recording?: {
+      enabled: boolean;
+      key?: string;
     };
   };
   functions?: AgentFunction[];
@@ -164,6 +214,7 @@ export interface PhoneNumberInfo {
   outbound?: boolean;
   aplisayId?: string | null;
   trunk?: TrunkInfo | null;
+  provisioned?: boolean;
   [key: string]: any;
 }
 
@@ -185,6 +236,14 @@ export interface PhoneRegistrationInfo {
 }
 
 export type PhoneEndpointInfo = PhoneNumberInfo | PhoneRegistrationInfo;
+
+export interface InvocationLogPayload {
+  userId: string;
+  organisationId: string;
+  callId: string;
+  subsystem?: string;
+  log: any;
+}
 
 // Get the API base URL from environment variable
 function getApiBaseUrl(): string {
@@ -218,13 +277,29 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error({ 
-        url, 
-        status: response.status, 
-        statusText: response.statusText, 
-        error: errorText 
-      }, 'API request failed');
-      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+      logger.error(
+        {
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+        },
+        'API request failed',
+      );
+
+      let body: any = null;
+      try {
+        body = JSON.parse(errorText);
+      } catch {
+        // If we can't parse JSON, keep a minimal structure.
+        body = { raw: errorText };
+      }
+
+      throw new ApiRequestError(
+        response.status,
+        body,
+        `API request failed: ${response.status} ${response.statusText}`,
+      );
     }
 
     const data = await response.json();
@@ -293,6 +368,24 @@ export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumbe
   return getPhoneEndpointByNumber(number);
 }
 
+// Mark a phone number as provisioned (or not) in the platform after LiveKit sync
+export async function setPhoneNumberProvisioned(
+  number: string,
+  provisioned: boolean
+): Promise<void> {
+  try {
+    await makeApiRequest<{ success: boolean }>(
+      `/api/agent-db/phone-endpoints/${encodeURIComponent(number)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ provisioned })
+      }
+    );
+  } catch (error) {
+    logger.error({ number, provisioned, error }, 'Failed to update phone number provisioning state');
+  }
+}
+
 
 // Create a new call record
 export async function createCall(callData: {
@@ -318,13 +411,28 @@ export async function createCall(callData: {
   // Add start() and end() methods to the call object
   call.start = async () => {
     logger.debug({ call }, "logging starting call");
-    return makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
-      method: 'POST',
-      body: JSON.stringify({
-        userId: call.userId,
-        organisationId: call.organisationId
-      })
-    });
+    try {
+      return await makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: call.userId,
+          organisationId: call.organisationId
+        })
+      });
+    } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        err.status === 429 &&
+        err.code === 'AGENT_CONCURRENCY_LIMIT_EXCEEDED'
+      ) {
+        throw new AgentConcurrencyLimitExceededBusyError({
+          scope: err.scope,
+          details: err.details,
+          originalError: err.body?.error ?? err.body?.raw,
+        });
+      }
+      throw err;
+    }
   };
   
   call.end = async (reason?: string, transactionLogs?: Array<{
@@ -388,6 +496,21 @@ export async function endCallById(callId: string, reason?: string): Promise<any>
   });
 }
 
+export async function setCallRecordingData(
+  callId: string,
+  recordingId: string,
+  encryptionKey?: string,
+): Promise<void> {
+  const body: any = { recordingId };
+  if (encryptionKey) {
+    body.encryptionKey = encryptionKey;
+  }
+  await makeApiRequest(`/api/agent-db/call/${encodeURIComponent(callId)}/recording`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
 // Create a new transaction log record
 export async function createTransactionLog(transactionData: {
   userId: string;
@@ -415,6 +538,14 @@ export async function createTransactionLog(transactionData: {
   return makeApiRequest('/api/agent-db/transaction-log', {
     method: 'POST',
     body: JSON.stringify(requestBody)
+  });
+}
+
+// Create a new invocation log record (compressed and stored server-side)
+export async function saveInvocationLog(payload: InvocationLogPayload): Promise<any> {
+  return makeApiRequest('/api/agent-db/invocation-log', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 

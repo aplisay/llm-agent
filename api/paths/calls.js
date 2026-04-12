@@ -25,7 +25,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt'],
+        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status'],
         where,
         order: [['index', 'ASC']],
         limit: parseInt(limit),
@@ -77,7 +77,8 @@ export default function (logger) {
                     callerId: "+443300889471",
                     calledId: "+442080996945",
                     startedAt: "2025-06-04T12:00:00.000Z",
-                    endedAt: "2025-06-04T12:01:00.000Z"
+                    endedAt: "2025-06-04T12:01:00.000Z",
+                    status: "ended normally"
                   },
                   {
                     id: "632555d87-948e-48f2-a53d-fc5f261daa7",
@@ -88,7 +89,8 @@ export default function (logger) {
                     callerId: "+443300889470",
                     calledId: "+442080996945",
                     startedAt: "2025-06-04T12:01:00.000Z",
-                    endedAt: "2025-06-04T12:02:00.000Z"
+                    endedAt: "2025-06-04T12:02:00.000Z",
+                    status: "ended normally"
                   },
                 ],
                 next: 2

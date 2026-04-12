@@ -26,6 +26,13 @@
     }
   },
 
-  "include": ["realtime.ts", "lib/**/*.ts"],
-  "exclude": ["node_modules", "plugins", "dist", "tsup.config.ts", "agent-lib", "temp-livekit-agents"]
+  "include": ["realtime.ts", "lib/**/*.ts", "agent-lib/**/*.d.ts"],
+  "exclude": [
+    "node_modules",
+    "plugins",
+    "dist",
+    "tsup.config.ts",
+    "agent-lib/**/*.js",
+    "temp-livekit-agents"
+  ]
 }

@@ -3,6 +3,10 @@ export default {
   testMatch: [
     '**/tests/*.test.mjs',
   ],
+  testPathIgnorePatterns: [
+    '/agents/',
+    'agent-concurrency-redis-skeleton\\.test\\.mjs',
+  ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',
   testTimeout: 60000,

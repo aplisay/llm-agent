@@ -1,4 +1,4 @@
-import { Agent, Instance, PhoneNumber } from '../../lib/database.js';
+import { Agent, Instance, PhoneNumber, Op } from '../../lib/database.js';
 
 let appParameters, log;
 
@@ -144,10 +144,13 @@ agentCreate.apiDoc = {
 
 
 const agentList = (async (req, res) => {
-  let userId = res.locals.user.id;
+  let { id: userId, organisationId } = res.locals.user;
+  let where = organisationId
+    ? { [Op.or]: [{ userId }, { organisationId }] }
+    : { userId };
   try {
     let agents = await Agent.findAll({
-      where: { userId },
+      where,
       include: [
         {
           model: Instance,
