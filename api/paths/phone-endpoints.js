@@ -75,6 +75,7 @@ const phoneEndpointList = (async (req, res) => {
             ]
           }
         ],
+        order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
       });
@@ -118,6 +119,7 @@ const phoneEndpointList = (async (req, res) => {
       PhoneNumber.findAll({
         where: numberWhere,
         attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt'],
+        order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
       }),

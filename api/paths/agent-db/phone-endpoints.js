@@ -94,7 +94,12 @@ const phoneEndpointsList = (async (req, res) => {
         const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
         const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
 
-        const rows = await PhoneNumber.findAll({ where: whereClause, limit: size, offset: startOffset });
+        const rows = await PhoneNumber.findAll({
+          where: whereClause,
+          order: [['number', 'ASC']],
+          limit: size,
+          offset: startOffset
+        });
         const nextOffset = rows.length === size ? startOffset + size : null;
 
         return res.send({ items: rows, nextOffset });
