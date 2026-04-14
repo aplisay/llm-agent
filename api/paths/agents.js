@@ -155,7 +155,8 @@ const agentList = (async (req, res) => {
     : { userId };
 
   const limitRaw = req.query.limit;
-  const usePaging = limitRaw !== undefined && limitRaw !== null && String(limitRaw).length > 0;
+  const startOffset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
+  const size = Math.min(200, Math.max(1, parseInt(String(limitRaw ?? 50), 10) || 50));
 
   try {
     const searchRaw = sanitizeAgentSearchToken(req.query.search);
@@ -184,18 +185,6 @@ const agentList = (async (req, res) => {
     const listAttrs = ['id', 'name', 'description', 'modelName', 'createdAt', 'updatedAt'];
     const order = [['updatedAt', 'DESC'], ['name', 'ASC'], ['id', 'ASC']];
 
-    if (!usePaging) {
-      const agents = await Agent.findAll({
-        where,
-        attributes: listAttrs,
-        order
-      });
-      return res.send(agents);
-    }
-
-    const startOffset = Math.max(0, parseInt(req.query.offset || '0', 10) || 0);
-    const size = Math.min(200, Math.max(1, parseInt(String(limitRaw), 10) || 50));
-
     const { count, rows: agents } = await Agent.findAndCountAll({
       where,
       attributes: listAttrs,
@@ -204,8 +193,8 @@ const agentList = (async (req, res) => {
       offset: startOffset
     });
 
-    const nextOffset = count > startOffset + agents.length ? startOffset + size : null;
-    return res.send({ agents, nextOffset });
+    const next = count > startOffset + agents.length ? startOffset + size : false;
+    return res.send({ agents, next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');
@@ -213,11 +202,10 @@ const agentList = (async (req, res) => {
   }
 });
 agentList.apiDoc = {
-  summary: 'Returns a list of all this user\'s agents.',
+  summary: 'Returns a paginated list of this user\'s agents.',
   description:
     'Summary index only: id, name, description, modelName, and timestamps; use GET /agents/{agentId} for the full agent. ' +
-    'Without query parameter `limit`, the response is a JSON array (legacy). With `limit`, the response is `{ agents, nextOffset }` ' +
-    '(same pagination style as phone-endpoints / trunks).',
+    'Response shape matches GET /calls and GET /agents/{agentId}/calls: `{ agents, next }` where `next` is the offset for the next page or `false` when done. Default `limit` is 50.',
   operationId: 'listAgents',
   tags: ["Agent"],
   parameters: [
@@ -225,15 +213,15 @@ agentList.apiDoc = {
       in: 'query',
       name: 'limit',
       required: false,
-      schema: { type: 'integer', minimum: 1, maximum: 200 },
-      description: 'When set, paginates and returns `{ agents, nextOffset }` instead of a bare array.'
+      schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+      description: 'Page size (default 50).'
     },
     {
       in: 'query',
       name: 'offset',
       required: false,
       schema: { type: 'integer', minimum: 0, default: 0 },
-      description: 'Row offset when using `limit`.'
+      description: 'Row offset for this page.'
     },
     {
       in: 'query',
@@ -252,33 +240,22 @@ agentList.apiDoc = {
   ],
   responses: {
     200: {
-      description: 'List of agent summaries for indexing (array if `limit` omitted; object if `limit` set).',
+      description: 'Paginated agent summaries: `{ agents, next }` (same pattern as GET /calls).',
       content: {
         'application/json': {
           schema: {
-            oneOf: [
-              {
+            type: 'object',
+            properties: {
+              agents: {
                 type: 'array',
-                items: {
-                  $ref: '#/components/schemas/AgentListItem'
-                }
+                items: { $ref: '#/components/schemas/AgentListItem' }
               },
-              {
-                type: 'object',
-                properties: {
-                  agents: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/AgentListItem' }
-                  },
-                  nextOffset: {
-                    type: 'integer',
-                    nullable: true,
-                    description: 'Pass as `offset` for the next page, or null when done.'
-                  }
-                },
-                required: ['agents', 'nextOffset']
+              next: {
+                description: 'Next `offset` for pagination, or `false` when there are no more results.',
+                oneOf: [{ type: 'integer' }, { type: 'boolean', enum: [false] }]
               }
-            ]
+            },
+            required: ['agents', 'next']
           }
         }
       }
