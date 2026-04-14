@@ -1,4 +1,4 @@
-import { Agent, Instance, PhoneNumber, Op } from '../../lib/database.js';
+import { Agent, Op } from '../../lib/database.js';
 
 let appParameters, log;
 
@@ -143,28 +143,58 @@ agentCreate.apiDoc = {
 
 
 
+/** Strip LIKE wildcards from user search input (avoids accidental pattern expansion). */
+function sanitizeAgentSearchToken(raw) {
+  return String(raw ?? '').trim().replace(/[%_\\]/g, '');
+}
+
 const agentList = (async (req, res) => {
   let { id: userId, organisationId } = res.locals.user;
-  let where = organisationId
+  const scopeWhere = organisationId
     ? { [Op.or]: [{ userId }, { organisationId }] }
     : { userId };
+
+  const limitRaw = req.query.limit;
+  const startOffset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
+  const size = Math.min(200, Math.max(1, parseInt(String(limitRaw ?? 50), 10) || 50));
+
   try {
-    let agents = await Agent.findAll({
-      where,
-      include: [
-        {
-          model: Instance,
-          as: 'listeners',
-          include: [
-            {
-              model: PhoneNumber,
-              as: 'number',
-            },
+    const searchRaw = sanitizeAgentSearchToken(req.query.search);
+    const searchField = String(req.query.searchField || 'all').toLowerCase();
+    const validField = searchField === 'name' || searchField === 'model' ? searchField : 'all';
+
+    let where = scopeWhere;
+    if (searchRaw) {
+      const pattern = `%${searchRaw}%`;
+      let searchWhere;
+      if (validField === 'name') {
+        searchWhere = { name: { [Op.iLike]: pattern } };
+      } else if (validField === 'model') {
+        searchWhere = { modelName: { [Op.iLike]: pattern } };
+      } else {
+        searchWhere = {
+          [Op.or]: [
+            { name: { [Op.iLike]: pattern } },
+            { modelName: { [Op.iLike]: pattern } }
           ]
-        }
-      ]
+        };
+      }
+      where = { [Op.and]: [scopeWhere, searchWhere] };
+    }
+
+    const listAttrs = ['id', 'name', 'description', 'modelName', 'createdAt', 'updatedAt'];
+    const order = [['updatedAt', 'DESC'], ['name', 'ASC'], ['id', 'ASC']];
+
+    const { count, rows: agents } = await Agent.findAndCountAll({
+      where,
+      attributes: listAttrs,
+      order,
+      limit: size,
+      offset: startOffset
     });
-    res.send(agents);
+
+    const next = count > startOffset + agents.length ? startOffset + size : false;
+    return res.send({ agents, next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');
@@ -172,19 +202,60 @@ const agentList = (async (req, res) => {
   }
 });
 agentList.apiDoc = {
-  summary: 'Returns a list of all this user\'s agents.',
+  summary: 'Returns a paginated list of this user\'s agents.',
+  description:
+    'Summary index only: id, name, description, modelName, and timestamps; use GET /agents/{agentId} for the full agent. ' +
+    'Response shape matches GET /calls and GET /agents/{agentId}/calls: `{ agents, next }` where `next` is the offset for the next page or `false` when done. Default `limit` is 50.',
   operationId: 'listAgents',
   tags: ["Agent"],
+  parameters: [
+    {
+      in: 'query',
+      name: 'limit',
+      required: false,
+      schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+      description: 'Page size (default 50).'
+    },
+    {
+      in: 'query',
+      name: 'offset',
+      required: false,
+      schema: { type: 'integer', minimum: 0, default: 0 },
+      description: 'Row offset for this page.'
+    },
+    {
+      in: 'query',
+      name: 'search',
+      required: false,
+      schema: { type: 'string' },
+      description: 'Case-insensitive substring filter on name and/or model (see `searchField`).'
+    },
+    {
+      in: 'query',
+      name: 'searchField',
+      required: false,
+      schema: { type: 'string', enum: ['all', 'name', 'model'], default: 'all' },
+      description: 'Whether `search` applies to name only, model only, or both.'
+    }
+  ],
   responses: {
     200: {
-      description: 'List of agents.',
+      description: 'Paginated agent summaries: `{ agents, next }` (same pattern as GET /calls).',
       content: {
         'application/json': {
           schema: {
-            type: 'array',
-            items: {
-              $ref: '#/components/schemas/Agent'
-            }
+            type: 'object',
+            properties: {
+              agents: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AgentListItem' }
+              },
+              next: {
+                description: 'Next `offset` for pagination, or `false` when there are no more results.',
+                oneOf: [{ type: 'integer' }, { type: 'boolean', enum: [false] }]
+              }
+            },
+            required: ['agents', 'next']
           }
         }
       }

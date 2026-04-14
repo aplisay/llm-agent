@@ -75,8 +75,16 @@ const phoneEndpointList = (async (req, res) => {
             ]
           }
         ],
+        order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
+      });
+
+      // Don't leak information to users that don't have access to the instance, even if the number is public.
+      rows.forEach(r => {
+        if (r.Instance && r.Instance.userId !== res.locals.user.id && (!organisationId || r.Instance.organisationId !== organisationId)) {
+          r.Instance = null;
+        }
       });
 
       const items = rows.map(r => ({
@@ -118,6 +126,7 @@ const phoneEndpointList = (async (req, res) => {
       PhoneNumber.findAll({
         where: numberWhere,
         attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt'],
+        order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
       }),

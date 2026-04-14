@@ -109,6 +109,27 @@ components:
           $ref: "#/components/schemas/Functions"
         keys:
           $ref: "#/components/schemas/Keys"
+    AgentListItem:
+      type: object
+      description: |-
+        Summary row returned by GET /agents: id, display fields, model, and timestamps only.
+        No options, keys, listeners, prompt, or functions — use GET /agents/{agentId} for the full agent.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        modelName:
+          $ref: "#/components/schemas/ModelName"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     ModelName:
       type: string
       description: The short model name
