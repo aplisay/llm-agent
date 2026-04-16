@@ -40,7 +40,7 @@ const listenerDeploymentsList = async (req, res) => {
               model: PhoneRegistration,
               as: 'registration',
               required: false,
-              attributes: ['id'],
+              attributes: ['id', 'name'],
             },
           ],
         },
@@ -54,6 +54,7 @@ const listenerDeploymentsList = async (req, res) => {
       for (const l of agent.listeners || []) {
         const phone = l.number?.number;
         const registrationId = l.registration?.id;
+        const registrationName = l.registration?.name || null;
         const createdAt = l.createdAt ? new Date(l.createdAt).toISOString() : null;
 
         let kind = 'webrtc';
@@ -71,6 +72,7 @@ const listenerDeploymentsList = async (req, res) => {
           kind,
           phoneNumber: phone || null,
           registrationId: registrationId || null,
+          registrationName,
           createdAt,
         });
       }
@@ -116,6 +118,7 @@ listenerDeploymentsList.apiDoc = {
                     kind: { type: 'string', enum: ['phone', 'registration', 'webrtc'] },
                     phoneNumber: { type: 'string', nullable: true },
                     registrationId: { type: 'string', nullable: true },
+                    registrationName: { type: 'string', nullable: true },
                     createdAt: {
                       type: 'string',
                       format: 'date-time',
