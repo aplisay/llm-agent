@@ -32,6 +32,10 @@ function init(app, logger) {
       next();
       return;
     }
+
+    // agent-db routes are internal-only: they must be called with x-shared-token.
+    // Tenant auth (Firebase / AuthKey) must never be able to access these routes.
+    const isAgentDbPath = req.originalUrl.startsWith('/api/agent-db');
     
     // Check for shared token for internal API calls
     const sharedToken = process.env.SHARED_API_TOKEN;
@@ -45,6 +49,11 @@ function init(app, logger) {
       };
       res.locals.user.sql = { where: { userId: 'system' } };
       next();
+      return;
+    }
+
+    if (isAgentDbPath) {
+      res.status(403).json({ message: 'Forbidden: agent-db is internal only' });
       return;
     }
     try {

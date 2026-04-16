@@ -252,6 +252,7 @@ describe('Agent Phone Number Workflow Test', () => {
         params: { listenerId: testListenerId }
       });
       const deleteListenerRes = createMockResponse();
+      deleteListenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
 
       await deleteListener(deleteListenerReq, deleteListenerRes);
 

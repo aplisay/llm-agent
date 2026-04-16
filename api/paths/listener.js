@@ -1,4 +1,4 @@
-import { Agent, Instance, PhoneNumber, Op } from '../../lib/database.js';
+import { Agent, Instance, PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
 
 /**
  * Flat list of active listener instances with parent agent name, for dashboards.
@@ -36,6 +36,12 @@ const listenerDeploymentsList = async (req, res) => {
               required: false,
               attributes: ['number'],
             },
+            {
+              model: PhoneRegistration,
+              as: 'registration',
+              required: false,
+              attributes: ['id', 'name'],
+            },
           ],
         },
       ],
@@ -47,14 +53,26 @@ const listenerDeploymentsList = async (req, res) => {
       const agentName = agent.name || 'Unnamed';
       for (const l of agent.listeners || []) {
         const phone = l.number?.number;
+        const registrationId = l.registration?.id;
+        const registrationName = l.registration?.name || null;
         const createdAt = l.createdAt ? new Date(l.createdAt).toISOString() : null;
+
+        let kind = 'webrtc';
+        if (phone) {
+          kind = 'phone';
+        } else if (registrationId) {
+          kind = 'registration';
+        }
+
         items.push({
           agentId: agent.id,
           agentName,
           listenerId: l.id,
           type: l.type,
-          kind: phone ? 'phone' : 'webrtc',
+          kind,
           phoneNumber: phone || null,
+          registrationId: registrationId || null,
+          registrationName,
           createdAt,
         });
       }
@@ -97,8 +115,10 @@ listenerDeploymentsList.apiDoc = {
                     agentName: { type: 'string' },
                     listenerId: { type: 'string', format: 'uuid' },
                     type: { type: 'string', enum: ['jambonz', 'ultravox', 'livekit'] },
-                    kind: { type: 'string', enum: ['phone', 'webrtc'] },
+                    kind: { type: 'string', enum: ['phone', 'registration', 'webrtc'] },
                     phoneNumber: { type: 'string', nullable: true },
+                    registrationId: { type: 'string', nullable: true },
+                    registrationName: { type: 'string', nullable: true },
                     createdAt: {
                       type: 'string',
                       format: 'date-time',
@@ -125,3 +145,4 @@ listenerDeploymentsList.apiDoc = {
     },
   },
 };
+

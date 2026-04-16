@@ -48,7 +48,8 @@ const getPhoneEndpoint = async (req, res) => {
         state: registration.state,
         error: registration.error,
         handler: registration.handler,
-        outbound: !!registration.outbound
+        outbound: !!registration.outbound,
+        options: registration.options || null
       });
     }
 
