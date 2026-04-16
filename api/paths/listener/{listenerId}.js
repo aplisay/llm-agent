@@ -1,4 +1,4 @@
-import { Instance } from '../../../lib/database.js';
+import { Instance, Op } from '../../../lib/database.js';
 
 let log;
 
@@ -10,19 +10,31 @@ export default function (logger) {
 };
 
 const listenerDelete = async (req, res) => {
-  let { listenerId } = req.params;
+  const { listenerId } = req.params;
+  const { id: userId, organisationId } = res.locals.user;
   req.log.info({ id: listenerId }, 'instance delete called');
+
+  const scopeWhere = organisationId
+    ? { [Op.or]: [{ userId }, { organisationId }] }
+    : { userId };
+
   try {
-    await Instance.destroy({
+    const deleted = await Instance.destroy({
       where: {
         id: listenerId,
+        ...scopeWhere,
       },
     });
+
+    if (!deleted) {
+      return res.status(404).send({ error: `Listener with ID ${listenerId} not found` });
+    }
+
     res.status(200).send();
   }
   catch (err) {
-    res.status(404).send(err);
     req.log.error(err, 'deleting instance');
+    res.status(404).send(err);
   }
 };
 
