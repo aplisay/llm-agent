@@ -17,6 +17,21 @@ export default function (logger, voices, wsServer) {
   };
 };
 
+/** Hide linked Instance (and thus Agent) when the caller may not see that listener. */
+function stripPhoneNumberInstancesForUser(rows, user) {
+  const userId = user?.id;
+  const organisationId = user?.organisationId;
+  for (const r of rows) {
+    if (
+      r.Instance &&
+      r.Instance.userId !== userId &&
+      (!organisationId || r.Instance.organisationId !== organisationId)
+    ) {
+      r.Instance = null;
+    }
+  }
+}
+
 const phoneEndpointList = (async (req, res) => {
   let { organisationId } = res.locals.user;
   let { originate, handler, type, offset, pageSize, search, trunkId: rawTrunkId } = req.query;
@@ -69,7 +84,9 @@ const phoneEndpointList = (async (req, res) => {
           {
             model: Instance,
             required: false,
-            attributes: ['id'],
+            // userId and organisationId are required for the visibility check below; without them
+            // every row appears cross-org and Instance (hence agent) is stripped for org users.
+            attributes: ['id', 'userId', 'organisationId'],
             include: [
               { model: Agent, required: false, attributes: ['id', 'name'] }
             ]
@@ -80,12 +97,7 @@ const phoneEndpointList = (async (req, res) => {
         offset: startOffset
       });
 
-      // Don't leak information to users that don't have access to the instance, even if the number is public.
-      rows.forEach(r => {
-        if (r.Instance && r.Instance.userId !== res.locals.user.id && (!organisationId || r.Instance.organisationId !== organisationId)) {
-          r.Instance = null;
-        }
-      });
+      stripPhoneNumberInstancesForUser(rows, res.locals.user);
 
       const items = rows.map(r => ({
         number: r.number,
@@ -125,7 +137,15 @@ const phoneEndpointList = (async (req, res) => {
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
+        include: [
+          {
+            model: Instance,
+            required: false,
+            attributes: ['id', 'userId', 'organisationId'],
+            include: [{ model: Agent, required: false, attributes: ['id', 'name'] }]
+          }
+        ],
         order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
@@ -138,12 +158,17 @@ const phoneEndpointList = (async (req, res) => {
       })
     ]);
 
+    stripPhoneNumberInstancesForUser(numRows, res.locals.user);
+
     const mappedNumbers = numRows.map(n => ({
       number: n.number,
       handler: n.handler,
       outbound: !!n.outbound,
       trunkId: n.aplisayId || null,
       provisioned: !!n.provisioned,
+      inUse: !!n.instanceId,
+      agentId: n.Instance?.Agent?.id ?? null,
+      agentName: n.Instance?.Agent?.name ?? null,
       _createdAt: n.createdAt
     }));
     const mappedRegs = regRows.map(r => ({
