@@ -154,11 +154,12 @@ describe('Agent Phone Number Workflow Test', () => {
   test('Complete Agent Phone Number Workflow', async () => {
 
     try {
-      // Step 1: Create phone number endpoint
+      // Step 1: Create phone number endpoint (unique number: parallel Jest suites share one DB)
+      const unique = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(-10);
       const phoneReq = createMockRequest({
         body: {
           type: 'e164-ddi',
-          number: '+1234567890',
+          number: `+1555${unique}`,
           handler: 'livekit',
           outbound: false,
           trunkId: testTrunkId

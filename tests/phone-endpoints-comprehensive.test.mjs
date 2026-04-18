@@ -237,6 +237,61 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       });
     });
 
+    test('type=e164-ddi returns agentId and agentName when the number is linked to an instance', async () => {
+      const userId = randomUUID();
+      await User.create({
+        id: userId,
+        organisationId: testOrgId,
+        name: 'Phone list user',
+        email: `${userId}@phone-endpoints-test.example.com`,
+        emailVerified: true,
+        phone: '+10000000001',
+        phoneVerified: true,
+        picture: 'https://example.com/p.png',
+        role: { admin: true }
+      });
+      const agent = await Agent.create({
+        name: 'Deployed list agent',
+        description: 't',
+        modelName: 'livekit:ultravox/ultravox-v0.7',
+        prompt: 'You are a test agent.',
+        options: { tts: { language: 'any', voice: 'Ciara' } },
+        functions: {},
+        keys: [],
+        userId,
+        organisationId: testOrgId
+      });
+      const instance = await Instance.create({
+        agentId: agent.id,
+        type: 'livekit',
+        key: 'k',
+        userId,
+        organisationId: testOrgId
+      });
+      await PhoneNumber.update({ instanceId: instance.id }, { where: { number: testPhoneId } });
+
+      const req = createMockRequest({
+        query: { type: 'e164-ddi' },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { id: userId, organisationId: testOrgId };
+
+      await phoneEndpointList(req, res);
+
+      expect(res._status).toBe(200);
+      const row = res._body.items.find((ep) => ep.number === testPhoneId);
+      expect(row).toBeDefined();
+      expect(row.inUse).toBe(true);
+      expect(row.agentId).toBe(agent.id);
+      expect(row.agentName).toBe('Deployed list agent');
+
+      await PhoneNumber.update({ instanceId: null }, { where: { number: testPhoneId } });
+      await Instance.destroy({ where: { id: instance.id } });
+      await Agent.destroy({ where: { id: agent.id } });
+      await User.destroy({ where: { id: userId } });
+    });
+
     test('should expose trunkId and not aplisayId for e164-ddi endpoints', async () => {
       const req = createMockRequest({
         query: { type: 'e164-ddi' },
@@ -342,8 +397,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     });
 
     test('should return empty list for organisation with no endpoints', async () => {
+      // Registrations are strictly org-scoped. The merged list also includes shared-pool DDIs
+      // (organisationId null), so an org with no data of its own may still see numbers; use
+      // phone-registration-only to assert true emptiness.
       const req = createMockRequest({
-        query: {},
+        query: { type: 'phone-registration' },
         headers: {}
       });
       const res = createMockResponse();
@@ -465,10 +523,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         const org1Endpoints = res1._body.items;
         expect(org1Endpoints.length).toBeGreaterThan(0);
 
-        // Verify Organisation 1 only sees its own phone number
+        // Verify Organisation 1 sees its own phone number (merged list may also include shared-pool DDIs)
         const org1PhoneNumbers = org1Endpoints.filter(ep => ep.number);
-        expect(org1PhoneNumbers).toHaveLength(1);
-        expect(org1PhoneNumbers[0].number).toBe('1555111111');
+        const org1OwnedDdis = org1PhoneNumbers.filter((ep) => ep.number === '1555111111');
+        expect(org1OwnedDdis).toHaveLength(1);
+        expect(org1PhoneNumbers.map((ep) => ep.number)).not.toContain('1555222222');
 
         // Verify Organisation 1 only sees its own registrations
         const org1Registrations = org1Endpoints.filter(ep => ep.id);
@@ -491,10 +550,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         const org2Endpoints = res2._body.items;
         expect(org2Endpoints.length).toBeGreaterThan(0);
 
-        // Verify Organisation 2 only sees its own phone number
         const org2PhoneNumbers = org2Endpoints.filter(ep => ep.number);
-        expect(org2PhoneNumbers).toHaveLength(1);
-        expect(org2PhoneNumbers[0].number).toBe('1555222222');
+        const org2OwnedDdis = org2PhoneNumbers.filter((ep) => ep.number === '1555222222');
+        expect(org2OwnedDdis).toHaveLength(1);
+        expect(org2PhoneNumbers.map((ep) => ep.number)).not.toContain('1555111111');
 
         // Verify Organisation 2 only sees its own registrations
         const org2Registrations = org2Endpoints.filter(ep => ep.id);
