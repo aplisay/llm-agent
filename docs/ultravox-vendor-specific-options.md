@@ -12,7 +12,7 @@ This document describes how to configure **Ultravox-only** settings for agents t
 
 - **Portability.** Relying on vendor blocks makes an agent **non-portable** in practice: you are encoding assumptions about one provider’s API and lifecycle, not about Aplisay’s stable agent contract.
 
-- **Cross-platform behaviour.** On stacks that are not Ultravox-backed LiveKit, `vendorSpecific` is generally **ignored**—so the same agent JSON may still “run” elsewhere. That is **not** the same as behaving the same. If **important** behaviour (for example a fixed welcome line encoded only in `firstSpeakerSettings`, or turn-taking tuned only via `vadSettings`) lives exclusively in these options, **other models or handlers will not reproduce it**, because those options are not applied there. Prefer putting durable behaviour in the **prompt**, **standard agent options**, and **tools** that every platform you care about supports.
+- **Cross-platform behaviour.** On stacks that are not Ultravox-backed LiveKit, `vendorSpecific` is generally **ignored**—so the same agent JSON may still “run” elsewhere. That is **not** the same as behaving the same. If **important** behaviour (for example a fixed welcome line encoded only in `firstSpeakerSettings`, turn-taking tuned only via `vadSettings`, or silence handling only via `inactivityMessages`) lives exclusively in these options, **other models or handlers will not reproduce it**, because those options are not applied there. Prefer putting durable behaviour in the **prompt**, **standard agent options**, and **tools** that every platform you care about supports.
 
 Use vendor-specific knobs when you understand the trade-offs and accept that they may need revisiting whenever Ultravox or our integration changes.
 
@@ -29,6 +29,7 @@ Supported keys today include (non-exhaustive; see implementation and Ultravox do
 | `experimentalSettings` | e.g. experimental transcription provider selection |
 | `vadSettings` | Call-level voice activity detection tuning |
 | `firstSpeakerSettings` | Who speaks first and how the opening turn is shaped |
+| `inactivityMessages` | Ordered prompts after cumulative user silence; optional hang-up behaviours |
 
 Other keys may be forwarded if added by Ultravox; treat undocumented keys as experimental.
 
@@ -43,7 +44,8 @@ Other keys may be forwarded if added by Ultravox; treat undocumented keys as exp
       "ultravox": {
         "experimentalSettings": { },
         "vadSettings": { },
-        "firstSpeakerSettings": { }
+        "firstSpeakerSettings": { },
+        "inactivityMessages": []
       }
     }
   }
@@ -151,6 +153,42 @@ When `firstSpeakerSettings` is present on the agent, our LiveKit Ultravox integr
 ```
 
 Again: if this greeting is **critical** to your product, duplicating or reinforcing the intent in the **system prompt** (or other portable mechanisms) reduces the risk of divergent behaviour on non-Ultravox routes.
+
+---
+
+## Inactivity messages (`inactivityMessages`)
+
+Optional **user-silence** handling: an ordered list of messages the agent speaks after **cumulative** periods without user activity. Durations use the same duration string pattern as elsewhere in the Ultravox API (e.g. `"30s"`, `"5.5s"`). Each entry can set `endBehavior` to control whether the call may end after that message (see Ultravox for enum values such as `END_BEHAVIOR_HANG_UP_SOFT`).
+
+Authoritative behaviour, ordering, and best practices are described in the Ultravox **[Calls overview — inactivityMessages](https://docs.ultravox.ai/api-reference/calls/overview#inactivitymessages-5)** section.
+
+```json
+{
+  "options": {
+    "vendorSpecific": {
+      "ultravox": {
+        "inactivityMessages": [
+          {
+            "duration": "30s",
+            "message": "Are you still there?"
+          },
+          {
+            "duration": "15s",
+            "message": "If there is nothing else, may I end the call?"
+          },
+          {
+            "duration": "10s",
+            "message": "Thank you for calling. Goodbye.",
+            "endBehavior": "END_BEHAVIOR_HANG_UP_SOFT"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+If silence handling or hang-up timing is **business-critical**, assume it **does not** apply on non-Ultravox stacks unless you implement an equivalent there.
 
 ---
 

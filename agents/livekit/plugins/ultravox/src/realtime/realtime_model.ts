@@ -45,6 +45,7 @@ interface ModelOptions {
       };
       vadSettings?: api_proto.UltravoxVadSettings;
       firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
+      inactivityMessages?: api_proto.UltravoxInactivityMessage[];
       [key: string]: any;
     };
     [key: string]: any;
@@ -295,6 +296,7 @@ export class RealtimeModel extends llm.RealtimeModel {
         };
         vadSettings?: api_proto.UltravoxVadSettings;
         firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
+        inactivityMessages?: api_proto.UltravoxInactivityMessage[];
         [key: string]: any;
       };
       [key: string]: any;
@@ -978,6 +980,13 @@ export class RealtimeSession extends llm.RealtimeSession {
           this.#logger.debug(
             { vadSettings: modelData.vadSettings },
             "Added VAD settings from vendor-specific options"
+          );
+        }
+        if (Array.isArray(uv?.inactivityMessages)) {
+          modelData.inactivityMessages = uv.inactivityMessages;
+          this.#logger.debug(
+            { count: modelData.inactivityMessages.length },
+            "Added inactivityMessages from vendor-specific options"
           );
         }
 

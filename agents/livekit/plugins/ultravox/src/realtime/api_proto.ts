@@ -48,6 +48,19 @@ export interface UltravoxFirstSpeakerSettings {
   agent?: UltravoxFirstSpeakerSettingsAgent;
 }
 
+/**
+ * Spoken prompts after periods of user inactivity (cumulative durations).
+ * @see https://docs.ultravox.ai/api-reference/calls/overview#inactivitymessages-5
+ */
+export interface UltravoxInactivityMessage {
+  duration: string;
+  message: string;
+  endBehavior?:
+    | 'END_BEHAVIOR_UNSPECIFIED'
+    | 'END_BEHAVIOR_HANG_UP_SOFT'
+    | 'END_BEHAVIOR_HANG_UP_STRICT';
+}
+
 export interface UltravoxTool {
   nameOverride: string;
   temporaryTool: {
@@ -103,6 +116,7 @@ export interface UltravoxModelData {
   firstSpeaker?: string;
   vadSettings?: UltravoxVadSettings;
   firstSpeakerSettings?: UltravoxFirstSpeakerSettings;
+  inactivityMessages?: UltravoxInactivityMessage[];
   experimentalSettings?: {
     transcriptionProvider?: string;
     [key: string]: any;

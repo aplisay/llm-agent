@@ -152,6 +152,19 @@ export interface Agent {
             delay?: string;
           };
         };
+        /**
+         * Messages spoken after cumulative periods of user inactivity (`inactivityMessages`).
+         * Durations are protobuf-style strings (e.g. `"30s"`). See Ultravox docs for ordering and `endBehavior`.
+         * @see https://docs.ultravox.ai/api-reference/calls/overview#inactivitymessages-5
+         */
+        inactivityMessages?: Array<{
+          duration: string;
+          message: string;
+          endBehavior?:
+            | 'END_BEHAVIOR_UNSPECIFIED'
+            | 'END_BEHAVIOR_HANG_UP_SOFT'
+            | 'END_BEHAVIOR_HANG_UP_STRICT';
+        }>;
         [key: string]: any;
       };
       [key: string]: any;

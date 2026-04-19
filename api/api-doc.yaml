@@ -383,7 +383,18 @@ components:
                     "agent": {
                       "text": "Hello, how can I help you today?"
                     }
-                  }
+                  },
+                  "inactivityMessages": [
+                    {
+                      "duration": "30s",
+                      "message": "Are you still there?"
+                    },
+                    {
+                      "duration": "15s",
+                      "message": "If there is nothing else, I will end the call.",
+                      "endBehavior": "END_BEHAVIOR_HANG_UP_SOFT"
+                    }
+                  ]
                 }
               }
               ```
@@ -400,6 +411,9 @@ components:
               firstSpeakerSettings:
                 agent:
                   prompt: "Greet the caller briefly and ask how you can help."
+              inactivityMessages:
+                - duration: "60s"
+                  message: "Are you still there?"
     CallHookConfig:
       type: object
       description: |-
