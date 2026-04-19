@@ -13,6 +13,41 @@ export type Voice = string;
 export type AudioFormat = 'pcm16';
 export type Model = string;
 
+/** Call-level VAD settings for Ultravox `POST /api/calls`. See https://docs.ultravox.ai/api-reference/calls/calls-post */
+export interface UltravoxVadSettings {
+  turnEndpointDelay?: string;
+  minimumTurnDuration?: string;
+  minimumInterruptionDuration?: string;
+  frameActivationThreshold?: number;
+}
+
+/** When the user should speak first but does not, optional agent fallback greeting. */
+export interface UltravoxFallbackAgentGreeting {
+  delay?: string;
+  text?: string;
+  prompt?: string;
+}
+
+export interface UltravoxFirstSpeakerSettingsUser {
+  fallback?: UltravoxFallbackAgentGreeting;
+}
+
+export interface UltravoxFirstSpeakerSettingsAgent {
+  uninterruptible?: boolean;
+  text?: string;
+  prompt?: string;
+  delay?: string;
+}
+
+/**
+ * Who speaks first and how the opening turn is shaped.
+ * Exactly one of `user` or `agent` should be set per Ultravox API.
+ */
+export interface UltravoxFirstSpeakerSettings {
+  user?: UltravoxFirstSpeakerSettingsUser;
+  agent?: UltravoxFirstSpeakerSettingsAgent;
+}
+
 export interface UltravoxTool {
   nameOverride: string;
   temporaryTool: {
@@ -66,6 +101,8 @@ export interface UltravoxModelData {
     };
   };
   firstSpeaker?: string;
+  vadSettings?: UltravoxVadSettings;
+  firstSpeakerSettings?: UltravoxFirstSpeakerSettings;
   experimentalSettings?: {
     transcriptionProvider?: string;
     [key: string]: any;

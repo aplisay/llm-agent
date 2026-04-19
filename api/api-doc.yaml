@@ -372,6 +372,17 @@ components:
                 "ultravox": {
                   "experimentalSettings": {
                     "transcriptionProvider": "deepgram-nova-3"
+                  },
+                  "vadSettings": {
+                    "turnEndpointDelay": "0.5s",
+                    "minimumTurnDuration": "0s",
+                    "minimumInterruptionDuration": "0.12s",
+                    "frameActivationThreshold": 0.5
+                  },
+                  "firstSpeakerSettings": {
+                    "agent": {
+                      "text": "Hello, how can I help you today?"
+                    }
                   }
                 }
               }
@@ -384,6 +395,11 @@ components:
             ultravox:
               experimentalSettings:
                 transcriptionProvider: "deepgram-nova-3"
+              vadSettings:
+                turnEndpointDelay: "0.384s"
+              firstSpeakerSettings:
+                agent:
+                  prompt: "Greet the caller briefly and ask how you can help."
     CallHookConfig:
       type: object
       description: |-

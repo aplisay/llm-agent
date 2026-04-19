@@ -43,6 +43,8 @@ interface ModelOptions {
         transcriptionProvider?: string;
         [key: string]: any;
       };
+      vadSettings?: api_proto.UltravoxVadSettings;
+      firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
       [key: string]: any;
     };
     [key: string]: any;
@@ -291,6 +293,8 @@ export class RealtimeModel extends llm.RealtimeModel {
           transcriptionProvider?: string;
           [key: string]: any;
         };
+        vadSettings?: api_proto.UltravoxVadSettings;
+        firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
         [key: string]: any;
       };
       [key: string]: any;
@@ -934,6 +938,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         );
 
         // Create Ultravox call
+        const uv = this.#opts.vendorSpecific?.ultravox;
         const modelData: api_proto.UltravoxModelData = {
           model: this.#opts.model,
           maxDuration: this.#opts.maxDuration,
@@ -951,15 +956,28 @@ export class RealtimeSession extends llm.RealtimeSession {
               mediaIdleTimeout: "30s",
             },
           },
-          firstSpeaker: this.#opts.firstSpeaker,
         };
 
-        // Add vendor-specific options (e.g., experimentalSettings)
-        if (this.#opts.vendorSpecific?.ultravox?.experimentalSettings) {
-          modelData.experimentalSettings = this.#opts.vendorSpecific.ultravox.experimentalSettings;
+        // Prefer firstSpeakerSettings (Ultravox-recommended) over deprecated firstSpeaker.
+        if (uv?.firstSpeakerSettings != null) {
+          modelData.firstSpeakerSettings = uv.firstSpeakerSettings;
+        } else {
+          modelData.firstSpeaker = this.#opts.firstSpeaker;
+        }
+
+        // Add vendor-specific options (e.g., experimentalSettings, vadSettings)
+        if (uv?.experimentalSettings) {
+          modelData.experimentalSettings = uv.experimentalSettings;
           this.#logger.debug(
             { experimentalSettings: modelData.experimentalSettings },
             "Added experimental settings from vendor-specific options"
+          );
+        }
+        if (uv?.vadSettings != null) {
+          modelData.vadSettings = uv.vadSettings;
+          this.#logger.debug(
+            { vadSettings: modelData.vadSettings },
+            "Added VAD settings from vendor-specific options"
           );
         }
 

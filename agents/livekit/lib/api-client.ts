@@ -120,6 +120,38 @@ export interface Agent {
           transcriptionProvider?: string;
           [key: string]: any;
         };
+        /**
+         * VAD settings forwarded to Ultravox `POST /api/calls` (`vadSettings`).
+         * Durations use protobuf duration strings, e.g. `"0.384s"`.
+         * @see https://docs.ultravox.ai/api-reference/calls/calls-post
+         */
+        vadSettings?: {
+          turnEndpointDelay?: string;
+          minimumTurnDuration?: string;
+          minimumInterruptionDuration?: string;
+          frameActivationThreshold?: number;
+        };
+        /**
+         * Opening-turn behaviour (`firstSpeakerSettings`). Prefer this over the model-level
+         * deprecated `firstSpeaker` enum; when set here, that enum is not sent on the create-call body.
+         * Exactly one of `user` or `agent` should be set per Ultravox API.
+         * @see https://docs.ultravox.ai/api-reference/calls/calls-post
+         */
+        firstSpeakerSettings?: {
+          user?: {
+            fallback?: {
+              delay?: string;
+              text?: string;
+              prompt?: string;
+            };
+          };
+          agent?: {
+            uninterruptible?: boolean;
+            text?: string;
+            prompt?: string;
+            delay?: string;
+          };
+        };
         [key: string]: any;
       };
       [key: string]: any;
