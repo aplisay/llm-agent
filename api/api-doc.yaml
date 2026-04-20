@@ -85,6 +85,15 @@ components:
           description: This model is a speech-to-speech audio model
           type: boolean
           example: false
+        voiceStack:
+          type: string
+          enum: [realtime, pipeline]
+          description: |-
+            LiveKit-only. `realtime` is speech-to-speech; `pipeline` is STT–LLM–TTS and uses agent `stt`/`tts` options.
+        requiresSttTts:
+          type: boolean
+          description: |-
+            LiveKit-only. When true, configure `options.stt` and `options.tts` (vendor, language, voice) for the pipeline.
         hasTelephony:
           description: This model has a telephony interface so can be activated with a number if required
           type: boolean
@@ -257,11 +266,33 @@ components:
                 Optional client-provided encryption key. When set, recordings are encrypted
                 with a key derived from this value and the server cannot decrypt them for you.
                 You must decrypt them client-side after download.
+        voiceMode:
+          type: string
+          enum: [realtime, pipeline]
+          description: |-
+            Optional LiveKit override. Normally omitted: stack is chosen from the model id in `modelName`
+            (see GET /models `voiceStack`). Use this only to force realtime vs pipeline when needed.
+        pipeline:
+          type: object
+          description: Optional full LiveKit Inference model strings (overrides derived `stt`/`tts`/`llm`).
+          properties:
+            stt:
+              type: string
+              description: STT model string (e.g. deepgram/nova-3:en).
+            llm:
+              type: string
+              description: LLM model string (e.g. openai/gpt-4o-mini).
+            tts:
+              type: string
+              description: TTS model and voice (e.g. cartesia/sonic-3:voice-id).
         tts:
           type: object
           properties:
             language:
               $ref: "#/components/schemas/Language"
+            vendor:
+              type: string
+              description: TTS provider for LiveKit pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
             voice:
               description: |-
                 TTS voice specifier.
@@ -273,6 +304,9 @@ components:
           properties:
             language:
               $ref: "#/components/schemas/Language"
+            vendor:
+              type: string
+              description: STT provider for LiveKit pipeline models (e.g. deepgram, assemblyai, cartesia).
         fallback:
           type: object
           description: |-

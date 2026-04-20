@@ -18,6 +18,10 @@ import {
 } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
+import {
+  detachPrimaryAgentMediaAfterBridge,
+  getLlmForTransferSession,
+} from "./voice-session-resources.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -217,10 +221,7 @@ async function finaliseBridgedCall(
   session: voice.AgentSession | null,
   setBridgedCallRecord?: (call: Call | null) => void
 ): Promise<Call | null> {
-  // Close down the model for the agent leg
-  if (session?.llm) {
-    (session.llm as llm.RealtimeModel)?.close();
-  }
+  detachPrimaryAgentMediaAfterBridge(session);
 
   try {
     const originalCallId = call.id;
@@ -670,7 +671,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const transferSession = new voice.AgentSession({
-      llm: session.llm, // Reuse the same LLM instance
+      llm: getLlmForTransferSession(session),
     });
     setTransferSession(transferSession);
 

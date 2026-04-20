@@ -9,6 +9,7 @@ export default function (logger, voices) {
 
   const voicesList = (async (req, res) => {
       try {
+        res.set('Deprecation', 'true');
         let voices = Object.fromEntries(await Promise.all((await handlers()).implementations.map(async ({ name, voices }) => ([name, await voices]))));
         res.send(voices);
       }
@@ -20,6 +21,8 @@ export default function (logger, voices) {
     voicesList.apiDoc = {
       summary: 'Returns list of valid TTS voice models',
       operationId: 'voicesList',
+      deprecated: true,
+      description: 'Deprecated. Use `GET /models/{modelName}/voices` and `GET /models/{modelName}/voices/{locale}` so voice and language choices match the selected model (especially LiveKit pipeline vs realtime).',
       tags: ["Voices"],
       responses: {
         200: {

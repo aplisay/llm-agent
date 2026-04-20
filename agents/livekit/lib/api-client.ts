@@ -58,11 +58,46 @@ export interface Agent {
   prompt?: string;
   options?: {
     /**
+     * Optional override for LiveKit voice stack. When omitted, mode is derived from the
+     * model id in `modelName` (see GET /models: `voiceStack` / `requiresSttTts`).
+     */
+    voiceMode?: 'realtime' | 'pipeline';
+    /**
+     * Optional LiveKit Inference model strings (full override). If unset, STT/TTS are
+     * derived from `stt` / `tts`, and LLM from the selected pipeline model id.
+     */
+    pipeline?: {
+      stt?: string;
+      llm?: string;
+      tts?: string;
+    };
+    /**
      * Optional maximum session duration for realtime LLMs (e.g. "305s").
      * Used by worker when constructing RealtimeModel.
      */
     maxDuration?: string;
+    /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
+    temperature?: number;
+    stt?: {
+      /**
+       * BCP-47 primary tag (e.g. `en`) for pipeline Inference STT.
+       * Values like `any` / `multi` are treated as unspecified and default to `en` (or `LIVEKIT_PIPELINE_STT_LANG`).
+       */
+      language?: string;
+      /** STT vendor for LiveKit pipeline (e.g. deepgram, assemblyai). */
+      vendor?: string;
+    };
     tts?: {
+      language?: string;
+      /**
+       * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
+       * `google` uses Gemini TTS on Node (`@livekit/agents-plugin-google`), not Google Cloud
+       * voice ids (`en-GB-Standard-O`). Map timbre with `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE`
+       * (global), `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE_<LANG>_<REGION>` (e.g. `..._EN_GB`),
+       * or `vendorSpecific.google.geminiVoiceName`. For a custom Inference TTS string, set
+       * `LIVEKIT_PIPELINE_GOOGLE_TTS`.
+       */
+      vendor?: string;
       voice?: string;
     };
     /**
@@ -166,6 +201,15 @@ export interface Agent {
             | 'END_BEHAVIOR_HANG_UP_STRICT';
         }>;
         [key: string]: any;
+      };
+      /**
+       * Google / Gemini options for the LiveKit pipeline when using Gemini TTS.
+       */
+      google?: {
+        /**
+         * Prebuilt Gemini TTS voice name (e.g. Kore, Puck). Overrides env and Cloud-id defaults.
+         */
+        geminiVoiceName?: string;
       };
       [key: string]: any;
     };
