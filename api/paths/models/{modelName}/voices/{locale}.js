@@ -27,6 +27,8 @@ export default function (logger, voices) {
     summary: 'List TTS voices by vendor for a model and locale',
     description: `Returns a vendor-keyed map of voice rows for the given \`locale\` (from [\`GET /models/{modelName}/voices\`](#operation-modelVoiceLocales)).
 
+For **LiveKit realtime** models, vendors are limited to the model’s provider (OpenAI vs Ultravox, etc.), not the full merged catalogue.
+
 Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
     operationId: 'modelVoicesByLocale',
     tags: ['Models'],

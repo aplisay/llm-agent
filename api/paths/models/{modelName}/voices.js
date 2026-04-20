@@ -22,7 +22,8 @@ export default function (logger, voices) {
 Use **URL-encoded** \`modelName\` as a single path segment (e.g. \`livekit%3Aopenai%2Fgpt-4o\` for \`livekit:openai/gpt-4o\`).
 
 - **LiveKit pipeline** models: locales are derived from configured Inference TTS providers (Deepgram, ElevenLabs, Cartesia, etc.). Google Cloud catalogue voices are omitted from this list because the Node pipeline uses Gemini TTS, not Cloud voice ids.
-- **LiveKit realtime** and other handlers: locales match the legacy nested voice map (often \`any\` for Ultravox/OpenAI realtime).
+- **LiveKit realtime**: locales and vendors are scoped to the model provider (e.g. OpenAI realtime → OpenAI voices only; Ultravox → Ultravox only). Google Gemini realtime has no separate catalogue rows here.
+- **Other handlers**: locales match that handler’s nested voice map.
 
 Prefer this over [\`GET /voices\`](#operation-voicesList).`,
     operationId: 'modelVoiceLocales',
