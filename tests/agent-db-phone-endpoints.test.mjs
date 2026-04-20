@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 
 describe('Agent DB Phone Endpoints API', () => {
   let phoneEndpointsList;
+  let updateProvisioning;
   let mockLogger;
   let mockVoices;
   let mockWsServer;
@@ -190,6 +191,8 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._body.items).toHaveLength(1);
       expect(res._body.items[0]).toHaveProperty('number', testPhoneNumber.number);
       expect(res._body.items[0]).toHaveProperty('handler', 'livekit');
+      expect(res._body.items[0]).toHaveProperty('provisioned');
+      expect(res._body.items[0]).toHaveProperty('callReceived');
       expect(res._body.nextOffset).toBeNull();
     });
 
@@ -255,6 +258,9 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._body.items.length).toBeGreaterThanOrEqual(2);
       expect(res._body.items.every(item => item.number)).toBe(true);
       expect(res._body.items.every(item => !item.id)).toBe(true);
+      // Ensure new fields are present on list payload
+      expect(res._body.items.every(item => 'provisioned' in item)).toBe(true);
+      expect(res._body.items.every(item => 'callReceived' in item)).toBe(true);
     });
 
     test('should filter numbers by handler when listing', async () => {
@@ -296,6 +302,7 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(resGet._body.items).toHaveLength(1);
       expect(resGet._body.items[0]).toHaveProperty('number', number);
       expect(resGet._body.items[0].provisioned).toBe(false);
+      expect(resGet._body.items[0]).toHaveProperty('callReceived');
 
       // Now update provisioning via internal PATCH
       const reqPatch = {
@@ -321,6 +328,48 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(resGet2._body.items).toHaveLength(1);
       expect(resGet2._body.items[0]).toHaveProperty('number', number);
       expect(resGet2._body.items[0].provisioned).toBe(true);
+    });
+  });
+
+  describe('callReceived stamping', () => {
+    test('should set callReceived on first single-number lookup and return it in the response', async () => {
+      const number = testPhoneNumber.number;
+      const before = await PhoneNumber.findByPk(number);
+      expect(before).toBeTruthy();
+      expect(before.callReceived).toBeNull();
+
+      const reqGet = createMockRequest({ type: 'e164-ddi', number });
+      const resGet = createMockResponse();
+      await phoneEndpointsList(reqGet, resGet);
+
+      expect(resGet._status).toBe(200);
+      expect(resGet._body.items).toHaveLength(1);
+      const item = resGet._body.items[0];
+      expect(item).toHaveProperty('number', number);
+      expect(item.callReceived).toBeTruthy();
+
+      const after = await PhoneNumber.findByPk(number);
+      expect(after.callReceived).toBeTruthy();
+    });
+
+    test('should set callReceived on first single-registration lookup and return it in the response', async () => {
+      const id = testRegistrationId;
+      const before = await PhoneRegistration.findByPk(id);
+      expect(before).toBeTruthy();
+      expect(before.callReceived).toBeNull();
+
+      const reqGet = createMockRequest({ type: 'phone-registration', id });
+      const resGet = createMockResponse();
+      await phoneEndpointsList(reqGet, resGet);
+
+      expect(resGet._status).toBe(200);
+      expect(resGet._body.items).toHaveLength(1);
+      const item = resGet._body.items[0];
+      expect(item).toHaveProperty('id', id);
+      expect(item.callReceived).toBeTruthy();
+
+      const after = await PhoneRegistration.findByPk(id);
+      expect(after.callReceived).toBeTruthy();
     });
   });
 
@@ -350,6 +399,7 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._body.items[0]).toHaveProperty('status', 'active');
       expect(res._body.items[0]).toHaveProperty('state', 'registered');
       expect(res._body.items[0]).toHaveProperty('outbound', true);
+      expect(res._body.items[0]).toHaveProperty('callReceived');
       expect(res._body.nextOffset).toBeNull();
     });
 
@@ -404,6 +454,7 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._body.items.length).toBeGreaterThanOrEqual(2);
       expect(res._body.items.every(item => item.id)).toBe(true);
       expect(res._body.items.every(item => !item.number)).toBe(true);
+      expect(res._body.items.every(item => Object.prototype.hasOwnProperty.call(item, 'callReceived'))).toBe(true);
     });
 
     test('should filter registrations by handler when listing', async () => {

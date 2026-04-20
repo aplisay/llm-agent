@@ -79,7 +79,7 @@ const phoneEndpointList = (async (req, res) => {
     if (type === 'e164-ddi') {
       const rows = await PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'],
         include: [
           {
             model: Instance,
@@ -104,6 +104,7 @@ const phoneEndpointList = (async (req, res) => {
         handler: r.handler,
         outbound: !!r.outbound,
         trunkId: r.aplisayId || null,
+        callReceived: r.callReceived ? r.callReceived.toISOString() : null,
         createdAt: r.createdAt ? r.createdAt.toISOString() : null,
         inUse: !!r.instanceId,
         agentId: r.Instance?.Agent?.id ?? null,
@@ -137,7 +138,7 @@ const phoneEndpointList = (async (req, res) => {
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'],
         include: [
           {
             model: Instance,
@@ -152,7 +153,7 @@ const phoneEndpointList = (async (req, res) => {
       }),
       PhoneRegistration.findAll({
         where: regWhere,
-        attributes: ['id', 'name', 'registrar', 'username', 'status', 'state', 'handler', 'outbound', 'createdAt'],
+        attributes: ['id', 'name', 'registrar', 'username', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
         limit: size,
         offset: startOffset
       })
@@ -166,6 +167,7 @@ const phoneEndpointList = (async (req, res) => {
       outbound: !!n.outbound,
       trunkId: n.aplisayId || null,
       provisioned: !!n.provisioned,
+      callReceived: n.callReceived ? n.callReceived.toISOString() : null,
       inUse: !!n.instanceId,
       agentId: n.Instance?.Agent?.id ?? null,
       agentName: n.Instance?.Agent?.name ?? null,
@@ -180,6 +182,7 @@ const phoneEndpointList = (async (req, res) => {
       state: r.state,
       handler: r.handler,
       outbound: !!r.outbound,
+      callReceived: r.callReceived ? r.callReceived.toISOString() : null,
       _createdAt: r.createdAt
     }));
 

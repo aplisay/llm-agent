@@ -49,6 +49,7 @@ const getPhoneEndpoint = async (req, res) => {
         error: registration.error,
         handler: registration.handler,
         outbound: !!registration.outbound,
+        callReceived: registration.callReceived ? registration.callReceived.toISOString() : null,
         options: registration.options || null
       });
     }
@@ -69,7 +70,8 @@ const getPhoneEndpoint = async (req, res) => {
       // Expose the associated trunk using the public trunkId field,
       // while keeping aplisayId as an internal implementation detail.
       trunkId: record.aplisayId || null,
-      provisioned: !!record.provisioned
+      provisioned: !!record.provisioned,
+      callReceived: record.callReceived ? record.callReceived.toISOString() : null,
     });
   }
   catch (err) {
@@ -108,7 +110,8 @@ getPhoneEndpoint.apiDoc = {
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' },
-                  provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' }
+                  provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' },
+                  callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
               },
               {
@@ -124,7 +127,8 @@ getPhoneEndpoint.apiDoc = {
                   state: { type: 'string', enum: ['initial', 'registering', 'registered', 'failed'] },
                   error: { type: 'string', description: 'Error message if failed' },
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-                  outbound: { type: 'boolean', description: 'Supports outbound' }
+                  outbound: { type: 'boolean', description: 'Supports outbound' },
+                  callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
               }
             ]
