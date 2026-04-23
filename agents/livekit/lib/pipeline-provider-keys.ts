@@ -41,7 +41,7 @@ function parseDeepgramStt(agent: Agent): { model: string; language: string } {
   const m = /^deepgram\/([^:]+):(.+)$/.exec(configured);
   if (!m) {
     throw new Error(
-      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: STT must be Deepgram (got "${configured}"). Set options.stt.vendor to "deepgram" or options.pipeline.stt to deepgram/...`,
+      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: STT must be Deepgram (got "${configured}"). Set options.stt.vendor to "deepgram" or "deepgram/<model>:<lang>"`,
     );
   }
   return { model: m[1]!, language: deepgramSttLanguage(agent) };
@@ -150,15 +150,7 @@ function cartesiaLanguage(agent: Agent): string {
 /**
  * Direct-provider TTS (ElevenLabs, Cartesia, Deepgram Aura). Google Gemini TTS is handled separately in `voice-session-factory`.
  */
-export function buildProviderPipelineTts(
-  agent: Agent,
-  opts: { pipelineTtsOverride: string },
-): tts.TTS {
-  const pipelineOverride = opts.pipelineTtsOverride.trim();
-  if (pipelineOverride.startsWith("deepgram/aura-2:")) {
-    return buildDeepgramPluginTtsFromAuraDescriptor(pipelineOverride);
-  }
-
+export function buildProviderPipelineTts(agent: Agent): tts.TTS {
   const t = agent.options?.tts;
   const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
 
@@ -194,7 +186,7 @@ export function buildProviderPipelineTts(
       return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr);
     }
     throw new Error(
-      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.pipeline.tts or voice config to resolve to deepgram/aura-2:... (got "${ttsStr}")`,
+      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.tts.vendor to be "deepgram/aura-2" (or voice config to infer deepgram) so it resolves to deepgram/aura-2:... (got "${ttsStr}")`,
     );
   }
 

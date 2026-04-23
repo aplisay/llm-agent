@@ -58,19 +58,29 @@ export interface Agent {
   prompt?: string;
   options?: {
     /**
+     * Optional opening greeting played right after the session starts.
+     *
+     * Note: for Ultravox realtime, prefer `vendorSpecific.ultravox.firstSpeakerSettings` for
+     * provider-native greetings; this block is intended to be portable and primarily used
+     * for pipeline and OpenAI realtime sessions.
+     */
+    greeting?: {
+      /**
+       * Fixed greeting text.
+       * When set, the agent plays this exact line at session start (uninterruptible) and waits for playout.
+       */
+      text?: string;
+      /**
+       * LLM instructions for the greeting.
+       * When set (and `text` is not set), the agent asks the model to greet the user accordingly.
+       */
+      instructions?: string;
+    };
+    /**
      * Optional override for LiveKit voice stack. When omitted, mode is derived from the
      * model id in `modelName` (see GET /models: `voiceStack` / `requiresSttTts`).
      */
     voiceMode?: 'realtime' | 'pipeline';
-    /**
-     * Optional LiveKit Inference model strings (full override). If unset, STT/TTS are
-     * derived from `stt` / `tts`, and LLM from the selected pipeline model id.
-     */
-    pipeline?: {
-      stt?: string;
-      llm?: string;
-      tts?: string;
-    };
     /**
      * Optional maximum session duration for realtime LLMs (e.g. "305s").
      * Used by worker when constructing RealtimeModel.
@@ -84,7 +94,11 @@ export interface Agent {
        * Values like `any` / `multi` are treated as unspecified and default to `en` (or `LIVEKIT_PIPELINE_STT_LANG`).
        */
       language?: string;
-      /** STT vendor for LiveKit pipeline (e.g. deepgram, assemblyai). */
+      /**
+       * STT vendor for LiveKit pipeline (e.g. `deepgram`, `assemblyai`, `cartesia`).
+       * You may optionally scope the inference model (and language suffix) via `vendor/model[:lang]`,
+       * e.g. `deepgram/nova-3:en` (defaults to language derived from `stt.language`).
+       */
       vendor?: string;
     };
     tts?: {
@@ -96,6 +110,9 @@ export interface Agent {
        * (global), `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE_<LANG>_<REGION>` (e.g. `..._EN_GB`),
        * or `vendorSpecific.google.geminiVoiceName`. For a custom Inference TTS string, set
        * `LIVEKIT_PIPELINE_GOOGLE_TTS`.
+       *
+       * You may optionally scope the inference model via `vendor/model`, e.g. `deepgram/aura-2`
+       * or `cartesia/sonic-3`. If you include a full `vendor/model:voice` string here, it wins.
        */
       vendor?: string;
       voice?: string;

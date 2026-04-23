@@ -9,7 +9,6 @@ export default function (logger, voices) {
 
   const voicesList = (async (req, res) => {
       try {
-        res.set('Deprecation', 'true');
         let voices = Object.fromEntries(await Promise.all((await handlers()).implementations.map(async ({ name, voices }) => ([name, await voices]))));
         res.send(voices);
       }

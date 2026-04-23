@@ -11,7 +11,6 @@ import type { Agent, Call } from "./api-client.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
   inferTtsVendor,
-  resolvePipelineLlm,
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
@@ -65,22 +64,7 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
 
 /** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
 function buildPipelineTts(agent: Agent) {
-  const pipelineOverride = (agent.options?.pipeline?.tts ?? "").trim();
   const useKeys = pipelineUsesProviderApiKeys();
-
-  if (pipelineOverride) {
-    if (useKeys && pipelineOverride.startsWith("deepgram/aura-2:")) {
-      return buildProviderPipelineTts(agent, {
-        pipelineTtsOverride: pipelineOverride,
-      });
-    }
-    if (!useKeys) {
-      if (pipelineOverride.startsWith("deepgram/aura-2:")) {
-        return inferenceTtsForDeepgramAura2(pipelineOverride, agent);
-      }
-      return pipelineOverride;
-    }
-  }
 
   const t = agent.options?.tts;
   const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
@@ -103,7 +87,7 @@ function buildPipelineTts(agent: Agent) {
   }
 
   if (useKeys) {
-    return buildProviderPipelineTts(agent, { pipelineTtsOverride: "" });
+    return buildProviderPipelineTts(agent);
   }
 
   const ttsStr = resolvePipelineTts(agent);
@@ -148,9 +132,8 @@ const PIPELINE_ON_ENTER_REPLY_INSTRUCTIONS =
  */
 class PipelineVoiceAgent extends voice.Agent {
   async onEnter(): Promise<void> {
-    this.session.generateReply({
-      instructions: PIPELINE_ON_ENTER_REPLY_INSTRUCTIONS,
-    });
+    // Greeting is handled centrally in runAgentWorker so it can be made uninterruptible
+    // and consistent with realtime stacks. Keep this hook empty.
   }
 }
 
@@ -185,11 +168,10 @@ export function createVoiceModelAndSession(
     const sttModel = useProviderKeys
       ? buildProviderPipelineStt(agent)
       : resolvePipelineStt(agent);
-    const llmModel = resolvePipelineLlm(agent, providerSeg);
     const pipelineLlm = useProviderKeys
       ? buildProviderPipelineLlm(agent, modelName)
       : new inference.LLM({
-          model: llmModel,
+          model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
         });
     const ttsModel = buildPipelineTts(agent);
 
@@ -199,10 +181,17 @@ export function createVoiceModelAndSession(
       ...(vad
         ? { vad, turnDetection: "vad" as const }
         : { turnDetection: "stt" as const }),
+      // Drop early user audio while agent speech is uninterruptible (greeting mode).
+      // This matches the product decision to avoid buffering/replaying early speech.
+      turnHandling: {
+        interruption: {
+          discardAudioIfUninterruptible: true,
+        },
+      },
       stt: sttModel,
       llm: pipelineLlm,
       tts: ttsModel,
-    });
+    } as any);
     return { session, model };
   }
 
@@ -230,6 +219,12 @@ export function createVoiceModelAndSession(
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),
-  });
+    // Drop early user audio while agent speech is uninterruptible (greeting mode).
+    turnHandling: {
+      interruption: {
+        discardAudioIfUninterruptible: true,
+      },
+    },
+  } as any);
   return { session, model };
 }

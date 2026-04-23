@@ -10,7 +10,7 @@ info:
 
     Extensible architecture that currently supports the following frameworks:
       * Jambonz: connecting LLMs to telephone calls via an STT->model->TTS pipeline (15 models, any STT,TTS supported by Jambonz)
-      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API (traditional STT/TTS pipeline agents coming soon)
+      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API
       * Ultravox: connecting LLMs to WebRTC rooms and SIP calls using the Ultravox API and SDK.
       
     Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
@@ -272,19 +272,32 @@ components:
           description: |-
             Optional LiveKit override. Normally omitted: stack is chosen from the model id in `modelName`
             (see GET /models `voiceStack`). Use this only to force realtime vs pipeline when needed.
-        pipeline:
+        greeting:
           type: object
-          description: Optional full LiveKit Inference model strings (overrides derived `stt`/`tts`/`llm`).
+          description: |-
+            Optional opening greeting played immediately after the agent session starts.
+
+            Exactly one of `text` or `instructions` may be set:
+
+            - `text`: fixed greeting line (played varbatim and uninterruptibly, the agent waits for playout).
+            - `instructions`: LLM-driven greeting instructions (still played uninterruptibly, and the agent waits for playout).
+
+            Implementation notes:
+            - The greeting is always **uninterruptible** and the agent always **waits for playout**.
+            - Inbound caller audio during greeting is **dropped** (not buffered/replayed) so the agent is deaf until the greeting is complete.
+            - If you require an interruptible greeting, then don't use this option, prompt the LLM to greet the caller accordingly in which case it will be interruptible like any other LLM dialogue.
           properties:
-            stt:
+            text:
               type: string
-              description: STT model string (e.g. deepgram/nova-3:en).
-            llm:
+              description: Fixed greeting text.
+              example: "Hello, how can I help you today?"
+            instructions:
               type: string
-              description: LLM model string (e.g. openai/gpt-4o-mini).
-            tts:
-              type: string
-              description: TTS model and voice (e.g. cartesia/sonic-3:voice-id).
+              description: LLM instructions for the greeting.
+              example: "Greet the caller briefly and ask how you can help."
+          oneOf:
+            - required: [text]
+            - required: [instructions]
         tts:
           type: object
           properties:
@@ -292,7 +305,9 @@ components:
               $ref: "#/components/schemas/Language"
             vendor:
               type: string
-              description: TTS provider for LiveKit pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
+              description: |-
+                TTS provider for pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
+                You may optionally scope the inference model via `vendor/model` (e.g. `deepgram/aura-2`, `cartesia/sonic-3`).
             voice:
               description: |-
                 TTS voice specifier.
@@ -306,7 +321,9 @@ components:
               $ref: "#/components/schemas/Language"
             vendor:
               type: string
-              description: STT provider for LiveKit pipeline models (e.g. deepgram, assemblyai, cartesia).
+              description: |-
+                STT provider for pipeline models (e.g. deepgram, assemblyai, cartesia).
+                You may optionally scope the inference model (and suffix) using `vendor/model[:lang]`, e.g. `deepgram/nova-3:en`.
         fallback:
           type: object
           description: |-

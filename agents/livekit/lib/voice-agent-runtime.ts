@@ -196,6 +196,7 @@ export async function runAgentWorker({
 
   let timerId: NodeJS.Timeout | null = null;
   let operation: string | null = null;
+  let resolvedVoiceMode: "realtime" | "pipeline" | null = null;
 
   // Marker log to verify worker logger capture is included in InvocationLog
   logger.info(
@@ -517,6 +518,7 @@ export async function runAgentWorker({
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
 
         const voiceMode = resolveVoiceMode(modelName, agent.options);
+        resolvedVoiceMode = voiceMode;
         const vad =
           voiceMode === "pipeline"
             ? (ctx.proc.userData as { vad?: VAD }).vad
@@ -762,6 +764,87 @@ export async function runAgentWorker({
     );
 
     logger.debug({ room }, "connected got room");
+
+    // ---- Opening greeting (uninterruptible, drop early user audio) ----
+    // First pass:
+    // - OpenAI realtime: `generateReply({ instructions: <greeting>, allowInterruptions:false })` and wait for playout.
+    // - Pipeline: fixed greeting uses `say(<text>, { allowInterruptions:false })`; LLM greeting uses `generateReply(...)`.
+    // - Ultravox realtime: prefer vendorSpecific.ultravox.firstSpeakerSettings (handled provider-side), so we skip here
+    //   unless a portable greeting is explicitly configured and no Ultravox firstSpeakerSettings are present.
+    try {
+      const greeting = agent?.options?.greeting;
+      const hasUltravoxFirstSpeaker =
+        Boolean(
+          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
+            ?.text,
+        ) ||
+        Boolean(
+          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
+            ?.prompt,
+        );
+
+      const voiceMode = resolvedVoiceMode || resolveVoiceMode(modelName, agent.options);
+      const text = (greeting?.text || "").trim();
+      const instructions = (greeting?.instructions || "").trim();
+      const hasGreeting = Boolean(text) || Boolean(instructions);
+      const invalidGreeting = Boolean(text) && Boolean(instructions);
+
+      const wantGreeting =
+        hasGreeting &&
+        !invalidGreeting &&
+        // For Ultravox realtime, let provider-native firstSpeakerSettings handle it.
+        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/") && hasUltravoxFirstSpeaker);
+
+      if (wantGreeting && session) {
+        const allowInterruptions = false;
+        const waitForPlayout = true;
+
+        // Prefer TTS `say()` when available (pipeline or text-only realtime with separate TTS).
+        const maybeSay = (session as any).say as
+          | ((t: string, opts?: { allowInterruptions?: boolean }) => any)
+          | undefined;
+
+        if (text) {
+          if (typeof maybeSay === "function") {
+            const handle = await maybeSay.call(session, text, {
+              allowInterruptions,
+            });
+            if (waitForPlayout && handle?.waitForPlayout) {
+              await handle.waitForPlayout();
+            }
+          } else {
+            // No TTS available: ask the realtime model to speak *exactly* this greeting.
+            const handle = await session.generateReply({
+              instructions: `Say exactly this greeting, verbatim, and nothing else:\n\n${JSON.stringify(
+                text,
+              )}`,
+              allowInterruptions,
+            } as any);
+            if (waitForPlayout && handle?.waitForPlayout) {
+              await handle.waitForPlayout();
+            }
+          }
+        } else if (instructions) {
+          const handle = await session.generateReply({
+            instructions,
+            allowInterruptions,
+          } as any);
+          if (waitForPlayout && handle?.waitForPlayout) {
+            await handle.waitForPlayout();
+          }
+        }
+      } else if (invalidGreeting) {
+        logger.warn(
+          {
+            hasText: Boolean(text),
+            hasInstructions: Boolean(instructions),
+          },
+          "invalid greeting config: set only one of options.greeting.text or options.greeting.instructions",
+        );
+      }
+    } catch (e) {
+      logger.warn({ e }, "opening greeting failed; continuing");
+    }
 
     const flushDtmfBuffer = () => {
       if (dtmfBuffer.length > 0 && session) {

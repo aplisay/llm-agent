@@ -1,6 +1,5 @@
 /**
  * Derives LiveKit Inference STT / TTS model strings from agent options (API shape).
- * `options.pipeline.*` overrides when set.
  */
 import type { Agent } from "./api-client.js";
 
@@ -47,16 +46,37 @@ function defaultPipelineEnv(): { stt: string; tts: string } {
   };
 }
 
+function normalizeSttVendorString(
+  raw: string | undefined,
+): { vendor: string; explicitModel?: string; explicitSuffix?: string } {
+  const s = String(raw || "").trim();
+  if (!s) return { vendor: "deepgram" };
+
+  // Allow fully-qualified inference STT strings like `deepgram/nova-3:en`
+  if (s.includes("/")) {
+    const [left, suffix] = s.split(":");
+    const vendor = left.split("/")[0]!.trim().toLowerCase();
+    const explicitModel = left.trim(); // keep vendor/model
+    const explicitSuffix = suffix?.trim();
+    return { vendor, explicitModel, explicitSuffix };
+  }
+
+  return { vendor: s.toLowerCase() };
+}
+
 /**
  * STT inference id, e.g. `deepgram/nova-3:en`
  */
 export function resolvePipelineStt(agent: Agent): string {
-  const o = agent.options?.pipeline?.stt;
-  if (o) return o;
-
   const stt = agent.options?.stt;
-  const vendor = (stt?.vendor || "deepgram").toLowerCase();
   const lang = langToSttSuffix(stt?.language);
+  const { vendor, explicitModel, explicitSuffix } = normalizeSttVendorString(
+    stt?.vendor,
+  );
+
+  if (explicitModel) {
+    return explicitSuffix ? `${explicitModel}:${explicitSuffix}` : `${explicitModel}:${lang}`;
+  }
 
   if (vendor === "assemblyai") {
     return `assemblyai/universal-streaming:${lang}`;
@@ -68,13 +88,26 @@ export function resolvePipelineStt(agent: Agent): string {
   return `deepgram/nova-3:${lang}`;
 }
 
+function normalizeTtsVendorString(
+  raw: string | undefined,
+): { vendor: string; explicitModel?: string; explicitVoice?: string } {
+  const s = String(raw || "").trim();
+  if (!s) return { vendor: "" };
+  // Allow fully-qualified inference TTS strings like `cartesia/sonic-3:<voice-id>`
+  if (s.includes("/")) {
+    const [left, voice] = s.split(":");
+    const vendor = left.split("/")[0]!.trim().toLowerCase();
+    const explicitModel = left.trim(); // vendor/model
+    const explicitVoice = voice?.trim();
+    return { vendor, explicitModel, explicitVoice };
+  }
+  return { vendor: s.toLowerCase() };
+}
+
 /**
  * TTS inference id, e.g. `cartesia/sonic-3:<voice-uuid>`
  */
 export function resolvePipelineTts(agent: Agent): string {
-  const o = agent.options?.pipeline?.tts;
-  if (o) return o;
-
   const t = agent.options?.tts;
   const env = defaultPipelineEnv();
 
@@ -83,11 +116,23 @@ export function resolvePipelineTts(agent: Agent): string {
   }
 
   const voice = String(t.voice).trim();
-  const vendor = (t.vendor || inferTtsVendor(voice)).toLowerCase();
+  const norm = normalizeTtsVendorString(t.vendor);
+  const vendor = (norm.vendor || inferTtsVendor(voice)).toLowerCase();
+  const explicitModel = norm.explicitModel;
+  const explicitVoice = norm.explicitVoice;
 
   // Ultravox is used via the realtime plugin, not as an Inference TTS endpoint.
   if (vendor === "ultravox") {
     return env.tts;
+  }
+
+  if (explicitModel) {
+    // If the vendor string included its own voice suffix, prefer it; otherwise use `options.tts.voice`.
+    const id = explicitVoice || (voice.includes(":") ? voice.split(":").pop()!.trim() : voice);
+    if (vendor === "deepgram" && explicitModel.toLowerCase() === "deepgram/aura-2") {
+      return `${explicitModel}:${deepgramCatalogToInferenceVoice(id)}`;
+    }
+    return `${explicitModel}:${id}`;
   }
 
   if (vendor === "cartesia") {
@@ -132,17 +177,4 @@ export function inferTtsVendor(voice: string): string {
     }
   }
   return "cartesia";
-}
-
-/**
- * LLM inference id for pipeline (defaults to model id from `livekit:provider/modelId`).
- */
-export function resolvePipelineLlm(
-  agent: Agent,
-  providerModelSegment: string | undefined,
-): string {
-  const o = agent.options?.pipeline?.llm;
-  if (o) return o;
-  if (providerModelSegment) return providerModelSegment;
-  return process.env.LIVEKIT_PIPELINE_LLM ?? "openai/gpt-4o-mini";
 }
