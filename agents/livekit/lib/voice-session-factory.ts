@@ -213,8 +213,38 @@ export function createVoiceModelAndSession(
   if (providerModelName) {
     llmOptions.model = providerModelName;
   }
-  if (agent?.options?.vendorSpecific) {
-    llmOptions.vendorSpecific = agent.options.vendorSpecific;
+  const vendorSpecific = (agent?.options?.vendorSpecific ||
+    undefined) as Record<string, any> | undefined;
+
+  // Ultravox realtime: map portable `options.greeting` → provider-native firstSpeakerSettings
+  // so the greeting actually happens at call start (Ultravox doesn't support response.create).
+  if (modelName.includes("livekit:ultravox/")) {
+    const greetingText = agent?.options?.greeting?.text?.trim() || "";
+    const greetingInstructions = agent?.options?.greeting?.instructions?.trim() || "";
+    const hasGreeting = Boolean(greetingText) || Boolean(greetingInstructions);
+
+    const existingFirstSpeaker =
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.text ||
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.prompt ||
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.user;
+
+    if (hasGreeting && !existingFirstSpeaker) {
+      llmOptions.vendorSpecific = {
+        ...(vendorSpecific || {}),
+        ultravox: {
+          ...(vendorSpecific?.ultravox || {}),
+          firstSpeakerSettings: {
+            agent: greetingText
+              ? { uninterruptible: true, text: greetingText }
+              : { uninterruptible: true, prompt: greetingInstructions },
+          },
+        },
+      };
+    } else if (vendorSpecific) {
+      llmOptions.vendorSpecific = vendorSpecific;
+    }
+  } else if (vendorSpecific) {
+    llmOptions.vendorSpecific = vendorSpecific;
   }
 
   const session = new voice.AgentSession({
