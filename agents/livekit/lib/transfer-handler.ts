@@ -304,7 +304,8 @@ async function handleBlindBridgeTransfer(
       registrationOriginated || false,
       b2buaGatewayIp,
       b2buaGatewayTransport,
-      registrationEndpointId
+      registrationEndpointId,
+      context.call?.id
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -377,7 +378,8 @@ async function handleBlindReferTransfer(
       aplisayId!,
       registrar,
       transport,
-      callerId
+      callerId,
+      context.call?.id
     );
 
     logger.info({ tpResult }, "transfer participant executed via SIP REFER");
@@ -540,7 +542,8 @@ async function startConsultativeTransfer(
       context.b2buaGatewayIp,
       context.b2buaGatewayTransport,
       context.registrationEndpointId,
-      callerId
+      callerId,
+      context.call?.id
     );
     setBridgedParticipant(transferTargetParticipant);
     // Step 5: Create TransferAgent with conversation history
@@ -885,7 +888,8 @@ async function finaliseConsultativeTransfer(
         aplisayId!,
         registrar,
         transport,
-        callerId
+        callerId,
+        context.call?.id
       );
 
       logger.info({}, "transfer executed via SIP REFER");

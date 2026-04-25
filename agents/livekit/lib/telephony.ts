@@ -13,6 +13,7 @@ export async function transferParticipant(
   registrar?: string | null,
   transport?: string | null,
   callerId?: string | null,
+  originatingCallId?: string | null,
 ): Promise<any> {
   logger.info({ roomName, participant, transferTo, registrar, transport }, "transfer participant initiated");
 
@@ -30,9 +31,15 @@ export async function transferParticipant(
 
   const sipTransferOptions = {
     playDialtone: false,
-    headers: callerId ? {
-      'X-Aplisay-Origin-Caller-Id': callerId
-    } : undefined
+    headers:
+      callerId || originatingCallId
+        ? {
+            ...(callerId ? { "X-Aplisay-Origin-Caller-Id": callerId } : {}),
+            ...(originatingCallId
+              ? { "X-Aplisay-Call-Id": originatingCallId }
+              : {}),
+          }
+        : undefined,
   };
 
   const sipClient = new SipClient(LIVEKIT_URL!, LIVEKIT_API_KEY!, LIVEKIT_API_SECRET!);
@@ -156,7 +163,8 @@ export async function bridgeParticipant(
   registrationOriginated: boolean = false,
   b2buaGatewayIp: string | null | undefined = null,
   b2buaGatewayTransport: string | null | undefined = null,
-  registrationEndpointId: string | null | undefined = null
+  registrationEndpointId: string | null | undefined = null,
+  originatingCallId: string | null | undefined = null
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -187,7 +195,8 @@ export async function bridgeParticipant(
       participantIdentity: 'sip-outbound-call',
       headers: {
         "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
-        "X-Aplisay-Origin-Caller-Id": originCallerId || 'unknown'
+        "X-Aplisay-Origin-Caller-Id": originCallerId || 'unknown',
+        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
       },
       participantName: 'Aplisay Bridged Transfer',
       fromNumber: origin,
@@ -223,7 +232,8 @@ export async function bridgeParticipant(
     participantIdentity: 'sip-outbound-call',
     headers: {
       'X-Aplisay-Trunk': aplisayId,
-      'X-Aplisay-Origin-Caller-Id': originCallerId || 'unknown'
+      'X-Aplisay-Origin-Caller-Id': originCallerId || 'unknown',
+      ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
     },
     participantName: 'Aplisay Bridged Transfer',
     fromNumber: origin,
@@ -266,7 +276,8 @@ export async function dialTransferTargetToConsultation(
   b2buaGatewayIp: string | null | undefined = null,
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
-  callerId: string | null | undefined = null
+  callerId: string | null | undefined = null,
+  originatingCallId: string | null | undefined = null
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -303,7 +314,8 @@ export async function dialTransferTargetToConsultation(
         participantIdentity: transferTargetIdentity,
         headers: {
           "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
-          "X-Aplisay-Origin-Caller-Id": callerId || 'unknown'
+          "X-Aplisay-Origin-Caller-Id": callerId || 'unknown',
+          ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
         },
         participantName: "Transfer Target",
         fromNumber: origin,
@@ -336,7 +348,8 @@ export async function dialTransferTargetToConsultation(
       participantIdentity: transferTargetIdentity,
       headers: {
         "X-Aplisay-Trunk": effectiveAplisayId || '',
-        "X-Aplisay-Origin-Caller-Id": callerId || 'unknown'
+        "X-Aplisay-Origin-Caller-Id": callerId || 'unknown',
+        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
       },
       participantName: "Transfer Target",
       fromNumber: origin,

@@ -308,6 +308,11 @@ export default defineAgent({
             outboundInfo.aplisayId,
             outboundInfo.fromNumber,
             callerId || "unknown",
+            false,
+            null,
+            null,
+            null,
+            call?.id,
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");

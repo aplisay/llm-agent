@@ -61,8 +61,8 @@ import worker from './lib/worker.js';
 await runSetup();
 
 // Use telephony functions
-await transferParticipant(roomName, participant, transferTo, aplisayId);
-await bridgeParticipant(roomName, participant, bridgeTo, aplisayId, callerId);
+await transferParticipant(roomName, participant, transferTo, aplisayId, null, null, callerId, callId);
+await bridgeParticipant(roomName, bridgeTo, aplisayId, callerId, originCallerId, false, null, null, null, callId);
 
 // Use the worker
 export default worker;
