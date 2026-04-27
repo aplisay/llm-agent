@@ -39,7 +39,6 @@ export async function transferParticipant(
       transferUri += `;transport=${transport as string}`;
     }
   }
-  transferUri += ";norefersub";
 
   const sipTransferOptions = {
     playDialtone: false,
