@@ -157,6 +157,8 @@ const phoneEndpointsList = (async (req, res) => {
             outbound: !!registration.outbound,
             instanceId: registration.instanceId,
             registrar: registration.registrar,
+            username: registration.username,
+            b2buaId: registration.b2buaId,
             options: registration.options,
             callReceived: stampedCallReceived,
           }],

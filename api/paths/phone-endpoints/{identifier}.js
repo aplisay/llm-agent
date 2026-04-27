@@ -44,6 +44,7 @@ const getPhoneEndpoint = async (req, res) => {
         name: registration.name,
         registrar: registration.registrar,
         username: registration.username,
+        b2buaId: registration.b2buaId || null,
         status: registration.status,
         state: registration.state,
         error: registration.error,
@@ -215,7 +216,7 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name', 'options'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -238,7 +239,16 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
         return res.status(400).send({ error: 'options must be an object if provided' });
       }
-      
+      if (updateFields.b2buaId !== undefined) {
+        if (updateFields.b2buaId === null || updateFields.b2buaId === '') {
+          updateFields.b2buaId = null;
+        } else if (typeof updateFields.b2buaId !== 'string' || !updateFields.b2buaId.trim()) {
+          return res.status(400).send({ error: 'b2buaId must be a non-empty string when provided' });
+        } else {
+          updateFields.b2buaId = updateFields.b2buaId.trim();
+        }
+      }
+
       // Handle credential rotation
       let credentialsChanged = false;
       for (const field of credentialFields) {

@@ -1,5 +1,5 @@
 import { SipClient } from "livekit-server-sdk";
-import { SIPTransport } from "@livekit/protocol";
+import { SIPMediaEncryption, SIPTransport } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers } from "./api-client.js";
 
@@ -31,15 +31,12 @@ export async function transferParticipant(
 
   const sipTransferOptions = {
     playDialtone: false,
-    headers:
-      callerId || originatingCallId
-        ? {
-            ...(callerId ? { "X-Aplisay-Origin-Caller-Id": callerId } : {}),
-            ...(originatingCallId
-              ? { "X-Aplisay-Call-Id": originatingCallId }
-              : {}),
-          }
-        : undefined,
+    headers: {
+      "Refer-Sub": "false",
+      "Supported": "norefersub",
+      ...(callerId ? { "X-Aplisay-Origin-Caller-Id": callerId } : {}),
+      ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
+    },
   };
 
   const sipClient = new SipClient(LIVEKIT_URL!, LIVEKIT_API_KEY!, LIVEKIT_API_SECRET!);
@@ -71,15 +68,16 @@ function mapTransportToSIPTransport(transport: string | null | undefined): SIPTr
 }
 
 /**
- * Finds or creates an outbound SIP trunk for a registration endpoint
- * Trunk name format: "Registration Trunk <IP address> <Transport>"
+ * Finds or creates an outbound SIP trunk for a registration endpoint.
+ * Trunk name format: "Registration Trunk <IP address> <Transport>".
+ * Media encryption is always SIP_MEDIA_ENCRYPT_ALLOW (SRTP when offered).
  * @param registrar - Registrar URI (e.g., "sip:provider.example.com:5060")
  * @param transport - Transport protocol (udp, tcp, tls)
  * @returns The SIP trunk ID
  */
 async function findOrCreateRegistrationTrunk(
   registrar: string,
-  transport: string | null | undefined
+  transport: string | null | undefined,
 ): Promise<string> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -96,13 +94,17 @@ async function findOrCreateRegistrationTrunk(
   // Normalize transport for trunk name
   const transportName = (transport || 'tcp').toUpperCase();
   
-  // Construct trunk name: "Registration Trunk <IP address> <Transport>"
   const trunkName = `Registration Trunk ${registrarHost} ${transportName}`;
 
-  // For B2BUA gateway connections, use port 5070
-  const b2buaAddress = `${registrarHost}:5070`;
+  const port = (transportName === 'TLS') ? 5071 : 5070;
 
-  logger.info({ trunkName, registrarHost, b2buaAddress, transport }, 'Finding or creating registration trunk');
+  // For B2BUA gateway connections, use port 5070
+  const b2buaAddress = `${registrarHost}:${port}`;
+
+  logger.info(
+    { trunkName, registrarHost, b2buaAddress, transport },
+    "Finding or creating registration trunk",
+  );
 
   // List existing outbound trunks
   const outboundSipTrunks = await sipClient.listSipOutboundTrunk();
@@ -134,7 +136,8 @@ async function findOrCreateRegistrationTrunk(
       transport: sipTransport,
       authUsername: LIVEKIT_SIP_USERNAME!,
       authPassword: LIVEKIT_SIP_PASSWORD!,
-    }
+      mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
+    },
   );
 
   logger.info({ trunkName, sipTrunkId: registrationTrunk.sipTrunkId }, 'Created registration trunk');
@@ -148,10 +151,11 @@ async function findOrCreateRegistrationTrunk(
  * @param aplisayId - Aplisay trunk ID (optional, not needed for registration-originated calls)
  * @param callerId - Caller ID to use for the call
  * @param originCallerId - Original caller ID
- * @param registrationOriginated - Whether the inbound call originated from a registration endpoint
- * @param b2buaGatewayIp - B2BUA gateway IP address (from sipHXLkRealIp) for registration-originated calls
- * @param b2buaGatewayTransport - B2BUA gateway transport (from sipHXLkTransport) for registration-originated calls
- * @param registrationEndpointId - Registration endpoint ID for registration-originated calls
+ * @param registrationOriginated - Inbound from a registration endpoint, or outbound originate with registration UUID (worker sets B2BUA from registration b2buaId)
+ * @param b2buaGatewayIp - B2BUA edge: sipHXLkRealIp on inbound, or PhoneRegistration.b2buaId for registration outbound originate
+ * @param b2buaGatewayTransport - sipHXLkTransport on inbound, or registration options.transport (default tcp) for originate
+ * @param registrationEndpointId - Registration UUID for X-Aplisay-PhoneRegistration
+ * @param originatingCallId - Platform call id for tracing headers
  * @returns The created SIP participant
  */
 export async function bridgeParticipant(
@@ -164,7 +168,7 @@ export async function bridgeParticipant(
   b2buaGatewayIp: string | null | undefined = null,
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
-  originatingCallId: string | null | undefined = null
+  originatingCallId: string | null | undefined = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -175,8 +179,6 @@ export async function bridgeParticipant(
   const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
   const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
-  // For registration-originated calls, dial through the B2BUA gateway that the call came through
-  // Use the B2BUA gateway IP and transport from participant attributes (sipHXLkRealIp, sipHXLkTransport)
   if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
       { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
@@ -186,7 +188,7 @@ export async function bridgeParticipant(
     // Find or create a trunk for this B2BUA gateway
     const registrationTrunkId = await findOrCreateRegistrationTrunk(
       b2buaGatewayIp,
-      b2buaGatewayTransport
+      b2buaGatewayTransport,
     );
 
     // For registration endpoints, we dial the destination number directly
@@ -199,7 +201,7 @@ export async function bridgeParticipant(
         ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
       },
       participantName: 'Aplisay Bridged Transfer',
-      fromNumber: origin,
+      fromNumber: '00000',
       krispEnabled: true,
       waitUntilAnswered: true
     };
@@ -260,10 +262,11 @@ export async function bridgeParticipant(
  * @param effectiveCallerId - Caller ID to use for the call
  * @param effectiveAplisayId - Aplisay trunk ID (optional)
  * @param transferTargetIdentity - Identity for the transfer target participant
- * @param registrationOriginated - Whether the inbound call originated from a registration endpoint
- * @param b2buaGatewayIp - B2BUA gateway IP address (from sipHXLkRealIp) for registration-originated calls
- * @param b2buaGatewayTransport - B2BUA gateway transport (from sipHXLkTransport) for registration-originated calls
- * @param registrationEndpointId - Registration endpoint ID for registration-originated calls
+ * @param registrationOriginated - Same semantics as bridgeParticipant (inbound registration leg or outbound originate)
+ * @param b2buaGatewayIp - sipHXLkRealIp or registration b2buaId
+ * @param b2buaGatewayTransport - sipHXLkTransport or registration options.transport
+ * @param registrationEndpointId - Registration UUID for X-Aplisay-PhoneRegistration
+ * @param originatingCallId - Platform call id for tracing headers
  * @returns The created SIP participant
  */
 export async function dialTransferTargetToConsultation(
@@ -277,7 +280,7 @@ export async function dialTransferTargetToConsultation(
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
   callerId: string | null | undefined = null,
-  originatingCallId: string | null | undefined = null
+  originatingCallId: string | null | undefined = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -287,8 +290,6 @@ export async function dialTransferTargetToConsultation(
 
   const origin = effectiveCallerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
-  // For registration-originated calls, dial through the B2BUA gateway that the call came through
-  // Use the B2BUA gateway IP and transport from participant attributes (sipHXLkRealIp, sipHXLkTransport)
   if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
       { consultRoomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
@@ -298,7 +299,7 @@ export async function dialTransferTargetToConsultation(
     // Find or create a trunk for this B2BUA gateway
     const registrationTrunkId = await findOrCreateRegistrationTrunk(
       b2buaGatewayIp,
-      b2buaGatewayTransport
+      b2buaGatewayTransport,
     );
     
     // Format destination number

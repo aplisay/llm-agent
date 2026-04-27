@@ -125,6 +125,7 @@ const phoneEndpointList = (async (req, res) => {
         name: r.name,
         registrar: r.registrar,
         username: r.username,
+        b2buaId: r.b2buaId || null,
         status: r.status,
         state: r.state,
         handler: r.handler,
@@ -153,7 +154,7 @@ const phoneEndpointList = (async (req, res) => {
       }),
       PhoneRegistration.findAll({
         where: regWhere,
-        attributes: ['id', 'name', 'registrar', 'username', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
+        attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
         limit: size,
         offset: startOffset
       })
@@ -178,6 +179,7 @@ const phoneEndpointList = (async (req, res) => {
       name: r.name,
       registrar: r.registrar,
       username: r.username,
+      b2buaId: r.b2buaId || null,
       status: r.status,
       state: r.state,
       handler: r.handler,
@@ -306,6 +308,7 @@ const createPhoneEndpoint = async (req, res) => {
         registrar: normalizedRegistrar,
         username: data.username,
         password: data.password,
+        b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
         options: data.options || null,
         organisationId,
         status: 'disabled',

@@ -2,141 +2,63 @@
 
 ## Overview
 
-The Originate Call API allows you to validate and originate outbound calls from an agent using a caller number to a called number. This endpoint performs comprehensive validation including organisation access control and UK phone number validation.
+The originate endpoint validates and starts an outbound call from an **agent listener instance** (`Instance`) toward a PSTN (`calledId`) using a **`callerId`** that must be allowed for outbound in your organisation — either an allocated **DDI** (`PhoneNumber`) or a **`phone-registration`** endpoint UUID (`PhoneRegistration`).
 
-## Endpoints
+## Endpoint
 
-### POST /api/agents/{agentId}/originate
+### `POST /api/listener/{listenerId}/originate`
 
-Validates and originates a call from an agent using a caller number to a called number.
+- **`listenerId`**: Listener / instance ID (from `POST …/listen`).
+- **Body**
+  - **`calledId`**: Destination number. If the agent has no custom `outboundCallFilter`, default validation is UK geographic/mobile (same rules as historically).
+  - **`callerId`**: Either **E.164** for an allocated number in `phone_numbers`, or a **UUID** primary key of a row in `phone_registrations`.
+  - **`metadata`**: Optional; forwarded to the LiveKit outbound dispatch.
 
-#### Authentication
+### Validation (caller)
 
-This endpoint requires authentication. The user's `organisationId` is automatically extracted from the authenticated user's session.
+| Caller type | Requirement |
+|-------------|----------------|
+| **DDI** (`callerId` = stored number string) | Row exists for the organisation, **`outbound`** is true, **`aplisayId`** set (trunk). |
+| **Registration** (`callerId` = UUID) | Row exists for the organisation, **`outbound`** is true, **`b2buaId`** set (B2BUA gateway IP/hostname). SIP CLI from **`username`** or **`options.displayNumber`**. Transport from **`options.transport`** (default `tcp`). |
 
-#### Request Parameters
+### Registration outbound (LiveKit worker)
 
-**Path Parameters:**
-- `agentId` (string, required): The ID of the agent to originate the call from
+For **`callerId`** = registration UUID there is no inbound SIP leg, so the worker uses **`b2buaId`** and **`options.transport`** from the registration record (same B2BUA edge semantics as inbound `sipHXLkRealIp` / `sipHXLkTransport`). See [`agents/livekit/README.md`](../agents/livekit/README.md).
 
-**Request Body:**
-```json
-{
-  "calledId": "+447911123456",
-  "callerId": "+442080996945"
-}
-```
+### Success response
 
-- `calledId` (string, required): The phone number to call (must be a valid UK geographic or mobile number)
-- `callerId` (string, required): The phone number to call from (must exist in phoneNumbers table and belong to the organisation)
+`200` — `{ success, message, data: { callId, listenerId, callerId, calledId, organisationId } }`.
 
-#### Validation Rules
+### Errors
 
-1. **Agent Validation**: The agent must exist and belong to the authenticated user's organisation
-2. **Caller Number Validation**: The `callerId` must exist in the phoneNumbers table and belong to the authenticated user's organisation
-3. **Called Number Validation**: The `calledId` must be a valid UK geographic or mobile number
+| Status | Typical cause |
+|--------|----------------|
+| **400** | Missing fields; invalid `calledId` for configured filter; caller not outbound-enabled; registration without **`b2buaId`** or CLI (`username` / `options.displayNumber`). |
+| **404** | Listener or caller endpoint not found / wrong org. |
+| **429** | Agent concurrency limits (see agent-concurrency docs). |
 
-#### UK Phone Number Validation
+## Examples
 
-The endpoint validates UK phone numbers according to the following rules:
-
-**Valid UK Mobile Numbers:**
-- Start with +44 or 44
-- National number starts with 7
-- Must be exactly 10 digits after removing +44/44 prefix
-- Examples: +447911123456, 447911123456
-
-**Valid UK Geographic Numbers:**
-- Start with +44 or 44
-- National number starts with 1, 2, 3, 5, 8, or 9 (excluding 7 which is mobile)
-- Must be 10-11 digits after removing +44/44 prefix
-- Examples: +442080996945, +441234567890
-
-#### Response
-
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "message": "Call origination request validated successfully",
-  "data": {
-    "agentId": "agent-123",
-    "callerId": "+442080996945",
-    "calledId": "+447911123456",
-    "organisationId": "org-456"
-  }
-}
-```
-
-**Error Responses:**
-
-- `400 Bad Request`: Missing parameters or invalid UK phone number
-  ```json
-  {
-    "error": "Missing required parameters: calledId and callerId are required"
-  }
-  ```
-
-- `403 Forbidden`: Access denied
-  ```json
-  {
-    "error": "Access denied: Agent does not belong to your organisation"
-  }
-  ```
-
-- `404 Not Found`: Agent or caller phone number not found
-  ```json
-  {
-    "error": "Agent agent-123 not found"
-  }
-  ```
-
-- `500 Internal Server Error`: Server error
-  ```json
-  {
-    "error": "Internal server error"
-  }
-  ```
-
-#### Example Usage
+### DDI as caller
 
 ```bash
-curl -X POST "https://llm-agent.aplisay.com/api/agents/agent-123/originate" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+curl -X POST "$API/listener/$LISTENER_ID/originate" \
+  -H "Authorization: Bearer …" \
   -H "Content-Type: application/json" \
-  -d '{
-    "calledId": "+447911123456",
-    "callerId": "+442080996945"
-  }'
+  -d '{"calledId":"+447911123456","callerId":"+442080996945"}'
 ```
 
-#### Security
+### Registration endpoint UUID as caller
 
-- **Organisation Isolation**: Users can only originate calls from agents and phone numbers belonging to their organisation
-- **Authentication Required**: Valid authentication is required to access this endpoint
-- **Input Validation**: Comprehensive validation of all input parameters
-- **UK Number Validation**: Strict validation of UK phone number formats
+Use the **`id`** returned when creating or listing `phone-registration` endpoints (`GET /phone-endpoints?type=phone-registration&originate=true`).
 
-#### Database Requirements
+```bash
+curl -X POST "$API/listener/$LISTENER_ID/originate" \
+  -H "Authorization: Bearer …" \
+  -H "Content-Type: application/json" \
+  -d '{"calledId":"+447911123456","callerId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}'
+```
 
-The endpoint requires the following database relationships:
+## Security
 
-- **Agent** model with `organisationId` field
-- **PhoneNumber** model with `organisationId` field
-- **User** model with `organisationId` field (for authentication)
-
-#### Error Handling
-
-The endpoint provides detailed error messages for different failure scenarios:
-
-1. **Missing Parameters**: Clear indication of which required parameters are missing
-2. **Invalid UK Numbers**: Specific validation errors for UK phone number format
-3. **Access Control**: Clear access denied messages for organisation mismatches
-4. **Not Found**: Specific error messages for missing agents or phone numbers
-
-#### Integration Notes
-
-- This endpoint is designed for validation and can be extended to actually initiate calls
-- The validation logic can be reused for other call-related endpoints
-- UK phone number validation follows standard UK numbering plan rules
-- Organisation-based access control ensures data isolation between organisations
+Organisation isolation applies to listener, caller number, and caller registration. Authentication is required.

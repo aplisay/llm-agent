@@ -78,6 +78,10 @@ Required environment variables:
 - `LIVEKIT_SIP_OUTBOUND` - SIP outbound configuration
 - `LIVEKIT_SIP_USERNAME` - SIP username
 - `LIVEKIT_SIP_PASSWORD` - SIP password
+- `SERVICE_BASE_URI` - Base URL for internal API calls (worker → agent-db)
+- `SHARED_API_TOKEN` - Optional auth for internal API calls
+
+Registration-based **outbound originate** (caller ID = registration UUID) has no inbound SIP leg, so the worker uses the registration row’s **`b2buaId`** (B2BUA gateway IP/hostname — same value as `sipHXLkRealIp` on inbound registration calls) and **`options.transport`** (default `tcp`) for `findOrCreateRegistrationTrunk`, instead of reading participant attributes.
 
 ## Development
 

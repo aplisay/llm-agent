@@ -298,8 +298,8 @@ export interface CallMetadata {
 export interface OutboundInfo {
   toNumber: string;
   fromNumber: string;
-  aplisayId: string;
-  instanceId: string;
+  aplisayId?: string;
+  instanceId?: string;
 }
 
 export interface TrunkInfo {
@@ -328,6 +328,9 @@ export interface PhoneRegistrationInfo {
   id: string;
   name?: string | null;
   handler: string;
+  username?: string | null;
+  /** B2BUA gateway host/IP for registration SIP (same role as sipHXLkRealIp on inbound legs). */
+  b2buaId?: string | null;
   status?: string;
   state?: string;
   outbound?: boolean;
@@ -336,6 +339,7 @@ export interface PhoneRegistrationInfo {
   registrar?: string | null;
   options?: {
     transport?: string;
+    displayNumber?: string;
     [key: string]: any;
   } | null;
   [key: string]: any;
@@ -368,10 +372,9 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   const url = `${baseUrl}${endpoint}`;
   const sharedToken = process.env.SHARED_API_TOKEN;
   
-  //logger.debug({ url, method: options.method || 'GET' }, 'Making API request');
   
   try {
-    logger.debug({ url, method: options.method || 'GET', options }, 'Making API request');
+    //logger.debug({ url, method: options.method || 'GET', options }, 'Making API request');
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',

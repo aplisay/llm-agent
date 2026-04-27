@@ -305,7 +305,7 @@ async function handleBlindBridgeTransfer(
       b2buaGatewayIp,
       b2buaGatewayTransport,
       registrationEndpointId,
-      context.call?.id
+      context.call?.id,
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -370,7 +370,7 @@ async function handleBlindReferTransfer(
         "Using registrar/transport from registration-originated call"
       );
     }
-
+    logger.info({ participant }, "Transferring using base participant");
     const tpResult = await transferParticipant(
       room.name!,
       participant.identity!,
@@ -390,8 +390,27 @@ async function handleBlindReferTransfer(
     };
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
-    setTransferState("failed", `Transfer failed: ${error.message}`);
-    throw error;
+    // This is pretty horrid, but the transfer can appear to fail *after*
+    // it has actually succeeded due to a couple of race conditions.
+    // We can detect these by checking for specific error messages.
+    // And then tell the caller it succeeded really.
+    if (
+      error.message?.includes("500: Internal Server Error") ||
+      error.message?.includes("twirp error unknown: participant does not exist")
+    ) {
+      logger.info(
+        { message: error.message },
+        "transfer failed quirk, succeeded really",
+      );
+      setTransferState("none", "Transfer completed (sort of) successfully");
+      return {
+        status: "OK",
+        reason: "The transfer target was found and accepted the transfer, future calls to transfer will now fail, do not call this tool again",
+      };
+    } else {
+      setTransferState("failed", `Transfer failed: ${error.message}`);
+      throw error;
+    }
   } finally {
     // Always clear the in-progress flag, even if transfer fails
     setConsultInProgress(false);
@@ -543,7 +562,7 @@ async function startConsultativeTransfer(
       context.b2buaGatewayTransport,
       context.registrationEndpointId,
       callerId,
-      context.call?.id
+      context.call?.id,
     );
     setBridgedParticipant(transferTargetParticipant);
     // Step 5: Create TransferAgent with conversation history

@@ -305,13 +305,13 @@ export default defineAgent({
           participant = await bridgeParticipant(
             room.name!,
             outboundInfo.toNumber,
-            outboundInfo.aplisayId,
+            outboundInfo.aplisayId ?? "",
             outboundInfo.fromNumber,
             callerId || "unknown",
-            false,
-            null,
-            null,
-            null,
+            registrationOriginated,
+            b2buaGatewayIp,
+            b2buaGatewayTransport,
+            registrationEndpointId,
             call?.id,
           );
           if (!participant) {
@@ -676,8 +676,8 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     await withTimeout(
       async () => {
         if (outbound) {
-          if (!calledId || !callerId || !aplisayId || !instanceId) {
-            logger.error({ ctx }, "missing metadata for outbound call");
+          if (!calledId || !callerId || !instanceId) {
+            logger.error({ ctx, calledId, callerId, aplisayId, instanceId }, "missing metadata for outbound call");
             throw new Error("Missing metadata for outbound call");
           }
           instance = await getInstanceById(instanceId);
@@ -690,12 +690,67 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           }
           // Do not perform side-effects here; signal to the caller to bridge
           outboundCall = true;
-          outboundInfo = {
-            toNumber: calledId,
-            fromNumber: callerId,
-            aplisayId,
-            instanceId,
-          };
+          const aplisayStr =
+            aplisayId != null ? String(aplisayId).trim() : "";
+          const callerIdStr = String(callerId);
+          const uuidRe =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+          if (!aplisayStr && uuidRe.test(callerIdStr)) {
+            const regEndpoint = await getPhoneEndpointById(callerIdStr);
+            if (!regEndpoint || !("id" in regEndpoint)) {
+              throw new Error(
+                `Registration endpoint not found for outbound call: ${callerIdStr}`,
+              );
+            }
+            const regInfo = regEndpoint as PhoneRegistrationInfo;
+            if (!regInfo.outbound) {
+              throw new Error(
+                `Registration ${callerIdStr} is not enabled for outbound calling`,
+              );
+            }
+            const optDisplay =
+              regInfo.options &&
+              typeof regInfo.options === "object" &&
+              "displayNumber" in regInfo.options
+                ? String(
+                    (regInfo.options as { displayNumber?: string })
+                      .displayNumber || "",
+                  ).trim()
+                : "";
+            const cliRaw =
+              optDisplay ||
+              String(regInfo.username ?? "").trim();
+            if (!cliRaw) {
+              throw new Error(
+                `Registration endpoint ${callerIdStr} has no username or options.displayNumber for outbound CLI`,
+              );
+            }
+            registrationOriginated = true;
+            registrationEndpointId = callerIdStr;
+            const gatewayHost = String(regInfo.b2buaId ?? "").trim();
+            const gatewayTransport = "tcp";
+            if (!gatewayHost) {
+              throw new Error(
+                `Registration endpoint ${callerIdStr} has no b2buaId (B2BUA gateway IP) for outbound calls`,
+              );
+            }
+            b2buaGatewayIp = gatewayHost;
+            b2buaGatewayTransport = gatewayTransport;
+            callerId = cliRaw.replace(/^\+/, "");
+            outboundInfo = {
+              toNumber: calledId,
+              fromNumber: callerId,
+              instanceId: instanceId,
+            };
+          } else {
+            outboundInfo = {
+              toNumber: calledId,
+              fromNumber: callerId,
+              aplisayId: aplisayId,
+              instanceId: instanceId,
+            };
+          }
         } else {
           logger.info({ room }, "room name getting participants");
           const participants = await roomService.listParticipants(room.name!);
@@ -853,6 +908,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     );
   } catch (e) {
     logger.error({ e }, "error getting call info");
+    throw e instanceof Error ? e : new Error(String(e));
   }
   if (!instance) {
     logger.error(
