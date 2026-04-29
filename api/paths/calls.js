@@ -67,8 +67,8 @@ export default function (logger) {
                   }
                 },
                 next: {
-                  type: 'string',
-                  description: 'The offset to use for the next page of results'
+                  type: 'number',
+                  description: 'The last index in this page; pass as `lastIndex` to fetch the next page.'
                 }
               },
               example: {
