@@ -42,6 +42,7 @@ import {
 import { withTimeout } from "./utils.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
+import { userOwnsRow } from "./scope.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -450,8 +451,13 @@ export default defineAgent({
                 );
               }
               if (
-                nextAgent.userId !== activeAgent.userId &&
-                nextAgent.organisationId !== activeAgent.organisationId
+                !userOwnsRow(
+                  {
+                    id: activeAgent.userId,
+                    organisationId: activeAgent.organisationId,
+                  },
+                  nextAgent,
+                )
               ) {
                 throw new Error(
                   `Fallback agent ${fallbackConfig.agent} does not belong to the same user or organization as the primary agent`,

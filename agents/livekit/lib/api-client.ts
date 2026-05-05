@@ -321,6 +321,17 @@ export interface PhoneNumberInfo {
   aplisayId?: string | null;
   trunk?: TrunkInfo | null;
   provisioned?: boolean;
+  /**
+   * Eagerly-loaded ownership view of the bound listener (set when
+   * `agent-db/phone-endpoints?number=...` resolves the number to a single
+   * row). Required for `userOwnsPhoneNumber` to authorise a no-org caller's
+   * use of a pool number that they have claimed via a listener.
+   */
+  Instance?: {
+    id: string;
+    userId?: string | null;
+    organisationId?: string | null;
+  } | null;
   [key: string]: any;
 }
 

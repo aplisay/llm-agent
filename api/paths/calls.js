@@ -1,4 +1,5 @@
 import { Call, Op } from '../../lib/database.js';
+import { scopeWhereForUser } from '../../lib/scope.js';
 let appParameters, log;
 
 export default function (logger) {
@@ -8,15 +9,10 @@ export default function (logger) {
   const listAllCalls = (async (req, res) => {
     try {
       let { startDate, endDate, lastIndex = 0, limit = 50 } = req.query;
-      const { id: userId, organisationId } = res.locals.user || {};
-      const scope =
-        organisationId
-          ? { [Op.or]: [{ userId }, { organisationId }] }
-          : { userId };
       let where = {
         [Op.and]: [
           { index: { [Op.gt]: lastIndex } },
-          scope
+          scopeWhereForUser(res.locals.user)
         ]
       };
       startDate = startDate ? new Date(startDate) : new Date(0);

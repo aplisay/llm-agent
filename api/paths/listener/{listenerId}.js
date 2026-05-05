@@ -1,4 +1,5 @@
-import { Instance, Op } from '../../../lib/database.js';
+import { Instance } from '../../../lib/database.js';
+import { scopeWhereForUser } from '../../../lib/scope.js';
 
 let log;
 
@@ -11,18 +12,13 @@ export default function (logger) {
 
 const listenerDelete = async (req, res) => {
   const { listenerId } = req.params;
-  const { id: userId, organisationId } = res.locals.user;
   req.log.info({ id: listenerId }, 'instance delete called');
-
-  const scopeWhere = organisationId
-    ? { [Op.or]: [{ userId }, { organisationId }] }
-    : { userId };
 
   try {
     const deleted = await Instance.destroy({
       where: {
         id: listenerId,
-        ...scopeWhere,
+        ...scopeWhereForUser(res.locals.user),
       },
     });
 

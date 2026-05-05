@@ -22,6 +22,7 @@ import {
   detachPrimaryAgentMediaAfterBridge,
   getLlmForTransferSession,
 } from "./voice-session-resources.js";
+import { userOwnsPhoneNumber } from "./scope.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -182,7 +183,21 @@ async function validateTransferArgs(
     if (!pn) {
       throw new Error("Invalid callerId: number not found");
     }
-    if (pn?.organisationId !== agent.organisationId) {
+    // Strict ownership check via userOwnsPhoneNumber. A direct
+    // `pn.organisationId !== agent.organisationId` comparison would let any
+    // no-org agent claim any other no-org tenant's outbound number as
+    // caller-ID (null !== null is false in JS); userOwnsRow alone would
+    // additionally refuse the legitimate no-org case where the user's
+    // listener has claimed a pool number, because PhoneNumber has no userId
+    // column. userOwnsPhoneNumber accepts either direct org match or
+    // transitive ownership via the bound Instance — the agent-db response
+    // attaches `Instance.userId/organisationId` for that branch.
+    if (
+      !userOwnsPhoneNumber(
+        { id: agent.userId, organisationId: agent.organisationId },
+        pn,
+      )
+    ) {
       throw new Error(
         "Invalid callerId: number not owned by this organisation"
       );

@@ -1,4 +1,4 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Sequelize, Op } from '../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Instance, Sequelize, Op } from '../../../lib/database.js';
 import { normalizeE164 } from '../../../lib/validation.js';
 
 let appParameters, log;
@@ -41,15 +41,23 @@ const phoneEndpointsList = (async (req, res) => {
       if (number) {
         // ('e164-ddi', undefined, defined): return a single number matching the phone number (filtered by handler if defined)
         const normalizedNumber = String(number).replace(/^\+/, '');
-        // Use a single query with LEFT JOIN to fetch phone number and trunk in one call
+        // Use a single query with LEFT JOINs to fetch phone number, trunk ownership
+        // checks on pool numbers via userOwnsPhoneNumber.
         const phoneNumber = await PhoneNumber.findOne({
           where: { number: normalizedNumber },
-          include: [{
-            model: Trunk,
-            as: 'Trunk',
-            required: false,
-            attributes: ['id', 'outbound', 'flags']
-          }]
+          include: [
+            {
+              model: Trunk,
+              as: 'Trunk',
+              required: false,
+              attributes: ['id', 'outbound', 'flags']
+            },
+            {
+              model: Instance,
+              required: false,
+              attributes: ['id', 'userId', 'organisationId']
+            }
+          ]
         });
         if (!phoneNumber) {
           return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -91,6 +99,13 @@ const phoneEndpointsList = (async (req, res) => {
           };
           // Remove the Sequelize include key (toJSON includes associated models)
           delete phoneNumberJson.Trunk;
+        }
+        if (phoneNumber.Instance) {
+          phoneNumberJson.Instance = {
+            id: phoneNumber.Instance.id,
+            userId: phoneNumber.Instance.userId,
+            organisationId: phoneNumber.Instance.organisationId,
+          };
         }
 
         return res.send({
