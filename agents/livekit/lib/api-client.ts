@@ -397,7 +397,8 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error(
+      const logFn = response.status === 404 ? logger.info.bind(logger) : response.status < 500 ? logger.warn.bind(logger) : logger.error.bind(logger);
+      logFn(
         {
           url,
           status: response.status,
@@ -426,7 +427,9 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
-    logger.error({ url, error }, 'API request error');
+    if (!(error instanceof ApiRequestError)) {
+      logger.error({ url, error }, 'API request error');
+    }
     throw error;
   }
 }
