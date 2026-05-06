@@ -23,6 +23,7 @@ import {
   getLlmForTransferSession,
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber } from "./scope.js";
+import { deleteRoomWithRetry } from "./livekit-helpers.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -816,7 +817,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
       } catch (cleanupError) {
         logger.error({ cleanupError }, "failed to cleanup consultation room");
       }
@@ -944,7 +945,7 @@ async function finaliseConsultativeTransfer(
     }
 
     // Step 4: Delete consultation room
-    await roomService.deleteRoom(consultRoomName);
+    await deleteRoomWithRetry(consultRoomName);
 
 
     logger.info({}, "consultation room cleaned up");
@@ -982,7 +983,7 @@ async function finaliseConsultativeTransfer(
         await consultRoom.disconnect();
       }
       if (consultRoomName) {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
       }
     } catch (cleanupError) {
       logger.error({ cleanupError }, "failed to cleanup during error");
@@ -1052,7 +1053,7 @@ export async function destroyInProgressTransfer(
     // Step 2: Delete consultation room
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
         logger.debug({ consultRoomName }, "deleted consultation room");
       } catch (e) {
         logger.error(
@@ -1213,7 +1214,7 @@ export async function rejectConsultativeTransfer(
     // Step 3: Delete consultation room
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
         logger.debug({ consultRoomName }, "deleted consultation room");
       } catch (e) {
         logger.error(

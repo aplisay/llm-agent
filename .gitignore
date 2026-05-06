@@ -18,6 +18,7 @@ lerna-debug.log*
 .cursor/**
 .vscode/**
 .vscode
+.mcp*
 
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
@@ -123,3 +124,4 @@ llm-agent.code-workspace
 tests/fixtures/agents/test-agent.js
 agent.json
 .cursorignore
+.mcp.json

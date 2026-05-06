@@ -10,6 +10,7 @@ export const DISCONNECT_REASONS = {
   SESSION_CLOSED: "Session closed",
   AGENT_INITIATED_HANGUP: "Agent initiated hangup",
   UNCAUGHT_ERROR_RUNNING_AGENT: "UNCAUGHT ERROR: running agent worker",
+  WATCHDOG_NO_PARTICIPANTS: "Watchdog: no remote participants",
 } as const;
 
 export const roomService = new RoomServiceClient(

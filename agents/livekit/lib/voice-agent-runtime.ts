@@ -9,6 +9,7 @@ import { setCallRecordingData, saveInvocationLog } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
+import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
@@ -94,7 +95,7 @@ export async function runAgentWorker({
           );
         }
         await call.end(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
-        await roomService.deleteRoom(room.name).catch((e) => {
+        await deleteRoomWithRetry(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
         invocationLogReason = DISCONNECT_REASONS.BRIDGED_PARTICIPANT;
@@ -120,7 +121,7 @@ export async function runAgentWorker({
           );
         }
         await call.end(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT);
-        await roomService.deleteRoom(room.name).catch((e) => {
+        await deleteRoomWithRetry(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
         invocationLogReason = DISCONNECT_REASONS.ORIGINAL_PARTICIPANT;
@@ -180,7 +181,7 @@ export async function runAgentWorker({
         "Fallback transfer failed in transfer-only mode",
       );
       await call.end(`Fallback transfer failed: ${tErr.message}`);
-      await roomService.deleteRoom(room.name).catch((e) => {
+      await deleteRoomWithRetry(room.name).catch((e) => {
         logger.error({ e }, "error deleting room");
       });
       await ctx.shutdown(tErr.message);
@@ -216,6 +217,15 @@ export async function runAgentWorker({
   let callStarted = false;
   // Guard to ensure RecorderIO finalization/upload runs only once per job
   let recorderFinalized = false;
+  // Guard to make cleanupAndClose idempotent: the watchdog and the SDK's
+  // ParticipantDisconnected handler can both race to call it.
+  let isCleaningUp = false;
+  // Watchdog interval: periodically verify the room still has the linked
+  // remote participant. If it doesn't and no transfer/consult is in flight,
+  // we force cleanup. This catches every leak path that isn't caught by
+  // closeOnDisconnect or the manual ParticipantDisconnected handler.
+  let watchdogInterval: NodeJS.Timeout | null = null;
+  const WATCHDOG_INTERVAL_MS = 120 * 1000;
 
   // DTMF buffering: accumulate digits and send as a single input after timeout
   let dtmfBuffer: string = "";
@@ -418,6 +428,12 @@ export async function runAgentWorker({
     reason: string,
     logEndCall: boolean = false,
   ) => {
+    if (isCleaningUp) {
+      logger.debug({ reason }, "cleanupAndClose: already in progress, skipping");
+      return;
+    }
+    isCleaningUp = true;
+
     const exitStatus: {
       callEnded: boolean;
       roomDeleted: boolean;
@@ -451,6 +467,11 @@ export async function runAgentWorker({
         clearTimeout(dtmfTimeout);
         dtmfTimeout = null;
       }
+      // Stop the leak watchdog
+      if (watchdogInterval) {
+        clearInterval(watchdogInterval);
+        watchdogInterval = null;
+      }
       // Flush any pending DTMF buffer before closing
       if (dtmfBuffer.length > 0 && session) {
         logger.debug(
@@ -473,7 +494,7 @@ export async function runAgentWorker({
         });
       exitStatus.callEnded = true;
       logger.debug("cleanup and close: call ended, deleting room");
-      await roomService.deleteRoom(room.name).catch((e) => {
+      await deleteRoomWithRetry(room.name).catch((e) => {
         logger.error({ e }, "error deleting room");
       });
       exitStatus.roomDeleted = true;
@@ -697,7 +718,7 @@ export async function runAgentWorker({
               );
               return;
             }
-            void roomService.deleteRoom(room.name).catch((e) => {
+            void deleteRoomWithRetry(room.name).catch((e) => {
               logger.error({ e }, "error deleting room on session close");
             });
             void getActiveCall()
@@ -725,7 +746,12 @@ export async function runAgentWorker({
         // Reserve concurrency before connecting to the LiveKit room.
         // This ensures concurrency failures are surfaced as immediate "busy"
         // rejections rather than connect-then-drop behaviour.
+        const tCallStart = Date.now();
         await call.start();
+        logger.info(
+          { ms: Date.now() - tCallStart, callId: call.id },
+          "timing: call.start done",
+        );
         callStarted = true;
         logger.debug({ call }, "concurrency reserved, starting session");
 
@@ -735,17 +761,62 @@ export async function runAgentWorker({
           { callId: call.id, record: recordingOptions?.enabled ?? false },
           "sessionStart with recording? enabled",
         );
+        const tSessionStart = Date.now();
         await Promise.race([
           session.start({
             room: ctx.room,
             agent: model,
             record: recordingOptions?.enabled ?? false,
-            // Let our disconnect / shutdown handler run cleanup (RecorderIO upload) before session closes
-            inputOptions: { closeOnDisconnect: false },
+            // Let the SDK auto-close the AgentSession when the linked participant
+            // disconnects (CLIENT_INITIATED / ROOM_DELETED / USER_REJECTED). Our
+            // session.on('close') handler still runs deleteRoom + call.end(), and
+            // RecorderIO finalisation happens in the ctx.shutdown callback which
+            // fires after close, so recording is unaffected. Previously this was
+            // disabled, which left sessions hanging when the manual
+            // ParticipantDisconnected handler's narrow match conditions (specific
+            // participant.sid / bridged-participant identity) failed to fire,
+            // causing concurrent session counts to climb over time.
+            inputOptions: { closeOnDisconnect: true },
           }),
           startupErrorPromise,
         ]);
+        logger.info(
+          { ms: Date.now() - tSessionStart, callId: call.id, voiceMode: resolvedVoiceMode },
+          "timing: session.start done",
+        );
         logger.info({ callId: call.id }, "session started");
+
+        // Leak watchdog. Periodically verify the room still has at least one
+        // remote participant. If not, and there is no transfer or consult in
+        // flight, force cleanup. This is a safety net for cases where neither
+        // the SDK auto-close (closeOnDisconnect) nor the manual
+        // ParticipantDisconnected handler fires — for example, if the linked
+        // participant's SID changes via reconnect, or a SIP participant
+        // disconnects with a reason that isn't in CLOSE_ON_DISCONNECT_REASONS.
+        // Interval is 120s to avoid burning LiveKit API rate limits.
+        watchdogInterval = setInterval(async () => {
+          try {
+            if (isCleaningUp) return;
+            if (getConsultInProgress()) return;
+            if (getBridgedParticipant()) return;
+            const transferState = getTransferState?.();
+            if (
+              transferState?.state === "dialling" ||
+              transferState?.state === "talking"
+            ) {
+              return;
+            }
+            const remoteCount = ctx.room?.remoteParticipants?.size ?? 0;
+            if (remoteCount > 0) return;
+            logger.warn(
+              { callId: call.id, room: room.name },
+              "watchdog: no remote participants and no transfer/consult in progress, forcing cleanup",
+            );
+            await cleanupAndClose(DISCONNECT_REASONS.WATCHDOG_NO_PARTICIPANTS);
+          } catch (e) {
+            logger.warn({ e }, "watchdog: error during check");
+          }
+        }, WATCHDOG_INTERVAL_MS);
 
         // Once startup has succeeded, we no longer need the startup-specific
         // error watcher; subsequent errors are treated as runtime failures.

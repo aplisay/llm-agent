@@ -17,7 +17,12 @@ if (process.argv[2] === 'setup') {
     agent: fileURLToPath(import.meta.url),
     agentName: 'realtime',
     port: 8081,
-    production: true
+    production: true,
+    // Pool of pre-spawned idle workers waiting for jobs. SDK default is 3,
+    // which proved insufficient under burst load (the 7.5s assignment timeout
+    // expires before new workers can spawn, causing retry storms). Override
+    // via NUM_IDLE_PROCESSES at deploy time.
+    numIdleProcesses: parseInt(process.env.NUM_IDLE_PROCESSES ?? '10', 10),
   }));
 }
 

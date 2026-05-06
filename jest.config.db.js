@@ -5,6 +5,7 @@ export default {
   ],
   testPathIgnorePatterns: [
     '/agents/',
+    '.claude',
     'agent-concurrency-redis-skeleton\\.test\\.mjs',
   ],
   setupFilesAfterEnv: [],

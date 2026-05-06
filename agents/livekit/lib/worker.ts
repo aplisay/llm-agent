@@ -41,6 +41,7 @@ import {
 } from "./transfer-handler.js";
 import { withTimeout } from "./utils.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
+import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { userOwnsRow } from "./scope.js";
 
@@ -190,7 +191,12 @@ export default defineAgent({
       | null = null;
 
     try {
+      const tGetCallInfo = Date.now();
       const scenario = await getCallInfo(ctx, room);
+      logger.info(
+        { ms: Date.now() - tGetCallInfo, room: room?.name },
+        "timing: getCallInfo done",
+      );
       logger.info({ scenario }, "scenario");
 
       let {
@@ -608,7 +614,7 @@ export default defineAgent({
         }
       }
       try {
-        room && room.name && (await roomService.deleteRoom(room.name));
+        room && room.name && (await deleteRoomWithRetry(room.name));
       } catch (e) {
         logger.error({ e }, "error deleting room");
       }
