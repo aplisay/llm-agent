@@ -1102,9 +1102,23 @@ export async function runAgentWorker({
       RoomEvent.ParticipantDisconnected,
       async (p: RemoteParticipant) => {
         const bp = getBridgedParticipant();
-        logger.debug(
-          { p, bridgedParticipant: bp, participant },
-          "participant disconnected",
+        // Logged at info so disconnect decisions are always visible — debug
+        // was previously hiding silent-drop bugs in production.
+        logger.info(
+          {
+            p: {
+              sid: p?.info?.sid,
+              identity: p?.info?.identity,
+              reason: p?.disconnectReason,
+            },
+            bp: bp
+              ? { sid: bp.participantId, identity: bp.participantIdentity }
+              : null,
+            orig: participant
+              ? { sid: participant.sid, identity: participant.identity }
+              : null,
+          },
+          "ParticipantDisconnected event received",
         );
         if (
           bp?.participantId === p?.info?.sid ||
@@ -1163,9 +1177,15 @@ export async function runAgentWorker({
 
             setBridgedParticipant(null as unknown as SipParticipant);
           }
-        } else if (p.info?.sid === participant?.sid) {
-          logger.debug(
-            "participant disconnected, initiating graceful shutdown",
+        } else if (
+          // Match identity primarily — it's stable across SIP gateway reconnects.
+          // SID is checked as a secondary signal in case identity wasn't captured.
+          (participant?.identity && p.info?.identity === participant.identity) ||
+          (participant?.sid && p.info?.sid === participant.sid)
+        ) {
+          logger.info(
+            { sid: p.info?.sid, identity: p.info?.identity },
+            "original participant disconnected, initiating graceful shutdown",
           );
           // End transfer activity if in progress
           try {
@@ -1198,6 +1218,50 @@ export async function runAgentWorker({
             await cleanupAndClose(
               DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
               true,
+            );
+          }
+        } else {
+          // Neither bridged nor original participant matched. This was a silent
+          // drop in the past, leaving the room alive after the only-real
+          // participant left (especially observed in blind-bridge transfers
+          // where the original caller's SID changed mid-call). If the room is
+          // now empty and nothing's in flight, force cleanup immediately rather
+          // than waiting up to 120s for the watchdog.
+          const remoteCount = ctx.room?.remoteParticipants?.size ?? 0;
+          const transferState = getTransferState?.();
+          const transferActive =
+            transferState?.state === "dialling" ||
+            transferState?.state === "talking";
+          logger.warn(
+            {
+              p: {
+                sid: p.info?.sid,
+                identity: p.info?.identity,
+                reason: p.disconnectReason,
+              },
+              bp: bp
+                ? { sid: bp.participantId, identity: bp.participantIdentity }
+                : null,
+              orig: participant
+                ? { sid: participant.sid, identity: participant.identity }
+                : null,
+              remoteCount,
+              consultInProgress: getConsultInProgress(),
+              transferState: transferState?.state,
+            },
+            "ParticipantDisconnected: no match against original or bridged",
+          );
+          if (
+            remoteCount === 0 &&
+            !getConsultInProgress() &&
+            !getBridgedParticipant() &&
+            !transferActive
+          ) {
+            logger.warn(
+              "room empty after unmatched disconnect, forcing cleanup",
+            );
+            await cleanupAndClose(
+              "Unmatched participant disconnect, room empty",
             );
           }
         }
