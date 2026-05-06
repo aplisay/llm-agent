@@ -500,11 +500,14 @@ export async function runAgentWorker({
       exitStatus.roomDeleted = true;
 
       invocationLogReason = reason;
+      exitStatus.contextShutdown = true;
+      logger.info(
+        { exitStatus, reason },
+        "cleanup and close completed (pre-shutdown)",
+      );
       logger.debug("cleanup and close: shutting down context");
       await ctx.shutdown(reason);
       logger.debug("cleanup and close: context shutdown complete");
-      exitStatus.contextShutdown = true;
-      logger.info({ exitStatus, reason }, "cleanup and close completed");
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
