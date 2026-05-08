@@ -1,0 +1,245 @@
+"""REST callbacks back into the llm-agent agent-db API.
+
+Section 8 of docs/livekit-agent-architecture.md is authoritative. Endpoints,
+header names, and idempotency behaviour mirror the LiveKit worker's
+``api-client.ts`` so the same REST server can serve both implementations.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+import httpx
+from loguru import logger
+from pydantic import BaseModel
+
+
+class ApiRequestError(Exception):
+    def __init__(self, status: int, body: Any, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body or {}
+        self.code = self.body.get("code") if isinstance(self.body, dict) else None
+        self.scope = self.body.get("scope") if isinstance(self.body, dict) else None
+        self.details = self.body.get("details") if isinstance(self.body, dict) else None
+
+
+class AgentConcurrencyLimitExceededBusyError(Exception):
+    code = "AGENT_CONCURRENCY_LIMIT_EXCEEDED"
+    status = 429
+
+    def __init__(
+        self,
+        scope: Optional[str] = None,
+        details: Any = None,
+        original_error: Optional[str] = None,
+    ) -> None:
+        scope_suffix = f" [{scope}]" if scope else ""
+        original = f" - {original_error}" if original_error else ""
+        super().__init__(f"busy: AGENT_CONCURRENCY_LIMIT_EXCEEDED{scope_suffix}{original}")
+        self.scope = scope
+        self.details = details
+
+
+def _base_url() -> str:
+    base = os.environ.get("SERVICE_BASE_URI")
+    if not base:
+        raise RuntimeError("SERVICE_BASE_URI environment variable is required")
+    return base
+
+
+def _shared_token() -> Optional[str]:
+    return os.environ.get("SHARED_API_TOKEN")
+
+
+async def _request(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[dict] = None,
+    body: Any = None,
+) -> Any:
+    url = f"{_base_url()}{endpoint}"
+    headers = {"Content-Type": "application/json"}
+    token = _shared_token()
+    if token:
+        headers["x-shared-token"] = token
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(method, url, params=params, json=body, headers=headers)
+
+    if resp.status_code >= 400:
+        text = resp.text
+        try:
+            parsed = resp.json()
+        except Exception:  # noqa: BLE001
+            parsed = {"raw": text}
+
+        log_fn = (
+            logger.info if resp.status_code == 404 else logger.warning if resp.status_code < 500 else logger.error
+        )
+        log_fn({"url": url, "status": resp.status_code, "error": text}, "API request failed")
+        raise ApiRequestError(resp.status_code, parsed, f"API request failed: {resp.status_code}")
+
+    if resp.headers.get("content-type", "").startswith("application/json"):
+        return resp.json()
+    return resp.text
+
+
+# ---- Lookup ----
+
+
+async def get_instance_by_id(instance_id: str) -> dict:
+    return await _request("GET", "/api/agent-db/instance", params={"instanceId": instance_id})
+
+
+async def get_instance_by_number(number: str) -> dict:
+    return await _request("GET", "/api/agent-db/instance", params={"number": number})
+
+
+async def get_agent_by_id(agent_id: str) -> dict:
+    return await _request("GET", f"/api/agents/{agent_id}")
+
+
+async def get_phone_endpoint_by_id(endpoint_id: str) -> Optional[dict]:
+    try:
+        result = await _request("GET", "/api/agent-db/phone-endpoints", params={"id": endpoint_id})
+    except ApiRequestError:
+        return None
+    items = result.get("items") if isinstance(result, dict) else None
+    return items[0] if items else None
+
+
+async def get_phone_endpoint_by_number(
+    number: str, trunk_id: Optional[str] = None
+) -> Optional[dict]:
+    params: dict = {"number": number}
+    if trunk_id:
+        params["trunkId"] = trunk_id
+    try:
+        result = await _request("GET", "/api/agent-db/phone-endpoints", params=params)
+    except ApiRequestError as e:
+        if "Trunk mismatch" in str(e):
+            raise
+        return None
+    items = result.get("items") if isinstance(result, dict) else None
+    return items[0] if items else None
+
+
+async def set_phone_endpoint_provisioned(number: str, provisioned: bool) -> None:
+    try:
+        await _request(
+            "PATCH",
+            f"/api/agent-db/phone-endpoints/{number}",
+            body={"provisioned": provisioned},
+        )
+    except ApiRequestError as e:
+        logger.error(f"failed to update phone provisioning state: {e}")
+
+
+# ---- Call lifecycle ----
+
+
+class CallRecord(BaseModel):
+    id: str
+    userId: str
+    organisationId: str
+    instanceId: str
+    agentId: str
+    metadata: dict = {}
+    options: dict = {}
+
+    # Internal — accumulates batched logs when streamLog is False; flushed at end.
+    batched_transaction_logs: list = []
+    end_called: bool = False
+
+
+async def create_call(call_data: dict) -> CallRecord:
+    raw = await _request("POST", "/api/agent-db/call", body=call_data)
+    record = CallRecord(
+        id=raw["id"],
+        userId=raw["userId"],
+        organisationId=raw["organisationId"],
+        instanceId=raw["instanceId"],
+        agentId=raw["agentId"],
+        metadata=raw.get("metadata") or {},
+        options=raw.get("options") or {},
+    )
+    return record
+
+
+async def start_call(call: CallRecord) -> None:
+    try:
+        await _request(
+            "POST",
+            f"/api/agent-db/call/{call.id}/start",
+            body={"userId": call.userId, "organisationId": call.organisationId},
+        )
+    except ApiRequestError as err:
+        if err.status == 429 and err.code == "AGENT_CONCURRENCY_LIMIT_EXCEEDED":
+            raise AgentConcurrencyLimitExceededBusyError(
+                scope=err.scope,
+                details=err.details,
+                original_error=(err.body or {}).get("error") if isinstance(err.body, dict) else None,
+            )
+        raise
+
+
+async def end_call(call: CallRecord, reason: Optional[str] = None) -> None:
+    if call.end_called:
+        return
+    call.end_called = True
+    body: dict = {
+        "reason": reason,
+        "userId": call.userId,
+        "organisationId": call.organisationId,
+    }
+    if call.batched_transaction_logs:
+        body["transactionLogs"] = [
+            _serialise_log(entry) for entry in call.batched_transaction_logs
+        ]
+    try:
+        await _request("POST", f"/api/agent-db/call/{call.id}/end", body=body)
+    except ApiRequestError as e:
+        logger.error(f"call.end failed: {e}")
+        raise
+
+
+async def end_call_by_id(call_id: str, reason: Optional[str] = None) -> None:
+    await _request("POST", f"/api/agent-db/call/{call_id}/end", body={"reason": reason})
+
+
+# ---- Logging ----
+
+
+def _serialise_log(entry: dict) -> dict:
+    out = dict(entry)
+    created = out.get("createdAt")
+    if isinstance(created, datetime):
+        out["createdAt"] = created.astimezone(timezone.utc).isoformat()
+    return out
+
+
+async def create_transaction_log(entry: dict) -> None:
+    if entry.get("type") == "status":
+        return
+    body = _serialise_log(entry)
+    await _request("POST", "/api/agent-db/transaction-log", body=body)
+
+
+async def save_invocation_log(payload: dict) -> None:
+    await _request("POST", "/api/agent-db/invocation-log", body=payload)
+
+
+# ---- Recording metadata ----
+
+
+async def set_call_recording_data(
+    call_id: str, recording_id: str, encryption_key: Optional[str] = None
+) -> None:
+    body: dict = {"recordingId": recording_id}
+    if encryption_key:
+        body["encryptionKey"] = encryption_key
+    await _request("PUT", f"/api/agent-db/call/{call_id}/recording", body=body)
