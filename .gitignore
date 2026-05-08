@@ -12,9 +12,20 @@ lerna-debug.log*
 *.code-workspace
 
 *.code-workspace
+.claude
+.claude/**
+.cursor*
+.cursor/**
+.vscode/**
+.vscode
+.mcp*
+
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+**/docs/.*
+
 
 # Runtime data
 pids
