@@ -273,31 +273,7 @@ components:
             Optional LiveKit override. Normally omitted: stack is chosen from the model id in `modelName`
             (see GET /models `voiceStack`). Use this only to force realtime vs pipeline when needed.
         greeting:
-          type: object
-          description: |-
-            Optional opening greeting played immediately after the agent session starts.
-
-            Exactly one of `text` or `instructions` may be set:
-
-            - `text`: fixed greeting line (played varbatim and uninterruptibly, the agent waits for playout).
-            - `instructions`: LLM-driven greeting instructions (still played uninterruptibly, and the agent waits for playout).
-
-            Implementation notes:
-            - The greeting is always **uninterruptible** and the agent always **waits for playout**.
-            - Inbound caller audio during greeting is **dropped** (not buffered/replayed) so the agent is deaf until the greeting is complete.
-            - If you require an interruptible greeting, then don't use this option, prompt the LLM to greet the caller accordingly in which case it will be interruptible like any other LLM dialogue.
-          properties:
-            text:
-              type: string
-              description: Fixed greeting text.
-              example: "Hello, how can I help you today?"
-            instructions:
-              type: string
-              description: LLM instructions for the greeting.
-              example: "Greet the caller briefly and ask how you can help."
-          oneOf:
-            - required: [text]
-            - required: [instructions]
+          $ref: "#/components/schemas/AgentGreeting"
         tts:
           type: object
           properties:
@@ -497,6 +473,44 @@ components:
               inactivityMessages:
                 - duration: "60s"
                   message: "Are you still there?"
+    AgentGreeting:
+      description: |-
+        Optional opening greeting played immediately after the agent session starts.
+
+        Exactly one of `text` or `instructions` may be set.
+
+        Implementation notes:
+          - The greeting is always uninterruptible and the agent waits for playout.
+          - Inbound caller audio during the greeting is dropped (not buffered/replayed), so the agent is effectively "deaf" until the greeting completes.
+          - If you need an interruptible greeting, do not use this option; prompt the model to greet naturally as part of the normal dialogue.
+
+        Availability:
+          - Supported for LiveKit agents and Ultravox WebRTC agents (model names prefixed `livekit:` and `ultravox:`).
+          - No-op on Jambonz telephony agents.
+
+        Note for LiveKit OpenAI realtime (`livekit:openai/...`):
+          - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          properties:
+            text:
+              type: string
+              description: Fixed greeting text.
+              example: "Hello, how can I help you today?"
+          required: [text]
+          not:
+            required: [instructions]
+        - type: object
+          additionalProperties: false
+          properties:
+            instructions:
+              type: string
+              description: LLM instructions for the greeting.
+              example: "Greet the caller briefly and ask how you can help."
+          required: [instructions]
+          not:
+            required: [text]
     CallHookConfig:
       type: object
       description: |-
