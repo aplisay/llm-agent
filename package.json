@@ -6,8 +6,11 @@
   "main": "index.mjs",
   "packageManager": "yarn@1.22.22",
   "scripts": {
+    "predevelop": "cd agents/livekit && yarn build",
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
+    "prestart": "cd agents/livekit && yarn build",
     "start": "NODE_ENV=production node index.mjs",
+    "prestage": "cd agents/livekit && yarn build",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
     "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --verbose",
     "test:db": "yarn test:setup && yarn test && yarn test:cleanup",

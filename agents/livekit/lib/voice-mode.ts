@@ -1,5 +1,5 @@
 import type { Agent } from "./api-client.js";
-import { isLivekitPipelineModelId } from "./livekit-pipeline-model-ids.js";
+import { isLivekitPipelineModelId } from "./livekit-model-registry.js";
 
 /**
  * How the voice stack is composed: single realtime speech-to-speech model vs
@@ -16,8 +16,7 @@ export function livekitModelIdFromName(modelName: string): string {
 
 /**
  * Pipeline vs realtime: driven by the model id from GET /models (`livekit:…`), with optional
- * `options.voiceMode` override. Pipeline model ids match `livekit-pipeline-model-ids.ts`
- * (keep in sync with `lib/models/livekit.js` PIPELINE_MODEL_ROWS).
+ * `options.voiceMode` override. Pipeline vs realtime ids are defined in `livekit-model-registry.ts`.
  */
 export function resolveVoiceMode(
   modelName: string,

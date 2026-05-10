@@ -19,10 +19,16 @@ if (process.argv[2] === 'setup') {
     port: 8081,
     production: true,
     // Pool of pre-spawned idle workers waiting for jobs. SDK default is 3,
-    // which proved insufficient under burst load (the 7.5s assignment timeout
-    // expires before new workers can spawn, causing retry storms). Override
-    // via NUM_IDLE_PROCESSES at deploy time.
-    numIdleProcesses: parseInt(process.env.NUM_IDLE_PROCESSES ?? '10', 10),
+    // which proved insufficient in production under burst load (the 7.5s
+    // assignment timeout expires before new workers can spawn, causing retry
+    // storms). Dev and staging don't see that traffic, so keep them at 3 to
+    // reduce local/staging resource usage. Override via NUM_IDLE_PROCESSES at
+    // deploy time.
+    numIdleProcesses: parseInt(
+      process.env.NUM_IDLE_PROCESSES
+        ?? (process.env.NODE_ENV === 'production' ? '10' : '3'),
+      10,
+    ),
   }));
 }
 
