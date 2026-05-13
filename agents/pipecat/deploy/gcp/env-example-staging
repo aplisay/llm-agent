@@ -1,0 +1,48 @@
+# Pipecat agent stack — staging env template.
+#
+# Processed by deploy-node.sh: random hex secrets are substituted for
+# `<NEW256bithexstring>` placeholders, EXT_IP_ADDRESS is set from the VM
+# metadata server, and the resulting file is copied to ~/pipecat-agent/.env on
+# the GCP VM.
+
+# Artifact Registry (where cloudbuild-staging.yaml pushes images).
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=aplisay-pipecat-agent
+IMAGE_TAG=staging
+PROJECT_NUMERIC_ID=160114196407
+
+# Public IP of the VM (filled in automatically by deploy-node.sh from the
+# instance metadata server).
+EXT_IP_ADDRESS=your-external-ip
+
+# Shared secrets — deploy-node.sh fills these with random 256-bit hex strings.
+ESL_SECRET=<NEW256bithexstring>
+CALL_API_TOKEN=<NEW256bithexstring>
+WORKER_EVENT_TOKEN=<NEW256bithexstring>
+PIPECAT_DISPATCH_TOKEN=<NEW256bithexstring>
+PIPECAT_JOIN_SECRET=<NEW256bithexstring>
+
+# llm-agent REST surface (agent-db callbacks).
+SERVICE_BASE_URI=https://staging-api.aplisay.example
+SHARED_API_TOKEN=<set-from-secret-manager>
+
+# Pipecat worker → esl-poller / FreeSWITCH → worker (host networking; localhost).
+PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+ESL_POLLER_URL=http://127.0.0.1:4001
+
+# Provider keys — populate via secretenv bundle or directly here.
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV_PIPECAT_STAGING
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+ELEVENLABS_API_KEY=
+
+LOGLEVEL=info
+
+# Optional: APIBAN SIP abuse block list (host iptables). Leave empty to skip
+# install on deploy.
+APIBAN_KEY=

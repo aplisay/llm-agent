@@ -1,0 +1,91 @@
+#
+# Pipecat agent stack — three containers, deployable together as a unit.
+#
+#   freeswitch     SIP termination + mod_audio_stream (WebSocket audio bridge)
+#   esl-poller     TypeScript ESL → HTTP call-control API + event webhook
+#   pipecat-worker Python FastAPI worker: Pipecat pipelines + REST callbacks
+#                  to llm-agent + SmallWebRTCTransport for browsers
+#
+# This is a modular bolt-on component for llm-agent. The Pipecat handler in
+# lib/handlers/pipecat.js dispatches outbound calls to `pipecat-worker` via
+# HTTP; inbound calls arrive at FreeSWITCH and flow worker-ward through
+# mod_audio_stream.
+#
+# host networking is the default because mod_audio_stream + RTP port pinning
+# is much simpler that way (FreeSWITCH expects to control its own SIP/RTP
+# ports). For non-host deployments, configure RTP ports explicitly and expose
+# them.
+#
+services:
+  freeswitch:
+    build:
+      context: ./freeswitch/
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      # mod_audio_stream's WS target (the pipecat-worker container).
+      # When using host networking the worker is reachable on localhost.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+    healthcheck:
+      test: ["CMD", "/usr/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  esl-poller:
+    build:
+      context: ./esl-poller/
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      freeswitch:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      ESL_HOST: 127.0.0.1
+      ESL_PORT: 8021
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      CALL_API_PORT: 4001
+      CALL_API_TOKEN: ${CALL_API_TOKEN}
+      # Webhook the pipecat worker exposes for channel events.
+      WORKER_EVENT_WEBHOOK: ${WORKER_EVENT_WEBHOOK:-http://127.0.0.1:8082/freeswitch/events}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      # Gateway poll is for aplisay-b2bua's config-server; off in this stack.
+      GATEWAY_POLL_ENABLED: "false"
+      CALL_API_ENABLED: "true"
+
+  pipecat-worker:
+    build:
+      context: ../../
+      dockerfile: agents/pipecat/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      esl-poller:
+        condition: service_started
+    environment:
+      PORT: 8082
+      SIP_GATEWAY: freeswitch
+      ESL_POLLER_URL: http://127.0.0.1:4001
+      ESL_POLLER_TOKEN: ${CALL_API_TOKEN}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+
+      # Bridge to llm-agent REST API
+      SERVICE_BASE_URI: ${SERVICE_BASE_URI}
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN}
+
+      # Auth shared with the Node handler in lib/handlers/pipecat.js
+      PIPECAT_DISPATCH_TOKEN: ${PIPECAT_DISPATCH_TOKEN}
+      PIPECAT_JOIN_SECRET: ${PIPECAT_JOIN_SECRET}
+
+      # Provider keys (only those the configured models need)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+
+      LOGLEVEL: ${LOGLEVEL:-info}

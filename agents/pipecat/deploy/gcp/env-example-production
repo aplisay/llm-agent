@@ -1,0 +1,37 @@
+# Pipecat agent stack — production env template.
+#
+# Same shape as env-example-staging but points at the production image tag and
+# the production llm-agent API. deploy-node.sh handles the rest.
+
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=aplisay-pipecat-agent
+IMAGE_TAG=latest
+PROJECT_NUMERIC_ID=160114196407
+
+EXT_IP_ADDRESS=your-external-ip
+
+ESL_SECRET=<NEW256bithexstring>
+CALL_API_TOKEN=<NEW256bithexstring>
+WORKER_EVENT_TOKEN=<NEW256bithexstring>
+PIPECAT_DISPATCH_TOKEN=<NEW256bithexstring>
+PIPECAT_JOIN_SECRET=<NEW256bithexstring>
+
+SERVICE_BASE_URI=https://api.aplisay.example
+SHARED_API_TOKEN=<set-from-secret-manager>
+
+PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+ESL_POLLER_URL=http://127.0.0.1:4001
+
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV_PIPECAT_PRODUCTION
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+ELEVENLABS_API_KEY=
+
+LOGLEVEL=info
+
+APIBAN_KEY=

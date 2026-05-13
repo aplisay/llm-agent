@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  Dialplan for the Pipecat agent FreeSWITCH.
+
+  Two flows:
+
+  - Inbound: a SIP INVITE arrives on the `external` profile. We capture the
+    section-6 wire headers (X-Aplisay-Trunk, X-Aplisay-PhoneRegistration,
+    X-Lk-RealIp, X-Lk-Transport, X-Aplisay-Call-Id) into channel variables,
+    then bridge into mod_audio_stream to the Pipecat worker. The worker reads
+    those variables out of the audio_stream "start" event metadata and uses
+    them in its inbound dispatch path.
+
+  - Outbound: the Pipecat worker originates calls via ESL `originate` against
+    `loopback/<destination>/outbound` which lands here, sets the headers from
+    channel variables provided in the originate command, and bridges out via
+    sofia/external/<destination>.
+
+  Transfers (REFER and blind-bridge) are also driven from the worker via ESL —
+  `uuid_transfer` for REFER, `uuid_bridge` for blind-bridge.
+-->
+<include>
+  <context name="default">
+
+    <!-- Inbound: SIP INVITE → stream to Pipecat -->
+    <extension name="inbound_to_pipecat">
+      <condition field="${sip_refer_to}" expression="^$"/>
+      <condition field="destination_number" expression=".+">
+        <action application="log" data="INFO inbound call from=${caller_id_number} to=${destination_number}"/>
+
+        <!-- Preserve trunk / registration identity for the worker. The header
+             names mirror the contract in docs/livekit-agent-architecture.md
+             section 6 verbatim. -->
+        <action application="set" data="aplisay_trunk=${sip_h_X-Aplisay-Trunk}"/>
+        <action application="set" data="aplisay_phone_registration=${sip_h_X-Aplisay-PhoneRegistration}"/>
+        <action application="set" data="aplisay_call_id=${sip_h_X-Aplisay-Call-Id}"/>
+        <action application="set" data="aplisay_b2bua_ip=${sip_h_X-Lk-RealIp}"/>
+        <action application="set" data="aplisay_b2bua_transport=${sip_h_X-Lk-Transport}"/>
+
+        <!-- Answer and bridge audio to the worker over WebSocket.
+             mod_audio_stream sends/receives L16 PCM 16kHz mono.
+             Metadata fields above ride the "start" event payload. -->
+        <action application="answer"/>
+        <action application="set" data="execute_on_answer=audio_stream start $${pipecat_ws_url} mono 16k"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+
+    <!-- Outbound: originated by the worker via ESL.
+         `originate {variables}loopback/<dest>/outbound &park` →
+         we set the headers from the channel variables and bridge to external. -->
+    <extension name="outbound_from_pipecat">
+      <condition field="${dialplan_target}" expression="^outbound$">
+        <action application="set" data="sip_h_X-Aplisay-Trunk=${aplisay_trunk}"/>
+        <action application="set" data="sip_h_X-Aplisay-Origin-Caller-Id=${origination_caller_id_number}"/>
+        <action application="set" data="sip_h_X-Aplisay-Call-Id=${aplisay_call_id}"/>
+        <action application="set" data="execute_on_answer=audio_stream start $${pipecat_ws_url} mono 16k"/>
+        <action application="bridge" data="sofia/external/${destination_number}"/>
+      </condition>
+    </extension>
+
+  </context>
+</include>

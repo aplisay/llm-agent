@@ -1,0 +1,67 @@
+# Production / staging compose for the Pipecat agent stack on a GCP VM.
+#
+# Pulls pre-built images from Artifact Registry. The local-dev compose at
+# agents/pipecat/docker-compose.yml builds the same services from source.
+#
+# Expected to live on the VM at ~/pipecat-agent/docker-compose.yaml alongside a
+# .env file populated by deploy-node.sh from env-example-{staging,production}.
+services:
+  freeswitch:
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:${IMAGE_TAG:-staging}
+    network_mode: host
+    restart: always
+    env_file:
+      - .env
+    environment:
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      ESL_SECRET: ${ESL_SECRET}
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+
+  esl-poller:
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:${IMAGE_TAG:-staging}
+    network_mode: host
+    restart: always
+    depends_on:
+      freeswitch:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      ESL_HOST: 127.0.0.1
+      ESL_PORT: 8021
+      ESL_SECRET: ${ESL_SECRET}
+      CALL_API_PORT: 4001
+      CALL_API_TOKEN: ${CALL_API_TOKEN}
+      WORKER_EVENT_WEBHOOK: ${WORKER_EVENT_WEBHOOK:-http://127.0.0.1:8082/freeswitch/events}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      GATEWAY_POLL_ENABLED: "false"
+      CALL_API_ENABLED: "true"
+
+  pipecat-worker:
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:${IMAGE_TAG:-staging}
+    network_mode: host
+    restart: always
+    depends_on:
+      esl-poller:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      PORT: 8082
+      SIP_GATEWAY: freeswitch
+      ESL_POLLER_URL: ${ESL_POLLER_URL:-http://127.0.0.1:4001}
+      ESL_POLLER_TOKEN: ${CALL_API_TOKEN}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      SERVICE_BASE_URI: ${SERVICE_BASE_URI}
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN}
+      PIPECAT_DISPATCH_TOKEN: ${PIPECAT_DISPATCH_TOKEN}
+      PIPECAT_JOIN_SECRET: ${PIPECAT_JOIN_SECRET}
+      GOOGLE_SECRETENV_PATH: ${GOOGLE_SECRETENV_PATH:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      LOGLEVEL: ${LOGLEVEL:-info}

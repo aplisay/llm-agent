@@ -18,6 +18,7 @@ from .base import (
     GatewaySessionParams,
 )
 from .daily_gateway import DailySipGateway
+from .freeswitch_gateway import FreeswitchSipGateway
 
 __all__ = [
     "SipGateway",
@@ -26,4 +27,5 @@ __all__ = [
     "GatewaySession",
     "GatewaySessionParams",
     "DailySipGateway",
+    "FreeswitchSipGateway",
 ]
