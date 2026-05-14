@@ -1,12 +1,6 @@
 import { initializeApp, applicationDefault } from 'firebase-admin/app';
-import { Instance, User, AuthKey, Op } from '../lib/database.js';
-
-function sqlWhereForUser(user) {
-  if (user.organisationId) {
-    return { [Op.or]: [{ userId: user.id }, { organisationId: user.organisationId }] };
-  }
-  return { userId: user.id };
-}
+import { Instance, User, AuthKey } from '../lib/database.js';
+import { scopeWhereForUser } from '../lib/scope.js';
 import * as firebase from 'firebase-admin/auth';
 
 function init(app, logger) {
@@ -90,7 +84,7 @@ function init(app, logger) {
             res.locals.user = user;
             res.locals.userAuth = true;
             res.locals.userAuthExpiry = expiry;
-            res.locals.user.sql = { where: sqlWhereForUser(user) };
+            res.locals.user.sql = { where: scopeWhereForUser(user) };
             res.locals.userAuth = true;
             next();
           }
@@ -101,7 +95,7 @@ function init(app, logger) {
             req.log.debug({ user, token }, 'firebase auth');
             if (user) {
               res.locals.user = await User.import({ ...user, id: user.user_id });
-              res.locals.user.sql = { where: sqlWhereForUser(res.locals.user) };
+              res.locals.user.sql = { where: scopeWhereForUser(res.locals.user) };
               next();
             }
             else {

@@ -1,4 +1,5 @@
-import { Agent, Instance, PhoneNumber, Op } from '../../../../lib/database.js';
+import { Agent, Instance, PhoneNumber } from '../../../../lib/database.js';
+import { scopeWhereForUser } from '../../../../lib/scope.js';
 
 /**
  * Room key + id for embedding @aplisay/react-widget (see https://widget.aplisay.com).
@@ -11,10 +12,7 @@ export default function (logger) {
 
 const roomKeyGet = async (req, res) => {
   const { listenerId } = req.params;
-  const { id: userId, organisationId } = res.locals.user;
-  const agentScope = organisationId
-    ? { [Op.or]: [{ userId }, { organisationId }] }
-    : { userId };
+  const agentScope = scopeWhereForUser(res.locals.user);
 
   try {
     const instance = await Instance.findOne({

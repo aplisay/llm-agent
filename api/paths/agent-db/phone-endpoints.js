@@ -1,4 +1,4 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Sequelize, Op } from '../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Instance, Sequelize, Op } from '../../../lib/database.js';
 import { normalizeE164 } from '../../../lib/validation.js';
 
 let appParameters, log;
@@ -41,15 +41,23 @@ const phoneEndpointsList = (async (req, res) => {
       if (number) {
         // ('e164-ddi', undefined, defined): return a single number matching the phone number (filtered by handler if defined)
         const normalizedNumber = String(number).replace(/^\+/, '');
-        // Use a single query with LEFT JOIN to fetch phone number and trunk in one call
+        // Use a single query with LEFT JOINs to fetch phone number, trunk ownership
+        // checks on pool numbers via userOwnsPhoneNumber.
         const phoneNumber = await PhoneNumber.findOne({
           where: { number: normalizedNumber },
-          include: [{
-            model: Trunk,
-            as: 'Trunk',
-            required: false,
-            attributes: ['id', 'outbound', 'flags']
-          }]
+          include: [
+            {
+              model: Trunk,
+              as: 'Trunk',
+              required: false,
+              attributes: ['id', 'outbound', 'flags']
+            },
+            {
+              model: Instance,
+              required: false,
+              attributes: ['id', 'userId', 'organisationId']
+            }
+          ]
         });
         if (!phoneNumber) {
           return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -67,9 +75,22 @@ const phoneEndpointsList = (async (req, res) => {
           });
         }
 
+        // Record the first inbound call time for this endpoint (best-effort, idempotent).
+        // We only set it when returning a single endpoint lookup by number.
+        // Also reflect the stamped value in the response, even though we update after fetching.
+        let stampedCallReceived = phoneNumber.callReceived ?? null;
+        if (!stampedCallReceived) {
+          stampedCallReceived = new Date();
+          await PhoneNumber.update(
+            { callReceived: stampedCallReceived },
+            { where: { number: phoneNumber.number, callReceived: { [Op.is]: null } } }
+          );
+        }
+
 
         // Build response object with trunk info if available
         const phoneNumberJson = phoneNumber.toJSON();
+        phoneNumberJson.callReceived = stampedCallReceived;
         if (phoneNumber.Trunk) {
           phoneNumberJson.trunk = {
             id: phoneNumber.Trunk.id,
@@ -78,6 +99,13 @@ const phoneEndpointsList = (async (req, res) => {
           };
           // Remove the Sequelize include key (toJSON includes associated models)
           delete phoneNumberJson.Trunk;
+        }
+        if (phoneNumber.Instance) {
+          phoneNumberJson.Instance = {
+            id: phoneNumber.Instance.id,
+            userId: phoneNumber.Instance.userId,
+            organisationId: phoneNumber.Instance.organisationId,
+          };
         }
 
         return res.send({
@@ -122,6 +150,18 @@ const phoneEndpointsList = (async (req, res) => {
         if (handler && registration.handler !== handler) {
           return res.send({ items: [], nextOffset: null });
         }
+
+        // Record the first inbound call time for this endpoint (best-effort, idempotent).
+        // We only set it when returning a single endpoint lookup by id.
+        let stampedCallReceived = registration.callReceived ?? null;
+        if (!stampedCallReceived) {
+          stampedCallReceived = new Date();
+          await PhoneRegistration.update(
+            { callReceived: stampedCallReceived },
+            { where: { id: registration.id, callReceived: { [Op.is]: null } } }
+          );
+        }
+
         return res.send({
           items: [{
             id: registration.id,
@@ -132,7 +172,10 @@ const phoneEndpointsList = (async (req, res) => {
             outbound: !!registration.outbound,
             instanceId: registration.instanceId,
             registrar: registration.registrar,
+            username: registration.username,
+            b2buaId: registration.b2buaId,
             options: registration.options,
+            callReceived: stampedCallReceived,
           }],
           nextOffset: null
         });
@@ -155,6 +198,7 @@ const phoneEndpointsList = (async (req, res) => {
           state: r.state,
           outbound: !!r.outbound,
           instanceId: r.instanceId,
+          callReceived: r.callReceived ?? null,
         }));
         const nextOffset = rows.length === size ? startOffset + size : null;
 
@@ -296,6 +340,8 @@ phoneEndpointsList.apiDoc = {
                         instanceId: { type: 'string', format: 'uuid' },
                         handler: { type: 'string', description: 'The handler type for this phone endpoint' },
                         aplisayId: { type: 'string', description: 'Trunk ID (aplisayId) assigned to this number', nullable: true },
+                        provisioned: { type: 'boolean', description: 'Whether the number has been provisioned in the underlying telephony platform', nullable: true },
+                        callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                         trunk: {
                           type: 'object',
                           description: 'Trunk information (included when looking up by number and trunk exists)',
@@ -329,6 +375,7 @@ phoneEndpointsList.apiDoc = {
                         status: { type: 'string', description: 'High-level status of the endpoint', enum: ['active', 'failed', 'disabled'] },
                         state: { type: 'string', description: 'Registration state', enum: ['initial', 'registering', 'registered', 'failed'] },
                         handler: { type: 'string', description: 'The handler type for this phone endpoint' },
+                        callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                         createdAt: { type: 'string', format: 'date-time' },
                         updatedAt: { type: 'string', format: 'date-time' }
                       }

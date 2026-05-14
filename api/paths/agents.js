@@ -1,4 +1,5 @@
 import { Agent, Op } from '../../lib/database.js';
+import { scopeWhereForUser } from '../../lib/scope.js';
 
 let appParameters, log;
 
@@ -149,10 +150,7 @@ function sanitizeAgentSearchToken(raw) {
 }
 
 const agentList = (async (req, res) => {
-  let { id: userId, organisationId } = res.locals.user;
-  const scopeWhere = organisationId
-    ? { [Op.or]: [{ userId }, { organisationId }] }
-    : { userId };
+  const scopeWhere = scopeWhereForUser(res.locals.user);
 
   const limitRaw = req.query.limit;
   const startOffset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);

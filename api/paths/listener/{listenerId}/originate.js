@@ -1,6 +1,7 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
+import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
 
 let appParameters, log;
 
@@ -31,20 +32,21 @@ const originateCall = (async (req, res) => {
       });
     }
 
-    // Check if agent exists and belongs to the organisation
     const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
     const agent = instance?.Agent;
 
-    if (!instance?.id || instance.organisationId !== organisationId) {
+    if (!instance?.id || !userOwnsRow(res.locals.user, instance)) {
       return res.status(404).send({ error: `Agent ${listenerId} not found` });
     }
 
-    // Check if callerId is present in phoneNumbers table or phoneRegistrations table and belongs to the organisation
-    let callerPhoneNumber = await PhoneNumber.findByPk(callerId);
+    // Check if callerId is present in phoneNumbers table or phoneRegistrations table and belongs to the user/org.
+    let callerPhoneNumber = await PhoneNumber.findByPk(callerId, {
+      include: [{ model: Instance, attributes: ['id', 'userId', 'organisationId'] }]
+    });
     let callerPhoneRegistration = null;
     let aplisayId = null;
-    
-    if (callerPhoneNumber && callerPhoneNumber.organisationId === organisationId) {
+
+    if (callerPhoneNumber && userOwnsPhoneNumber(res.locals.user, callerPhoneNumber)) {
       // Found in phone numbers table
       if (!callerPhoneNumber.outbound) {
         return res.status(400).send({
@@ -59,13 +61,22 @@ const originateCall = (async (req, res) => {
       if (uuidRe.test(callerId)) {
         callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
       }
-      if (!callerPhoneRegistration || callerPhoneRegistration.organisationId !== organisationId) {
+      if (!callerPhoneRegistration || !userOwnsRow(res.locals.user, callerPhoneRegistration)) {
         return res.status(404).send({
           error: `Caller ${callerId} not found in phone numbers or registrations table`
         });
       }
-      // For registrations, we don't check outbound flag as they're typically for inbound
-      // but we can still use them for outbound calls
+      if (!callerPhoneRegistration.outbound) {
+        return res.status(400).send({
+          error: `Caller registration ${callerId} is not enabled for outbound calling`
+        });
+      }
+      const b2buaHost = String(callerPhoneRegistration.b2buaId || '').trim();
+      if (!b2buaHost) {
+        return res.status(400).send({
+          error: `Caller registration ${callerId} has no b2buaId (B2BUA gateway IP) required for outbound calls`
+        });
+      }
     }
 
     // Validate that calledId matches the agent's outboundCallFilter if specified
@@ -150,7 +161,7 @@ originateCall.apiDoc = {
             },
             callerId: {
               type: "string",
-              description: "The phone number or registration ID to call from (must exist in phoneNumbers or phoneRegistrations table and belong to the organisation)",
+              description: "E.164 phone number or registration endpoint UUID to call from. Must belong to the organisation and have outbound enabled on the phone number or registration record.",
               example: "+442080996945"
             },
             metadata: {

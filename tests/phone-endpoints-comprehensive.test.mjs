@@ -234,6 +234,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       endpoints.forEach(ep => {
         expect(ep).toHaveProperty('number');
         expect(ep).not.toHaveProperty('id');
+        expect(ep).toHaveProperty('callReceived');
       });
     });
 
@@ -604,6 +605,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // Public surface should expose trunkId (if assigned), not aplisayId
       expect(res._body).toHaveProperty('trunkId');
       expect(res._body).toHaveProperty('provisioned');
+      expect(res._body).toHaveProperty('callReceived');
       expect(res._body).not.toHaveProperty('id');
       expect(res._body).not.toHaveProperty('name'); // Phone numbers don't have name field
     });
@@ -627,6 +629,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('state');
       expect(res._body).toHaveProperty('handler');
       expect(res._body).toHaveProperty('outbound');
+      expect(res._body).toHaveProperty('callReceived');
       expect(res._body).not.toHaveProperty('number');
     });
 

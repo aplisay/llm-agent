@@ -1,4 +1,5 @@
-import { Agent, Instance, PhoneNumber, Op } from '../../../lib/database.js';
+import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
+import { scopeWhereForUser } from '../../../lib/scope.js';
 
 let log;
 
@@ -13,11 +14,8 @@ export default function (logger) {
 
 
 function agentWhere(req, res) {
-  const { id: userId, organisationId } = res.locals.user;
   const { agentId } = req.params;
-  return organisationId
-    ? { id: agentId, [Op.or]: [{ userId }, { organisationId }] }
-    : { id: agentId, userId };
+  return { id: agentId, ...scopeWhereForUser(res.locals.user) };
 }
 
 const agentGet = async (req, res) => {

@@ -21,6 +21,8 @@ export interface PhoneRegistrationSchema {
   handler: string; // e.g., 'livekit', 'jambonz'
   outbound: boolean;
   registrar: string; // SIP contact URI
+  /** B2BUA node external IP (`EXT_IP_ADDRESS`); set by aplisay-b2bua config-server when serving a registration to FreeSWITCH. */
+  b2buaId?: string | null;
   username: string;
   password: string; // encrypted in DB
   options: Record<string, any> | null; // JSONB

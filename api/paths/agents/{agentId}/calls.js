@@ -1,4 +1,5 @@
 import { Call, Op } from '../../../../lib/database.js';
+import { scopeWhereForUser } from '../../../../lib/scope.js';
 let appParameters, log;
 
 export default function (logger) {
@@ -9,15 +10,12 @@ export default function (logger) {
     try {
       let { agentId } = req.params;
       let { startDate, endDate, offset = 0, limit = 50 } = req.query;
+      // Scope to rows the caller may see; previously a hand-rolled OR that
+      // collapsed across all no-org tenants when organisationId was null.
       let where = {
         [Op.and]: [
           { agentId },
-          {
-            [Op.or]: [
-              { userId: res.locals.user.id },
-              { organisationId: res.locals.user.organisationId }
-            ]
-          }
+          scopeWhereForUser(res.locals.user)
         ]
       };
       startDate = startDate ? new Date(startDate) : new Date(0);

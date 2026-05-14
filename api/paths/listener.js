@@ -1,4 +1,5 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
+import { scopeWhereForUser } from '../../lib/scope.js';
 
 /**
  * Flat list of active listener instances with parent agent name, for dashboards.
@@ -10,10 +11,7 @@ export default function (logger) {
 }
 
 const listenerDeploymentsList = async (req, res) => {
-  const { id: userId, organisationId } = res.locals.user;
-  const scopeWhere = organisationId
-    ? { [Op.or]: [{ userId }, { organisationId }] }
-    : { userId };
+  const scopeWhere = scopeWhereForUser(res.locals.user);
 
   const filterAgentId = req.query.agentId;
   const agentWhere = filterAgentId

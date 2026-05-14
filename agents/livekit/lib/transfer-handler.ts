@@ -18,6 +18,12 @@ import {
 } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
+import {
+  detachPrimaryAgentMediaAfterBridge,
+  getLlmForTransferSession,
+} from "./voice-session-resources.js";
+import { userOwnsPhoneNumber } from "./scope.js";
+import { deleteRoomWithRetry } from "./livekit-helpers.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -178,7 +184,21 @@ async function validateTransferArgs(
     if (!pn) {
       throw new Error("Invalid callerId: number not found");
     }
-    if (pn?.organisationId !== agent.organisationId) {
+    // Strict ownership check via userOwnsPhoneNumber. A direct
+    // `pn.organisationId !== agent.organisationId` comparison would let any
+    // no-org agent claim any other no-org tenant's outbound number as
+    // caller-ID (null !== null is false in JS); userOwnsRow alone would
+    // additionally refuse the legitimate no-org case where the user's
+    // listener has claimed a pool number, because PhoneNumber has no userId
+    // column. userOwnsPhoneNumber accepts either direct org match or
+    // transitive ownership via the bound Instance — the agent-db response
+    // attaches `Instance.userId/organisationId` for that branch.
+    if (
+      !userOwnsPhoneNumber(
+        { id: agent.userId, organisationId: agent.organisationId },
+        pn,
+      )
+    ) {
       throw new Error(
         "Invalid callerId: number not owned by this organisation"
       );
@@ -217,10 +237,7 @@ async function finaliseBridgedCall(
   session: voice.AgentSession | null,
   setBridgedCallRecord?: (call: Call | null) => void
 ): Promise<Call | null> {
-  // Close down the model for the agent leg
-  if (session?.llm) {
-    (session.llm as llm.RealtimeModel)?.close();
-  }
+  detachPrimaryAgentMediaAfterBridge(session);
 
   try {
     const originalCallId = call.id;
@@ -303,7 +320,8 @@ async function handleBlindBridgeTransfer(
       registrationOriginated || false,
       b2buaGatewayIp,
       b2buaGatewayTransport,
-      registrationEndpointId
+      registrationEndpointId,
+      context.call?.id,
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -368,7 +386,7 @@ async function handleBlindReferTransfer(
         "Using registrar/transport from registration-originated call"
       );
     }
-
+    logger.info({ participant }, "Transferring using base participant");
     const tpResult = await transferParticipant(
       room.name!,
       participant.identity!,
@@ -376,7 +394,8 @@ async function handleBlindReferTransfer(
       aplisayId!,
       registrar,
       transport,
-      callerId
+      callerId,
+      context.call?.id
     );
 
     logger.info({ tpResult }, "transfer participant executed via SIP REFER");
@@ -387,8 +406,27 @@ async function handleBlindReferTransfer(
     };
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
-    setTransferState("failed", `Transfer failed: ${error.message}`);
-    throw error;
+    // This is pretty horrid, but the transfer can appear to fail *after*
+    // it has actually succeeded due to a couple of race conditions.
+    // We can detect these by checking for specific error messages.
+    // And then tell the caller it succeeded really.
+    if (
+      error.message?.includes("500: Internal Server Error") ||
+      error.message?.includes("twirp error unknown: participant does not exist")
+    ) {
+      logger.info(
+        { message: error.message },
+        "transfer failed quirk, succeeded really",
+      );
+      setTransferState("none", "Transfer completed (sort of) successfully");
+      return {
+        status: "OK",
+        reason: "The transfer target was found and accepted the transfer, future calls to transfer will now fail, do not call this tool again",
+      };
+    } else {
+      setTransferState("failed", `Transfer failed: ${error.message}`);
+      throw error;
+    }
   } finally {
     // Always clear the in-progress flag, even if transfer fails
     setConsultInProgress(false);
@@ -539,7 +577,8 @@ async function startConsultativeTransfer(
       context.b2buaGatewayIp,
       context.b2buaGatewayTransport,
       context.registrationEndpointId,
-      callerId
+      callerId,
+      context.call?.id,
     );
     setBridgedParticipant(transferTargetParticipant);
     // Step 5: Create TransferAgent with conversation history
@@ -670,7 +709,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const transferSession = new voice.AgentSession({
-      llm: session.llm, // Reuse the same LLM instance
+      llm: getLlmForTransferSession(session),
     });
     setTransferSession(transferSession);
 
@@ -778,7 +817,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
       } catch (cleanupError) {
         logger.error({ cleanupError }, "failed to cleanup consultation room");
       }
@@ -884,7 +923,8 @@ async function finaliseConsultativeTransfer(
         aplisayId!,
         registrar,
         transport,
-        callerId
+        callerId,
+        context.call?.id
       );
 
       logger.info({}, "transfer executed via SIP REFER");
@@ -905,7 +945,7 @@ async function finaliseConsultativeTransfer(
     }
 
     // Step 4: Delete consultation room
-    await roomService.deleteRoom(consultRoomName);
+    await deleteRoomWithRetry(consultRoomName);
 
 
     logger.info({}, "consultation room cleaned up");
@@ -943,7 +983,7 @@ async function finaliseConsultativeTransfer(
         await consultRoom.disconnect();
       }
       if (consultRoomName) {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
       }
     } catch (cleanupError) {
       logger.error({ cleanupError }, "failed to cleanup during error");
@@ -1013,7 +1053,7 @@ export async function destroyInProgressTransfer(
     // Step 2: Delete consultation room
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
         logger.debug({ consultRoomName }, "deleted consultation room");
       } catch (e) {
         logger.error(
@@ -1174,7 +1214,7 @@ export async function rejectConsultativeTransfer(
     // Step 3: Delete consultation room
     if (consultRoomName) {
       try {
-        await roomService.deleteRoom(consultRoomName);
+        await deleteRoomWithRetry(consultRoomName);
         logger.debug({ consultRoomName }, "deleted consultation room");
       } catch (e) {
         logger.error(

@@ -19,6 +19,7 @@
     "start": "yarn build && NODE_ENV=production node dist/realtime.mjs start",
     "stage": "yarn build && NODE_ENV=staging LOGLEVEL=debug node dist/realtime.mjs dev",
     "build": "npx tsup --clean",
+    "test:voice": "yarn build && node scripts/run-voice-selftest.mjs",
     "dev": "tsup --watch",
     "setup-agents": "bash scripts/setup-agents.sh",
     "build:deps": "bash scripts/build-deps.sh"
@@ -29,6 +30,9 @@
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
     "@google-cloud/storage": "^7.13.0",
     "@livekit/agents": "^1.0.25",
+    "@livekit/agents-plugin-cartesia": "1.0.46",
+    "@livekit/agents-plugin-deepgram": "1.0.46",
+    "@livekit/agents-plugin-elevenlabs": "1.0.46",
     "@livekit/agents-plugin-google": "^1.0.25",
     "@livekit/agents-plugin-openai": "^1.0.25",
     "@livekit/noise-cancellation-node": "^0.1.9",

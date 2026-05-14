@@ -58,11 +58,63 @@ export interface Agent {
   prompt?: string;
   options?: {
     /**
+     * Optional opening greeting played right after the session starts.
+     *
+     * Note: for Ultravox realtime, prefer `vendorSpecific.ultravox.firstSpeakerSettings` for
+     * provider-native greetings; this block is intended to be portable and primarily used
+     * for pipeline and OpenAI realtime sessions.
+     */
+    greeting?: {
+      /**
+       * Fixed greeting text.
+       * When set, the agent plays this exact line at session start (uninterruptible) and waits for playout.
+       */
+      text?: string;
+      /**
+       * LLM instructions for the greeting.
+       * When set (and `text` is not set), the agent asks the model to greet the user accordingly.
+       */
+      instructions?: string;
+    };
+    /**
+     * Optional override for LiveKit voice stack. When omitted, mode is derived from the
+     * model id in `modelName` (see GET /models: `voiceStack` / `requiresSttTts`).
+     */
+    voiceMode?: 'realtime' | 'pipeline';
+    /**
      * Optional maximum session duration for realtime LLMs (e.g. "305s").
      * Used by worker when constructing RealtimeModel.
      */
     maxDuration?: string;
+    /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
+    temperature?: number;
+    stt?: {
+      /**
+       * BCP-47 primary tag (e.g. `en`) for pipeline Inference STT.
+       * Values like `any` / `multi` are treated as unspecified and default to `en` (or `LIVEKIT_PIPELINE_STT_LANG`).
+       */
+      language?: string;
+      /**
+       * STT vendor for LiveKit pipeline (e.g. `deepgram`, `assemblyai`, `cartesia`).
+       * You may optionally scope the inference model (and language suffix) via `vendor/model[:lang]`,
+       * e.g. `deepgram/nova-3:en` (defaults to language derived from `stt.language`).
+       */
+      vendor?: string;
+    };
     tts?: {
+      language?: string;
+      /**
+       * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
+       * `google` uses Gemini TTS on Node (`@livekit/agents-plugin-google`), not Google Cloud
+       * voice ids (`en-GB-Standard-O`). Map timbre with `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE`
+       * (global), `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE_<LANG>_<REGION>` (e.g. `..._EN_GB`),
+       * or `vendorSpecific.google.geminiVoiceName`. For a custom Inference TTS string, set
+       * `LIVEKIT_PIPELINE_GOOGLE_TTS`.
+       *
+       * You may optionally scope the inference model via `vendor/model`, e.g. `deepgram/aura-2`
+       * or `cartesia/sonic-3`. If you include a full `vendor/model:voice` string here, it wins.
+       */
+      vendor?: string;
       voice?: string;
     };
     /**
@@ -120,7 +172,61 @@ export interface Agent {
           transcriptionProvider?: string;
           [key: string]: any;
         };
+        /**
+         * VAD settings forwarded to Ultravox `POST /api/calls` (`vadSettings`).
+         * Durations use protobuf duration strings, e.g. `"0.384s"`.
+         * @see https://docs.ultravox.ai/api-reference/calls/calls-post
+         */
+        vadSettings?: {
+          turnEndpointDelay?: string;
+          minimumTurnDuration?: string;
+          minimumInterruptionDuration?: string;
+          frameActivationThreshold?: number;
+        };
+        /**
+         * Opening-turn behaviour (`firstSpeakerSettings`). Prefer this over the model-level
+         * deprecated `firstSpeaker` enum; when set here, that enum is not sent on the create-call body.
+         * Exactly one of `user` or `agent` should be set per Ultravox API.
+         * @see https://docs.ultravox.ai/api-reference/calls/calls-post
+         */
+        firstSpeakerSettings?: {
+          user?: {
+            fallback?: {
+              delay?: string;
+              text?: string;
+              prompt?: string;
+            };
+          };
+          agent?: {
+            uninterruptible?: boolean;
+            text?: string;
+            prompt?: string;
+            delay?: string;
+          };
+        };
+        /**
+         * Messages spoken after cumulative periods of user inactivity (`inactivityMessages`).
+         * Durations are protobuf-style strings (e.g. `"30s"`). See Ultravox docs for ordering and `endBehavior`.
+         * @see https://docs.ultravox.ai/api-reference/calls/overview#inactivitymessages-5
+         */
+        inactivityMessages?: Array<{
+          duration: string;
+          message: string;
+          endBehavior?:
+            | 'END_BEHAVIOR_UNSPECIFIED'
+            | 'END_BEHAVIOR_HANG_UP_SOFT'
+            | 'END_BEHAVIOR_HANG_UP_STRICT';
+        }>;
         [key: string]: any;
+      };
+      /**
+       * Google / Gemini options for the LiveKit pipeline when using Gemini TTS.
+       */
+      google?: {
+        /**
+         * Prebuilt Gemini TTS voice name (e.g. Kore, Puck). Overrides env and Cloud-id defaults.
+         */
+        geminiVoiceName?: string;
       };
       [key: string]: any;
     };
@@ -192,8 +298,8 @@ export interface CallMetadata {
 export interface OutboundInfo {
   toNumber: string;
   fromNumber: string;
-  aplisayId: string;
-  instanceId: string;
+  aplisayId?: string;
+  instanceId?: string;
 }
 
 export interface TrunkInfo {
@@ -215,6 +321,17 @@ export interface PhoneNumberInfo {
   aplisayId?: string | null;
   trunk?: TrunkInfo | null;
   provisioned?: boolean;
+  /**
+   * Eagerly-loaded ownership view of the bound listener (set when
+   * `agent-db/phone-endpoints?number=...` resolves the number to a single
+   * row). Required for `userOwnsPhoneNumber` to authorise a no-org caller's
+   * use of a pool number that they have claimed via a listener.
+   */
+  Instance?: {
+    id: string;
+    userId?: string | null;
+    organisationId?: string | null;
+  } | null;
   [key: string]: any;
 }
 
@@ -222,6 +339,9 @@ export interface PhoneRegistrationInfo {
   id: string;
   name?: string | null;
   handler: string;
+  username?: string | null;
+  /** B2BUA gateway host/IP for registration SIP (same role as sipHXLkRealIp on inbound legs). */
+  b2buaId?: string | null;
   status?: string;
   state?: string;
   outbound?: boolean;
@@ -230,6 +350,7 @@ export interface PhoneRegistrationInfo {
   registrar?: string | null;
   options?: {
     transport?: string;
+    displayNumber?: string;
     [key: string]: any;
   } | null;
   [key: string]: any;
@@ -262,10 +383,9 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   const url = `${baseUrl}${endpoint}`;
   const sharedToken = process.env.SHARED_API_TOKEN;
   
-  //logger.debug({ url, method: options.method || 'GET' }, 'Making API request');
   
   try {
-    logger.debug({ url, method: options.method || 'GET', options }, 'Making API request');
+    //logger.debug({ url, method: options.method || 'GET', options }, 'Making API request');
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
@@ -277,7 +397,8 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error(
+      const logFn = response.status === 404 ? logger.info.bind(logger) : response.status < 500 ? logger.warn.bind(logger) : logger.error.bind(logger);
+      logFn(
         {
           url,
           status: response.status,
@@ -306,7 +427,9 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
-    logger.error({ url, error }, 'API request error');
+    if (!(error instanceof ApiRequestError)) {
+      logger.error({ url, error }, 'API request error');
+    }
     throw error;
   }
 }

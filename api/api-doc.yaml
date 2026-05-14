@@ -10,7 +10,7 @@ info:
 
     Extensible architecture that currently supports the following frameworks:
       * Jambonz: connecting LLMs to telephone calls via an STT->model->TTS pipeline (15 models, any STT,TTS supported by Jambonz)
-      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API (traditional STT/TTS pipeline agents coming soon)
+      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API
       * Ultravox: connecting LLMs to WebRTC rooms and SIP calls using the Ultravox API and SDK.
       
     Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
@@ -85,6 +85,15 @@ components:
           description: This model is a speech-to-speech audio model
           type: boolean
           example: false
+        voiceStack:
+          type: string
+          enum: [realtime, pipeline]
+          description: |-
+            LiveKit-only. `realtime` is speech-to-speech; `pipeline` is STT–LLM–TTS and uses agent `stt`/`tts` options.
+        requiresSttTts:
+          type: boolean
+          description: |-
+            LiveKit-only. When true, configure `options.stt` and `options.tts` (vendor, language, voice) for the pipeline.
         hasTelephony:
           description: This model has a telephony interface so can be activated with a number if required
           type: boolean
@@ -257,11 +266,24 @@ components:
                 Optional client-provided encryption key. When set, recordings are encrypted
                 with a key derived from this value and the server cannot decrypt them for you.
                 You must decrypt them client-side after download.
+        voiceMode:
+          type: string
+          enum: [realtime, pipeline]
+          description: |-
+            Optional LiveKit override. Normally omitted: stack is chosen from the model id in `modelName`
+            (see GET /models `voiceStack`). Use this only to force realtime vs pipeline when needed.
+        greeting:
+          $ref: "#/components/schemas/AgentGreeting"
         tts:
           type: object
           properties:
             language:
               $ref: "#/components/schemas/Language"
+            vendor:
+              type: string
+              description: |-
+                TTS provider for pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
+                You may optionally scope the inference model via `vendor/model` (e.g. `deepgram/aura-2`, `cartesia/sonic-3`).
             voice:
               description: |-
                 TTS voice specifier.
@@ -273,6 +295,11 @@ components:
           properties:
             language:
               $ref: "#/components/schemas/Language"
+            vendor:
+              type: string
+              description: |-
+                STT provider for pipeline models (e.g. deepgram, assemblyai, cartesia).
+                You may optionally scope the inference model (and suffix) using `vendor/model[:lang]`, e.g. `deepgram/nova-3:en`.
         fallback:
           type: object
           description: |-
@@ -320,8 +347,40 @@ components:
                 `transfer` with this number as a `static` or `metadata` parameter.
               type: string
               example: "+44123456780"
-        callbackUrl:
-          $ref: "#/components/schemas/CallbackUrl"
+        maxDuration:
+          description: |-
+            Maximum duration for any single call/session handled by this agent, expressed as a
+            duration string in whole seconds with a trailing `s` suffix (e.g. `"305s"`).
+
+            Defaults to `"305s"` if not specified.
+
+            Behaviour:
+              - For providers that natively support a session time limit (e.g. Ultravox), the value
+                is passed through to the provider so the model itself winds the conversation down
+                when the limit is reached.
+              - For all other providers, the worker enforces a hard stop: roughly 5 seconds after
+                `maxDuration` elapses the session is asked to generate a final reply, and ~10 seconds
+                after that the room and call are torn down. This guarantees calls cannot exceed the
+                configured limit even on backends with no native timeout (e.g. OpenAI realtime).
+
+          type: string
+          pattern: "^\\d+s$"
+          default: "305s"
+          example: "305s"
+        timeExceededMessage:
+          description: |-
+            Message that the agent should deliver to the caller when `maxDuration` is reached and
+            the session is being wound down.
+
+            Currently only honoured by providers that support a native session time limit with a
+            wind-down message (Ultravox). For other providers, on timeout the worker prompts the
+            model with a generic "The session has timed out." instruction instead, and this option
+            is ignored.
+
+            Defaults to `"It has been great chatting with you, but we have exceeded our time now."`.
+          type: string
+          default: "It has been great chatting with you, but we have exceeded our time now."
+          example: "We've reached the end of our scheduled time — thanks for calling, goodbye!"
         outboundCallFilter:
           description: |-
             A regular expression pattern that will be used to filter outbound calls generated by this agent.
@@ -372,7 +431,29 @@ components:
                 "ultravox": {
                   "experimentalSettings": {
                     "transcriptionProvider": "deepgram-nova-3"
-                  }
+                  },
+                  "vadSettings": {
+                    "turnEndpointDelay": "0.5s",
+                    "minimumTurnDuration": "0s",
+                    "minimumInterruptionDuration": "0.12s",
+                    "frameActivationThreshold": 0.5
+                  },
+                  "firstSpeakerSettings": {
+                    "agent": {
+                      "text": "Hello, how can I help you today?"
+                    }
+                  },
+                  "inactivityMessages": [
+                    {
+                      "duration": "30s",
+                      "message": "Are you still there?"
+                    },
+                    {
+                      "duration": "15s",
+                      "message": "If there is nothing else, I will end the call.",
+                      "endBehavior": "END_BEHAVIOR_HANG_UP_SOFT"
+                    }
+                  ]
                 }
               }
               ```
@@ -384,6 +465,52 @@ components:
             ultravox:
               experimentalSettings:
                 transcriptionProvider: "deepgram-nova-3"
+              vadSettings:
+                turnEndpointDelay: "0.384s"
+              firstSpeakerSettings:
+                agent:
+                  prompt: "Greet the caller briefly and ask how you can help."
+              inactivityMessages:
+                - duration: "60s"
+                  message: "Are you still there?"
+    AgentGreeting:
+      description: |-
+        Optional opening greeting played immediately after the agent session starts.
+
+        Exactly one of `text` or `instructions` may be set.
+
+        Implementation notes:
+          - The greeting is always uninterruptible and the agent waits for playout.
+          - Inbound caller audio during the greeting is dropped (not buffered/replayed), so the agent is effectively "deaf" until the greeting completes.
+          - If you need an interruptible greeting, do not use this option; prompt the model to greet naturally as part of the normal dialogue.
+
+        Availability:
+          - Supported for LiveKit agents and Ultravox WebRTC agents (model names prefixed `livekit:` and `ultravox:`).
+          - No-op on Jambonz telephony agents.
+
+        Note for LiveKit OpenAI realtime (`livekit:openai/...`):
+          - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          properties:
+            text:
+              type: string
+              description: Fixed greeting text.
+              example: "Hello, how can I help you today?"
+          required: [text]
+          not:
+            required: [instructions]
+        - type: object
+          additionalProperties: false
+          properties:
+            instructions:
+              type: string
+              description: LLM instructions for the greeting.
+              example: "Greet the caller briefly and ask how you can help."
+          required: [instructions]
+          not:
+            required: [text]
     CallHookConfig:
       type: object
       description: |-

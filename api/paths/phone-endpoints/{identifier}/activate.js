@@ -1,6 +1,7 @@
 import { PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 import { registrationSimulator } from '../../../../lib/registration-simulation.js';
+import { userOwnsRow } from '../../../../lib/scope.js';
 
 let log;
 
@@ -12,7 +13,6 @@ export default function (logger) {
 };
 
 const activateRegistration = async (req, res) => {
-  const { organisationId } = res.locals.user || {};
   const { identifier } = req.params;
 
   try {
@@ -29,7 +29,7 @@ const activateRegistration = async (req, res) => {
     if (!registration) {
       return res.status(404).send({ error: 'Phone registration not found' });
     }
-    if (registration.organisationId !== organisationId) {
+    if (!userOwnsRow(res.locals.user, registration)) {
       return res.status(403).send({ error: 'Access denied' });
     }
 

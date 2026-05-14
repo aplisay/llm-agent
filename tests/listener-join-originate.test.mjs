@@ -248,11 +248,12 @@ describe('Listener Join and Originate Endpoints Test', () => {
         type: 'phone-registration',
         name: 'Test Registration Endpoint',
         handler: 'livekit',
-        outbound: false,
+        outbound: true,
         registrar: 'sip:test.example.com:5060',
         username: 'testuser',
         password: 'testpass',
-        options: { region: 'us-east' }
+        b2buaId: '127.0.0.1',
+        options: { region: 'us-east', transport: 'tcp' }
       }
     });
     const registrationRes = createMockResponse();
@@ -427,6 +428,92 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('success', true);
     expect(originateRes._body).toHaveProperty('data');
 
+  });
+
+  test('should reject originate when registration is not enabled for outbound', async () => {
+    await createTestAgent();
+    const registrationReq = createMockRequest({
+      body: {
+        type: 'phone-registration',
+        name: 'No Outbound Reg',
+        handler: 'livekit',
+        outbound: false,
+        registrar: 'sip:reg2.example.com:5060',
+        username: 'nout',
+        password: 'testpass',
+        options: { region: 'us-east' }
+      }
+    });
+    const registrationRes = createMockResponse();
+    registrationRes.locals.user = { organisationId: testOrgId };
+    await createPhoneEndpoint(registrationReq, registrationRes);
+    const regId = registrationRes._body.id;
+
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { id: regId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    const regListenerId = listenerRes._body.id;
+
+    const originateReq = createMockRequest({
+      params: { listenerId: regListenerId },
+      body: {
+        calledId: '+447911123456',
+        callerId: regId,
+        metadata: {}
+      }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq, originateRes);
+
+    expect(originateRes._status).toBe(400);
+    expect(originateRes._body?.error).toMatch(/not enabled for outbound/);
+  });
+
+  test('should reject originate when registration has no b2buaId', async () => {
+    await createTestAgent();
+    const registrationReq = createMockRequest({
+      body: {
+        type: 'phone-registration',
+        name: 'No B2BUA host',
+        handler: 'livekit',
+        outbound: true,
+        registrar: 'sip:reg-nob2.example.com:5060',
+        username: 'nob2host',
+        password: 'testpass',
+        options: {}
+      }
+    });
+    const registrationRes = createMockResponse();
+    registrationRes.locals.user = { organisationId: testOrgId };
+    await createPhoneEndpoint(registrationReq, registrationRes);
+    const regId = registrationRes._body.id;
+
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { id: regId }
+    });
+    const listenerRes = createMockResponse();
+    await createListener(listenerReq, listenerRes);
+    const regListenerId = listenerRes._body.id;
+
+    const originateReq = createMockRequest({
+      params: { listenerId: regListenerId },
+      body: {
+        calledId: '+447911123456',
+        callerId: regId,
+        metadata: {}
+      }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { organisationId: testOrgId };
+    await originateCall(originateReq, originateRes);
+
+    expect(originateRes._status).toBe(400);
+    expect(originateRes._body?.error).toMatch(/b2buaId/);
   });
 
   test('should allow join on phone number listener (current behavior)', async () => {

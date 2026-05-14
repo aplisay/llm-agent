@@ -44,11 +44,13 @@ const getPhoneEndpoint = async (req, res) => {
         name: registration.name,
         registrar: registration.registrar,
         username: registration.username,
+        b2buaId: registration.b2buaId || null,
         status: registration.status,
         state: registration.state,
         error: registration.error,
         handler: registration.handler,
         outbound: !!registration.outbound,
+        callReceived: registration.callReceived ? registration.callReceived.toISOString() : null,
         options: registration.options || null
       });
     }
@@ -69,7 +71,8 @@ const getPhoneEndpoint = async (req, res) => {
       // Expose the associated trunk using the public trunkId field,
       // while keeping aplisayId as an internal implementation detail.
       trunkId: record.aplisayId || null,
-      provisioned: !!record.provisioned
+      provisioned: !!record.provisioned,
+      callReceived: record.callReceived ? record.callReceived.toISOString() : null,
     });
   }
   catch (err) {
@@ -108,7 +111,8 @@ getPhoneEndpoint.apiDoc = {
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' },
-                  provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' }
+                  provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' },
+                  callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
               },
               {
@@ -124,7 +128,8 @@ getPhoneEndpoint.apiDoc = {
                   state: { type: 'string', enum: ['initial', 'registering', 'registered', 'failed'] },
                   error: { type: 'string', description: 'Error message if failed' },
                   handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
-                  outbound: { type: 'boolean', description: 'Supports outbound' }
+                  outbound: { type: 'boolean', description: 'Supports outbound' },
+                  callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
               }
             ]
@@ -211,7 +216,7 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name', 'options'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -234,7 +239,16 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
         return res.status(400).send({ error: 'options must be an object if provided' });
       }
-      
+      if (updateFields.b2buaId !== undefined) {
+        if (updateFields.b2buaId === null || updateFields.b2buaId === '') {
+          updateFields.b2buaId = null;
+        } else if (typeof updateFields.b2buaId !== 'string' || !updateFields.b2buaId.trim()) {
+          return res.status(400).send({ error: 'b2buaId must be a non-empty string when provided' });
+        } else {
+          updateFields.b2buaId = updateFields.b2buaId.trim();
+        }
+      }
+
       // Handle credential rotation
       let credentialsChanged = false;
       for (const field of credentialFields) {

@@ -1,6 +1,7 @@
 import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
 import { getTelephonyHandler } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
+import { scopeWhereForOrganisation } from '../../lib/scope.js';
 
 let appParameters, log;
 
@@ -15,7 +16,7 @@ export default function (logger, voices, wsServer) {
     GET: phoneEndpointList,
     POST: createPhoneEndpoint
   };
-};
+}
 
 /** Hide linked Instance (and thus Agent) when the caller may not see that listener. */
 function stripPhoneNumberInstancesForUser(rows, user) {
@@ -33,7 +34,6 @@ function stripPhoneNumberInstancesForUser(rows, user) {
 }
 
 const phoneEndpointList = (async (req, res) => {
-  let { organisationId } = res.locals.user;
   let { originate, handler, type, offset, pageSize, search, trunkId: rawTrunkId } = req.query;
   const trunkIds = [].concat(rawTrunkId ?? []).map((id) => String(id).trim()).filter(Boolean);
 
@@ -43,13 +43,15 @@ const phoneEndpointList = (async (req, res) => {
 
     const telephonyHandler = handler ? await getTelephonyHandler(handler) : null;
 
-    // Build where clauses per model
-    const numberWhere = {
-      [Op.or]: [
-        { organisationId },
-        { organisationId: { [Op.eq]: null } }
-      ]
-    };
+    // PhoneNumber (DDI) is shown to org members AND exposes the admin pool of
+    // unallocated numbers (organisationId IS NULL) so callers can claim from
+    // it. No-org users see only the pool — and must never see another org's
+    // numbers, hence the explicit null branch rather than relying on
+    // `{ organisationId: maybeNull }` and JS coercion.
+    const orgScope = scopeWhereForOrganisation(res.locals.user);
+    const numberWhere = orgScope
+      ? { [Op.or]: [orgScope, { organisationId: { [Op.eq]: null } }] }
+      : { organisationId: { [Op.eq]: null } };
     if (originate) {
       numberWhere.outbound = true;
       numberWhere.aplisayId = { [Op.ne]: null };
@@ -65,13 +67,22 @@ const phoneEndpointList = (async (req, res) => {
       numberWhere.aplisayId = trunkIds.length === 1 ? trunkIds[0] : { [Op.in]: trunkIds };
     }
 
-    const regWhere = {
-      organisationId
-    };
-    if (originate) {
+    // PhoneRegistration is strictly org-owned (there is no admin pool). A
+    // no-org user must see nothing here; previously the bare
+    // `{ organisationId: null }` filter leaked every other no-org tenant's
+    // registrations into the response.
+    if (!orgScope) {
+      // Short-circuit before any DB call. Caller-visible behaviour: empty
+      // registration list, no DDI rows beyond the unallocated pool.
+      if (type === 'phone-registration') {
+        return res.send({ items: [], nextOffset: null });
+      }
+    }
+    const regWhere = orgScope ? { ...orgScope } : null;
+    if (regWhere && originate) {
       regWhere.outbound = true;
     }
-    if (telephonyHandler) {
+    if (regWhere && telephonyHandler) {
       regWhere.handler = telephonyHandler;
     }
 
@@ -79,11 +90,14 @@ const phoneEndpointList = (async (req, res) => {
     if (type === 'e164-ddi') {
       const rows = await PhoneNumber.findAll({
         where: numberWhere,
-        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'],
         include: [
           {
             model: Instance,
             required: false,
+            // userId and organisationId are required for the visibility check below; without them
+            // every row appears cross-org and Instance (hence agent) is stripped for org users.
+            attributes: ['id', 'userId', 'organisationId'],
             // userId and organisationId are required for the visibility check below; without them
             // every row appears cross-org and Instance (hence agent) is stripped for org users.
             attributes: ['id', 'userId', 'organisationId'],
@@ -98,12 +112,14 @@ const phoneEndpointList = (async (req, res) => {
       });
 
       stripPhoneNumberInstancesForUser(rows, res.locals.user);
+      stripPhoneNumberInstancesForUser(rows, res.locals.user);
 
       const items = rows.map(r => ({
         number: r.number,
         handler: r.handler,
         outbound: !!r.outbound,
         trunkId: r.aplisayId || null,
+        callReceived: r.callReceived ? r.callReceived.toISOString() : null,
         createdAt: r.createdAt ? r.createdAt.toISOString() : null,
         inUse: !!r.instanceId,
         agentId: r.Instance?.Agent?.id ?? null,
@@ -114,6 +130,7 @@ const phoneEndpointList = (async (req, res) => {
       return res.send({ items, nextOffset });
     }
     if (type === 'phone-registration') {
+      // The no-org early return above already handled the !regWhere case.
       const rows = await PhoneRegistration.findAll({
         where: regWhere,
         limit: size,
@@ -124,6 +141,7 @@ const phoneEndpointList = (async (req, res) => {
         name: r.name,
         registrar: r.registrar,
         username: r.username,
+        b2buaId: r.b2buaId || null,
         status: r.status,
         state: r.state,
         handler: r.handler,
@@ -133,7 +151,8 @@ const phoneEndpointList = (async (req, res) => {
       return res.send({ items, nextOffset });
     }
 
-    // Both types: fetch a window from each, merge, and page
+    // Both types: fetch a window from each, merge, and page. No-org users
+    // skip the registration query entirely (no rows are theirs to see).
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
@@ -146,17 +165,30 @@ const phoneEndpointList = (async (req, res) => {
             include: [{ model: Agent, required: false, attributes: ['id', 'name'] }]
           }
         ],
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'],
+        include: [
+          {
+            model: Instance,
+            required: false,
+            attributes: ['id', 'userId', 'organisationId'],
+            include: [{ model: Agent, required: false, attributes: ['id', 'name'] }]
+          }
+        ],
         order: [['number', 'ASC']],
         limit: size,
         offset: startOffset
       }),
-      PhoneRegistration.findAll({
-        where: regWhere,
-        attributes: ['id', 'name', 'registrar', 'username', 'status', 'state', 'handler', 'outbound', 'createdAt'],
-        limit: size,
-        offset: startOffset
-      })
+      regWhere
+        ? PhoneRegistration.findAll({
+            where: regWhere,
+            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
+            limit: size,
+            offset: startOffset
+          })
+        : Promise.resolve([])
     ]);
+
+    stripPhoneNumberInstancesForUser(numRows, res.locals.user);
 
     stripPhoneNumberInstancesForUser(numRows, res.locals.user);
 
@@ -166,6 +198,7 @@ const phoneEndpointList = (async (req, res) => {
       outbound: !!n.outbound,
       trunkId: n.aplisayId || null,
       provisioned: !!n.provisioned,
+      callReceived: n.callReceived ? n.callReceived.toISOString() : null,
       inUse: !!n.instanceId,
       agentId: n.Instance?.Agent?.id ?? null,
       agentName: n.Instance?.Agent?.name ?? null,
@@ -176,10 +209,12 @@ const phoneEndpointList = (async (req, res) => {
       name: r.name,
       registrar: r.registrar,
       username: r.username,
+      b2buaId: r.b2buaId || null,
       status: r.status,
       state: r.state,
       handler: r.handler,
       outbound: !!r.outbound,
+      callReceived: r.callReceived ? r.callReceived.toISOString() : null,
       _createdAt: r.createdAt
     }));
 
@@ -270,6 +305,12 @@ const createPhoneEndpoint = async (req, res) => {
     }
 
     if (type === 'phone-registration') {
+      if (!organisationId) {
+        return res.status(403).send({
+          error: 'Phone registrations require an organisation membership'
+        });
+      }
+
       const validation = validatePhoneRegistration(data);
       if (!validation.isValid) {
         return res.status(400).send({
@@ -303,6 +344,7 @@ const createPhoneEndpoint = async (req, res) => {
         registrar: normalizedRegistrar,
         username: data.username,
         password: data.password,
+        b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
         options: data.options || null,
         organisationId,
         status: 'disabled',

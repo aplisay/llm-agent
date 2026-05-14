@@ -1,0 +1,13 @@
+Manual verification checklist (LiveKit worker: realtime vs pipeline)
+
+Prerequisites: yarn build; agent with livekit:openai/ or ultravox/google model names.
+
+Realtime (default, voiceMode omitted or realtime)
+- Inbound SIP/WebRTC: agent speaks, transcript events in transaction logs, hangup tool works.
+- Fallback: force bad primary model then confirm fallback.model or fallback.number path.
+- Recording: instance/agent recording enabled → OGG upload path (RecorderIO).
+- Consultative transfer: warm transfer to second party; transfer agent session starts; accept/reject tools.
+
+Pipeline (options.voiceMode: pipeline, optional options.pipeline STT/LLM/TTS overrides)
+- Same scenarios as above. Without Silero VAD, turn detection uses STT mode; optional prewarm can set proc.userData.vad for vad turn detection.
+- Env defaults: LIVEKIT_PIPELINE_STT, LIVEKIT_PIPELINE_LLM, LIVEKIT_PIPELINE_TTS when options.pipeline not set.

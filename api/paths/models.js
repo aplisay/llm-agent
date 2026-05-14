@@ -15,14 +15,26 @@ export default function (logger) {
 const modelList = async (req, res) => {
   try {
     res.send(Object.fromEntries(
-      (await handlers()).models.map(({ name, description, supportsFunctions, implementation, hasTelephony, hasWebRTC}) => (
+      (await handlers()).models.map(({
+        name,
+        description,
+        supportsFunctions,
+        implementation,
+        hasTelephony,
+        hasWebRTC,
+        audioModel,
+        voiceStack,
+        requiresSttTts,
+      }) => (
         [name,
         {
           description,
           supportsFunctions,
-          audioModel: implementation.audioModel,
+          audioModel: audioModel ?? implementation.audioModel,
           hasTelephony,
           hasWebRTC,
+          ...(voiceStack != null ? { voiceStack } : {}),
+          ...(requiresSttTts != null ? { requiresSttTts } : {}),
         }
         ]
       ))
