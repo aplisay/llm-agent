@@ -14,7 +14,7 @@ lerna-debug.log*
 *.code-workspace
 .claude
 .claude/**
-.cursor
+.cursor*
 .cursor/**
 .vscode/**
 .vscode

@@ -16,7 +16,7 @@ export default function (logger, voices, wsServer) {
     GET: phoneEndpointList,
     POST: createPhoneEndpoint
   };
-};
+}
 
 /** Hide linked Instance (and thus Agent) when the caller may not see that listener. */
 function stripPhoneNumberInstancesForUser(rows, user) {
@@ -98,6 +98,9 @@ const phoneEndpointList = (async (req, res) => {
             // userId and organisationId are required for the visibility check below; without them
             // every row appears cross-org and Instance (hence agent) is stripped for org users.
             attributes: ['id', 'userId', 'organisationId'],
+            // userId and organisationId are required for the visibility check below; without them
+            // every row appears cross-org and Instance (hence agent) is stripped for org users.
+            attributes: ['id', 'userId', 'organisationId'],
             include: [
               { model: Agent, required: false, attributes: ['id', 'name'] }
             ]
@@ -108,6 +111,7 @@ const phoneEndpointList = (async (req, res) => {
         offset: startOffset
       });
 
+      stripPhoneNumberInstancesForUser(rows, res.locals.user);
       stripPhoneNumberInstancesForUser(rows, res.locals.user);
 
       const items = rows.map(r => ({
@@ -152,6 +156,15 @@ const phoneEndpointList = (async (req, res) => {
     const [numRows, regRows] = await Promise.all([
       PhoneNumber.findAll({
         where: numberWhere,
+        attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'createdAt', 'instanceId'],
+        include: [
+          {
+            model: Instance,
+            required: false,
+            attributes: ['id', 'userId', 'organisationId'],
+            include: [{ model: Agent, required: false, attributes: ['id', 'name'] }]
+          }
+        ],
         attributes: ['number', 'handler', 'outbound', 'aplisayId', 'provisioned', 'callReceived', 'createdAt', 'instanceId'],
         include: [
           {
@@ -174,6 +187,8 @@ const phoneEndpointList = (async (req, res) => {
           })
         : Promise.resolve([])
     ]);
+
+    stripPhoneNumberInstancesForUser(numRows, res.locals.user);
 
     stripPhoneNumberInstancesForUser(numRows, res.locals.user);
 
