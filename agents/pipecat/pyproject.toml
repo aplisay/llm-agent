@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "loguru>=0.7",
     "google-cloud-storage>=2.14",
+    "cryptography>=42.0",
 ]
 
 [build-system]

@@ -233,8 +233,16 @@ section 6.7 works end-to-end (`uuid_deflect` for REFER,
 follow-up: the gateway interface supports it but the runtime still degrades
 the accept-path to blind-bridge (section 6.10).
 
-Recording (section 9.2) is not yet wired — to land via `mod_record` or
-`audio_stream`-side capture.
+Recording (section 9.2) is wired via Pipecat's `AudioBufferProcessor`
+(`num_channels=2`, user-left / bot-right). PCM is streamed to a local temp
+file during the call, encoded to Opus/OGG with ffmpeg on session shutdown,
+encrypted in AES‑256‑GCM, and uploaded to GCS. The on-wire contract is
+shared with the LiveKit agent — see
+[`lib/recording/CONTRACT.md`](../../lib/recording/CONTRACT.md). Implementation
+lives in [`pipecat_aplisay/recording/`](pipecat_aplisay/recording/);
+enable per agent via `agent.options.recording.enabled` (with instance-level
+override) and optionally supply `agent.options.recording.key` for
+client-side decrypt.
 
 ## Pipeline registry
 

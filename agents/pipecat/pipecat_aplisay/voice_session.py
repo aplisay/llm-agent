@@ -28,6 +28,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
     MuteUntilFirstBotCompleteUserMuteStrategy,
@@ -176,17 +177,39 @@ async def build_voice_session(
     metadata: dict,
     tools: list[dict],
     system_prompt: str,
-) -> PipelineTask:
+    enable_recording: bool = False,
+) -> tuple[PipelineTask, Optional[AudioBufferProcessor]]:
     """Construct a configured ``PipelineTask`` for the call.
+
+    When ``enable_recording`` is true the returned ``AudioBufferProcessor``
+    is appended to the pipeline (stereo, user-left/bot-right per
+    ``lib/recording/CONTRACT.md``). The caller owns its lifecycle:
+    ``await processor.start_recording()`` once the session is up and
+    ``await processor.stop_recording()`` on shutdown.
 
     The caller wires the returned task into a ``PipelineRunner`` and starts it.
     """
     mode: VoiceMode = resolve_voice_mode(model_name, agent.get("options"))
-    logger.bind(mode=mode, model=model_name).info("building voice session")
+    logger.bind(mode=mode, model=model_name, recording=enable_recording).info(
+        "building voice session"
+    )
+
+    audio_buffer: Optional[AudioBufferProcessor] = None
+    if enable_recording:
+        # Stereo, sample rate inherits from whatever the source pipeline
+        # produces. ``num_channels=2`` is the documented "user left / bot
+        # right" layout — matches LiveKit's RecorderIO output exactly.
+        audio_buffer = AudioBufferProcessor(num_channels=2)
 
     if mode == "realtime":
-        return await _build_realtime(transport, model_name, agent, metadata, tools, system_prompt)
-    return await _build_pipeline(transport, model_name, agent, metadata, tools, system_prompt)
+        task = await _build_realtime(
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
+        )
+    else:
+        task = await _build_pipeline(
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
+        )
+    return task, audio_buffer
 
 
 async def _build_realtime(
@@ -196,6 +219,7 @@ async def _build_realtime(
     metadata: dict,
     tools: list[dict],
     system_prompt: str,
+    audio_buffer: Optional[AudioBufferProcessor],
 ) -> PipelineTask:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -440,15 +464,19 @@ async def _build_realtime(
         context, user_params=user_params
     )
 
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            user_aggregator,
-            llm,
-            transport.output(),
-            assistant_aggregator,
-        ]
-    )
+    processors: list = [
+        transport.input(),
+        user_aggregator,
+        llm,
+        transport.output(),
+    ]
+    # The recording docs require ``AudioBufferProcessor`` to sit AFTER
+    # ``transport.output()`` so it sees both the user's input frames and the
+    # bot's rendered TTS output frames.
+    if audio_buffer is not None:
+        processors.append(audio_buffer)
+    processors.append(assistant_aggregator)
+    pipeline = Pipeline(processors)
     return PipelineTask(pipeline, params=PipelineParams())
 
 
@@ -459,6 +487,7 @@ async def _build_pipeline(
     metadata: dict,
     tools: list[dict],
     system_prompt: str,
+    audio_buffer: Optional[AudioBufferProcessor],
 ) -> PipelineTask:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -563,15 +592,16 @@ async def _build_pipeline(
         context, user_params=user_params
     )
 
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            user_aggregator,
-            llm,
-            tts,
-            transport.output(),
-            assistant_aggregator,
-        ]
-    )
+    processors: list = [
+        transport.input(),
+        stt,
+        user_aggregator,
+        llm,
+        tts,
+        transport.output(),
+    ]
+    if audio_buffer is not None:
+        processors.append(audio_buffer)
+    processors.append(assistant_aggregator)
+    pipeline = Pipeline(processors)
     return PipelineTask(pipeline, params=PipelineParams())

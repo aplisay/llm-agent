@@ -1816,6 +1816,9 @@ google = [
 openai = [
     { name = "websockets" },
 ]
+ultravox = [
+    { name = "websockets" },
+]
 webrtc = [
     { name = "aiortc" },
     { name = "opencv-python" },
@@ -1826,11 +1829,12 @@ name = "pipecat-aplisay-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
     { name = "loguru" },
-    { name = "pipecat-ai", extra = ["anthropic", "cartesia", "daily", "deepgram", "google", "openai", "webrtc"] },
+    { name = "pipecat-ai", extra = ["anthropic", "cartesia", "daily", "deepgram", "google", "openai", "ultravox", "webrtc"] },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1838,11 +1842,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-cloud-storage", specifier = ">=2.14" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "loguru", specifier = ">=0.7" },
-    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "openai", "silero", "webrtc"], specifier = ">=1.0.0" },
+    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "openai", "silero", "ultravox", "webrtc"], specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
