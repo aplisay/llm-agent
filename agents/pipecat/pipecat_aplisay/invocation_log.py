@@ -24,7 +24,7 @@ async def append(entry: dict[str, Any]) -> None:
         _BUFFER.append(entry)
 
 
-async def flush_invocation_logs(subsystem: str = "worker") -> None:
+async def flush_invocation_logs(subsystem: str = "pipecat-agent") -> None:
     """Drain the buffer and POST it to llm-agent."""
     async with _LOCK:
         batch = list(_BUFFER)

@@ -82,7 +82,7 @@ def _builtin_metadata(args: dict, metadata: dict, options: dict) -> dict:
             raise PermissionError("Access to metadata.toolsCalls is not allowed for this handler")
         value = _get_by_path(metadata, key)
         out[key] = "unknown" if value is None else value
-    logger.debug({"keys": keys, "result": out}, "metadata builtin result")
+    logger.bind(keys=keys, result=out).debug("metadata builtin result")
     return out
 
 
@@ -146,10 +146,24 @@ async def function_handler(
     specific_builtins: dict[str, Callable[..., Any]],
     options: Optional[dict] = None,
 ) -> dict:
-    """Execute a batch of tool calls sequentially. Returns ``function_results``."""
+    """Execute a batch of tool calls sequentially. Returns ``function_results``.
+
+    Telemetry emissions match the canonical JS handler in
+    ``lib/function-handler.js`` and the ``transaction_logs.type`` Postgres
+    enum (``function_calls`` / ``function_results`` — both plural):
+
+    - Just before each call executes: ``{function_calls: [{name, arguments}]}``
+    - After the whole batch completes: ``{function_results: [{name, input, result}]}``
+
+    Singular ``function_call`` was the previous emission and is not in the
+    enum — the server rejects it with a 500.
+    """
     options = options or {}
     builtins = {**HARDWIRED_BUILTINS, **specific_builtins}
     function_results: list[dict] = []
+    # Mirror inputs per call so the batched function_results emission below
+    # carries the same {name, input, result} shape as the JS handler.
+    inputs_by_name: dict[str, dict] = {}
 
     for fn_call in function_calls:
         name = fn_call["name"]
@@ -164,6 +178,17 @@ async def function_handler(
             function_results.append({"name": name, "result": None, "error": str(e)})
             _write_result_to_metadata(metadata, name, {}, None, str(e))
             continue
+        inputs_by_name[name] = inputs
+
+        # Pre-execution telemetry. One-element array per call mirrors the JS
+        # handler's behaviour (it emits a `function_calls: [{...}]` message
+        # right before each invocation).
+        try:
+            await message_handler(
+                {"function_calls": [{"name": name, "arguments": inputs}]}
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"function_calls telemetry emit failed: {e}")
 
         impl = fn_def.get("implementation", "rest")
         result: Any = None
@@ -184,7 +209,7 @@ async def function_handler(
                 raise RuntimeError(f"unknown implementation {impl}")
         except Exception as e:  # noqa: BLE001
             error = str(e)
-            logger.warning({"name": name, "error": error}, "function execution failed")
+            logger.bind(name=name, error=error).warning("function execution failed")
 
         # Write to metadata BEFORE redaction so chaining sees the real value.
         _write_result_to_metadata(metadata, name, inputs, result, error)
@@ -198,20 +223,26 @@ async def function_handler(
             {"name": name, "result": visible_result, "error": error}
         )
 
-        # Emit telemetry for each call.
-        try:
-            await message_handler(
-                {
-                    "function_call": {
-                        "name": name,
-                        "input": inputs,
-                        "result": visible_result,
-                        "error": error,
+    # Batched post-execution telemetry — one row per turn, regardless of how
+    # many tool calls were in the batch.
+    try:
+        await message_handler(
+            {
+                "function_results": [
+                    {
+                        "name": fr["name"],
+                        "input": inputs_by_name.get(fr["name"]),
+                        "result": fr.get("result"),
+                        # Include error only when present so successful rows
+                        # match the JS handler's shape exactly.
+                        **({"error": fr["error"]} if fr.get("error") else {}),
                     }
-                }
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"telemetry emit failed: {e}")
+                    for fr in function_results
+                ]
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"function_results telemetry emit failed: {e}")
 
     return {"function_results": function_results}
 

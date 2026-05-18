@@ -122,7 +122,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
 
         if kind == "stop":
             self._is_open = False
-            logger.info({"event": event}, "audio_stream stop")
+            logger.bind(event=event).info("audio_stream stop")
             return None
 
         if kind == "dtmf":
@@ -136,7 +136,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
 
         # Unknown event types — log and ignore. Errors / status frames live
         # here; they don't translate to a Pipecat frame on their own.
-        logger.debug({"event": event}, "audio_stream event")
+        logger.bind(event=event).debug("audio_stream event")
         return None
 
     async def _handle_start_event(self, event: dict) -> None:

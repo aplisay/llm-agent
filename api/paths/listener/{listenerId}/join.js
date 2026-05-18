@@ -12,18 +12,35 @@ export default function () {
       let { options } = req.body || {};
       res.set('Access-Control-Allow-Origin', '*');
 
+      // Look up the instance / agent first so a genuine 404 stays a 404.
+      // Anything that goes wrong *after* the lookup (handler.join() throwing
+      // because of missing config, provider errors, etc.) is a 500 with the
+      // real message so the operator and the frontend can see what failed.
+      let instance, agent, Handler, handler;
       try {
-        let instance = await Instance.findByPk(listenerId, { include: Agent });
-        let { Agent: agent } = instance;
-        req.log.debug({ req: '', agent, instance }, 'join instance');
-        if (instance.number) {
-          req.log.info('Join called on telephony room!');
-          throw new Error('bad listener');
+        instance = await Instance.findByPk(listenerId, { include: Agent });
+        agent = instance?.Agent;
+      } catch (err) {
+        req.log.error({ err, listenerId }, 'join: lookup failed');
+        return res.status(500).send({ error: err?.message || 'lookup failed' });
+      }
+      if (!instance || !agent) {
+        return res.status(404).send({ error: `no listener ${listenerId}` });
+      }
+      req.log.debug({ agent, instance }, 'join instance');
+      if (instance.number) {
+        req.log.info('Join called on telephony room!');
+        return res.status(400).send({ error: 'cannot join a telephony listener' });
+      }
+
+      try {
+        Handler = (await handlers()).getHandler(agent.modelName);
+        if (!Handler) {
+          return res.status(400).send({ error: `no handler for ${agent.modelName}` });
         }
-        let Handler = (await handlers()).getHandler(agent.modelName);
-        let handler = new Handler({ agent, instance, logger: req.log });
+        handler = new Handler({ agent, instance, logger: req.log });
         let room = await handler.join({ options });
-        res.send(room);
+        return res.send(room);
       }
       catch (err) {
         if (err instanceof AgentConcurrencyLimitExceededError) {
@@ -34,8 +51,8 @@ export default function () {
             details: err.details,
           });
         }
-        req.log.error({ message: err?.message, stack: err?.stack }, 'join error');
-        res.status(404).send(`no agent ${listenerId}`);
+        req.log.error({ message: err?.message, stack: err?.stack, listenerId, modelName: agent?.modelName }, 'join: handler.join() threw');
+        return res.status(500).send({ error: err?.message || 'handler.join failed' });
       }
 
     });

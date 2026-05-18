@@ -109,7 +109,7 @@ external::gateway3          sofia gateway    TRYING`;
     test('should parse profile header format with extra columns', () => {
       const output = `Profile::Gateway-Name                        Data        State   Ping Time   IB Calls(F/T)   OB Calls(F/T)
 =================================================================================================
-external::f3b9ba45-8498-4f3a-8a15-ead09c203b4f  sip:m215-14e1@pabx1.caliu.net:5061;transport=tls  REGED    0.00  0/3  0/0
+external::f3b9ba45-8498-4f3a-8a15-ead09c203b4f  sip:username@host.thing.com:5061;transport=tls  REGED    0.00  0/3  0/0
 external::51681b4a-f2c5-49a2-864f-ea0697d5895e  sip:user@host;transport=tls                          FAIL_WAIT 0.00  0/0  0/0
 `;
 

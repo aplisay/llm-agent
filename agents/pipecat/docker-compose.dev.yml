@@ -1,0 +1,75 @@
+#
+# Pipecat agent stack — DEVELOPMENT layout.
+#
+# Two containers under Docker (freeswitch + esl-poller); the pipecat-worker
+# runs in your terminal foreground via `uv run python -m pipecat_aplisay`. That
+# gives you live reload, tracebacks in the foreground, and easy debugger
+# attachment without round-tripping through a container build.
+#
+# Networking model:
+# - Linux: `network_mode: host` works as expected — the containers share the
+#   host's loopback, so `127.0.0.1` resolves the same for everyone (worker on
+#   host, FS in container, esl-poller in container).
+# - macOS / Windows (Docker Desktop): `network_mode: host` shares the
+#   Docker VM's loopback, NOT the host's. Containers reach the host worker via
+#   `host.docker.internal`; the host reaches container ports via `localhost`
+#   if they're explicitly published. The PIPECAT_WS_URL and
+#   WORKER_EVENT_WEBHOOK env vars must be set to `host.docker.internal:8082`
+#   on those platforms — see the README section "Running the dev stack".
+#
+# Either way, start it with:
+#
+#     # one terminal — bring up the two containers
+#     docker compose -f docker-compose.dev.yml up --build
+#
+#     # another terminal — run the worker in the foreground
+#     cd agents/pipecat
+#     uv sync
+#     uv run python -m pipecat_aplisay
+#
+services:
+  freeswitch:
+    build:
+      context: ./freeswitch/
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      # mod_audio_stream's outbound WS target. Override to
+      # ws://host.docker.internal:8082/freeswitch/audio on macOS/Windows.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+    healthcheck:
+      test: ["CMD", "/usr/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Bind-mount the conf tree so you can iterate on the dialplan / sofia
+    # profile without rebuilding the FS image. Use `fs_cli` (built-in) or
+    # `docker exec freeswitch /usr/local/freeswitch/bin/fs_cli -x reloadxml`
+    # to pick up changes.
+    volumes:
+      - ./freeswitch/conf:/usr/local/freeswitch/conf:ro
+
+  esl-poller:
+    build:
+      context: ./esl-poller/
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      freeswitch:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      LOGLEVEL: ${LOGLEVEL:-debug}
+      ESL_HOST: 127.0.0.1
+      ESL_PORT: 8021
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      CALL_API_PORT: 4001
+      CALL_API_TOKEN: ${CALL_API_TOKEN}
+      # Where esl-poller POSTs CHANNEL_HANGUP / _BRIDGE / _ANSWER events. On
+      # macOS/Windows, override to http://host.docker.internal:8082/freeswitch/events.
+      WORKER_EVENT_WEBHOOK: ${WORKER_EVENT_WEBHOOK:-http://127.0.0.1:8082/freeswitch/events}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      GATEWAY_POLL_ENABLED: "false"
+      CALL_API_ENABLED: "true"

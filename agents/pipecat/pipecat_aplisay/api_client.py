@@ -67,8 +67,26 @@ async def _request(
     if token:
         headers["x-shared-token"] = token
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.request(method, url, params=params, json=body, headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, params=params, json=body, headers=headers)
+    except httpx.ConnectError as e:
+        # DNS / TCP failure reaching the llm-agent REST server. Most common
+        # cause in dev is SERVICE_BASE_URI unset, pointed at an unresolvable
+        # placeholder, or set to https:// against a plain-HTTP server (a
+        # WRONG_VERSION_NUMBER error surfaces as ConnectError too).
+        msg = (
+            f"cannot reach llm-agent REST server at {url}: {e}. "
+            "Check SERVICE_BASE_URI (scheme + host) on the worker and that "
+            "the llm-agent server is running and reachable from this host."
+        )
+        logger.bind(url=url, method=method, error=str(e)).error(msg)
+        raise ApiRequestError(502, {"error": msg}, msg) from e
+    except httpx.RequestError as e:
+        # Other transport-level failures (timeout, TLS handshake errors, etc).
+        msg = f"transport error calling {method} {url}: {e}"
+        logger.bind(url=url, method=method, error=str(e)).error(msg)
+        raise ApiRequestError(502, {"error": msg}, msg) from e
 
     if resp.status_code >= 400:
         text = resp.text
@@ -80,7 +98,9 @@ async def _request(
         log_fn = (
             logger.info if resp.status_code == 404 else logger.warning if resp.status_code < 500 else logger.error
         )
-        log_fn({"url": url, "status": resp.status_code, "error": text}, "API request failed")
+        log_fn(
+            f"API request failed: {method} {url} -> {resp.status_code} {text[:200]}"
+        )
         raise ApiRequestError(resp.status_code, parsed, f"API request failed: {resp.status_code}")
 
     if resp.headers.get("content-type", "").startswith("application/json"):
@@ -151,6 +171,11 @@ class CallRecord(BaseModel):
     metadata: dict = {}
     options: dict = {}
 
+    # Set False for browser / WebRTC sessions where the worker fabricates a
+    # stub Call locally instead of POSTing /api/agent-db/call. end_call() is a
+    # no-op for non-persisted records.
+    persisted: bool = True
+
     # Internal — accumulates batched logs when streamLog is False; flushed at end.
     batched_transaction_logs: list = []
     end_called: bool = False
@@ -191,6 +216,11 @@ async def end_call(call: CallRecord, reason: Optional[str] = None) -> None:
     if call.end_called:
         return
     call.end_called = True
+    # Non-persisted stub records (browser sessions) were never POSTed to the
+    # server; there's nothing for /call/:id/end to find. Calling it would 404.
+    if not call.persisted:
+        logger.debug(f"end_call: skipping non-persisted call {call.id}")
+        return
     body: dict = {
         "reason": reason,
         "userId": call.userId,

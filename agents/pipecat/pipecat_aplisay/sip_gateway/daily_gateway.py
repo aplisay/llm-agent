@@ -59,7 +59,7 @@ class _DailyGatewaySession(GatewaySession):
         # Daily's transport closes the room when the bot leaves. The room
         # cleanup itself is fire-and-forget; the gateway's caller drives
         # disconnect-reason logging via the call lifecycle layer.
-        logger.info({"session_id": self.session_id, "reason": reason}, "daily session hangup")
+        logger.bind(session_id=self.session_id, reason=reason).info("daily session hangup")
         try:
             await self.transport.stop()
         except Exception as e:  # noqa: BLE001

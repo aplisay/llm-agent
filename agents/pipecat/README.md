@@ -77,6 +77,16 @@ esl-poller (TS):
 
 ## Running locally
 
+Two layouts are available:
+
+- **`docker-compose.yml`** — full three-container stack, everything inside
+  Docker. Closest to production.
+- **`docker-compose.dev.yml`** — FreeSWITCH and esl-poller in containers, the
+  Python worker on the **host in the foreground** (live reload, tracebacks,
+  easy debugger attach).
+
+### Full container stack
+
 ```bash
 cd agents/pipecat
 cp .env.example .env
@@ -88,6 +98,98 @@ The compose file uses host networking so RTP port pinning is straightforward
 and FreeSWITCH-to-worker / worker-to-poller traffic stays on `127.0.0.1`. For
 non-host deployments expose ports explicitly and use service DNS names in the
 URL env vars.
+
+### Dev stack (worker on host)
+
+`docker-compose.dev.yml` brings up FreeSWITCH and esl-poller only. The worker
+runs in your terminal foreground via `uv`. Two terminals; in the first:
+
+```bash
+cd agents/pipecat
+cp .env.example .env                          # one-off — populate tokens etc.
+docker compose -f docker-compose.dev.yml up --build
+```
+
+…in the second:
+
+```bash
+cd agents/pipecat
+uv sync                                       # one-off
+# Load the same env file the containers use, then run the worker.
+set -a; source .env; set +a
+export SIP_GATEWAY=freeswitch
+export ESL_POLLER_URL=http://127.0.0.1:4001
+export PORT=8082
+uv run python -m pipecat_aplisay
+```
+
+Stop the worker with Ctrl-C. Stop the containers with `docker compose -f
+docker-compose.dev.yml down` from the first terminal.
+
+**Networking — Linux**: nothing else required. `network_mode: host` shares the
+host's loopback, so `127.0.0.1` resolves the same everywhere — FreeSWITCH
+dials `ws://127.0.0.1:8082/freeswitch/audio`, esl-poller POSTs to
+`http://127.0.0.1:8082/freeswitch/events`, the worker calls
+`http://127.0.0.1:4001/calls/...`. All on the same loopback.
+
+**Networking — macOS / Windows (Docker Desktop)**: containers share the
+Docker VM's loopback, not the host's. You need two overrides in `.env` (or
+exported into your shell before `docker compose up`) so the containers reach
+the host worker via the Docker-Desktop bridge:
+
+```bash
+export PIPECAT_WS_URL=ws://host.docker.internal:8082/freeswitch/audio
+export WORKER_EVENT_WEBHOOK=http://host.docker.internal:8082/freeswitch/events
+```
+
+The reverse direction (worker → esl-poller) keeps working because
+`network_mode: host` on Docker Desktop exposes container-listening ports on
+the host's `localhost`, so `ESL_POLLER_URL=http://127.0.0.1:4001` is correct
+unchanged.
+
+A softphone or SIP trunk wanting to reach FreeSWITCH dials the **host's
+IP/hostname**, not `localhost` — Docker Desktop's host-network bridge maps
+inbound 5060/UDP to the FreeSWITCH container.
+
+### Required environment variables for the host-side worker
+
+`agents/pipecat/.env` (loaded into the shell via `set -a; source .env; set +a`)
+should include at minimum:
+
+| Var                     | Why                                                                   |
+| ----------------------- | --------------------------------------------------------------------- |
+| `CALL_API_TOKEN`        | Shared bearer between worker and esl-poller; must match container env |
+| `PIPECAT_DISPATCH_TOKEN`| Bearer the JS llm-agent handler uses to dispatch outbound calls       |
+| `PIPECAT_JOIN_SECRET`   | HMAC secret used to verify `/webrtc/offer` join tokens                |
+| `SERVICE_BASE_URI`      | Base URL of the llm-agent REST server (agent-db callbacks)            |
+| `SHARED_API_TOKEN`      | `x-shared-token` value for the agent-db API                           |
+| `OPENAI_API_KEY`, etc.  | Provider keys for whichever models you exercise                       |
+
+Plus a small set the worker invocation needs specifically:
+
+| Var                | Value                              | Purpose                                          |
+| ------------------ | ---------------------------------- | ------------------------------------------------ |
+| `SIP_GATEWAY`      | `freeswitch`                       | Selects the FreeSWITCH gateway                   |
+| `ESL_POLLER_URL`   | `http://127.0.0.1:4001`            | Where the worker calls the call-control API     |
+| `ESL_POLLER_TOKEN` | _(same as `CALL_API_TOKEN`)_       | Bearer for that API                              |
+| `WORKER_EVENT_TOKEN` | _(same as `CALL_API_TOKEN`)_     | Bearer the worker requires on `/freeswitch/events` |
+| `PORT`             | `8082`                             | Port the worker listens on (FreeSWITCH dials it)|
+
+On the **llm-agent server side** (different process, almost certainly running
+in another terminal), point it at the dev worker:
+
+```bash
+# in the llm-agent process's environment
+export PIPECAT_WORKER_URL=http://127.0.0.1:8082
+export PIPECAT_PUBLIC_URL=http://127.0.0.1:8082
+export PIPECAT_DISPATCH_TOKEN=<same value as above>
+export PIPECAT_JOIN_SECRET=<same value as above>
+```
+
+`PIPECAT_PUBLIC_URL` is the origin a browser will hit when joining a WebRTC
+session — for local dev with the frontend on the same machine, `127.0.0.1`
+is fine; for a tunnelled-in remote browser, set it to the public origin
+(ngrok URL, LAN IP, etc.).
 
 ## Environment
 

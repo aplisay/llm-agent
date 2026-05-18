@@ -55,7 +55,7 @@ class _FsGatewaySession(GatewaySession):
     _gateway: "FreeswitchSipGateway"
 
     async def hangup(self, reason: str) -> None:
-        logger.info({"channel_uuid": self.channel_uuid, "reason": reason}, "freeswitch hangup")
+        logger.bind(channel_uuid=self.channel_uuid, reason=reason).info("freeswitch hangup")
         await self._gateway._call_api(
             "POST",
             f"/calls/{self.channel_uuid}/hangup",

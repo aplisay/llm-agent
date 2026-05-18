@@ -23,10 +23,70 @@ from loguru import logger
 from .function_handler import function_handler
 
 
+# Property-level keys that are valid JSON Schema and that LLM providers
+# accept on a function-parameter spec. Anything else on an Aplisay function
+# definition is platform metadata (``in``, ``source``, ``from``, ``required``,
+# ``redact``, custom routing hints) — useful server-side, but providers like
+# Google reject them with a strict pydantic schema validation.
+_LLM_VISIBLE_SCHEMA_KEYS = frozenset(
+    {
+        "type",
+        "description",
+        "enum",
+        "format",
+        "items",
+        "properties",
+        "required",  # only valid on object schemas; we drop it at the
+                    # property level below because Aplisay uses
+                    # `required: true` on individual params (which would
+                    # be a boolean, not a list) — JSONSchema's `required`
+                    # at the property level only makes sense for nested
+                    # objects.
+        "additionalProperties",
+        "nullable",
+        "default",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "pattern",
+    }
+)
+
+
+def _strip_property(value: dict) -> dict:
+    """Return a copy of an Aplisay-formatted parameter spec with only
+    JSON-Schema-valid keys retained.
+
+    Drops ``in``, ``source``, ``from``, ``redact``, and the boolean-style
+    ``required`` flag (which Aplisay uses at the property level to indicate
+    "this param must be supplied" — represented in real JSONSchema as
+    membership of the parent object's ``required: [...]`` array).
+    """
+    if not isinstance(value, dict):
+        return value
+    out: dict = {}
+    for k, v in value.items():
+        if k not in _LLM_VISIBLE_SCHEMA_KEYS:
+            continue
+        # Drop the property-level boolean ``required`` — see note above.
+        if k == "required" and isinstance(v, bool):
+            continue
+        out[k] = v
+    return out
+
+
 def _filter_llm_visible_schema(properties: dict) -> dict:
-    """LLM sees only ``source: 'generated'`` properties — section 5.2."""
+    """LLM sees only ``source: 'generated'`` properties — section 5.2.
+
+    Each surviving property is then stripped of Aplisay-platform keys so
+    strict providers (Google's pydantic-validated ``GenerateContentConfig``)
+    don't reject the function declaration.
+    """
     return {
-        key: {k: v for k, v in value.items() if k != "required"}
+        key: _strip_property(value)
         for key, value in properties.items()
         if (value or {}).get("source", "generated") == "generated"
     }
@@ -92,7 +152,7 @@ def build_agent_tools(
                     )
                 return first.get("result")
             except Exception as e:  # noqa: BLE001
-                logger.info({"error": str(e)}, "error executing function")
+                logger.bind(error=str(e)).info("error executing function")
                 raise RuntimeError(f"error executing function: {e}") from e
 
         descriptors.append({"schema": schema, "execute": execute})

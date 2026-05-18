@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
@@ -83,13 +84,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# CORS for the browser-facing /webrtc/offer route. The other endpoints on this
+# worker are server-to-server (FreeSWITCH, esl-poller, llm-agent's JS handler,
+# Daily) and don't need CORS, but middleware applies app-wide and they ignore
+# the headers anyway.
+#
+# WEBRTC_ALLOWED_ORIGINS is a comma-separated list (e.g.
+# "http://localhost:3000,https://playground.aplisay.example"). Defaults to "*"
+# for dev convenience — that's safe because the offer endpoint is gated by an
+# HMAC-signed time-limited token, not by cookies / Authorization headers, so a
+# wildcard origin can't be abused via credentialed requests.
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get("WEBRTC_ALLOWED_ORIGINS", "*").split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["POST", "OPTIONS", "GET"],
+    allow_headers=["*"],
+)
+
 
 @app.post("/dispatch")
 async def dispatch(request: Request, authorization: Optional[str] = Header(default=None)):
     require_dispatch_token(authorization)
     payload = await request.json()
     kind = payload.get("kind")
-    logger.info({"kind": kind, "payload": payload}, "dispatch received")
+    logger.bind(kind=kind, payload=payload).info("dispatch received")
 
     if kind == "outbound":
         return await _handle_outbound_dispatch(request.app, payload)
@@ -171,7 +195,7 @@ async def daily_dialin(request: Request) -> dict:
     section 6.2 / 6.3, and bring up a session.
     """
     body = await request.json()
-    logger.info({"body": body}, "daily dial-in webhook")
+    logger.bind(body=body).info("daily dial-in webhook")
 
     dialin = body.get("dialin_settings") or {}
     from_number = body.get("From") or body.get("from")
@@ -237,12 +261,21 @@ async def daily_dialin(request: Request) -> dict:
 @app.post("/webrtc/offer")
 async def webrtc_offer(request: Request) -> JSONResponse:
     body = await request.json()
-    token = body.get("token")
+    # The token rides as a query-string param so the browser client can use
+    # stock SmallWebRTCTransport without customising the request body. We
+    # still accept it from the body as a fallback for older callers.
+    token = request.query_params.get("token") or body.get("token")
     if not token:
         raise HTTPException(status_code=400, detail="missing token")
     payload = verify_join_token(token)
 
-    instance = await api_client.get_instance_by_id(payload.instance_id)
+    try:
+        instance = await api_client.get_instance_by_id(payload.instance_id)
+    except api_client.ApiRequestError as e:
+        # Surface the actual upstream error to the browser instead of a 500
+        # traceback. Common case in dev: SERVICE_BASE_URI not set or pointed
+        # at an unresolvable placeholder.
+        raise HTTPException(status_code=e.status, detail=str(e))
     if not instance:
         raise HTTPException(status_code=404, detail="instance not found")
     agent = instance.get("Agent")
@@ -265,53 +298,235 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         webrtc_connection=pc,
     )
 
-    # Use a stub call record for browser sessions — they don't go through the
-    # full call/start REST flow, but we still log to llm-agent via the sendMessage
-    # path. A non-persistent CallRecord is enough.
-    call = api_client.CallRecord(
-        id=str(uuid.uuid4()),
-        userId=agent["userId"],
-        organisationId=agent["organisationId"],
-        instanceId=instance["id"],
-        agentId=agent["id"],
-        metadata={
-            "aplisay": {
-                "callerId": "WebRTC",
+    # Create a real persisted Call record so transcripts flow through the
+    # normal transaction-log path back to the frontend (via the listener's
+    # WebSocket socket) and so end_call() works on cleanup. The architecture
+    # doc treats browser sessions as first-class participants — the only
+    # difference from a SIP call is the media transport.
+    try:
+        call = await api_client.create_call(
+            {
+                "userId": agent["userId"],
+                "organisationId": agent["organisationId"],
+                "instanceId": instance["id"],
+                "agentId": agent["id"],
+                "platform": "pipecat",
+                "platformCallId": payload.session_id,
                 "calledId": "WebRTC",
-                "model": agent["modelName"],
-            },
-        },
-    )
+                "callerId": "WebRTC",
+                "modelName": agent["modelName"],
+                "options": agent.get("options") or {},
+                "metadata": {
+                    **(instance.get("metadata") or {}),
+                    "aplisay": {
+                        "callerId": "WebRTC",
+                        "calledId": "WebRTC",
+                        "model": agent["modelName"],
+                    },
+                },
+            }
+        )
+        await api_client.start_call(call)
+    except api_client.AgentConcurrencyLimitExceededBusyError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except api_client.ApiRequestError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
 
     # The browser session is owned by the same orchestration as a phone call.
     from .call_session import CallSession, TransferState
     from .sip_gateway.base import GatewaySession as _GW
 
     class _BrowserGatewaySession(_GW):
-        def __init__(self, transport, session_id):
+        """Wraps the SmallWebRTCTransport+Connection pair for the browser path.
+
+        Pipecat's `SmallWebRTCTransport` has no `.stop()`; the way to tear a
+        peer down is to call `disconnect()` on the underlying
+        `SmallWebRTCConnection`. We hold that handle here so hangup/shutdown
+        can do it.
+        """
+
+        def __init__(self, transport, connection, session_id):
             self.transport = transport
+            self._connection = connection
             self.session_id = session_id
 
         async def hangup(self, reason: str) -> None:
-            await self.transport.stop()
+            try:
+                await self._connection.disconnect()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"webrtc connection disconnect failed: {e}")
 
         async def transfer(self, _req) -> None:
             raise RuntimeError("transfer not supported in browser sessions")
 
         async def shutdown(self) -> None:
-            await self.transport.stop()
+            await self.hangup("Session closed")
 
     session = CallSession(
         session_id=payload.session_id,
         agent=agent,
         instance=instance,
         sip_gateway=request.app.state.sip_gateway,
-        gateway_session=_BrowserGatewaySession(transport, payload.session_id),
+        gateway_session=_BrowserGatewaySession(transport, pc, payload.session_id),
         call=call,
     )
-    request.app.state.live_calls[call.id] = session
-    asyncio.create_task(_run_session(request.app, session, call.id))
 
+    # Preflight the voice-session build BEFORE answering the SDP. If a
+    # provider config is wrong (missing API key, unsupported vendor, bad
+    # voice ID, ...), the failure surfaces here as an HTTP 5xx with the
+    # exception message in the body — the browser sees a real error and can
+    # display it, instead of receiving a 200 SDP answer and stalling on a
+    # silent worker-side crash.
+    #
+    # Connection-establishment failures (the LLM provider's WebSocket
+    # dropping after the pipeline starts running) still happen asynchronously
+    # and surface as a normal pipeline-end with `SESSION_CLOSED`; they're
+    # rarer than config errors and need a different recovery path anyway.
+    try:
+        prepared_task, max_duration_secs = await session.prepare_run(
+            agent, agent["modelName"], agent.get("prompt") or ""
+        )
+    except Exception as e:  # noqa: BLE001
+        # `logger.exception(...)` includes the traceback in the log output;
+        # `logger.bind(...).error(...)` alone hides it unless the formatter
+        # explicitly renders bound fields, which is how the original "build
+        # failed during preflight" message looked useless.
+        logger.opt(exception=True).error(
+            f"voice session build failed during /webrtc/offer preflight: "
+            f"{type(e).__name__}: {e} (callId={call.id})",
+        )
+        # Undo everything we created before this point so the agent's
+        # concurrency slot is released and the half-open peer is closed.
+        try:
+            await api_client.end_call(
+                call, reason=f"build failed: {e}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await pc.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        # Include the exception type in the detail so the browser-side error
+        # message tells the operator what kind of failure they're looking at
+        # (KeyError, ImportError, ValueError, etc.) — not just the message.
+        raise HTTPException(
+            status_code=500,
+            detail=f"session build failed: {type(e).__name__}: {e}",
+        )
+
+    request.app.state.live_calls[call.id] = session
+
+    async def _run_browser_session():
+        try:
+            await session.run_prepared(prepared_task, max_duration_secs)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"browser session runner failed: {e}")
+            try:
+                await api_client.end_call(
+                    session.call,
+                    reason=DISCONNECT_REASONS["UNCAUGHT_ERROR_RUNNING_AGENT"],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            request.app.state.live_calls.pop(call.id, None)
+            try:
+                await session.gateway_session.shutdown()
+            except Exception as inner:  # noqa: BLE001
+                logger.warning(f"gateway shutdown failed: {inner}")
+
+    # Wait for the pipeline to *actually start* before answering the SDP,
+    # so connection-establishment failures (Ultravox API rejection, OpenAI
+    # Realtime WebSocket close, Gemini Live auth failure, etc.) propagate
+    # back to the browser as an HTTP 500. ``prepare_run`` only constructs
+    # the task — provider connection happens during ``StartFrame``
+    # propagation once the runner kicks the pipeline. Without this wait,
+    # the browser gets a 200 SDP answer and a stalled-spinner experience
+    # because the worker-side pipeline died seconds later.
+    #
+    # The signal we watch: ``on_pipeline_started`` fires when StartFrame
+    # reaches the sink (every processor has handled it without raising).
+    # ``on_pipeline_error`` fires when any processor pushes a fatal
+    # ErrorFrame upstream. Whichever fires first decides the outcome.
+    started_event = asyncio.Event()
+    error_event = asyncio.Event()
+    startup_error: dict[str, Any] = {}
+
+    @prepared_task.event_handler("on_pipeline_started")
+    async def _startup_on_started(*_args, **_kwargs) -> None:
+        started_event.set()
+
+    @prepared_task.event_handler("on_pipeline_error")
+    async def _startup_on_error(_task, error_frame) -> None:  # noqa: ANN001
+        startup_error["error"] = getattr(error_frame, "error", "pipeline error")
+        startup_error["exception"] = getattr(error_frame, "exception", None)
+        error_event.set()
+
+    session_task = asyncio.create_task(_run_browser_session())
+
+    started_waiter = asyncio.create_task(started_event.wait())
+    error_waiter = asyncio.create_task(error_event.wait())
+    try:
+        _done, pending = await asyncio.wait(
+            [started_waiter, error_waiter],
+            timeout=15.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for p in pending:
+            p.cancel()
+    except Exception:  # noqa: BLE001
+        # Defensive — wait() shouldn't raise but we'd rather surface a
+        # tidy 500 than crash the request handler.
+        pass
+
+    if error_event.is_set() or not started_event.is_set():
+        # Failure (or startup timeout). Cancel the running session, end
+        # the persisted Call so the concurrency slot is released, tear
+        # down the half-open WebRTC peer, and surface the cause to the
+        # browser. ``error_event`` not set + ``started_event`` not set
+        # means the 15-second wait elapsed without either signal — treat
+        # as a startup hang.
+        if not error_event.is_set():
+            startup_error["error"] = "session startup timeout (15s)"
+            startup_error["exception"] = None
+        err_msg = startup_error.get("error") or "pipeline startup error"
+        exc = startup_error.get("exception")
+        detail = (
+            f"{err_msg} ({type(exc).__name__}: {exc})"
+            if exc is not None
+            else err_msg
+        )
+        logger.opt(exception=exc).error(
+            f"voice session startup failed: {detail} (callId={call.id})",
+        )
+        # Cancel the runner task and wait briefly so its `finally` block
+        # gets a chance to run (end_call + gateway shutdown). Bound the
+        # wait so a misbehaving runner can't stall the HTTP response.
+        session_task.cancel()
+        try:
+            await asyncio.wait_for(session_task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+        # Defensive cleanup in case the runner's finally didn't fire.
+        request.app.state.live_calls.pop(call.id, None)
+        try:
+            await api_client.end_call(call, reason=f"startup failed: {detail}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await pc.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"session startup failed: {detail}",
+        )
+
+    # Pipeline is up and running. Return the SDP answer so the browser
+    # completes its end of the WebRTC handshake.
     return JSONResponse({"sdp": answer["sdp"], "type": answer["type"]})
 
 
@@ -380,7 +595,7 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
     if not instance and start.called_id:
         instance = await api_client.get_instance_by_number(start.called_id)
     if not instance:
-        logger.error({"start": start.raw}, "no instance for inbound freeswitch call")
+        logger.bind(start=start.raw).error("no instance for inbound freeswitch call")
         await websocket.close(code=1011)
         return
 
@@ -449,7 +664,7 @@ async def freeswitch_events(
 
     call_id = request.app.state.calls_by_channel.get(channel_uuid)
     if not call_id:
-        logger.debug({"event": event, "channel_uuid": channel_uuid}, "event for unknown channel")
+        logger.bind(event=event, channel_uuid=channel_uuid).debug("event for unknown channel")
         return {"ok": True}
 
     session: CallSession = request.app.state.live_calls.get(call_id)
