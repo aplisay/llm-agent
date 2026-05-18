@@ -31,7 +31,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
+from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
@@ -248,18 +249,16 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     if not agent:
         raise HTTPException(status_code=404, detail="instance has no agent")
 
-    # Create the WebRTC connection per the SmallWebRTCTransport handshake.
-    from pipecat.transports.network.webrtc_connection import (
-        SmallWebRTCConnection,
-    )
-
     sdp = body.get("sdp")
     sdp_type = body.get("type")
     if not sdp or not sdp_type:
         raise HTTPException(status_code=400, detail="missing sdp / type")
 
     pc = SmallWebRTCConnection()
-    answer = await pc.create_answer({"sdp": sdp, "type": sdp_type})
+    await pc.initialize(sdp, sdp_type)
+    answer = pc.get_answer()
+    if not answer:
+        raise HTTPException(status_code=500, detail="webrtc answer not ready")
 
     transport = SmallWebRTCTransport(
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),

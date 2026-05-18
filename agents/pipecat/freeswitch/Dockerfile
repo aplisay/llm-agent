@@ -18,8 +18,12 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
         pkg-config \
         libssl-dev \
         libwebsockets-dev \
+        libevent-dev \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Source-built FreeSWITCH installs pkg-config metadata outside the default path.
+ENV PKG_CONFIG_PATH=/usr/local/freeswitch/lib/pkgconfig
 
 # Pin the upstream voxcom-us mod_audio_stream to a known commit. The module
 # builds out-of-tree against the installed FreeSWITCH headers.
@@ -27,6 +31,7 @@ ARG MOD_AUDIO_STREAM_REF=main
 RUN git clone https://github.com/voxcom-us/mod_audio_stream.git /usr/src/mod_audio_stream \
     && cd /usr/src/mod_audio_stream \
     && git checkout ${MOD_AUDIO_STREAM_REF} \
+    && git submodule update --init --recursive \
     && mkdir -p build \
     && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
