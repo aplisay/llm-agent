@@ -187,7 +187,7 @@ class TranscriptForwardingObserver(BaseObserver):
             and isinstance(frame, TTSTextFrame)
         ):
             if TTSService is not None and isinstance(src, TTSService):
-                await self._append_bot_chunk(frame.text or _EMPTY, join_with=" ")
+                await self._append_bot_chunk(frame.text or _EMPTY)
             return
 
         if (
@@ -195,36 +195,80 @@ class TranscriptForwardingObserver(BaseObserver):
             and LLMTextFrame is not None
             and isinstance(frame, LLMTextFrame)
         ):
-            # Realtime LLMs stream bot text as LLMTextFrame deltas. Unlike
-            # TTSTextFrame's sentence-sized chunks, these are typically
-            # word- or token-sized; concatenate without inserting a
-            # separator to preserve the original whitespace.
+            # Realtime LLMs stream bot text as LLMTextFrame deltas. Most
+            # providers (OpenAI Realtime, Gemini Live) include leading
+            # whitespace where appropriate; Ultravox does not, so the
+            # appender's smart word-boundary separator backfills missing
+            # spaces ("isquite" → "is quite") without disturbing genuine
+            # contractions or punctuation joins.
             if isinstance(src, LLMService):
-                await self._append_bot_chunk(frame.text or _EMPTY, join_with="")
+                await self._append_bot_chunk(frame.text or _EMPTY)
             return
 
-    async def _append_bot_chunk(self, chunk: str, *, join_with: str) -> None:
+    # Characters at the start of a chunk that should *attach* to the
+    # preceding word — sentence-final punctuation, closing brackets,
+    # and the contraction apostrophe ("it" + "'s"). When the chunk
+    # starts with one of these we suppress the space insertion.
+    _ATTACH_TO_PREVIOUS = frozenset(".,!?;:'\")]}-…”’")
+
+    # Characters at the end of a buffer that should *attach* to the
+    # following word — opening brackets and opening quotes. When the
+    # buffer ends with one of these we suppress the space insertion.
+    _ATTACH_TO_NEXT = frozenset("([{“‘")
+
+    @classmethod
+    def _needs_space_separator(cls, buffer: str, chunk: str) -> bool:
+        """Decide whether to insert a single space between two streaming
+        text deltas.
+
+        Returns True iff:
+          * the buffer does not already end with whitespace,
+          * the chunk does not already start with whitespace,
+          * the chunk's first char is not attach-to-previous punctuation,
+          * the buffer's last char is not attach-to-next punctuation.
+
+        Rationale: Ultravox (and any provider that ships tokenised
+        deltas without word-leading spaces) emits "is", "quite",
+        "pleasant" as three separate chunks. The current concatenation
+        rendered "isquitepleasant"; this rule restores natural word
+        boundaries while leaving genuine contractions intact:
+
+          ``it`` + ``'s``  → no insert  → "it's"        ✓
+          ``it's`` + ``a`` → insert     → "it's a"      ✓
+          ``hello,`` + ``world`` → insert → "hello, world" ✓
+          ``(`` + ``hello`` → no insert → "(hello"      ✓
+          ``hello`` + ``)`` → no insert → "hello)"      ✓
+          ``is`` + ``quite`` → insert   → "is quite"    ✓
+        """
+        if not buffer or not chunk:
+            return False
+        last = buffer[-1]
+        first = chunk[0]
+        if last.isspace() or first.isspace():
+            return False
+        if first in cls._ATTACH_TO_PREVIOUS:
+            return False
+        if last in cls._ATTACH_TO_NEXT:
+            return False
+        return True
+
+    async def _append_bot_chunk(self, chunk: str) -> None:
         if not chunk:
             return
-        if self._bot_buffer and join_with:
-            self._bot_buffer = f"{self._bot_buffer}{join_with}{chunk}"
+        if self._bot_buffer and self._needs_space_separator(self._bot_buffer, chunk):
+            self._bot_buffer = f"{self._bot_buffer} {chunk}"
         else:
-            self._bot_buffer = (self._bot_buffer + chunk).strip() if not join_with else (
-                f"{self._bot_buffer}{join_with}{chunk}".strip()
-            )
-        # For TTSTextFrame (join_with=" ") trim leading/trailing whitespace
-        # so consecutive sentences read naturally; for LLMTextFrame
-        # (join_with="") preserve internal whitespace.
-        if join_with == " ":
-            self._bot_buffer = self._bot_buffer.strip()
-        await self._emit("agent", self._bot_buffer, is_final=False)
+            self._bot_buffer = f"{self._bot_buffer}{chunk}"
+        # Strip on emit only — the buffer keeps trailing whitespace so a
+        # subsequent chunk's smart-separator check sees the actual state.
+        await self._emit("agent", self._bot_buffer.strip(), is_final=False)
 
     async def _finalise_bot_turn(self) -> None:
         """Emit the accumulated bot text as ``isFinal: true`` if there is
         anything pending, then reset.
         """
         if self._bot_buffer:
-            await self._emit("agent", self._bot_buffer, is_final=True)
+            await self._emit("agent", self._bot_buffer.strip(), is_final=True)
         self._bot_buffer = ""
         # The next BotStartedSpeakingFrame will start a fresh turn — but
         # clear the dedupe cache eagerly so an identical interim text in
