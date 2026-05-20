@@ -27,6 +27,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from . import api_client
 from .agent_tools import build_agent_tools
 from .constants import DISCONNECT_REASONS, PLATFORM
+from .recording import RecordingSession
 from .sip_gateway.base import (
     GatewaySession,
     GatewaySessionParams,
@@ -58,6 +59,7 @@ class CallSession:
     _runner: Optional[PipelineRunner] = None
     _wants_hangup: bool = False
     _shutdown: asyncio.Event = field(default_factory=asyncio.Event)
+    _recording: Optional[RecordingSession] = None
 
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling."""
@@ -146,14 +148,38 @@ class CallSession:
             get_transfer_state=lambda: {"state": self.transfer_state.state, "description": self.transfer_state.description},
         )
 
-        task = await build_voice_session(
+        recording_opts = _resolve_recording_options(agent, self.instance)
+        task, audio_buffer = await build_voice_session(
             transport=self.gateway_session.transport,
             model_name=model_name,
             agent=agent,
             metadata=metadata,
             tools=tools,
             system_prompt=system_prompt,
+            enable_recording=recording_opts.enabled,
         )
+
+        # When recording is enabled, build the RecordingSession now and wire
+        # it to the AudioBufferProcessor. We start ``start_recording()`` from
+        # the ``on_client_connected`` handler the gateway transports already
+        # emit, so the recorder follows the same lifecycle as the greeting.
+        if recording_opts.enabled and audio_buffer is not None:
+            self._recording = RecordingSession(
+                call_id=self.call.id,
+                client_encryption_key=recording_opts.key,
+            )
+            self._recording.attach_to(audio_buffer)
+            transport_ref = self.gateway_session.transport
+
+            @transport_ref.event_handler("on_client_connected")
+            async def _start_recorder(*_args, **_kwargs) -> None:
+                await self._recording.start()
+                try:
+                    await audio_buffer.start_recording()
+                except Exception as e:  # noqa: BLE001
+                    logger.bind(call_id=self.call.id).warning(
+                        f"recording: start_recording() raised: {e}"
+                    )
 
         # Forward user transcripts (interim + final) and bot turn finals to
         # the transaction-log path. Uses the platform's provisional-row
@@ -320,6 +346,35 @@ class CallSession:
         finally:
             if timeout_task and not timeout_task.done():
                 timeout_task.cancel()
+            # Finalise the recording once the runner has stopped. The
+            # AudioBufferProcessor has already drained any in-flight frames by
+            # this point, so no more ``on_audio_data`` events will fire.
+            await self._finalise_recording()
+
+    async def _finalise_recording(self) -> None:
+        recording = self._recording
+        if recording is None:
+            return
+        self._recording = None
+        try:
+            result = await recording.stop_and_upload()
+        except Exception as e:  # noqa: BLE001
+            logger.bind(call_id=self.call.id).warning(
+                f"recording: stop_and_upload failed: {e}"
+            )
+            return
+        if result is None:
+            return
+        try:
+            await api_client.set_call_recording_data(
+                self.call.id,
+                result.gcs_object,
+                result.server_generated_key,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(call_id=self.call.id).warning(
+                f"recording: set_call_recording_data failed: {e}"
+            )
 
     async def _run_once(self, agent: dict, model_name: str, system_prompt: str) -> None:
         task, max_duration_secs = await self.prepare_run(agent, model_name, system_prompt)
@@ -403,6 +458,30 @@ class CallSession:
 
 
 # ---- Helpers ----
+
+
+@dataclass
+class _RecordingOptions:
+    enabled: bool
+    key: Optional[str]
+
+
+def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions:
+    """Merge agent + instance-level ``recording`` per the override hierarchy.
+
+    Section 9.4 of the architecture doc says ``recording`` is overridable at
+    instance level; the instance value wins when set, otherwise the agent
+    default applies. ``enabled`` is the gate; ``key`` (when present) selects
+    client-side decryption per section 9.2.
+    """
+    agent_opts = (agent.get("options") or {}).get("recording") or {}
+    instance_opts = (instance.get("recording") if isinstance(instance, dict) else None) or {}
+
+    enabled = instance_opts.get("enabled", agent_opts.get("enabled", False))
+    key = instance_opts.get("key", agent_opts.get("key"))
+    if isinstance(key, str) and not key.strip():
+        key = None
+    return _RecordingOptions(enabled=bool(enabled), key=key)
 
 
 def _parse_duration(value: Any) -> Optional[int]:
