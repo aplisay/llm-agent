@@ -66,10 +66,21 @@ class _DailyGatewaySession(GatewaySession):
             logger.warning(f"daily transport stop failed: {e}")
 
     async def transfer(self, req: TransferRequest) -> None:
-        # Daily exposes blind transfer via SIP REFER under the hood; consultative
-        # acceptance currently lands on blind-bridge per section 6.10. Caller-ID
-        # override and X-Aplisay-Call-Id stamping require Daily's `headers`
-        # parameter on the transfer settings — pass through what the SDK accepts.
+        # Daily exposes blind transfer via SIP REFER under the hood;
+        # consultative transfer needs Daily's multi-room consultation
+        # pattern (a second room + dial-out + cross-room participant
+        # bridging on accept) which we haven't implemented yet. Fail
+        # the consultative operation hard rather than silently
+        # downgrading to blind — bots that expect consult semantics
+        # (transferPrompt, accept/reject, async return) would otherwise
+        # get an incorrect outcome with no signal.
+        if req.operation == "consultative":
+            raise RuntimeError(
+                "Daily gateway does not yet support consultative transfer "
+                "(needs multi-room consultation pattern; see "
+                "docs/call-transfers.md). Use operation='blind' instead, or "
+                "switch to the sipbridge / voiceblender / freeswitch ingress."
+            )
         settings: dict[str, Any] = {"toEndPoint": req.destination}
         if req.caller_id_override:
             settings["displayName"] = req.caller_id_override

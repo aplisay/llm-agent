@@ -1,8 +1,11 @@
 # Cloud Build — Pipecat agent stack (staging).
 #
-# Builds and pushes three images to Artifact Registry:
+# Builds and pushes four images to Artifact Registry:
 #   - freeswitch       (agents/pipecat/freeswitch)
 #   - esl-poller       (agents/pipecat/esl-poller)
+#   - sipbridge        (agents/pipecat/sipbridge — Go SIP UAS, build context
+#                       is the repo root because its Dockerfile COPYs
+#                       agents/pipecat/sipbridge into the image)
 #   - pipecat-worker   (Dockerfile lives in agents/pipecat/, build context is
 #                       the repo root because the worker Dockerfile COPYs
 #                       agents/pipecat into the image)
@@ -59,6 +62,32 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
     id: Push-esl-poller
 
+  # ----- sipbridge -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat/sipbridge into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:staging
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+    id: Push-sipbridge
+
   # ----- pipecat-worker -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat into the image.
@@ -91,6 +120,8 @@ images:
   - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
   - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
 
 options:
@@ -106,4 +137,5 @@ tags:
   - pipecat-agent-staging
   - freeswitch
   - esl-poller
+  - sipbridge
   - pipecat-worker

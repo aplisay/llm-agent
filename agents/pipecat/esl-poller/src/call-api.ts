@@ -230,6 +230,39 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
     }
   });
 
+  /**
+   * Install a media bridge between two existing channels via FreeSWITCH's
+   * ``uuid_bridge`` command. Used by the LiveKit-parity consultative-
+   * transfer flow: after the TransferAgent's ``accept_transfer`` tool
+   * fires on the consult bot, the worker calls this with the original
+   * call's channel uuid as ``:uuid`` and the consult call's channel
+   * uuid as ``peerUuid``. FreeSWITCH joins them in a 2-party media
+   * bridge; the bot WSes get torn down as the channels leave the
+   * Pipecat-attached state.
+   *
+   * Mirrors the sipbridge ``POST /v1/calls/{id}/transfer { mode:
+   * "bridged", target: <other> }`` primitive and voiceblender's
+   * room-based bridge. See ``docs/call-transfers.md``.
+   */
+  app.post("/calls/:uuid/bridge", async (req, res) => {
+    if (!requireToken(req, res)) return;
+    const { uuid } = req.params;
+    const body = req.body as { peerUuid?: string };
+    if (!body?.peerUuid) {
+      res.status(400).json({ error: "peerUuid required" });
+      return;
+    }
+    try {
+      const cmd = `uuid_bridge ${uuid} ${body.peerUuid}`;
+      logger.info({ cmd, uuid, peerUuid: body.peerUuid }, "bridging channels");
+      await client.bgapi(cmd, ESL_TIMEOUT);
+      res.json({ ok: true });
+    } catch (err: any) {
+      logger.error({ err, uuid, peerUuid: body.peerUuid }, "bridge failed");
+      res.status(500).json({ error: err?.message || "bridge failed" });
+    }
+  });
+
   app.post("/calls/:uuid/hangup", async (req, res) => {
     if (!requireToken(req, res)) return;
     const { uuid } = req.params;

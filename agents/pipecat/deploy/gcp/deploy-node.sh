@@ -346,6 +346,15 @@ if wants_component docker; then
     fi
 
     echo -e "\n${YELLOW}Starting containers on VM...${NC}"
+    # The compose file uses profiles to select the SIP ingress
+    # (freeswitch / voiceblender / daily). The .env file on the VM is the
+    # source of truth — COMPOSE_PROFILES picks the profile, SIP_GATEWAY
+    # tells the worker which gateway class to instantiate at startup.
+    # Bring down anything from the previous profile first so we don't end
+    # up with two SIP UAs fighting for UDP/5060.
+    gcloud compute ssh "$NODE_NAME" --zone="$ZONE" --project="$PROJECT_ID" --command="cd ~/$REMOTE_DIR && docker compose --profile freeswitch --profile voiceblender --profile sipbridge --profile daily down --remove-orphans 2>&1" || {
+        echo -e "${YELLOW}Warning: compose down (all profiles) failed, continuing anyway...${NC}" >&2
+    }
     gcloud compute ssh "$NODE_NAME" --zone="$ZONE" --project="$PROJECT_ID" --command="cd ~/$REMOTE_DIR && docker compose pull 2>&1" || {
         echo -e "${YELLOW}Warning: docker compose pull failed, continuing anyway...${NC}" >&2
     }

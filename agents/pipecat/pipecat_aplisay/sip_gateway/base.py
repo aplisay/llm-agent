@@ -87,13 +87,42 @@ class GatewaySessionParams:
 
 @dataclass
 class TransferRequest:
-    """Inputs to a mid-call transfer."""
+    """Inputs to a mid-call transfer.
+
+    Matches the operation taxonomy documented in ``docs/call-transfers.md``:
+
+      - ``blind``        — direct REFER (or bridged fallback when REFER
+                           isn't available, or when ``force_bridged`` is
+                           set).
+      - ``consultative`` — warm transfer: a separate TransferAgent runs
+                           on a fresh leg to the third party and decides
+                           whether to bridge.
+
+    Older internal callers may still pass ``operation="bridged"`` —
+    gateway implementations should treat that as ``blind`` +
+    ``force_bridged=True`` for backwards compatibility.
+    """
 
     destination: str  # number or SIP URI
-    operation: str  # "blind" or "bridged" or "consult"
+    operation: str  # "blind" or "consultative" — see docstring
     caller_id_override: Optional[str] = None
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
+
+    # Consultative-transfer fields. Populated by the call session when
+    # ``operation == "consultative"``; ignored otherwise. Mirrors the
+    # LiveKit transfer-handler contract — see ``docs/call-transfers.md``
+    # and ``transfer_prompts.py``.
+    #
+    # ``transfer_prompt_template`` is the already-resolved template
+    # (precedence: args.transferPrompt → agent.options.transferPrompt →
+    # ``DEFAULT_TRANSFER_PROMPT_TEMPLATE``) as a single string.
+    # ``${parentTranscript}`` placeholders are NOT yet substituted; the
+    # gateway / consult flow does that just before building the
+    # TransferAgent's system prompt so the transcript is as fresh as
+    # possible.
+    transfer_prompt_template: Optional[str] = None
+    parent_transcript: Optional[str] = None
 
 
 class GatewaySession(Protocol):
@@ -112,6 +141,113 @@ class GatewaySession(Protocol):
     async def transfer(self, req: TransferRequest) -> None: ...
 
     async def shutdown(self) -> None: ...
+
+    async def bridge_with(self, other: "GatewaySession") -> None:
+        """Install media relay between this session and ``other``.
+
+        Used to finalise consultative transfers — when the TransferAgent
+        on the consult leg calls ``accept_transfer``, the parent leg
+        and the consult leg get bridged together (bot WSes close, A and
+        C talk directly through the gateway until either BYEs).
+
+        Default implementation raises ``NotImplementedError`` —
+        gateways that support consultative transfer override this with
+        gateway-specific primitives (REST bridge, ESL uuid_bridge, etc.).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support bridge_with "
+            f"(consultative transfer); operation=\"consultative\" should be "
+            f"rejected upstream by ``transfer()``."
+        )
+
+
+@dataclass
+class ConsultPayload:
+    """The warm-transfer state stashed on the gateway between the
+    parent CallSession requesting ``transfer(consultative)`` and the
+    consult leg's media WebSocket arriving at the worker.
+
+    LiveKit-parity contract — see ``docs/call-transfers.md`` and
+    ``pipecat_aplisay/transfer_prompts.py``:
+
+      - ``parent_session_id`` lets the worker's WS handler find the
+        parent CallSession in ``app.state.live_calls`` (so the
+        TransferAgent's accept/reject builtins can drive its
+        transfer_state).
+      - ``transfer_prompt_template`` is the already-resolved template
+        (precedence: args.transferPrompt → agent.options.transferPrompt
+        → DEFAULT_TRANSFER_PROMPT_TEMPLATE). Still contains
+        ``${parentTranscript}`` — the WS handler substitutes that just
+        before passing the prompt to the TransferAgent's CallSession.
+      - ``parent_transcript`` is the snapshot of the parent's chat
+        history at the moment ``transfer(consultative)`` was called,
+        rendered as ``> caller:`` / ``> agent:`` lines.
+
+    The same dataclass is reused across the FreeSWITCH, sipbridge, and
+    voiceblender gateways. Each gateway's ``_do_consultative`` calls
+    ``register_consult_session`` to stash it and the worker's per-
+    gateway WS handler reads it via ``consult_payload``.
+    """
+
+    parent_session_id: str
+    transfer_prompt_template: str
+    parent_transcript: str
+
+
+class ConsultStateMixin:
+    """Shared state machine for warm-transfer (consultative) flows.
+
+    Adds three small maps to a gateway:
+
+      * ``_consult_payloads``  — pending consult-session payloads keyed
+        by ``consult_session_id``.
+      * ``_consult_call_ids``  — per-parent-session, the bridge call
+        id of the consult leg (so accept_transfer can target it for
+        the bridged-relay finalisation).
+      * (gateway-specific) per-WS bookkeeping is kept on the gateway
+        itself.
+
+    Inheriting gateways must call ``_init_consult_state()`` from their
+    constructor (Python doesn't run mixin ``__init__`` automatically
+    unless we use a strict cooperative-multiple-inheritance pattern).
+    """
+
+    def _init_consult_state(self) -> None:
+        self._consult_payloads: dict[str, ConsultPayload] = {}
+        self._consult_call_ids: dict[str, str] = {}
+
+    def register_consult_session(
+        self,
+        *,
+        consult_session_id: str,
+        parent_session_id: str,
+        transfer_prompt_template: str,
+        parent_transcript: str,
+    ) -> None:
+        self._consult_payloads[consult_session_id] = ConsultPayload(
+            parent_session_id=parent_session_id,
+            transfer_prompt_template=transfer_prompt_template,
+            parent_transcript=parent_transcript,
+        )
+
+    def consult_payload(self, session_id: str) -> Optional[ConsultPayload]:
+        return self._consult_payloads.get(session_id)
+
+    def consult_parent(self, session_id: str) -> Optional[str]:
+        p = self._consult_payloads.get(session_id)
+        return p.parent_session_id if p else None
+
+    def clear_consult_session(self, consult_session_id: str) -> None:
+        self._consult_payloads.pop(consult_session_id, None)
+
+    def set_consult_call_id(self, session_id: str, consult_call_id: str) -> None:
+        self._consult_call_ids[session_id] = consult_call_id
+
+    def get_consult_call_id(self, session_id: str) -> Optional[str]:
+        return self._consult_call_ids.get(session_id)
+
+    def clear_consult_call_id(self, session_id: str) -> None:
+        self._consult_call_ids.pop(session_id, None)
 
 
 class SipGateway(Protocol):

@@ -19,6 +19,8 @@ from .base import (
 )
 from .daily_gateway import DailySipGateway
 from .freeswitch_gateway import FreeswitchSipGateway
+from .sipbridge_gateway import SipBridgeSipGateway
+from .voiceblender_gateway import VoiceblenderSipGateway
 
 __all__ = [
     "SipGateway",
@@ -28,4 +30,6 @@ __all__ = [
     "GatewaySessionParams",
     "DailySipGateway",
     "FreeswitchSipGateway",
+    "SipBridgeSipGateway",
+    "VoiceblenderSipGateway",
 ]

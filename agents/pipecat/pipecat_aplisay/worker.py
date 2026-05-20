@@ -12,9 +12,14 @@ Endpoints:
   every call. The start event metadata drives inbound dispatch.
 - ``POST /freeswitch/events`` — esl-poller webhook for channel-level events
   (CHANNEL_HANGUP, CHANNEL_BRIDGE, CHANNEL_ANSWER).
+- ``WS /voiceblender/agent/{session_id}`` — voiceblender opens this when a
+  leg is being attached to a Pipecat agent (after ``POST /v1/legs/{id}/agent``
+  on the voiceblender side). Wire format is stock Pipecat protobuf at
+  16 kHz mono.
 
 The worker remains gateway-agnostic above the ``sip_gateway`` indirection;
-``SIP_GATEWAY=daily|freeswitch`` selects the implementation at startup.
+``SIP_GATEWAY=daily|freeswitch|voiceblender`` selects the implementation at
+startup.
 """
 
 from __future__ import annotations
@@ -43,6 +48,9 @@ from . import api_client
 from .auth import require_dispatch_token, verify_join_token
 from .call_session import (
     CallSession,
+    TransferState,
+    build_transfer_agent_dict,
+    setup_consult_call,
     setup_inbound_call,
     setup_outbound_call,
 )
@@ -53,13 +61,17 @@ from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
     DailySipGateway,
     FreeswitchSipGateway,
+    GatewaySessionParams,
     InboundCallContext,
+    SipBridgeSipGateway,
+    VoiceblenderSipGateway,
 )
+from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch.
+    # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
     if gateway_name == "daily":
         app.state.sip_gateway = DailySipGateway()
@@ -70,6 +82,29 @@ async def lifespan(app: FastAPI):
             await gw.start()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"freeswitch gateway start failed at boot: {e}")
+    elif gateway_name == "sipbridge":
+        sb_gw = SipBridgeSipGateway()
+        app.state.sip_gateway = sb_gw
+        try:
+            await sb_gw.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"sipbridge gateway start failed at boot: {e}")
+    elif gateway_name == "voiceblender":
+        vb_gw = VoiceblenderSipGateway()
+        app.state.sip_gateway = vb_gw
+        # The gateway needs two callbacks back into worker-level state:
+        # (a) agent resolution from VSI ``leg.ringing`` events (mirrors the
+        # FreeSWITCH inbound-WS lookup and the Daily dialin webhook), and
+        # (b) session lookup so leg.transfer_* events can drive the
+        # in-process transfer_state machine on the matching CallSession.
+        vb_gw.set_agent_resolver(_voiceblender_resolve_agent)
+        vb_gw.set_session_lookup(
+            lambda sid: _voiceblender_session_lookup(app, sid)
+        )
+        try:
+            await vb_gw.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"voiceblender gateway start failed at boot: {e}")
     else:
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
@@ -80,6 +115,144 @@ async def lifespan(app: FastAPI):
         await flush_invocation_logs()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"invocation log flush failed on shutdown: {e}")
+    # Stop the VSI subscriber cleanly if voiceblender is the active gateway.
+    gw_obj = getattr(app.state, "sip_gateway", None)
+    if isinstance(gw_obj, VoiceblenderSipGateway):
+        try:
+            await gw_obj.stop()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"voiceblender gateway stop failed: {e}")
+    # sipbridge has no long-lived connections; stop() is a no-op but
+    # called for symmetry / future-proofing.
+    if isinstance(gw_obj, SipBridgeSipGateway):
+        try:
+            await gw_obj.stop()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"sipbridge gateway stop failed: {e}")
+
+
+async def _voiceblender_resolve_agent(
+    event: dict,
+) -> Optional[tuple[dict, dict]]:
+    """Agent lookup for an inbound voiceblender ``leg.ringing`` VSI event.
+
+    Same lookup chain as Daily dial-in and FreeSWITCH inbound: phone
+    registration → trunk+number → number. Returns ``(instance, agent)`` or
+    ``None`` if no agent is configured for the dialled number.
+    """
+    headers = event.get("custom_headers") or {}
+    to_number = event.get("to")
+    aplisay_id = headers.get("X-Aplisay-Trunk")
+    phone_registration = headers.get("X-Aplisay-PhoneRegistration")
+
+    instance = None
+    if phone_registration:
+        endpoint = await api_client.get_phone_endpoint_by_id(phone_registration)
+        if endpoint and endpoint.get("instanceId"):
+            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
+    if not instance and to_number:
+        endpoint = await api_client.get_phone_endpoint_by_number(
+            to_number, aplisay_id
+        )
+        if endpoint and endpoint.get("instanceId"):
+            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
+    if not instance and to_number:
+        instance = await api_client.get_instance_by_number(to_number)
+    if not instance:
+        return None
+    agent = instance.get("Agent")
+    if not agent:
+        return None
+    return instance, agent
+
+
+def _voiceblender_session_lookup(app: FastAPI, session_id: str):
+    """Find the live ``CallSession`` matching a voiceblender ``session_id``.
+
+    ``live_calls`` is keyed by call.id (which is *not* the session_id), so
+    we walk the values; the set is small (single-digit count per worker in
+    typical operation) and the lookup is rare (only fires on
+    ``leg.transfer_*`` events).
+    """
+    for s in app.state.live_calls.values():
+        if getattr(s, "session_id", None) == session_id:
+            return s
+    return None
+
+
+async def _sipbridge_resolve_agent_from_headers(
+    websocket: WebSocket,
+) -> Optional[tuple[dict, dict, InboundCallContext]]:
+    """Agent lookup for an inbound sipbridge WS.
+
+    sipbridge passes SIP-derived metadata as request headers on the WS
+    opening handshake (X-Sipbridge-Call-ID, X-Sipbridge-From,
+    X-Sipbridge-To, plus the X-Aplisay-* contract from section 6 of
+    docs/livekit-agent-architecture.md). We run the same agent lookup
+    chain Daily dial-in and FreeSWITCH use, then return ``(instance,
+    agent, ctx)`` with a fully-populated InboundCallContext.
+
+    Returns ``None`` if no agent maps to the dialled number.
+    """
+    h = websocket.headers
+    bridge_call_id = h.get("x-sipbridge-call-id") or h.get("X-Sipbridge-Call-ID")
+    from_uri = h.get("x-sipbridge-from") or ""
+    to_uri = h.get("x-sipbridge-to") or ""
+    aplisay_id = h.get("x-aplisay-trunk")
+    phone_registration = h.get("x-aplisay-phoneregistration")
+    aplisay_call_id = h.get("x-aplisay-call-id")
+    b2bua_ip = h.get("x-lk-realip")
+    b2bua_transport = h.get("x-lk-transport")
+
+    # Extract bare numbers from SIP URIs. sipgo gives us
+    # "sip:+44...@host" form; strip to the user portion.
+    def _user_of(uri: str) -> str:
+        if not uri:
+            return ""
+        s = uri
+        if s.startswith("<") and s.endswith(">"):
+            s = s[1:-1]
+        if s.lower().startswith("sip:"):
+            s = s[4:]
+        if "@" in s:
+            s = s.split("@", 1)[0]
+        return s
+
+    from_number = _user_of(from_uri)
+    to_number = _user_of(to_uri)
+
+    instance = None
+    if phone_registration:
+        endpoint = await api_client.get_phone_endpoint_by_id(phone_registration)
+        if endpoint and endpoint.get("instanceId"):
+            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
+    if not instance and to_number:
+        endpoint = await api_client.get_phone_endpoint_by_number(
+            to_number, aplisay_id
+        )
+        if endpoint and endpoint.get("instanceId"):
+            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
+    if not instance and to_number:
+        instance = await api_client.get_instance_by_number(to_number)
+    if not instance:
+        return None
+    agent = instance.get("Agent")
+    if not agent:
+        return None
+
+    session_id = f"sb-{uuid.uuid4()}"
+    ctx = InboundCallContext(
+        session_id=session_id,
+        called_id=to_number,
+        caller_id=from_number,
+        aplisay_id=aplisay_id,
+        phone_registration=phone_registration,
+        b2bua_gateway_ip=b2bua_ip,
+        b2bua_gateway_transport=b2bua_transport,
+        call_id=aplisay_call_id,
+        raw={"bridge_call_id": bridge_call_id},
+    )
+    return instance, agent, ctx
 
 
 app = FastAPI(lifespan=lifespan)
@@ -580,6 +753,95 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
+    # Consultative warm-transfer leg? (LiveKit-parity contract — see
+    # ``docs/call-transfers.md``.) ``FreeswitchSipGateway._do_consultative``
+    # uses ``channel_uuid`` as the session_id key, so we look it up
+    # directly against the start event's channel uuid.
+    consult_payload = sip_gateway.consult_payload(start.channel_uuid)
+    if consult_payload is not None:
+        from .transfer_prompts import substitute_parent_transcript
+
+        parent = _voiceblender_session_lookup(
+            websocket.app, consult_payload.parent_session_id
+        )
+        if parent is None:
+            logger.bind(
+                parent_session_id=consult_payload.parent_session_id,
+                channel_uuid=start.channel_uuid,
+            ).warning("freeswitch consult: parent session no longer live")
+            await websocket.close(code=1011)
+            sip_gateway.clear_consult_session(start.channel_uuid)
+            return
+
+        transfer_agent_prompt = substitute_parent_transcript(
+            consult_payload.transfer_prompt_template,
+            consult_payload.parent_transcript,
+        )
+        transfer_agent = build_transfer_agent_dict(
+            parent_agent=parent.agent,
+            transfer_agent_prompt=transfer_agent_prompt,
+        )
+
+        # State transition on the parent: third party has answered.
+        parent.transfer_state = TransferState(
+            "talking", "Speaking with transfer target..."
+        )
+
+        # The InboundCallContext for the consult uses the channel_uuid
+        # as session_id so setup_inbound (gateway hook) and FreeSWITCH's
+        # register_inbound_session find the right channel.
+        ctx = InboundCallContext(
+            session_id=start.channel_uuid,
+            called_id=start.called_id,
+            caller_id=parent.call.callerId,
+            aplisay_id=None,
+            phone_registration=None,
+            b2bua_gateway_ip=None,
+            b2bua_gateway_transport=None,
+            call_id=None,
+            raw={
+                "transport": transport,
+                "channel_uuid": start.channel_uuid,
+                "consult_of": consult_payload.parent_session_id,
+                "start_event": start.raw,
+            },
+        )
+
+        try:
+            consult_session = await setup_consult_call(
+                sip_gateway,
+                ctx,
+                instance=parent.instance,
+                transfer_agent=transfer_agent,
+                parent=parent,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(channel_uuid=start.channel_uuid).error(
+                f"freeswitch consult setup_consult_call failed: {e}"
+            )
+            parent.transfer_state = TransferState(
+                "failed", f"Consult setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_consult_session(start.channel_uuid)
+            return
+        websocket.app.state.live_calls[consult_session.call.id] = consult_session
+        websocket.app.state.calls_by_channel[start.channel_uuid] = consult_session.call.id
+
+        try:
+            await _run_session(
+                websocket.app, consult_session, consult_session.call.id
+            )
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if parent.transfer_state.state == "talking":
+                parent.transfer_state = TransferState(
+                    "rejected", "Transfer target disconnected"
+                )
+            sip_gateway.clear_consult_session(start.channel_uuid)
+        return
+
     # Lookup chain — section 6.2 / 6.3.
     instance = None
     if start.aplisay_phone_registration:
@@ -680,6 +942,468 @@ async def freeswitch_events(
         await session.gateway_session.shutdown()
 
     return {"ok": True}
+
+
+# ---- Voiceblender WebSocket (Pipecat protobuf transport) ----
+
+
+@app.websocket("/voiceblender/agent/{session_id}")
+async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
+    """WebSocket the voiceblender process opens after ``POST /v1/legs/{id}/agent``.
+
+    Wire format is stock Pipecat protobuf at 16 kHz mono, so we use the
+    upstream :class:`ProtobufFrameSerializer` (no custom serializer to write
+    — voiceblender speaks the same ``pipecat.Frame`` proto its own
+    ``examples/pipecat-agent/bot.py`` does, just from Go instead of Python).
+
+    Inbound vs outbound branch on the pre-registered :class:`PendingAttach`:
+
+    - **Inbound** (``leg.ringing`` -> agent resolved by VSI subscriber, then
+      ``POST /v1/legs/{id}/answer`` + ``POST /v1/legs/{id}/agent``): we own
+      the call lifecycle. Build a CallSession via :func:`setup_inbound_call`
+      and run the pipeline in this handler, matching the FreeSWITCH inbound
+      flow exactly except the serializer differs.
+
+    - **Outbound** (``POST /dispatch`` -> ``gateway.originate()`` -> we POST
+      ``/v1/legs`` to voiceblender -> voiceblender dials us): the dispatch
+      task owns the call lifecycle. We just need to register the
+      ``_VbGatewaySession`` so ``originate()`` returns, then hold the
+      WebSocket open until voiceblender signals ``leg.disconnected`` via
+      VSI.
+    """
+    await websocket.accept()
+    sip_gateway = websocket.app.state.sip_gateway
+    if not isinstance(sip_gateway, VoiceblenderSipGateway):
+        logger.warning("/voiceblender/agent invoked but SIP_GATEWAY != voiceblender")
+        await websocket.close(code=1011)
+        return
+
+    pending = sip_gateway.pending_attaches.get(session_id)
+    if pending is None:
+        logger.bind(session_id=session_id).warning(
+            "voiceblender WS connected with no pending attach — rejecting"
+        )
+        await websocket.close(code=1011)
+        return
+
+    serializer = ProtobufFrameSerializer()
+    transport = FastAPIWebsocketTransport(
+        websocket=websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,
+            serializer=serializer,
+        ),
+    )
+
+    # Stamp transport + leg_id onto the inbound ctx so setup_inbound (called
+    # from setup_inbound_call below, or directly for the outbound path) has
+    # what it needs to build the _VbGatewaySession.
+    pending.inbound_ctx.raw["transport"] = transport
+    pending.inbound_ctx.raw["leg_id"] = pending.leg_id
+    sip_gateway.pending_attaches.pop(session_id, None)
+
+    is_inbound = bool(pending.agent)
+
+    # Consultative warm-transfer leg? (LiveKit-parity contract — see
+    # ``docs/call-transfers.md``.) ``_do_consultative`` populates BOTH
+    # the consult payload AND a regular pending-attach with empty
+    # agent, so the existing inbound/outbound discriminator falls
+    # through to the outbound path naturally. We check before either
+    # branch so the TransferAgent CallSession gets built.
+    consult_payload = sip_gateway.consult_payload(session_id)
+
+    if is_inbound:
+        # Inbound: create the CallSession ourselves and drive the runner.
+        try:
+            session = await setup_inbound_call(
+                sip_gateway,
+                pending.inbound_ctx,
+                instance=pending.instance,
+                agent=pending.agent,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"voiceblender setup_inbound_call failed: {e}"
+            )
+            await websocket.close(code=1011)
+            return
+        websocket.app.state.live_calls[session.call.id] = session
+        try:
+            await _run_session(websocket.app, session, session.call.id)
+        except WebSocketDisconnect:
+            pass
+        return
+
+    if consult_payload is not None:
+        # Consultative warm-transfer leg. Spawn a TransferAgent
+        # CallSession bound to the parent's agent's LLM provider but
+        # with a bespoke prompt + accept/reject tool surface. Mirrors
+        # the sipbridge consult flow exactly — only the gateway
+        # underneath differs.
+        from .transfer_prompts import substitute_parent_transcript
+
+        parent = _voiceblender_session_lookup(
+            websocket.app, consult_payload.parent_session_id
+        )
+        if parent is None:
+            logger.bind(
+                parent_session_id=consult_payload.parent_session_id,
+                session_id=session_id,
+            ).warning("voiceblender consult: parent session no longer live")
+            await websocket.close(code=1011)
+            sip_gateway.clear_consult_session(session_id)
+            return
+
+        transfer_agent_prompt = substitute_parent_transcript(
+            consult_payload.transfer_prompt_template,
+            consult_payload.parent_transcript,
+        )
+        transfer_agent = build_transfer_agent_dict(
+            parent_agent=parent.agent,
+            transfer_agent_prompt=transfer_agent_prompt,
+        )
+
+        # State transition: dialling → talking on the parent (the WS
+        # arrival means the third party has answered).
+        parent.transfer_state = TransferState(
+            "talking", "Speaking with transfer target..."
+        )
+
+        try:
+            consult_session = await setup_consult_call(
+                sip_gateway,
+                pending.inbound_ctx,
+                instance=parent.instance,
+                transfer_agent=transfer_agent,
+                parent=parent,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"voiceblender consult setup_consult_call failed: {e}"
+            )
+            parent.transfer_state = TransferState(
+                "failed", f"Consult setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_consult_session(session_id)
+            return
+        websocket.app.state.live_calls[consult_session.call.id] = consult_session
+        try:
+            await _run_session(
+                websocket.app, consult_session, consult_session.call.id
+            )
+        except WebSocketDisconnect:
+            pass
+        finally:
+            # No explicit accept/reject → parent stays in `talking` → bump
+            # to `rejected` so transfer_status surfaces meaningful state.
+            if parent.transfer_state.state == "talking":
+                parent.transfer_state = TransferState(
+                    "rejected", "Transfer target disconnected"
+                )
+            sip_gateway.clear_consult_session(session_id)
+        return
+
+    # Outbound path. Register the gateway session so the originate() future
+    # in the dispatch task resolves; then block until voiceblender reports
+    # the leg gone, holding the WebSocket open while the dispatch task's
+    # PipelineRunner drives this transport.
+    from .sip_gateway import GatewaySessionParams
+
+    try:
+        await sip_gateway.setup_inbound(
+            pending.inbound_ctx, GatewaySessionParams(session_id=session_id)
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.bind(session_id=session_id).error(
+            f"voiceblender outbound setup_inbound failed: {e}"
+        )
+        await websocket.close(code=1011)
+        return
+
+    done_event = sip_gateway.wait_for_leg_done(session_id)
+    try:
+        await done_event.wait()
+    except WebSocketDisconnect:
+        pass
+    except asyncio.CancelledError:
+        # FastAPI cancels the handler when the WS closes — propagate.
+        raise
+    finally:
+        sip_gateway.release_leg_done(session_id)
+
+
+# ---- sipbridge WebSocket (Pipecat protobuf transport) ----
+
+
+@app.websocket("/sipbridge/agent/{session_id}")
+async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
+    """WebSocket the sipbridge container opens after accepting a SIP
+    INVITE.
+
+    Same wire format as the voiceblender path (stock Pipecat protobuf
+    at 16 kHz mono via :class:`ProtobufFrameSerializer`). The difference
+    is how dispatch metadata reaches us: sipbridge attaches the SIP-side
+    From/To/X-Aplisay-* headers as HTTP request headers on the opening
+    handshake — there is no separate event channel.
+
+    ``session_id`` in the URL is a token the bridge generated from the
+    SIP Call-ID (or X-Aplisay-Call-Id if the upstream B2BUA stamped
+    one); we treat it as opaque and use it as the worker-side
+    ``session_id`` for the CallSession.
+    """
+    sip_gateway = websocket.app.state.sip_gateway
+    if not isinstance(sip_gateway, SipBridgeSipGateway):
+        # 1011 = server unable to fulfil — accept-then-close is the only
+        # way to surface a reason on the WS layer. (HTTP-status WS
+        # rejects aren't well-supported by clients in practice.)
+        await websocket.accept()
+        logger.warning("/sipbridge/agent invoked but SIP_GATEWAY != sipbridge")
+        await websocket.close(code=1011)
+        return
+
+    is_outbound = sip_gateway.is_outbound(session_id)
+    bridge_call_id = (
+        websocket.headers.get("x-sipbridge-call-id")
+        or websocket.headers.get("X-Sipbridge-Call-ID")
+        or ""
+    )
+
+    if is_outbound:
+        # Two sub-flows here:
+        #
+        #   (a) Plain outbound originate (POST /dispatch → setup_outbound_call):
+        #       dispatch already owns the CallSession + runner, waiting
+        #       on the originate() future. We just register the
+        #       gateway session (which resolves the future) and hold
+        #       the WS alive while dispatch's runner drives it.
+        #
+        #   (b) Warm-transfer consult (Phase C): bot_A initiated a
+        #       consult via transfer(operation="consult"). The gateway
+        #       has recorded a parent_session_id for this consult; we
+        #       build a fresh CallSession using the parent's agent +
+        #       instance and run a second pipeline here in the
+        #       handler (same shape as inbound).
+        parent_session_id = sip_gateway.consult_parent(session_id)
+
+        await websocket.accept()
+        serializer = ProtobufFrameSerializer()
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=serializer,
+            ),
+        )
+        try:
+            sip_gateway.register_inbound_session(
+                session_id=session_id,
+                bridge_call_id=bridge_call_id,
+                transport=transport,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"sipbridge outbound register_inbound_session failed: {e}"
+            )
+            await websocket.close(code=1011)
+            return
+
+        if parent_session_id:
+            # LiveKit-parity warm-transfer consultation. The consult
+            # bot is NOT a clone of the parent — it's a purpose-built
+            # TransferAgent with:
+            #   - a bespoke system prompt resolved per the LiveKit
+            #     precedence chain (args → agent options → default
+            #     template), with ``${parentTranscript}`` substituted
+            #     for the parent's running chat history at the moment
+            #     the transfer was requested;
+            #   - a restricted tool surface (accept_transfer /
+            #     reject_transfer only — no nested transfers, no
+            #     hangup);
+            #   - the parent CallSession recorded on the consult
+            #     session so the accept/reject builtins can drive
+            #     the parent's transfer_state.
+            #
+            # See ``docs/call-transfers.md``, ``transfer_prompts.py``,
+            # and ``call_session.py:_builtin_consult_accept/reject``.
+            from .transfer_prompts import substitute_parent_transcript
+
+            parent = _voiceblender_session_lookup(websocket.app, parent_session_id)
+            consult_parent = parent
+            if consult_parent is None:
+                logger.bind(
+                    parent_session_id=parent_session_id,
+                    session_id=session_id,
+                ).warning("sipbridge consult: parent session no longer live")
+                await websocket.close(code=1011)
+                sip_gateway.unregister_session(session_id)
+                sip_gateway.clear_consult_session(session_id)
+                return
+
+            payload = sip_gateway.consult_payload(session_id)
+            if payload is None:
+                logger.bind(session_id=session_id).error(
+                    "sipbridge consult: payload missing on WS arrival"
+                )
+                await websocket.close(code=1011)
+                sip_gateway.unregister_session(session_id)
+                return
+
+            # Build the TransferAgent's effective system prompt by
+            # substituting ${parentTranscript} now (the latest possible
+            # moment before the consult bot reads its prompt — matches
+            # LiveKit transfer-handler.ts:634-637). The agent-dict
+            # assembly is gateway-agnostic and shared with the
+            # voiceblender + freeswitch consult arms.
+            transfer_agent_prompt = substitute_parent_transcript(
+                payload.transfer_prompt_template,
+                payload.parent_transcript,
+            )
+            transfer_agent = build_transfer_agent_dict(
+                parent_agent=consult_parent.agent,
+                transfer_agent_prompt=transfer_agent_prompt,
+            )
+
+            ctx = InboundCallContext(
+                session_id=session_id,
+                called_id=None,
+                caller_id=consult_parent.call.callerId,
+                aplisay_id=None,
+                phone_registration=None,
+                b2bua_gateway_ip=None,
+                b2bua_gateway_transport=None,
+                call_id=None,
+                raw={
+                    "transport": transport,
+                    "bridge_call_id": bridge_call_id,
+                    "consult_of": parent_session_id,
+                },
+            )
+
+            # State transition: dialling → talking (the WS arriving
+            # means the third party has answered and our bot is now
+            # speaking with them). Matches LiveKit
+            # transfer-handler.ts:767.
+            consult_parent.transfer_state = TransferState(
+                "talking", "Speaking with transfer target..."
+            )
+
+            try:
+                consult_session = await setup_consult_call(
+                    sip_gateway,
+                    ctx,
+                    instance=consult_parent.instance,
+                    transfer_agent=transfer_agent,
+                    parent=consult_parent,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.bind(session_id=session_id).error(
+                    f"sipbridge consult setup failed: {e}"
+                )
+                consult_parent.transfer_state = TransferState(
+                    "failed", f"Consult setup failed: {e}"
+                )
+                await websocket.close(code=1011)
+                sip_gateway.unregister_session(session_id)
+                sip_gateway.clear_consult_session(session_id)
+                return
+            websocket.app.state.live_calls[consult_session.call.id] = consult_session
+            try:
+                await _run_session(
+                    websocket.app, consult_session, consult_session.call.id
+                )
+            except WebSocketDisconnect:
+                pass
+            finally:
+                # If the consult bot's WS closes without an explicit
+                # accept/reject (e.g. the third party hung up), record
+                # a generic rejection on the parent so transfer_status
+                # surfaces something meaningful. Matches LiveKit
+                # transfer-handler.ts:796-801.
+                if consult_parent.transfer_state.state == "talking":
+                    consult_parent.transfer_state = TransferState(
+                        "rejected", "Transfer target disconnected"
+                    )
+                sip_gateway.unregister_session(session_id)
+                sip_gateway.clear_consult_session(session_id)
+            return
+
+        # Plain outbound — just wait for done.
+        done_event = sip_gateway.wait_for_leg_done(session_id)
+        try:
+            await done_event.wait()
+        except WebSocketDisconnect:
+            pass
+        except asyncio.CancelledError:
+            raise
+        finally:
+            sip_gateway.release_leg_done(session_id)
+            sip_gateway.unregister_session(session_id)
+        return
+
+    # Inbound flow.
+    # Resolve the agent BEFORE accepting the WS so we can fail clean.
+    resolved = await _sipbridge_resolve_agent_from_headers(websocket)
+    if resolved is None:
+        await websocket.accept()
+        logger.warning(
+            "sipbridge WS: no agent for inbound call "
+            f"(to={websocket.headers.get('x-sipbridge-to')!r})"
+        )
+        await websocket.close(code=1011)
+        return
+    instance, agent, ctx = resolved
+
+    await websocket.accept()
+
+    serializer = ProtobufFrameSerializer()
+    transport = FastAPIWebsocketTransport(
+        websocket=websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,
+            serializer=serializer,
+        ),
+    )
+
+    # Stamp the transport + bridge_call_id onto the inbound ctx so
+    # setup_inbound (which the gateway's register_inbound_session
+    # effectively bypasses) wouldn't fail; setup_inbound_call calls
+    # gateway.setup_inbound(...) which we still satisfy.
+    ctx.raw["transport"] = transport
+
+    # Build the CallSession via the normal inbound path.
+    try:
+        session = await setup_inbound_call(
+            sip_gateway, ctx, instance=instance, agent=agent
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.bind(session_id=ctx.session_id).error(
+            f"sipbridge setup_inbound_call failed: {e}"
+        )
+        await websocket.close(code=1011)
+        return
+
+    # Register the bridge_call_id → session mapping so REST hangup /
+    # transfer targets the right bridge resource.
+    sip_gateway.register_inbound_session(
+        session_id=ctx.session_id,
+        bridge_call_id=bridge_call_id,
+        transport=transport,
+    )
+    websocket.app.state.live_calls[session.call.id] = session
+
+    try:
+        await _run_session(websocket.app, session, session.call.id)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sip_gateway.unregister_session(ctx.session_id)
 
 
 # ---- Daily REST helper ----

@@ -178,7 +178,7 @@ async def build_voice_session(
     tools: list[dict],
     system_prompt: str,
     enable_recording: bool = False,
-) -> tuple[PipelineTask, Optional[AudioBufferProcessor]]:
+) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext]:
     """Construct a configured ``PipelineTask`` for the call.
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
@@ -186,6 +186,12 @@ async def build_voice_session(
     ``lib/recording/CONTRACT.md``). The caller owns its lifecycle:
     ``await processor.start_recording()`` once the session is up and
     ``await processor.stop_recording()`` on shutdown.
+
+    The ``LLMContext`` is returned alongside the task because callers
+    (specifically :class:`CallSession`) need a handle to extract the
+    running chat history for the LiveKit-parity consultative-transfer
+    flow — see ``CallSession.get_parent_transcript()`` and
+    ``docs/call-transfers.md`` for the ``${parentTranscript}`` contract.
 
     The caller wires the returned task into a ``PipelineRunner`` and starts it.
     """
@@ -202,14 +208,14 @@ async def build_voice_session(
         audio_buffer = AudioBufferProcessor(num_channels=2)
 
     if mode == "realtime":
-        task = await _build_realtime(
+        task, context = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
         )
     else:
-        task = await _build_pipeline(
+        task, context = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
         )
-    return task, audio_buffer
+    return task, audio_buffer, context
 
 
 async def _build_realtime(
@@ -220,7 +226,7 @@ async def _build_realtime(
     tools: list[dict],
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
-) -> PipelineTask:
+) -> tuple[PipelineTask, LLMContext]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
 
@@ -478,7 +484,7 @@ async def _build_realtime(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    return PipelineTask(pipeline, params=PipelineParams())
+    return PipelineTask(pipeline, params=PipelineParams()), context
 
 
 async def _build_pipeline(
@@ -489,7 +495,7 @@ async def _build_pipeline(
     tools: list[dict],
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
-) -> PipelineTask:
+) -> tuple[PipelineTask, LLMContext]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
     stt_opts = options.get("stt") or {}
@@ -605,4 +611,4 @@ async def _build_pipeline(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    return PipelineTask(pipeline, params=PipelineParams())
+    return PipelineTask(pipeline, params=PipelineParams()), context

@@ -16,7 +16,7 @@ to the runtime.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
 
@@ -100,12 +100,19 @@ def build_agent_tools(
     on_hangup: Callable[[], Awaitable[None]],
     on_transfer: Callable[[dict], Awaitable[Any]],
     get_transfer_state: Callable[[], dict],
+    extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
 
     Each entry is ``{schema: {name, description, properties, required}, execute}``
     and the voice-session layer adapts them to whatever LLMService is in use
     (Pipecat exposes ``FunctionSchema`` / ``register_function`` per service).
+
+    ``extra_builtins`` is an optional map of additional platform-built-in
+    function names to their handler coroutines. Used by the consultative-
+    transfer flow to wire ``accept_transfer`` / ``reject_transfer`` onto
+    the TransferAgent's bot session — see
+    ``CallSession._build_consult_transfer_agent_tools``.
     """
     functions = agent.get("functions") or []
     keys = agent.get("keys") or []
@@ -120,6 +127,8 @@ def build_agent_tools(
         "transfer": _builtin_factory_transfer(on_transfer),
         "transfer_status": _builtin_factory_transfer_status(get_transfer_state),
     }
+    if extra_builtins:
+        builtins.update(extra_builtins)
 
     descriptors: list[dict] = []
     for fn_def in functions:

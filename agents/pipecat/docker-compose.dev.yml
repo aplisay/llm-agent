@@ -1,34 +1,43 @@
 #
 # Pipecat agent stack — DEVELOPMENT layout.
 #
-# Two containers under Docker (freeswitch + esl-poller); the pipecat-worker
-# runs in your terminal foreground via `uv run python -m pipecat_aplisay`. That
-# gives you live reload, tracebacks in the foreground, and easy debugger
-# attachment without round-tripping through a container build.
+# Containers under Docker provide the SIP/media ingress; the pipecat-worker
+# runs in your terminal foreground via `uv run python -m pipecat_aplisay`.
+# That gives you live reload, tracebacks in the foreground, and easy
+# debugger attachment without round-tripping through a container build.
+#
+# Profiles match the production compose file:
+#
+#   `--profile freeswitch`    freeswitch + esl-poller containers
+#   `--profile voiceblender`  voiceblender container only
+#   `--profile sipbridge`     sipbridge container only
 #
 # Networking model:
-# - Linux: `network_mode: host` works as expected — the containers share the
-#   host's loopback, so `127.0.0.1` resolves the same for everyone (worker on
-#   host, FS in container, esl-poller in container).
+# - Linux: `network_mode: host` works as expected — the containers share
+#   the host's loopback, so `127.0.0.1` resolves the same for everyone
+#   (worker on host, FS / voiceblender in container).
 # - macOS / Windows (Docker Desktop): `network_mode: host` shares the
-#   Docker VM's loopback, NOT the host's. Containers reach the host worker via
-#   `host.docker.internal`; the host reaches container ports via `localhost`
-#   if they're explicitly published. The PIPECAT_WS_URL and
-#   WORKER_EVENT_WEBHOOK env vars must be set to `host.docker.internal:8082`
-#   on those platforms — see the README section "Running the dev stack".
+#   Docker VM's loopback, NOT the host's. Containers reach the host worker
+#   via `host.docker.internal`; the host reaches container ports via
+#   `localhost` if they're explicitly published. PIPECAT_WS_URL,
+#   WORKER_EVENT_WEBHOOK, and VOICEBLENDER_WORKER_WS_BASE must be set to
+#   `host.docker.internal:8082` on those platforms — see README "Running
+#   the dev stack".
 #
-# Either way, start it with:
+# Bring up the containers, then run the worker:
 #
-#     # one terminal — bring up the two containers
-#     docker compose -f docker-compose.dev.yml up --build
+#     # one terminal — FreeSWITCH-backed dev
+#     docker compose -f docker-compose.dev.yml --profile freeswitch up --build
+#     # another terminal
+#     cd agents/pipecat && SIP_GATEWAY=freeswitch uv run python -m pipecat_aplisay
 #
-#     # another terminal — run the worker in the foreground
-#     cd agents/pipecat
-#     uv sync
-#     uv run python -m pipecat_aplisay
+#     # OR — voiceblender-backed dev
+#     docker compose -f docker-compose.dev.yml --profile voiceblender up --build
+#     cd agents/pipecat && SIP_GATEWAY=voiceblender uv run python -m pipecat_aplisay
 #
 services:
   freeswitch:
+    profiles: ["freeswitch"]
     build:
       context: ./freeswitch/
     network_mode: host
@@ -52,6 +61,7 @@ services:
       - ./freeswitch/conf:/usr/local/freeswitch/conf:ro
 
   esl-poller:
+    profiles: ["freeswitch"]
     build:
       context: ./esl-poller/
     network_mode: host
@@ -73,3 +83,53 @@ services:
       WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
       GATEWAY_POLL_ENABLED: "false"
       CALL_API_ENABLED: "true"
+
+  # ---- Voiceblender ingress (profile: voiceblender) ---------------------
+  #
+  # Single Go container that owns SIP signalling, RTP media, and the
+  # REST/VSI control surface. The worker connects to it via REST + the
+  # VSI WebSocket; voiceblender dials the worker on the audio WS
+  # (`/voiceblender/agent/{session_id}`) after `POST /v1/legs/{id}/agent`.
+  #
+  # On macOS/Windows override VOICEBLENDER_WORKER_WS_BASE to
+  # `ws://host.docker.internal:8082` so voiceblender can reach the
+  # foreground worker.
+  voiceblender:
+    profiles: ["voiceblender"]
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
+      SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
+      SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}
+      RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
+      RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      API_KEY: ${VOICEBLENDER_API_KEY:-}
+      LOG_LEVEL: ${LOGLEVEL:-debug}
+
+  # ---- sipbridge ingress (profile: sipbridge) ---------------------------
+  #
+  # Minimal in-tree SIP UAS. See agents/pipecat/sipbridge for source.
+  # Default ports: 5060/udp SIP, 10000-20000/udp RTP, :8090/tcp REST.
+  # On macOS/Windows override SIPBRIDGE_WORKER_WS_BASE to
+  # ``ws://host.docker.internal:8082`` so the bridge can reach a
+  # foreground worker process.
+  sipbridge:
+    profiles: ["sipbridge"]
+    build:
+      context: ../../
+      dockerfile: agents/pipecat/sipbridge/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
+      SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
+      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
+      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+      SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-debug}

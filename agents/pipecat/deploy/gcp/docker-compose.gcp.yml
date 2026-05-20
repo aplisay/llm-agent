@@ -3,10 +3,24 @@
 # Pulls pre-built images from Artifact Registry. The local-dev compose at
 # agents/pipecat/docker-compose.yml builds the same services from source.
 #
-# Expected to live on the VM at ~/pipecat-agent/docker-compose.yaml alongside a
-# .env file populated by deploy-node.sh from env-example-{staging,production}.
+# Expected to live on the VM at ~/pipecat-agent/docker-compose.yaml alongside
+# a .env file populated by deploy-node.sh from env-example-{staging,production}.
+#
+# Compose profiles select the SIP ingress; only one ingress runs at a time
+# because they share the host's UDP/5060 + RTP port ranges:
+#
+#     docker compose --profile freeswitch up -d
+#     docker compose --profile voiceblender up -d
+#     docker compose --profile sipbridge up -d
+#     docker compose --profile daily up -d        # no SIP host container
+#
+# `.env` controls which one deploy-node.sh starts via the SIP_GATEWAY +
+# COMPOSE_PROFILES variables.
 services:
+  # ---- FreeSWITCH ingress (profile: freeswitch) -------------------------
+
   freeswitch:
+    profiles: ["freeswitch"]
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:${IMAGE_TAG:-staging}
     network_mode: host
     restart: always
@@ -18,6 +32,7 @@ services:
       PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
 
   esl-poller:
+    profiles: ["freeswitch"]
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:${IMAGE_TAG:-staging}
     network_mode: host
     restart: always
@@ -38,21 +53,74 @@ services:
       GATEWAY_POLL_ENABLED: "false"
       CALL_API_ENABLED: "true"
 
+  # ---- Voiceblender ingress (profile: voiceblender) ---------------------
+
+  voiceblender:
+    profiles: ["voiceblender"]
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    network_mode: host
+    restart: always
+    env_file:
+      - .env
+    environment:
+      HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
+      SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
+      SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}
+      RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
+      RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      API_KEY: ${VOICEBLENDER_API_KEY:-}
+
+  # ---- sipbridge ingress (profile: sipbridge) ---------------------------
+
+  sipbridge:
+    profiles: ["sipbridge"]
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/sipbridge:${IMAGE_TAG:-staging}
+    network_mode: host
+    restart: always
+    env_file:
+      - .env
+    environment:
+      SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
+      SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
+      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
+      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+      SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-info}
+
+  # ---- Pipecat worker (all profiles) ------------------------------------
+
   pipecat-worker:
+    profiles: ["freeswitch", "voiceblender", "sipbridge", "daily"]
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:${IMAGE_TAG:-staging}
     network_mode: host
     restart: always
-    depends_on:
-      esl-poller:
-        condition: service_started
     env_file:
       - .env
     environment:
       PORT: 8082
-      SIP_GATEWAY: freeswitch
+      # Selects which gateway to instantiate at startup.
+      SIP_GATEWAY: ${SIP_GATEWAY:-freeswitch}
+
+      # FreeSWITCH-only:
       ESL_POLLER_URL: ${ESL_POLLER_URL:-http://127.0.0.1:4001}
       ESL_POLLER_TOKEN: ${CALL_API_TOKEN}
       WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+
+      # Voiceblender-only:
+      VOICEBLENDER_BASE_URL: ${VOICEBLENDER_BASE_URL:-http://127.0.0.1:8080}
+      VOICEBLENDER_API_KEY: ${VOICEBLENDER_API_KEY:-}
+      VOICEBLENDER_APP_ID: ${VOICEBLENDER_APP_ID:-aplisay-pipecat}
+      VOICEBLENDER_WORKER_WS_BASE: ${VOICEBLENDER_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+
+      # sipbridge-only:
+      SIPBRIDGE_BASE_URL: ${SIPBRIDGE_BASE_URL:-http://127.0.0.1:8090}
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+
+      # All profiles:
       SERVICE_BASE_URI: ${SERVICE_BASE_URI}
       SHARED_API_TOKEN: ${SHARED_API_TOKEN}
       PIPECAT_DISPATCH_TOKEN: ${PIPECAT_DISPATCH_TOKEN}
@@ -64,4 +132,5 @@ services:
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ULTRAVOX_API_KEY: ${ULTRAVOX_API_KEY:-}
       LOGLEVEL: ${LOGLEVEL:-info}
