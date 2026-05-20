@@ -278,10 +278,11 @@ async def _build_realtime(
         # configuration.
         import uuid as _uuid
 
-        from pipecat.services.ultravox.llm import (
-            OneShotInputParams,
-            UltravoxRealtimeLLMService,
-        )
+        from pipecat.services.ultravox.llm import OneShotInputParams
+
+        # Local subclass overrides ``_receive_messages`` to silence a benign
+        # ERROR line on client-driven teardown. See ultravox_compat.py.
+        from .ultravox_compat import AplisayUltravoxRealtimeLLMService as UltravoxRealtimeLLMService
 
         # Ultravox's /calls API expects model ids in the ``fixie-ai/<name>``
         # namespace — that's Pipecat's documented default
