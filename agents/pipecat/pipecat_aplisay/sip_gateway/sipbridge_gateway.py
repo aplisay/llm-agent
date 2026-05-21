@@ -265,7 +265,15 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
     name = "sipbridge"
 
     def __init__(self) -> None:
-        base = os.environ.get("SIPBRIDGE_BASE_URL", "http://sipbridge:8090")
+        # Default to 127.0.0.1:8090 — matches both deployment styles in this
+        # repo. The compose stack (docker-compose.yml) runs the sipbridge
+        # container with ``network_mode: host`` and sets ``SIPBRIDGE_BASE_URL``
+        # to ``http://127.0.0.1:8090`` for the worker, and the dev workflow
+        # (docker-compose.dev.yml + ``uv run python -m pipecat_aplisay``)
+        # reaches the host-networked sipbridge container at the same address.
+        # A Docker-DNS name like ``sipbridge`` would only work inside a bridge
+        # network, which isn't how either deployment is wired.
+        base = os.environ.get("SIPBRIDGE_BASE_URL", "http://127.0.0.1:8090")
         self.base_url = base.rstrip("/")
         self.api_token = os.environ.get("SIPBRIDGE_API_TOKEN")
 

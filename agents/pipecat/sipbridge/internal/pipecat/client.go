@@ -44,6 +44,15 @@ type Client struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	stopped bool
+
+	// closeErr is the read-loop's terminating error, set just before
+	// ``done`` is closed. Read it via ``CloseErr()`` after ``Done()`` has
+	// fired (or after ``WaitForEarlyClose`` returns true). The bridge
+	// uses this to recover the WS close code from a worker that rejected
+	// the call by closing immediately after accept (the fallback path
+	// for ``_ws_deny`` when ASGI denial response isn't available — see
+	// ``pipecat_aplisay/worker.py``).
+	closeErr error
 }
 
 // NewClient prepares (but does not yet connect) a client. Call Connect
@@ -79,17 +88,68 @@ func (c *Client) SetCloseHandler(fn func(err error)) {
 	c.onClose = fn
 }
 
+// DialError is returned by Connect when the WS upgrade fails. It carries
+// the HTTP status code from the worker's denial response when the worker
+// rejected the upgrade (e.g. 404 if no agent is configured for the
+// dialled number, 503 if the worker can't reach its REST control plane).
+// HTTPStatus is 0 when the failure was at the transport layer (TCP
+// refused, DNS, TLS, …) — i.e. we never got an HTTP response.
+//
+// Calling code uses HTTPStatus to map worker failures to meaningful SIP
+// response codes; see internal/call/manager.go onInvite.
+type DialError struct {
+	URL        string
+	HTTPStatus int
+	Wrapped    error
+}
+
+func (e *DialError) Error() string {
+	if e.HTTPStatus != 0 {
+		return fmt.Sprintf("pipecat ws dial %q: server denied with HTTP %d: %v",
+			e.URL, e.HTTPStatus, e.Wrapped)
+	}
+	return fmt.Sprintf("pipecat ws dial %q: %v", e.URL, e.Wrapped)
+}
+
+func (e *DialError) Unwrap() error { return e.Wrapped }
+
+// captureTransport is a minimal http.RoundTripper that records the last
+// response it saw. We inject it into coder/websocket's DialOptions so
+// that — when the worker denies the upgrade with a non-101 response —
+// we can read the HTTP status code (which the public ``websocket.Dial``
+// otherwise discards on error). On success the captured response is
+// just the 101 Switching Protocols, which we ignore.
+type captureTransport struct {
+	base     http.RoundTripper
+	lastResp *http.Response
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	t.lastResp = resp
+	return resp, err
+}
+
 // Connect dials the worker's WS endpoint and spawns the read loop.
 // Returns immediately on successful handshake; failures are reported as
-// an error here and via SetCloseHandler if they occur mid-stream.
+// a *DialError here (carrying the HTTP status when the worker denied
+// the upgrade) and via SetCloseHandler if they occur mid-stream.
 func (c *Client) Connect(ctx context.Context, hdr http.Header) error {
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	ct := &captureTransport{base: http.DefaultTransport}
 	conn, _, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{
 		HTTPHeader: hdr,
+		// Wrap the default HTTPClient so we can recover the HTTP status
+		// from a denial response — see captureTransport above.
+		HTTPClient: &http.Client{Transport: ct},
 	})
 	if err != nil {
-		return fmt.Errorf("pipecat ws dial %q: %w", c.url, err)
+		status := 0
+		if ct.lastResp != nil {
+			status = ct.lastResp.StatusCode
+		}
+		return &DialError{URL: c.url, HTTPStatus: status, Wrapped: err}
 	}
 	// `MessageBinary` audio frames can be large (20 ms of 16 kHz s16le
 	// mono is 640 bytes; an LLM may chunk larger). Lift the read limit
@@ -168,12 +228,41 @@ func (c *Client) Done() <-chan struct{} {
 	return c.done
 }
 
+// CloseErr returns the error that ended the read loop (or nil if the
+// loop hasn't ended yet). Safe to call after Done() has fired or after
+// WaitForEarlyClose returned true. For a worker-initiated rejection
+// this is a ``*websocket.CloseError`` and the close code is recoverable
+// via ``websocket.CloseStatus(err)``.
+func (c *Client) CloseErr() error {
+	return c.closeErr
+}
+
+// WaitForEarlyClose blocks up to ``timeout`` waiting for the WS to
+// close. Returns true if a close happened in that window (in which case
+// CloseErr() is set), false if the timeout elapsed and the call is
+// still live.
+//
+// Used by the call manager right after Connect succeeds: a worker that
+// can't honour the call (e.g. no agent for the dialled number) but
+// can't / won't use the ASGI denial-response extension accepts the WS
+// upgrade and then closes immediately with a private-use WS close code
+// (4xxx) encoding the SIP rejection status. The manager waits a short
+// window for this so a clean SIP-rejection response can replace the
+// otherwise-inevitable 200 OK.
+func (c *Client) WaitForEarlyClose(timeout time.Duration) bool {
+	select {
+	case <-c.done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 func (c *Client) readLoop(ctx context.Context) {
 	defer close(c.done)
-	var closeErr error
 	defer func() {
 		if c.onClose != nil {
-			c.onClose(closeErr)
+			c.onClose(c.closeErr)
 		}
 	}()
 
@@ -185,7 +274,7 @@ func (c *Client) readLoop(ctx context.Context) {
 		}
 		mt, data, err := c.conn.Read(ctx)
 		if err != nil {
-			closeErr = err
+			c.closeErr = err
 			if !errors.Is(err, context.Canceled) {
 				log.Warn().Err(err).Str("url", c.url).Msg("pipecat ws read ended")
 			}

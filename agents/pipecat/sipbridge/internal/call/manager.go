@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/rs/zerolog/log"
 
 	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/codec"
@@ -466,7 +467,22 @@ func (m *Manager) onInvite(
 	defer cancel()
 	if err := pc.Connect(dctx, hdr); err != nil {
 		rtpSess.Close()
-		return nil, fmt.Errorf("call: pipecat ws connect: %w", err)
+		return nil, mapWSDialErrorToReject(err)
+	}
+
+	// 5b. Brief wait for an early WS close — covers the fallback path
+	// in the worker where it can't use the ASGI denial-response
+	// extension and instead accepts the upgrade then closes immediately
+	// with a 4xxx close code encoding the SIP rejection status. Without
+	// this we'd return SDP/200 OK to the upstream B2BUA before the
+	// close frame arrived and the call would be "answered" only to BYE
+	// instantly. 300ms is enough for any in-process synchronous
+	// rejection (the worker's resolver returns within ~ms on a 404);
+	// real audio start-up is much slower so we don't risk false
+	// positives here.
+	if pc.WaitForEarlyClose(300 * time.Millisecond) {
+		rtpSess.Close()
+		return nil, mapEarlyCloseToReject(pc.CloseErr())
 	}
 
 	// 6. Spawn the RTP read goroutine. From here on, audio flows.
@@ -495,6 +511,154 @@ func (m *Manager) onBye(callID string) {
 	if ok {
 		c.Close()
 	}
+}
+
+// mapWSDialErrorToReject converts a Pipecat WS dial failure into a
+// ``*sipx.RejectError`` carrying an appropriate SIP response code. The
+// worker rejects the WS upgrade with an HTTP status that maps to the
+// SIP status the upstream B2BUA / carrier should see; if we can't
+// recover the HTTP status (TCP refused, DNS, TLS handshake, …) we
+// default to SIP 503 — "the worker is unavailable, try later".
+//
+// HTTP → SIP mapping table:
+//
+//	worker HTTP        SIP                why
+//	-----------------  -----------------  -----------------------------
+//	404 Not Found      404 Not Found      no agent for dialled number
+//	403 Forbidden      403 Forbidden      auth/policy refusal
+//	401 Unauthorized   401 Unauthorized   missing/bad auth on REST
+//	429 Too Many       503 Service Unav.  worker-level rate limit
+//	5xx                500 Server Error   worker bug / dep down
+//	other 4xx          488 Not Accept.    catch-all SIP "no, but client-side"
+//	no response (0)    503 Service Unav.  worker process down / unreachable
+//
+// SIP doesn't have a direct equivalent for every HTTP status — 488 Not
+// Acceptable Here is the conventional SIP catch-all for "your request
+// is malformed in a way the server can articulate", which is the
+// closest analogue to a generic 4xx from the worker.
+func mapWSDialErrorToReject(err error) error {
+	var de *pcclient.DialError
+	if !errors.As(err, &de) {
+		// Not a dial error — treat as generic server-side failure.
+		return &sipx.RejectError{
+			SIPCode: 500,
+			Reason:  "Server Error",
+			Cause:   err,
+		}
+	}
+	switch de.HTTPStatus {
+	case 0:
+		return &sipx.RejectError{
+			SIPCode: 503,
+			Reason:  "Service Unavailable",
+			Cause:   err,
+		}
+	case http.StatusNotFound:
+		return &sipx.RejectError{
+			SIPCode: 404,
+			Reason:  "Not Found",
+			Cause:   err,
+		}
+	case http.StatusUnauthorized:
+		return &sipx.RejectError{
+			SIPCode: 401,
+			Reason:  "Unauthorized",
+			Cause:   err,
+		}
+	case http.StatusForbidden:
+		return &sipx.RejectError{
+			SIPCode: 403,
+			Reason:  "Forbidden",
+			Cause:   err,
+		}
+	case http.StatusTooManyRequests:
+		return &sipx.RejectError{
+			SIPCode: 503,
+			Reason:  "Service Unavailable",
+			Cause:   err,
+		}
+	}
+	if de.HTTPStatus >= 500 {
+		return &sipx.RejectError{
+			SIPCode: 500,
+			Reason:  "Server Error",
+			Cause:   err,
+		}
+	}
+	if de.HTTPStatus >= 400 {
+		return &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   err,
+		}
+	}
+	// 1xx/2xx/3xx leaked through — shouldn't happen since coder/websocket
+	// only errors on non-101; treat as a server error so we don't accept
+	// the SIP transaction with a healthy code while the WS path is broken.
+	return &sipx.RejectError{
+		SIPCode: 500,
+		Reason:  "Server Error",
+		Cause:   err,
+	}
+}
+
+// mapEarlyCloseToReject converts a WS close frame that arrived
+// immediately after the upgrade into a ``*sipx.RejectError`` carrying
+// the SIP response code the worker meant to signal. Used on the
+// fallback path where the worker accepted the upgrade and then closed
+// — the close code in the private-use range (4xxx) encodes the SIP
+// status as ``4000 + sip_status`` (4404 → SIP 404, 4503 → SIP 503).
+//
+// Anything outside the 4xxx range — including the generic 1011
+// StatusInternalError that older Pipecat worker builds emitted — is
+// treated as a server-side failure and mapped to SIP 500.
+func mapEarlyCloseToReject(err error) error {
+	code := websocket.CloseStatus(err)
+	if code >= 4000 && code <= 4999 {
+		sipCode := int(code) - 4000
+		if sipCode < 300 || sipCode > 699 {
+			// Out-of-SIP-range code — fall through to 500.
+			return &sipx.RejectError{
+				SIPCode: 500,
+				Reason:  "Server Error",
+				Cause:   err,
+			}
+		}
+		return &sipx.RejectError{
+			SIPCode: sipCode,
+			Reason:  sipReasonFor(sipCode),
+			Cause:   err,
+		}
+	}
+	// Non-private-use or no close code present → server error.
+	return &sipx.RejectError{
+		SIPCode: 500,
+		Reason:  "Server Error",
+		Cause:   err,
+	}
+}
+
+// sipReasonFor returns the canonical SIP reason phrase for a status
+// code. Covers the rejection codes we map to from worker failures; any
+// unrecognised code falls back to "Server Error".
+func sipReasonFor(code int) string {
+	switch code {
+	case 401:
+		return "Unauthorized"
+	case 403:
+		return "Forbidden"
+	case 404:
+		return "Not Found"
+	case 486:
+		return "Busy Here"
+	case 488:
+		return "Not Acceptable Here"
+	case 500:
+		return "Server Error"
+	case 503:
+		return "Service Unavailable"
+	}
+	return "Server Error"
 }
 
 // pickSessionID picks a stable session_id for the worker WS URL. If the

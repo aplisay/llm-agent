@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -16,15 +17,32 @@ type Config struct {
 	SIPSignalIP   string // advertised in Contact / Via — public-facing IP
 	SIPSignalPort int    // default 5060 (UDP)
 	SIPBindIP     string // bind address for the UDP listener — default = SIPSignalIP
+	// UDPDisabled skips the UDP listener entirely. Useful when running
+	// behind Docker Desktop on macOS / Windows, where inbound UDP source
+	// addresses are NAT-mangled to loopback (``[::1]``) and responses
+	// never reach the real peer. TLS sidesteps this because TCP keeps
+	// the bidirectional connection state independent of the apparent
+	// source IP. When UDPDisabled is true, the operator MUST configure
+	// the upstream B2BUA / carrier to use ``transport=tls`` on the TLS
+	// port; any UDP INVITEs will simply be unanswered.
+	UDPDisabled bool
 
-	// TLS / SIPS (Phase G). When enabled the bridge listens on
-	// `TLSSignalPort` over TCP+TLS in addition to the UDP listener.
-	// Carriers / B2BUAs targeting SIPS use the TLS port; the UDP
-	// listener stays up for any non-TLS peer.
-	TLSEnabled    bool   // true if both TLSCertFile and TLSKeyFile are set
-	TLSSignalPort int    // default 5061
-	TLSCertFile   string // PEM-encoded certificate path
-	TLSKeyFile    string // PEM-encoded private key path
+	// TLS / SIPS (Phase G). The bridge listens on ``TLSSignalPort`` over
+	// TCP+TLS. Carriers / B2BUAs targeting SIPS use the TLS port; if
+	// UDPDisabled is false, the UDP listener remains up in parallel for
+	// any non-TLS peer.
+	//
+	// If both TLSCertFile and TLSKeyFile are set the bridge loads that
+	// keypair. Otherwise — and unless TLSAutoSelfSigned is explicitly
+	// disabled — it mints an ephemeral self-signed cert at startup
+	// covering SIPSignalIP and "sipbridge". This makes TLS-only
+	// deployments work out of the box with an SBC configured to skip
+	// cert validation; for production you should mount a real cert.
+	TLSEnabled        bool   // true if either a cert pair is loaded or self-signed is in play
+	TLSSignalPort     int    // default 5061
+	TLSCertFile       string // PEM-encoded certificate path (optional if TLSAutoSelfSigned)
+	TLSKeyFile        string // PEM-encoded private key path (optional if TLSAutoSelfSigned)
+	TLSAutoSelfSigned bool   // generate ephemeral self-signed cert when no cert file is set
 
 	// RTP media.
 	MediaIP     string // public-facing media IP, advertised in SDP c=/m=
@@ -52,9 +70,11 @@ func Load() (*Config, error) {
 		SIPSignalIP:    env("SIPBRIDGE_SIP_SIGNAL_IP", ""),
 		SIPSignalPort:  envInt("SIPBRIDGE_SIP_SIGNAL_PORT", 5060),
 		SIPBindIP:      env("SIPBRIDGE_SIP_BIND_IP", ""),
-		TLSSignalPort:  envInt("SIPBRIDGE_SIP_TLS_PORT", 5061),
-		TLSCertFile:    env("SIPBRIDGE_TLS_CERT_FILE", ""),
-		TLSKeyFile:     env("SIPBRIDGE_TLS_KEY_FILE", ""),
+		UDPDisabled:    envBool("SIPBRIDGE_SIP_UDP_DISABLED", false),
+		TLSSignalPort:     envInt("SIPBRIDGE_SIP_TLS_PORT", 5061),
+		TLSCertFile:       env("SIPBRIDGE_TLS_CERT_FILE", ""),
+		TLSKeyFile:        env("SIPBRIDGE_TLS_KEY_FILE", ""),
+		TLSAutoSelfSigned: envBool("SIPBRIDGE_TLS_AUTO_SELFSIGNED", true),
 		MediaIP:        env("SIPBRIDGE_MEDIA_IP", ""),
 		MediaBindIP:    env("SIPBRIDGE_MEDIA_BIND_IP", ""),
 		RTPPortMin:     envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
@@ -64,7 +84,10 @@ func Load() (*Config, error) {
 		APIBearerToken: env("SIPBRIDGE_API_TOKEN", ""),
 		LogLevel:       env("SIPBRIDGE_LOG_LEVEL", "info"),
 	}
-	cfg.TLSEnabled = cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
+	// TLS is on if either a real cert pair is provided OR we're
+	// allowed to auto-generate a self-signed one. Disable both knobs
+	// to turn TLS off entirely.
+	cfg.TLSEnabled = (cfg.TLSCertFile != "" && cfg.TLSKeyFile != "") || cfg.TLSAutoSelfSigned
 	// SIPSignalIP / MediaIP must be set explicitly — there's no safe
 	// default ("127.0.0.1" works for local dev but silently fails when
 	// any remote peer can't reach 127.0.0.1, so refuse to start).
@@ -84,6 +107,11 @@ func Load() (*Config, error) {
 	if cfg.RTPPortMin >= cfg.RTPPortMax {
 		return nil, fmt.Errorf("config: RTP_PORT_MIN(%d) >= RTP_PORT_MAX(%d)",
 			cfg.RTPPortMin, cfg.RTPPortMax)
+	}
+	// Refuse to start with no SIP listener at all — silently doing
+	// nothing on the SIP port is a foot-gun.
+	if cfg.UDPDisabled && !cfg.TLSEnabled {
+		return nil, fmt.Errorf("config: SIPBRIDGE_SIP_UDP_DISABLED is set but TLS is not configured (set SIPBRIDGE_TLS_CERT_FILE and SIPBRIDGE_TLS_KEY_FILE, or re-enable UDP)")
 	}
 	return cfg, nil
 }
@@ -105,4 +133,18 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envBool(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off", "":
+		return false
+	}
+	return def
 }

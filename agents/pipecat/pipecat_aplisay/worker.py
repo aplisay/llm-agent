@@ -131,6 +131,100 @@ async def lifespan(app: FastAPI):
             logger.warning(f"sipbridge gateway stop failed: {e}")
 
 
+async def _ws_deny(websocket: WebSocket, status: int, body: bytes = b"") -> None:
+    """Reject a WebSocket upgrade with a specific HTTP status code.
+
+    Uses the ASGI WebSocket Denial Response extension (uvicorn 0.20+ /
+    Starlette 0.19+) — both confirmed present in this repo's lockfile.
+    sipbridge captures the response via a wrapped HTTPClient transport
+    and maps the HTTP status onto a SIP response code (404 → 404,
+    503 → 503, etc.), so the upstream B2BUA / carrier sees a meaningful
+    failure reason instead of a generic 500 Server Error.
+
+    Falls back to ``accept() + close(code=1011)`` if the ASGI server
+    doesn't advertise the extension; that loses the precise status but
+    at least closes the WS cleanly.
+    """
+    # ASGI advertises the extension by including the key in scope[
+    # "extensions"] with an empty dict value (``{"websocket.http.response":
+    # {}}``). bool({}) is False, so the previous ``bool(...)`` check made
+    # this branch unreachable even when uvicorn fully supported denial
+    # responses. Use ``is not None`` to mean "present" without truthiness.
+    has_denial = (
+        websocket.scope.get("extensions", {}).get("websocket.http.response")
+        is not None
+    )
+    logger.debug(
+        f"sipbridge WS: denying upgrade with HTTP {status}, "
+        f"denial_extension_supported={has_denial}"
+    )
+    if has_denial:
+        await websocket.send({
+            "type": "websocket.http.response.start",
+            "status": status,
+            "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+        })
+        await websocket.send({
+            "type": "websocket.http.response.body",
+            "body": body,
+        })
+        return
+    # Fallback — accept then close with a WS close code in the private-
+    # use range (4xxx) that encodes the SIP status: ``close_code =
+    # 4000 + sip_status``. sipbridge's call manager detects an early
+    # close-with-4xxx-code and remaps it to the original SIP status, so
+    # this path still yields a correct SIP response code on the wire —
+    # just at the cost of a ~few-ms WS round trip vs the direct denial
+    # response above.
+    await websocket.accept()
+    await websocket.close(code=4000 + status)
+
+
+async def _lookup_instance_for_inbound(
+    *,
+    phone_registration: Optional[str],
+    to_number: Optional[str],
+    aplisay_id: Optional[str],
+) -> Optional[dict]:
+    """Run the inbound-call instance lookup chain, absorbing 404s.
+
+    All three inbound paths (voiceblender VSI event, sipbridge WS headers,
+    FreeSWITCH /inbound-dispatch) need the same lookup ladder:
+    phone_registration → trunk+number → bare number. Each step can return
+    404 from the REST API; that's a "this step found nothing", not an
+    error — we want to continue to the next step (and ultimately tell the
+    SIP / gateway layer "no agent for this call"), not let an
+    ``ApiRequestError(404)`` escape into the WS / event handler as a
+    500-class crash. Other API errors (5xx, transport failures) are
+    re-raised so the caller can map them to non-404 SIP statuses.
+
+    Returns the instance dict, or ``None`` if no step in the chain
+    yielded one. The caller is responsible for the further check that
+    ``instance.get("Agent")`` is present.
+    """
+
+    async def _maybe(coro):
+        try:
+            return await coro
+        except api_client.ApiRequestError as e:
+            if e.status == 404:
+                return None
+            raise
+
+    instance: Optional[dict] = None
+    if phone_registration:
+        endpoint = await _maybe(api_client.get_phone_endpoint_by_id(phone_registration))
+        if endpoint and endpoint.get("instanceId"):
+            instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
+    if not instance and to_number:
+        endpoint = await _maybe(api_client.get_phone_endpoint_by_number(to_number, aplisay_id))
+        if endpoint and endpoint.get("instanceId"):
+            instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
+    if not instance and to_number:
+        instance = await _maybe(api_client.get_instance_by_number(to_number))
+    return instance
+
+
 async def _voiceblender_resolve_agent(
     event: dict,
 ) -> Optional[tuple[dict, dict]]:
@@ -145,19 +239,11 @@ async def _voiceblender_resolve_agent(
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
-    instance = None
-    if phone_registration:
-        endpoint = await api_client.get_phone_endpoint_by_id(phone_registration)
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and to_number:
-        endpoint = await api_client.get_phone_endpoint_by_number(
-            to_number, aplisay_id
-        )
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and to_number:
-        instance = await api_client.get_instance_by_number(to_number)
+    instance = await _lookup_instance_for_inbound(
+        phone_registration=phone_registration,
+        to_number=to_number,
+        aplisay_id=aplisay_id,
+    )
     if not instance:
         return None
     agent = instance.get("Agent")
@@ -221,19 +307,11 @@ async def _sipbridge_resolve_agent_from_headers(
     from_number = _user_of(from_uri)
     to_number = _user_of(to_uri)
 
-    instance = None
-    if phone_registration:
-        endpoint = await api_client.get_phone_endpoint_by_id(phone_registration)
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and to_number:
-        endpoint = await api_client.get_phone_endpoint_by_number(
-            to_number, aplisay_id
-        )
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and to_number:
-        instance = await api_client.get_instance_by_number(to_number)
+    instance = await _lookup_instance_for_inbound(
+        phone_registration=phone_registration,
+        to_number=to_number,
+        aplisay_id=aplisay_id,
+    )
     if not instance:
         return None
     agent = instance.get("Agent")
@@ -384,17 +462,11 @@ async def daily_dialin(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="missing destination number")
 
     # Lookup chain — section 6.2 / 6.3.
-    instance = None
-    if phone_registration:
-        endpoint = await api_client.get_phone_endpoint_by_id(phone_registration)
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance:
-        endpoint = await api_client.get_phone_endpoint_by_number(to_number, aplisay_id)
-        if endpoint and endpoint.get("instanceId"):
-            instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance:
-        instance = await api_client.get_instance_by_number(to_number)
+    instance = await _lookup_instance_for_inbound(
+        phone_registration=phone_registration,
+        to_number=to_number,
+        aplisay_id=aplisay_id,
+    )
     if not instance:
         raise HTTPException(status_code=404, detail="no instance found for number")
 
@@ -1347,14 +1419,32 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
     # Inbound flow.
     # Resolve the agent BEFORE accepting the WS so we can fail clean.
-    resolved = await _sipbridge_resolve_agent_from_headers(websocket)
-    if resolved is None:
-        await websocket.accept()
+    # On lookup failure we reject the upgrade with an HTTP status that
+    # sipbridge maps onto a SIP response code (404 → SIP 404 Not Found,
+    # 503 → SIP 503, etc.). Without this the SIP transaction sees a
+    # generic 500 Server Error for every reason a call can't be placed,
+    # which is useless to the upstream B2BUA / carrier.
+    try:
+        resolved = await _sipbridge_resolve_agent_from_headers(websocket)
+    except api_client.ApiRequestError as e:
+        # Non-404 from the REST API (transport error, 5xx, 401…). 404
+        # is already absorbed inside the lookup helper.
         logger.warning(
+            "sipbridge WS: REST lookup failed "
+            f"(status={e.status}, to={websocket.headers.get('x-sipbridge-to')!r})"
+        )
+        # 401/403 → leave as-is so the carrier sees a meaningful auth
+        # failure; otherwise map to 503 (we couldn't reach our own
+        # control plane, the call isn't going through).
+        sip_class = e.status if e.status in (401, 403) else 503
+        await _ws_deny(websocket, sip_class, b"agent-db lookup failed")
+        return
+    if resolved is None:
+        logger.info(
             "sipbridge WS: no agent for inbound call "
             f"(to={websocket.headers.get('x-sipbridge-to')!r})"
         )
-        await websocket.close(code=1011)
+        await _ws_deny(websocket, 404, b"no agent for dialled number")
         return
     instance, agent, ctx = resolved
 

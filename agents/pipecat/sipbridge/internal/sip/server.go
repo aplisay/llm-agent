@@ -28,8 +28,39 @@ import (
 // error, the server replies with the matching status code (default 500)
 // and tears down the transaction.
 //
+// If the handler wants to control the SIP response code (e.g. "no agent
+// for this number" should be SIP 404, not the generic 500), it can
+// return a ``*RejectError`` instead of a bare error — the server will
+// honour ``RejectError.SIPCode`` and ``RejectError.Reason``.
+//
 // The call manager registers the handler in call.Manager.RegisterSIP().
 type InviteHandler func(ctx context.Context, callID string, offer *CodecOffer, headers IncomingHeaders) (sdpAnswer []byte, err error)
+
+// RejectError is the typed error an InviteHandler returns when it wants
+// the SIP server to respond with a specific status code (e.g. 404 Not
+// Found rather than 500 Server Error). The Reason is the SIP reason
+// phrase appended after the status code on the wire.
+//
+// Use the helper constructors below where possible — they pick sensible
+// reason phrases and ensure the status code is in the SIP response
+// range (3xx–6xx).
+type RejectError struct {
+	SIPCode int
+	Reason  string
+	// Cause is the underlying error (e.g. the wrapped DialError from
+	// the Pipecat WS client). It's preserved via Unwrap so the caller
+	// can drill down with errors.As / errors.Is for logging.
+	Cause error
+}
+
+func (e *RejectError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("sip reject %d %s: %v", e.SIPCode, e.Reason, e.Cause)
+	}
+	return fmt.Sprintf("sip reject %d %s", e.SIPCode, e.Reason)
+}
+
+func (e *RejectError) Unwrap() error { return e.Cause }
 
 // ByeHandler is invoked on inbound BYE. The server has already
 // 200-OK'd the BYE on the wire; the handler just gets the chance to
@@ -64,8 +95,12 @@ type Server struct {
 	calls   map[string]*activeCall // sip CallID → state for ACK/BYE matching
 	invite  InviteHandler
 	bye     ByeHandler
-	signalIP string
+	// signalIP is the IP we advertise (Via/Contact); bindIP is the
+	// address we actually listen on. They differ on any non-trivial
+	// deployment — see Config docs and docker-compose for the rationale.
+	signalIP   string
 	signalPort int
+	bindIP     string
 }
 
 // activeCall holds the per-Call-ID dialog reference plus a discriminator
@@ -151,6 +186,7 @@ func NewServer(cfg Config) (*Server, error) {
 		calls:      make(map[string]*activeCall),
 		signalIP:   cfg.SignalIP,
 		signalPort: cfg.SignalPort,
+		bindIP:     cfg.BindIP,
 	}
 	s.registerHandlers()
 	return s, nil
@@ -164,31 +200,38 @@ func (s *Server) SetByeHandler(h ByeHandler) { s.bye = h }
 
 // Listen binds the UDP socket and starts the SIP transaction loop.
 // Returns when the context is cancelled or the listener errors fatally.
+//
+// We bind to bindIP (which defaults to signalIP if unset). They differ
+// in any Docker / NAT deployment: bind on 0.0.0.0 to receive packets on
+// every interface, but keep signalIP as the routable address peers see
+// in Via / Contact / SDP.
 func (s *Server) Listen(ctx context.Context) error {
-	addr := net.JoinHostPort(s.signalIP, fmt.Sprintf("%d", s.signalPort))
-	log.Info().Str("addr", addr).Msg("sip: listening (UDP)")
+	addr := net.JoinHostPort(s.bindIP, fmt.Sprintf("%d", s.signalPort))
+	log.Info().
+		Str("addr", addr).
+		Str("advertised", fmt.Sprintf("%s:%d", s.signalIP, s.signalPort)).
+		Msg("sip: listening (UDP)")
 	return s.srv.ListenAndServe(ctx, "udp", addr)
 }
 
 // ListenTLS binds an additional TCP/TLS listener (SIPS, port 5061 by
 // convention). Carriers / B2BUAs targeting SIPS use this; the UDP
-// listener stays up in parallel for non-TLS peers.
+// listener stays up in parallel for non-TLS peers, unless the operator
+// disabled it via ``SIPBRIDGE_SIP_UDP_DISABLED``.
 //
-// ``certFile`` and ``keyFile`` are PEM-encoded paths. We load them
-// once at startup; cert rotation requires a restart for v1. A future
-// pass can switch to a watching reloader if zero-downtime cert refresh
-// becomes operationally interesting.
-func (s *Server) ListenTLS(ctx context.Context, port int, certFile, keyFile string) error {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return fmt.Errorf("sip: load TLS cert/key: %w", err)
-	}
+// The cert is built and passed in by the caller (see ``LoadOrGenerateCert``
+// in cert.go). Cert rotation requires a restart for v1.
+func (s *Server) ListenTLS(ctx context.Context, port int, cert tls.Certificate) error {
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
 	}
-	addr := net.JoinHostPort(s.signalIP, fmt.Sprintf("%d", port))
-	log.Info().Str("addr", addr).Msg("sip: listening (TLS)")
+	// Same bind-vs-advertise split as the UDP listener.
+	addr := net.JoinHostPort(s.bindIP, fmt.Sprintf("%d", port))
+	log.Info().
+		Str("addr", addr).
+		Str("advertised", fmt.Sprintf("%s:%d", s.signalIP, port)).
+		Msg("sip: listening (TLS)")
 	return s.srv.ListenAndServeTLS(ctx, "tcp", addr, cfg)
 }
 
@@ -211,6 +254,19 @@ func (s *Server) registerHandlers() {
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	callID := req.CallID().Value()
+	// Log the wire-level source of the INVITE up front. SIP responses go
+	// back to this address (with rport / received semantics), so if it
+	// shows as loopback (``[::1]:5060`` or ``127.0.0.1``) instead of the
+	// peer's real IP, your responses will loop back into the bridge
+	// rather than reach the peer. The most common cause is Docker
+	// Desktop's "host networking" not preserving source addresses on
+	// inbound UDP — enable real host networking (4.29+) or run sipbridge
+	// directly on the host.
+	log.Info().
+		Str("call_id", callID).
+		Str("source", req.Source()).
+		Str("destination", req.Destination()).
+		Msg("sip: INVITE received")
 	if s.invite == nil {
 		s.respond(req, tx, 500, "No handler", nil)
 		return
@@ -233,8 +289,21 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	answer, err := s.invite(context.Background(), callID, offer, headers)
 	if err != nil {
-		log.Warn().Err(err).Str("call_id", callID).Msg("sip: invite handler rejected")
-		s.respond(req, tx, 500, "Server Error", nil)
+		// Default rejection: 500. Handlers signal a different SIP status
+		// (e.g. 404 No Agent, 503 Worker Unavailable) by returning a
+		// *RejectError.
+		code, reason := 500, "Server Error"
+		var rej *RejectError
+		if errors.As(err, &rej) {
+			code, reason = rej.SIPCode, rej.Reason
+		}
+		log.Warn().
+			Err(err).
+			Str("call_id", callID).
+			Int("sip_code", code).
+			Str("sip_reason", reason).
+			Msg("sip: invite handler rejected")
+		s.respond(req, tx, code, reason, nil)
 		return
 	}
 

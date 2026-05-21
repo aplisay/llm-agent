@@ -123,13 +123,71 @@ services:
       dockerfile: agents/pipecat/sipbridge/Dockerfile
     network_mode: host
     restart: unless-stopped
+    # ``host.docker.internal`` is auto-injected on Docker Desktop (macOS /
+    # Windows) but absent on Linux. ``host-gateway`` makes the same hostname
+    # resolve to the host's bridge gateway on Linux, so the bridge can reach
+    # a worker running on the host with the same URL on every platform.
+    # Necessary in dev because the worker runs on the host (uv run) while
+    # sipbridge runs in a container — the container's loopback ≠ host's
+    # loopback even with ``network_mode: host`` on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
+      # Advertised IPs (stamped into Via/Contact and SDP c=/m=). Must be
+      # reachable by the upstream B2BUA / SBC.
       SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
       SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
       SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # Bind IPs (where the kernel actually accepts packets). Default to
+      # wildcard — Docker is always behind some form of NAT (Docker Desktop
+      # VM, bridge networks, port-forwarded host network on Linux), so the
+      # advertised IP is rarely the same as the address packets actually
+      # arrive on. Binding wildcard catches loopback, LAN, and VPN; the
+      # advertised IPs above tell peers where to route replies.
+      SIPBRIDGE_SIP_BIND_IP: ${SIPBRIDGE_SIP_BIND_IP:-0.0.0.0}
+      SIPBRIDGE_MEDIA_BIND_IP: ${SIPBRIDGE_MEDIA_BIND_IP:-0.0.0.0}
       SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
       SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
-      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+      # Reach the worker via host.docker.internal so this works on Docker
+      # Desktop (where the container's 127.0.0.1 is the VM's loopback, not
+      # the host's). The ``extra_hosts`` directive above makes the same
+      # name resolve correctly on Linux too.
+      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://host.docker.internal:8082}
       SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
       SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-debug}
+
+      # ---- TLS / SIPS ----
+      #
+      # Docker Desktop on macOS/Windows mangles inbound UDP source
+      # addresses to ``[::1]`` (the VM's loopback), which breaks UDP SIP
+      # responses (they loop back to the bridge instead of reaching the
+      # peer). TLS sidesteps this entirely: TCP keeps the connection
+      # 4-tuple in the kernel, so responses go back on the same socket
+      # regardless of NAT.
+      #
+      # By default the bridge listens on TCP+TLS at the port below and
+      # — if no cert/key pair is mounted — mints an ephemeral self-
+      # signed cert at startup. That's enough for any upstream SBC you
+      # can tell to skip cert validation. The fingerprint is logged on
+      # boot so you can pin it on the SBC if you'd rather.
+      #
+      # To use TLS-only, set ``SIPBRIDGE_SIP_UDP_DISABLED=1`` and point
+      # your SIP trunk / SBC at ``transport=tls`` on the TLS port.
+      #
+      # For production: mount a real cert + key into the container and
+      # set SIPBRIDGE_TLS_CERT_FILE / _KEY_FILE to the in-container
+      # paths (see the commented ``volumes`` block below). The self-
+      # signed fallback can be turned off entirely with
+      # ``SIPBRIDGE_TLS_AUTO_SELFSIGNED=0``.
+      SIPBRIDGE_SIP_TLS_PORT: ${SIPBRIDGE_SIP_TLS_PORT:-5061}
+      SIPBRIDGE_TLS_CERT_FILE: ${SIPBRIDGE_TLS_CERT_FILE:-}
+      SIPBRIDGE_TLS_KEY_FILE: ${SIPBRIDGE_TLS_KEY_FILE:-}
+      SIPBRIDGE_TLS_AUTO_SELFSIGNED: ${SIPBRIDGE_TLS_AUTO_SELFSIGNED:-1}
+      SIPBRIDGE_SIP_UDP_DISABLED: ${SIPBRIDGE_SIP_UDP_DISABLED:-0}
+    # Uncomment + adjust to make a real cert available to the container.
+    # The paths inside the container must match what
+    # ``SIPBRIDGE_TLS_CERT_FILE`` / ``SIPBRIDGE_TLS_KEY_FILE`` point at.
+    # volumes:
+    #   - /etc/letsencrypt/live/sip.example.com/fullchain.pem:/certs/cert.pem:ro
+    #   - /etc/letsencrypt/live/sip.example.com/privkey.pem:/certs/key.pem:ro

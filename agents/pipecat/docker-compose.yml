@@ -129,9 +129,19 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
+      # Advertised IPs (stamped into Via/Contact and SDP c=/m=). Must be
+      # reachable by the upstream B2BUA / SBC.
       SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
       SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
       SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # Bind IPs (where the kernel actually accepts packets). Default to
+      # wildcard — Docker is always behind some form of NAT (Docker Desktop
+      # VM, bridge networks, port-forwarded host network on Linux), so the
+      # advertised IP is rarely the same as the address packets actually
+      # arrive on. Binding wildcard catches loopback, LAN, and VPN; the
+      # advertised IPs above tell peers where to route replies.
+      SIPBRIDGE_SIP_BIND_IP: ${SIPBRIDGE_SIP_BIND_IP:-0.0.0.0}
+      SIPBRIDGE_MEDIA_BIND_IP: ${SIPBRIDGE_MEDIA_BIND_IP:-0.0.0.0}
       SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
       SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
       SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}

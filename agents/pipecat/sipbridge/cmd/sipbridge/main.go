@@ -34,8 +34,17 @@ func main() {
 	}
 	setLogLevel(cfg.LogLevel)
 
+	udpDesc := fmt.Sprintf("%s:%d", cfg.SIPSignalIP, cfg.SIPSignalPort)
+	if cfg.UDPDisabled {
+		udpDesc = "disabled"
+	}
+	tlsDesc := "disabled"
+	if cfg.TLSEnabled {
+		tlsDesc = fmt.Sprintf("%s:%d", cfg.SIPSignalIP, cfg.TLSSignalPort)
+	}
 	log.Info().
-		Str("sip", fmt.Sprintf("%s:%d", cfg.SIPSignalIP, cfg.SIPSignalPort)).
+		Str("sip_udp", udpDesc).
+		Str("sip_tls", tlsDesc).
 		Str("media_ip", cfg.MediaIP).
 		Int("rtp_min", cfg.RTPPortMin).
 		Int("rtp_max", cfg.RTPPortMax).
@@ -67,20 +76,44 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Component count: UDP SIP + API are always-on, TLS listener is
-	// optional. Sized to 3 so we can fit all three pushes without
-	// blocking, even when TLS is disabled (the third never sends).
+	// Component count: API is always-on; UDP SIP and TLS SIP listeners
+	// are each optional. Sized to 3 so we can fit all three pushes
+	// without blocking, even when one transport is disabled (the third
+	// just never sends).
 	errCh := make(chan error, 3)
-	go func() {
-		if err := sipSrv.Listen(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			errCh <- fmt.Errorf("sip (UDP): %w", err)
-			return
-		}
-		errCh <- nil
-	}()
-	if cfg.TLSEnabled {
+	if !cfg.UDPDisabled {
 		go func() {
-			if err := sipSrv.ListenTLS(ctx, cfg.TLSSignalPort, cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && !errors.Is(err, context.Canceled) {
+			if err := sipSrv.Listen(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- fmt.Errorf("sip (UDP): %w", err)
+				return
+			}
+			errCh <- nil
+		}()
+	} else {
+		log.Info().Msg("sip: UDP listener disabled by config (TLS-only mode)")
+	}
+	if cfg.TLSEnabled {
+		// Build the cert before spawning the listener goroutine so we
+		// can fail fast (and log the fingerprint synchronously) instead
+		// of swallowing the error in a goroutine.
+		cert, fp, selfSigned, err := sipx.LoadOrGenerateCert(
+			cfg.TLSCertFile,
+			cfg.TLSKeyFile,
+			[]string{cfg.SIPSignalIP, "sipbridge"},
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("sip: TLS cert setup")
+		}
+		certLog := log.Info().Str("sha256_fingerprint", fp)
+		if selfSigned {
+			certLog = certLog.Bool("self_signed", true).
+				Str("hint", "configure your upstream SBC to skip TLS cert validation, or mount a real cert via SIPBRIDGE_TLS_CERT_FILE/_KEY_FILE")
+		} else {
+			certLog = certLog.Str("source", cfg.TLSCertFile)
+		}
+		certLog.Msg("sip: TLS cert ready")
+		go func() {
+			if err := sipSrv.ListenTLS(ctx, cfg.TLSSignalPort, cert); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- fmt.Errorf("sip (TLS): %w", err)
 				return
 			}
