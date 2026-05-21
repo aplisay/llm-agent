@@ -1,5 +1,6 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { HANDLER_NAMES } from '../../lib/handlers/index.js';
 
 /**
  * Flat list of active listener instances with parent agent name, for dashboards.
@@ -112,7 +113,7 @@ listenerDeploymentsList.apiDoc = {
                     agentId: { type: 'string', format: 'uuid' },
                     agentName: { type: 'string' },
                     listenerId: { type: 'string', format: 'uuid' },
-                    type: { type: 'string', enum: ['jambonz', 'ultravox', 'livekit'] },
+                    type: { type: 'string', enum: HANDLER_NAMES },
                     kind: { type: 'string', enum: ['phone', 'registration', 'webrtc'] },
                     phoneNumber: { type: 'string', nullable: true },
                     registrationId: { type: 'string', nullable: true },

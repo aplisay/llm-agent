@@ -1056,6 +1056,7 @@ components:
               enum:
                 - livekit
                 - jambonz
+                - pipecat
               default: livekit
             outbound:
               type: boolean
@@ -1119,6 +1120,7 @@ components:
           enum:
             - livekit
             - jambonz
+            - pipecat
           description: Handler for this endpoint
         registrar:
           $ref: '#/components/schemas/Registrar'
