@@ -11,14 +11,17 @@ package call
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	srtpv3 "github.com/pion/srtp/v3"
 	"github.com/rs/zerolog/log"
 
 	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/codec"
@@ -40,6 +43,36 @@ type Config struct {
 	// Even-numbered port range for RTP (inclusive).
 	RTPPortMin int
 	RTPPortMax int
+
+	// SRTPEnabled accepts encrypted-media offers (SDES + DTLS-SRTP)
+	// from peers; plaintext is still accepted unless SRTPRequired.
+	SRTPEnabled bool
+	// SRTPRequired refuses plaintext-only offers with SIP 488 Not
+	// Acceptable Here. Use when the bridge sits behind TLS signalling
+	// and any plaintext peer is a misconfiguration.
+	SRTPRequired bool
+	// SRTPDTLSEnabled opts the DTLS-SRTP path in alongside SDES.
+	// Has no effect when SRTPEnabled is false.
+	SRTPDTLSEnabled bool
+	// SRTPOutbound: when true, outbound originate offers SDES SRTP
+	// (RTP/SAVP profile) instead of plaintext. The peer can answer
+	// SDES (we install contexts and traffic is encrypted) or — in
+	// stricter SBC configs — reject with 488 (we surface the failure
+	// to the caller of Originate). When false, outbound originate
+	// offers plain RTP/AVP regardless of SRTPEnabled.
+	SRTPOutbound bool
+
+	// DTLSCert is the X.509 cert (with private key) we use for
+	// DTLS-SRTP handshakes. Reuse of the SIP TLS cert is recommended —
+	// the same identity covers both signalling and media. nil disables
+	// DTLS-SRTP regardless of SRTPDTLSEnabled.
+	DTLSCert *tls.Certificate
+	// DTLSFingerprint is the SHA-256 fingerprint of DTLSCert, in the
+	// SDP ``a=fingerprint:`` wire form ("sha-256 AB:CD:..."). The
+	// caller computes this once at startup (sipx.LoadOrGenerateCert
+	// already returns the value) and passes it through. We don't
+	// recompute per-call.
+	DTLSFingerprint string
 }
 
 // Manager is the per-process owner of all active calls.
@@ -146,7 +179,36 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 		return "", fmt.Errorf("call: rtp: %w", err)
 	}
 
-	offer := sipx.BuildOffer(rtpSess, m.cfg.MediaIP)
+	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled, we
+	// offer SDES SRTP (RTP/SAVP) with one ``a=crypto`` line per
+	// catalogued suite, in our preference order. Peer picks one in
+	// their 200 OK answer; ourOfferedSDES maps tag → the master
+	// material we generated for that tag so we can build the
+	// outbound SRTP context once we know which tag they took.
+	//
+	// DTLS-SRTP outbound is not yet implemented — it needs the
+	// initiate-side handshake plus a=setup:actpass parsing of the
+	// answer to learn who's client/server. Out of scope here; SDES
+	// is what every SBC supports anyway.
+	encOffer := sipx.EncryptionParams{}
+	ourOfferedSDES := map[int]rtp.CryptoMaterial{}
+	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
+	if offeringSDES {
+		encOffer.Profile = "RTP/SAVP"
+		for i, suite := range rtp.SRTPSuites {
+			material, err := rtp.Generate(suite)
+			if err != nil {
+				rtpSess.Close()
+				return "", fmt.Errorf("call: generate SDES material: %w", err)
+			}
+			tag := i + 1 // tags are 1-indexed by convention
+			ourOfferedSDES[tag] = material
+			encOffer.CryptoLines = append(encOffer.CryptoLines,
+				fmt.Sprintf("%d %s inline:%s",
+					tag, suite.Name, material.EncodeInline()))
+		}
+	}
+	offer := sipx.BuildOffer(rtpSess, m.cfg.MediaIP, encOffer)
 
 	// Inject X-Aplisay-Call-Id from metadata if present — the upstream
 	// B2BUA uses this as the platform-wide call correlator.
@@ -186,6 +248,28 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 		return "", errors.New("call: no acceptable codec in answer")
 	}
 	rtpSess.SetPayloadType(pt)
+
+	// If we offered SDES and the peer answered RTP/SAVP, install
+	// SRTP contexts. If we offered RTP/AVP, the answer must be AVP
+	// too — nothing to install. If we offered RTP/SAVP and the peer
+	// answered something else, that's a protocol violation; tear the
+	// call down rather than silently fall back to plaintext.
+	if offeringSDES {
+		inboundCtx, outboundCtx, err := installOutboundSDES(answer, ourOfferedSDES)
+		if err != nil {
+			rtpSess.Close()
+			_ = m.sip.Hangup(ctx, out.CallID)
+			return "", fmt.Errorf("call: outbound SDES negotiation: %w", err)
+		}
+		if err := rtpSess.SetSRTPContexts(inboundCtx, outboundCtx); err != nil {
+			rtpSess.Close()
+			_ = m.sip.Hangup(ctx, out.CallID)
+			return "", fmt.Errorf("call: install outbound SRTP contexts: %w", err)
+		}
+		log.Info().
+			Str("call_id", out.CallID).
+			Msg("call: outbound SDES negotiated; media encrypted")
+	}
 
 	// 4. Open the Pipecat WS using the session_id supplied by the
 	// worker (which is waiting on a future keyed by that id).
@@ -392,13 +476,35 @@ func (m *Manager) onInvite(
 		return nil, fmt.Errorf("call: rtp remote: %w", err)
 	}
 
-	// 2. Build SDP answer + decide codec.
-	answer, pt, err := sipx.BuildAnswer(offer, rtpSess, m.cfg.MediaIP)
+	// 2a. Negotiate SRTP — picks plaintext / SDES / DTLS-SRTP based on
+	// the offer + our policy. Returns a *sipx.RejectError mapped to a
+	// SIP rejection code if policy demands encrypted and the peer
+	// offered plaintext.
+	neg, err := m.negotiateSRTP(offer)
+	if err != nil {
+		rtpSess.Close()
+		return nil, err
+	}
+	// 2b. For SDES the contexts can be installed immediately. For
+	// DTLS-SRTP they get installed asynchronously in step 7 once the
+	// handshake completes.
+	if neg.InboundCtx != nil || neg.OutboundCtx != nil {
+		if err := rtpSess.SetSRTPContexts(neg.InboundCtx, neg.OutboundCtx); err != nil {
+			rtpSess.Close()
+			return nil, fmt.Errorf("call: install SRTP contexts: %w", err)
+		}
+	}
+	// 2c. Build SDP answer + decide codec.
+	answer, pt, err := sipx.BuildAnswer(offer, rtpSess, m.cfg.MediaIP, neg.Params)
 	if err != nil {
 		rtpSess.Close()
 		return nil, fmt.Errorf("call: sdp answer: %w", err)
 	}
 	rtpSess.SetPayloadType(pt)
+	log.Info().
+		Str("call_id", callID).
+		Str("encryption", neg.Mode).
+		Msg("call: encryption negotiated")
 
 	// 3. Build the per-session Pipecat WS URL and open the WS.
 	sessionID := pickSessionID(callID, headers)
@@ -485,8 +591,31 @@ func (m *Manager) onInvite(
 		return nil, mapEarlyCloseToReject(pc.CloseErr())
 	}
 
-	// 6. Spawn the RTP read goroutine. From here on, audio flows.
-	rtpSess.Start(context.Background())
+	// 6. Spawn the RTP read goroutine. For plaintext / SDES the
+	// session can start immediately. For DTLS-SRTP the readLoop has
+	// to stay parked until the handshake completes on the same UDP
+	// socket — kick the handshake off in a goroutine, it will call
+	// Start when it's done (and Close on failure).
+	if neg.Finalize != nil {
+		go func() {
+			fctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := neg.Finalize(fctx, rtpSess); err != nil {
+				log.Error().
+					Err(err).
+					Str("call_id", callID).
+					Msg("call: DTLS-SRTP handshake failed; tearing call down")
+				_ = m.Hangup(context.Background(), callID)
+				return
+			}
+			rtpSess.Start(context.Background())
+			log.Info().
+				Str("call_id", callID).
+				Msg("call: DTLS-SRTP handshake complete; media flowing")
+		}()
+	} else {
+		rtpSess.Start(context.Background())
+	}
 
 	m.mu.Lock()
 	m.calls[callID] = c
@@ -497,6 +626,7 @@ func (m *Manager) onInvite(
 		Str("session_id", sessionID).
 		Str("ws_url", wsURL).
 		Int("rtp_port", rtpSess.LocalAddr().Port).
+		Bool("encrypted", neg.Mode != "plaintext").
 		Msg("call: ready")
 	return answer, nil
 }
@@ -600,6 +730,264 @@ func mapWSDialErrorToReject(err error) error {
 		Reason:  "Server Error",
 		Cause:   err,
 	}
+}
+
+// negotiatedSRTP carries the result of negotiating encrypted media
+// from an inbound SDP offer. The Manager.onInvite path uses it to
+// (a) populate sipx.EncryptionParams for BuildAnswer and (b) install
+// the matching SRTP contexts on the rtp.Session.
+//
+// For SDES the contexts can be installed immediately — both sides'
+// keying material is in the SDP. For DTLS-SRTP the contexts are nil
+// at negotiation time and a Finalize callback is set; the call
+// manager calls Finalize after the DTLS handshake completes (on a
+// background goroutine; the SIP transaction is answered synchronously
+// with the SDP, the keys arrive shortly after).
+type negotiatedSRTP struct {
+	// Encryption params for the SDP answer.
+	Params sipx.EncryptionParams
+	// SRTP contexts to install on the rtp.Session for SDES. Nil for
+	// DTLS-SRTP — those get installed via Finalize.
+	InboundCtx, OutboundCtx *srtpv3.Context
+	// Finalize runs the DTLS-SRTP handshake on the rtp.Session's
+	// socket, derives the per-direction master keys from the keying-
+	// material export, and installs SRTP contexts. nil for SDES /
+	// plaintext.
+	Finalize func(ctx context.Context, rtpSess *rtp.Session) error
+	// Mode is "plaintext" | "sdes" | "dtls-srtp" — used for logging.
+	Mode string
+}
+
+// negotiateSRTP picks the encryption path based on the peer's offered
+// MediaProfile and the bridge's policy. Returns a *sipx.RejectError
+// when SRTPRequired is set and the peer offered plaintext only — the
+// SIP layer translates that into a 488 Not Acceptable Here.
+func (m *Manager) negotiateSRTP(offer *sipx.CodecOffer) (*negotiatedSRTP, error) {
+	// 1. Identify what the peer wants from MediaProfile.
+	profile := offer.MediaProfile
+	wantsSDES := profile == "RTP/SAVP" || profile == "RTP/SAVPF"
+	wantsDTLS := profile == "UDP/TLS/RTP/SAVP" || profile == "UDP/TLS/RTP/SAVPF"
+	wantsPlain := !wantsSDES && !wantsDTLS // including "RTP/AVP", "RTP/AVPF", or empty
+
+	if !m.cfg.SRTPEnabled {
+		if wantsPlain {
+			return &negotiatedSRTP{Mode: "plaintext"}, nil
+		}
+		// Peer wants encryption, we have it off. Don't try to "downgrade
+		// to plaintext" — that would silently weaken security guarantees
+		// the peer is relying on. Reject so the operator sees it.
+		return nil, &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   fmt.Errorf("peer offered %q but SRTPEnabled=false", profile),
+		}
+	}
+	if wantsPlain {
+		if m.cfg.SRTPRequired {
+			return nil, &sipx.RejectError{
+				SIPCode: 488,
+				Reason:  "Not Acceptable Here",
+				Cause:   fmt.Errorf("SRTPRequired but peer offered plaintext %q", profile),
+			}
+		}
+		return &negotiatedSRTP{Mode: "plaintext"}, nil
+	}
+
+	if wantsSDES {
+		return m.negotiateSDES(offer, profile)
+	}
+	if wantsDTLS {
+		if !m.cfg.SRTPDTLSEnabled || m.cfg.DTLSCert == nil {
+			return nil, &sipx.RejectError{
+				SIPCode: 488,
+				Reason:  "Not Acceptable Here",
+				Cause:   fmt.Errorf("peer offered DTLS-SRTP but SRTPDTLSEnabled=false or no cert configured"),
+			}
+		}
+		return m.negotiateDTLSSRTP(offer, profile)
+	}
+	// Shouldn't reach here — the wantsPlain branch above covers all
+	// non-SAVP profiles — but defend in depth.
+	return nil, &sipx.RejectError{
+		SIPCode: 488,
+		Reason:  "Not Acceptable Here",
+		Cause:   fmt.Errorf("unsupported media profile %q", profile),
+	}
+}
+
+// negotiateSDES is the inbound SDES path: pick a suite both sides
+// support, decode the peer's master key+salt, generate ours, build the
+// SRTP contexts, and emit the matching ``a=crypto`` line for our
+// answer.
+func (m *Manager) negotiateSDES(offer *sipx.CodecOffer, profile string) (*negotiatedSRTP, error) {
+	if len(offer.CryptoOffers) == 0 {
+		return nil, &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   errors.New("SAVP profile but no a=crypto attributes"),
+		}
+	}
+	// Walk peer's offers in their preference order; pick first one we
+	// support. RFC 4568 says the answerer picks one of the offered
+	// attributes; we don't get to substitute a different suite.
+	var chosen sipx.CryptoAttr
+	var chosenSuite rtp.SRTPSuite
+	for _, ca := range offer.CryptoOffers {
+		s, ok := rtp.SuiteByName(ca.Suite)
+		if !ok {
+			continue
+		}
+		chosen = ca
+		chosenSuite = s
+		break
+	}
+	if chosenSuite.Name == "" {
+		return nil, &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   fmt.Errorf("no SDES suite in common (peer offered %d suite(s))", len(offer.CryptoOffers)),
+		}
+	}
+	// Decode peer's keying material (inbound key for us = peer's master).
+	peerMaterial, err := rtp.DecodeInline(chosenSuite, chosen.Inline)
+	if err != nil {
+		return nil, &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   fmt.Errorf("decode peer crypto: %w", err),
+		}
+	}
+	// Generate our own material for the outbound direction.
+	ourMaterial, err := rtp.Generate(chosenSuite)
+	if err != nil {
+		return nil, fmt.Errorf("generate SDES material: %w", err) // bubble as 500
+	}
+	inboundCtx, err := peerMaterial.Context()
+	if err != nil {
+		return nil, fmt.Errorf("build inbound SRTP context: %w", err)
+	}
+	outboundCtx, err := ourMaterial.Context()
+	if err != nil {
+		return nil, fmt.Errorf("build outbound SRTP context: %w", err)
+	}
+	cryptoLine := fmt.Sprintf("%d %s inline:%s",
+		chosen.Tag, chosenSuite.Name, ourMaterial.EncodeInline())
+	return &negotiatedSRTP{
+		Mode: "sdes",
+		Params: sipx.EncryptionParams{
+			Profile:     profile, // echo whatever they offered (RTP/SAVP or RTP/SAVPF)
+			CryptoLines: []string{cryptoLine},
+		},
+		InboundCtx:  inboundCtx,
+		OutboundCtx: outboundCtx,
+	}, nil
+}
+
+// negotiateDTLSSRTP is the inbound DTLS-SRTP path: pick our setup role,
+// stamp our cert fingerprint in the answer, defer the actual handshake
+// + key derivation to Finalize. The handshake can't run synchronously
+// because the peer won't send DTLS packets until they've received our
+// SDP answer.
+func (m *Manager) negotiateDTLSSRTP(offer *sipx.CodecOffer, profile string) (*negotiatedSRTP, error) {
+	if m.cfg.DTLSFingerprint == "" {
+		return nil, fmt.Errorf("DTLS-SRTP: no fingerprint configured on manager")
+	}
+	if offer.Fingerprint.IsZero() {
+		return nil, &sipx.RejectError{
+			SIPCode: 488,
+			Reason:  "Not Acceptable Here",
+			Cause:   errors.New("DTLS-SRTP profile but no a=fingerprint"),
+		}
+	}
+	// RFC 5763 §5: answer picks "passive" if offer is "actpass" / "active",
+	// "active" if offer is "passive". Default offer is "actpass".
+	ourRole := "passive"
+	switch offer.Setup {
+	case "active":
+		ourRole = "passive"
+	case "passive":
+		ourRole = "active"
+	case "actpass", "":
+		ourRole = "passive"
+	case "holdconn":
+		return nil, &sipx.RejectError{
+			SIPCode: 488, Reason: "Not Acceptable Here",
+			Cause: errors.New("DTLS-SRTP a=setup:holdconn not supported"),
+		}
+	}
+	// Finalize runs after the SIP 200 OK. Implemented in dtls.go
+	// (Task 8) — for now stash the inputs so the handshake routine
+	// has what it needs.
+	peerFingerprint := offer.Fingerprint
+	cert := m.cfg.DTLSCert
+	isClient := ourRole == "active"
+	finalize := func(ctx context.Context, rtpSess *rtp.Session) error {
+		return rtp.RunDTLSSRTPHandshake(
+			ctx, rtpSess, cert,
+			peerFingerprint.Algorithm, peerFingerprint.Hex,
+			isClient,
+		)
+	}
+	return &negotiatedSRTP{
+		Mode: "dtls-srtp",
+		Params: sipx.EncryptionParams{
+			Profile:     profile,
+			Fingerprint: m.cfg.DTLSFingerprint,
+			SetupRole:   ourRole,
+		},
+		Finalize: finalize,
+	}, nil
+}
+
+// installOutboundSDES finishes the outbound SDES handshake: given the
+// peer's 200 OK answer and the master keys we offered (indexed by tag),
+// it figures out which suite they accepted and builds inbound + outbound
+// SRTP contexts.
+//
+//   - peer answers RTP/AVP (plaintext) when we offered SAVP → protocol
+//     violation per RFC 3264 §6.1 (answer profile must match offer),
+//     reject.
+//   - peer answers RTP/SAVP with no a=crypto → also a violation, reject.
+//   - peer answers with a tag we didn't offer → reject; can't decode.
+//   - peer answers with our offered tag — use their inline as the
+//     decrypt key, our offered material as the encrypt key.
+func installOutboundSDES(
+	answer *sipx.CodecOffer,
+	offered map[int]rtp.CryptoMaterial,
+) (*srtpv3.Context, *srtpv3.Context, error) {
+	profile := answer.MediaProfile
+	if profile != "RTP/SAVP" && profile != "RTP/SAVPF" {
+		return nil, nil, fmt.Errorf("we offered SAVP but peer answered %q", profile)
+	}
+	if len(answer.CryptoOffers) == 0 {
+		return nil, nil, errors.New("peer answered SAVP but provided no a=crypto")
+	}
+	// Answer carries exactly one a=crypto (the suite they picked). If
+	// they sent more, take the first.
+	picked := answer.CryptoOffers[0]
+	ourMaterial, ok := offered[picked.Tag]
+	if !ok {
+		return nil, nil, fmt.Errorf("peer picked tag %d which we didn't offer", picked.Tag)
+	}
+	// Their suite name must match the suite for the tag we offered;
+	// RFC 4568 §5.1.2 says the answerer MUST use a suite from the offer.
+	if !strings.EqualFold(picked.Suite, ourMaterial.Suite.Name) {
+		return nil, nil, fmt.Errorf("peer picked tag %d but with suite %q (we offered %q for that tag)",
+			picked.Tag, picked.Suite, ourMaterial.Suite.Name)
+	}
+	peerMaterial, err := rtp.DecodeInline(ourMaterial.Suite, picked.Inline)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode peer crypto: %w", err)
+	}
+	inboundCtx, err := peerMaterial.Context()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build inbound SRTP context: %w", err)
+	}
+	outboundCtx, err := ourMaterial.Context()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build outbound SRTP context: %w", err)
+	}
+	return inboundCtx, outboundCtx, nil
 }
 
 // mapEarlyCloseToReject converts a WS close frame that arrived

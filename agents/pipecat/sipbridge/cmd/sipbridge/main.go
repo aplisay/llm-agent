@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -51,14 +52,57 @@ func main() {
 		Str("worker_ws", cfg.WorkerWSBase).
 		Msg("sipbridge: starting")
 
+	// Build the TLS cert up front (if either TLS signalling OR
+	// DTLS-SRTP is enabled). Same cert / fingerprint covers both:
+	// the SIP TLS listener uses it for signalling, the DTLS-SRTP
+	// handshake uses it for media identity. Single identity = one
+	// thing to provision, one fingerprint for the SBC to trust.
+	var (
+		mediaCert        *tls.Certificate
+		mediaFingerprint string
+	)
+	wantDTLS := cfg.SRTPEnabled && cfg.SRTPDTLSEnabled
+	if cfg.TLSEnabled || wantDTLS {
+		cert, fp, selfSigned, err := sipx.LoadOrGenerateCert(
+			cfg.TLSCertFile,
+			cfg.TLSKeyFile,
+			[]string{cfg.SIPSignalIP, "sipbridge"},
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("sip: TLS cert setup")
+		}
+		certLog := log.Info().
+			Str("sha256_fingerprint", fp).
+			Bool("for_sip_tls", cfg.TLSEnabled).
+			Bool("for_dtls_srtp", wantDTLS)
+		if selfSigned {
+			certLog = certLog.Bool("self_signed", true).
+				Str("hint", "configure your upstream SBC to skip TLS+DTLS cert validation, or mount a real cert via SIPBRIDGE_TLS_CERT_FILE/_KEY_FILE")
+		} else {
+			certLog = certLog.Str("source", cfg.TLSCertFile)
+		}
+		certLog.Msg("sip: TLS cert ready")
+		mediaCert = &cert
+		mediaFingerprint = "sha-256 " + fp
+	}
+
 	// Wire components.
-	mgr := call.New(call.Config{
-		WorkerWSBase: cfg.WorkerWSBase,
-		MediaIP:      cfg.MediaIP,
-		MediaBindIP:  cfg.MediaBindIP,
-		RTPPortMin:   cfg.RTPPortMin,
-		RTPPortMax:   cfg.RTPPortMax,
-	})
+	callCfg := call.Config{
+		WorkerWSBase:    cfg.WorkerWSBase,
+		MediaIP:         cfg.MediaIP,
+		MediaBindIP:     cfg.MediaBindIP,
+		RTPPortMin:      cfg.RTPPortMin,
+		RTPPortMax:      cfg.RTPPortMax,
+		SRTPEnabled:     cfg.SRTPEnabled,
+		SRTPRequired:    cfg.SRTPRequired,
+		SRTPDTLSEnabled: cfg.SRTPDTLSEnabled,
+		SRTPOutbound:    cfg.SRTPOutbound,
+	}
+	if wantDTLS {
+		callCfg.DTLSCert = mediaCert
+		callCfg.DTLSFingerprint = mediaFingerprint
+	}
+	mgr := call.New(callCfg)
 
 	sipSrv, err := sipx.NewServer(sipx.Config{
 		SignalIP:   cfg.SIPSignalIP,
@@ -93,27 +137,13 @@ func main() {
 		log.Info().Msg("sip: UDP listener disabled by config (TLS-only mode)")
 	}
 	if cfg.TLSEnabled {
-		// Build the cert before spawning the listener goroutine so we
-		// can fail fast (and log the fingerprint synchronously) instead
-		// of swallowing the error in a goroutine.
-		cert, fp, selfSigned, err := sipx.LoadOrGenerateCert(
-			cfg.TLSCertFile,
-			cfg.TLSKeyFile,
-			[]string{cfg.SIPSignalIP, "sipbridge"},
-		)
-		if err != nil {
-			log.Fatal().Err(err).Msg("sip: TLS cert setup")
-		}
-		certLog := log.Info().Str("sha256_fingerprint", fp)
-		if selfSigned {
-			certLog = certLog.Bool("self_signed", true).
-				Str("hint", "configure your upstream SBC to skip TLS cert validation, or mount a real cert via SIPBRIDGE_TLS_CERT_FILE/_KEY_FILE")
-		} else {
-			certLog = certLog.Str("source", cfg.TLSCertFile)
-		}
-		certLog.Msg("sip: TLS cert ready")
+		// Cert was already built above so DTLS-SRTP and SIP TLS share
+		// the same identity. The pointer-deref is safe because the
+		// "build cert" block runs when TLSEnabled or wantDTLS is true,
+		// which is a superset of TLSEnabled.
+		tlsCert := *mediaCert
 		go func() {
-			if err := sipSrv.ListenTLS(ctx, cfg.TLSSignalPort, cert); err != nil && !errors.Is(err, context.Canceled) {
+			if err := sipSrv.ListenTLS(ctx, cfg.TLSSignalPort, tlsCert); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- fmt.Errorf("sip (TLS): %w", err)
 				return
 			}

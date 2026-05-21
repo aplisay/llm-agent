@@ -20,6 +20,7 @@ import (
 	"time"
 
 	pionrtp "github.com/pion/rtp"
+	srtpv3 "github.com/pion/srtp/v3"
 	"github.com/rs/zerolog/log"
 )
 
@@ -76,9 +77,22 @@ type Session struct {
 	// Outbound sequence + timestamp state. RFC 3550 says these should
 	// be random on session start to defeat third-party injection of
 	// spoofed packets.
-	seq atomic.Uint32 // wraps via uint16 in writeRTP
-	ts  atomic.Uint32
+	seq  atomic.Uint32 // wraps via uint16 in writeRTP
+	ts   atomic.Uint32
 	ssrc uint32
+
+	// SRTP contexts, set via SetSRTPContexts when the call negotiated
+	// encrypted media (SDES or DTLS-SRTP). pion's contexts are
+	// unidirectional, so we keep one for each direction. Both are nil
+	// for plaintext sessions; one without the other is a configuration
+	// bug (rejected by SetSRTPContexts).
+	//
+	// Held under srtpMu — DTLS-SRTP installs them asynchronously after
+	// the SIP 200 OK, so a packet may arrive before the contexts land;
+	// readLoop holds the lock briefly to read the current pair.
+	srtpMu      sync.RWMutex
+	srtpInbound  *srtpv3.Context
+	srtpOutbound *srtpv3.Context
 
 	mu     sync.Mutex
 	closed bool
@@ -152,9 +166,40 @@ func (s *Session) Start(ctx context.Context) {
 	go s.readLoop(rctx)
 }
 
+// SetSRTPContexts installs the SRTP encryption/decryption contexts.
+// Both must be non-nil (encryption is bidirectional in this stack);
+// passing one without the other is rejected to make the half-encrypted
+// state impossible. Safe to call concurrently with the read loop —
+// readLoop / SendPayload pick up the new contexts on the next packet.
+//
+// Used by the call manager once SDES has been negotiated in SDP, or
+// once a DTLS-SRTP handshake has completed and we've derived the per-
+// direction master keys from the keying-material export.
+func (s *Session) SetSRTPContexts(inbound, outbound *srtpv3.Context) error {
+	if (inbound == nil) != (outbound == nil) {
+		return errors.New("rtp: SetSRTPContexts: must set both inbound and outbound, or neither")
+	}
+	s.srtpMu.Lock()
+	s.srtpInbound = inbound
+	s.srtpOutbound = outbound
+	s.srtpMu.Unlock()
+	return nil
+}
+
+// IsEncrypted reports whether SRTP contexts are currently installed.
+// Used by the call manager for logging / metric tagging.
+func (s *Session) IsEncrypted() bool {
+	s.srtpMu.RLock()
+	defer s.srtpMu.RUnlock()
+	return s.srtpOutbound != nil
+}
+
 // SendPayload wraps an already-encoded codec payload in an RTP header
 // and sends it. Caller provides the codec bytes (e.g. 160 bytes of
 // PCMU); we add the RTP framing + sequence/ts and ship it.
+//
+// If an outbound SRTP context is installed, the marshalled RTP packet
+// is encrypted via SRTP before going on the wire.
 func (s *Session) SendPayload(payload []byte) error {
 	remote := s.remoteAddr.Load()
 	if remote == nil {
@@ -173,6 +218,15 @@ func (s *Session) SendPayload(payload []byte) error {
 	buf, err := pkt.Marshal()
 	if err != nil {
 		return fmt.Errorf("rtp: marshal: %w", err)
+	}
+	s.srtpMu.RLock()
+	out := s.srtpOutbound
+	s.srtpMu.RUnlock()
+	if out != nil {
+		buf, err = out.EncryptRTP(nil, buf, nil)
+		if err != nil {
+			return fmt.Errorf("rtp: SRTP encrypt: %w", err)
+		}
 	}
 	if _, err := s.conn.WriteToUDP(buf, remote); err != nil {
 		return fmt.Errorf("rtp: write: %w", err)
@@ -219,9 +273,24 @@ func (s *Session) readLoop(ctx context.Context) {
 			log.Warn().Err(err).Msg("rtp: read error")
 			return
 		}
+		// If SRTP is installed, decrypt before parsing the RTP header.
+		// pion's DecryptRTP allocates a fresh buffer for the plaintext,
+		// so we don't need to worry about aliasing ``buf``.
+		raw := buf[:n]
+		s.srtpMu.RLock()
+		in := s.srtpInbound
+		s.srtpMu.RUnlock()
+		if in != nil {
+			pt, err := in.DecryptRTP(nil, raw, nil)
+			if err != nil {
+				log.Warn().Err(err).Int("len", n).Msg("rtp: SRTP decrypt failed (auth tag / replay / wrong key?)")
+				continue
+			}
+			raw = pt
+		}
 		pkt := &pionrtp.Packet{}
-		if err := pkt.Unmarshal(buf[:n]); err != nil {
-			log.Warn().Err(err).Int("len", n).Msg("rtp: malformed packet")
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Warn().Err(err).Int("len", len(raw)).Msg("rtp: malformed packet")
 			continue
 		}
 		if s.onPayload != nil {

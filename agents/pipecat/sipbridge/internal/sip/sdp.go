@@ -16,15 +16,67 @@ import (
 // Phase A; Opus and G.722 will land here in Phase E as we add codec
 // negotiation logic.
 type CodecOffer struct {
-	HasPCMU      bool
-	HasPCMA      bool
-	RemoteIP     string
-	RemotePort   int
+	HasPCMU    bool
+	HasPCMA    bool
+	RemoteIP   string
+	RemotePort int
 	// Direction of the m=audio line (sendrecv / sendonly / recvonly /
 	// inactive). Hold (a=sendonly / a=inactive) is signalled this way
 	// — we honour it on the audio bridge but don't tear down the call.
 	Direction string
+
+	// MediaProfile is the m=audio profile token, joined with '/' — one of
+	// "RTP/AVP", "RTP/SAVP", "UDP/TLS/RTP/SAVP", "RTP/SAVPF", etc.
+	// Tells us which key-exchange path the peer offered: plain, SDES, or
+	// DTLS-SRTP.
+	MediaProfile string
+
+	// CryptoOffers carries the parsed ``a=crypto`` attributes when the
+	// peer offered SDES (MediaProfile is RTP/SAVP or RTP/SAVPF). Each
+	// entry preserves the order the peer sent so we can honour their
+	// preference. Empty for non-SDES offers.
+	CryptoOffers []CryptoAttr
+
+	// Fingerprint is the parsed ``a=fingerprint:<algo> <hex>`` for
+	// DTLS-SRTP. Used to verify the peer's cert during the DTLS
+	// handshake. Empty for non-DTLS offers.
+	Fingerprint Fingerprint
+
+	// Setup is the parsed ``a=setup:<role>`` for DTLS-SRTP — one of
+	// "active", "passive", "actpass", "holdconn" (RFC 4145). When the
+	// peer offers "actpass" we pick "passive" (server-side handshake);
+	// when they offer "active" we pick "passive"; when they offer
+	// "passive" we pick "active". Empty for non-DTLS offers.
+	Setup string
 }
+
+// CryptoAttr is one parsed ``a=crypto:<tag> <suite> inline:<inline> [params...]``
+// attribute. Tag is the peer's identifier for this offer; we echo it
+// back in our answer so they know which offer we accepted.
+//
+// Inline is the base64(masterKey||masterSalt) form; pass it through
+// ``rtp.DecodeInline(suite, inline)`` once you know the suite — the
+// suite name lives in Suite.
+type CryptoAttr struct {
+	Tag    int
+	Suite  string // SDES suite name, e.g. "AES_CM_128_HMAC_SHA1_80"
+	Inline string // raw base64(key||salt), tail params already stripped
+	// Params is the trailing optional ``lifetime|mki:length`` etc, kept
+	// for completeness but not interpreted in v1 (no re-key support).
+	Params string
+}
+
+// Fingerprint is a parsed ``a=fingerprint:<algorithm> <hex>``. Algorithm
+// is lowercased ("sha-256", "sha-1", …); Hex is the colon-separated
+// hex form on the wire (matching ``openssl x509 -fingerprint``).
+type Fingerprint struct {
+	Algorithm string
+	Hex       string
+}
+
+// IsZero reports whether the fingerprint is unset (no a=fingerprint
+// attribute seen).
+func (f Fingerprint) IsZero() bool { return f.Algorithm == "" }
 
 // ParseOffer extracts the codecs + remote RTP endpoint from a SIP
 // INVITE's SDP body. Returns an error only on actually-malformed SDP;
@@ -54,7 +106,33 @@ func ParseOffer(body []byte) (*CodecOffer, error) {
 	}
 
 	out := &CodecOffer{
-		Direction: directionOf(audio),
+		Direction:    directionOf(audio),
+		MediaProfile: strings.Join(audio.MediaName.Protos, "/"),
+	}
+
+	// Walk session-level a=fingerprint / a=setup first so the
+	// media-level (if any) can override below per RFC 8842.
+	for _, a := range sess.Attributes {
+		switch a.Key {
+		case "fingerprint":
+			out.Fingerprint = parseFingerprint(a.Value)
+		case "setup":
+			out.Setup = strings.ToLower(strings.TrimSpace(a.Value))
+		}
+	}
+	// Media-level attributes for the audio stream — these win over
+	// session-level (and are where carriers usually put crypto attrs).
+	for _, a := range audio.Attributes {
+		switch a.Key {
+		case "crypto":
+			if ca, ok := parseCryptoAttr(a.Value); ok {
+				out.CryptoOffers = append(out.CryptoOffers, ca)
+			}
+		case "fingerprint":
+			out.Fingerprint = parseFingerprint(a.Value)
+		case "setup":
+			out.Setup = strings.ToLower(strings.TrimSpace(a.Value))
+		}
 	}
 
 	// Remote IP comes from media-level c= line if present, else
@@ -104,6 +182,77 @@ func ParseOffer(body []byte) (*CodecOffer, error) {
 	return out, nil
 }
 
+// parseCryptoAttr decodes an SDES ``a=crypto`` value into a CryptoAttr.
+// Returns ``false`` on malformed input — we silently skip rather than
+// fail the whole parse, since the peer may offer several crypto lines
+// and we only need to recognise one we can use.
+//
+// Wire format: ``<tag> <suite> inline:<key>[|<lifetime>[|<mki:length>]] [more params...]``
+//
+//	1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGw|2^20|1:4
+func parseCryptoAttr(value string) (CryptoAttr, bool) {
+	fields := strings.Fields(value)
+	if len(fields) < 3 {
+		return CryptoAttr{}, false
+	}
+	tag, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return CryptoAttr{}, false
+	}
+	suite := fields[1]
+	// Find the inline: parameter. It's typically the first key=value
+	// pair after the suite, but per RFC 4568 other key=value params can
+	// precede it (key-method=other things), so we scan all post-suite
+	// fields rather than assume position.
+	var inlineRaw string
+	var paramsTail []string
+	for _, f := range fields[2:] {
+		if rest, ok := strings.CutPrefix(f, "inline:"); ok {
+			inlineRaw = rest
+			continue
+		}
+		paramsTail = append(paramsTail, f)
+	}
+	if inlineRaw == "" {
+		return CryptoAttr{}, false
+	}
+	// Split off optional ``|lifetime|mki:length`` from the inline value;
+	// keep the head as base64 of key||salt, the tail goes in Params.
+	var inlineParams string
+	if i := strings.IndexByte(inlineRaw, '|'); i >= 0 {
+		inlineParams = inlineRaw[i+1:]
+		inlineRaw = inlineRaw[:i]
+	}
+	allParams := inlineParams
+	if len(paramsTail) > 0 {
+		if allParams != "" {
+			allParams += " "
+		}
+		allParams += strings.Join(paramsTail, " ")
+	}
+	return CryptoAttr{
+		Tag:    tag,
+		Suite:  suite,
+		Inline: inlineRaw,
+		Params: allParams,
+	}, true
+}
+
+// parseFingerprint decodes ``a=fingerprint:<algorithm> <hex>``.
+// Algorithm is lower-cased so callers can compare without surprise;
+// hex is preserved in the colon-separated upper-case form most CAs +
+// openssl emit.
+func parseFingerprint(value string) Fingerprint {
+	fields := strings.Fields(value)
+	if len(fields) < 2 {
+		return Fingerprint{}
+	}
+	return Fingerprint{
+		Algorithm: strings.ToLower(fields[0]),
+		Hex:       strings.ToUpper(fields[1]),
+	}
+}
+
 // directionOf returns the m=audio direction attribute (sendrecv /
 // sendonly / recvonly / inactive). Default is sendrecv if no
 // directional attribute is present (RFC 4566 §6).
@@ -117,6 +266,40 @@ func directionOf(m *sdp.MediaDescription) string {
 	return "sendrecv"
 }
 
+// EncryptionParams describes the encryption choice for an outgoing SDP
+// answer or offer. The caller (typically internal/call/manager.go)
+// composes this after deciding which key-exchange mode it can satisfy
+// based on what the peer offered and the bridge's policy. Zero value
+// means plaintext RTP/AVP — backwards-compatible with the original
+// Phase A behaviour.
+type EncryptionParams struct {
+	// Profile is the SDP media profile token, joined with '/'. Common
+	// values: "RTP/AVP" (plaintext), "RTP/SAVP" (SDES), "RTP/SAVPF"
+	// (SDES with feedback), "UDP/TLS/RTP/SAVP" (DTLS-SRTP). Empty
+	// defaults to "RTP/AVP".
+	Profile string
+
+	// CryptoLines holds the post-prefix value(s) of ``a=crypto:`` lines
+	// for SDES — each entry is one line, e.g.
+	// "1 AES_CM_128_HMAC_SHA1_80 inline:abc...". An SDP answer carries
+	// exactly one (the suite we accepted); an SDP offer can carry many
+	// (one per suite we'd be willing to use, in preference order). Set
+	// when Profile is "RTP/SAVP" or "RTP/SAVPF"; nil otherwise.
+	CryptoLines []string
+
+	// Fingerprint is the post-prefix value of ``a=fingerprint:`` for
+	// DTLS-SRTP — e.g. "sha-256 AB:CD:...". Set when Profile is
+	// "UDP/TLS/RTP/SAVP"; empty otherwise.
+	Fingerprint string
+
+	// SetupRole is the ``a=setup:<role>`` value for DTLS-SRTP — one of
+	// "active", "passive", "actpass". RFC 5763 §5: an answer MUST NOT
+	// use "actpass"; pick "passive" if the offer is "actpass" or
+	// "active", and "active" if the offer is "passive". Empty for
+	// non-DTLS answers.
+	SetupRole string
+}
+
 // BuildAnswer constructs an SDP answer offering the chosen codec at
 // the supplied local RTP endpoint. Always includes PT 101 (RFC 4733
 // telephone-event) so the carrier can send DTMF events out-of-band
@@ -126,7 +309,10 @@ func directionOf(m *sdp.MediaDescription) string {
 // `mediaIP` is the IP the remote should send media to — the bridge's
 // public IP / NAT-mapped IP, not necessarily its bind IP. This is set
 // from the SIPBRIDGE_MEDIA_IP env var (see config/config.go).
-func BuildAnswer(offer *CodecOffer, localRTP *rtp.Session, mediaIP string) ([]byte, rtp.PayloadType, error) {
+//
+// `enc` selects the media profile (plain / SDES / DTLS-SRTP) and the
+// matching SDP attributes. Pass zero value for plaintext.
+func BuildAnswer(offer *CodecOffer, localRTP *rtp.Session, mediaIP string, enc EncryptionParams) ([]byte, rtp.PayloadType, error) {
 	pt := rtp.PayloadPCMU
 	formats := []string{"0", "101"}
 	rtpmaps := []string{"0 PCMU/8000", "101 telephone-event/8000"}
@@ -154,9 +340,13 @@ func BuildAnswer(offer *CodecOffer, localRTP *rtp.Session, mediaIP string) ([]by
 		answerDir = "inactive"
 	}
 
-	// Build the SDP by hand — Phase A is so small that the hand-rolled
-	// form is shorter and clearer than wiring it through pion/sdp's
-	// builder API. If we add ICE / DTLS / SRTP we should switch to the
+	profile := enc.Profile
+	if profile == "" {
+		profile = "RTP/AVP"
+	}
+
+	// Build the SDP by hand — the structure is small enough that
+	// hand-rolled is shorter and clearer than wiring through pion/sdp's
 	// builder.
 	lines := []string{
 		"v=0",
@@ -164,10 +354,22 @@ func BuildAnswer(offer *CodecOffer, localRTP *rtp.Session, mediaIP string) ([]by
 		"s=sipbridge",
 		fmt.Sprintf("c=IN IP4 %s", mediaIP),
 		"t=0 0",
-		fmt.Sprintf("m=audio %d RTP/AVP %s", port, strings.Join(formats, " ")),
+		fmt.Sprintf("m=audio %d %s %s", port, profile, strings.Join(formats, " ")),
 	}
 	for _, rm := range rtpmaps {
 		lines = append(lines, "a=rtpmap:"+rm)
+	}
+	// Encryption-specific attributes go right after the codec rtpmaps,
+	// before ptime/fmtp/direction. SBC parsers don't care about order
+	// here but this matches how most carriers emit their offers.
+	for _, cl := range enc.CryptoLines {
+		lines = append(lines, "a=crypto:"+cl)
+	}
+	if enc.Fingerprint != "" {
+		lines = append(lines, "a=fingerprint:"+enc.Fingerprint)
+	}
+	if enc.SetupRole != "" {
+		lines = append(lines, "a=setup:"+enc.SetupRole)
 	}
 	lines = append(lines,
 		"a=ptime:20",
@@ -184,22 +386,41 @@ func BuildAnswer(offer *CodecOffer, localRTP *rtp.Session, mediaIP string) ([]by
 // prefer it; A-law is the European default but every European carrier
 // accepts mu-law as a fallback. PT 101 publishes our willingness to
 // receive out-of-band DTMF.
-func BuildOffer(localRTP *rtp.Session, mediaIP string) []byte {
+//
+// ``enc`` selects the media profile (plain / SDES / DTLS-SRTP) and the
+// matching SDP attributes — for an outbound originate we get to choose
+// what we offer. Pass the zero value for plaintext.
+func BuildOffer(localRTP *rtp.Session, mediaIP string, enc EncryptionParams) []byte {
 	port := localRTP.LocalAddr().Port
+	profile := enc.Profile
+	if profile == "" {
+		profile = "RTP/AVP"
+	}
 	lines := []string{
 		"v=0",
 		fmt.Sprintf("o=- %d %d IN IP4 %s", randSessID(), 1, mediaIP),
 		"s=sipbridge",
 		fmt.Sprintf("c=IN IP4 %s", mediaIP),
 		"t=0 0",
-		fmt.Sprintf("m=audio %d RTP/AVP 0 8 101", port),
+		fmt.Sprintf("m=audio %d %s 0 8 101", port, profile),
 		"a=rtpmap:0 PCMU/8000",
 		"a=rtpmap:8 PCMA/8000",
 		"a=rtpmap:101 telephone-event/8000",
+	}
+	for _, cl := range enc.CryptoLines {
+		lines = append(lines, "a=crypto:"+cl)
+	}
+	if enc.Fingerprint != "" {
+		lines = append(lines, "a=fingerprint:"+enc.Fingerprint)
+	}
+	if enc.SetupRole != "" {
+		lines = append(lines, "a=setup:"+enc.SetupRole)
+	}
+	lines = append(lines,
 		"a=fmtp:101 0-15",
 		"a=ptime:20",
 		"a=sendrecv",
-	}
+	)
 	return []byte(strings.Join(lines, "\r\n") + "\r\n")
 }
 

@@ -50,6 +50,29 @@ type Config struct {
 	RTPPortMin  int    // default 10000
 	RTPPortMax  int    // default 20000
 
+	// SRTP encrypted-media policy.
+	//
+	// - SRTPEnabled: accept encrypted offers (SDES + DTLS-SRTP) when the
+	//   peer asks for them, fall back to plaintext otherwise. Default
+	//   true; set false only to force plaintext (debugging).
+	// - SRTPRequired: refuse plaintext-only offers with SIP 488 Not
+	//   Acceptable Here. Use this when the bridge sits behind TLS
+	//   signalling and any plaintext peer is a misconfiguration.
+	//   Implies SRTPEnabled.
+	// - SRTPDTLSEnabled: opt into DTLS-SRTP in addition to SDES.
+	//   Default true; both are supported when the peer's SDP indicates
+	//   the matching profile. Disabling it forces SDES-only (useful for
+	//   peers with broken DTLS-SRTP implementations).
+	SRTPEnabled     bool
+	SRTPRequired    bool
+	SRTPDTLSEnabled bool
+	// SRTPOutbound: offer SDES SRTP on outbound INVITEs (best-effort
+	// — peer that doesn't support it will reject with 488 and the
+	// outbound originate fails). Set to false to fall back to
+	// plaintext outbound offers, e.g. for trunks known not to support
+	// SRTP. Has no effect when SRTPEnabled is false.
+	SRTPOutbound bool
+
 	// Pipecat worker WebSocket base URL — we append /sipbridge/agent/{session_id}.
 	WorkerWSBase string
 
@@ -75,6 +98,10 @@ func Load() (*Config, error) {
 		TLSCertFile:       env("SIPBRIDGE_TLS_CERT_FILE", ""),
 		TLSKeyFile:        env("SIPBRIDGE_TLS_KEY_FILE", ""),
 		TLSAutoSelfSigned: envBool("SIPBRIDGE_TLS_AUTO_SELFSIGNED", true),
+		SRTPEnabled:       envBool("SIPBRIDGE_SRTP_ENABLED", true),
+		SRTPRequired:      envBool("SIPBRIDGE_SRTP_REQUIRED", false),
+		SRTPDTLSEnabled:   envBool("SIPBRIDGE_SRTP_DTLS_ENABLED", true),
+		SRTPOutbound:      envBool("SIPBRIDGE_SRTP_OUTBOUND", true),
 		MediaIP:        env("SIPBRIDGE_MEDIA_IP", ""),
 		MediaBindIP:    env("SIPBRIDGE_MEDIA_BIND_IP", ""),
 		RTPPortMin:     envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
@@ -112,6 +139,11 @@ func Load() (*Config, error) {
 	// nothing on the SIP port is a foot-gun.
 	if cfg.UDPDisabled && !cfg.TLSEnabled {
 		return nil, fmt.Errorf("config: SIPBRIDGE_SIP_UDP_DISABLED is set but TLS is not configured (set SIPBRIDGE_TLS_CERT_FILE and SIPBRIDGE_TLS_KEY_FILE, or re-enable UDP)")
+	}
+	// SRTPRequired without SRTPEnabled is a misconfiguration that would
+	// silently never accept any call. Refuse to start.
+	if cfg.SRTPRequired && !cfg.SRTPEnabled {
+		return nil, fmt.Errorf("config: SIPBRIDGE_SRTP_REQUIRED is set but SIPBRIDGE_SRTP_ENABLED=0; either enable SRTP or relax the requirement")
 	}
 	return cfg, nil
 }
