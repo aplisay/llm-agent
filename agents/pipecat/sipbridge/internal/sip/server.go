@@ -98,9 +98,10 @@ type Server struct {
 	// signalIP is the IP we advertise (Via/Contact); bindIP is the
 	// address we actually listen on. They differ on any non-trivial
 	// deployment — see Config docs and docker-compose for the rationale.
-	signalIP   string
-	signalPort int
-	bindIP     string
+	signalIP      string
+	signalPort    int
+	tlsSignalPort int
+	bindIP        string
 
 	// traceEnabled gates the full-message SIP trace logger (see
 	// traceSIP) — set from Config.TraceEnabled at NewServer time.
@@ -157,6 +158,15 @@ type Config struct {
 	SignalIP string
 	// SignalPort is the SIP port to listen on (UDP). Default 5060.
 	SignalPort int
+	// TLSSignalPort is the SIPS port we advertise in the Contact for
+	// dialogs established over TLS. Should match the port the TLS
+	// listener is bound to (typically 5061). Used to build a
+	// ``sips:...:<port>;transport=tls`` Contact per RFC 5630 §5.5
+	// when answering an INVITE that arrived over TLS — answering a
+	// SIPS dialog with a plaintext sip: Contact forces in-dialog
+	// requests (ACK, BYE, re-INVITE) to fail back to UDP, which
+	// almost always means they're routed to nowhere when behind NAT.
+	TLSSignalPort int
 	// BindIP is the address to bind the UDP listener to. Defaults to
 	// SignalIP if empty.
 	BindIP string
@@ -255,14 +265,15 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		ua:           ua,
-		srv:          srv,
-		ub:           dua,
-		calls:        make(map[string]*activeCall),
-		signalIP:     cfg.SignalIP,
-		signalPort:   cfg.SignalPort,
-		bindIP:       cfg.BindIP,
-		traceEnabled: cfg.TraceEnabled,
+		ua:            ua,
+		srv:           srv,
+		ub:            dua,
+		calls:         make(map[string]*activeCall),
+		signalIP:      cfg.SignalIP,
+		signalPort:    cfg.SignalPort,
+		tlsSignalPort: cfg.TLSSignalPort,
+		bindIP:        cfg.BindIP,
+		traceEnabled:  cfg.TraceEnabled,
 	}
 	s.registerHandlers()
 	return s, nil
@@ -427,6 +438,15 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// DialogUA's ContactHDR if we don't supply one ourselves.
 	resp := sip.NewResponseFromRequest(dlg.Dialog.InviteRequest, 200, "OK", answer)
 	resp.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	// Transport-appropriate Contact. The UA's stored ContactHDR is a
+	// plain ``sip:`` URI on the UDP signal port — wrong for TLS
+	// dialogs. Per RFC 5630 §5.5, a UAS answering an INVITE over
+	// TLS MUST emit a ``sips:`` Contact reachable over TLS;
+	// otherwise the peer routes subsequent in-dialog requests
+	// (notably the ACK to our 200 OK) over UDP to whatever URI we
+	// gave them — which behind NAT goes nowhere. We synthesise the
+	// right Contact per-call from the dialog's transport.
+	resp.AppendHeader(s.contactForDialog(dlg))
 	s.traceSIP(">", "200 OK for INVITE", resp)
 	// Send the 200 OK via the dialog's WriteResponse rather than
 	// tx.Respond. Critical difference: WriteResponse stamps
@@ -453,6 +473,42 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		Str("from", headers.From).
 		Str("to", headers.To).
 		Msg("sip: INVITE answered")
+}
+
+// contactForDialog builds a Contact header appropriate for the dialog
+// transport. TLS dialogs get a ``sips:`` URI on the TLS port with
+// ``;transport=tls`` (RFC 5630 §5.5); everything else gets a ``sip:``
+// URI on the UDP port. The host is our advertised SignalIP — same
+// address peers used to reach us for the INVITE.
+//
+// Why this matters: the peer's UAC uses our Contact as the target
+// for the ACK to our 2xx AND as the remote-target in the route set
+// for all subsequent in-dialog requests. A ``sip:`` Contact on UDP
+// 5060 forces TLS-arrived peers to switch to UDP for the ACK, and
+// when our advertised host isn't reachable over UDP from the peer
+// (typical behind NAT / Docker) the ACK silently vanishes — the
+// dialog never confirms, sipgo's WriteResponse retransmits the 200
+// OK for 32s, then gives up.
+func (s *Server) contactForDialog(dlg *sipgo.DialogServerSession) *sip.ContactHeader {
+	transport := ""
+	if dlg.Dialog.InviteRequest != nil {
+		transport = strings.ToLower(dlg.Dialog.InviteRequest.Transport())
+	}
+	uri := sip.Uri{
+		User: "sipbridge",
+		Host: s.signalIP,
+		Port: s.signalPort,
+	}
+	switch transport {
+	case "tls", "wss":
+		uri.Scheme = "sips"
+		if s.tlsSignalPort > 0 {
+			uri.Port = s.tlsSignalPort
+		}
+		uri.UriParams = sip.NewParams()
+		uri.UriParams.Add("transport", "tls")
+	}
+	return &sip.ContactHeader{Address: uri}
 }
 
 func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {

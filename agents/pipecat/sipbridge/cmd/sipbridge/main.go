@@ -106,10 +106,11 @@ func main() {
 	mgr := call.New(callCfg)
 
 	sipSrv, err := sipx.NewServer(sipx.Config{
-		SignalIP:     cfg.SIPSignalIP,
-		SignalPort:   cfg.SIPSignalPort,
-		BindIP:       cfg.SIPBindIP,
-		TraceEnabled: cfg.SIPTraceEnabled,
+		SignalIP:      cfg.SIPSignalIP,
+		SignalPort:    cfg.SIPSignalPort,
+		TLSSignalPort: cfg.TLSSignalPort,
+		BindIP:        cfg.SIPBindIP,
+		TraceEnabled:  cfg.SIPTraceEnabled,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("sip server")
