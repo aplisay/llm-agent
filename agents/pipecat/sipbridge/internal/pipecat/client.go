@@ -45,6 +45,11 @@ type Client struct {
 	done    chan struct{}
 	stopped bool
 
+	// audioRateWarned ensures the unexpected-sample-rate warning fires
+	// at most once per Client (rather than once per audio frame, which
+	// would be many times a second).
+	audioRateWarned bool
+
 	// closeErr is the read-loop's terminating error, set just before
 	// ``done`` is closed. Read it via ``CloseErr()`` after ``Done()`` has
 	// fired (or after ``WaitForEarlyClose`` returns true). The bridge
@@ -298,10 +303,21 @@ func (c *Client) readLoop(ctx context.Context) {
 func (c *Client) dispatch(frame *IncomingFrame) {
 	switch {
 	case frame.Audio != nil:
-		// Worker emits AudioRawFrame at 16 kHz mono s16le per its
-		// `WebsocketServerTransport` audio-out config. Pass through to
-		// the registered handler; the RTP layer downsamples + encodes
-		// for the wire.
+		// Worker is expected to emit AudioRawFrame at 16 kHz mono
+		// s16le, matching what FastAPIWebsocketParams pins it to (see
+		// pipecat_aplisay/worker.py). If we see a different sample rate
+		// the bridge's downsampler will mis-interpret the samples and
+		// the caller hears chipmunked / aliased audio — log loudly so
+		// it's obvious from the bridge logs which side is misconfigured.
+		// We log at most once per call.
+		if frame.Audio.SampleRate != 0 && frame.Audio.SampleRate != 16000 && !c.audioRateWarned {
+			c.audioRateWarned = true
+			log.Warn().
+				Uint32("got", frame.Audio.SampleRate).
+				Uint32("expected", 16000).
+				Str("url", c.url).
+				Msg("pipecat ws: unexpected audio sample rate — fix audio_in/out_sample_rate in worker FastAPIWebsocketParams or the audio will be distorted on the SIP wire")
+		}
 		if c.onAudio != nil {
 			c.onAudio(frame.Audio.Audio)
 		}

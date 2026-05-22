@@ -101,6 +101,35 @@ type Server struct {
 	signalIP   string
 	signalPort int
 	bindIP     string
+
+	// traceEnabled gates the full-message SIP trace logger (see
+	// traceSIP) — set from Config.TraceEnabled at NewServer time.
+	traceEnabled bool
+}
+
+// traceSIP logs a SIP message at INFO with full headers + body when
+// tracing is enabled. ``direction`` is a short prefix like ``>``
+// (outbound / bridge → peer) or ``<`` (inbound / peer → bridge).
+// ``label`` describes the context (e.g. "inbound request", "200 OK for
+// INVITE"). The full wire form comes from sipgo's ``msg.String()``.
+//
+// Used to diagnose dialog-level issues — missing BYE, weird SDP from
+// the SBC, retransmits, etc. Heavy but invaluable when something's
+// going wrong below the call manager.
+type sipMessage interface {
+	String() string
+	StartLine() string
+}
+
+func (s *Server) traceSIP(direction, label string, msg sipMessage) {
+	if !s.traceEnabled || msg == nil {
+		return
+	}
+	log.Info().
+		Str("dir", direction).
+		Str("label", label).
+		Str("start_line", msg.StartLine()).
+		Msgf("sip trace:\n%s%s", direction+" ", strings.ReplaceAll(msg.String(), "\n", "\n"+direction+" "))
 }
 
 // activeCall holds the per-Call-ID dialog reference plus a discriminator
@@ -133,6 +162,14 @@ type Config struct {
 	BindIP string
 	// UserAgent string sent in the User-Agent / Server header.
 	UserAgent string
+
+	// TraceEnabled: when true, every SIP message that crosses the
+	// bridge — inbound requests, our outbound responses, our outbound
+	// requests, and the responses we receive — is logged at INFO
+	// level with full headers + body. Heavy: a typical call produces
+	// 10–15 message lines. Use for diagnosing dialog-level issues
+	// (where's the BYE, what's in the SDP, etc).
+	TraceEnabled bool
 }
 
 // NewServer builds and configures the UAS but does not start listening
@@ -148,8 +185,33 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.UserAgent = "aplisay-sipbridge/0.1"
 	}
 
+	// Outbound TLS config used when sipgo dials a new client connection
+	// for in-dialog requests (typically BYE) that can't reuse the
+	// inbound TLS connection — e.g. when the peer (Twilio Elastic SIP
+	// Trunk, classically) closed the inbound side as part of their
+	// silent hangup. ``InsecureSkipVerify=true`` is deliberate:
+	//
+	//   - Carrier certs (Twilio, Bandwidth, Telnyx, …) generally have
+	//     DNS-name SANs only (``*.pstn.twilio.com`` etc.). When we
+	//     reconnect by IP — which is all sipgo's transport layer
+	//     knows from ``InviteRequest.Source()`` — Go's verifier
+	//     refuses with "doesn't contain any IP SANs".
+	//   - We're not the side authenticating the peer here — the SIP
+	//     dialog state machine carries our authentication via the
+	//     dialog Call-ID + tags. The TLS layer is just providing
+	//     transport confidentiality between us and a peer we already
+	//     trust (we accepted their INVITE).
+	//
+	// If you ever want a stricter policy in production — pinning the
+	// carrier cert, or providing a CA bundle so DNS-name validation
+	// works — replace this with a tls.Config that has RootCAs set.
+	clientTLSConf := &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // see comment above
+		MinVersion:         tls.VersionTLS12,
+	}
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(cfg.UserAgent),
+		sipgo.WithUserAgenTLSConfig(clientTLSConf),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sip: NewUA: %w", err)
@@ -177,16 +239,30 @@ func NewServer(cfg Config) (*Server, error) {
 	dua := &sipgo.DialogUA{
 		Client:     client,
 		ContactHDR: contact,
+		// RewriteContact: in-dialog requests (BYE, re-INVITE, REFER, …)
+		// go to the wire-level source of the INVITE rather than the
+		// Contact URI's host. Without this, sipgo follows the Contact
+		// URI literally — which is fatal for peers behind NAT or in
+		// separate Docker networks, where the Contact often advertises
+		// an unroutable RFC1918 / Docker-bridge IP (e.g. 172.18.x.x).
+		//
+		// This is RFC 5923 "Connection Reuse" for TLS dialogs and the
+		// equivalent NAT-traversal answer for UDP. It mirrors what
+		// every B2BUA / SBC does by default; sipgo just doesn't turn
+		// it on without us asking. Comment in dialog_ua.go:20 sums it
+		// up: "Should be used when behind NAT."
+		RewriteContact: true,
 	}
 
 	s := &Server{
-		ua:         ua,
-		srv:        srv,
-		ub:         dua,
-		calls:      make(map[string]*activeCall),
-		signalIP:   cfg.SignalIP,
-		signalPort: cfg.SignalPort,
-		bindIP:     cfg.BindIP,
+		ua:           ua,
+		srv:          srv,
+		ub:           dua,
+		calls:        make(map[string]*activeCall),
+		signalIP:     cfg.SignalIP,
+		signalPort:   cfg.SignalPort,
+		bindIP:       cfg.BindIP,
+		traceEnabled: cfg.TraceEnabled,
 	}
 	s.registerHandlers()
 	return s, nil
@@ -250,9 +326,21 @@ func (s *Server) registerHandlers() {
 	// CANCEL / OPTIONS get a default 200 OK / 487 from sipgo's
 	// transaction layer; we don't need to override unless we add load
 	// shedding or "OPTIONS keepalive" tracking.
+	//
+	// OnNoRoute fires for any inbound request that doesn't match the
+	// registered handlers (OPTIONS, INFO, REFER, MESSAGE, etc). We
+	// don't have business logic for these but we want them in the
+	// trace when tracing is on, so we can see e.g. carrier OPTIONS
+	// keepalives or unexpected REFERs. Respond 501 Not Implemented so
+	// the peer doesn't retransmit.
+	s.srv.OnNoRoute(func(req *sip.Request, tx sip.ServerTransaction) {
+		s.traceSIP("<", "no-route ("+string(req.Method)+")", req)
+		s.respond(req, tx, 501, "Not Implemented", nil)
+	})
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
+	s.traceSIP("<", "INVITE", req)
 	callID := req.CallID().Value()
 	// Log the wire-level source of the INVITE up front. SIP responses go
 	// back to this address (with rport / received semantics), so if it
@@ -285,7 +373,9 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// Provisional 100 Trying — the answer build below can take a moment
 	// (allocating an RTP port + opening the worker WS), so give the
 	// upstream B2BUA confidence the request is being processed.
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Trying", nil))
+	tryingResp := sip.NewResponseFromRequest(req, 100, "Trying", nil)
+	s.traceSIP(">", "100 Trying for INVITE", tryingResp)
+	_ = tx.Respond(tryingResp)
 
 	answer, err := s.invite(context.Background(), callID, offer, headers)
 	if err != nil {
@@ -320,22 +410,41 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	s.calls[callID] = &activeCall{uas: dlg}
 	s.mu.Unlock()
 
-	// 200 OK with our SDP answer. Content-Type must be application/sdp
-	// (sipgo doesn't set this automatically when we use
-	// NewResponseFromRequest + SetBody).
-	resp := sip.NewResponseFromRequest(req, 200, "OK", answer)
+	// 200 OK with our SDP answer. Critical detail: we build the
+	// response from ``dlg.Dialog.InviteRequest`` rather than the raw
+	// ``req`` we got from the handler. ReadInvite (sipgo's dialog_ua.go
+	// line ~40) clones the request and stamps a UUID-derived
+	// ``;tag=`` onto the To header, then stores that augmented copy
+	// AND derives the dialog ID from it. If we build the 200 OK
+	// from the raw request (no To-tag), WriteResponse computes a
+	// different dialog ID from the response and refuses with
+	// "ID do not match. Invite request has changed headers?" —
+	// silently breaking dialog establishment.
+	//
+	// Content-Type must be application/sdp (sipgo's
+	// NewResponseFromRequest copies request headers but doesn't set
+	// Content-Type). Contact is added by WriteResponse from the
+	// DialogUA's ContactHDR if we don't supply one ourselves.
+	resp := sip.NewResponseFromRequest(dlg.Dialog.InviteRequest, 200, "OK", answer)
 	resp.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	// Add a Contact so subsequent in-dialog requests (ACK, BYE, re-
-	// INVITE) target our SignalIP:SignalPort directly.
-	resp.AppendHeader(&sip.ContactHeader{
-		Address: sip.Uri{
-			User: "sipbridge",
-			Host: s.signalIP,
-			Port: s.signalPort,
-		},
-	})
-	if err := tx.Respond(resp); err != nil {
-		log.Warn().Err(err).Str("call_id", callID).Msg("sip: failed to send 200 OK")
+	s.traceSIP(">", "200 OK for INVITE", resp)
+	// Send the 200 OK via the dialog's WriteResponse rather than
+	// tx.Respond. Critical difference: WriteResponse stamps
+	// ``s.Dialog.InviteResponse = res`` (so later in-dialog requests
+	// like BYE can synthesise their ``From`` header from the dialog
+	// state via buildReq), drives the 2xx retransmit timer until ACK
+	// arrives, and transitions the dialog state machine through
+	// Established → Confirmed. tx.Respond does none of that —
+	// using it left the dialog session blind to its own 200 OK, and
+	// every subsequent BYE was missing its From header, which the
+	// peer (Twilio) silently drops as a parse violation.
+	//
+	// WriteResponse blocks until the ACK arrives (or 64*T1 ≈ 32s
+	// timeout). sipgo continues to dispatch other inbound messages
+	// (including the ACK itself, which our OnAck handler then forwards
+	// to dlg.ReadAck — that's what unblocks us).
+	if err := dlg.WriteResponse(resp); err != nil {
+		log.Warn().Err(err).Str("call_id", callID).Msg("sip: WriteResponse (200 OK) failed")
 		s.cleanupCall(callID)
 		return
 	}
@@ -347,6 +456,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
+	s.traceSIP("<", "ACK", req)
 	// ACK transitions the dialog to Confirmed. sipgo's
 	// DialogServerSession.ReadAck does this; we just need to forward.
 	callID := req.CallID().Value()
@@ -369,7 +479,16 @@ func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
+	s.traceSIP("<", "BYE", req)
 	callID := req.CallID().Value()
+	// Log every BYE so the path from SIP wire → call manager teardown
+	// → worker WS close is visible. Without this it's impossible to
+	// tell from logs whether the peer's BYE actually arrived or got
+	// dropped somewhere (e.g. closed TCP connection on TLS transports).
+	log.Info().
+		Str("call_id", callID).
+		Str("source", req.Source()).
+		Msg("sip: BYE received")
 	s.mu.Lock()
 	c := s.calls[callID]
 	s.mu.Unlock()
@@ -377,6 +496,9 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		// Unknown dialog — respond 200 anyway so the far end stops
 		// retransmitting (some carriers re-send BYE after a missed
 		// ACK).
+		log.Warn().
+			Str("call_id", callID).
+			Msg("sip: BYE for unknown dialog — call manager won't tear down (was the INVITE answered on this bridge?)")
 		s.respond(req, tx, 200, "OK", nil)
 		return
 	}
@@ -409,6 +531,7 @@ func (s *Server) cleanupCall(callID string) {
 // ReadInvite). Body may be nil.
 func (s *Server) respond(req *sip.Request, tx sip.ServerTransaction, code int, reason string, body []byte) {
 	resp := sip.NewResponseFromRequest(req, code, reason, body)
+	s.traceSIP(">", fmt.Sprintf("%d %s for %s", code, reason, req.Method), resp)
 	if err := tx.Respond(resp); err != nil {
 		log.Warn().Err(err).Int("code", code).Msg("sip: respond failed")
 	}
@@ -485,6 +608,9 @@ func (s *Server) Originate(
 	if err != nil {
 		return nil, nil, fmt.Errorf("sip: Invite: %w", err)
 	}
+	if dlg.InviteRequest != nil {
+		s.traceSIP(">", "INVITE (outbound)", dlg.InviteRequest)
+	}
 
 	// WaitAnswer blocks for the final response. Provisional responses
 	// (100 Trying / 180 Ringing) are consumed internally.
@@ -493,6 +619,9 @@ func (s *Server) Originate(
 		return nil, nil, fmt.Errorf("sip: WaitAnswer: %w", err)
 	}
 	resp := dlg.InviteResponse
+	if resp != nil {
+		s.traceSIP("<", fmt.Sprintf("%d %s for outbound INVITE", resp.StatusCode, resp.Reason), resp)
+	}
 	if resp == nil || !resp.IsSuccess() {
 		_ = dlg.Close()
 		code := 0
@@ -641,15 +770,142 @@ func (s *Server) Hangup(ctx context.Context, callID string) error {
 	}
 	s.mu.Unlock()
 	if !ok {
+		log.Warn().Str("call_id", callID).Msg("sip: hangup: no active dialog (already cleaned up or never created)")
 		return fmt.Errorf("sip: hangup: unknown call_id %q", callID)
 	}
-	if c.uas != nil {
-		return c.uas.Bye(ctx)
+	// Construct + trace + send BYE on whichever dialog half is
+	// populated. We replicate sipgo's DialogXxx.Bye() inline rather
+	// than delegating, so we can stamp the BYE into the SIP trace
+	// log just before sending AND capture the response — sipgo's
+	// WriteBye swallows the response object, so without this inline
+	// version we couldn't see what (if anything) the peer replied.
+	switch {
+	case c.uas != nil:
+		bye, err := s.buildByeForUAS(c.uas)
+		if err != nil {
+			log.Warn().Err(err).Str("call_id", callID).Msg("sip: hangup: build BYE (UAS) failed")
+			return err
+		}
+		return s.sendByeAndTraceResponse(ctx, callID, "UAS", bye, c.uas.TransactionRequest)
+	case c.uac != nil:
+		bye, err := s.buildByeForUAC(c.uac)
+		if err != nil {
+			log.Warn().Err(err).Str("call_id", callID).Msg("sip: hangup: build BYE (UAC) failed")
+			return err
+		}
+		return s.sendByeAndTraceResponse(ctx, callID, "UAC", bye, c.uac.TransactionRequest)
 	}
-	if c.uac != nil {
-		return c.uac.Bye(ctx)
-	}
+	log.Warn().Str("call_id", callID).Msg("sip: hangup: dialog has neither UAS nor UAC handle — nothing to BYE")
 	return nil
+}
+
+// sendByeAndTraceResponse runs the BYE through the dialog's transaction
+// layer (replicating sipgo's ``WriteBye`` minus its dialog-state guard,
+// which we can't trust — it returns nil silently if the dialog has
+// somehow already been marked Ended, hiding routing failures), traces
+// both the outgoing BYE and any final response we get back, and
+// returns the appropriate error.
+//
+// txReq is the dialog session's TransactionRequest method (either
+// DialogServerSession's or DialogClientSession's), passed as a value
+// so this helper works for both UAS and UAC sides.
+func (s *Server) sendByeAndTraceResponse(
+	ctx context.Context,
+	callID string,
+	side string,
+	bye *sip.Request,
+	txReq func(context.Context, *sip.Request) (sip.ClientTransaction, error),
+) error {
+	// Pre-buildReq trace: the bare BYE we constructed, before sipgo's
+	// dialog layer stamps From/To/Call-ID/CSeq/Route/Via etc. Useful
+	// only to see the Request-URI and confirm the build started.
+	s.traceSIP(">", "BYE (outbound, "+side+"-side, pre-buildReq)", bye)
+	tx, err := txReq(ctx, bye)
+	if err != nil {
+		log.Warn().Err(err).Str("call_id", callID).Msg("sip: BYE TransactionRequest failed")
+		return err
+	}
+	defer tx.Terminate()
+	// Post-buildReq the request has been mutated in-place with all
+	// the dialog-state headers (From, To, Call-ID, CSeq, Via, Route)
+	// AND (if RewriteContact applied) a corrected Destination. Log
+	// the FINAL wire form — this is what actually went out. If the
+	// peer doesn't respond, this is where to look for malformed
+	// headers, wrong Route order, missing tags, etc.
+	s.traceSIP(">", "BYE (outbound, "+side+"-side, post-buildReq, on the wire)", bye)
+	log.Info().
+		Str("call_id", callID).
+		Str("dest", bye.Destination()).
+		Str("transport", bye.Transport()).
+		Msg("sip: BYE handed to transaction layer")
+	select {
+	case res, ok := <-tx.Responses():
+		if !ok {
+			log.Warn().
+				Str("call_id", callID).
+				Msg("sip: BYE response channel closed without final — peer never responded (transaction timeout?)")
+			return errors.New("sip: BYE got no final response")
+		}
+		s.traceSIP("<", fmt.Sprintf("%d %s for BYE", res.StatusCode, res.Reason), res)
+		if res.StatusCode != 200 {
+			return fmt.Errorf("sip: BYE got non-2xx response: %d %s", res.StatusCode, res.Reason)
+		}
+		log.Info().
+			Str("call_id", callID).
+			Msg("sip: BYE acknowledged with 200 OK")
+		return nil
+	case <-ctx.Done():
+		log.Warn().
+			Err(ctx.Err()).
+			Str("call_id", callID).
+			Msg("sip: BYE context cancelled before response arrived")
+		return ctx.Err()
+	}
+}
+
+// buildByeForUAS mirrors sipgo's ``DialogServerSession.Bye()`` —
+// constructs a BYE request targeted at the Contact the peer published
+// in the original INVITE, with the dialog's transport. WriteBye
+// populates the From/To/Call-ID/CSeq from the dialog state when it
+// runs the request through the transaction layer.
+//
+// The actual destination override (so the BYE goes back on the same
+// connection the INVITE arrived on, rather than dialling out to
+// whatever the Contact URI says) is enabled via the ``RewriteContact``
+// flag on the parent ``DialogUA`` — see ``NewServer``. sipgo's
+// ``buildReq`` honours that flag and calls ``SetDestination`` for us
+// inside ``WriteBye``. Doing it ourselves here would be overwritten
+// at the same point.
+func (s *Server) buildByeForUAS(dlg *sipgo.DialogServerSession) (*sip.Request, error) {
+	if dlg.Dialog.InviteRequest == nil {
+		return nil, errors.New("dialog has no InviteRequest")
+	}
+	cont := dlg.Dialog.InviteRequest.Contact()
+	if cont == nil {
+		return nil, errors.New("dialog InviteRequest has no Contact header")
+	}
+	bye := sip.NewRequest(sip.BYE, cont.Address)
+	bye.SetTransport(dlg.Dialog.InviteRequest.Transport())
+	return bye, nil
+}
+
+// buildByeForUAC mirrors sipgo's ``DialogClientSession.Bye()`` — same
+// shape but the target Contact lives on the InviteResponse rather than
+// the InviteRequest. Destination override is handled by sipgo's
+// ``RewriteContact`` flag (see ``buildByeForUAS`` rationale).
+func (s *Server) buildByeForUAC(dlg *sipgo.DialogClientSession) (*sip.Request, error) {
+	if dlg.Dialog.InviteResponse == nil {
+		return nil, errors.New("dialog has no InviteResponse")
+	}
+	cont := dlg.Dialog.InviteResponse.Contact()
+	if cont == nil {
+		return nil, errors.New("dialog InviteResponse has no Contact header")
+	}
+	bye := sip.NewRequest(sip.BYE, cont.Address)
+	if dlg.Dialog.InviteRequest != nil {
+		bye.SetTransport(dlg.Dialog.InviteRequest.Transport())
+	}
+	return bye, nil
 }
 
 // Compile-time guard against unused imports during incremental builds.

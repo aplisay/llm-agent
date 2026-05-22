@@ -49,6 +49,14 @@ type Config struct {
 	MediaBindIP string // local bind IP for RTP sockets — default = MediaIP
 	RTPPortMin  int    // default 10000
 	RTPPortMax  int    // default 20000
+	// RTPTimeoutSeconds: tear the call down (BYE upstream + close
+	// worker WS) after this many seconds with no inbound RTP. Catches
+	// Twilio's Elastic SIP Trunk "silent hangup" behaviour (no BYE,
+	// media just stops) and any other peer that drops media without
+	// signalling. 0 disables. Default 10 — long enough to ride out
+	// brief network blips (typical packet-loss bursts are 1–3s) but
+	// short enough that the bot doesn't keep talking into the void.
+	RTPTimeoutSeconds int
 
 	// SRTP encrypted-media policy.
 	//
@@ -84,6 +92,11 @@ type Config struct {
 
 	// Logging.
 	LogLevel string // default "info"
+	// SIPTraceEnabled: log every SIP message that crosses the wire at
+	// INFO with full headers + body. Heavy but invaluable for debugging
+	// dialog-level issues (missing BYE, weird carrier SDP, etc.). Off
+	// by default; enable in dev compose.
+	SIPTraceEnabled bool
 }
 
 // Load reads the environment and returns a fully-populated Config, or
@@ -104,12 +117,14 @@ func Load() (*Config, error) {
 		SRTPOutbound:      envBool("SIPBRIDGE_SRTP_OUTBOUND", true),
 		MediaIP:        env("SIPBRIDGE_MEDIA_IP", ""),
 		MediaBindIP:    env("SIPBRIDGE_MEDIA_BIND_IP", ""),
-		RTPPortMin:     envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
-		RTPPortMax:     envInt("SIPBRIDGE_RTP_PORT_MAX", 20000),
+		RTPPortMin:        envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
+		RTPPortMax:        envInt("SIPBRIDGE_RTP_PORT_MAX", 20000),
+		RTPTimeoutSeconds: envInt("SIPBRIDGE_RTP_TIMEOUT_SECONDS", 10),
 		WorkerWSBase:   env("SIPBRIDGE_WORKER_WS_BASE", "ws://pipecat-worker:8082"),
 		APIBindAddr:    env("SIPBRIDGE_API_BIND_ADDR", ":8090"),
 		APIBearerToken: env("SIPBRIDGE_API_TOKEN", ""),
-		LogLevel:       env("SIPBRIDGE_LOG_LEVEL", "info"),
+		LogLevel:        env("SIPBRIDGE_LOG_LEVEL", "info"),
+		SIPTraceEnabled: envBool("SIPBRIDGE_SIP_TRACE", false),
 	}
 	// TLS is on if either a real cert pair is provided OR we're
 	// allowed to auto-generate a self-signed one. Disable both knobs

@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -62,6 +63,13 @@ type Config struct {
 	// offers plain RTP/AVP regardless of SRTPEnabled.
 	SRTPOutbound bool
 
+	// RTPTimeoutSeconds: tear the call down (send BYE upstream + close
+	// the worker WS) when no inbound RTP has arrived for this many
+	// seconds. Covers peers — notably Twilio's Elastic SIP Trunk —
+	// that stop sending media when the caller hangs up but never
+	// send a BYE. 0 disables the watchdog. Default 10.
+	RTPTimeoutSeconds int
+
 	// DTLSCert is the X.509 cert (with private key) we use for
 	// DTLS-SRTP handshakes. Reuse of the SIP TLS cert is recommended —
 	// the same identity covers both signalling and media. nil disables
@@ -96,6 +104,9 @@ func New(cfg Config) *Manager {
 	if cfg.RTPPortMax == 0 {
 		cfg.RTPPortMax = 20000
 	}
+	if cfg.RTPTimeoutSeconds == 0 {
+		cfg.RTPTimeoutSeconds = 10
+	}
 	return &Manager{
 		cfg:   cfg,
 		calls: make(map[string]*Call),
@@ -127,6 +138,7 @@ func (m *Manager) ActiveCallIDs() []string {
 // media path and sends a SIP BYE in whichever direction the dialog
 // has. Idempotent — multiple calls for the same id are silently fine.
 func (m *Manager) Hangup(ctx context.Context, callID string) error {
+	log.Info().Str("call_id", callID).Msg("call: hangup requested")
 	m.mu.Lock()
 	c, ok := m.calls[callID]
 	if ok {
@@ -134,15 +146,21 @@ func (m *Manager) Hangup(ctx context.Context, callID string) error {
 	}
 	m.mu.Unlock()
 	if !ok {
+		log.Warn().Str("call_id", callID).Msg("call: hangup for unknown call_id — already torn down?")
 		return fmt.Errorf("call: unknown call_id %q", callID)
 	}
 	// SIP-side BYE first so the far end starts terminating; then
 	// release our local media. Errors on BYE are non-fatal — we
 	// continue with media teardown either way.
 	if m.sip != nil {
+		log.Info().Str("call_id", callID).Msg("call: sending BYE upstream")
 		if err := m.sip.Hangup(ctx, callID); err != nil {
 			log.Warn().Err(err).Str("call_id", callID).Msg("call: BYE failed during hangup")
+		} else {
+			log.Info().Str("call_id", callID).Msg("call: BYE upstream complete")
 		}
+	} else {
+		log.Warn().Str("call_id", callID).Msg("call: no SIP layer registered — skipping BYE")
 	}
 	c.Close()
 	return nil
@@ -290,9 +308,14 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 		jb:        rtp.NewJitterBuffer(3, 160),
 		closed:    make(chan struct{}),
 	}
+	c.lastRTPNanos.Store(time.Now().UnixNano())
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	outCallID := out.CallID
+	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
+		_ = m.Hangup(context.Background(), outCallID)
+	})
 
 	rtpSess.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
@@ -524,9 +547,14 @@ func (m *Manager) onInvite(
 		jb:        rtp.NewJitterBuffer(3, 160),
 		closed:    make(chan struct{}),
 	}
+	c.lastRTPNanos.Store(time.Now().UnixNano())
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	inCallID := callID
+	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
+		_ = m.Hangup(context.Background(), inCallID)
+	})
 
 	// 4. Wire callbacks. Both directions go through the codec layer.
 	rtpSess.SetPayloadHandler(c.onRTPPayload)
@@ -639,7 +667,10 @@ func (m *Manager) onBye(callID string) {
 	}
 	m.mu.Unlock()
 	if ok {
+		log.Info().Str("call_id", callID).Msg("call: tearing down (BYE)")
 		c.Close()
+	} else {
+		log.Warn().Str("call_id", callID).Msg("call: onBye for unknown call — already torn down or never registered")
 	}
 }
 
@@ -1113,6 +1144,30 @@ type Call struct {
 	// jitter buffer is bypassed (relay packets pass straight through
 	// to keep the bridged path minimum-latency).
 	peer *Call
+
+	// firstRTPLogged: once-flag that gates the "first RTP packet
+	// received" diagnostic log. Useful to confirm whether the upstream
+	// is actually sending media to the port we advertised in the SDP
+	// answer — especially in dev when only a sub-range of RTP ports
+	// is forwarded through Docker Desktop / a corporate firewall.
+	firstRTPLogged atomic.Bool
+
+	// lastRTPNanos is the time.UnixNano() of the most recent inbound
+	// RTP packet. Updated atomically on every payload. The media-
+	// timeout watchdog compares it against time.Now() to detect peers
+	// that have stopped sending media without sending a BYE — most
+	// famously Twilio's Elastic SIP Trunk, which simply ceases media
+	// when the caller hangs up.
+	//
+	// Initialised at Call construction to time.Now().UnixNano() so the
+	// watchdog gives an equal grace period for media to start as it
+	// does for media to stop.
+	lastRTPNanos atomic.Int64
+
+	// mediaTimeoutStop cancels the media-timeout watchdog. Set when
+	// the watchdog goroutine is started; nil-safe (Close handles
+	// both states).
+	mediaTimeoutStop context.CancelFunc
 }
 
 // SetPeer puts the call into media-relay mode by stapling it to its
@@ -1163,6 +1218,26 @@ func (c *Call) SetPeer(peer *Call) {
 func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bool) {
 	if c.isClosed() {
 		return
+	}
+	// Refresh the last-RTP timestamp on every packet — the media-
+	// timeout watchdog reads this to detect peers that stop sending
+	// media without sending BYE.
+	c.lastRTPNanos.Store(time.Now().UnixNano())
+	// First-packet diagnostic. Swap returns the prior value, so the
+	// log fires exactly once per call regardless of how many packets
+	// race in concurrently. Useful when investigating "no inbound
+	// audio" issues — confirms RTP is actually arriving at the bound
+	// port (rather than e.g. being dropped by a firewall / missing
+	// port-forward).
+	if c.firstRTPLogged.CompareAndSwap(false, true) {
+		log.Info().
+			Str("call_id", c.callID).
+			Uint8("payload_type", uint8(pt)).
+			Int("payload_bytes", len(payload)).
+			Uint16("first_seq", seq).
+			Int("rtp_port", c.rtp.LocalAddr().Port).
+			Bool("encrypted", c.rtp.IsEncrypted()).
+			Msg("rtp: first inbound packet received")
 	}
 	c.mu.Lock()
 	peer := c.peer
@@ -1332,12 +1407,69 @@ func (c *Call) Close() {
 	if c.releaseStop != nil {
 		c.releaseStop()
 	}
+	if c.mediaTimeoutStop != nil {
+		c.mediaTimeoutStop()
+	}
 	if c.rtp != nil {
 		c.rtp.Close()
 	}
 	if c.ws != nil {
 		c.ws.Stop()
 	}
+}
+
+// startMediaTimeoutWatchdog spawns a ticker that tears the call down
+// when no inbound RTP has been seen for ``timeoutSec`` seconds. Used
+// to detect peers (Twilio Elastic SIP Trunk in particular) that stop
+// sending media when the caller hangs up but never bother to send a
+// BYE. Without this the bridge would happily keep the call leg alive
+// forever, leaking the worker Pipecat session and any upstream
+// trunk slot.
+//
+// The hangup parameter is the manager-level teardown — it sends a SIP
+// BYE upstream (so the carrier releases its end) AND closes the local
+// call. Plain ``c.Close()`` is wrong here: that leaves the SIP dialog
+// open from the peer's perspective, which on some carriers leaks
+// channel-equivalent state for the dialog-timer's default ~32 minutes.
+func (c *Call) startMediaTimeoutWatchdog(timeoutSec int, hangup func()) {
+	if timeoutSec <= 0 || hangup == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.mediaTimeoutStop = cancel
+	timeoutNanos := int64(timeoutSec) * int64(time.Second)
+	// Tick at 1/3 of the timeout — fine-grained enough to catch the
+	// silence quickly, coarse enough not to thrash the scheduler.
+	tickInterval := time.Duration(timeoutNanos / 3)
+	if tickInterval < time.Second {
+		tickInterval = time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if c.isClosed() {
+					return
+				}
+				silenceNanos := time.Now().UnixNano() - c.lastRTPNanos.Load()
+				if silenceNanos < timeoutNanos {
+					continue
+				}
+				log.Warn().
+					Str("call_id", c.callID).
+					Int("timeout_s", timeoutSec).
+					Float64("silence_s", float64(silenceNanos)/float64(time.Second)).
+					Bool("ever_received_rtp", c.firstRTPLogged.Load()).
+					Msg("rtp: media timeout — tearing down (no BYE from peer; Twilio-style silent hangup)")
+				hangup()
+				return
+			}
+		}
+	}()
 }
 
 func (c *Call) isClosed() bool {

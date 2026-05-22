@@ -88,15 +88,16 @@ func main() {
 
 	// Wire components.
 	callCfg := call.Config{
-		WorkerWSBase:    cfg.WorkerWSBase,
-		MediaIP:         cfg.MediaIP,
-		MediaBindIP:     cfg.MediaBindIP,
-		RTPPortMin:      cfg.RTPPortMin,
-		RTPPortMax:      cfg.RTPPortMax,
-		SRTPEnabled:     cfg.SRTPEnabled,
-		SRTPRequired:    cfg.SRTPRequired,
-		SRTPDTLSEnabled: cfg.SRTPDTLSEnabled,
-		SRTPOutbound:    cfg.SRTPOutbound,
+		WorkerWSBase:      cfg.WorkerWSBase,
+		MediaIP:           cfg.MediaIP,
+		MediaBindIP:       cfg.MediaBindIP,
+		RTPPortMin:        cfg.RTPPortMin,
+		RTPPortMax:        cfg.RTPPortMax,
+		RTPTimeoutSeconds: cfg.RTPTimeoutSeconds,
+		SRTPEnabled:       cfg.SRTPEnabled,
+		SRTPRequired:      cfg.SRTPRequired,
+		SRTPDTLSEnabled:   cfg.SRTPDTLSEnabled,
+		SRTPOutbound:      cfg.SRTPOutbound,
 	}
 	if wantDTLS {
 		callCfg.DTLSCert = mediaCert
@@ -105,9 +106,10 @@ func main() {
 	mgr := call.New(callCfg)
 
 	sipSrv, err := sipx.NewServer(sipx.Config{
-		SignalIP:   cfg.SIPSignalIP,
-		SignalPort: cfg.SIPSignalPort,
-		BindIP:     cfg.SIPBindIP,
+		SignalIP:     cfg.SIPSignalIP,
+		SignalPort:   cfg.SIPSignalPort,
+		BindIP:       cfg.SIPBindIP,
+		TraceEnabled: cfg.SIPTraceEnabled,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("sip server")

@@ -146,8 +146,14 @@ services:
       # advertised IPs above tell peers where to route replies.
       SIPBRIDGE_SIP_BIND_IP: ${SIPBRIDGE_SIP_BIND_IP:-0.0.0.0}
       SIPBRIDGE_MEDIA_BIND_IP: ${SIPBRIDGE_MEDIA_BIND_IP:-0.0.0.0}
+      # Narrower RTP port range than prod (10000–20000) because Docker
+      # Desktop on macOS / Windows port-forwards each UDP port
+      # individually and 10 000 forwarded ports adds noticeable startup
+      # latency + RAM. 250 ports = 125 simultaneous calls (RTP uses
+      # even ports only), which is plenty for dev. Override per-shell
+      # if you need more concurrency.
       SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
-      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
+      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-10249}
       # Reach the worker via host.docker.internal so this works on Docker
       # Desktop (where the container's 127.0.0.1 is the VM's loopback, not
       # the host's). The ``extra_hosts`` directive above makes the same
@@ -156,6 +162,11 @@ services:
       SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
       SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-debug}
+      # Full SIP message dumps on every transaction (in + out). Heavy
+      # but indispensable for debugging dialog-level issues — set this
+      # back to 0 once you're done. Has no effect when SIPBRIDGE_LOG_LEVEL
+      # is higher than info.
+      SIPBRIDGE_SIP_TRACE: ${SIPBRIDGE_SIP_TRACE:-1}
 
       # ---- TLS / SIPS ----
       #

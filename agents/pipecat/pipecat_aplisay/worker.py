@@ -290,18 +290,32 @@ async def _sipbridge_resolve_agent_from_headers(
     b2bua_ip = h.get("x-lk-realip")
     b2bua_transport = h.get("x-lk-transport")
 
-    # Extract bare numbers from SIP URIs. sipgo gives us
-    # "sip:+44...@host" form; strip to the user portion.
+    # Extract bare numbers from SIP / SIPS / tel URIs. sipgo gives us
+    # "sip:+44...@host" or — once we switched to TLS — "sips:+44...@host";
+    # carriers occasionally hand off "tel:+44..." too (RFC 3966). We
+    # need just the user portion ("+44...") so it matches the bare
+    # number stored against the phone endpoint in the REST DB. We also
+    # strip user-part parameters like ";user=phone" that some SBCs add.
     def _user_of(uri: str) -> str:
         if not uri:
             return ""
-        s = uri
+        s = uri.strip()
         if s.startswith("<") and s.endswith(">"):
             s = s[1:-1]
-        if s.lower().startswith("sip:"):
-            s = s[4:]
+        # Strip URI scheme (RFC 3261 + RFC 3966). Case-insensitive
+        # comparison; only one scheme present at a time.
+        for scheme in ("sips:", "sip:", "tel:"):
+            if s.lower().startswith(scheme):
+                s = s[len(scheme):]
+                break
+        # SIP request-URIs are user@host[:port][;params]; tel: URIs are
+        # user[;params]. Cut at @ for SIP, then drop the host. The same
+        # split also handles "user@host:port;params" form.
         if "@" in s:
             s = s.split("@", 1)[0]
+        # Strip user-part parameters (";user=phone", ";phone-context=...").
+        if ";" in s:
+            s = s.split(";", 1)[0]
         return s
 
     from_number = _user_of(from_uri)
@@ -1458,6 +1472,18 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             audio_out_enabled=True,
             add_wav_header=False,
             serializer=serializer,
+            # The bridge speaks PCM16LE mono at 16 kHz over the WS in
+            # both directions — its codec layer up/downsamples between
+            # 16 kHz on the WS and 8 kHz on the RTP wire (G.711 PCMU/A).
+            # Pin the transport rates so Pipecat's internal resamplers
+            # converge on 16 kHz before frames hit the WS, no matter
+            # what the LLM service emits natively (Ultravox is 24 kHz,
+            # OpenAI Realtime is 24 kHz, others vary). Without this
+            # we'd let the LLM's native rate leak through and the
+            # bridge would mis-interpret it as 16 kHz → pitch-shifted
+            # / distorted audio at both ends.
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=16000,
         ),
     )
 
