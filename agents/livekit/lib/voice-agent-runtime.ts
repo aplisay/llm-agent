@@ -208,11 +208,6 @@ export async function runAgentWorker({
   let session: voice.AgentSession | null = null;
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
-  /**
-   * When the bridged leg ends we call `session.close()` then `cleanupAndClose()`.
-   * The Close handler must not delete the room / end the active call in between — that is cleanupAndClose's job.
-   */
-  let suppressNextSessionCloseRoomHandlers = false;
   let maxDuration: number = 305000; // Default value
   let callStarted = false;
   // Guard to ensure RecorderIO finalization/upload runs only once per job
@@ -701,8 +696,7 @@ export async function runAgentWorker({
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
             logger.info({ ev }, "session closed");
-            // End transfer activity if in progress (non-blocking; listener stays synchronous
-            // so `suppressNextSessionCloseRoomHandlers` is not raced by `finally` after `session.close()`).
+            // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
               DISCONNECT_REASONS.SESSION_CLOSED,
             ).catch((transferError) => {
@@ -711,16 +705,12 @@ export async function runAgentWorker({
                 "error ending transfer activity during session close",
               );
             });
-            // Blind bridge: bridged-leg cleanup calls `session.close()` then `cleanupAndClose()`.
-            // Skip room delete / active-call end here so the bridged call is not torn down twice.
-            if (suppressNextSessionCloseRoomHandlers) {
-              suppressNextSessionCloseRoomHandlers = false;
-              logger.info(
-                {},
-                "session close with deferred room/call cleanup (bridged teardown sequence)",
-              );
-              return;
-            }
+            // Best-effort room/call teardown. Our ParticipantDisconnected
+            // handler always also calls cleanupAndClose (which deletes the
+            // room and ends the active call awaited), so these are belt-and-
+            // braces in case session close arrives without a participant
+            // disconnect (e.g. SDK auto-close on shutdown). deleteRoomWithRetry
+            // treats 404 as success so double-delete is harmless.
             void deleteRoomWithRetry(room.name).catch((e) => {
               logger.error({ e }, "error deleting room on session close");
             });
