@@ -132,7 +132,12 @@ export interface TransferArgs {
   operation?: 'blind' | 'consultative';
   transferPrompt?: string;
   consultFeedback?: boolean;
+  // Force the final hop to be completed by bridging (legacy; inverse of forceRefer).
   forceBridged?: boolean;
+  // Force the final hop to be completed via SIP REFER (with ?Replaces for the
+  // consultative finalize) regardless of the origin default. Takes precedence
+  // over forceBridged when both are set.
+  forceRefer?: boolean;
   [key: string]: any;
   session?: voice.AgentSession;
 }

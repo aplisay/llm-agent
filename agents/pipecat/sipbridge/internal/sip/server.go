@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -751,6 +752,106 @@ func (s *Server) Refer(ctx context.Context, callID string, target string) error 
 		return s.sendReferOnUAC(ctx, c.uac, referHdrs)
 	}
 	return errors.New("sip: REFER: dialog has no UAS or UAC session")
+}
+
+// ReferReplaces sends an attended-transfer REFER on ``parentCallID`` (the
+// original caller A↔bridge leg) whose Refer-To embeds a
+// ``?Replaces=<consult-dialog>`` pointing at the consult target C. This is
+// the SIP-REFER finalisation of a consultative transfer (RFC 3891): A
+// re-INVITEs C with Replaces, C swaps the bridge↔C dialog for the A↔C one,
+// and the bridge drops both legs from the media path.
+//
+// The Refer-To target URI and the Replaces dialog identifier (Call-ID +
+// to-tag + from-tag) are both derived from the consult leg's dialog
+// (``consultCallID``), so the worker only needs to pass the two call ids.
+func (s *Server) ReferReplaces(ctx context.Context, parentCallID, consultCallID string) error {
+	s.mu.Lock()
+	parent, okP := s.calls[parentCallID]
+	consult, okC := s.calls[consultCallID]
+	s.mu.Unlock()
+	if !okP {
+		return fmt.Errorf("sip: REFER+Replaces: unknown parent call_id %q", parentCallID)
+	}
+	if !okC {
+		return fmt.Errorf("sip: REFER+Replaces: unknown consult call_id %q", consultCallID)
+	}
+
+	target, replaces, err := consultDialogReplaces(consult)
+	if err != nil {
+		return fmt.Errorf("sip: REFER+Replaces: %w", err)
+	}
+
+	// Refer-To MUST be angle-bracket enclosed when it carries an embedded
+	// header (the ?Replaces=), per RFC 3515 §2.1 / RFC 3261. The Replaces
+	// value is percent-escaped so its ';' and '=' don't terminate the URI.
+	referTo := fmt.Sprintf("<%s?Replaces=%s>", target, url.QueryEscape(replaces))
+	referHdrs := []sip.Header{
+		sip.NewHeader("Refer-To", referTo),
+		sip.NewHeader("Referred-By", fmt.Sprintf("<sip:sipbridge@%s>", s.signalIP)),
+	}
+
+	log.Info().
+		Str("parent_call_id", parentCallID).
+		Str("consult_call_id", consultCallID).
+		Str("refer_to", referTo).
+		Msg("sip: attended REFER + Replaces")
+
+	if parent.uas != nil {
+		return s.sendReferOnUAS(ctx, parent.uas, referHdrs)
+	}
+	if parent.uac != nil {
+		return s.sendReferOnUAC(ctx, parent.uac, referHdrs)
+	}
+	return errors.New("sip: REFER+Replaces: parent dialog has no UAS or UAC session")
+}
+
+// consultDialogReplaces derives the Refer-To target URI and the Replaces
+// header value for an attended transfer from the consult leg's dialog.
+//
+// The consult leg is always an outbound (UAC) dialog the bridge originated
+// to C, so:
+//
+//   - target  = the dialled destination AOR (consult INVITE's To URI),
+//     which routes via the same upstream path the original caller uses.
+//   - replaces = "<call-id>;to-tag=<C's tag>;from-tag=<bridge's tag>".
+//     From C's perspective (the UAS of the consult dialog) its local tag is
+//     the To-tag of the 200 OK and the remote tag is the From-tag of the
+//     INVITE — which is exactly what C needs to match the Replaces.
+func consultDialogReplaces(c *activeCall) (target string, replaces string, err error) {
+	if c.uac == nil {
+		return "", "", errors.New("consult dialog is not an outbound (UAC) dialog")
+	}
+	inv := c.uac.InviteRequest
+	resp := c.uac.InviteResponse
+	if inv == nil || resp == nil {
+		return "", "", errors.New("consult dialog missing INVITE/response")
+	}
+
+	callID := inv.CallID().Value()
+
+	var fromTag, toTag string
+	if f := inv.From(); f != nil {
+		fromTag = f.Params.GetOr("tag", "")
+	}
+	if t := resp.To(); t != nil {
+		toTag = t.Params.GetOr("tag", "")
+	}
+	if callID == "" || fromTag == "" || toTag == "" {
+		return "", "", fmt.Errorf(
+			"consult dialog missing Replaces identifiers (call-id=%q from-tag=%q to-tag=%q)",
+			callID, fromTag, toTag,
+		)
+	}
+
+	if t := inv.To(); t != nil {
+		target = t.Address.String()
+	}
+	if target == "" {
+		return "", "", errors.New("consult dialog missing destination URI")
+	}
+
+	replaces = fmt.Sprintf("%s;to-tag=%s;from-tag=%s", callID, toTag, fromTag)
+	return target, replaces, nil
 }
 
 func (s *Server) sendReferOnUAS(

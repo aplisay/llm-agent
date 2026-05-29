@@ -72,6 +72,20 @@ class CallSession:
     # transfer_state and trigger the bridge.
     parent_session: Optional["CallSession"] = None
 
+    # Origin / transfer-mode context, threaded from the inbound lookup
+    # (worker.py) so ``_on_transfer`` can resolve REFER-vs-bridge at transfer
+    # time. ``registration_originated`` drives the default (registration →
+    # REFER, trunk → bridged). The two force_* fields carry the endpoint /
+    # trunk option overrides (None = unset, fall through to origin default).
+    # See ``docs/call-transfers.md``.
+    registration_originated: bool = False
+    force_refer_transfer: Optional[bool] = None
+    force_bridged_transfer: Optional[bool] = None
+    # Resolved REFER-vs-bridge decision for the in-flight consultative
+    # transfer, recorded when ``_on_transfer`` starts the consult leg so the
+    # accept tool finalises via the same mode (attended REFER vs media bridge).
+    _consult_use_refer: bool = False
+
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling."""
         active_agent = self.agent
@@ -504,6 +518,29 @@ class CallSession:
             turns.append((role, content))
         return render_parent_transcript(turns)
 
+    def _resolve_use_refer(self, args: dict) -> bool:
+        """Resolve whether the final transfer hop should use SIP REFER
+        (with ?Replaces for the consultative finalize) versus a media
+        bridge. Mirrors LiveKit's ``resolveUseRefer`` in
+        ``agents/livekit/lib/transfer-handler.ts``.
+
+        Precedence (highest first):
+          1. per-transfer ``forceRefer`` arg → REFER
+          2. per-transfer ``forceBridged`` arg → bridged
+          3. trunk option ``forceReferTransfer`` → REFER
+          4. registration option ``forceBridgedTransfer`` → bridged
+          5. origin default: registration → REFER, trunk/other → bridged
+        """
+        if args.get("forceRefer") is True:
+            return True
+        if args.get("forceBridged") is True:
+            return False
+        if self.force_refer_transfer is True:
+            return True
+        if self.force_bridged_transfer is True:
+            return False
+        return self.registration_originated is True
+
     async def _on_transfer(self, args: dict) -> dict:
         """Tool-call entry point. Maps the LLM-visible ``transfer``
         function args onto a :class:`TransferRequest`, which the gateway
@@ -534,16 +571,23 @@ class CallSession:
         # "consultative" + force_bridged.
         if op == "consult":
             op = "consultative"
-        force_bridged = bool(args.get("forceBridged")) or (op == "bridged")
+        legacy_bridged = (op == "bridged")
         if op == "bridged":
             op = "blind"
+
+        # Resolve REFER-vs-bridge using per-transfer args + origin context
+        # (registration → REFER default, trunk → bridged default). A legacy
+        # ``operation="bridged"`` still forces a bridge regardless of origin.
+        use_refer = self._resolve_use_refer(args) and not legacy_bridged
+        force_bridged = legacy_bridged or (not use_refer)
 
         req = TransferRequest(
             destination=args["number"],
             operation=op,
             caller_id_override=args.get("callerId"),
-            can_refer=False,  # gateway-specific override; sipbridge sets True via Refer
+            can_refer=use_refer,  # gateway honours this for the final hop
             force_bridged=force_bridged,
+            force_refer=use_refer,
         )
 
         if op == "consultative":
@@ -552,6 +596,10 @@ class CallSession:
                 agent_options_prompt=(self.agent.get("options") or {}).get("transferPrompt"),
             )
             req.parent_transcript = self.get_parent_transcript()
+            # Record the resolved finalize mode so the consult bot's
+            # accept_transfer tool completes via the same mechanism
+            # (attended REFER+Replaces vs media bridge).
+            self._consult_use_refer = use_refer
 
         try:
             self.transfer_state = TransferState(
@@ -622,7 +670,23 @@ def _builtin_consult_accept(consult_session: CallSession):
             }
         reason = args.get("reason") or ""
         try:
-            await parent.gateway_session.bridge_with(consult_session.gateway_session)
+            if parent._consult_use_refer:
+                try:
+                    await parent.gateway_session.attended_refer_with(
+                        consult_session.gateway_session
+                    )
+                except NotImplementedError:
+                    # Gateway can't drive a raw attended REFER — fall back
+                    # to a media bridge so the transfer still completes.
+                    logger.warning(
+                        "attended_refer_with unsupported on gateway; "
+                        "falling back to media bridge"
+                    )
+                    await parent.gateway_session.bridge_with(
+                        consult_session.gateway_session
+                    )
+            else:
+                await parent.gateway_session.bridge_with(consult_session.gateway_session)
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.
             # Should have been rejected upstream by ``transfer()``; if
@@ -783,6 +847,9 @@ async def setup_inbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        registration_originated=inbound.registration_originated,
+        force_refer_transfer=inbound.force_refer_transfer,
+        force_bridged_transfer=inbound.force_bridged_transfer,
     )
 
 

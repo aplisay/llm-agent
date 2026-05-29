@@ -148,6 +148,57 @@ function canParticipantRefer(
 }
 
 /**
+ * Resolves whether the final hop of a transfer should be completed via SIP
+ * REFER (true) or by bridging (false). Applies to both blind transfers and the
+ * finalisation of consultative transfers.
+ *
+ * Origin defaults:
+ *  - registration-originated SIP calls default to REFER
+ *  - SIP trunk calls default to bridged (REFER only if the trunk opts in via
+ *    flags.forceReferTransfer, or the legacy flags.canRefer capability flag)
+ *  - WebRTC participants can never REFER
+ *
+ * Overrides, highest precedence first:
+ *  1. Per-transfer args.forceRefer / args.forceBridged
+ *  2. Endpoint / trunk options: registration options.forceBridgedTransfer
+ *     (surfaced as context.forceBridged, also fed by the legacy
+ *     options.forceBridged) and trunk flags.forceReferTransfer
+ *  3. Origin default above
+ */
+function resolveUseRefer(context: TransferContext): boolean {
+  const { participant, registrationOriginated, trunkInfo, args } = context;
+
+  // WebRTC participants cannot REFER under any circumstances.
+  if (!isSipParticipant(participant)) {
+    return false;
+  }
+
+  // 1. Per-transfer explicit overrides win. forceRefer beats forceBridged.
+  if (args.forceRefer === true) {
+    return true;
+  }
+  if (args.forceBridged === true) {
+    return false;
+  }
+
+  // 2. Endpoint / trunk level options.
+  // context.forceBridged carries registration options.forceBridgedTransfer
+  // (or the legacy options.forceBridged alias).
+  if (context.forceBridged === true) {
+    return false;
+  }
+  if (
+    trunkInfo?.flags?.forceReferTransfer === true ||
+    trunkInfo?.flags?.canRefer === true
+  ) {
+    return true;
+  }
+
+  // 3. Origin default: registration => REFER, trunk => bridged.
+  return registrationOriginated === true;
+}
+
+/**
  * Validates transfer arguments and resolves effective caller ID
  */
 async function validateTransferArgs(
@@ -517,6 +568,7 @@ async function startConsultativeTransfer(
     args,
     sessionRef,
     setBridgedParticipant,
+    setCurrentBridged,
     setConsultInProgress,
     setConsultRoomName,
     setTransferSession,
@@ -581,6 +633,9 @@ async function startConsultativeTransfer(
       context.call?.id,
     );
     setBridgedParticipant(transferTargetParticipant);
+    // Record the consult target so the REFER+Replaces finalise can reference its
+    // SIP dialog (best-effort; LiveKit only exposes sipCallId, not the to/from tags).
+    setCurrentBridged(transferTargetParticipant);
     // Step 5: Create TransferAgent with conversation history
     const prevCtx = session.chatCtx;
     const ctxCopy = prevCtx.copy({
@@ -915,6 +970,21 @@ async function finaliseConsultativeTransfer(
         );
       }
 
+      // Build a best-effort Replaces token from the consultation leg so the
+      // caller's endpoint replaces that dialog instead of ringing the target
+      // again. LiveKit only exposes the SIP Call-ID (no to/from tags), so this
+      // is incomplete; if the upstream can't honour a Call-ID-only Replaces it
+      // degrades to a plain REFER. TODO: supply full dialog tags once LiveKit
+      // surfaces them.
+      const consultTarget = context.getCurrentBridged();
+      const replaces = consultTarget?.sipCallId || null;
+      if (!replaces) {
+        logger.warn(
+          { consultTarget },
+          "no consult dialog id available; falling back to plain REFER without Replaces"
+        );
+      }
+
       // Use SIP REFER to transfer the original participant to the transfer target
       await transferParticipant(
         room.name!,
@@ -924,10 +994,11 @@ async function finaliseConsultativeTransfer(
         registrar,
         transport,
         callerId,
-        context.call?.id
+        context.call?.id,
+        replaces
       );
 
-      logger.info({}, "transfer executed via SIP REFER");
+      logger.info({ replaces }, "transfer executed via SIP REFER (+Replaces best-effort)");
     } else {
       // Case 3: Move transfer target from consultation room to caller room
       await roomService.moveParticipant(
@@ -1243,18 +1314,9 @@ async function handleConsultativeTransfer(
   context: TransferContext,
   effectiveCallerId: string,
   effectiveAplisayId: string,
-  finaliseBridgedCallFn: () => Promise<Call | null>
+  finaliseBridgedCallFn: () => Promise<Call | null>,
+  useRefer: boolean
 ): Promise<TransferResult> {
-  const { participant, registrationOriginated, trunkInfo } = context;
-
-  // Check canRefer capability
-  const canRefer = canParticipantRefer(
-    participant,
-    registrationOriginated,
-    trunkInfo
-  );
-  const isSip = isSipParticipant(participant);
-
   // Set up promise to wait for TransferAgent decision
   let resolveDecision: (
     accepted: boolean,
@@ -1287,18 +1349,18 @@ async function handleConsultativeTransfer(
   };
 
   try {
-    // Start consultation (this will set up the consultation room and TransferAgent)
-    // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-    // When fixed, restore: if (isSip && canRefer) to use Case 4 (REFER) for registration-originated calls
+    // Start consultation (this will set up the consultation room and TransferAgent).
+    // useRefer decides whether the eventual finalisation hands the caller over
+    // via SIP REFER (+?Replaces) or by bridging the transfer target into the
+    // caller's room.
     let startResult: TransferResult;
 
     startResult = await startConsultativeTransfer(
       consultativeContext,
       effectiveCallerId,
       effectiveAplisayId,
-      false // canRefer && isSip && !useBridged
+      useRefer
     );
-    // }
 
     // If starting consultation failed, clear flag and return error
     if (startResult.status !== "OK") {
@@ -1332,16 +1394,13 @@ async function handleConsultativeTransfer(
         const decision = await Promise.race([decisionPromise, timeoutPromise]);
 
         if (decision.accepted) {
-          // Finalize the transfer
-          // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-
+          // Finalize the transfer using the resolved mode (REFER+Replaces or bridge).
           let finaliseResult: TransferResult;
           finaliseResult = await finaliseConsultativeTransfer(
             consultativeContext,
             finaliseBridgedCallFn,
-            false
+            useRefer
           );
-          // }
 
           if (finaliseResult.status === "OK") {
             context.setTransferState("none", "Transfer completed successfully");
@@ -1523,13 +1582,19 @@ export async function handleTransfer(
     );
   };
 
-  // Route based on operation and participant capabilities
-  // Check if forceBridged is set to override REFER capability
-  // Use effectiveForceBridged which considers both endpoint options and args
-  const useBridged = effectiveForceBridged;
-  
+  // Route based on operation and the resolved transfer mode.
+  // resolveUseRefer applies origin defaults (registration => REFER,
+  // trunk => bridged) plus the forceRefer / forceBridged / forceReferTransfer /
+  // forceBridgedTransfer overrides.
+  const useRefer = resolveUseRefer(context);
+
+  logger.info(
+    { useRefer, forceRefer: args.forceRefer, canRefer, isSip },
+    "resolved transfer mode"
+  );
+
   if (operation === "blind") {
-    if (isSip && canRefer && !useBridged) {
+    if (useRefer) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context);
     } else {
@@ -1546,7 +1611,8 @@ export async function handleTransfer(
       context,
       effectiveCallerId,
       effectiveAplisayId,
-      finaliseBridgedCallFn
+      finaliseBridgedCallFn,
+      useRefer
     );
   } else {
     throw new Error(`Unknown transfer operation: ${operation}`);

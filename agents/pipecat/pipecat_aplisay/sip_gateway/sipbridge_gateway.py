@@ -106,10 +106,10 @@ class _SbGatewaySession(GatewaySession):
 
           - ``blind``: in-dialog REFER on the existing call. If
             ``force_bridged`` (typically from a registration endpoint
-            that can't honour REFER) the bridge route is taken instead
-            via a synthesised consult+bridge — but for v1 we just
-            REFER unconditionally; the upstream B2BUA should be
-            REFER-capable for this gateway.
+            that can't honour REFER) the native dial+bridge route is
+            taken instead: the bridge dials the target as a fresh
+            agent-less leg and relays media between it and the caller,
+            keeping media inside the platform (``mode: "dial_bridge"``).
           - ``consultative``: dial a fresh leg, attach a TransferAgent
             (separate Pipecat session with bespoke prompt + accept/
             reject tools) on the worker side. **Returns immediately**:
@@ -149,6 +149,29 @@ class _SbGatewaySession(GatewaySession):
                 "DELETE", f"/v1/calls/{consult}", None, raise_on_error=False
             )
             self._gateway.clear_consult_call_id(self.session_id)
+
+        # force_bridged (typically a registration endpoint that can't
+        # honour REFER) takes the native dial+relay path: the bridge
+        # dials the target as a fresh agent-less leg and relays media
+        # between it and the caller, keeping media inside the bridge.
+        # Otherwise we REFER and let the upstream B2BUA reroute.
+        if req.force_bridged:
+            logger.bind(
+                call_id=self.bridge_call_id,
+                target=req.destination,
+                mode="dial_bridge",
+            ).info("sipbridge transfer (native dial+bridge)")
+            await self._gateway._call_api(
+                "POST",
+                f"/v1/calls/{self.bridge_call_id}/transfer",
+                {
+                    "target": req.destination,
+                    "mode": "dial_bridge",
+                    "caller_id": req.caller_id_override or "",
+                },
+            )
+            return
+
         logger.bind(
             call_id=self.bridge_call_id, target=req.destination, mode="blind"
         ).info("sipbridge transfer (blind REFER)")
@@ -246,6 +269,34 @@ class _SbGatewaySession(GatewaySession):
             "POST",
             f"/v1/calls/{self.bridge_call_id}/transfer",
             {"target": other.bridge_call_id, "mode": "bridged"},
+        )
+
+    async def attended_refer_with(self, other: GatewaySession) -> None:
+        """Finalise a consultative transfer via attended SIP REFER.
+
+        Sends the bridge a ``mode: "attended"`` transfer on *this* leg
+        (the original caller A↔bridge dialog) whose ``replaces`` is the
+        consult leg's bridge call id (``other``). The bridge resolves that
+        call id to the consult dialog's Call-ID + tags, builds a
+        ``Refer-To: <sip:C@host?Replaces=...>`` and REFERs A to C. A then
+        re-INVITEs C with ?Replaces, the bridge drops both legs, and A and
+        C talk directly. See RFC 3891 and
+        ``agents/pipecat/sipbridge/internal/sip/server.go``.
+        """
+        if not isinstance(other, _SbGatewaySession):
+            raise NotImplementedError(
+                f"sipbridge attended_refer_with: peer must be _SbGatewaySession, "
+                f"got {type(other).__name__}"
+            )
+        logger.bind(
+            call_id=self.bridge_call_id,
+            consult_call_id=other.bridge_call_id,
+            mode="attended",
+        ).info("sipbridge transfer (attended REFER + Replaces)")
+        await self._gateway._call_api(
+            "POST",
+            f"/v1/calls/{self.bridge_call_id}/transfer",
+            {"target": other.bridge_call_id, "mode": "attended"},
         )
 
     async def shutdown(self) -> None:

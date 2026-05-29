@@ -857,12 +857,17 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 // Store registrar and transport for transfer operations
                 registrationRegistrar = regInfo.registrar || null;
                 registrationTransport = regInfo.options?.transport || null;
-                // Store forceBridged option from phone registration endpoint
-                if (regInfo.options?.forceBridged !== undefined) {
-                  forceBridged = regInfo.options.forceBridged === true;
+                // Store forced-bridged option from phone registration endpoint.
+                // forceBridgedTransfer is the canonical option name;
+                // forceBridged is retained as a legacy alias.
+                const forceBridgedOption =
+                  regInfo.options?.forceBridgedTransfer ??
+                  regInfo.options?.forceBridged;
+                if (forceBridgedOption !== undefined) {
+                  forceBridged = forceBridgedOption === true;
                   logger.info(
                     { forceBridged, phoneRegistration },
-                    "Extracted forceBridged from phone registration options",
+                    "Extracted forceBridgedTransfer/forceBridged from phone registration options",
                   );
                 }
                 // PhoneRegistration now has instanceId, so we can lookup the instance

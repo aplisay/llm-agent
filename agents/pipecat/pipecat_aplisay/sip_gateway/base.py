@@ -48,6 +48,20 @@ class InboundCallContext:
     b2bua_gateway_ip: Optional[str] = None    # X-Lk-RealIp
     b2bua_gateway_transport: Optional[str] = None  # X-Lk-Transport
 
+    # True when the call originated through a registration endpoint (B2BUA
+    # path) rather than a SIP trunk. Drives the transfer-mode default:
+    # registration → REFER, trunk → bridged. See ``docs/call-transfers.md``.
+    registration_originated: bool = False
+
+    # Resolved origin transfer-mode overrides, read from the phone endpoint's
+    # options (registration) or trunk flags (number) at inbound lookup time.
+    #   - force_refer_transfer: trunk option to default this trunk to REFER.
+    #   - force_bridged_transfer: registration option to default to bridged.
+    # Per-transfer params still take precedence over these. ``None`` means the
+    # gateway couldn't determine the option (degrade to origin default).
+    force_refer_transfer: Optional[bool] = None
+    force_bridged_transfer: Optional[bool] = None
+
     # Pre-existing platform call UUID if the gateway can stamp one through.
     call_id: Optional[str] = None  # X-Aplisay-Call-Id
 
@@ -109,6 +123,12 @@ class TransferRequest:
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
 
+    # Force the final hop to be completed via SIP REFER (with ?Replaces for
+    # the consultative finalize) regardless of the origin default. Takes
+    # precedence over ``force_bridged`` when both are set. Mirrors the
+    # LiveKit ``forceRefer`` transfer arg — see ``docs/call-transfers.md``.
+    force_refer: bool = False
+
     # Consultative-transfer fields. Populated by the call session when
     # ``operation == "consultative"``; ignored otherwise. Mirrors the
     # LiveKit transfer-handler contract — see ``docs/call-transfers.md``
@@ -158,6 +178,24 @@ class GatewaySession(Protocol):
             f"{type(self).__name__} does not support bridge_with "
             f"(consultative transfer); operation=\"consultative\" should be "
             f"rejected upstream by ``transfer()``."
+        )
+
+    async def attended_refer_with(self, other: "GatewaySession") -> None:
+        """Finalise a consultative transfer via attended SIP REFER.
+
+        Instead of installing a media bridge (``bridge_with``), send the
+        parent leg a ``REFER`` whose ``Refer-To`` embeds a
+        ``?Replaces=<consult-dialog>`` pointing at ``other`` (the consult
+        leg). The transferee's UA then re-INVITEs the consult target
+        directly, replacing the consult dialog, and both bot legs drop out
+        of the media path. See RFC 3891 and ``docs/call-transfers.md``.
+
+        Default implementation raises ``NotImplementedError`` — gateways
+        that can't drive a raw REFER fall back to ``bridge_with``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support attended_refer_with; "
+            f"fall back to bridge_with."
         )
 
 

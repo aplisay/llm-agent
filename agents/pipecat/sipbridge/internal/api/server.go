@@ -151,8 +151,22 @@ func (s *Server) handleOriginate(w http.ResponseWriter, r *http.Request) {
 
 // transferBody for POST /v1/calls/{id}/transfer.
 type transferBody struct {
-	Target string `json:"target"` // SIP URI or bare number
-	Mode   string `json:"mode"`   // "blind" (Phase B); attended/consult Phase C
+	Target string `json:"target"` // SIP URI / bare number (blind, dial_bridge) or call_id (bridged, attended)
+	// "blind"      — in-dialog REFER on this call to ``target`` (number/URI).
+	// "bridged"    — media relay between this call and ``target`` (a consult call_id).
+	// "attended"   — REFER this call to a consult target with ?Replaces of the
+	//                consult dialog (``target`` is the consult call_id). RFC 3891.
+	// "dial_bridge" — native blind bridged transfer: dial ``target``
+	//                (number/URI) as a fresh agent-less leg and relay
+	//                media to this call. Used when the carrier doesn't
+	//                honour REFER. ``caller_id`` / ``custom_headers`` are
+	//                stamped on the new outbound INVITE.
+	Mode string `json:"mode"`
+	// CallerID / CustomHeaders / Metadata apply only to mode
+	// "dial_bridge", where a new outbound INVITE is placed.
+	CallerID      string            `json:"caller_id"`
+	CustomHeaders map[string]string `json:"custom_headers"`
+	Metadata      map[string]string `json:"metadata"`
 }
 
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +184,32 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing target")
 		return
 	}
+
+	// dial_bridge places a fresh outbound INVITE, so give it the same
+	// long timeout as originate (carrier ringback can take seconds) and
+	// route it to the dedicated dial+relay primitive rather than the
+	// in-dialog Transfer switch.
+	if body.Mode == "dial_bridge" {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		relayID, err := s.mgr.DialAndBridge(ctx, call.DialBridgeParams{
+			OriginalCallID: id,
+			Destination:    body.Target,
+			CallerID:       body.CallerID,
+			CustomHeaders:  body.CustomHeaders,
+			Metadata:       body.Metadata,
+		})
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"relay_call_id": relayID,
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.mgr.Transfer(ctx, id, body.Target, body.Mode); err != nil {

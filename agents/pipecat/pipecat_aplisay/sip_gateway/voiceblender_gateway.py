@@ -143,6 +143,16 @@ class _VbGatewaySession(GatewaySession):
                 f"voiceblender: unknown transfer operation {op!r} "
                 "(expected 'blind' or 'consultative')"
             )
+
+        # force_bridged (typically a registration endpoint that can't
+        # honour REFER) takes the native room-bridge path: dial the
+        # target as a fresh agent-less leg, then drop both legs into a
+        # voiceblender room so media stays inside the platform. Plain
+        # blind otherwise issues an in-dialog REFER.
+        if req.force_bridged:
+            await self._do_dial_bridge(req)
+            return
+
         body: dict[str, Any] = {
             "target": req.destination,
             "mode": "blind",
@@ -155,6 +165,42 @@ class _VbGatewaySession(GatewaySession):
         await self._gateway._call_api(
             "POST", f"/v1/legs/{self.leg_id}/transfer", body
         )
+
+    async def _do_dial_bridge(self, req: TransferRequest) -> None:
+        """Native blind bridged transfer for voiceblender.
+
+        Dials ``req.destination`` as a fresh outbound leg with NO agent
+        attached (omit the ``agent`` field so no bot WS is opened), then
+        room-bridges it with this leg via :meth:`_bridge_legs`. Media
+        stays inside voiceblender — no carrier REFER — so it works on
+        registrations/trunks that don't honour REFER.
+
+        NOTE: depends on ``POST /v1/legs`` accepting an agent-less
+        origination (returning a leg that simply rings the PSTN target).
+        Flagged for live verification against the voiceblender external
+        API — if the server requires an ``agent``, this needs the API to
+        grow an explicit "bridge-only" origination mode.
+        """
+        body: dict[str, Any] = {
+            "destination": req.destination,
+            "caller_id": req.caller_id_override or "",
+            "app_id": self._gateway.app_id,
+            "metadata": {"bridge_of": self.leg_id},
+        }
+        logger.bind(
+            original_leg_id=self.leg_id, target=req.destination, mode="dial_bridge"
+        ).info("voiceblender transfer (native dial+bridge): dialing target")
+
+        resp = await self._gateway._call_api("POST", "/v1/legs", body)
+        new_leg_id = (resp or {}).get("id") or (resp or {}).get("leg_id")
+        if not new_leg_id:
+            raise RuntimeError(
+                f"voiceblender dial_bridge: POST /v1/legs did not return a leg id: {resp!r}"
+            )
+        await self._bridge_legs(self.leg_id, new_leg_id)
+        logger.bind(
+            original_leg=self.leg_id, target_leg=new_leg_id
+        ).info("voiceblender dial_bridge: caller bridged to target leg")
 
     async def _do_consultative(self, req: TransferRequest) -> None:
         """Fire-and-forget consultative-transfer initiation.
@@ -250,7 +296,22 @@ class _VbGatewaySession(GatewaySession):
                 f"voiceblender bridge_with: peer must be _VbGatewaySession, "
                 f"got {type(other).__name__}"
             )
-        room_id = f"consult-bridge-{uuid.uuid4()}"
+        await self._bridge_legs(self.leg_id, other.leg_id)
+        logger.bind(
+            parent_leg=self.leg_id, consult_leg=other.leg_id
+        ).info("voiceblender bridge_with: legs joined in consult-bridge room")
+
+    async def _bridge_legs(self, leg_a: str, leg_b: str) -> None:
+        """Create a temporary voiceblender room and move both legs into
+        it so the room mixer joins their audio.
+
+        Shared by :meth:`bridge_with` (consultative finalisation) and
+        :meth:`_do_dial_bridge` (native blind bridged transfer). The
+        room is reaped automatically once the last leg leaves. ``leg_a``
+        is joined first so any agent WS on it detaches only after it is
+        safely in the room.
+        """
+        room_id = f"bridge-{uuid.uuid4()}"
         # Create the temporary bridge room. Voiceblender's
         # ``POST /v1/rooms`` body is documented to accept ``id`` for
         # caller-chosen naming; if the server doesn't honour it, we
@@ -263,22 +324,15 @@ class _VbGatewaySession(GatewaySession):
                 room_id = resp["id"]
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(
-                f"voiceblender bridge_with: room create failed: {e}"
+                f"voiceblender _bridge_legs: room create failed: {e}"
             ) from e
 
-        # Move both legs into the room. Order matters minimally — both
-        # operations are idempotent re: room membership, but we put the
-        # parent first so the consult bot's WS gets detached only after
-        # the parent leg is safely in the room.
-        for leg_id in (self.leg_id, other.leg_id):
+        for leg_id in (leg_a, leg_b):
             await self._gateway._call_api(
                 "POST",
                 f"/v1/rooms/{room_id}/legs",
                 {"leg_id": leg_id},
             )
-        logger.bind(
-            parent_leg=self.leg_id, consult_leg=other.leg_id, room=room_id
-        ).info("voiceblender bridge_with: legs joined in consult-bridge room")
 
     async def shutdown(self) -> None:
         # Best-effort hangup. The VSI ``leg.disconnected`` listener will also

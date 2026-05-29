@@ -1,6 +1,6 @@
 import path from 'node:path';
 import logger from './logger.js';
-// @ts-expect-error JS module without published types; contract documented in lib/recording/CONTRACT.md
+// JS module imported via tsconfig allowJs; contract documented in lib/recording/CONTRACT.md
 import { uploadEncryptedOgg } from '../agent-lib/recording/index.js';
 
 const RECORDER_IO_FILENAME = 'audio.ogg';

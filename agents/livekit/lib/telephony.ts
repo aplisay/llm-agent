@@ -6,16 +6,26 @@ import { getPhoneNumbers } from "./api-client.js";
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
 export async function transferParticipant(
-  roomName: string, 
-  participant: string, 
-  transferTo: string, 
+  roomName: string,
+  participant: string,
+  transferTo: string,
   aplisayId: string,
   registrar?: string | null,
   transport?: string | null,
   callerId?: string | null,
   originatingCallId?: string | null,
+  // RFC 3891 dialog identifier ("call-id;to-tag=...;from-tag=...") of a leg the
+  // referred party should replace. Used for the consultative (attended) finalise
+  // so the original caller's endpoint replaces the consultation leg rather than
+  // ringing the target a second time.
+  // NOTE: on LiveKit this is best-effort. The server SDK only surfaces the SIP
+  // Call-ID (sipCallId), not the to/from tags a complete Replaces requires, and
+  // whether the LiveKit SIP service forwards an embedded Replaces to the upstream
+  // B2BUA is platform-dependent. TODO: revisit once LiveKit exposes full dialog
+  // identifiers / Replaces pass-through.
+  replaces?: string | null,
 ): Promise<any> {
-  logger.info({ roomName, participant, transferTo, registrar, transport }, "transfer participant initiated");
+  logger.info({ roomName, participant, transferTo, registrar, transport, replaces }, "transfer participant initiated");
 
   // If registrar is provided, construct SIP URI for registration endpoint
   let transferUri = `tel:${transferTo}`;
@@ -27,6 +37,16 @@ export async function transferParticipant(
     if (transport) {
       transferUri += `;transport=${transport as string}`;
     }
+  }
+
+  // Attended transfer: embed Replaces in the Refer-To URI so the referred party
+  // replaces the existing (consultation) dialog. tel: URIs cannot carry a
+  // Replaces header param, so upgrade to a sip: URI targeting the same number.
+  if (replaces) {
+    if (transferUri.startsWith("tel:")) {
+      transferUri = `sip:${transferTo}`;
+    }
+    transferUri += `?Replaces=${encodeURIComponent(replaces)}`;
   }
 
   const sipTransferOptions = {

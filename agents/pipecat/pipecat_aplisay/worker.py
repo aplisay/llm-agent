@@ -28,6 +28,7 @@ import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -180,12 +181,27 @@ async def _ws_deny(websocket: WebSocket, status: int, body: bytes = b"") -> None
     await websocket.close(code=4000 + status)
 
 
+@dataclass
+class _InboundOrigin:
+    """Origin / transfer-mode context resolved during inbound lookup.
+
+    Threaded into :class:`InboundCallContext` so the call session can
+    resolve REFER-vs-bridge at transfer time (registration → REFER default,
+    trunk → bridged default). ``force_*`` are ``None`` when the endpoint
+    didn't carry the option (fall through to origin default).
+    """
+
+    registration_originated: bool = False
+    force_refer_transfer: Optional[bool] = None
+    force_bridged_transfer: Optional[bool] = None
+
+
 async def _lookup_instance_for_inbound(
     *,
     phone_registration: Optional[str],
     to_number: Optional[str],
     aplisay_id: Optional[str],
-) -> Optional[dict]:
+) -> tuple[Optional[dict], _InboundOrigin]:
     """Run the inbound-call instance lookup chain, absorbing 404s.
 
     All three inbound paths (voiceblender VSI event, sipbridge WS headers,
@@ -198,8 +214,10 @@ async def _lookup_instance_for_inbound(
     500-class crash. Other API errors (5xx, transport failures) are
     re-raised so the caller can map them to non-404 SIP statuses.
 
-    Returns the instance dict, or ``None`` if no step in the chain
-    yielded one. The caller is responsible for the further check that
+    Returns ``(instance, origin)`` where ``instance`` is ``None`` if no
+    step in the chain yielded one. ``origin`` carries the transfer-mode
+    context derived from the resolving endpoint (registration options /
+    trunk flags). The caller is responsible for the further check that
     ``instance.get("Agent")`` is present.
     """
 
@@ -212,17 +230,32 @@ async def _lookup_instance_for_inbound(
             raise
 
     instance: Optional[dict] = None
+    origin = _InboundOrigin()
     if phone_registration:
         endpoint = await _maybe(api_client.get_phone_endpoint_by_id(phone_registration))
         if endpoint and endpoint.get("instanceId"):
             instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
+            if instance:
+                origin.registration_originated = True
+                opts = endpoint.get("options") or {}
+                if "forceBridgedTransfer" in opts:
+                    origin.force_bridged_transfer = bool(opts.get("forceBridgedTransfer"))
+                # Legacy alias retained for backwards compatibility.
+                elif "forceBridged" in opts:
+                    origin.force_bridged_transfer = bool(opts.get("forceBridged"))
     if not instance and to_number:
         endpoint = await _maybe(api_client.get_phone_endpoint_by_number(to_number, aplisay_id))
         if endpoint and endpoint.get("instanceId"):
             instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
+            if instance:
+                flags = ((endpoint.get("trunk") or {}).get("flags")) or {}
+                if "forceReferTransfer" in flags:
+                    origin.force_refer_transfer = bool(flags.get("forceReferTransfer"))
+                elif flags.get("canRefer") is True:
+                    origin.force_refer_transfer = True
     if not instance and to_number:
         instance = await _maybe(api_client.get_instance_by_number(to_number))
-    return instance
+    return instance, origin
 
 
 async def _voiceblender_resolve_agent(
@@ -239,7 +272,7 @@ async def _voiceblender_resolve_agent(
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
-    instance = await _lookup_instance_for_inbound(
+    instance, _origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
         to_number=to_number,
         aplisay_id=aplisay_id,
@@ -321,7 +354,7 @@ async def _sipbridge_resolve_agent_from_headers(
     from_number = _user_of(from_uri)
     to_number = _user_of(to_uri)
 
-    instance = await _lookup_instance_for_inbound(
+    instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
         to_number=to_number,
         aplisay_id=aplisay_id,
@@ -341,6 +374,9 @@ async def _sipbridge_resolve_agent_from_headers(
         phone_registration=phone_registration,
         b2bua_gateway_ip=b2bua_ip,
         b2bua_gateway_transport=b2bua_transport,
+        registration_originated=origin.registration_originated,
+        force_refer_transfer=origin.force_refer_transfer,
+        force_bridged_transfer=origin.force_bridged_transfer,
         call_id=aplisay_call_id,
         raw={"bridge_call_id": bridge_call_id},
     )
@@ -476,7 +512,7 @@ async def daily_dialin(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="missing destination number")
 
     # Lookup chain — section 6.2 / 6.3.
-    instance = await _lookup_instance_for_inbound(
+    instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
         to_number=to_number,
         aplisay_id=aplisay_id,
@@ -499,6 +535,9 @@ async def daily_dialin(request: Request) -> dict:
         phone_registration=phone_registration,
         b2bua_gateway_ip=headers.get("X-Lk-RealIp"),
         b2bua_gateway_transport=headers.get("X-Lk-Transport"),
+        registration_originated=origin.registration_originated,
+        force_refer_transfer=origin.force_refer_transfer,
+        force_bridged_transfer=origin.force_bridged_transfer,
         call_id=headers.get("X-Aplisay-Call-Id"),
         raw={"dialin_settings": dialin, "room_url": room_url, "token": token},
     )

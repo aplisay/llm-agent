@@ -501,8 +501,28 @@ export async function runAgentWorker({
         "cleanup and close completed (pre-shutdown)",
       );
       logger.debug("cleanup and close: shutting down context");
-      await ctx.shutdown(reason);
-      logger.debug("cleanup and close: context shutdown complete");
+      // Bound ctx.shutdown. After a blind-bridge call the SDK cannot fully
+      // drain the AgentSession (the underlying Ultravox pipeline is dead)
+      // and shutdown hangs until the 120s hard-exit timer fires. Cap it at
+      // 10s; if shutdown hangs, force-exit immediately rather than burning
+      // another 110 seconds of wall clock holding the worker slot. Our
+      // cleanup (room delete, call.end) already completed above so the DB
+      // state is consistent; only the SDK's internal teardown is incomplete.
+      try {
+        await withTimeout(
+          () => ctx.shutdown(reason),
+          10_000,
+          new Error("ctx.shutdown timed out after 10s"),
+        );
+        logger.debug("cleanup and close: context shutdown complete");
+      } catch (shutdownErr) {
+        logger.info(
+          { shutdownErr, reason },
+          "ctx.shutdown failed or timed out; forcing process exit",
+        );
+        // Defer one tick so the log line above is flushed before we exit.
+        setImmediate(() => process.exit(0));
+      }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(

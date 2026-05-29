@@ -176,25 +176,29 @@ type OriginateParams struct {
 	Metadata        map[string]string // free-form; included as X-Aplisay-Call-Id when present
 }
 
-// Originate places an outbound INVITE through the SIP layer, then
-// (after the 200 OK / SDP answer arrives) wires the per-call RTP +
-// Pipecat WS just like the inbound path.
+// dialAndWireRTP performs the SIP-dial + RTP-socket + codec/SRTP
+// negotiation shared by every outbound leg (agent originate, consult
+// leg, and the agent-less relay leg of a native bridged transfer). It
+// returns a partially-built Call: the SIP dialog is up, the RTP socket
+// is bound and pointed at the remote endpoint, the payload type and any
+// SRTP contexts are set — but there is NO Pipecat WS, NO jitter buffer,
+// and the RTP read loop has NOT been started. Callers layer the bits
+// they need on top (a bot WS for Originate, peer relay for
+// DialAndBridge) and are responsible for rtp.Start + registering the
+// Call in m.calls.
 //
-// Returns the bridge's internal call_id on success; the worker uses
-// that for follow-up REST calls (DELETE, transfer).
-func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, error) {
-	if m.sip == nil {
-		return "", errors.New("call: SIP layer not registered")
-	}
-	if p.AgentSessionID == "" {
-		return "", errors.New("call: AgentSessionID is required")
-	}
-
+// On any error after the INVITE is answered, the helper sends a BYE and
+// closes the socket itself, so callers only need to propagate the error.
+//
+// The returned ``custom`` map is the header set actually sent on the
+// INVITE (X-Aplisay-Call-Id promoted from metadata), so callers that
+// open a WS can stamp the same headers on it.
+func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call, map[string]string, error) {
 	// 1. Allocate the local RTP socket so we can publish our endpoint
 	// in the SDP offer.
 	rtpSess, err := rtp.NewSession(m.cfg.MediaBindIP, m.cfg.RTPPortMin, m.cfg.RTPPortMax)
 	if err != nil {
-		return "", fmt.Errorf("call: rtp: %w", err)
+		return nil, nil, fmt.Errorf("call: rtp: %w", err)
 	}
 
 	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled, we
@@ -217,7 +221,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 			material, err := rtp.Generate(suite)
 			if err != nil {
 				rtpSess.Close()
-				return "", fmt.Errorf("call: generate SDES material: %w", err)
+				return nil, nil, fmt.Errorf("call: generate SDES material: %w", err)
 			}
 			tag := i + 1 // tags are 1-indexed by convention
 			ourOfferedSDES[tag] = material
@@ -242,7 +246,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	out, _, err := m.sip.Originate(ctx, p.Destination, offer, custom)
 	if err != nil {
 		rtpSess.Close()
-		return "", fmt.Errorf("call: originate: %w", err)
+		return nil, nil, fmt.Errorf("call: originate: %w", err)
 	}
 
 	// 3. Wire RTP to the remote endpoint the SDP answer published.
@@ -250,12 +254,12 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	if answer.RemoteIP == "" || answer.RemotePort == 0 {
 		rtpSess.Close()
 		_ = m.sip.Hangup(ctx, out.CallID)
-		return "", errors.New("call: SDP answer missing remote endpoint")
+		return nil, nil, errors.New("call: SDP answer missing remote endpoint")
 	}
 	if err := rtpSess.SetRemote(answer.RemoteIP, answer.RemotePort); err != nil {
 		rtpSess.Close()
 		_ = m.sip.Hangup(ctx, out.CallID)
-		return "", fmt.Errorf("call: rtp remote: %w", err)
+		return nil, nil, fmt.Errorf("call: rtp remote: %w", err)
 	}
 	pt := rtp.PayloadPCMU
 	if !answer.HasPCMU && answer.HasPCMA {
@@ -263,7 +267,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	} else if !answer.HasPCMU && !answer.HasPCMA {
 		rtpSess.Close()
 		_ = m.sip.Hangup(ctx, out.CallID)
-		return "", errors.New("call: no acceptable codec in answer")
+		return nil, nil, errors.New("call: no acceptable codec in answer")
 	}
 	rtpSess.SetPayloadType(pt)
 
@@ -277,50 +281,74 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 		if err != nil {
 			rtpSess.Close()
 			_ = m.sip.Hangup(ctx, out.CallID)
-			return "", fmt.Errorf("call: outbound SDES negotiation: %w", err)
+			return nil, nil, fmt.Errorf("call: outbound SDES negotiation: %w", err)
 		}
 		if err := rtpSess.SetSRTPContexts(inboundCtx, outboundCtx); err != nil {
 			rtpSess.Close()
 			_ = m.sip.Hangup(ctx, out.CallID)
-			return "", fmt.Errorf("call: install outbound SRTP contexts: %w", err)
+			return nil, nil, fmt.Errorf("call: install outbound SRTP contexts: %w", err)
 		}
 		log.Info().
 			Str("call_id", out.CallID).
 			Msg("call: outbound SDES negotiated; media encrypted")
 	}
 
+	c := &Call{
+		callID:  out.CallID,
+		rtp:     rtpSess,
+		payload: pt,
+		closed:  make(chan struct{}),
+	}
+	c.lastRTPNanos.Store(time.Now().UnixNano())
+	return c, custom, nil
+}
+
+// Originate places an outbound INVITE through the SIP layer, then
+// (after the 200 OK / SDP answer arrives) wires the per-call RTP +
+// Pipecat WS just like the inbound path.
+//
+// Returns the bridge's internal call_id on success; the worker uses
+// that for follow-up REST calls (DELETE, transfer).
+func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, error) {
+	if m.sip == nil {
+		return "", errors.New("call: SIP layer not registered")
+	}
+	if p.AgentSessionID == "" {
+		return "", errors.New("call: AgentSessionID is required")
+	}
+
+	// 1-3. Dial + wire RTP/SRTP. On error the helper has already
+	// closed the socket and sent BYE if the dialog was up.
+	c, custom, err := m.dialAndWireRTP(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	c.sessionID = p.AgentSessionID
+	c.jb = rtp.NewJitterBuffer(3, 160)
+
 	// 4. Open the Pipecat WS using the session_id supplied by the
 	// worker (which is waiting on a future keyed by that id).
 	wsURL, err := joinWSPath(m.cfg.WorkerWSBase, "/sipbridge/agent/"+url.PathEscape(p.AgentSessionID))
 	if err != nil {
-		rtpSess.Close()
-		_ = m.sip.Hangup(ctx, out.CallID)
+		c.rtp.Close()
+		_ = m.sip.Hangup(ctx, c.callID)
 		return "", fmt.Errorf("call: ws url: %w", err)
 	}
 
 	pc := pcclient.NewClient(wsURL)
-	c := &Call{
-		callID:    out.CallID,
-		sessionID: p.AgentSessionID,
-		rtp:       rtpSess,
-		ws:        pc,
-		payload:   pt,
-		jb:        rtp.NewJitterBuffer(3, 160),
-		closed:    make(chan struct{}),
-	}
-	c.lastRTPNanos.Store(time.Now().UnixNano())
+	c.ws = pc
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
-	outCallID := out.CallID
+	outCallID := c.callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), outCallID)
 	})
 
-	rtpSess.SetPayloadHandler(c.onRTPPayload)
+	c.rtp.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
 	pc.SetCloseHandler(func(err error) {
-		log.Info().Str("call_id", out.CallID).Err(err).Msg("call: ws closed (outbound)")
+		log.Info().Str("call_id", outCallID).Err(err).Msg("call: ws closed (outbound)")
 		c.Close()
 	})
 
@@ -328,7 +356,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	// worker's lookup chain has them available. The bridge already
 	// knows everything the worker needs.
 	hdr := http.Header{}
-	hdr.Set("X-Sipbridge-Call-ID", out.CallID)
+	hdr.Set("X-Sipbridge-Call-ID", c.callID)
 	for k, v := range custom {
 		hdr.Set(k, v)
 	}
@@ -336,24 +364,24 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := pc.Connect(dctx, hdr); err != nil {
-		rtpSess.Close()
-		_ = m.sip.Hangup(ctx, out.CallID)
+		c.rtp.Close()
+		_ = m.sip.Hangup(ctx, c.callID)
 		return "", fmt.Errorf("call: pipecat ws connect: %w", err)
 	}
 
-	rtpSess.Start(context.Background())
+	c.rtp.Start(context.Background())
 
 	m.mu.Lock()
-	m.calls[out.CallID] = c
+	m.calls[c.callID] = c
 	m.mu.Unlock()
 
 	log.Info().
-		Str("call_id", out.CallID).
+		Str("call_id", c.callID).
 		Str("session_id", p.AgentSessionID).
 		Str("ws_url", wsURL).
-		Int("rtp_port", rtpSess.LocalAddr().Port).
+		Int("rtp_port", c.rtp.LocalAddr().Port).
 		Msg("call: outbound ready")
-	return out.CallID, nil
+	return c.callID, nil
 }
 
 // Transfer sends a REFER on an existing call or installs a media
@@ -368,6 +396,13 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 //     The bridge installs an in-process media relay between the two
 //     calls, closes both Pipecat WSes, and keeps the SIP dialogs open
 //     until either side BYEs (at which point both get cleaned up).
+//   - mode "attended": ``target`` is interpreted as a second call_id
+//     (a consult leg). Instead of bridging media, the bridge REFERs the
+//     original caller to the consult target with ``?Replaces`` pointing
+//     at the consult dialog (RFC 3891). The caller re-INVITEs the consult
+//     target directly and the bridge drops out of the media path. This is
+//     the SIP-REFER finalisation of a consultative transfer — see
+//     ``docs/call-transfers.md``.
 //   - mode "consult": invalid for the transfer endpoint — clients
 //     should call the dedicated /v1/calls/{id}/consult endpoint.
 func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) error {
@@ -379,6 +414,8 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) err
 		return m.sip.Refer(ctx, callID, target)
 	case "bridged":
 		return m.BridgeRelay(callID, target)
+	case "attended":
+		return m.sip.ReferReplaces(ctx, callID, target)
 	case "consult":
 		return errors.New("call: use /v1/calls/{id}/consult endpoint for consult, not /transfer")
 	default:
@@ -422,6 +459,82 @@ func (m *Manager) BridgeRelay(callA, callB string) error {
 		Str("call_b", callB).
 		Msg("call: media relay installed (bridged transfer)")
 	return nil
+}
+
+// DialBridgeParams carries the body of a native blind-bridged transfer:
+// dial ``Destination`` as a fresh agent-less leg and relay its media
+// to ``OriginalCallID``. Unlike Consult, the new leg has no Pipecat WS
+// — it exists purely as the far end of an in-Go RTP relay.
+type DialBridgeParams struct {
+	OriginalCallID string
+	Destination    string
+	CallerID       string
+	CustomHeaders  map[string]string
+	Metadata       map[string]string
+}
+
+// DialAndBridge is the native (non-REFER) blind bridged transfer: it
+// dials ``Destination`` as a new outbound leg with NO agent attached,
+// then installs an in-process RTP relay between the original caller and
+// that new leg. The agent bot on the original leg drops out of the
+// media path (its Pipecat WS is closed by SetPeer) and the bridge
+// becomes a transparent B2BUA forwarding G.711 between the two dialogs.
+// Media stays inside the bridge — no carrier REFER is involved — so it
+// works on trunks/registrations that don't honour REFER.
+//
+// Returns the new leg's call_id (for diagnostics / later teardown). On
+// any failure after the leg answers, the new leg is torn down so we
+// don't leak a half-bridged dialog.
+func (m *Manager) DialAndBridge(ctx context.Context, p DialBridgeParams) (string, error) {
+	if m.sip == nil {
+		return "", errors.New("call: SIP layer not registered")
+	}
+	// The original must still be live — we relay into it.
+	m.mu.Lock()
+	_, ok := m.calls[p.OriginalCallID]
+	m.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("call: dial_bridge: unknown original call_id %q", p.OriginalCallID)
+	}
+
+	// Dial the target. The relay leg is agent-less: no Pipecat WS and
+	// no jitter buffer — onRTPPayload forwards straight to the peer
+	// once SetPeer engages (which BridgeRelay does below).
+	c, _, err := m.dialAndWireRTP(ctx, OriginateParams{
+		Destination:   p.Destination,
+		CallerID:      p.CallerID,
+		CustomHeaders: p.CustomHeaders,
+		Metadata:      p.Metadata,
+	})
+	if err != nil {
+		return "", fmt.Errorf("call: dial_bridge: %w", err)
+	}
+
+	newID := c.callID
+	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
+		_ = m.Hangup(context.Background(), newID)
+	})
+	c.rtp.SetPayloadHandler(c.onRTPPayload)
+	c.rtp.Start(context.Background())
+
+	m.mu.Lock()
+	m.calls[newID] = c
+	m.mu.Unlock()
+
+	// Install the relay. BridgeRelay closes the original leg's bot WS
+	// (SetPeer) so the agent drops out; the new leg never had one.
+	if err := m.BridgeRelay(p.OriginalCallID, newID); err != nil {
+		// Codec mismatch or the original vanished — tear the new leg
+		// down (SIP BYE + media close) so we don't leak it.
+		_ = m.Hangup(context.Background(), newID)
+		return "", fmt.Errorf("call: dial_bridge: %w", err)
+	}
+	log.Info().
+		Str("original", p.OriginalCallID).
+		Str("relay_leg", newID).
+		Str("destination", p.Destination).
+		Msg("call: native blind bridged transfer established")
+	return newID, nil
 }
 
 // ConsultParams is what the REST /v1/calls/{id}/consult endpoint
