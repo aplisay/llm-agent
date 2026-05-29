@@ -160,9 +160,9 @@ function canParticipantRefer(
  *
  * Overrides, highest precedence first:
  *  1. Per-transfer args.forceRefer / args.forceBridged
- *  2. Endpoint / trunk options: registration options.forceBridgedTransfer
- *     (surfaced as context.forceBridged, also fed by the legacy
- *     options.forceBridged) and trunk flags.forceReferTransfer
+ *  2. Endpoint / trunk options: the registration option bridged_transfer
+ *     (snake_case in API/storage; surfaced in code as context.forceBridged)
+ *     and trunk flags.forceReferTransfer
  *  3. Origin default above
  */
 function resolveUseRefer(context: TransferContext): boolean {
@@ -182,8 +182,8 @@ function resolveUseRefer(context: TransferContext): boolean {
   }
 
   // 2. Endpoint / trunk level options.
-  // context.forceBridged carries registration options.forceBridgedTransfer
-  // (or the legacy options.forceBridged alias).
+  // context.forceBridged carries the registration option bridged_transfer
+  // (snake_case in API/storage, camelCase here in code).
   if (context.forceBridged === true) {
     return false;
   }
@@ -1584,8 +1584,8 @@ export async function handleTransfer(
 
   // Route based on operation and the resolved transfer mode.
   // resolveUseRefer applies origin defaults (registration => REFER,
-  // trunk => bridged) plus the forceRefer / forceBridged / forceReferTransfer /
-  // forceBridgedTransfer overrides.
+  // trunk => bridged) plus the forceRefer / forceBridged (per-transfer),
+  // trunk forceReferTransfer, and registration bridged_transfer overrides.
   const useRefer = resolveUseRefer(context);
 
   logger.info(

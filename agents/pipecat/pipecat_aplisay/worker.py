@@ -238,11 +238,8 @@ async def _lookup_instance_for_inbound(
             if instance:
                 origin.registration_originated = True
                 opts = endpoint.get("options") or {}
-                if "forceBridgedTransfer" in opts:
-                    origin.force_bridged_transfer = bool(opts.get("forceBridgedTransfer"))
-                # Legacy alias retained for backwards compatibility.
-                elif "forceBridged" in opts:
-                    origin.force_bridged_transfer = bool(opts.get("forceBridged"))
+                if "bridged_transfer" in opts:
+                    origin.force_bridged_transfer = bool(opts.get("bridged_transfer"))
     if not instance and to_number:
         endpoint = await _maybe(api_client.get_phone_endpoint_by_number(to_number, aplisay_id))
         if endpoint and endpoint.get("instanceId"):

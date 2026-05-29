@@ -18,7 +18,7 @@ The `transfer.number` parameter must be `static` or `metadata` (never `generated
 ### Blind Transfers
 
 Blind transfers may be implemented using two different mechanisms, depending on the capabilities of the original caller's connection.
-The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation based on the call's origin (see [Transfer mode selection](#transfer-mode-selection) below). You can override the automatic selection per transfer with the `forceBridged` or `forceRefer` parameters, or change the default for an endpoint with the `forceReferTransfer` (trunk) / `forceBridgedTransfer` (registration) options.
+The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation based on the call's origin (see [Transfer mode selection](#transfer-mode-selection) below). You can override the automatic selection per transfer with the `forceBridged` or `forceRefer` parameters, or change the default for an endpoint with the `forceReferTransfer` (trunk) / `bridged_transfer` (registration) options.
 
 #### 1. Bridging (Case 1)
 
@@ -84,14 +84,12 @@ Whether a transfer is completed by **bridging** (media stays on the platform) or
    - `forceRefer` wins if both are somehow set.
 2. **Endpoint / trunk option** (configured against the phone endpoint, not per call):
    - `forceReferTransfer: true` in a **trunk's** options — make this trunk default to REFER instead of bridging.
-   - `forceBridgedTransfer: true` in a **registration endpoint's** options — make this endpoint default to bridging instead of REFER. (See [phone-endpoints-api.md](./phone-endpoints-api.md).)
+   - `bridged_transfer: true` in a **registration endpoint's** options — make this endpoint default to bridging instead of REFER. (Registration options are snake_case to match the other keys on that structure; in code the value surfaces as the camelCase `forceBridged`. See [phone-endpoints-api.md](./phone-endpoints-api.md).)
 3. **Origin default** from the table above.
-
-> **Backwards compatibility:** the older `forceBridged` registration-endpoint option is still honoured as an alias for `forceBridgedTransfer`, and the per-transfer `forceBridged` parameter behaves exactly as before. Existing agents and endpoints need no changes.
 
 ### Consultative Transfers
 
-Consultative transfers run a consultation phase first and then finalise either by **bridging** the two legs together or, where the origin supports it, by an **attended SIP REFER (REFER-with-Replaces, RFC 3891)** that hands both legs off to the upstream and drops the platform out of the media path entirely. The choice follows exactly the same [Transfer mode selection](#transfer-mode-selection) rules as blind transfers: bridging is the default on SIP trunks, attended REFER is the default for registration endpoints, and `forceRefer` / `forceBridged` (per transfer) or `forceReferTransfer` / `forceBridgedTransfer` (per endpoint) override it.
+Consultative transfers run a consultation phase first and then finalise either by **bridging** the two legs together or, where the origin supports it, by an **attended SIP REFER (REFER-with-Replaces, RFC 3891)** that hands both legs off to the upstream and drops the platform out of the media path entirely. The choice follows exactly the same [Transfer mode selection](#transfer-mode-selection) rules as blind transfers: bridging is the default on SIP trunks, attended REFER is the default for registration endpoints, and `forceRefer` / `forceBridged` (per transfer) or `forceReferTransfer` (trunk) / `bridged_transfer` (registration) override it.
 
 When the attended-REFER path is taken, the platform sends the original caller a `REFER` whose `Refer-To` embeds `?Replaces=<consult-dialog>` identifying the consultation leg; the caller re-INVITEs the transfer target directly, replacing the consultation dialog, and both bot legs drop out. If a gateway cannot drive an attended REFER, it transparently falls back to bridging so the transfer still completes.
 
@@ -505,7 +503,7 @@ Use the `consultFeedback` parameter to enable returning detailed rejection feedb
 
 ### Forcing the transfer mechanism
 
-By default, the system selects the transfer mechanism (bridging or SIP REFER) from the call's origin — see [Transfer mode selection](#transfer-mode-selection). You can override this per transfer with `forceBridged: true` (force bridging) or `forceRefer: true` (force SIP REFER, including the attended REFER-with-Replaces finalize for consultative transfers). `forceRefer` takes precedence if both are set. To change the default for a whole endpoint instead of per call, use the `forceReferTransfer` (trunk) or `forceBridgedTransfer` (registration) endpoint options documented in [phone-endpoints-api.md](./phone-endpoints-api.md).
+By default, the system selects the transfer mechanism (bridging or SIP REFER) from the call's origin — see [Transfer mode selection](#transfer-mode-selection). You can override this per transfer with `forceBridged: true` (force bridging) or `forceRefer: true` (force SIP REFER, including the attended REFER-with-Replaces finalize for consultative transfers). `forceRefer` takes precedence if both are set. To change the default for a whole endpoint instead of per call, use the `forceReferTransfer` (trunk) or `bridged_transfer` (registration) endpoint options documented in [phone-endpoints-api.md](./phone-endpoints-api.md).
 
 The example below forces bridging; set `forceRefer` instead to force SIP REFER.
 

@@ -528,7 +528,8 @@ class CallSession:
           1. per-transfer ``forceRefer`` arg → REFER
           2. per-transfer ``forceBridged`` arg → bridged
           3. trunk option ``forceReferTransfer`` → REFER
-          4. registration option ``forceBridgedTransfer`` → bridged
+          4. registration option ``bridged_transfer`` (snake_case in
+             API/storage; held here as ``force_bridged_transfer``) → bridged
           5. origin default: registration → REFER, trunk/other → bridged
         """
         if args.get("forceRefer") is True:

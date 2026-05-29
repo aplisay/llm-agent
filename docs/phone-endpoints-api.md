@@ -147,7 +147,7 @@ The `options` object carries provider-specific and behavioural settings for the 
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `forceBridgedTransfer` | boolean | `false` | When `true`, transfers on calls that arrived via this registration are completed by **bridging** the media through the platform instead of the registration default of **SIP REFER**. Enable this when the registered endpoint or its upstream doesn't handle REFER / REFER-with-Replaces reliably. A per-transfer `forceRefer: true` on the agent's `transfer` call still overrides this. The legacy key `forceBridged` is accepted as an alias. See [call-transfers.md](./call-transfers.md#transfer-mode-selection). |
+| `bridged_transfer` | boolean | `false` | When `true`, transfers on calls that arrived via this registration are completed by **bridging** the media through the platform instead of the registration default of **SIP REFER**. Enable this when the registered endpoint or its upstream doesn't handle REFER / REFER-with-Replaces reliably. A per-transfer `forceRefer: true` on the agent's `transfer` call still overrides this. (Key is snake_case to match the other registration options; in code it surfaces as the camelCase `forceBridged`.) See [call-transfers.md](./call-transfers.md#transfer-mode-selection). |
 
 **Example with the option set:**
 
@@ -159,7 +159,7 @@ The `options` object carries provider-specific and behavioural settings for the 
   "username": "user123",
   "password": "secret",
   "outbound": true,
-  "options": { "forceBridgedTransfer": true }
+  "options": { "bridged_transfer": true }
 }
 ```
 
