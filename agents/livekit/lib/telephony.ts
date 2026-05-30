@@ -1,5 +1,5 @@
 import { SipClient } from "livekit-server-sdk";
-import { SIPMediaEncryption, SIPTransport } from "@livekit/protocol";
+import { SIPMediaEncryption, SIPHeaderOptions, SIPTransport } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers } from "./api-client.js";
 
@@ -197,11 +197,10 @@ export async function bridgeParticipant(
   );
 
   const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-  const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
   if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
-      { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
+      { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, bridgeTo },
       "bridging participant through B2BUA gateway for registration-originated call"
     );
 
@@ -226,7 +225,7 @@ export async function bridgeParticipant(
       waitUntilAnswered: true
     };
 
-    logger.info({ roomName, destination, origin, callerId, sipParticipantOptions, registrationTrunkId }, "bridge participant initiated (registration endpoint)");
+    logger.info({ roomName, bridgeTo, origin, callerId, sipParticipantOptions, registrationTrunkId }, "bridge participant initiated (registration endpoint)");
 
     const newParticipant = await sipClient.createSipParticipant(
       registrationTrunkId,
@@ -263,7 +262,7 @@ export async function bridgeParticipant(
     waitUntilAnswered: true
   };
 
-  logger.info({ roomName, destination, origin, callerId, sipParticipantOptions }, "bridge participant initiated (trunk-based)");
+  logger.info({ roomName, bridgeTo, origin, callerId, sipParticipantOptions }, "bridge participant initiated (trunk-based)");
 
   const newParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
@@ -282,7 +281,7 @@ export async function bridgeParticipant(
  * @param effectiveCallerId - Caller ID to use for the call
  * @param effectiveAplisayId - Aplisay trunk ID (optional)
  * @param transferTargetIdentity - Identity for the transfer target participant
- * @param registrationOriginated - Same semantics as bridgeParticipant (inbound registration leg or outbound originate)
+ * @param useRegistrationTrunk - When true (registration endpoint id + B2BUA host), dial via registration trunk
  * @param b2buaGatewayIp - sipHXLkRealIp or registration b2buaId
  * @param b2buaGatewayTransport - sipHXLkTransport or registration options.transport
  * @param registrationEndpointId - Registration UUID for X-Aplisay-PhoneRegistration
@@ -295,7 +294,7 @@ export async function dialTransferTargetToConsultation(
   effectiveCallerId: string,
   effectiveAplisayId: string | null | undefined,
   transferTargetIdentity: string = "transfer-target",
-  registrationOriginated: boolean = false,
+  useRegistrationTrunk: boolean = false,
   b2buaGatewayIp: string | null | undefined = null,
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
@@ -310,7 +309,7 @@ export async function dialTransferTargetToConsultation(
 
   const origin = effectiveCallerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
-  if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
+  if (useRegistrationTrunk && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
       { consultRoomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
       "dialing transfer target through B2BUA gateway for registration-originated call"
@@ -322,14 +321,11 @@ export async function dialTransferTargetToConsultation(
       b2buaGatewayTransport,
     );
     
-    // Format destination number
-    const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-
-    // For registration endpoints, we dial the destination number directly
-    // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
+    // Pass destination as supplied (UK national 0…, bare 44…, or +44…) so agent
+    // static transfer numbers and API originate calledId honour trunk dial rules.
     const transferTargetParticipant = await sipClient.createSipParticipant(
       registrationTrunkId,
-      destinationFormatted, // Use phone number, trunk routes to registrar
+      destination,
       consultRoomName,
       {
         participantIdentity: transferTargetIdentity,
@@ -342,10 +338,14 @@ export async function dialTransferTargetToConsultation(
         fromNumber: origin,
         krispEnabled: true,
         waitUntilAnswered: true,
+        // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
+        // sip.h.* attributes so the consultative REFER can build a full RFC 3891
+        // Replaces from the consult leg. See finaliseConsultativeTransfer.
+        includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
       }
     );
 
-    logger.info({ transferTargetParticipant, consultRoomName, destinationFormatted, registrationEndpointId, registrationTrunkId }, "transfer target dialed through registrar trunk with registration endpoint ID");
+    logger.info({ transferTargetParticipant, consultRoomName, destination, registrationEndpointId, registrationTrunkId }, "transfer target dialed through registrar trunk with registration endpoint ID");
     return transferTargetParticipant;
   }
 
@@ -359,11 +359,9 @@ export async function dialTransferTargetToConsultation(
     throw new Error("No livekit outbound SIP trunk found");
   }
 
-  const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-
   const transferTargetParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
-    destinationFormatted,
+    destination,
     consultRoomName,
     {
       participantIdentity: transferTargetIdentity,
@@ -376,6 +374,10 @@ export async function dialTransferTargetToConsultation(
       fromNumber: origin,
       krispEnabled: true,
       waitUntilAnswered: true,
+      // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
+      // sip.h.* attributes so the consultative REFER can build a full RFC 3891
+      // Replaces from the consult leg. See finaliseConsultativeTransfer.
+      includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
     }
   );
 

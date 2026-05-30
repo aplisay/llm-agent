@@ -842,8 +842,14 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
             // Otherwise, use the calledId (phone number) to lookup by number
             if (phoneRegistration) {
               registrationOriginated = true;
+              // NOTE: do NOT overwrite calledId/callerId here. They are the
+              // SIP-derived, dialable values (typically the "00000" catch-all
+              // for registration calls) and they flow into the telephony /
+              // transfer path (consult dial origin, REFER caller-id). The
+              // registration UUID is substituted into the persisted call
+              // record only — see setupCallAndUtilities.
               logger.info(
-                { callerId, phoneRegistration, aplisayId },
+                { callerId, calledId, phoneRegistration, aplisayId },
                 "new Livekit inbound telephone call, looking up phone endpoint by registration ID",
               );
               const phoneEndpoint =
@@ -1103,6 +1109,20 @@ async function setupCallAndUtilities({
     logger.debug({ state, description }, "Transfer state updated");
   };
 
+  // For registration-endpoint inbound calls the SIP-derived calledId/callerId
+  // are the "00000" catch-all (no useful identity). Record the registration
+  // UUID instead so the call record correlates back to the endpoint. This is
+  // RECORD-ONLY: the dialable calledId/callerId above are left untouched and
+  // continue to drive the telephony / transfer (consult dial, REFER) path.
+  const recordCalledId =
+    registrationOriginated && registrationEndpointId && (!calledId || calledId === "00000")
+      ? registrationEndpointId
+      : calledId;
+  const recordCallerId =
+    registrationOriginated && registrationEndpointId && (!callerId || callerId === "00000")
+      ? registrationEndpointId
+      : callerId;
+
   const call = await createCall({
     id: callId,
     userId,
@@ -1111,16 +1131,16 @@ async function setupCallAndUtilities({
     agentId: agent.id,
     platform: "livekit",
     platformCallId: room?.name,
-    calledId,
-    callerId,
+    calledId: recordCalledId,
+    callerId: recordCallerId,
     modelName,
     options,
     metadata: {
       ...instance.metadata,
       ...(callMetadata || {}),
       aplisay: {
-        callerId,
-        calledId,
+        callerId: recordCallerId,
+        calledId: recordCalledId,
         fallbackNumbers,
         model: agent.modelName,
       },
