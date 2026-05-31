@@ -1,31 +1,21 @@
 import { SipClient } from "livekit-server-sdk";
-import { SIPMediaEncryption, SIPHeaderOptions, SIPTransport } from "@livekit/protocol";
+import { SIPMediaEncryption, SIPTransport } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers } from "./api-client.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
 export async function transferParticipant(
-  roomName: string,
-  participant: string,
-  transferTo: string,
+  roomName: string, 
+  participant: string, 
+  transferTo: string, 
   aplisayId: string,
   registrar?: string | null,
   transport?: string | null,
   callerId?: string | null,
   originatingCallId?: string | null,
-  // RFC 3891 dialog identifier ("call-id;to-tag=...;from-tag=...") of a leg the
-  // referred party should replace. Used for the consultative (attended) finalise
-  // so the original caller's endpoint replaces the consultation leg rather than
-  // ringing the target a second time.
-  // NOTE: on LiveKit this is best-effort. The server SDK only surfaces the SIP
-  // Call-ID (sipCallId), not the to/from tags a complete Replaces requires, and
-  // whether the LiveKit SIP service forwards an embedded Replaces to the upstream
-  // B2BUA is platform-dependent. TODO: revisit once LiveKit exposes full dialog
-  // identifiers / Replaces pass-through.
-  replaces?: string | null,
 ): Promise<any> {
-  logger.info({ roomName, participant, transferTo, registrar, transport, replaces }, "transfer participant initiated");
+  logger.info({ roomName, participant, transferTo, registrar, transport }, "transfer participant initiated");
 
   // If registrar is provided, construct SIP URI for registration endpoint
   let transferUri = `tel:${transferTo}`;
@@ -37,16 +27,6 @@ export async function transferParticipant(
     if (transport) {
       transferUri += `;transport=${transport as string}`;
     }
-  }
-
-  // Attended transfer: embed Replaces in the Refer-To URI so the referred party
-  // replaces the existing (consultation) dialog. tel: URIs cannot carry a
-  // Replaces header param, so upgrade to a sip: URI targeting the same number.
-  if (replaces) {
-    if (transferUri.startsWith("tel:")) {
-      transferUri = `sip:${transferTo}`;
-    }
-    transferUri += `?Replaces=${encodeURIComponent(replaces)}`;
   }
 
   const sipTransferOptions = {
@@ -89,15 +69,23 @@ function mapTransportToSIPTransport(transport: string | null | undefined): SIPTr
 
 /**
  * Finds or creates an outbound SIP trunk for a registration endpoint.
- * Trunk name format: "Registration Trunk <IP address> <Transport>".
- * Media encryption is always SIP_MEDIA_ENCRYPT_ALLOW (SRTP when offered).
+ * Trunk name format: "Registration Trunk <IP address> <Transport>" for
+ * encryption-allowed trunks, with a " (plain RTP)" suffix for the
+ * unencrypted variant. Two distinct named trunks are maintained so that the
+ * media-encryption policy can be selected per call based on whether the
+ * A-leg media is encrypted: offering SRTP to a plain-RTP-only endpoint
+ * (e.g. some Wildix configurations) is rejected with a 603 Decline.
  * @param registrar - Registrar URI (e.g., "sip:provider.example.com:5060")
  * @param transport - Transport protocol (udp, tcp, tls)
+ * @param allowEncryption - When true, create/use a trunk that offers SRTP
+ *   (SIP_MEDIA_ENCRYPT_ALLOW); when false, use a trunk that forces plain RTP
+ *   (SIP_MEDIA_ENCRYPT_DISABLE). Defaults to true to preserve prior behaviour.
  * @returns The SIP trunk ID
  */
 async function findOrCreateRegistrationTrunk(
   registrar: string,
   transport: string | null | undefined,
+  allowEncryption: boolean = true,
 ): Promise<string> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -110,11 +98,14 @@ async function findOrCreateRegistrationTrunk(
   let registrarHost = registrar.replace(/^sips?:/i, '').replace(/^tel:/i, '');
   // Remove port if present (e.g., "provider.example.com:5060" -> "provider.example.com")
   registrarHost = registrarHost.split(':')[0];
-  
+
   // Normalize transport for trunk name
   const transportName = (transport || 'tcp').toUpperCase();
-  
-  const trunkName = `Registration Trunk ${registrarHost} ${transportName}`;
+
+  // The plain-RTP variant gets a distinct name so both trunks can coexist;
+  // the encryption-allowed name is kept unchanged for backward compatibility.
+  const encryptionSuffix = allowEncryption ? '' : ' (plain RTP)';
+  const trunkName = `Registration Trunk ${registrarHost} ${transportName}${encryptionSuffix}`;
 
   const port = (transportName === 'TLS') ? 5071 : 5070;
 
@@ -156,7 +147,9 @@ async function findOrCreateRegistrationTrunk(
       transport: sipTransport,
       authUsername: LIVEKIT_SIP_USERNAME!,
       authPassword: LIVEKIT_SIP_PASSWORD!,
-      mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
+      mediaEncryption: allowEncryption
+        ? SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW
+        : SIPMediaEncryption.SIP_MEDIA_ENCRYPT_DISABLE,
     },
   );
 
@@ -176,6 +169,9 @@ async function findOrCreateRegistrationTrunk(
  * @param b2buaGatewayTransport - sipHXLkTransport on inbound, or registration options.transport (default tcp) for originate
  * @param registrationEndpointId - Registration UUID for X-Aplisay-PhoneRegistration
  * @param originatingCallId - Platform call id for tracing headers
+ * @param aLegEncrypted - Whether the A-leg media is encrypted (SRTP). Drives
+ *   registration-trunk media-encryption policy selection. Defaults to true to
+ *   preserve prior behaviour (offer SRTP) when the signal is unavailable.
  * @returns The created SIP participant
  */
 export async function bridgeParticipant(
@@ -189,6 +185,8 @@ export async function bridgeParticipant(
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
   originatingCallId: string | null | undefined = null,
+  aLegEncrypted: boolean = true,
+  registrationUsername: string | null | undefined = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -197,17 +195,22 @@ export async function bridgeParticipant(
   );
 
   const origin = callerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+  const destination = bridgeTo.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
   if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
-      { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, bridgeTo },
+      { roomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination, aLegEncrypted },
       "bridging participant through B2BUA gateway for registration-originated call"
     );
 
-    // Find or create a trunk for this B2BUA gateway
+    // Find or create a trunk for this B2BUA gateway. Select the media-encryption
+    // policy based on the A-leg: only offer SRTP to the B-leg when the A-leg is
+    // itself encrypted, otherwise force plain RTP to avoid 603 Decline from
+    // plain-RTP-only endpoints.
     const registrationTrunkId = await findOrCreateRegistrationTrunk(
       b2buaGatewayIp,
       b2buaGatewayTransport,
+      aLegEncrypted,
     );
 
     // For registration endpoints, we dial the destination number directly
@@ -220,12 +223,16 @@ export async function bridgeParticipant(
         ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
       },
       participantName: 'Aplisay Bridged Transfer',
-      fromNumber: '00000',
+      // Present the registration's own trunk username (the A-leg's To-user /
+      // SIP extension) as the calling number toward the gateway, rather than
+      // the placeholder. Avoids 603 Decline from PBXs that reject an unknown
+      // calling number. Falls back to the placeholder when unavailable.
+      fromNumber: registrationUsername || '00000',
       krispEnabled: true,
       waitUntilAnswered: true
     };
 
-    logger.info({ roomName, bridgeTo, origin, callerId, sipParticipantOptions, registrationTrunkId }, "bridge participant initiated (registration endpoint)");
+    logger.info({ roomName, destination, origin, callerId, sipParticipantOptions, registrationTrunkId, registrationUsername }, "bridge participant initiated (registration endpoint)");
 
     const newParticipant = await sipClient.createSipParticipant(
       registrationTrunkId,
@@ -262,7 +269,7 @@ export async function bridgeParticipant(
     waitUntilAnswered: true
   };
 
-  logger.info({ roomName, bridgeTo, origin, callerId, sipParticipantOptions }, "bridge participant initiated (trunk-based)");
+  logger.info({ roomName, destination, origin, callerId, sipParticipantOptions }, "bridge participant initiated (trunk-based)");
 
   const newParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
@@ -281,11 +288,14 @@ export async function bridgeParticipant(
  * @param effectiveCallerId - Caller ID to use for the call
  * @param effectiveAplisayId - Aplisay trunk ID (optional)
  * @param transferTargetIdentity - Identity for the transfer target participant
- * @param useRegistrationTrunk - When true (registration endpoint id + B2BUA host), dial via registration trunk
+ * @param registrationOriginated - Same semantics as bridgeParticipant (inbound registration leg or outbound originate)
  * @param b2buaGatewayIp - sipHXLkRealIp or registration b2buaId
  * @param b2buaGatewayTransport - sipHXLkTransport or registration options.transport
  * @param registrationEndpointId - Registration UUID for X-Aplisay-PhoneRegistration
  * @param originatingCallId - Platform call id for tracing headers
+ * @param aLegEncrypted - Whether the A-leg media is encrypted (SRTP). Drives
+ *   registration-trunk media-encryption policy selection. Defaults to true to
+ *   preserve prior behaviour (offer SRTP) when the signal is unavailable.
  * @returns The created SIP participant
  */
 export async function dialTransferTargetToConsultation(
@@ -294,12 +304,14 @@ export async function dialTransferTargetToConsultation(
   effectiveCallerId: string,
   effectiveAplisayId: string | null | undefined,
   transferTargetIdentity: string = "transfer-target",
-  useRegistrationTrunk: boolean = false,
+  registrationOriginated: boolean = false,
   b2buaGatewayIp: string | null | undefined = null,
   b2buaGatewayTransport: string | null | undefined = null,
   registrationEndpointId: string | null | undefined = null,
   callerId: string | null | undefined = null,
   originatingCallId: string | null | undefined = null,
+  aLegEncrypted: boolean = true,
+  registrationUsername: string | null | undefined = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -309,23 +321,30 @@ export async function dialTransferTargetToConsultation(
 
   const origin = effectiveCallerId.replace(/^0/, "44").replace(/^(?!\+)/, "+");
 
-  if (useRegistrationTrunk && b2buaGatewayIp && registrationEndpointId) {
+  if (registrationOriginated && b2buaGatewayIp && registrationEndpointId) {
     logger.info(
-      { consultRoomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination },
+      { consultRoomName, b2buaGatewayIp, b2buaGatewayTransport, registrationEndpointId, destination, aLegEncrypted },
       "dialing transfer target through B2BUA gateway for registration-originated call"
     );
 
-    // Find or create a trunk for this B2BUA gateway
+    // Find or create a trunk for this B2BUA gateway. Select the media-encryption
+    // policy based on the A-leg: only offer SRTP to the B-leg when the A-leg is
+    // itself encrypted, otherwise force plain RTP to avoid 603 Decline from
+    // plain-RTP-only endpoints.
     const registrationTrunkId = await findOrCreateRegistrationTrunk(
       b2buaGatewayIp,
       b2buaGatewayTransport,
+      aLegEncrypted,
     );
     
-    // Pass destination as supplied (UK national 0…, bare 44…, or +44…) so agent
-    // static transfer numbers and API originate calledId honour trunk dial rules.
+    // Format destination number
+    const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+
+    // For registration endpoints, we dial the destination number directly
+    // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const transferTargetParticipant = await sipClient.createSipParticipant(
       registrationTrunkId,
-      destination,
+      destinationFormatted, // Use phone number, trunk routes to registrar
       consultRoomName,
       {
         participantIdentity: transferTargetIdentity,
@@ -335,17 +354,18 @@ export async function dialTransferTargetToConsultation(
           ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
         },
         participantName: "Transfer Target",
-        fromNumber: origin,
+        // Present the registration's own trunk username (e.g. the A-leg's
+        // To-user / SIP extension) as the calling number toward the gateway,
+        // rather than the placeholder CLI. Some PBXs (e.g. Wildix) 603-Decline
+        // an outbound/transfer call whose calling number is unrecognised. Fall
+        // back to the previous behaviour when the username is unavailable.
+        fromNumber: registrationUsername || origin,
         krispEnabled: true,
         waitUntilAnswered: true,
-        // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
-        // sip.h.* attributes so the consultative REFER can build a full RFC 3891
-        // Replaces from the consult leg. See finaliseConsultativeTransfer.
-        includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
       }
     );
 
-    logger.info({ transferTargetParticipant, consultRoomName, destination, registrationEndpointId, registrationTrunkId }, "transfer target dialed through registrar trunk with registration endpoint ID");
+    logger.info({ transferTargetParticipant, consultRoomName, destinationFormatted, registrationEndpointId, registrationTrunkId, registrationUsername }, "transfer target dialed through registrar trunk with registration endpoint ID");
     return transferTargetParticipant;
   }
 
@@ -359,9 +379,11 @@ export async function dialTransferTargetToConsultation(
     throw new Error("No livekit outbound SIP trunk found");
   }
 
+  const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
+
   const transferTargetParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
-    destination,
+    destinationFormatted,
     consultRoomName,
     {
       participantIdentity: transferTargetIdentity,
@@ -374,10 +396,6 @@ export async function dialTransferTargetToConsultation(
       fromNumber: origin,
       krispEnabled: true,
       waitUntilAnswered: true,
-      // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
-      // sip.h.* attributes so the consultative REFER can build a full RFC 3891
-      // Replaces from the consult leg. See finaliseConsultativeTransfer.
-      includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
     }
   );
 
