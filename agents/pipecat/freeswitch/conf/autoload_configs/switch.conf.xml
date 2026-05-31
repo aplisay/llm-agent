@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<include>
+  <configuration name="switch.conf" description="Core Configuration">
+    <global_settings>
+      <param name="log-level" value="info"/>
+      <param name="auto-create-sip-profiles" value="false"/>
+      <param name="sip-trace" value="false"/>
+
+      <param name="rtp-start-port" value="$${rtp_start_port}"/>
+      <param name="rtp-end-port" value="$${rtp_end_port}"/>
+      <param name="rtp-timeout-sec" value="60"/>
+      <param name="rtp-hold-timeout-sec" value="1800"/>
+
+      <param name="max-sessions" value="200"/>
+      <param name="sessions-per-second" value="30"/>
+      <param name="max-dtmf-duration" value="5000"/>
+
+      <param name="codec-prefs" value="$${global_codec_prefs}"/>
+
+      <param name="dbname" value="switch"/>
+      <param name="dbpath" value="$${db_dir}"/>
+
+      <param name="sip-ip" value="$${local_ip_v4}"/>
+      <param name="sip-port" value="$${sip_port}"/>
+      <param name="sip-tls-port" value="$${sip_tls_port}"/>
+
+      <param name="local-ip" value="$${local_ip_v4}"/>
+      <param name="external-ip" value="$${ext_ipv4_address}"/>
+
+      <param name="console-log-level" value="info"/>
+      <param name="file-log-level" value="info"/>
+
+      <param name="max-calls-per-second" value="50"/>
+      <param name="max-concurrent-calls" value="200"/>
+
+      <param name="timezone" value="UTC"/>
+      <param name="shutdown-timeout" value="30"/>
+    </global_settings>
+  </configuration>
+</include>

@@ -1,5 +1,5 @@
 import { PhoneNumber, Op } from '../../lib/database.js';
-import { getTelephonyHandler } from '../../lib/handlers/index.js';
+import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
 
 // DEPRECATED: This endpoint is deprecated. Use /api/phone-endpoints instead.
 
@@ -81,7 +81,7 @@ phoneNumberList.apiDoc = {
       required: false,
       schema: {
         type: 'string',
-        enum: ['livekit', 'jambonz', 'ultravox']
+        enum: HANDLER_NAMES
       }
     }
   ],
@@ -101,7 +101,7 @@ phoneNumberList.apiDoc = {
                 },
                 handler: {
                   type: 'string',
-                  enum: ['livekit', 'jambonz'],
+                  enum: TELEPHONY_HANDLER_NAMES,
                   description: 'The handler type for this phone number'
                 },
                 outbound: {

@@ -1,0 +1,58 @@
+//
+// Copyright (c) 2024–2026, Daily
+//
+// SPDX-License-Identifier: BSD 2-Clause License
+//
+// Canonical Pipecat frame schema. Mirrored verbatim from upstream
+// https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/frames/frames.proto
+//
+// We do not run protoc against this file — the sipbridge has a hand-rolled
+// wire encoder in internal/pipecat/wire.go that emits the same bytes the
+// upstream `ProtobufFrameSerializer` (in pipecat.serializers.protobuf)
+// emits and accepts. This file is here for documentation only: if Pipecat
+// adds a new field, the same change needs to land in wire.go.
+//
+// Wire compatibility is tested by the worker accepting frames from this
+// bridge round-trip against its own `ProtobufFrameSerializer` — the
+// protobuf wire format is field-tag-based, so as long as the field
+// numbers and types match, both ends interop.
+
+syntax = "proto3";
+
+package pipecat;
+
+message TextFrame {
+  uint64 id = 1;
+  string name = 2;
+  string text = 3;
+}
+
+message AudioRawFrame {
+  uint64 id = 1;
+  string name = 2;
+  bytes audio = 3;
+  uint32 sample_rate = 4;
+  uint32 num_channels = 5;
+  optional uint64 pts = 6;
+}
+
+message TranscriptionFrame {
+  uint64 id = 1;
+  string name = 2;
+  string text = 3;
+  string user_id = 4;
+  string timestamp = 5;
+}
+
+message MessageFrame {
+  string data = 1;
+}
+
+message Frame {
+  oneof frame {
+    TextFrame text = 1;
+    AudioRawFrame audio = 2;
+    TranscriptionFrame transcription = 3;
+    MessageFrame message = 4;
+  }
+}

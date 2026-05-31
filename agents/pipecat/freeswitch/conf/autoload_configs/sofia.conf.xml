@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<include>
+  <configuration name="sofia.conf" description="Sofia SIP">
+    <settings>
+      <param name="inbound-codec-prefs" value="$${global_codec_prefs}"/>
+      <param name="outbound-codec-prefs" value="$${outbound_codec_prefs}"/>
+    </settings>
+    <profiles>
+      <X-PRE-PROCESS cmd="include" data="$${conf_dir}/sip_profiles/*.xml"/>
+    </profiles>
+  </configuration>
+</include>

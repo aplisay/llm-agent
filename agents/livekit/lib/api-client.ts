@@ -308,6 +308,9 @@ export interface TrunkInfo {
   outbound: boolean;
   flags?: {
     canRefer?: boolean;
+    // When true, transfers on this trunk default to SIP REFER instead of the
+    // bridged default for SIP trunk calls.
+    forceReferTransfer?: boolean;
     [key: string]: any;
   } | null;
 }

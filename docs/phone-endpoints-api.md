@@ -141,6 +141,30 @@ You can send `number` or `phoneNumber`; both are accepted.
 }
 ```
 
+##### Registration `options`
+
+The `options` object carries provider-specific and behavioural settings for the registration. Transfer-related keys:
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `bridged_transfer` | boolean | `false` | When `true`, transfers on calls that arrived via this registration are completed by **bridging** the media through the platform instead of the registration default of **SIP REFER**. Enable this when the registered endpoint or its upstream doesn't handle REFER / REFER-with-Replaces reliably. A per-transfer `forceRefer: true` on the agent's `transfer` call still overrides this. (Key is snake_case to match the other registration options; in code it surfaces as the camelCase `forceBridged`.) See [call-transfers.md](./call-transfers.md#transfer-mode-selection). |
+
+**Example with the option set:**
+
+```json
+{
+  "type": "phone-registration",
+  "name": "SIP Reg A",
+  "registrar": "sip:provider.example.com:5060",
+  "username": "user123",
+  "password": "secret",
+  "outbound": true,
+  "options": { "bridged_transfer": true }
+}
+```
+
+> **Trunk counterpart:** SIP trunks default to **bridging** for transfers. To make a trunk default to **SIP REFER** instead, set `forceReferTransfer: true` in the trunk's `flags` (trunk configuration, not this endpoint API). The same per-transfer `forceRefer` / `forceBridged` parameters override either default. See [call-transfers.md](./call-transfers.md#transfer-mode-selection).
+
 ---
 
 ### PUT /api/phone-endpoints/{identifier}

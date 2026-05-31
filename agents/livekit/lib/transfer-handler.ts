@@ -55,9 +55,11 @@ export interface TransferContext {
   trunkInfo: TrunkInfo | null | undefined;
   registrationRegistrar: string | null | undefined;
   registrationTransport: string | null | undefined;
+  registrationUsername: string | null | undefined; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
   registrationEndpointId: string | null | undefined; // Registration endpoint ID from sipHXAplisayPhoneregistration
   b2buaGatewayIp: string | null | undefined; // B2BUA gateway IP from sipHXLkRealIp
   b2buaGatewayTransport: string | null | undefined; // B2BUA gateway transport from sipHXLkTransport
+  aLegEncrypted: boolean; // Whether the inbound A-leg media is encrypted (SRTP), from sipHXLkMediaEncryption; drives B-leg trunk media policy
   forceBridged?: boolean; // Force bridged transfer from phone registration endpoint options
   options: any;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
@@ -299,6 +301,8 @@ async function handleBlindBridgeTransfer(
     b2buaGatewayIp,
     b2buaGatewayTransport,
     registrationEndpointId,
+    registrationUsername,
+    aLegEncrypted,
   } = context;
 
   logger.info(
@@ -322,6 +326,8 @@ async function handleBlindBridgeTransfer(
       b2buaGatewayTransport,
       registrationEndpointId,
       context.call?.id,
+      aLegEncrypted,
+      registrationUsername,
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -579,6 +585,8 @@ async function startConsultativeTransfer(
       context.registrationEndpointId,
       callerId,
       context.call?.id,
+      context.aLegEncrypted,
+      context.registrationUsername,
     );
     setBridgedParticipant(transferTargetParticipant);
     // Step 5: Create TransferAgent with conversation history

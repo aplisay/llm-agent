@@ -1,0 +1,205 @@
+#
+# Pipecat agent stack — three deployment topologies, selected via Compose
+# profiles so the FreeSWITCH and voiceblender ingresses can coexist in the
+# same compose file but never start simultaneously (they both want UDP/5060
+# under host networking, the RTP range, etc.).
+#
+# Topologies
+# ----------
+#
+#   `--profile freeswitch`  (default for backward compatibility)
+#       freeswitch       SIP termination + mod_audio_stream
+#       esl-poller       TypeScript ESL → HTTP call-control API + webhook
+#       pipecat-worker   SIP_GATEWAY=freeswitch
+#
+#   `--profile voiceblender`
+#       voiceblender     Go SIP B2BUA + mixer + REST/VSI control plane
+#       pipecat-worker   SIP_GATEWAY=voiceblender
+#
+#   `--profile sipbridge`
+#       sipbridge        Minimal Go sipgo SIP UAS → Pipecat protobuf WS
+#                        (no mixer, no recording — see agents/pipecat/sipbridge)
+#       pipecat-worker   SIP_GATEWAY=sipbridge
+#
+#   `--profile daily`        (no SIP host containers; cloud-native)
+#       pipecat-worker   SIP_GATEWAY=daily   (talks to Daily.co API)
+#
+# Usage
+# -----
+#
+#   docker compose --profile freeswitch up
+#   docker compose --profile voiceblender up
+#   docker compose --profile sipbridge up
+#   docker compose --profile daily up
+#
+# The pipecat-worker container carries every profile so a single
+# `docker compose up` against any profile picks it up.
+#
+# Networking
+# ----------
+#
+# host networking is the default for the SIP-terminating topologies because
+# RTP port pinning is much simpler that way (both FreeSWITCH and
+# voiceblender expect to control their own SIP/RTP UDP port ranges). For
+# non-host deployments, configure RTP ports explicitly and expose them.
+#
+services:
+  # ---- FreeSWITCH ingress (profile: freeswitch) -------------------------
+
+  freeswitch:
+    profiles: ["freeswitch"]
+    build:
+      context: ./freeswitch/
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      # mod_audio_stream's WS target (the pipecat-worker container).
+      # When using host networking the worker is reachable on localhost.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+    healthcheck:
+      test: ["CMD", "/usr/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  esl-poller:
+    profiles: ["freeswitch"]
+    build:
+      context: ./esl-poller/
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      freeswitch:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      ESL_HOST: 127.0.0.1
+      ESL_PORT: 8021
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      CALL_API_PORT: 4001
+      CALL_API_TOKEN: ${CALL_API_TOKEN}
+      # Webhook the pipecat worker exposes for channel events.
+      WORKER_EVENT_WEBHOOK: ${WORKER_EVENT_WEBHOOK:-http://127.0.0.1:8082/freeswitch/events}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      # Gateway poll is for aplisay-b2bua's config-server; off in this stack.
+      GATEWAY_POLL_ENABLED: "false"
+      CALL_API_ENABLED: "true"
+
+  # ---- Voiceblender ingress (profile: voiceblender) ---------------------
+
+  voiceblender:
+    profiles: ["voiceblender"]
+    # Pin a release tag in production. v0.6.0 is the first tag with the
+    # Pipecat agent integration on stable footing — see
+    # https://github.com/voiceblender/voiceblender/releases/tag/v0.6.0
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      # SIP/RTP — defaults are voiceblender's own defaults; set explicitly
+      # here so it's clear which ports get pinned, and so they're easy to
+      # remap (e.g. SIP_PORT=5070) when running alongside another SIP UA on
+      # the same host.
+      HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
+      SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
+      SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}  # 0 disables TLS
+      RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
+      RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # API auth — used by the worker for REST calls + VSI subscription.
+      API_KEY: ${VOICEBLENDER_API_KEY:-}
+      # We don't use voiceblender's native recording — our worker pipeline
+      # handles AES-GCM-encrypted OGG/Opus upload to GCS already, so S3
+      # vars stay unset.
+
+  # ---- sipbridge ingress (profile: sipbridge) ---------------------------
+  #
+  # Minimal in-tree SIP UAS — see agents/pipecat/sipbridge for the Go
+  # source. Phase A: inbound G.711 (PCMU/PCMA) only, REST control API on
+  # :8090, no TLS/SRTP. Designed to be ~1/30th the runtime footprint of
+  # freeswitch + esl-poller. Builds from source via the Dockerfile in
+  # the same directory.
+  sipbridge:
+    profiles: ["sipbridge"]
+    build:
+      context: ../../
+      dockerfile: agents/pipecat/sipbridge/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      # Advertised IPs (stamped into Via/Contact and SDP c=/m=). Must be
+      # reachable by the upstream B2BUA / SBC.
+      SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
+      SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # Bind IPs (where the kernel actually accepts packets). Default to
+      # wildcard — Docker is always behind some form of NAT (Docker Desktop
+      # VM, bridge networks, port-forwarded host network on Linux), so the
+      # advertised IP is rarely the same as the address packets actually
+      # arrive on. Binding wildcard catches loopback, LAN, and VPN; the
+      # advertised IPs above tell peers where to route replies.
+      SIPBRIDGE_SIP_BIND_IP: ${SIPBRIDGE_SIP_BIND_IP:-0.0.0.0}
+      SIPBRIDGE_MEDIA_BIND_IP: ${SIPBRIDGE_MEDIA_BIND_IP:-0.0.0.0}
+      SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
+      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
+      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+      SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-info}
+
+  # ---- Pipecat worker (all profiles) ------------------------------------
+
+  pipecat-worker:
+    profiles: ["freeswitch", "voiceblender", "sipbridge", "daily"]
+    build:
+      context: ../../
+      dockerfile: agents/pipecat/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PORT: 8082
+      # Which SIP gateway to wire at startup. The worker reads SIP_GATEWAY
+      # and instantiates the matching gateway in its FastAPI lifespan; it
+      # otherwise stays gateway-agnostic.
+      SIP_GATEWAY: ${SIP_GATEWAY:-freeswitch}
+
+      # --- FreeSWITCH gateway settings (only used when SIP_GATEWAY=freeswitch) ---
+      ESL_POLLER_URL: http://127.0.0.1:4001
+      ESL_POLLER_TOKEN: ${CALL_API_TOKEN}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+
+      # --- Voiceblender gateway settings (only used when SIP_GATEWAY=voiceblender) ---
+      # Where the worker reaches voiceblender's REST + VSI endpoints. With
+      # host networking that's localhost on the configured HTTP port.
+      VOICEBLENDER_BASE_URL: ${VOICEBLENDER_BASE_URL:-http://127.0.0.1:8080}
+      VOICEBLENDER_API_KEY: ${VOICEBLENDER_API_KEY:-}
+      VOICEBLENDER_APP_ID: ${VOICEBLENDER_APP_ID:-aplisay-pipecat}
+      # Where voiceblender reaches the worker to open the audio WS. Must
+      # be reachable from the voiceblender container — with host networking
+      # that's localhost again.
+      VOICEBLENDER_WORKER_WS_BASE: ${VOICEBLENDER_WORKER_WS_BASE:-ws://127.0.0.1:8082}
+
+      # --- sipbridge gateway settings (only used when SIP_GATEWAY=sipbridge) ---
+      SIPBRIDGE_BASE_URL: ${SIPBRIDGE_BASE_URL:-http://127.0.0.1:8090}
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+
+      # --- Bridge to llm-agent REST API (all profiles) ---
+      SERVICE_BASE_URI: ${SERVICE_BASE_URI}
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN}
+
+      # --- Auth shared with the Node handler in lib/handlers/pipecat.js ---
+      PIPECAT_DISPATCH_TOKEN: ${PIPECAT_DISPATCH_TOKEN}
+      PIPECAT_JOIN_SECRET: ${PIPECAT_JOIN_SECRET}
+
+      # --- Provider keys (only those the configured models need) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ULTRAVOX_API_KEY: ${ULTRAVOX_API_KEY:-}
+
+      LOGLEVEL: ${LOGLEVEL:-info}

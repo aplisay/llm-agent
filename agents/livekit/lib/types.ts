@@ -42,9 +42,11 @@ export interface CallScenario {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
 }
 
@@ -85,9 +87,11 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
 }
 

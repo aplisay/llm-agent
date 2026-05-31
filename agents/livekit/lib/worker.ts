@@ -215,9 +215,11 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp = null,
         b2buaGatewayTransport = null,
+        aLegEncrypted = true,
         forceBridged,
       } = scenario;
 
@@ -289,9 +291,11 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
+        aLegEncrypted,
         forceBridged,
         requestHangup: () => {},
         participant: participant,
@@ -320,6 +324,8 @@ export default defineAgent({
             b2buaGatewayTransport,
             registrationEndpointId,
             call?.id,
+            aLegEncrypted,
+            registrationUsername,
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -669,9 +675,20 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let trunkInfo: TrunkInfo | null = null;
   let registrationRegistrar: string | null = null;
   let registrationTransport: string | null = null;
+  // Registration trunk username (e.g. "8092"), used as the calling number toward
+  // the gateway on transfer/bridge B-legs so PBXs that reject an unknown calling
+  // number (e.g. Wildix -> 603 Decline) accept the call.
+  let registrationUsername: string | null = null;
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
+  // Whether the inbound A-leg media is encrypted (SRTP). Drives the
+  // media-encryption policy of the B-leg registration trunk used for transfers:
+  // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
+  // force plain RTP to avoid 603 Decline from plain-RTP-only endpoints (e.g.
+  // some Wildix configurations). Defaults to true (offer SRTP) to preserve
+  // prior behaviour when the B2BUA does not stamp the signal.
+  let aLegEncrypted = true;
   let forceBridged: boolean | undefined = undefined;
   /*
 
@@ -798,12 +815,27 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 sipHostname: sipHostnameAttr,
                 sipHXLkRealIp: b2buaGatewayIpAttr,
                 sipHXLkTransport: b2buaGatewayTransportAttr,
+                sipHXLkMediaEncryption: aLegMediaEncryptionAttr,
               } = participant.attributes || {};
 
               calledId = calledIdAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
               phoneRegistration = phoneRegistrationAttr;
+
+              // Determine A-leg media encryption from the B2BUA-stamped header
+              // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
+              // header is absent we keep the default (true) to preserve prior
+              // behaviour. The value is treated as plain RTP only when it
+              // explicitly indicates no/disabled encryption.
+              if (aLegMediaEncryptionAttr != null && aLegMediaEncryptionAttr !== '') {
+                const enc = String(aLegMediaEncryptionAttr).trim().toLowerCase();
+                aLegEncrypted = !['disable', 'disabled', 'none', 'off', 'no', 'false', '0', 'rtp', 'plain', 'unencrypted'].includes(enc);
+                logger.info(
+                  { aLegMediaEncryption: aLegMediaEncryptionAttr, aLegEncrypted },
+                  "Extracted A-leg media encryption from participant attributes",
+                );
+              }
 
               // Store registration endpoint ID for transfer operations
               if (phoneRegistration) {
@@ -857,6 +889,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 // Store registrar and transport for transfer operations
                 registrationRegistrar = regInfo.registrar || null;
                 registrationTransport = regInfo.options?.transport || null;
+                // Trunk username (= the A-leg's To-user / SIP extension), used as
+                // the calling number presented toward the gateway on transfers.
+                registrationUsername = regInfo.username || null;
                 // Store forceBridged option from phone registration endpoint
                 if (regInfo.options?.forceBridged !== undefined) {
                   forceBridged = regInfo.options.forceBridged === true;
@@ -950,9 +985,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     trunkInfo,
     registrationRegistrar,
     registrationTransport,
+    registrationUsername,
     registrationEndpointId,
     b2buaGatewayIp,
     b2buaGatewayTransport,
+    aLegEncrypted,
     forceBridged,
   };
 }
@@ -1035,9 +1072,11 @@ async function setupCallAndUtilities({
   trunkInfo,
   registrationRegistrar,
   registrationTransport,
+  registrationUsername,
   registrationEndpointId,
   b2buaGatewayIp,
   b2buaGatewayTransport,
+  aLegEncrypted = true,
   forceBridged,
   requestHangup,
   participant: originalParticipant,
@@ -1210,9 +1249,11 @@ async function setupCallAndUtilities({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp: b2buaGatewayIp ?? null,
         b2buaGatewayTransport: b2buaGatewayTransport ?? null,
+        aLegEncrypted,
         forceBridged,
         options,
         sessionRef,

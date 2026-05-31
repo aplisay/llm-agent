@@ -1,5 +1,6 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
 import { normalizeE164, validateSipUri } from '../../../lib/validation.js';
+import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 
 let log;
 
@@ -108,7 +109,7 @@ getPhoneEndpoint.apiDoc = {
                 properties: {
                   name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                   number: { type: 'string', description: 'The phone number' },
-                  handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
+                  handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' },
                   provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' },
@@ -127,7 +128,7 @@ getPhoneEndpoint.apiDoc = {
                   status: { type: 'string', enum: ['active', 'failed', 'disabled'] },
                   state: { type: 'string', enum: ['initial', 'registering', 'registered', 'failed'] },
                   error: { type: 'string', description: 'Error message if failed' },
-                  handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
+                  handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
@@ -200,8 +201,8 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
         return res.status(400).send({ error: 'outbound must be a boolean value' });
       }
-      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
-        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      if (updateFields.handler !== undefined && !TELEPHONY_HANDLER_NAMES.includes(updateFields.handler)) {
+        return res.status(400).send({ error: `handler must be one of: ${TELEPHONY_HANDLER_NAMES.join(', ')}` });
       }
       await phoneNumber.update(updateFields);
       return res.send({ success: true });
@@ -230,8 +231,8 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
         return res.status(400).send({ error: 'outbound must be a boolean value' });
       }
-      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
-        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      if (updateFields.handler !== undefined && !TELEPHONY_HANDLER_NAMES.includes(updateFields.handler)) {
+        return res.status(400).send({ error: `handler must be one of: ${TELEPHONY_HANDLER_NAMES.join(', ')}` });
       }
       if (updateFields.name !== undefined && typeof updateFields.name !== 'string') {
         return res.status(400).send({ error: 'name must be a string' });

@@ -1,0 +1,141 @@
+# Cloud Build — Pipecat agent stack (staging).
+#
+# Builds and pushes four images to Artifact Registry:
+#   - freeswitch       (agents/pipecat/freeswitch)
+#   - esl-poller       (agents/pipecat/esl-poller)
+#   - sipbridge        (agents/pipecat/sipbridge — Go SIP UAS, build context
+#                       is the repo root because its Dockerfile COPYs
+#                       agents/pipecat/sipbridge into the image)
+#   - pipecat-worker   (Dockerfile lives in agents/pipecat/, build context is
+#                       the repo root because the worker Dockerfile COPYs
+#                       agents/pipecat into the image)
+#
+# Adapted from aplisay-b2bua/deploy/gcp/cloudbuild-staging.yaml.
+steps:
+  # ----- FreeSWITCH -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - BUILD_ENV=production
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:staging
+      - '-f'
+      - './agents/pipecat/freeswitch/Dockerfile'
+      - './agents/pipecat/freeswitch'
+    id: Build-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+    id: Push-freeswitch
+
+  # ----- esl-poller -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:staging
+      - '-f'
+      - './agents/pipecat/esl-poller/Dockerfile'
+      - './agents/pipecat/esl-poller'
+    id: Build-esl-poller
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+    id: Push-esl-poller
+
+  # ----- sipbridge -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat/sipbridge into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:staging
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+    id: Push-sipbridge
+
+  # ----- pipecat-worker -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:staging
+      - '-f'
+      - './agents/pipecat/Dockerfile'
+      - '.'
+    id: Build-pipecat-worker
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+    id: Push-pipecat-worker
+
+images:
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+substitutions:
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+
+tags:
+  - pipecat-agent-staging
+  - freeswitch
+  - esl-poller
+  - sipbridge
+  - pipecat-worker

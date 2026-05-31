@@ -208,11 +208,6 @@ export async function runAgentWorker({
   let session: voice.AgentSession | null = null;
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
-  /**
-   * When the bridged leg ends we call `session.close()` then `cleanupAndClose()`.
-   * The Close handler must not delete the room / end the active call in between — that is cleanupAndClose's job.
-   */
-  let suppressNextSessionCloseRoomHandlers = false;
   let maxDuration: number = 305000; // Default value
   let callStarted = false;
   // Guard to ensure RecorderIO finalization/upload runs only once per job
@@ -506,8 +501,28 @@ export async function runAgentWorker({
         "cleanup and close completed (pre-shutdown)",
       );
       logger.debug("cleanup and close: shutting down context");
-      await ctx.shutdown(reason);
-      logger.debug("cleanup and close: context shutdown complete");
+      // Bound ctx.shutdown. After a blind-bridge call the SDK cannot fully
+      // drain the AgentSession (the underlying Ultravox pipeline is dead)
+      // and shutdown hangs until the 120s hard-exit timer fires. Cap it at
+      // 10s; if shutdown hangs, force-exit immediately rather than burning
+      // another 110 seconds of wall clock holding the worker slot. Our
+      // cleanup (room delete, call.end) already completed above so the DB
+      // state is consistent; only the SDK's internal teardown is incomplete.
+      try {
+        await withTimeout(
+          () => ctx.shutdown(reason),
+          10_000,
+          new Error("ctx.shutdown timed out after 10s"),
+        );
+        logger.debug("cleanup and close: context shutdown complete");
+      } catch (shutdownErr) {
+        logger.info(
+          { shutdownErr, reason },
+          "ctx.shutdown failed or timed out; forcing process exit",
+        );
+        // Defer one tick so the log line above is flushed before we exit.
+        setImmediate(() => process.exit(0));
+      }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
@@ -701,8 +716,7 @@ export async function runAgentWorker({
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
             logger.info({ ev }, "session closed");
-            // End transfer activity if in progress (non-blocking; listener stays synchronous
-            // so `suppressNextSessionCloseRoomHandlers` is not raced by `finally` after `session.close()`).
+            // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
               DISCONNECT_REASONS.SESSION_CLOSED,
             ).catch((transferError) => {
@@ -711,16 +725,12 @@ export async function runAgentWorker({
                 "error ending transfer activity during session close",
               );
             });
-            // Blind bridge: bridged-leg cleanup calls `session.close()` then `cleanupAndClose()`.
-            // Skip room delete / active-call end here so the bridged call is not torn down twice.
-            if (suppressNextSessionCloseRoomHandlers) {
-              suppressNextSessionCloseRoomHandlers = false;
-              logger.info(
-                {},
-                "session close with deferred room/call cleanup (bridged teardown sequence)",
-              );
-              return;
-            }
+            // Best-effort room/call teardown. Our ParticipantDisconnected
+            // handler always also calls cleanupAndClose (which deletes the
+            // room and ends the active call awaited), so these are belt-and-
+            // braces in case session close arrives without a participant
+            // disconnect (e.g. SDK auto-close on shutdown). deleteRoomWithRetry
+            // treats 404 as success so double-delete is harmless.
             void deleteRoomWithRetry(room.name).catch((e) => {
               logger.error({ e }, "error deleting room on session close");
             });
@@ -1154,26 +1164,21 @@ export async function runAgentWorker({
                 "error ending transfer activity during bridged participant disconnect",
               );
             }
+            // Don't call session.close() here. The Ultravox realtime model was
+            // already closed by detachPrimaryAgentMediaAfterBridge at bridge
+            // time; calling session.close() on a session whose underlying
+            // pipeline is dead deadlocks (the SDK's drain awaits a response
+            // that will never arrive). cleanupAndClose drives teardown
+            // directly via deleteRoom + getActiveCall.end + ctx.shutdown.
+            // ctx.shutdown still triggers the registered RecorderIO
+            // finalisation hook, so recording is preserved.
             logger.debug(
-              "transfer activity ended, closing AgentSession then cleanup",
+              "transfer activity ended, running hard cleanup (skipping session.close after bridge)",
             );
-            suppressNextSessionCloseRoomHandlers = true;
-            try {
-              if (session) {
-                try {
-                  await session.close();
-                } catch (closeErr) {
-                  logger.warn(
-                    { closeErr },
-                    "session.close after bridge failed; continuing cleanup",
-                  );
-                }
-                sessionRef(null);
-                modelRef(null);
-                session = null;
-              }
-            } finally {
-              suppressNextSessionCloseRoomHandlers = false;
+            if (session) {
+              sessionRef(null);
+              modelRef(null);
+              session = null;
             }
             await cleanupAndClose(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
             logger.debug("cleanup and close done");
@@ -1202,27 +1207,20 @@ export async function runAgentWorker({
             );
           }
 
-          // Let the AgentSession finish and close; when the job shuts down,
-          // our shutdown callback will finalize and upload the RecorderIO file.
-          if (session) {
-            try {
-              await session.close();
-            } catch (e) {
-              logger.warn(
-                { e },
-                "error closing session after participant disconnect, falling back to hard cleanup",
-              );
-              await cleanupAndClose(
-                DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
-                true,
-              );
-            }
-          } else {
-            await cleanupAndClose(
-              DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
-              true,
-            );
-          }
+          // Don't call session.close() here. With `closeOnDisconnect: true`
+          // the SDK has already started closing the session in its own
+          // ParticipantDisconnected handler (which ran synchronously before
+          // ours); awaiting our own session.close() would deadlock on the
+          // SDK's in-flight close — which itself can hang if the agent has
+          // already stepped out of a blind bridge (dead Ultravox pipeline).
+          // cleanupAndClose drives our cleanup directly (timers, deleteRoom,
+          // getActiveCall.end, ctx.shutdown). ctx.shutdown fires the
+          // registered RecorderIO finalisation hook, so recording is
+          // preserved.
+          await cleanupAndClose(
+            DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
+            true,
+          );
         } else {
           // Neither bridged nor original participant matched. This was a silent
           // drop in the past, leaving the room alive after the only-real

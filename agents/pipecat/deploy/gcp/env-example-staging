@@ -1,0 +1,93 @@
+# Pipecat agent stack — staging env template.
+#
+# Processed by deploy-node.sh: random hex secrets are substituted for
+# `<NEW256bithexstring>` placeholders, EXT_IP_ADDRESS is set from the VM
+# metadata server, and the resulting file is copied to ~/pipecat-agent/.env on
+# the GCP VM.
+
+# Artifact Registry (where cloudbuild-staging.yaml pushes images).
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=aplisay-pipecat-agent
+IMAGE_TAG=staging
+PROJECT_NUMERIC_ID=160114196407
+
+# Public IP of the VM (filled in automatically by deploy-node.sh from the
+# instance metadata server).
+EXT_IP_ADDRESS=your-external-ip
+
+# ---- SIP ingress selection -----------------------------------------------
+#
+# Two coordinated variables decide which SIP ingress runs on this VM:
+#
+#   COMPOSE_PROFILES   tells docker compose which services to start; picks
+#                      one of: freeswitch | voiceblender | sipbridge | daily
+#   SIP_GATEWAY        tells the pipecat-worker process which gateway
+#                      class to instantiate; mirrors COMPOSE_PROFILES
+#
+# Switching ingresses on the same VM requires:
+#   1. Update both vars in this file.
+#   2. `docker compose --profile <old> down` to release UDP/5060 + RTP.
+#   3. `docker compose up -d` with the new profile.
+# deploy-node.sh automates this (it brings everything down before bringing
+# the selected profile up).
+#
+COMPOSE_PROFILES=freeswitch
+SIP_GATEWAY=freeswitch
+
+# Shared secrets — deploy-node.sh fills these with random 256-bit hex strings.
+ESL_SECRET=<NEW256bithexstring>
+CALL_API_TOKEN=<NEW256bithexstring>
+WORKER_EVENT_TOKEN=<NEW256bithexstring>
+PIPECAT_DISPATCH_TOKEN=<NEW256bithexstring>
+PIPECAT_JOIN_SECRET=<NEW256bithexstring>
+
+# llm-agent REST surface (agent-db callbacks).
+SERVICE_BASE_URI=https://staging-api.aplisay.example
+SHARED_API_TOKEN=<set-from-secret-manager>
+
+# ---- FreeSWITCH ingress only --------------------------------------------
+PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+ESL_POLLER_URL=http://127.0.0.1:4001
+
+# ---- Voiceblender ingress only ------------------------------------------
+# Pin the image tag to a tested release; v0.6.0 is the first stable Pipecat
+# integration. SIP_PORT/RTP_PORT_* can be remapped if you ever need to run
+# voiceblender alongside another SIP UA on the same host.
+VOICEBLENDER_VERSION=v0.6.0
+VOICEBLENDER_API_KEY=<NEW256bithexstring>
+VOICEBLENDER_APP_ID=aplisay-pipecat
+VOICEBLENDER_BASE_URL=http://127.0.0.1:8080
+VOICEBLENDER_WORKER_WS_BASE=ws://127.0.0.1:8082
+VOICEBLENDER_HTTP_PORT=8080
+VOICEBLENDER_SIP_PORT=5060
+VOICEBLENDER_SIP_TLS_PORT=0
+VOICEBLENDER_RTP_PORT_MIN=10000
+VOICEBLENDER_RTP_PORT_MAX=20000
+
+# ---- sipbridge ingress only ---------------------------------------------
+# Built from source via cloudbuild; the image tag matches the worker's.
+SIPBRIDGE_BASE_URL=http://127.0.0.1:8090
+SIPBRIDGE_API_TOKEN=<NEW256bithexstring>
+SIPBRIDGE_API_PORT=8090
+SIPBRIDGE_SIP_PORT=5060
+SIPBRIDGE_RTP_PORT_MIN=10000
+SIPBRIDGE_RTP_PORT_MAX=20000
+SIPBRIDGE_WORKER_WS_BASE=ws://127.0.0.1:8082
+
+# Provider keys — populate via secretenv bundle or directly here.
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV_PIPECAT_STAGING
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+ELEVENLABS_API_KEY=
+ULTRAVOX_API_KEY=
+
+LOGLEVEL=info
+
+# Optional: APIBAN SIP abuse block list (host iptables). Leave empty to skip
+# install on deploy.
+APIBAN_KEY=

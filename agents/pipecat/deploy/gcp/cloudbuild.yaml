@@ -1,0 +1,130 @@
+# Cloud Build — Pipecat agent stack (production / `latest`).
+#
+# Same three-image build as cloudbuild-staging.yaml but tags the result with
+# `latest` instead of `staging`. Use a tag-triggered build for releases:
+#
+#   gcloud builds submit --config agents/pipecat/deploy/gcp/cloudbuild.yaml \
+#       --substitutions LOCATION=europe-west1
+#
+# Adapted from aplisay-b2bua/deploy/gcp/cloudbuild.yaml.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - BUILD_ENV=production
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:latest
+      - '-f'
+      - './agents/pipecat/freeswitch/Dockerfile'
+      - './agents/pipecat/freeswitch'
+    id: Build-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+    id: Push-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:latest
+      - '-f'
+      - './agents/pipecat/esl-poller/Dockerfile'
+      - './agents/pipecat/esl-poller'
+    id: Build-esl-poller
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+    id: Push-esl-poller
+
+  # ----- sipbridge -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:latest
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+    id: Push-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:latest
+      - '-f'
+      - './agents/pipecat/Dockerfile'
+      - '.'
+    id: Build-pipecat-worker
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+    id: Push-pipecat-worker
+
+images:
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+substitutions:
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+
+tags:
+  - pipecat-agent-latest
+  - freeswitch
+  - esl-poller
+  - sipbridge
+  - pipecat-worker
