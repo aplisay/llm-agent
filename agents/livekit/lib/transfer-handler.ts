@@ -945,6 +945,17 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     // Step 7: Create call record for consultation leg
     const { agent, instance, call } = context;
     const { userId, organisationId } = agent;
+    // For registration-originated calls the dialable effectiveCallerId is the
+    // "00000" catch-all (no useful identity). Record the registration UUID
+    // instead so the consult leg correlates back to the endpoint — mirroring the
+    // main inbound call record. RECORD-ONLY: effectiveCallerId itself is left
+    // untouched and continues to drive the consult dial CLI above.
+    const recordConsultCallerId =
+      context.registrationOriginated &&
+      context.registrationEndpointId &&
+      (!effectiveCallerId || effectiveCallerId === "00000")
+        ? context.registrationEndpointId
+        : effectiveCallerId;
     const consultCallRecord = await createCall({
       parentId: call.id,
       userId,
@@ -954,13 +965,13 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       platform: "livekit",
       platformCallId: consultRoomName,
       calledId: args.number,
-      callerId: effectiveCallerId,
+      callerId: recordConsultCallerId,
       modelName: agent.modelName,
       options: context.options,
       metadata: {
         ...instance.metadata,
         aplisay: {
-          callerId: effectiveCallerId,
+          callerId: recordConsultCallerId,
           calledId: args.number,
           transferConsultation: true,
           originalCallId: call.id,
