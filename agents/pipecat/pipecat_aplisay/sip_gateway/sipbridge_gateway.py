@@ -209,11 +209,19 @@ class _SbGatewaySession(GatewaySession):
             parent_transcript=req.parent_transcript or "",
         )
 
+        # Assert the genuine origin to the gateway: the From toward the gateway
+        # is the trunk username (for call admission), so we surface the real
+        # caller as X-Aplisay-Origin-Caller-Id; the B2BUA maps it into a
+        # P-Asserted-Identity. Mirrors LiveKit's X-Aplisay-Origin-Caller-Id.
+        custom_headers: dict[str, str] = {}
+        if req.origin_caller_id:
+            custom_headers["X-Aplisay-Origin-Caller-Id"] = req.origin_caller_id
+
         body: dict[str, Any] = {
             "destination": req.destination,
             "caller_id": req.caller_id_override or "",
             "agent_ws_session_id": consult_session_id,
-            "custom_headers": {},
+            "custom_headers": custom_headers,
             "metadata": {},
         }
         logger.bind(

@@ -194,6 +194,11 @@ class _InboundOrigin:
     registration_originated: bool = False
     force_refer_transfer: Optional[bool] = None
     force_bridged_transfer: Optional[bool] = None
+    # Registration trunk username (e.g. "8092" — the A-leg's To-user / SIP
+    # extension). Presented as the calling number toward the gateway on
+    # transfer legs so PBXs that reject an unknown calling number (e.g. Wildix
+    # -> 603 Decline) accept the call. Mirrors LiveKit's registrationUsername.
+    registration_username: Optional[str] = None
 
 
 async def _lookup_instance_for_inbound(
@@ -237,6 +242,10 @@ async def _lookup_instance_for_inbound(
             instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
             if instance:
                 origin.registration_originated = True
+                # Trunk username (= the A-leg's To-user / SIP extension), used
+                # as the calling number presented toward the gateway on
+                # transfers. Mirrors LiveKit's regInfo.username capture.
+                origin.registration_username = endpoint.get("username")
                 opts = endpoint.get("options") or {}
                 if "bridged_transfer" in opts:
                     origin.force_bridged_transfer = bool(opts.get("bridged_transfer"))
@@ -374,6 +383,7 @@ async def _sipbridge_resolve_agent_from_headers(
         registration_originated=origin.registration_originated,
         force_refer_transfer=origin.force_refer_transfer,
         force_bridged_transfer=origin.force_bridged_transfer,
+        registration_username=origin.registration_username,
         call_id=aplisay_call_id,
         raw={"bridge_call_id": bridge_call_id},
     )
@@ -535,6 +545,7 @@ async def daily_dialin(request: Request) -> dict:
         registration_originated=origin.registration_originated,
         force_refer_transfer=origin.force_refer_transfer,
         force_bridged_transfer=origin.force_bridged_transfer,
+        registration_username=origin.registration_username,
         call_id=headers.get("X-Aplisay-Call-Id"),
         raw={"dialin_settings": dialin, "room_url": room_url, "token": token},
     )

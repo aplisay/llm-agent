@@ -81,6 +81,15 @@ class CallSession:
     registration_originated: bool = False
     force_refer_transfer: Optional[bool] = None
     force_bridged_transfer: Optional[bool] = None
+    # Registration trunk username (e.g. "8092"); presented as the calling
+    # number toward the gateway on transfer legs so PBXs that reject an unknown
+    # CLI (e.g. Wildix -> 603 Decline) accept the call. Mirrors LiveKit's
+    # registrationUsername -> fromNumber. ``None`` for non-registration calls.
+    registration_username: Optional[str] = None
+    # The genuine originating caller (inbound A-leg caller). Surfaced as
+    # X-Aplisay-Origin-Caller-Id on transfer legs so the B2BUA can assert it as
+    # P-Asserted-Identity toward the gateway. Mirrors LiveKit's originCallerId.
+    origin_caller_id: Optional[str] = None
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
@@ -582,10 +591,18 @@ class CallSession:
         use_refer = self._resolve_use_refer(args) and not legacy_bridged
         force_bridged = legacy_bridged or (not use_refer)
 
+        # Default the calling number toward the gateway to the registration
+        # trunk username (e.g. 8092) when registration-originated, unless the
+        # LLM/tool supplied an explicit callerId. Mirrors LiveKit's
+        # fromNumber = registrationUsername || origin (telephony.ts): some PBXs
+        # (e.g. Wildix) 603-Decline a transfer whose CLI is unrecognised.
+        # ``registration_username`` is None for non-registration calls, so this
+        # is a no-op there.
         req = TransferRequest(
             destination=args["number"],
             operation=op,
-            caller_id_override=args.get("callerId"),
+            caller_id_override=args.get("callerId") or self.registration_username,
+            origin_caller_id=self.origin_caller_id,
             can_refer=use_refer,  # gateway honours this for the final hop
             force_bridged=force_bridged,
             force_refer=use_refer,
@@ -851,6 +868,8 @@ async def setup_inbound_call(
         registration_originated=inbound.registration_originated,
         force_refer_transfer=inbound.force_refer_transfer,
         force_bridged_transfer=inbound.force_bridged_transfer,
+        registration_username=inbound.registration_username,
+        origin_caller_id=inbound.caller_id,
     )
 
 
