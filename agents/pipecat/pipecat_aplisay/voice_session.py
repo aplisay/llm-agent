@@ -178,6 +178,7 @@ async def build_voice_session(
     tools: list[dict],
     system_prompt: str,
     enable_recording: bool = False,
+    relay_endpoint: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext]:
     """Construct a configured ``PipelineTask`` for the call.
 
@@ -209,11 +210,11 @@ async def build_voice_session(
 
     if mode == "realtime":
         task, context = await _build_realtime(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
         )
     else:
         task, context = await _build_pipeline(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
         )
     return task, audio_buffer, context
 
@@ -226,6 +227,7 @@ async def _build_realtime(
     tools: list[dict],
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
+    relay_endpoint: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -471,10 +473,17 @@ async def _build_realtime(
         context, user_params=user_params
     )
 
+    # Relay tap sits right after input() (capture/mute the leg's mic during a
+    # WebRTC-origin transfer); injector sits right before output() (mute the bot
+    # and emit the peer leg's audio). Inert until engaged — see media_relay.
+    relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
+    relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     processors: list = [
         transport.input(),
+        *relay_tap,
         user_aggregator,
         llm,
+        *relay_inject,
         transport.output(),
     ]
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
@@ -495,6 +504,7 @@ async def _build_pipeline(
     tools: list[dict],
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
+    relay_endpoint: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -599,12 +609,18 @@ async def _build_pipeline(
         context, user_params=user_params
     )
 
+    # Relay tap after input(), injector before output() — inert until engaged
+    # for a WebRTC-origin transfer (see media_relay / _build_realtime).
+    relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
+    relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     processors: list = [
         transport.input(),
+        *relay_tap,
         stt,
         user_aggregator,
         llm,
         tts,
+        *relay_inject,
         transport.output(),
     ]
     if audio_buffer is not None:

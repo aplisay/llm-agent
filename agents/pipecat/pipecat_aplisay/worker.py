@@ -675,6 +675,12 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         sip_gateway=request.app.state.sip_gateway,
         gateway_session=_BrowserGatewaySession(transport, pc, payload.session_id),
         call=call,
+        # Browser origin: a WebRTC caller has no SIP leg, so a transfer to a
+        # telephony endpoint is bridged in-worker via media_relay rather than
+        # natively inside a SIP gateway. This flags _on_transfer to route to
+        # the worker-side relay path and makes prepare_run splice in a relay
+        # endpoint. See docs/call-transfers.md.
+        is_webrtc_origin=True,
     )
 
     # Preflight the voice-session build BEFORE answering the SDP. If a
