@@ -394,7 +394,9 @@ components:
             buffering delay. A pressed `dtmfTerminator` always flushes the buffer immediately,
             regardless of this value.
 
-            Note: DTMF buffering is currently honoured by the LiveKit worker only.
+            Honoured by the LiveKit worker and by the Pipecat worker across its SIP gateways:
+            FreeSWITCH, Daily, sipbridge, and Voiceblender (the latter two decode RFC 4733
+            telephone-event tones in their media layer and forward them to the worker).
           type: integer
           minimum: 0
           default: 1500
@@ -408,7 +410,9 @@ components:
             Defaults to `"#"`. Set to an empty string (`""`) to disable the immediate-send
             terminator so the buffer is only ever flushed on the `dtmfTimeout`.
 
-            Note: DTMF buffering is currently honoured by the LiveKit worker only.
+            Honoured by the LiveKit worker and by the Pipecat worker across its SIP gateways:
+            FreeSWITCH, Daily, sipbridge, and Voiceblender (the latter two decode RFC 4733
+            telephone-event tones in their media layer and forward them to the worker).
           type: string
           default: "#"
           example: "#"

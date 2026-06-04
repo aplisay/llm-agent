@@ -57,7 +57,7 @@ from .call_session import (
 )
 from .constants import DISCONNECT_REASONS
 from .invocation_log import flush_invocation_logs
-from .serializers import FreeSwitchAudioStreamSerializer
+from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
     DailySipGateway,
@@ -1091,9 +1091,17 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
     """WebSocket the voiceblender process opens after ``POST /v1/legs/{id}/agent``.
 
     Wire format is stock Pipecat protobuf at 16 kHz mono, so we use the
-    upstream :class:`ProtobufFrameSerializer` (no custom serializer to write
-    — voiceblender speaks the same ``pipecat.Frame`` proto its own
-    ``examples/pipecat-agent/bot.py`` does, just from Go instead of Python).
+    upstream :class:`ProtobufFrameSerializer` — voiceblender speaks the same
+    ``pipecat.Frame`` proto its own ``examples/pipecat-agent/bot.py`` does,
+    just from Go instead of Python, and (unlike sipbridge) only ever sends
+    Audio and Text frames over this socket.
+
+    DTMF is *not* carried on this audio WebSocket: voiceblender decodes
+    RFC 4733 tones in its pion media layer and publishes them on its VSI
+    event stream as ``dtmf.received``. The gateway's VSI subscriber handles
+    that event and injects an ``InputDTMFFrame`` into the running pipeline —
+    see :meth:`VoiceblenderSipGateway._on_leg_dtmf` and
+    :meth:`CallSession.inject_dtmf`.
 
     Inbound vs outbound branch on the pre-registered :class:`PendingAttach`:
 
@@ -1142,6 +1150,9 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
     pending.inbound_ctx.raw["transport"] = transport
     pending.inbound_ctx.raw["leg_id"] = pending.leg_id
     sip_gateway.pending_attaches.pop(session_id, None)
+    # NB: the serializer just above is the plain ProtobufFrameSerializer, not
+    # DtmfProtobufFrameSerializer — voiceblender delivers DTMF via VSI, not
+    # this socket (see the handler docstring).
 
     is_inbound = bool(pending.agent)
 
@@ -1283,7 +1294,9 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
     INVITE.
 
     Same wire format as the voiceblender path (stock Pipecat protobuf
-    at 16 kHz mono via :class:`ProtobufFrameSerializer`). The difference
+    at 16 kHz mono via :class:`DtmfProtobufFrameSerializer`, which decodes
+    the bridge's ``{"type":"dtmf",...}`` transport messages into
+    ``InputDTMFFrame``s). The difference
     is how dispatch metadata reaches us: sipbridge attaches the SIP-side
     From/To/X-Aplisay-* headers as HTTP request headers on the opening
     handshake — there is no separate event channel.
@@ -1328,7 +1341,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         parent_session_id = sip_gateway.consult_parent(session_id)
 
         await websocket.accept()
-        serializer = ProtobufFrameSerializer()
+        serializer = DtmfProtobufFrameSerializer()
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
             params=FastAPIWebsocketParams(
@@ -1517,7 +1530,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
 
-    serializer = ProtobufFrameSerializer()
+    serializer = DtmfProtobufFrameSerializer()
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(

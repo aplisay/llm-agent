@@ -21,8 +21,10 @@ from typing import Any, Awaitable, Callable, Optional
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.audio.dtmf.types import KeypadEntry
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.dtmf_aggregator import DTMFAggregator
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -62,6 +64,72 @@ def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams
         return None
     return LLMUserAggregatorParams(
         user_mute_strategies=[MuteUntilFirstBotCompleteUserMuteStrategy()]
+    )
+
+
+# Default inter-digit DTMF idle timeout, in milliseconds. Kept in sync with the
+# LiveKit worker (agents/livekit/lib/voice-agent-runtime.ts) so DTMF buffering
+# behaves identically across stacks. Pipecat's own DTMFAggregator defaults to
+# 2000ms; we override it to this value.
+_DEFAULT_DTMF_TIMEOUT_MS = 1500
+
+
+def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
+    """Build the DTMF aggregator that buffers keypad digits into a single user
+    turn, honouring per-agent ``options.dtmfTimeout`` and
+    ``options.dtmfTerminator``.
+
+    Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
+    per keypress. Without an aggregator those frames reach no consumer — the
+    LLM context aggregators only react to ``TranscriptionFrame``s — so digits
+    are silently dropped. This aggregator accumulates digits and flushes them
+    as a single ``TranscriptionFrame`` (which the user context aggregator then
+    feeds to the LLM as a normal user turn) when either:
+
+    - no further digit arrives for ``dtmfTimeout`` milliseconds (default 1500), or
+    - the ``dtmfTerminator`` digit is pressed (default ``#``).
+
+    This mirrors the LiveKit worker's DTMF buffering. ``dtmfTimeout`` accepts
+    ``0`` to flush essentially per-digit; ``dtmfTerminator`` accepts ``""`` to
+    disable the immediate-send terminator (buffer flushes on timeout only).
+    """
+    options = agent.get("options") or {}
+
+    timeout_ms = options.get("dtmfTimeout")
+    # bool is an int subclass — reject it explicitly so `true`/`false` don't slip through.
+    if (
+        not isinstance(timeout_ms, (int, float))
+        or isinstance(timeout_ms, bool)
+        or timeout_ms < 0
+    ):
+        timeout_ms = _DEFAULT_DTMF_TIMEOUT_MS
+    timeout_s = timeout_ms / 1000.0
+
+    terminator_opt = options.get("dtmfTerminator")
+    if terminator_opt is None:
+        termination_digit: Optional[KeypadEntry] = KeypadEntry.POUND
+    elif terminator_opt == "":
+        # Disable the immediate-send terminator. The base aggregator compares
+        # `frame.button == termination_digit`, so a None never matches and the
+        # buffer is only ever flushed on the idle timeout.
+        termination_digit = None
+    else:
+        try:
+            termination_digit = KeypadEntry(str(terminator_opt))
+        except ValueError:
+            logger.warning(
+                f"invalid dtmfTerminator {terminator_opt!r}; falling back to '#'"
+            )
+            termination_digit = KeypadEntry.POUND
+
+    logger.debug(
+        f"DTMF aggregator: timeout={timeout_s}s terminator={termination_digit!r}"
+    )
+    # termination_digit may be None to disable the terminator (see above); the
+    # base class type-hints KeypadEntry but only does an equality comparison.
+    return DTMFAggregator(
+        timeout=timeout_s,
+        termination_digit=termination_digit,  # type: ignore[arg-type]
     )
 
 
@@ -474,9 +542,14 @@ async def _build_realtime(
     # and emit the peer leg's audio). Inert until engaged — see media_relay.
     relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
+    # Buffer DTMF keypresses into a single user turn before the context
+    # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
+    # never consumed and digits are dropped.
+    dtmf_aggregator = _dtmf_aggregator_for(agent)
     processors: list = [
         transport.input(),
         *relay_tap,
+        dtmf_aggregator,
         user_aggregator,
         llm,
         *relay_inject,
@@ -609,10 +682,15 @@ async def _build_pipeline(
     # for a WebRTC-origin transfer (see media_relay / _build_realtime).
     relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
+    # Buffer DTMF keypresses into a single user turn before the context
+    # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
+    # audio frames, so ordering relative to it is immaterial.
+    dtmf_aggregator = _dtmf_aggregator_for(agent)
     processors: list = [
         transport.input(),
         *relay_tap,
         stt,
+        dtmf_aggregator,
         user_aggregator,
         llm,
         tts,

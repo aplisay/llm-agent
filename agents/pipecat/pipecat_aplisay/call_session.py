@@ -459,6 +459,43 @@ class CallSession:
             # this point, so no more ``on_audio_data`` events will fire.
             await self._finalise_recording()
 
+    async def inject_dtmf(self, digit: str) -> bool:
+        """Inject a DTMF keypress into the running pipeline as an
+        ``InputDTMFFrame``.
+
+        Used by gateways whose media layer surfaces DTMF out-of-band rather
+        than on the audio transport — notably voiceblender, which emits a
+        ``dtmf.received`` VSI event instead of forwarding a Pipecat
+        ``MessageFrame`` over the audio WebSocket (sipbridge and FreeSWITCH do
+        the latter, so they never need this). Queuing at the head of the task
+        feeds the frame in upstream of the DTMF aggregator, exactly as if the
+        transport had produced it.
+
+        Returns ``True`` if the frame was queued, ``False`` if the pipeline
+        isn't running yet or the digit isn't a recognised keypad symbol.
+        """
+        task = self._task
+        if task is None:
+            logger.bind(session_id=self.session_id, digit=digit).debug(
+                "inject_dtmf: no running task yet, dropping digit"
+            )
+            return False
+
+        from pipecat.audio.dtmf.types import KeypadEntry
+        from pipecat.frames.frames import InputDTMFFrame
+
+        try:
+            button = KeypadEntry(str(digit))
+        except ValueError:
+            # KeypadEntry covers 0-9, * and #. RFC 4733 A-D are unsupported.
+            logger.bind(session_id=self.session_id, digit=digit).warning(
+                "inject_dtmf: unrecognised DTMF digit"
+            )
+            return False
+
+        await task.queue_frames([InputDTMFFrame(button=button)])
+        return True
+
     async def _teardown_relay(self) -> None:
         """Stop and clean up a blind relay leg / consultative leg bridged to
         this (browser) session. Idempotent."""

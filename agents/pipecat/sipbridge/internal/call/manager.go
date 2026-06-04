@@ -1378,7 +1378,10 @@ func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bo
 
 // handleDTMF parses an RFC 4733 telephone-event payload and, on the
 // end-of-event flag, ships a MessageFrame to the worker with a small
-// JSON describing the press: ``{"dtmf":"5","duration_ms":120}``.
+// JSON describing the press:
+// ``{"type":"dtmf","digit":"5","duration_ms":120,"call_id":"..."}``.
+// The worker's DtmfProtobufFrameSerializer turns this into a Pipecat
+// InputDTMFFrame.
 //
 // We avoid emitting on every packet of a long press because Pipecat's
 // MessageFrame channel is meant for occasional events, not a stream;

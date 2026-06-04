@@ -125,3 +125,5 @@ tests/fixtures/agents/test-agent.js
 agent.json
 .cursorignore
 .mcp.json
+**/__pycache__
+*.pyc

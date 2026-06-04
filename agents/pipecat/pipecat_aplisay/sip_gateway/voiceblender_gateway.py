@@ -600,6 +600,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             await self._on_leg_ringing(event)
         elif etype == "leg.disconnected":
             await self._on_leg_disconnected(event)
+        elif etype == "dtmf.received":
+            await self._on_leg_dtmf(event)
         elif etype in {
             "leg.transfer_initiated",
             "leg.transfer_requested",
@@ -609,10 +611,43 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         }:
             await self._on_leg_transfer(etype, event)
         else:
-            # Many other event types (DTMF, playback, AMD, recording, etc.)
-            # are out of scope for v1 — they're available on the wire if/when
-            # we want them. Log at debug only.
+            # Other event types (playback, AMD, recording, etc.) are out of
+            # scope — they're available on the wire if/when we want them. Log
+            # at debug only.
             logger.bind(type=etype).debug("VSI event ignored")
+
+    async def _on_leg_dtmf(self, event: dict) -> None:
+        """Handle a ``dtmf.received`` VSI event.
+
+        Voiceblender decodes RFC 4733 telephone-event tones in its pion media
+        layer and publishes them on the VSI stream rather than forwarding them
+        over the audio WebSocket (unlike sipbridge). The envelope is::
+
+            {"type": "dtmf.received", "leg_id": "...", "digit": "5", "seq": 1}
+
+        We map the leg back to its live CallSession and inject the digit into
+        the pipeline, where the DTMF aggregator buffers it into the
+        conversation exactly like the FreeSWITCH/sipbridge paths.
+        """
+        leg_id = event.get("leg_id") or event.get("id")
+        digit = event.get("digit")
+        if not leg_id or not digit:
+            logger.bind(type="dtmf.received").debug(
+                f"dtmf.received without leg_id/digit: {event!r}"
+            )
+            return
+        session_id = self._leg_to_session.get(leg_id)
+        if not session_id or self._session_lookup is None:
+            return
+        session = self._session_lookup(session_id)
+        if session is None:
+            return
+        try:
+            await session.inject_dtmf(str(digit))
+        except Exception as e:  # noqa: BLE001
+            logger.bind(leg_id=leg_id, digit=digit).warning(
+                f"VSI: failed to inject DTMF: {e}"
+            )
 
     async def _on_leg_ringing(self, event: dict) -> None:
         leg_id = event.get("leg_id") or event.get("id")
