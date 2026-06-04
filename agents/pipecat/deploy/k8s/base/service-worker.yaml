@@ -1,0 +1,29 @@
+# Control-plane access to the worker's HTTP API (:8082) — the /dispatch
+# endpoint the llm-agent server calls to start outbound calls, plus the
+# /webrtc/offer and /daily/dialin entry points.
+#
+# ClusterIP is right when llm-agent runs in the same cluster. If llm-agent is
+# external, change type to LoadBalancer (or front it with an Ingress) and lock
+# it down to llm-agent's source range — /dispatch is bearer-authenticated
+# (PIPECAT_DISPATCH_TOKEN) but should not be open to the internet.
+#
+# Any node can serve a dispatch (outbound origination uses that node's own
+# gateway + external IP), so load-balancing across nodes is fine here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipecat-worker
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+  ports:
+    - name: worker-http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP

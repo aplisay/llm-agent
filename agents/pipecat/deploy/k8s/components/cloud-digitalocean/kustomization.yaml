@@ -1,0 +1,22 @@
+# DigitalOcean load-balancer settings for the SIP signalling Service.
+#
+# A DO load balancer in TCP mode (L4 passthrough) forwards 5061 without
+# terminating TLS. DOKS worker droplets get public IPs by default, so RTP can
+# reach each node directly.
+#
+# Node pool: open the RTP UDP range + TCP 5061 in a DO Cloud Firewall attached
+# to the SIP node pool, scoped to your SBC source ranges. See the README.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          service.beta.kubernetes.io/do-loadbalancer-protocol: "tcp"
+          service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "tcp"
+          service.beta.kubernetes.io/do-loadbalancer-healthcheck-port: "5061"

@@ -1,0 +1,78 @@
+# Adds the FreeSWITCH SIP/media container + the esl-poller call-control sidecar
+# to the per-node pod, and points the worker at the freeswitch gateway.
+#
+# FreeSWITCH's entrypoint has a real shell, so we wrap it directly to export the
+# detected node IP into EXT_IP_ADDRESS (consumed by vars.xml `env-set`). The
+# entrypoint also concatenates a mounted /certs/tls.{crt,key} into its TLS pem,
+# falling back to its baked-in self-signed cert when the Secret is absent.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pipecat-sip
+  namespace: pipecat
+spec:
+  template:
+    spec:
+      containers:
+        - name: pipecat-worker
+          env:
+            - name: SIP_GATEWAY
+              value: freeswitch
+
+        - name: freeswitch
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export EXT_IP_ADDRESS="$(cat /etc/node-meta/ext-ip)"
+              exec /usr/bin/entrypoint.sh
+          envFrom:
+            - configMapRef:
+                name: pipecat-config
+            - secretRef:
+                name: pipecat-secrets
+          ports:
+            - name: sip-udp
+              containerPort: 5060
+              protocol: UDP
+            - name: sip-tls
+              containerPort: 5061
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 8021
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+              readOnly: true
+            # FreeSWITCH entrypoint reads /certs/tls.crt + /certs/tls.key.
+            - name: sip-tls
+              mountPath: /certs
+              readOnly: true
+          resources:
+            requests:
+              cpu: 300m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+
+        - name: esl-poller
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller:latest
+          envFrom:
+            - configMapRef:
+                name: pipecat-config
+            - secretRef:
+                name: pipecat-secrets
+          readinessProbe:
+            tcpSocket:
+              port: 4001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

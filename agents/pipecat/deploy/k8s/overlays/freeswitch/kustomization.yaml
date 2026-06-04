@@ -1,0 +1,18 @@
+# FreeSWITCH ingress overlay.
+#
+# Three containers in the per-node pod: freeswitch (SIP + RTP), esl-poller (call
+# control sidecar), and the worker. FreeSWITCH already has a TLS listener on 5061
+# (freeswitch/conf/vars.xml) and reads its advertised IP from EXT_IP_ADDRESS.
+#
+# NOTE: FreeSWITCH's default RTP range here is 16384-16484 (see vars.xml), not
+# 10000-20000 — open that range in the cloud firewall for this overlay.
+#
+#     kubectl apply -k overlays/freeswitch
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: daemonset.yaml

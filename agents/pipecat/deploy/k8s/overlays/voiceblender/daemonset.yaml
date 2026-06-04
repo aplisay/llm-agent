@@ -1,0 +1,87 @@
+# Adds the Voiceblender SIP/media container to the per-node pod and points the
+# worker at the voiceblender gateway.
+#
+# Voiceblender expects UNPREFIXED env (HTTP_ADDR, SIP_PORT, ...), so we map them
+# explicitly from the VOICEBLENDER_* keys in pipecat-config rather than using a
+# bare envFrom.
+#
+# CAVEAT — node external IP: Voiceblender is a third-party image and we can't
+# assume its base has /bin/sh or know its entrypoint path. We launch it via the
+# static busybox shim (as for sipbridge) and `exec voiceblender` from PATH. If
+# your voiceblender image puts the binary elsewhere, adjust the `exec` target.
+# If you'd rather not wrap it at all, drop the command/args and instead pin a
+# per-node external IP another way (e.g. one DaemonSet per node with NODE_EXT_IP
+# set) — but auto-detection via the wrapper is the supported path.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pipecat-sip
+  namespace: pipecat
+spec:
+  template:
+    spec:
+      containers:
+        - name: pipecat-worker
+          env:
+            - name: SIP_GATEWAY
+              value: voiceblender
+
+        - name: voiceblender
+          image: ghcr.io/voiceblender/voiceblender:v0.6.0
+          command: ["/etc/node-meta/busybox", "sh", "-c"]
+          args:
+            - |
+              export EXT_IP_ADDRESS="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
+              exec voiceblender
+          env:
+            - name: HTTP_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: pipecat-config
+                  key: VOICEBLENDER_HTTP_ADDR
+            - name: SIP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: pipecat-config
+                  key: VOICEBLENDER_SIP_PORT
+            - name: SIP_TLS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: pipecat-config
+                  key: VOICEBLENDER_SIP_TLS_PORT
+            - name: RTP_PORT_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: pipecat-config
+                  key: VOICEBLENDER_RTP_PORT_MIN
+            - name: RTP_PORT_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: pipecat-config
+                  key: VOICEBLENDER_RTP_PORT_MAX
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pipecat-secrets
+                  key: VOICEBLENDER_API_KEY
+          ports:
+            - name: vb-http
+              containerPort: 8080
+              protocol: TCP
+            - name: sip-tls
+              containerPort: 5061
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

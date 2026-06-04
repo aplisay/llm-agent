@@ -1,0 +1,67 @@
+# Adds the sipbridge SIP/media container to the per-node pod and tells the
+# worker to instantiate the sipbridge gateway.
+#
+# sipbridge ships as a distroless image with no shell, so it cannot expand the
+# detected node IP itself. We launch it through the static busybox the
+# install-shim initContainer dropped into the shared volume: a 3-line wrapper
+# exports the advertised SIP + media IP (read from /etc/node-meta/ext-ip) and
+# then execs the real binary. Everything else comes from envFrom.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pipecat-sip
+  namespace: pipecat
+spec:
+  template:
+    spec:
+      containers:
+        - name: pipecat-worker
+          env:
+            - name: SIP_GATEWAY
+              value: sipbridge
+
+        - name: sipbridge
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge:latest
+          command: ["/etc/node-meta/busybox", "sh", "-c"]
+          args:
+            - |
+              export SIPBRIDGE_SIP_SIGNAL_IP="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
+              export SIPBRIDGE_MEDIA_IP="$SIPBRIDGE_SIP_SIGNAL_IP"
+              exec /sipbridge
+          envFrom:
+            - configMapRef:
+                name: pipecat-config
+            - secretRef:
+                name: pipecat-secrets
+          # To use a CA-signed cert instead of the self-signed fallback, create
+          # the pipecat-sip-tls Secret (see base/sip-tls-secret.example.yaml) and
+          # uncomment:
+          # env:
+          #   - name: SIPBRIDGE_TLS_CERT_FILE
+          #     value: /etc/sip-tls/tls.crt
+          #   - name: SIPBRIDGE_TLS_KEY_FILE
+          #     value: /etc/sip-tls/tls.key
+          ports:
+            - name: sip-tls
+              containerPort: 5061
+              protocol: TCP
+            - name: sip-api
+              containerPort: 8090
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 8090
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+            - name: sip-tls
+              mountPath: /etc/sip-tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

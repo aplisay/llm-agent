@@ -1,0 +1,22 @@
+# GCP load-balancer settings for the SIP signalling Service.
+#
+# On GKE, `type: LoadBalancer` already provisions an external L4 network
+# passthrough load balancer (TCP), which is exactly what we want — it preserves
+# the SBC source IP and does not terminate TLS. The annotation below just makes
+# the "external" intent explicit (it is the default).
+#
+# Node pool: give the SIP node pool external IPs (the default for public GKE
+# node pools) and open the RTP UDP range + TCP 5061 in the VPC firewall to your
+# SBC source ranges. See the README for gcloud snippets.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          networking.gke.io/load-balancer-type: "External"

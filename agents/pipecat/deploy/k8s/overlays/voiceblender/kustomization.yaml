@@ -1,0 +1,15 @@
+# Voiceblender ingress overlay (optional / secondary).
+#
+# Voiceblender is a THIRD-PARTY image (ghcr.io/voiceblender/voiceblender) whose
+# entrypoint and shell we don't control, so the node-IP wrapper here is
+# best-effort — read the comments in daemonset.yaml before using in production.
+#
+#     kubectl apply -k overlays/voiceblender
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: daemonset.yaml
