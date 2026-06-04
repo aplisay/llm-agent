@@ -292,21 +292,18 @@ async def _build_realtime(
         # ERROR line on client-driven teardown. See ultravox_compat.py.
         from .ultravox_compat import AplisayUltravoxRealtimeLLMService as UltravoxRealtimeLLMService
 
-        # Ultravox's /calls API expects model ids in the canonical
-        # ``ultravox/<name>`` namespace (e.g. ``ultravox/ultravox-v0.6``).
-        # The legacy ``fixie-ai/`` namespace was retired and is now rejected
-        # with HTTP 400 ``["Model `fixie-ai/ultravox-v0.6` does not exist"]``.
-        # (See lib/models/ultravox.js, where ``fixie-ai/*`` ids survive only
-        # as backwards-compat aliases that MAP TO ``ultravox/...`` — the
-        # native handler passes the ``ultravox/`` prefix straight through to
-        # the API.)
+        # Ultravox's /calls API expects the BARE catalogue id with no vendor
+        # namespace (e.g. ``ultravox-v0.6``). BOTH ``fixie-ai/ultravox-v0.6``
+        # and ``ultravox/ultravox-v0.6`` are rejected with HTTP 400 ``["Model
+        # `…` does not exist"]``.
         #
-        # The Aplisay platform model registry already stores ids in this
-        # namespace (lib/models/pipecat.js rows are ``("ultravox",
-        # "ultravox-v0.6")``, routed here as ``ultravox/ultravox-v0.6``), so
-        # pass ``model_id`` through verbatim. A bare name (no vendor segment)
-        # gets the ``ultravox/`` prefix attached.
-        ultravox_model = model_id if "/" in model_id else f"ultravox/{model_id}"
+        # The Aplisay platform model registry stores ids in the
+        # ``ultravox/<name>`` namespace (lib/models/pipecat.js rows are
+        # ``("ultravox", "ultravox-v0.6")``, routed here as
+        # ``ultravox/ultravox-v0.6``), so strip everything up to and including
+        # the last ``/`` before sending — mirroring the native handler
+        # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
+        ultravox_model = model_id.rsplit("/", 1)[-1]
         voice = (options.get("tts") or {}).get("voice")
 
         # ----- Greeting wiring (Ultravox-specific) -----
