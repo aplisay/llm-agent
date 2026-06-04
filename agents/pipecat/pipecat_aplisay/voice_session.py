@@ -292,22 +292,21 @@ async def _build_realtime(
         # ERROR line on client-driven teardown. See ultravox_compat.py.
         from .ultravox_compat import AplisayUltravoxRealtimeLLMService as UltravoxRealtimeLLMService
 
-        # Ultravox's /calls API expects model ids in the ``fixie-ai/<name>``
-        # namespace — that's Pipecat's documented default
-        # (``fixie-ai/ultravox``) and what the API actually accepts. The
-        # ``ultravox/...`` form is rejected with HTTP 400 ``["Model
-        # ``ultravox/ultravox-v0.7`` does not exist"]``.
+        # Ultravox's /calls API expects model ids in the canonical
+        # ``ultravox/<name>`` namespace (e.g. ``ultravox/ultravox-v0.6``).
+        # The legacy ``fixie-ai/`` namespace was retired and is now rejected
+        # with HTTP 400 ``["Model `fixie-ai/ultravox-v0.6` does not exist"]``.
+        # (See lib/models/ultravox.js, where ``fixie-ai/*`` ids survive only
+        # as backwards-compat aliases that MAP TO ``ultravox/...`` — the
+        # native handler passes the ``ultravox/`` prefix straight through to
+        # the API.)
         #
-        # The Aplisay platform model registry uses ``ultravox`` as the
-        # vendor segment (see lib/models/pipecat.js: rows are
-        # ``("ultravox", "ultravox-v0.7")``) for handler routing; we strip
-        # that internal prefix and re-attach the API-side ``fixie-ai/``
-        # namespace before sending. If the caller already passed a
-        # fully-qualified ``fixie-ai/<name>`` (or any other vendor-prefixed
-        # spelling) leave it unchanged.
-        _, ultravox_model = model_id.split("/", 1)
-        if "/" not in ultravox_model:
-            ultravox_model = f"fixie-ai/{ultravox_model}"
+        # The Aplisay platform model registry already stores ids in this
+        # namespace (lib/models/pipecat.js rows are ``("ultravox",
+        # "ultravox-v0.6")``, routed here as ``ultravox/ultravox-v0.6``), so
+        # pass ``model_id`` through verbatim. A bare name (no vendor segment)
+        # gets the ``ultravox/`` prefix attached.
+        ultravox_model = model_id if "/" in model_id else f"ultravox/{model_id}"
         voice = (options.get("tts") or {}).get("voice")
 
         # ----- Greeting wiring (Ultravox-specific) -----
