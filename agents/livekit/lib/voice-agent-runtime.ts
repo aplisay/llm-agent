@@ -222,11 +222,14 @@ export async function runAgentWorker({
   let watchdogInterval: NodeJS.Timeout | null = null;
   const WATCHDOG_INTERVAL_MS = 120 * 1000;
 
-  // DTMF buffering: accumulate digits and send as a single input after timeout
+  // DTMF buffering: accumulate digits and send as a single input after timeout.
+  // Both values default here and may be overridden per-agent from
+  // `agent.options.dtmfTimeout` / `agent.options.dtmfTerminator` once the agent
+  // is resolved (see below).
   let dtmfBuffer: string = "";
   let dtmfTimeout: NodeJS.Timeout | null = null;
-  const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
-  const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
+  let dtmfTimeoutMs = 1500; // 1.5 seconds of silence before sending
+  let dtmfTerminator = "#"; // Send immediately when this is pressed
 
   let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
@@ -555,6 +558,20 @@ export async function runAgentWorker({
         const maxDurationString: string = agent?.options?.maxDuration || "305s";
         maxDuration =
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
+
+        // Resolve per-agent DTMF buffering options, falling back to defaults.
+        const dtmfTimeoutOption = agent?.options?.dtmfTimeout;
+        if (typeof dtmfTimeoutOption === "number" && dtmfTimeoutOption >= 0) {
+          dtmfTimeoutMs = dtmfTimeoutOption;
+        }
+        const dtmfTerminatorOption = agent?.options?.dtmfTerminator;
+        if (typeof dtmfTerminatorOption === "string") {
+          dtmfTerminator = dtmfTerminatorOption;
+        }
+        logger.debug(
+          { dtmfTimeoutMs, dtmfTerminator },
+          "Resolved DTMF buffering options",
+        );
 
         const voiceMode = resolveVoiceMode(modelName, agent.options);
         resolvedVoiceMode = voiceMode;
@@ -1083,7 +1100,7 @@ export async function runAgentWorker({
       }
 
       // If terminator is pressed, send immediately (don't add terminator to buffer)
-      if (digit === DTMF_TERMINATOR) {
+      if (dtmfTerminator !== "" && digit === dtmfTerminator) {
         logger.debug(
           { buffer: dtmfBuffer },
           "DTMF terminator pressed, sending immediately",
@@ -1107,7 +1124,7 @@ export async function runAgentWorker({
           "DTMF timeout reached, flushing buffer",
         );
         flushDtmfBuffer();
-      }, DTMF_TIMEOUT_MS);
+      }, dtmfTimeoutMs);
     });
     logger.debug("DTMF listener registered");
 

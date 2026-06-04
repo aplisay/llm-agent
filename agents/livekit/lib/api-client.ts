@@ -86,6 +86,18 @@ export interface Agent {
      * Used by worker when constructing RealtimeModel.
      */
     maxDuration?: string;
+    /**
+     * Inter-digit DTMF timeout in milliseconds. Buffered DTMF digits are flushed
+     * to the LLM after this period of keypad silence. Defaults to 1500ms.
+     * Set to 0 to flush each digit individually (no buffering delay).
+     */
+    dtmfTimeout?: number;
+    /**
+     * DTMF digit that, when pressed, immediately flushes the buffered digits
+     * (without itself being added to the buffer). Defaults to "#".
+     * Set to an empty string to disable the immediate-send terminator.
+     */
+    dtmfTerminator?: string;
     /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
     temperature?: number;
     stt?: {
