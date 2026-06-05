@@ -18,6 +18,7 @@ SIP leg is a Daily room, a FreeSWITCH bridge, or anything else.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -42,6 +43,35 @@ from .voice_session import build_voice_session
 class _WebrtcEgressError(Exception):
     """Raised when a WebRTC-origin transfer's caller-ID / egress trunk can't be
     resolved or validated. Surfaced to the agent as a FAILED transfer."""
+
+
+# UUID form of a registration-endpoint id supplied as callerId (vs an E.164
+# number). Mirrors the discriminator in LiveKit worker.ts outbound resolution.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.I,
+)
+
+
+@dataclass
+class _WebrtcEgress:
+    """Resolved outbound routing for a WebRTC-origin transfer leg.
+
+    Mirrors LiveKit's two originate cases (see ``telephony.ts`` /
+    ``worker.ts``):
+
+      - **Registration**: dial the registration's B2BUA gateway
+        (``b2bua_gateway_ip``) with ``X-Aplisay-PhoneRegistration``; CLI is the
+        registration's displayNumber/username.
+      - **Trunk**: dial the global Aplisay outbound SBC with ``X-Aplisay-Trunk``;
+        CLI is the caller-ID number itself.
+    """
+
+    caller_id: str  # CLI to present (digits, no leading +)
+    aplisay_id: Optional[str] = None
+    registration_endpoint_id: Optional[str] = None
+    b2bua_gateway_ip: Optional[str] = None
+    b2bua_gateway_transport: Optional[str] = None
 
 
 @dataclass
@@ -135,6 +165,9 @@ class CallSession:
     # Set on a WebRTC-origin parent while a consultative leg is live (the
     # TransferAgent bot session), so teardown can stop it with the parent.
     _consult_session: Optional["CallSession"] = None
+    # Detached task that performs the WebRTC transfer dial+bridge, so it survives
+    # the LLM cancelling the function-call coroutine on caller interruption.
+    _webrtc_bg_task: Optional[Any] = None
 
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling."""
@@ -784,15 +817,21 @@ class CallSession:
         self.transfer_state = TransferState("failed", reason)
         return {"error": reason, "status": "FAILED", "reason": reason}
 
-    async def _resolve_webrtc_egress(self, args: dict) -> tuple[str, Optional[str]]:
-        """Resolve (caller_id, aplisay_id) for a WebRTC-origin transfer leg.
+    async def _resolve_webrtc_egress(self, args: dict) -> _WebrtcEgress:
+        """Resolve outbound routing for a WebRTC-origin transfer leg.
 
-        A browser call has no inbound trunk, so the outbound leg dials out on the
-        caller-ID number's egress trunk. Mirrors LiveKit's
-        ``validateAndResolveCallerId`` (transfer-handler.ts): the supplied
-        ``callerId`` must be a known, outbound-enabled number; its ``aplisayId``
-        becomes the egress trunk. Raises :class:`_WebrtcEgressError` on any
-        violation (surfaced to the agent as a FAILED transfer).
+        A browser call has no inbound trunk, so the outbound leg must carry its
+        own routing. Mirrors LiveKit's outbound resolution (worker.ts /
+        telephony.ts): the supplied ``callerId`` is either
+
+          - a **registration-endpoint UUID** → dial that registration's B2BUA
+            gateway (``b2buaId``); CLI = ``options.displayNumber || username``;
+            stamp ``X-Aplisay-PhoneRegistration``; or
+          - an **E.164 number** → dial the global Aplisay outbound SBC; CLI = the
+            number; stamp ``X-Aplisay-Trunk`` with the number's ``aplisayId``.
+
+        Raises :class:`_WebrtcEgressError` on any violation (surfaced to the
+        agent as a FAILED transfer).
         """
         caller_id = args.get("callerId")
         if not caller_id:
@@ -800,6 +839,41 @@ class CallSession:
                 "a callerId is required for transfers from a WebRTC session "
                 "(there is no inbound number to use as the calling line)"
             )
+        caller_id = str(caller_id).strip()
+
+        # --- Registration endpoint (UUID callerId) ---
+        if _UUID_RE.match(caller_id):
+            reg = await api_client.get_phone_endpoint_by_id(caller_id)
+            if not reg or "id" not in reg:
+                raise _WebrtcEgressError(
+                    f"registration endpoint {caller_id!r} not found"
+                )
+            if not reg.get("outbound"):
+                raise _WebrtcEgressError(
+                    f"registration endpoint {caller_id!r} is not enabled for "
+                    "outbound calling"
+                )
+            opts = reg.get("options") or {}
+            cli = str(opts.get("displayNumber") or reg.get("username") or "").strip()
+            if not cli:
+                raise _WebrtcEgressError(
+                    f"registration endpoint {caller_id!r} has no username / "
+                    "displayNumber to use as outbound CLI"
+                )
+            b2bua = str(reg.get("b2buaId") or "").strip()
+            if not b2bua:
+                raise _WebrtcEgressError(
+                    f"registration endpoint {caller_id!r} has no b2buaId "
+                    "(B2BUA gateway) for outbound calls"
+                )
+            return _WebrtcEgress(
+                caller_id=cli.lstrip("+"),
+                registration_endpoint_id=caller_id,
+                b2bua_gateway_ip=b2bua,
+                b2bua_gateway_transport=str(opts.get("transport") or "tcp"),
+            )
+
+        # --- Trunk (E.164 number callerId) ---
         row = await api_client.get_phone_number(caller_id)
         if not row:
             raise _WebrtcEgressError(f"callerId {caller_id!r} is not a known number")
@@ -826,9 +900,9 @@ class CallSession:
         if not aplisay_id:
             logger.bind(caller_id=caller_id).warning(
                 "webrtc egress: number has no aplisayId (egress trunk); "
-                "relying on gateway default trunk"
+                "the gateway will need a default outbound SBC route"
             )
-        return caller_id, aplisay_id
+        return _WebrtcEgress(caller_id=caller_id, aplisay_id=aplisay_id)
 
     def _reject_daily(self) -> Optional[dict]:
         """WebRTC relay needs a bare ``originate``; the Daily gateway requires
@@ -881,45 +955,91 @@ class CallSession:
         return leg_call, leg_session_id
 
     async def _do_webrtc_bridge(self, args: dict) -> dict:
-        """Blind WebRTC→telephony transfer: dial a bare outbound leg and bridge
-        the browser caller to it via an in-worker media relay (see
-        media_relay.py). The agent drops out; caller and target talk directly."""
-        from . import media_relay
+        """Blind WebRTC→telephony transfer entry point.
 
+        Validates quickly and hands the actual dial+bridge to a **detached**
+        background task, returning immediately. This matters: the dial
+        (``originate``) can take many seconds to answer, but this method runs
+        inside the LLM function-call coroutine, which the realtime provider
+        *cancels* the moment the caller speaks again ("interruption"). Doing the
+        originate inline means a single interruption aborts the transfer
+        mid-dial. The background task is independent of that cancellation, so the
+        bridge completes regardless; the agent learns the outcome via
+        ``transfer_status`` (state dialling → talking / failed)."""
         if self.relay_endpoint is None:
             return self._transfer_failed("media relay not available on this session")
         rejected = self._reject_daily()
         if rejected is not None:
             return rejected
+        if not args.get("number"):
+            return self._transfer_failed("transfer requires a destination number")
+
+        self.transfer_state = TransferState(
+            "dialling", f"Transferring to {args['number']}"
+        )
+        # Detach — survive function-call cancellation. Keep a reference so the
+        # task isn't garbage-collected mid-flight.
+        self._webrtc_bg_task = asyncio.create_task(self._webrtc_bridge_bg(dict(args)))
+        return {
+            "ok": True,
+            "status": "OK",
+            "reason": "Transfer initiated. Use transfer_status to check progress.",
+        }
+
+    async def _webrtc_bridge_bg(self, args: dict) -> None:
+        """Background worker for a blind WebRTC bridge: resolve egress, dial a
+        bare outbound leg, and engage the in-worker media relay. Runs detached
+        from the function-call coroutine so an LLM interruption can't abort it."""
+        from . import media_relay
 
         destination = args["number"]
-        self.transfer_state = TransferState("dialling", f"Transferring to {destination}")
+        logger.bind(call_id=self.call.id, destination=destination).info(
+            "webrtc blind transfer: starting background dial"
+        )
         try:
-            caller_id, aplisay_id = await self._resolve_webrtc_egress(args)
+            egress = await self._resolve_webrtc_egress(args)
         except _WebrtcEgressError as e:
-            return self._transfer_failed(str(e))
+            self._transfer_failed(str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            self._transfer_failed(f"egress resolution failed: {e}")
+            return
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=caller_id, destination=destination, consult=False
+                caller_id=egress.caller_id, destination=destination, consult=False
             )
         except Exception as e:  # noqa: BLE001
-            return self._transfer_failed(f"could not create bridged call record: {e}")
+            self._transfer_failed(f"could not create bridged call record: {e}")
+            return
 
         # Originate the bare outbound leg. ``originate`` resolves once the leg's
-        # media is up (gateway-specific) — i.e. the target answered.
+        # media is up (gateway-specific) — i.e. the target answered. The egress
+        # routing (registration B2BUA vs trunk SBC) is carried in the params and
+        # turned into a routable SIP URI by the gateway.
         params = OutboundCallParams(
-            caller_id=caller_id,
+            caller_id=egress.caller_id,
             called_id=destination,
             call_id=leg_call.id,
-            aplisay_id=aplisay_id,
+            aplisay_id=egress.aplisay_id,
+            registration_endpoint_id=egress.registration_endpoint_id,
+            b2bua_gateway_ip=egress.b2bua_gateway_ip,
+            b2bua_gateway_transport=egress.b2bua_gateway_transport,
         )
         session_params = GatewaySessionParams(session_id=leg_session_id)
+        logger.bind(
+            leg_call_id=leg_call.id,
+            caller_id=egress.caller_id,
+            aplisay_id=egress.aplisay_id,
+            registration_endpoint_id=egress.registration_endpoint_id,
+            b2bua_gateway_ip=egress.b2bua_gateway_ip,
+        ).info("webrtc blind transfer: originating outbound leg")
         try:
             gw_session = await self.sip_gateway.originate(params, session_params)
         except Exception as e:  # noqa: BLE001
             await self._safe_end_call(leg_call, f"originate failed: {e}")
-            return self._transfer_failed(f"could not reach transfer target: {e}")
+            self._transfer_failed(f"could not reach transfer target: {e}")
+            return
 
         # Bot-less relay pipeline on the leg, bridged to the browser endpoint.
         leg_endpoint = media_relay.RelayEndpoint(name=leg_session_id)
@@ -940,12 +1060,6 @@ class CallSession:
         logger.bind(call_id=self.call.id, leg_call_id=leg_call.id).info(
             "webrtc blind bridged transfer established"
         )
-        return {
-            "ok": True,
-            "status": "OK",
-            "reason": "Transfer connected.",
-            "relay_call_id": leg_call.id,
-        }
 
     async def _run_relay_leg(self) -> None:
         """Drive the blind relay leg's pipeline to completion. When it ends (the
@@ -968,24 +1082,26 @@ class CallSession:
                 logger.warning(f"webrtc relay teardown: browser hangup failed: {e}")
 
     async def _do_webrtc_consultative(self, args: dict) -> dict:
-        """Consultative WebRTC→telephony transfer: dial a leg running a
-        TransferAgent bot, let it consult the target, then on ``accept_transfer``
-        bridge the browser caller to the target via the same in-worker relay
-        (see ``_builtin_consult_accept``)."""
-        from .transfer_prompts import resolve_transfer_prompt, substitute_parent_transcript
+        """Consultative WebRTC→telephony transfer entry point.
 
+        Like the blind path, the actual dial runs in a **detached** background
+        task so an LLM interruption (which cancels this function-call coroutine)
+        can't abort it mid-dial. The background task dials a leg running a
+        TransferAgent bot; on ``accept_transfer`` the browser caller is bridged
+        to the target via the in-worker relay (see ``_builtin_consult_accept``)."""
         if self.relay_endpoint is None:
             return self._transfer_failed("media relay not available on this session")
         rejected = self._reject_daily()
         if rejected is not None:
             return rejected
+        if not args.get("number"):
+            return self._transfer_failed("transfer requires a destination number")
 
-        destination = args["number"]
         self.transfer_state = TransferState("dialling", "Dialling transfer target...")
-        try:
-            caller_id, aplisay_id = await self._resolve_webrtc_egress(args)
-        except _WebrtcEgressError as e:
-            return self._transfer_failed(str(e))
+        # Snapshot the parent transcript NOW (in the function-call coroutine, with
+        # the LLM context fresh) before detaching — the background task can't
+        # safely touch the live context mid-cancellation.
+        from .transfer_prompts import resolve_transfer_prompt, substitute_parent_transcript
 
         prompt_template = resolve_transfer_prompt(
             args_prompt=args.get("transferPrompt"),
@@ -997,13 +1113,35 @@ class CallSession:
                 prompt_template, self.get_parent_transcript()
             ),
         )
+        self._webrtc_bg_task = asyncio.create_task(
+            self._webrtc_consult_bg(dict(args), transfer_agent)
+        )
+        return {
+            "ok": True,
+            "status": "OK",
+            "reason": "Consultation started. Use transfer_status to check progress.",
+        }
+
+    async def _webrtc_consult_bg(self, args: dict, transfer_agent: dict) -> None:
+        """Background worker for a consultative WebRTC transfer: dial the consult
+        leg + run the TransferAgent. Detached from the function-call coroutine."""
+        destination = args["number"]
+        try:
+            egress = await self._resolve_webrtc_egress(args)
+        except _WebrtcEgressError as e:
+            self._transfer_failed(str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            self._transfer_failed(f"egress resolution failed: {e}")
+            return
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=caller_id, destination=destination, consult=True
+                caller_id=egress.caller_id, destination=destination, consult=True
             )
         except Exception as e:  # noqa: BLE001
-            return self._transfer_failed(f"could not create consult call record: {e}")
+            self._transfer_failed(f"could not create consult call record: {e}")
+            return
 
         try:
             consult_session = await setup_consult_outbound_call(
@@ -1013,25 +1151,23 @@ class CallSession:
                 instance=self.instance,
                 transfer_agent=transfer_agent,
                 parent=self,
-                caller_id=caller_id,
+                caller_id=egress.caller_id,
                 called_id=destination,
-                aplisay_id=aplisay_id,
+                aplisay_id=egress.aplisay_id,
+                registration_endpoint_id=egress.registration_endpoint_id,
+                b2bua_gateway_ip=egress.b2bua_gateway_ip,
+                b2bua_gateway_transport=egress.b2bua_gateway_transport,
             )
         except Exception as e:  # noqa: BLE001
             await self._safe_end_call(leg_call, f"consult originate failed: {e}")
-            return self._transfer_failed(f"could not reach transfer target: {e}")
+            self._transfer_failed(f"could not reach transfer target: {e}")
+            return
 
         self._consult_session = consult_session
         # Run the TransferAgent bot on the consult leg. accept/reject tools on it
         # drive our transfer_state and, on accept, bridge the relay endpoints.
         asyncio.create_task(self._run_consult_session(consult_session))
         self.transfer_state = TransferState("talking", "Speaking with transfer target...")
-        return {
-            "ok": True,
-            "status": "OK",
-            "reason": "Consultation started. Use transfer_status to check progress.",
-            "relay_call_id": leg_call.id,
-        }
 
     async def _run_consult_session(self, consult_session: "CallSession") -> None:
         try:
@@ -1342,6 +1478,10 @@ def build_transfer_agent_dict(
                     "target to the caller. Use this when the transfer "
                     "target agrees to take the call."
                 ),
+                # Dispatch to the ``accept_transfer`` entry in extra_builtins
+                # (wired in prepare_run). Without this the handler defaults to
+                # ``rest`` (function_handler.py:193) and the tool errors out.
+                "implementation": "builtin",
                 "platform": "accept_transfer",
                 "input_schema": {
                     "type": "object",
@@ -1388,6 +1528,7 @@ def build_transfer_agent_dict(
                         },
                     },
                 },
+                "implementation": "builtin",
             },
         ],
         # Drop platform keys — the TransferAgent's tools call the
@@ -1473,6 +1614,9 @@ async def setup_consult_outbound_call(
     caller_id: str,
     called_id: str,
     aplisay_id: Optional[str],
+    registration_endpoint_id: Optional[str] = None,
+    b2bua_gateway_ip: Optional[str] = None,
+    b2bua_gateway_transport: Optional[str] = None,
 ) -> CallSession:
     """Build a consult-side TransferAgent CallSession on a freshly **originated**
     outbound leg.
@@ -1491,6 +1635,9 @@ async def setup_consult_outbound_call(
         called_id=called_id,
         call_id=call.id,
         aplisay_id=aplisay_id,
+        registration_endpoint_id=registration_endpoint_id,
+        b2bua_gateway_ip=b2bua_gateway_ip,
+        b2bua_gateway_transport=b2bua_gateway_transport,
     )
     session_params = GatewaySessionParams(session_id=session_id)
     gw_session = await sip_gateway.originate(params, session_params)

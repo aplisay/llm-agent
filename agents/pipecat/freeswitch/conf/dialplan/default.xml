@@ -47,15 +47,40 @@
     </extension>
 
     <!-- Outbound: originated by the worker via ESL.
-         `originate {variables}loopback/<dest>/outbound &park` →
-         we set the headers from the channel variables and bridge to external. -->
-    <extension name="outbound_from_pipecat">
+         `originate {variables}loopback/<dest>/outbound &park` lands here. We set
+         the section-6 headers from the channel variables, choose a next hop, and
+         bridge. Two routes:
+           - default (trunk / callerId-number): the static `sbc` sofia gateway,
+             configured from the PIPECAT_SIP_* triple.
+           - registration target: when esl-poller stamped `aplisay_b2bua_authority`
+             (from the worker's b2bua_gateway_ip hint), bridge straight to that
+             b2bua's SIP port instead.
+         Split across three extensions (continue="true") so the common header /
+         audio_stream setup runs once and the b2bua override is a clean branch —
+         avoids quoting a sip: URI through ${cond(...)}. -->
+    <extension name="outbound_common" continue="true">
       <condition field="${dialplan_target}" expression="^outbound$">
         <action application="set" data="sip_h_X-Aplisay-Trunk=${aplisay_trunk}"/>
         <action application="set" data="sip_h_X-Aplisay-Origin-Caller-Id=${origination_caller_id_number}"/>
         <action application="set" data="sip_h_X-Aplisay-Call-Id=${aplisay_call_id}"/>
         <action application="set" data="execute_on_answer=audio_stream start $${pipecat_ws_url} mono 16k"/>
-        <action application="bridge" data="sofia/external/${destination_number}"/>
+        <!-- Default next hop: trunk / callerId-number originates via the SBC. -->
+        <action application="set" data="dialed_target=sofia/gateway/sbc/${destination_number}"/>
+      </condition>
+    </extension>
+
+    <!-- Registration target: route to the associated b2bua (dynamic, per call).
+         Stamp the platform From domain on this leg the way sipbridge does. -->
+    <extension name="outbound_b2bua_override" continue="true">
+      <condition field="${dialplan_target}" expression="^outbound$"/>
+      <condition field="${aplisay_b2bua_authority}" expression="^.+$">
+        <action application="set" data="dialed_target=[sip_from_host=$${pipecat_sip_from_domain},sip_invite_domain=$${pipecat_sip_from_domain}]sofia/external/sip:${destination_number}@${aplisay_b2bua_authority};transport=${aplisay_b2bua_transport}"/>
+      </condition>
+    </extension>
+
+    <extension name="outbound_bridge">
+      <condition field="${dialplan_target}" expression="^outbound$">
+        <action application="bridge" data="${dialed_target}"/>
       </condition>
     </extension>
 

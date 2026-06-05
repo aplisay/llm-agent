@@ -14,4 +14,11 @@ fi
 chown -R freeswitch:freeswitch /usr/local/freeswitch/run /usr/local/freeswitch/log /usr/local/freeswitch/db ${CERTS_DIR}
 chmod og-rwx -R ${CERTS_DIR} || true
 
+# Derive the default-SBC gateway proxy from the platform-wide PIPECAT_SIP_*
+# triple (the single source of truth shared with sipbridge). PIPECAT_SIP_OUTBOUND
+# is a SIP URI (e.g. "sip:test.sbc.aplisay.net:5060;transport=tcp"); the sofia
+# gateway "proxy" param wants the host[:port][;transport=…] without the scheme.
+# Exported so vars.xml's env-set can pull it into a FreeSWITCH global var.
+export PIPECAT_SBC_PROXY="$(printf '%s' "${PIPECAT_SIP_OUTBOUND}" | sed -E 's#^sips?:##')"
+
 exec gosu freeswitch:freeswitch /usr/local/freeswitch/bin/freeswitch -nonat -c

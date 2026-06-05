@@ -110,6 +110,9 @@ func main() {
 		SignalPort:    cfg.SIPSignalPort,
 		TLSSignalPort: cfg.TLSSignalPort,
 		BindIP:        cfg.SIPBindIP,
+		AuthUsername:  cfg.SIPAuthUsername,
+		AuthPassword:  cfg.SIPAuthPassword,
+		FromDomain:    cfg.SIPFromDomain,
 		TraceEnabled:  cfg.SIPTraceEnabled,
 	})
 	if err != nil {

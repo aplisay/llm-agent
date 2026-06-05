@@ -81,6 +81,23 @@ type Config struct {
 	// SRTP. Has no effect when SRTPEnabled is false.
 	SRTPOutbound bool
 
+	// Outbound SIP digest credentials. Presented when an outbound INVITE is
+	// challenged (401/407) by the upstream SBC — i.e. the "outbound trunk"
+	// auth, the analogue of LiveKit's createSipOutboundTrunk
+	// authUsername/authPassword. Empty → no auth (peer must accept
+	// unauthenticated, e.g. IP-allowlisted SBC). Named PIPECAT_SIP_* to line
+	// up with the platform's PIPECAT_SIP_OUTBOUND route setting.
+	SIPAuthUsername string
+	SIPAuthPassword string
+
+	// SIPFromDomain is the host presented in the From of outbound INVITEs (the
+	// From user is the per-call CLI). The upstream SBC gates outbound-trunk
+	// routing on this domain, so it must match a handler domain the SBC
+	// recognises (e.g. the pipecat handler domain / PIPECAT_HANDLER_DOMAIN on
+	// the SBC). Empty → sipgo's default From (only works for SBCs that
+	// authenticate purely by source IP).
+	SIPFromDomain string
+
 	// Pipecat worker WebSocket base URL — we append /sipbridge/agent/{session_id}.
 	WorkerWSBase string
 
@@ -115,6 +132,9 @@ func Load() (*Config, error) {
 		SRTPRequired:      envBool("SIPBRIDGE_SRTP_REQUIRED", false),
 		SRTPDTLSEnabled:   envBool("SIPBRIDGE_SRTP_DTLS_ENABLED", true),
 		SRTPOutbound:      envBool("SIPBRIDGE_SRTP_OUTBOUND", true),
+		SIPAuthUsername:   env("PIPECAT_SIP_USERNAME", ""),
+		SIPAuthPassword:   env("PIPECAT_SIP_PASSWORD", ""),
+		SIPFromDomain:     env("PIPECAT_SIP_FROM_DOMAIN", ""),
 		MediaIP:        env("SIPBRIDGE_MEDIA_IP", ""),
 		MediaBindIP:    env("SIPBRIDGE_MEDIA_BIND_IP", ""),
 		RTPPortMin:        envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),

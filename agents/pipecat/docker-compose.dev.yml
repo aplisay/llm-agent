@@ -48,6 +48,14 @@ services:
       # mod_audio_stream's outbound WS target. Override to
       # ws://host.docker.internal:8082/freeswitch/audio on macOS/Windows.
       PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      # Default-SBC next hop. FreeSWITCH is the SBC client: the static "sbc"
+      # sofia gateway (sip_profiles/external.xml) is built from this triple.
+      # entrypoint.sh derives PIPECAT_SBC_PROXY (scheme-stripped) from
+      # PIPECAT_SIP_OUTBOUND; vars.xml pulls all four into FS globals.
+      PIPECAT_SIP_OUTBOUND: ${PIPECAT_SIP_OUTBOUND:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
     healthcheck:
       test: ["CMD", "/usr/bin/healthcheck.sh"]
       interval: 30s
@@ -161,6 +169,15 @@ services:
       SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://host.docker.internal:8082}
       SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      # Outbound-trunk identity + auth for trunk-origin originate / WebRTC
+      # transfers. PIPECAT_SIP_FROM_DOMAIN is the From host the SBC gates on
+      # (must equal the SBC's PIPECAT_HANDLER_DOMAIN); USERNAME/PASSWORD answer
+      # the SBC's 401/407 digest challenge (must match the SBC subscriber row
+      # in that realm). Read by the Go bridge — NOT the worker — so they must
+      # be passed into this container explicitly.
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
       SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-debug}
       # Full SIP message dumps on every transaction (in + out). Heavy
       # but indispensable for debugging dialog-level issues — set this

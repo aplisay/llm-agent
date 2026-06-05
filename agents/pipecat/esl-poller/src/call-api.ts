@@ -35,6 +35,12 @@ export interface OriginateBody {
   channelUuid?: string;
   /** Optional gateway through which to route the outbound call. */
   gateway?: string;
+  /** Registration-origin routing (mirrors the sipbridge/voiceblender contract).
+   *  When registrationEndpointId + b2buaGatewayIp are present, the call is
+   *  routed to that registration's b2bua instead of the default SBC gateway. */
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
 }
 
 export interface TransferBody {
@@ -128,6 +134,20 @@ function wireChannelEventForwarding({ client, logger }: CallApiOptions): void {
   client.custom.on("CHANNEL_ANSWER", (ev: any) => void forward("CHANNEL_ANSWER", ev));
 }
 
+/** Strip a leading sip:/sips: scheme from a host or URI (mirrors sipbridge's
+ *  `_strip_sip_scheme`). */
+function stripSipScheme(s: string): string {
+  return s.replace(/^sips?:/i, "");
+}
+
+/** Resolve a registration's b2bua SIP authority the same way sipbridge does
+ *  (`_outbound_target_uri`): use the IP as-is if it already carries a port,
+ *  else default to the b2bua's SIP port 5070. */
+function b2buaAuthority(ip: string): string {
+  const host = stripSipScheme(ip).trim();
+  return host.includes(":") ? host : `${host}:5070`;
+}
+
 /**
  * Build the originate variables string (FreeSWITCH `{k=v,k=v}` syntax).
  */
@@ -144,6 +164,20 @@ function buildOriginateVars(body: OriginateBody, channelUuid: string): string {
   if (body.aplisayId) {
     parts.push(`aplisay_trunk=${body.aplisayId}`);
     parts.push(`sip_h_X-Aplisay-Trunk=${body.aplisayId}`);
+  }
+  // Registration-origin routing: when the worker supplies a b2bua gateway IP,
+  // stamp the authority + transport so the dialplan bridges straight to that
+  // b2bua instead of the default SBC gateway. The X-Lk-* headers mirror the
+  // section-6 wire contract carried by sipbridge.
+  if (body.b2buaGatewayIp) {
+    const transport = body.b2buaGatewayTransport || "tcp";
+    parts.push(`aplisay_b2bua_authority=${b2buaAuthority(body.b2buaGatewayIp)}`);
+    parts.push(`aplisay_b2bua_transport=${transport}`);
+    parts.push(`sip_h_X-Lk-RealIp=${stripSipScheme(body.b2buaGatewayIp)}`);
+    parts.push(`sip_h_X-Lk-Transport=${transport}`);
+    if (body.registrationEndpointId) {
+      parts.push(`sip_h_X-Aplisay-PhoneRegistration=${body.registrationEndpointId}`);
+    }
   }
   return parts.join(",");
 }

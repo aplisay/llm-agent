@@ -242,6 +242,13 @@ class FreeswitchSipGateway(ConsultStateMixin, SipGateway):
                     "callerId": params.caller_id,
                     "callId": params.call_id,
                     "aplisayId": params.aplisay_id,
+                    # Registration-origin routing (esl-poller routes to the
+                    # registration's B2BUA gateway when present, else uses the
+                    # trunk via aplisayId). Carried for parity with the
+                    # sipbridge / voiceblender outbound contract.
+                    "registrationEndpointId": params.registration_endpoint_id,
+                    "b2buaGatewayIp": params.b2bua_gateway_ip,
+                    "b2buaGatewayTransport": params.b2bua_gateway_transport,
                     "channelUuid": channel_uuid,
                 },
             )

@@ -15,6 +15,15 @@
        The dialplan substitutes this into the audio_stream application. -->
   <X-PRE-PROCESS cmd="env-set" data="pipecat_ws_url=$PIPECAT_WS_URL"/>
 
+  <!-- Default-SBC next-hop, derived from the platform-wide PIPECAT_SIP_* triple
+       (the same source sipbridge consumes). pipecat_sbc_proxy is the scheme-
+       stripped host[:port][;transport=…] computed in entrypoint.sh; the others
+       feed the static "sbc" sofia gateway's From identity + digest auth. -->
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sbc_proxy=$PIPECAT_SBC_PROXY"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_username=$PIPECAT_SIP_USERNAME"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_password=$PIPECAT_SIP_PASSWORD"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_from_domain=$PIPECAT_SIP_FROM_DOMAIN"/>
+
   <X-PRE-PROCESS cmd="set" data="global_codec_prefs=PCMU,PCMA,G722"/>
   <X-PRE-PROCESS cmd="set" data="outbound_codec_prefs=PCMU,PCMA,G722"/>
 </include>

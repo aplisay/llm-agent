@@ -104,6 +104,21 @@ type Server struct {
 	tlsSignalPort int
 	bindIP        string
 
+	// authUsername / authPassword are the SIP digest credentials presented
+	// when an outbound INVITE is challenged (401/407) — i.e. the credentials
+	// the outbound SBC requires. Part of the "outbound trunk" config (mirrors
+	// LiveKit's createSipOutboundTrunk authUsername/authPassword). Empty when
+	// the SBC doesn't challenge (or for registration-origin legs to a B2BUA
+	// gateway, which don't authenticate).
+	authUsername string
+	authPassword string
+
+	// fromDomain is the host part presented in the From of outbound INVITEs
+	// (the From user is the per-call CLI). The upstream SBC gates outbound-
+	// trunk routing on this domain, so it must be a handler domain the SBC
+	// recognises. Empty → let sipgo synthesise a default From.
+	fromDomain string
+
 	// traceEnabled gates the full-message SIP trace logger (see
 	// traceSIP) — set from Config.TraceEnabled at NewServer time.
 	traceEnabled bool
@@ -151,6 +166,19 @@ type OutboundResult struct {
 	Answer *CodecOffer // SDP answer parsed from the 200 OK body
 }
 
+// SIPResponseError is returned by Originate when the outbound INVITE receives a
+// non-2xx final response. It carries the status code so callers can branch on
+// it — notably to retry a plaintext RTP/AVP offer when a carrier rejects SRTP
+// with 488 Not Acceptable Here (Twilio: "SIP trunk does not accept secure").
+type SIPResponseError struct {
+	Code   int
+	Reason string
+}
+
+func (e *SIPResponseError) Error() string {
+	return fmt.Sprintf("sip: INVITE final %d %s", e.Code, e.Reason)
+}
+
 // Config controls how the server binds and presents itself on the wire.
 type Config struct {
 	// SignalIP is the IP advertised in the Contact / Via headers — the
@@ -173,6 +201,19 @@ type Config struct {
 	BindIP string
 	// UserAgent string sent in the User-Agent / Server header.
 	UserAgent string
+
+	// AuthUsername / AuthPassword: SIP digest credentials for outbound
+	// INVITEs that the SBC challenges (401/407). Part of the outbound-trunk
+	// config — the analogue of LiveKit's createSipOutboundTrunk
+	// authUsername/authPassword. Empty disables auth (peer must accept
+	// unauthenticated, e.g. an IP-allowlisted SBC or a registration B2BUA).
+	AuthUsername string
+	AuthPassword string
+
+	// FromDomain: host presented in the From of outbound INVITEs (user is the
+	// per-call CLI). Must be a handler domain the upstream SBC recognises for
+	// outbound-trunk routing. Empty → sipgo's default From.
+	FromDomain string
 
 	// TraceEnabled: when true, every SIP message that crosses the
 	// bridge — inbound requests, our outbound responses, our outbound
@@ -274,9 +315,21 @@ func NewServer(cfg Config) (*Server, error) {
 		signalPort:    cfg.SignalPort,
 		tlsSignalPort: cfg.TLSSignalPort,
 		bindIP:        cfg.BindIP,
+		authUsername:  cfg.AuthUsername,
+		authPassword:  cfg.AuthPassword,
+		fromDomain:    cfg.FromDomain,
 		traceEnabled:  cfg.TraceEnabled,
 	}
 	s.registerHandlers()
+	// Surface outbound-trunk config at startup so a 401/407 failure is easy to
+	// diagnose: sipgo only answers an auth challenge when a password is set, so
+	// "auth_password_set=false" here explains an outbound INVITE that dies on
+	// 407. The password value itself is never logged.
+	log.Info().
+		Str("from_domain", cfg.FromDomain).
+		Str("auth_username", cfg.AuthUsername).
+		Bool("auth_password_set", cfg.AuthPassword != "").
+		Msg("sip: outbound trunk config")
 	return s, nil
 }
 
@@ -643,6 +696,7 @@ func (s *Server) NewCallID() string {
 func (s *Server) Originate(
 	ctx context.Context,
 	target string,
+	fromUser string,
 	sdpOffer []byte,
 	customHeaders map[string]string,
 ) (*OutboundResult, *sipgo.DialogClientSession, error) {
@@ -657,6 +711,23 @@ func (s *Server) Originate(
 	extra := []sip.Header{
 		sip.NewHeader("Content-Type", "application/sdp"),
 	}
+	// Present a real From identity. Without this, sipgo synthesises
+	// ``From: "<ua-name>" <sip:<ua-name>@localhost>`` (it only fills From when
+	// the request has none — so providing our own wins, no duplicate). The
+	// upstream SBC keys its outbound-trunk routing off the From: it gates on
+	// the From *domain* (must be a recognised handler domain) and rewrites the
+	// From *user* (the calling number) per the trunk's from_format. We set the
+	// user to the resolved CLI and the host to the configured handler domain;
+	// when either is unset we leave sipgo's default (e.g. for peers that
+	// authenticate purely by source IP).
+	if s.fromDomain != "" && fromUser != "" {
+		from := &sip.FromHeader{
+			Address: sip.Uri{Scheme: "sip", User: fromUser, Host: s.fromDomain},
+			Params:  sip.NewParams(),
+		}
+		from.Params.Add("tag", sip.GenerateTagN(16))
+		extra = append(extra, from)
+	}
 	for k, v := range customHeaders {
 		extra = append(extra, sip.NewHeader(k, v))
 	}
@@ -670,22 +741,45 @@ func (s *Server) Originate(
 	}
 
 	// WaitAnswer blocks for the final response. Provisional responses
-	// (100 Trying / 180 Ringing) are consumed internally.
-	if err := dlg.WaitAnswer(ctx, sipgo.AnswerOptions{}); err != nil {
+	// (100 Trying / 180 Ringing) are consumed internally. When the SBC
+	// challenges the INVITE (401/407), sipgo re-sends with a digest
+	// Authorization built from these credentials — the outbound-trunk auth
+	// (mirrors LiveKit's createSipOutboundTrunk authUsername/authPassword).
+	// Empty creds → no auth attempted (peer must accept unauthenticated).
+	var lastResp *sip.Response
+	if err := dlg.WaitAnswer(ctx, sipgo.AnswerOptions{
+		Username: s.authUsername,
+		Password: s.authPassword,
+		// Trace EVERY response (provisional, auth challenge, and final) as it
+		// arrives. Without this, a non-2xx final (e.g. 404/403) makes WaitAnswer
+		// return an error and we'd bail before logging the response — so the
+		// SIP trace would show only the outbound INVITE and none of the SBC's
+		// answers, which is exactly the blind spot we hit debugging this. Also
+		// capture the last response so we can surface its status code.
+		OnResponse: func(res *sip.Response) error {
+			s.traceSIP("<", fmt.Sprintf("%d %s for outbound INVITE", res.StatusCode, res.Reason), res)
+			lastResp = res
+			return nil
+		},
+	}); err != nil {
 		_ = dlg.Close()
+		// Surface the final status code (e.g. 488) so the caller can decide to
+		// retry — sipgo reports non-2xx finals as a WaitAnswer error.
+		if lastResp != nil {
+			return nil, nil, &SIPResponseError{Code: int(lastResp.StatusCode), Reason: lastResp.Reason}
+		}
 		return nil, nil, fmt.Errorf("sip: WaitAnswer: %w", err)
 	}
 	resp := dlg.InviteResponse
-	if resp != nil {
-		s.traceSIP("<", fmt.Sprintf("%d %s for outbound INVITE", resp.StatusCode, resp.Reason), resp)
-	}
 	if resp == nil || !resp.IsSuccess() {
 		_ = dlg.Close()
 		code := 0
+		reason := ""
 		if resp != nil {
 			code = int(resp.StatusCode)
+			reason = resp.Reason
 		}
-		return nil, nil, fmt.Errorf("sip: INVITE final %d", code)
+		return nil, nil, &SIPResponseError{Code: code, Reason: reason}
 	}
 
 	// Carrier sent a 2xx with their SDP answer — parse to extract the

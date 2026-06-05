@@ -37,6 +37,7 @@ import asyncio
 from typing import Optional
 
 from loguru import logger
+from pipecat.audio.resamplers.soxr_resampler import SOXRAudioResampler
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -46,6 +47,17 @@ from pipecat.frames.frames import (
     StartFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+
+def _peak(audio: bytes) -> int:
+    """Peak absolute s16le sample in ``audio`` — a cheap signal-vs-silence probe
+    for diagnostics (≈0 means the frame is silence). Returns -1 if unparseable."""
+    if not audio:
+        return 0
+    try:
+        return max((abs(s) for s in memoryview(audio).cast("h")), default=0)
+    except (ValueError, TypeError):
+        return -1
 
 
 class _RelayTap(FrameProcessor):
@@ -60,6 +72,7 @@ class _RelayTap(FrameProcessor):
     def __init__(self, endpoint: "RelayEndpoint"):
         super().__init__()
         self._endpoint = endpoint
+        self._fwd_count = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -80,6 +93,13 @@ class _RelayTap(FrameProcessor):
                         num_channels=frame.num_channels,
                     )
                 )
+                self._fwd_count += 1
+                if self._fwd_count == 1 or self._fwd_count % 100 == 0:
+                    logger.info(
+                        f"relay tap[{self._endpoint.name}->{peer.name}]: "
+                        f"forwarded {self._fwd_count} frames "
+                        f"rate={frame.sample_rate} peak={_peak(frame.audio)}"
+                    )
             # Swallow: do not drive the local bot while relaying.
             return
 
@@ -100,6 +120,15 @@ class _RelayInjector(FrameProcessor):
         self._endpoint = endpoint
         self._queue: asyncio.Queue[OutputAudioRawFrame] = asyncio.Queue()
         self._reader: Optional[asyncio.Task] = None
+        # The rate the local output transport's (stream) resampler locks onto —
+        # learned from the bot's own OutputAudioRawFrames before relay engages.
+        # pipecat's output transport resampler can't change input rate mid-
+        # stream, so relayed audio MUST be fed at this exact rate. None until a
+        # bot frame is seen (e.g. a bare relay leg with no bot of its own).
+        self._dst_rate: Optional[int] = None
+        # Stateless per-call resampler (handles arbitrary in/out rates; identity
+        # when equal) — used to convert peer audio to ``_dst_rate``.
+        self._resampler = SOXRAudioResampler()
 
     async def feed(self, frame: OutputAudioRawFrame) -> None:
         await self._queue.put(frame)
@@ -116,19 +145,49 @@ class _RelayInjector(FrameProcessor):
             self._reader = None
 
         if (
-            self._endpoint.engaged
-            and direction == FrameDirection.DOWNSTREAM
+            direction == FrameDirection.DOWNSTREAM
             and isinstance(frame, OutputAudioRawFrame)
         ):
-            # Drop the local bot's audio while relaying — the agent is silent.
-            return
+            if self._endpoint.engaged:
+                # Drop the local bot's audio while relaying — the agent is silent.
+                return
+            # Remember the rate the local output transport sees from the bot, so
+            # relayed audio can be fed at the same rate (its resampler locks to
+            # this and rejects any change). Updated on every pre-relay frame.
+            self._dst_rate = frame.sample_rate
 
         await self.push_frame(frame, direction)
 
     async def _drain(self) -> None:
+        drained = 0
         while True:
             frame = await self._queue.get()
-            await self.push_frame(frame, FrameDirection.DOWNSTREAM)
+            target = self._dst_rate
+            src_rate = frame.sample_rate
+            if target and target != frame.sample_rate:
+                audio = await self._resampler.resample(
+                    frame.audio, frame.sample_rate, target
+                )
+                frame = OutputAudioRawFrame(
+                    audio=audio, sample_rate=target, num_channels=frame.num_channels
+                )
+            try:
+                await self.push_frame(frame, FrameDirection.DOWNSTREAM)
+            except Exception as e:  # noqa: BLE001
+                # A push failure (e.g. a locked output resampler) would otherwise
+                # silently kill this drain loop and mute the relay one-way. Log it
+                # and keep draining so one bad frame can't stop the audio.
+                logger.warning(
+                    f"relay inject[{self._endpoint.name}]: push_frame failed "
+                    f"(src={src_rate} dst={target}): {e}; continuing drain"
+                )
+                continue
+            drained += 1
+            if drained == 1 or drained % 100 == 0:
+                logger.info(
+                    f"relay inject[{self._endpoint.name}]: drained {drained} frames "
+                    f"src={src_rate} dst={target} peak={_peak(frame.audio)}"
+                )
 
 
 class RelayEndpoint:
@@ -151,12 +210,12 @@ class RelayEndpoint:
         """Point this endpoint at ``peer`` and start relaying immediately."""
         self.peer = peer
         self.engaged = True
-        logger.bind(endpoint=self.name, peer=peer.name).info("media relay endpoint engaged")
+        logger.info(f"media relay endpoint engaged: {self.name} -> {peer.name}")
 
     def disengage(self) -> None:
         self.engaged = False
         self.peer = None
-        logger.bind(endpoint=self.name).info("media relay endpoint disengaged")
+        logger.info(f"media relay endpoint disengaged: {self.name}")
 
 
 def bridge(a: RelayEndpoint, b: RelayEndpoint) -> None:
@@ -164,7 +223,7 @@ def bridge(a: RelayEndpoint, b: RelayEndpoint) -> None:
     only each other; both local bots go silent and idle."""
     a.engage(b)
     b.engage(a)
-    logger.bind(a=a.name, b=b.name).info("media relay bridged")
+    logger.info(f"media relay bridged: {a.name} <-> {b.name}")
 
 
 def build_relay_only_task(transport, endpoint: RelayEndpoint):

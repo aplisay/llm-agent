@@ -25,8 +25,21 @@ startup.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
+
+# The ``websockets`` library logs every frame it sends/receives as a hex dump
+# (``> BINARY …`` / ``< BINARY …``) via its per-connection logger at DEBUG. With
+# the protobuf audio transports (sipbridge / voiceblender legs) that floods the
+# worker log with thousands of lines per call — drowning the actual signal. Pin
+# the library's loggers to INFO so connection open/close/ping still show but the
+# frame trace is gone. A logger with its own level set filters before any handler
+# or root config, so this holds regardless of how DEBUG got enabled. Set
+# ``WS_TRACE=1`` to restore the full per-frame dump for deep wire debugging.
+if (os.environ.get("WS_TRACE") or "").lower() not in ("1", "true", "yes", "on"):
+    for _ws_logger in ("websockets", "websockets.client", "websockets.server"):
+        logging.getLogger(_ws_logger).setLevel(logging.INFO)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -1349,6 +1362,15 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
                 audio_out_enabled=True,
                 add_wav_header=False,
                 serializer=serializer,
+                # The bridge speaks PCM16LE mono at 16 kHz over the WS in both
+                # directions (it up/downsamples to 8 kHz G.711 on the RTP wire).
+                # Pin the transport rates so Pipecat's resamplers converge on 16
+                # kHz before frames hit the WS — without this, outbound legs
+                # (agent originate AND WebRTC-transfer relay legs) leak the LLM's
+                # native rate (e.g. 24 kHz) onto the wire and the bridge warns /
+                # distorts. Mirrors the inbound path below.
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=16000,
             ),
         )
         try:
