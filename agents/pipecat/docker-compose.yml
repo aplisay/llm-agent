@@ -52,12 +52,26 @@ services:
       context: ./freeswitch/
     network_mode: host
     restart: unless-stopped
+    # mod_audio_stream's libwebsockets resolves the worker WS host via
+    # getaddrinfo (/etc/hosts), NOT Docker's embedded DNS — so host.docker.internal
+    # must be a real /etc/hosts entry or the WS connect fails ("connection error").
+    # host-gateway makes it resolve to the host on every platform (same as sipbridge).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
       ESL_SECRET: ${ESL_SECRET:-ClueCon}
       # mod_audio_stream's WS target (the pipecat-worker container).
       # When using host networking the worker is reachable on localhost.
       PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      # Default-SBC next hop. FreeSWITCH is the SBC client: the static "sbc"
+      # sofia gateway (sip_profiles/external.xml) is built from this triple.
+      # entrypoint.sh derives PIPECAT_SBC_PROXY (scheme-stripped) from
+      # PIPECAT_SIP_OUTBOUND; vars.xml pulls all four into FS globals.
+      PIPECAT_SIP_OUTBOUND: ${PIPECAT_SIP_OUTBOUND:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
     healthcheck:
       test: ["CMD", "/usr/bin/healthcheck.sh"]
       interval: 30s
@@ -86,22 +100,20 @@ services:
       # Gateway poll is for aplisay-b2bua's config-server; off in this stack.
       GATEWAY_POLL_ENABLED: "false"
       CALL_API_ENABLED: "true"
+      # Outbound originates run uuid_audio_stream toward this WS and (for b2bua
+      # targets) stamp this From domain. Same values the worker/FS container use.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
 
   # ---- Voiceblender ingress (profile: voiceblender) ---------------------
 
   voiceblender:
     profiles: ["voiceblender"]
-    # Pin a release tag in production. v0.6.0 is the first tag with the
-    # Pipecat agent integration on stable footing — see
-    # https://github.com/voiceblender/voiceblender/releases/tag/v0.6.0
-    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
     network_mode: host
     restart: unless-stopped
     environment:
-      # SIP/RTP — defaults are voiceblender's own defaults; set explicitly
-      # here so it's clear which ports get pinned, and so they're easy to
-      # remap (e.g. SIP_PORT=5070) when running alongside another SIP UA on
-      # the same host.
+
       HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
       SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
       SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}  # 0 disables TLS
@@ -147,6 +159,13 @@ services:
       SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
       SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      # Outbound-trunk identity + auth for trunk-origin originate / WebRTC
+      # transfers (read by the Go bridge, not the worker). FROM_DOMAIN must
+      # equal the SBC's PIPECAT_HANDLER_DOMAIN; USERNAME/PASSWORD must match the
+      # SBC subscriber row in that realm.
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
       SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-info}
 
   # ---- Pipecat worker (all profiles) ------------------------------------

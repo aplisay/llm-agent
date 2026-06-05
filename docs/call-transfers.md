@@ -64,6 +64,20 @@ The decision on which to use is transparent to the LLM tools call and the most a
 
 **Caller ID behaviour:** When SIP REFER (deflect) is used, the call is effectively handed back to the upstream system, which then redirects the caller to the target. The upstream PBX or carrier is responsible for generating the Caller ID that the transfer target sees. Because the call never re-enters our media path, we cannot attach custom headers such as `X-Aplisay-Origin-Caller-Id` and we have no control over which Caller ID the upstream system presents. If you need guarantees about Caller ID propagation in REFER flows, speak with the telco architect who designed the redirect path to understand the limitations imposed by that infrastructure.
 
+#### 3. Worker-side media relay (WebRTC origin)
+
+Bridging (Case 1) and REFER (Case 2) both rely on the original caller being a **SIP** participant: bridging loops the two legs together *inside a SIP gateway*, and REFER hands a SIP dialog back upstream. A **WebRTC / browser** caller has neither — their media terminates in the worker's `SmallWebRTCTransport`, not in any SIP gateway. So a transfer from a browser caller to a telephony endpoint is always bridged, but the bridge is built in the **one place both media endpoints meet — the worker itself**:
+
+1. The worker resolves the egress trunk + caller ID (see below), then **originates a new outbound telephony leg** to the target through the configured SIP gateway.
+2. A pair of lightweight processors (a *tap* after the transport input, an *injector* before the transport output — see `agents/pipecat/pipecat_aplisay/media_relay.py`) are spliced into both legs' Pipecat pipelines. Engaging them relays raw PCM audio between the browser peer and the telephony leg in both directions; the agent goes silent and idle, and the two parties hear only each other.
+3. **Nothing is torn down** to install the relay — both pipelines keep running — so the WebRTC peer connection (which would otherwise disconnect on pipeline end) stays up across the cutover.
+
+Because the relay carries decoded PCM, the browser's Opus/48 kHz audio and the telephony leg's G.711/8 kHz audio are reconciled by Pipecat's normal resampling at each transport sink — there is no same-codec constraint (unlike the in-gateway bridge, which is G.711-only).
+
+`forceRefer` is meaningless for a WebRTC origin (there is no SIP dialog to REFER) and is ignored. Consultative transfers from a WebRTC caller use the **same** relay for their finalise step: the consultation runs a TransferAgent on the outbound leg as usual, and on `accept_transfer` the worker engages the browser↔target relay instead of an in-gateway bridge.
+
+**Caller ID behaviour (WebRTC origin):** a browser call has no inbound trunk, so the outbound leg dials out on the egress trunk belonging to the supplied `callerId` number. The `callerId` is therefore **required** for transfers from a browser session, and must be a number known to the platform with outbound calling enabled (its trunk becomes the egress path). This mirrors LiveKit's caller-ID resolution.
+
 ### Transfer mode selection
 
 Whether a transfer is completed by **bridging** (media stays on the platform) or by **SIP REFER** (the call is handed back to the upstream and leaves the platform) is decided by the call's origin, with optional overrides. The same logic governs the final hop of a [consultative transfer](#consultative-transfers).

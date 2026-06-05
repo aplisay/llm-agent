@@ -62,6 +62,12 @@ class InboundCallContext:
     force_refer_transfer: Optional[bool] = None
     force_bridged_transfer: Optional[bool] = None
 
+    # Registration trunk username (e.g. "8092"), captured from the phone
+    # endpoint at inbound lookup. Used as the calling number presented toward
+    # the gateway on transfer legs (mirrors LiveKit's registrationUsername /
+    # fromNumber). ``None`` for non-registration (trunk) calls.
+    registration_username: Optional[str] = None
+
     # Pre-existing platform call UUID if the gateway can stamp one through.
     call_id: Optional[str] = None  # X-Aplisay-Call-Id
 
@@ -120,6 +126,12 @@ class TransferRequest:
     destination: str  # number or SIP URI
     operation: str  # "blind" or "consultative" — see docstring
     caller_id_override: Optional[str] = None
+    # The genuine originating caller (the inbound A-leg's caller). The From
+    # toward the gateway may be rewritten to the trunk username for call
+    # admission, so we additionally surface the real origin as
+    # X-Aplisay-Origin-Caller-Id on the transfer leg; the B2BUA turns it into a
+    # P-Asserted-Identity. Mirrors LiveKit's X-Aplisay-Origin-Caller-Id header.
+    origin_caller_id: Optional[str] = None
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
 

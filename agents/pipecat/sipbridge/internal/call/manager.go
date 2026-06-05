@@ -176,6 +176,38 @@ type OriginateParams struct {
 	Metadata        map[string]string // free-form; included as X-Aplisay-Call-Id when present
 }
 
+// buildOutboundOffer builds the SDP offer for an outbound INVITE on ``rtpSess``.
+// When ``offeringSDES`` it offers SDES SRTP (RTP/SAVP) with one ``a=crypto``
+// line per catalogued suite (preference order) and returns the tag → master
+// material map needed to install the SRTP context from the peer's answer.
+// Otherwise it offers plaintext RTP/AVP and an empty map. Reusable so the
+// dial path can re-offer plaintext after a 488 SRTP rejection.
+//
+// DTLS-SRTP outbound is not yet implemented — it needs the initiate-side
+// handshake plus a=setup:actpass parsing of the answer; SDES is what every SBC
+// supports anyway.
+func (m *Manager) buildOutboundOffer(
+	rtpSess *rtp.Session, offeringSDES bool,
+) ([]byte, map[int]rtp.CryptoMaterial, error) {
+	encOffer := sipx.EncryptionParams{}
+	ourOfferedSDES := map[int]rtp.CryptoMaterial{}
+	if offeringSDES {
+		encOffer.Profile = "RTP/SAVP"
+		for i, suite := range rtp.SRTPSuites {
+			material, err := rtp.Generate(suite)
+			if err != nil {
+				return nil, nil, fmt.Errorf("call: generate SDES material: %w", err)
+			}
+			tag := i + 1 // tags are 1-indexed by convention
+			ourOfferedSDES[tag] = material
+			encOffer.CryptoLines = append(encOffer.CryptoLines,
+				fmt.Sprintf("%d %s inline:%s",
+					tag, suite.Name, material.EncodeInline()))
+		}
+	}
+	return sipx.BuildOffer(rtpSess, m.cfg.MediaIP, encOffer), ourOfferedSDES, nil
+}
+
 // dialAndWireRTP performs the SIP-dial + RTP-socket + codec/SRTP
 // negotiation shared by every outbound leg (agent originate, consult
 // leg, and the agent-less relay leg of a native bridged transfer). It
@@ -201,36 +233,15 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		return nil, nil, fmt.Errorf("call: rtp: %w", err)
 	}
 
-	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled, we
-	// offer SDES SRTP (RTP/SAVP) with one ``a=crypto`` line per
-	// catalogued suite, in our preference order. Peer picks one in
-	// their 200 OK answer; ourOfferedSDES maps tag → the master
-	// material we generated for that tag so we can build the
-	// outbound SRTP context once we know which tag they took.
-	//
-	// DTLS-SRTP outbound is not yet implemented — it needs the
-	// initiate-side handshake plus a=setup:actpass parsing of the
-	// answer to learn who's client/server. Out of scope here; SDES
-	// is what every SBC supports anyway.
-	encOffer := sipx.EncryptionParams{}
-	ourOfferedSDES := map[int]rtp.CryptoMaterial{}
+	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled we offer SDES
+	// SRTP (RTP/SAVP). ``ourOfferedSDES`` maps tag → master material so we can
+	// install the outbound SRTP context once the peer picks a tag in its 200 OK.
 	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
-	if offeringSDES {
-		encOffer.Profile = "RTP/SAVP"
-		for i, suite := range rtp.SRTPSuites {
-			material, err := rtp.Generate(suite)
-			if err != nil {
-				rtpSess.Close()
-				return nil, nil, fmt.Errorf("call: generate SDES material: %w", err)
-			}
-			tag := i + 1 // tags are 1-indexed by convention
-			ourOfferedSDES[tag] = material
-			encOffer.CryptoLines = append(encOffer.CryptoLines,
-				fmt.Sprintf("%d %s inline:%s",
-					tag, suite.Name, material.EncodeInline()))
-		}
+	offer, ourOfferedSDES, err := m.buildOutboundOffer(rtpSess, offeringSDES)
+	if err != nil {
+		rtpSess.Close()
+		return nil, nil, err
 	}
-	offer := sipx.BuildOffer(rtpSess, m.cfg.MediaIP, encOffer)
 
 	// Inject X-Aplisay-Call-Id from metadata if present — the upstream
 	// B2BUA uses this as the platform-wide call correlator.
@@ -243,10 +254,32 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 	}
 
 	// 2. Send INVITE and wait for the 200 OK + SDP answer.
-	out, _, err := m.sip.Originate(ctx, p.Destination, offer, custom)
+	out, _, err := m.sip.Originate(ctx, p.Destination, p.CallerID, offer, custom)
 	if err != nil {
-		rtpSess.Close()
-		return nil, nil, fmt.Errorf("call: originate: %w", err)
+		// Some carriers (notably Twilio Elastic SIP Trunks unless explicitly
+		// configured for secure media) reject an SRTP offer with 488 Not
+		// Acceptable Here. When we offered SRTP and SRTP isn't strictly
+		// required, retry once with a plaintext RTP/AVP offer so the call still
+		// completes. Trunks that accept SRTP never hit this path, so secure
+		// media is preserved everywhere it's supported.
+		var se *sipx.SIPResponseError
+		if offeringSDES && !m.cfg.SRTPRequired && errors.As(err, &se) && se.Code == 488 {
+			log.Warn().
+				Str("destination", p.Destination).
+				Int("code", se.Code).
+				Msg("call: peer rejected SRTP offer (488); retrying with plaintext RTP/AVP")
+			offeringSDES = false
+			offer, ourOfferedSDES, err = m.buildOutboundOffer(rtpSess, false)
+			if err != nil {
+				rtpSess.Close()
+				return nil, nil, err
+			}
+			out, _, err = m.sip.Originate(ctx, p.Destination, p.CallerID, offer, custom)
+		}
+		if err != nil {
+			rtpSess.Close()
+			return nil, nil, fmt.Errorf("call: originate: %w", err)
+		}
 	}
 
 	// 3. Wire RTP to the remote endpoint the SDP answer published.
@@ -1378,7 +1411,10 @@ func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bo
 
 // handleDTMF parses an RFC 4733 telephone-event payload and, on the
 // end-of-event flag, ships a MessageFrame to the worker with a small
-// JSON describing the press: ``{"dtmf":"5","duration_ms":120}``.
+// JSON describing the press:
+// ``{"type":"dtmf","digit":"5","duration_ms":120,"call_id":"..."}``.
+// The worker's DtmfProtobufFrameSerializer turns this into a Pipecat
+// InputDTMFFrame.
 //
 // We avoid emitting on every packet of a long press because Pipecat's
 // MessageFrame channel is meant for occasional events, not a stream;

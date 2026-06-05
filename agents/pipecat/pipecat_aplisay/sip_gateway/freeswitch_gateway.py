@@ -54,6 +54,14 @@ class _FsGatewaySession(GatewaySession):
     session_id: str
     channel_uuid: str
     _gateway: "FreeswitchSipGateway"
+    # Set when the session is torn down. The /freeswitch/audio WS handler awaits
+    # this for outbound-originated legs (incl. WebRTC consult): the originating
+    # coroutine owns and drives the session, while the handler just keeps the
+    # WebSocket open until shutdown fires.
+    _finished: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def wait_finished(self) -> None:
+        await self._finished.wait()
 
     async def hangup(self, reason: str) -> None:
         logger.bind(channel_uuid=self.channel_uuid, reason=reason).info("freeswitch hangup")
@@ -167,6 +175,7 @@ class _FsGatewaySession(GatewaySession):
         )
 
     async def shutdown(self) -> None:
+        self._finished.set()
         await self.hangup("Session closed")
 
 
@@ -242,6 +251,13 @@ class FreeswitchSipGateway(ConsultStateMixin, SipGateway):
                     "callerId": params.caller_id,
                     "callId": params.call_id,
                     "aplisayId": params.aplisay_id,
+                    # Registration-origin routing (esl-poller routes to the
+                    # registration's B2BUA gateway when present, else uses the
+                    # trunk via aplisayId). Carried for parity with the
+                    # sipbridge / voiceblender outbound contract.
+                    "registrationEndpointId": params.registration_endpoint_id,
+                    "b2buaGatewayIp": params.b2bua_gateway_ip,
+                    "b2buaGatewayTransport": params.b2bua_gateway_transport,
                     "channelUuid": channel_uuid,
                 },
             )
@@ -253,6 +269,16 @@ class FreeswitchSipGateway(ConsultStateMixin, SipGateway):
             return await asyncio.wait_for(future, timeout=30.0)
         finally:
             self._pending_outbound.pop(channel_uuid, None)
+
+    def has_pending_outbound(self, channel_uuid: str) -> bool:
+        """True if an :meth:`originate` call is awaiting this channel uuid.
+
+        The /freeswitch/audio handler uses this to route an arriving audio_stream
+        to the outbound-originate branch (the originating coroutine owns the
+        session) rather than the inbound-dispatch branch.
+        """
+        pending = self._pending_outbound.get(channel_uuid)
+        return pending is not None and not pending.done()
 
     def register_inbound_session(
         self, *, channel_uuid: str, transport: BaseTransport, session_id: str

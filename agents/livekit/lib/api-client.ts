@@ -86,6 +86,31 @@ export interface Agent {
      * Used by worker when constructing RealtimeModel.
      */
     maxDuration?: string;
+    /**
+     * Inter-digit DTMF timeout in milliseconds. Buffered DTMF digits are flushed
+     * to the LLM after this period of keypad silence. Defaults to 1500ms.
+     * Set to 0 to flush each digit individually (no buffering delay).
+     */
+    dtmfTimeout?: number;
+    /**
+     * DTMF digit that, when pressed, immediately flushes the buffered digits
+     * (without itself being added to the buffer). Defaults to "#".
+     * Set to an empty string to disable the immediate-send terminator.
+     */
+    dtmfTerminator?: string;
+    /**
+     * Inactivity "kick": while the call is live, if there has been no
+     * conversational activity (no user speech and the agent is not speaking)
+     * for `timeout`, the agent speaks `message` verbatim via TTS. Re-fires on
+     * each further `timeout` of continued silence and resets on any activity.
+     * Absent/malformed ⇒ feature off (behaviour unchanged).
+     */
+    inactivity?: {
+      /** Idle timeout, seconds (number) or a string like "8s" (maxDuration convention). */
+      timeout: number | string;
+      /** Literal phrase spoken verbatim on each idle kick (deterministic, not an LLM prompt). */
+      message: string;
+    };
     /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
     temperature?: number;
     stt?: {

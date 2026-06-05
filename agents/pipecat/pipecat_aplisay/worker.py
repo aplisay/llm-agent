@@ -25,8 +25,21 @@ startup.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
+
+# The ``websockets`` library logs every frame it sends/receives as a hex dump
+# (``> BINARY …`` / ``< BINARY …``) via its per-connection logger at DEBUG. With
+# the protobuf audio transports (sipbridge / voiceblender legs) that floods the
+# worker log with thousands of lines per call — drowning the actual signal. Pin
+# the library's loggers to INFO so connection open/close/ping still show but the
+# frame trace is gone. A logger with its own level set filters before any handler
+# or root config, so this holds regardless of how DEBUG got enabled. Set
+# ``WS_TRACE=1`` to restore the full per-frame dump for deep wire debugging.
+if (os.environ.get("WS_TRACE") or "").lower() not in ("1", "true", "yes", "on"):
+    for _ws_logger in ("websockets", "websockets.client", "websockets.server"):
+        logging.getLogger(_ws_logger).setLevel(logging.INFO)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -57,7 +70,7 @@ from .call_session import (
 )
 from .constants import DISCONNECT_REASONS
 from .invocation_log import flush_invocation_logs
-from .serializers import FreeSwitchAudioStreamSerializer
+from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
     DailySipGateway,
@@ -194,6 +207,11 @@ class _InboundOrigin:
     registration_originated: bool = False
     force_refer_transfer: Optional[bool] = None
     force_bridged_transfer: Optional[bool] = None
+    # Registration trunk username (e.g. "8092" — the A-leg's To-user / SIP
+    # extension). Presented as the calling number toward the gateway on
+    # transfer legs so PBXs that reject an unknown calling number (e.g. Wildix
+    # -> 603 Decline) accept the call. Mirrors LiveKit's registrationUsername.
+    registration_username: Optional[str] = None
 
 
 async def _lookup_instance_for_inbound(
@@ -237,6 +255,10 @@ async def _lookup_instance_for_inbound(
             instance = await _maybe(api_client.get_instance_by_id(endpoint["instanceId"]))
             if instance:
                 origin.registration_originated = True
+                # Trunk username (= the A-leg's To-user / SIP extension), used
+                # as the calling number presented toward the gateway on
+                # transfers. Mirrors LiveKit's regInfo.username capture.
+                origin.registration_username = endpoint.get("username")
                 opts = endpoint.get("options") or {}
                 if "bridged_transfer" in opts:
                     origin.force_bridged_transfer = bool(opts.get("bridged_transfer"))
@@ -374,6 +396,7 @@ async def _sipbridge_resolve_agent_from_headers(
         registration_originated=origin.registration_originated,
         force_refer_transfer=origin.force_refer_transfer,
         force_bridged_transfer=origin.force_bridged_transfer,
+        registration_username=origin.registration_username,
         call_id=aplisay_call_id,
         raw={"bridge_call_id": bridge_call_id},
     )
@@ -535,6 +558,7 @@ async def daily_dialin(request: Request) -> dict:
         registration_originated=origin.registration_originated,
         force_refer_transfer=origin.force_refer_transfer,
         force_bridged_transfer=origin.force_bridged_transfer,
+        registration_username=origin.registration_username,
         call_id=headers.get("X-Aplisay-Call-Id"),
         raw={"dialin_settings": dialin, "room_url": room_url, "token": token},
     )
@@ -664,6 +688,12 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         sip_gateway=request.app.state.sip_gateway,
         gateway_session=_BrowserGatewaySession(transport, pc, payload.session_id),
         call=call,
+        # Browser origin: a WebRTC caller has no SIP leg, so a transfer to a
+        # telephony endpoint is bridged in-worker via media_relay rather than
+        # natively inside a SIP gateway. This flags _on_transfer to route to
+        # the worker-side relay path and makes prepare_run splice in a relay
+        # endpoint. See docs/call-transfers.md.
+        is_webrtc_origin=True,
     )
 
     # Preflight the voice-session build BEFORE answering the SDP. If a
@@ -865,6 +895,29 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
             serializer=serializer,
         ),
     )
+
+    # Outbound-originated leg (regular outbound OR WebRTC consult). These connect
+    # with ``?uuid=<channel uuid>`` — the worker already generated that uuid in
+    # ``originate()`` and pinned it as origination_uuid, so we correlate on the
+    # query param directly. (mod_audio_stream only emits a start event when given
+    # metadata, and its arg parser mangles JSON, so the outbound path deliberately
+    # does NOT depend on a start event.) The originating coroutine owns and drives
+    # the session; we just keep this WebSocket open until it tears down.
+    outbound_uuid = websocket.query_params.get("uuid")
+    if outbound_uuid and sip_gateway.has_pending_outbound(outbound_uuid):
+        gw_session = sip_gateway.register_inbound_session(
+            channel_uuid=outbound_uuid,
+            transport=transport,
+            session_id=outbound_uuid,
+        )
+        logger.bind(channel_uuid=outbound_uuid).info(
+            "freeswitch outbound leg connected; handed transport to originator"
+        )
+        try:
+            await gw_session.wait_finished()
+        except WebSocketDisconnect:
+            pass
+        return
 
     # Wait for the start metadata before we can dispatch — mod_audio_stream
     # sends it within a few hundred ms of the WS open.
@@ -1074,9 +1127,17 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
     """WebSocket the voiceblender process opens after ``POST /v1/legs/{id}/agent``.
 
     Wire format is stock Pipecat protobuf at 16 kHz mono, so we use the
-    upstream :class:`ProtobufFrameSerializer` (no custom serializer to write
-    — voiceblender speaks the same ``pipecat.Frame`` proto its own
-    ``examples/pipecat-agent/bot.py`` does, just from Go instead of Python).
+    upstream :class:`ProtobufFrameSerializer` — voiceblender speaks the same
+    ``pipecat.Frame`` proto its own ``examples/pipecat-agent/bot.py`` does,
+    just from Go instead of Python, and (unlike sipbridge) only ever sends
+    Audio and Text frames over this socket.
+
+    DTMF is *not* carried on this audio WebSocket: voiceblender decodes
+    RFC 4733 tones in its pion media layer and publishes them on its VSI
+    event stream as ``dtmf.received``. The gateway's VSI subscriber handles
+    that event and injects an ``InputDTMFFrame`` into the running pipeline —
+    see :meth:`VoiceblenderSipGateway._on_leg_dtmf` and
+    :meth:`CallSession.inject_dtmf`.
 
     Inbound vs outbound branch on the pre-registered :class:`PendingAttach`:
 
@@ -1125,6 +1186,9 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
     pending.inbound_ctx.raw["transport"] = transport
     pending.inbound_ctx.raw["leg_id"] = pending.leg_id
     sip_gateway.pending_attaches.pop(session_id, None)
+    # NB: the serializer just above is the plain ProtobufFrameSerializer, not
+    # DtmfProtobufFrameSerializer — voiceblender delivers DTMF via VSI, not
+    # this socket (see the handler docstring).
 
     is_inbound = bool(pending.agent)
 
@@ -1266,7 +1330,9 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
     INVITE.
 
     Same wire format as the voiceblender path (stock Pipecat protobuf
-    at 16 kHz mono via :class:`ProtobufFrameSerializer`). The difference
+    at 16 kHz mono via :class:`DtmfProtobufFrameSerializer`, which decodes
+    the bridge's ``{"type":"dtmf",...}`` transport messages into
+    ``InputDTMFFrame``s). The difference
     is how dispatch metadata reaches us: sipbridge attaches the SIP-side
     From/To/X-Aplisay-* headers as HTTP request headers on the opening
     handshake — there is no separate event channel.
@@ -1311,7 +1377,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         parent_session_id = sip_gateway.consult_parent(session_id)
 
         await websocket.accept()
-        serializer = ProtobufFrameSerializer()
+        serializer = DtmfProtobufFrameSerializer()
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
             params=FastAPIWebsocketParams(
@@ -1319,6 +1385,15 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
                 audio_out_enabled=True,
                 add_wav_header=False,
                 serializer=serializer,
+                # The bridge speaks PCM16LE mono at 16 kHz over the WS in both
+                # directions (it up/downsamples to 8 kHz G.711 on the RTP wire).
+                # Pin the transport rates so Pipecat's resamplers converge on 16
+                # kHz before frames hit the WS — without this, outbound legs
+                # (agent originate AND WebRTC-transfer relay legs) leak the LLM's
+                # native rate (e.g. 24 kHz) onto the wire and the bridge warns /
+                # distorts. Mirrors the inbound path below.
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=16000,
             ),
         )
         try:
@@ -1500,7 +1575,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
 
-    serializer = ProtobufFrameSerializer()
+    serializer = DtmfProtobufFrameSerializer()
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(

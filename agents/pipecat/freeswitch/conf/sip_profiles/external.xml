@@ -1,10 +1,28 @@
 <?xml version="1.0"?>
 <include>
-  <gateways>
-    <!-- Outbound gateways are added dynamically by the Pipecat worker via ESL
-         when an outbound originate needs one. -->
-  </gateways>
   <profile name="external">
+    <gateways>
+      <!-- Default-SBC outbound gateway. FreeSWITCH *is* the SBC client here: the
+           dialplan routes trunk / callerId-number originates via
+           `sofia/gateway/sbc/<number>`. Every param is derived from the
+           platform-wide PIPECAT_SIP_* triple (via vars.xml globals), so the SBC
+           next-hop has a single source of truth shared with sipbridge.
+           Outbound-only — we never register; the SBC gates on the From domain
+           and answers the INVITE's 401/407 with username/password. -->
+      <gateway name="sbc">
+        <param name="proxy" value="$${pipecat_sbc_proxy}"/>
+        <param name="register" value="false"/>
+        <param name="username" value="$${pipecat_sip_username}"/>
+        <param name="password" value="$${pipecat_sip_password}"/>
+        <param name="realm" value="$${pipecat_sip_from_domain}"/>
+        <param name="from-domain" value="$${pipecat_sip_from_domain}"/>
+        <param name="caller-id-in-from" value="true"/>
+      </gateway>
+
+      <!-- Per-registration b2bua next-hops are NOT static gateways: the worker
+           passes the b2bua IP per call and the dialplan bridges
+           sofia/external/sip:<num>@<b2bua_ip>:5070 directly. -->
+    </gateways>
     <settings>
       <param name="domain" value="$${domain}" parse="true"/>
       <param name="ext-sip-ip" value="$${ext_ipv4_address}"/>
@@ -24,6 +42,22 @@
       <param name="rtp-secure-media" value="optional"/>
 
       <param name="user-agent-string" value="Aplisay Pipecat Agent FS"/>
+
+      <!-- SIP TLS. Needed for outbound calls to registration b2buas that use
+           transport=tls (the SBC trunk is plain TCP and doesn't need this).
+           entrypoint.sh mints a self-signed agent.pem in $${certs_dir}; we don't
+           verify the peer (dev), so any b2bua cert is accepted. tls-only stays
+           false so UDP/TCP keep working for the SBC + inbound. -->
+      <param name="tls" value="true"/>
+      <param name="tls-only" value="false"/>
+      <param name="tls-bind-params" value="transport=tls"/>
+      <param name="tls-sip-port" value="$${sip_tls_port}"/>
+      <param name="tls-passphrase" value=""/>
+      <param name="tls-verify-date" value="false"/>
+      <param name="tls-verify-policy" value="none"/>
+      <param name="tls-verify-depth" value="2"/>
+      <param name="tls-verify-in-subjects" value=""/>
+      <param name="tls-version" value="tlsv1.2,tlsv1.3"/>
     </settings>
   </profile>
 </include>

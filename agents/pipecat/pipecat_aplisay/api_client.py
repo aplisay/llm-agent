@@ -123,6 +123,27 @@ async def get_agent_by_id(agent_id: str) -> dict:
     return await _request("GET", f"/api/agents/{agent_id}")
 
 
+async def get_phone_number(number: str) -> Optional[dict]:
+    """Look up a provisioned PhoneNumber (DDI/trunk number) by E.164 number.
+
+    Returns the row (``number``, ``outbound``, ``aplisayId``, ``instanceId``,
+    ...) or ``None`` if not found. Used to resolve the egress trunk + validate
+    the caller-ID for a WebRTC-origin transfer — mirrors the PhoneNumber lookup
+    in LiveKit's ``transfer-handler.ts`` ``validateAndResolveCallerId``.
+    """
+    try:
+        result = await _request(
+            "GET", "/api/agent-db/phone-numbers", params={"number": number}
+        )
+    except ApiRequestError:
+        return None
+    # Route returns a bare array of rows.
+    if isinstance(result, list):
+        return result[0] if result else None
+    items = result.get("items") if isinstance(result, dict) else None
+    return items[0] if items else None
+
+
 async def get_phone_endpoint_by_id(endpoint_id: str) -> Optional[dict]:
     try:
         result = await _request("GET", "/api/agent-db/phone-endpoints", params={"id": endpoint_id})

@@ -13,7 +13,10 @@ import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
-import { createVoiceModelAndSession } from "./voice-session-factory.js";
+import {
+  createVoiceModelAndSession,
+  inactivityAwayTimeoutSecs,
+} from "./voice-session-factory.js";
 
 export async function runAgentWorker({
   ctx,
@@ -222,11 +225,22 @@ export async function runAgentWorker({
   let watchdogInterval: NodeJS.Timeout | null = null;
   const WATCHDOG_INTERVAL_MS = 120 * 1000;
 
-  // DTMF buffering: accumulate digits and send as a single input after timeout
+  // DTMF buffering: accumulate digits and send as a single input after timeout.
+  // Both values default here and may be overridden per-agent from
+  // `agent.options.dtmfTimeout` / `agent.options.dtmfTerminator` once the agent
+  // is resolved (see below).
   let dtmfBuffer: string = "";
   let dtmfTimeout: NodeJS.Timeout | null = null;
-  const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
-  const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
+  let dtmfTimeoutMs = 1500; // 1.5 seconds of silence before sending
+  let dtmfTerminator = "#"; // Send immediately when this is pressed
+
+  // Inactivity "kick": repeating timer that re-speaks options.inactivity.message
+  // every `timeout` seconds while the user is in the "away" state. The first
+  // kick fires from the SDK `user_state_changed` → "away" event (driven by
+  // `voiceOptions.userAwayTimeout`); subsequent kicks come from this interval.
+  // Cleared when the user becomes active again or on teardown. Null/unset when
+  // options.inactivity is absent — zero behavioural change in that case.
+  let inactivityInterval: NodeJS.Timeout | null = null;
 
   let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
@@ -462,6 +476,11 @@ export async function runAgentWorker({
         clearTimeout(dtmfTimeout);
         dtmfTimeout = null;
       }
+      // Stop the inactivity-kick repeat timer
+      if (inactivityInterval) {
+        clearInterval(inactivityInterval);
+        inactivityInterval = null;
+      }
       // Stop the leak watchdog
       if (watchdogInterval) {
         clearInterval(watchdogInterval);
@@ -555,6 +574,20 @@ export async function runAgentWorker({
         const maxDurationString: string = agent?.options?.maxDuration || "305s";
         maxDuration =
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
+
+        // Resolve per-agent DTMF buffering options, falling back to defaults.
+        const dtmfTimeoutOption = agent?.options?.dtmfTimeout;
+        if (typeof dtmfTimeoutOption === "number" && dtmfTimeoutOption >= 0) {
+          dtmfTimeoutMs = dtmfTimeoutOption;
+        }
+        const dtmfTerminatorOption = agent?.options?.dtmfTerminator;
+        if (typeof dtmfTerminatorOption === "string") {
+          dtmfTerminator = dtmfTerminatorOption;
+        }
+        logger.debug(
+          { dtmfTimeoutMs, dtmfTerminator },
+          "Resolved DTMF buffering options",
+        );
 
         const voiceMode = resolveVoiceMode(modelName, agent.options);
         resolvedVoiceMode = voiceMode;
@@ -798,6 +831,89 @@ export async function runAgentWorker({
           "timing: session.start done",
         );
         logger.info({ callId: call.id }, "session started");
+
+        // ---- Inactivity "kick" ----
+        // When options.inactivity is configured, the session was built with
+        // `voiceOptions.userAwayTimeout` = inactivity.timeout (see
+        // voice-session-factory.ts), so LiveKit emits a `user_state_changed`
+        // event with newState === "away" after that many seconds of silence.
+        // We speak the literal message on that event and then re-speak it on a
+        // repeat interval for as long as the user stays away, cancelling the
+        // moment any activity flips the user back to speaking/listening. This
+        // gives the "re-fire every `timeout` of continued silence, reset on
+        // activity" contract. Inert (handler never registered) when unset.
+        const inactivityMessage =
+          typeof agent?.options?.inactivity?.message === "string"
+            ? agent.options.inactivity.message.trim()
+            : "";
+        const inactivityTimeoutSecs = inactivityAwayTimeoutSecs(agent);
+        // Ultravox realtime handles inactivity NATIVELY via
+        // `vendorSpecific.ultravox.inactivityMessages` (wired in
+        // voice-session-factory.ts): Ultravox is speech-to-speech with no
+        // separate TTS, so a JS-side say()/generateReply kick is unreliable for
+        // it. Only wire the generic SDK user-away kick for NON-ultravox models
+        // (pipeline TTS / OpenAI / Gemini realtime), which have real TTS.
+        const isUltravoxRealtime =
+          (resolvedVoiceMode || resolveVoiceMode(modelName, agent.options)) ===
+            "realtime" && modelName.includes("livekit:ultravox/");
+        if (
+          inactivityMessage &&
+          inactivityTimeoutSecs !== undefined &&
+          session &&
+          !isUltravoxRealtime
+        ) {
+          const speakInactivity = async () => {
+            // Suppress during/after a transfer bridge — the local agent's audio
+            // is no longer what the caller hears.
+            if (getBridgedParticipant()) return;
+            const s = session;
+            if (!s) return;
+            try {
+              const maybeSay = (s as any).say as
+                | ((t: string, opts?: { allowInterruptions?: boolean }) => any)
+                | undefined;
+              if (typeof maybeSay === "function") {
+                await maybeSay.call(s, inactivityMessage, {
+                  allowInterruptions: true,
+                });
+              } else {
+                await (s as any).generateReply({
+                  userInput: inactivityMessage,
+                });
+              }
+            } catch (e) {
+              logger.info({ e }, "inactivity kick failed");
+            }
+          };
+
+          session.on(
+            voice.AgentSessionEventTypes.UserStateChanged,
+            (event: { newState?: string }) => {
+              if (event?.newState === "away") {
+                // First kick immediately on becoming away, then repeat every
+                // `timeout` seconds of continued silence.
+                if (inactivityInterval) {
+                  clearInterval(inactivityInterval);
+                  inactivityInterval = null;
+                }
+                void speakInactivity();
+                inactivityInterval = setInterval(() => {
+                  void speakInactivity();
+                }, inactivityTimeoutSecs * 1000);
+              } else {
+                // User became active again (speaking / listening) — stop kicking.
+                if (inactivityInterval) {
+                  clearInterval(inactivityInterval);
+                  inactivityInterval = null;
+                }
+              }
+            },
+          );
+          logger.debug(
+            { inactivityTimeoutSecs, isUltravoxRealtime },
+            "inactivity kick wired",
+          );
+        }
 
         // Leak watchdog. Periodically verify the room still has at least one
         // remote participant. If not, and there is no transfer or consult in
@@ -1083,7 +1199,7 @@ export async function runAgentWorker({
       }
 
       // If terminator is pressed, send immediately (don't add terminator to buffer)
-      if (digit === DTMF_TERMINATOR) {
+      if (dtmfTerminator !== "" && digit === dtmfTerminator) {
         logger.debug(
           { buffer: dtmfBuffer },
           "DTMF terminator pressed, sending immediately",
@@ -1107,7 +1223,7 @@ export async function runAgentWorker({
           "DTMF timeout reached, flushing buffer",
         );
         flushDtmfBuffer();
-      }, DTMF_TIMEOUT_MS);
+      }, dtmfTimeoutMs);
     });
     logger.debug("DTMF listener registered");
 
