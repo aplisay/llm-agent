@@ -908,6 +908,10 @@ components:
           type: string
           description: unique ID of this call
           example: 648aa45d-204a-4c0c-a1e1-419406254134
+        index:
+          type: number
+          description: Monotonically increasing index of this call, used for cursor pagination in list endpoints
+          example: 1
         parentId:
           type: string
           nullable: true
@@ -921,14 +925,6 @@ components:
           type: string
           description: The name of the model used for this call, if specified
           example: gpt-4.1-mini
-        from:
-          type: string
-          description: Caller number (as received, no format guaranteed)
-          example: "03300889471"
-        to:
-          type: string
-          description: Called number for this call
-          example: "+442080996945"
         startedAt:
           type: string
           description: The time this call started
