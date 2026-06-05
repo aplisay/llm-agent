@@ -10,6 +10,14 @@
       <load module="mod_hash"/>
       <load module="mod_db"/>
       <load module="mod_dialplan_xml"/>
+      <!-- File logging (config in logfile.conf.xml) — without this FreeSWITCH
+           only writes to the block-buffered console, which never flushes under
+           Docker, so SIP traces are invisible. -->
+      <load module="mod_logfile"/>
+      <!-- Required by the outbound originate path: the worker dials
+           `loopback/<dest>/outbound &park`, which needs the loopback endpoint
+           to run the outbound dialplan + bridge to the SBC gateway. -->
+      <load module="mod_loopback"/>
       <!-- WebSocket audio bridge from voxcom-us/mod_audio_stream -->
       <load module="mod_audio_stream"/>
     </modules>

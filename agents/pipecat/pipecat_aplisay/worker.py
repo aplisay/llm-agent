@@ -896,6 +896,29 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         ),
     )
 
+    # Outbound-originated leg (regular outbound OR WebRTC consult). These connect
+    # with ``?uuid=<channel uuid>`` — the worker already generated that uuid in
+    # ``originate()`` and pinned it as origination_uuid, so we correlate on the
+    # query param directly. (mod_audio_stream only emits a start event when given
+    # metadata, and its arg parser mangles JSON, so the outbound path deliberately
+    # does NOT depend on a start event.) The originating coroutine owns and drives
+    # the session; we just keep this WebSocket open until it tears down.
+    outbound_uuid = websocket.query_params.get("uuid")
+    if outbound_uuid and sip_gateway.has_pending_outbound(outbound_uuid):
+        gw_session = sip_gateway.register_inbound_session(
+            channel_uuid=outbound_uuid,
+            transport=transport,
+            session_id=outbound_uuid,
+        )
+        logger.bind(channel_uuid=outbound_uuid).info(
+            "freeswitch outbound leg connected; handed transport to originator"
+        )
+        try:
+            await gw_session.wait_finished()
+        except WebSocketDisconnect:
+            pass
+        return
+
     # Wait for the start metadata before we can dispatch — mod_audio_stream
     # sends it within a few hundred ms of the WS open.
     try:

@@ -24,6 +24,18 @@ const CALL_API_TOKEN = process.env.CALL_API_TOKEN || "";
 const WORKER_EVENT_WEBHOOK = process.env.WORKER_EVENT_WEBHOOK || "";
 const WORKER_EVENT_TOKEN = process.env.WORKER_EVENT_TOKEN || CALL_API_TOKEN;
 const ESL_TIMEOUT = Number(process.env.ESL_TIMEOUT || 5000);
+// Where mod_audio_stream connects back to the worker. Same value the
+// FreeSWITCH container uses; the answered outbound leg streams its media here.
+const PIPECAT_WS_URL =
+  process.env.PIPECAT_WS_URL || "ws://127.0.0.1:8082/freeswitch/audio";
+// From-domain stamped on b2bua-routed legs (registration targets). The default
+// SBC gateway supplies its own From identity, so this is only used for the
+// direct sofia/external b2bua route.
+const PIPECAT_SIP_FROM_DOMAIN = process.env.PIPECAT_SIP_FROM_DOMAIN || "";
+// Telephony codecs offered to the carrier / b2bua. The worker speaks L16 over
+// the audio_stream WS; FreeSWITCH transcodes. Without forcing these the leg
+// would proxy L16/8000 and carriers reject it (488 INCOMPATIBLE_DESTINATION).
+const OUTBOUND_CODECS = process.env.PIPECAT_OUTBOUND_CODECS || "PCMU,PCMA,G722";
 
 export interface OriginateBody {
   /** Full destination (E.164 PSTN number, SIP URI, or gateway/<number> form). */
@@ -165,20 +177,38 @@ function buildOriginateVars(body: OriginateBody, channelUuid: string): string {
     parts.push(`aplisay_trunk=${body.aplisayId}`);
     parts.push(`sip_h_X-Aplisay-Trunk=${body.aplisayId}`);
   }
-  // Registration-origin routing: when the worker supplies a b2bua gateway IP,
-  // stamp the authority + transport so the dialplan bridges straight to that
-  // b2bua instead of the default SBC gateway. The X-Lk-* headers mirror the
-  // section-6 wire contract carried by sipbridge.
+  // Registration-origin routing: when the worker supplies a b2bua gateway IP we
+  // route straight to that b2bua (see the endpoint built in /calls/originate)
+  // and stamp the section-6 X-Lk-* / From identity the b2bua expects. (The
+  // default SBC gateway supplies its own From, so we only set From here.)
   if (body.b2buaGatewayIp) {
     const transport = body.b2buaGatewayTransport || "tcp";
-    parts.push(`aplisay_b2bua_authority=${b2buaAuthority(body.b2buaGatewayIp)}`);
-    parts.push(`aplisay_b2bua_transport=${transport}`);
     parts.push(`sip_h_X-Lk-RealIp=${stripSipScheme(body.b2buaGatewayIp)}`);
     parts.push(`sip_h_X-Lk-Transport=${transport}`);
     if (body.registrationEndpointId) {
       parts.push(`sip_h_X-Aplisay-PhoneRegistration=${body.registrationEndpointId}`);
     }
+    if (PIPECAT_SIP_FROM_DOMAIN) {
+      parts.push(`sip_from_host=${PIPECAT_SIP_FROM_DOMAIN}`);
+      parts.push(`sip_invite_domain=${PIPECAT_SIP_FROM_DOMAIN}`);
+    }
   }
+  // Force telephony codecs on the carrier leg (single-quoted so the comma list
+  // survives the {..} block) and resample/transcode to the worker's L16.
+  parts.push(`absolute_codec_string='${OUTBOUND_CODECS}'`);
+  // Start mod_audio_stream on THIS leg when it answers. We originate the carrier
+  // leg directly (no loopback) and pin origination_uuid=channelUuid, so the leg
+  // uuid is known up-front. The channel uuid is passed to the worker as a WS
+  // query param (?uuid=…) rather than mod_audio_stream metadata: this fork only
+  // sends metadata it was given, and its arg parser (switch_separate_string)
+  // would mangle a JSON token's quotes — the query string is preserved verbatim
+  // by validate_ws_uri and read by the worker to correlate the pending originate.
+  // mod_audio_stream exposes only the uuid_audio_stream API (no `audio_stream`
+  // application), hence api_on_answer.
+  const wsUrl = `${PIPECAT_WS_URL}?uuid=${channelUuid}`;
+  parts.push(
+    `api_on_answer='uuid_audio_stream ${channelUuid} start ${wsUrl} mono 16k'`,
+  );
   return parts.join(",");
 }
 
@@ -199,9 +229,23 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
     }
     const channelUuid = body.channelUuid || randomUUID();
     const vars = buildOriginateVars(body, channelUuid);
-    const target = body.gateway
-      ? `sofia/gateway/${body.gateway}/${body.destination}`
-      : `loopback/${body.destination}/outbound`;
+    // Originate the carrier leg DIRECTLY (no loopback): the answered leg carries
+    // the carrier media and runs uuid_audio_stream (via api_on_answer) so its
+    // uuid == channelUuid == the uuid the worker is waiting on. Routing:
+    //   - registration target → the b2bua's SIP port (sofia/external)
+    //   - explicit gateway override → that gateway
+    //   - default trunk/callerId → the static "sbc" gateway (PIPECAT_SIP_*)
+    let target: string;
+    if (body.b2buaGatewayIp) {
+      const transport = body.b2buaGatewayTransport || "tcp";
+      target = `sofia/external/sip:${body.destination}@${b2buaAuthority(
+        body.b2buaGatewayIp,
+      )};transport=${transport}`;
+    } else if (body.gateway) {
+      target = `sofia/gateway/${body.gateway}/${body.destination}`;
+    } else {
+      target = `sofia/gateway/sbc/${body.destination}`;
+    }
     const cmd = `originate {${vars}}${target} &park`;
     logger.info({ cmd, channelUuid }, "originate call");
     try {

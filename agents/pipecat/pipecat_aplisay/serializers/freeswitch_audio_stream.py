@@ -27,6 +27,7 @@ this serializer surfaces in the start event metadata.
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -92,9 +93,24 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         logger.debug(f"FreeSwitchAudioStreamSerializer setup sample_rate={self._sample_rate}")
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        # Outbound audio: pass raw PCM bytes straight onto the socket.
+        # Outbound audio (worker → channel). voxcom mod_audio_stream does NOT
+        # play raw binary frames back into the channel — its playback path
+        # (processMessage) only accepts a JSON text frame of the form
+        # {"type":"streamAudio","data":{"audioDataType":"raw","sampleRate":N,
+        #   "audioData":"<base64 PCM>"}}; anything else is ignored, so raw bytes
+        # would leave the far end hearing silence. (Inbound is the opposite:
+        # mod_audio_stream sends us raw binary, handled in deserialize.)
         if isinstance(frame, AudioRawFrame):
-            return frame.audio
+            return json.dumps(
+                {
+                    "type": "streamAudio",
+                    "data": {
+                        "audioDataType": "raw",
+                        "sampleRate": frame.sample_rate or self._sample_rate,
+                        "audioData": base64.b64encode(frame.audio).decode("ascii"),
+                    },
+                }
+            )
         # Other frames (control messages, etc.) are not forwarded by default;
         # extensions can add them as JSON text frames here.
         return None

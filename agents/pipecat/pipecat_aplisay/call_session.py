@@ -165,6 +165,11 @@ class CallSession:
     # Set on a WebRTC-origin parent while a consultative leg is live (the
     # TransferAgent bot session), so teardown can stop it with the parent.
     _consult_session: Optional["CallSession"] = None
+    # consultFeedback flag from the parent's transfer tool call. When False
+    # (default), a rejected consult returns only a generic "Transfer failed" to
+    # the parent agent; when True, the target's detailed reason is shared.
+    # Mirrors livekit transfer-handler.ts:1181-1185.
+    _consult_feedback: bool = False
     # Detached task that performs the WebRTC transfer dial+bridge, so it survives
     # the LLM cancelling the function-call coroutine on caller interruption.
     _webrtc_bg_task: Optional[Any] = None
@@ -1097,6 +1102,16 @@ class CallSession:
         if not args.get("number"):
             return self._transfer_failed("transfer requires a destination number")
 
+        # Preconfigured on B's transfer tool (eval: from=__EVAL_CONSULT_FEEDBACK__).
+        # Controls whether a rejected consult shares the target's detailed reason
+        # with the parent agent (see _builtin_consult_reject). May arrive as a
+        # bool or a string, so normalise (bool("false") would be truthy).
+        _cf = args.get("consultFeedback")
+        self._consult_feedback = _cf is True or (
+            isinstance(_cf, str) and _cf.strip().lower() == "true"
+        )
+        logger.info(f"webrtc consult initiated (consultFeedback={self._consult_feedback})")
+
         self.transfer_state = TransferState("dialling", "Dialling transfer target...")
         # Snapshot the parent transcript NOW (in the function-call coroutine, with
         # the LLM context fresh) before detaching — the background task can't
@@ -1325,8 +1340,16 @@ def _builtin_consult_reject(consult_session: CallSession):
             await consult_session.gateway_session.shutdown()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"consult reject: shutdown raised (continuing): {e}")
-        parent.transfer_state = TransferState("rejected", reason)
-        logger.bind(reason=reason).info("consult reject_transfer fired; parent state=rejected")
+        # Only share the target's detailed reason with the parent agent when
+        # consultFeedback was set on the transfer; otherwise a generic failure.
+        # Mirrors livekit transfer-handler.ts:1181-1185.
+        share_feedback = bool(getattr(parent, "_consult_feedback", False))
+        description = reason if share_feedback else "Transfer failed"
+        parent.transfer_state = TransferState("rejected", description)
+        logger.info(
+            f"consult reject_transfer fired; parent state=rejected "
+            f"(consultFeedback={share_feedback}, shared={description!r})"
+        )
         return {
             "success": True,
             "status": "OK",
