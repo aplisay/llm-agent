@@ -153,12 +153,14 @@ class _VbGatewaySession(GatewaySession):
             await self._do_dial_bridge(req)
             return
 
+        # Voiceblender's ``POST /v1/legs/{id}/transfer`` body is just
+        # ``{target: <SIP URI>, replaces_leg_id?}`` — blind vs attended is
+        # implied by the absence/presence of ``replaces_leg_id`` (no ``mode``
+        # field). ``target`` must be a routable SIP URI, so run a bare E.164
+        # through the same trunk-route helper as originate.
         body: dict[str, Any] = {
-            "target": req.destination,
-            "mode": "blind",
+            "target": self._gateway._target_uri(req.destination),
         }
-        if req.caller_id_override:
-            body["caller_id"] = req.caller_id_override
         logger.bind(leg_id=self.leg_id, mode="blind", target=req.destination).info(
             "voiceblender transfer (blind REFER)"
         )
@@ -182,11 +184,15 @@ class _VbGatewaySession(GatewaySession):
         grow an explicit "bridge-only" origination mode.
         """
         body: dict[str, Any] = {
-            "destination": req.destination,
-            "caller_id": req.caller_id_override or "",
+            "type": "sip",
+            "to": self._gateway._target_uri(req.destination),
+            "from": (req.caller_id_override or "").lstrip("+"),
             "app_id": self._gateway.app_id,
             "metadata": {"bridge_of": self.leg_id},
         }
+        auth = self._gateway._sip_auth()
+        if auth:
+            body["auth"] = auth
         logger.bind(
             original_leg_id=self.leg_id, target=req.destination, mode="dial_bridge"
         ).info("voiceblender transfer (native dial+bridge): dialing target")
@@ -221,17 +227,16 @@ class _VbGatewaySession(GatewaySession):
             parent_transcript=req.parent_transcript or "",
         )
 
-        ws_url = f"{self._gateway.worker_ws_base}/voiceblender/agent/{consult_session_id}"
         body: dict[str, Any] = {
-            "destination": req.destination,
-            "caller_id": req.caller_id_override or "",
+            "type": "sip",
+            "to": self._gateway._target_uri(req.destination),
+            "from": (req.caller_id_override or "").lstrip("+"),
             "app_id": self._gateway.app_id,
-            "agent": {
-                "provider": "pipecat",
-                "agent_id": ws_url,
-            },
             "metadata": {"consult_of": self.leg_id},
         }
+        auth = self._gateway._sip_auth()
+        if auth:
+            body["auth"] = auth
         logger.bind(
             original_leg_id=self.leg_id,
             consult_session_id=consult_session_id,
@@ -272,6 +277,12 @@ class _VbGatewaySession(GatewaySession):
                 raw={"leg_id": consult_leg_id, "consult_of": self.session_id},
             ),
             created_at=asyncio.get_running_loop().time(),
+        )
+        # Fire-and-forget: wait for the third party to answer, then attach our
+        # worker as the leg's Pipecat agent so VB dials the consult WS.
+        asyncio.create_task(
+            self._gateway._connect_then_attach(consult_leg_id, consult_session_id),
+            name=f"vb-consult-attach-{consult_session_id}",
         )
         logger.bind(
             consult_leg_id=consult_leg_id,
@@ -377,6 +388,18 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             os.environ.get("VOICEBLENDER_VSI_TOKEN") or self.api_key or None
         )
 
+        # Outbound next-hop, derived from the platform-wide ``PIPECAT_SIP_*``
+        # triple (same source sipbridge uses — see
+        # ``sipbridge_gateway._outbound_target_uri``). Voiceblender has no
+        # trunk config of its own: ``POST /v1/legs`` dials whatever SIP URI we
+        # hand it, so the worker is responsible for turning a bare E.164 into a
+        # routable ``sip:<e164>@<sbc>`` URI plus digest ``auth``. ``SIP_DOMAIN``
+        # on the container stamps the From host from ``PIPECAT_SIP_FROM_DOMAIN``.
+        self.outbound_sbc = os.environ.get("PIPECAT_SIP_OUTBOUND")
+        self.sip_username = os.environ.get("PIPECAT_SIP_USERNAME")
+        self.sip_password = os.environ.get("PIPECAT_SIP_PASSWORD")
+        self.sip_from_domain = os.environ.get("PIPECAT_SIP_FROM_DOMAIN")
+
         self.pending_attaches: dict[str, PendingAttach] = {}
         # session_id → leg_id; the WS handler stores this when the WS opens
         # so the VSI subscriber can map leg-level events (transfer, hangup)
@@ -396,6 +419,14 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         # ``/v1/legs`` returns synchronously with a leg_id, but the WS that
         # voiceblender opens to us is what unblocks the originate caller.
         self._pending_outbound: dict[str, asyncio.Future[_VbGatewaySession]] = {}
+
+        # Outbound answer gate, keyed by leg_id. ``POST /v1/legs`` returns with
+        # the leg in ``ringing``; the Pipecat agent can only be attached once
+        # the remote answers (``leg.connected`` on VSI). originate()/consult
+        # create this future before the POST and await it, then attach the
+        # agent. The VSI subscriber resolves it on ``leg.connected`` or fails
+        # it on ``leg.disconnected`` before connect (busy / no-answer / 401).
+        self._pending_connected: dict[str, asyncio.Future[None]] = {}
 
         # Per-session leg-disconnected signals — set by the VSI subscriber
         # when ``leg.disconnected`` fires. The /voiceblender/agent WS
@@ -433,8 +464,10 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
     async def start(self) -> None:
         """Verify reachability and spawn the VSI subscriber."""
         try:
-            r = await self._call_api("GET", "/v1/health", None, raise_on_error=True)
-            logger.bind(health=r).info("voiceblender reachable")
+            # Voiceblender exposes no dedicated health route; ``GET /v1/legs``
+            # (200 + ``[]`` when idle) is the cheapest liveness probe.
+            r = await self._call_api("GET", "/v1/legs", None, raise_on_error=True)
+            logger.bind(legs=r).info("voiceblender reachable")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"voiceblender health check failed at boot: {e}")
         self._vsi_task = asyncio.create_task(self._vsi_loop(), name="vsi-subscriber")
@@ -486,31 +519,39 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
     ) -> GatewaySession:
         """Originate an outbound leg via ``POST /v1/legs``.
 
-        The agent WS URL is pre-set so voiceblender attaches our worker on
-        answer. The future resolves when the WS handler receives the matching
-        connection.
+        Voiceblender (v0.7.x) does **not** accept an inline agent on
+        ``POST /v1/legs`` and has no trunk of its own — it dials whatever SIP
+        URI we hand it. So the sequence is:
+
+          1. ``POST /v1/legs`` with ``{type:"sip", to:<routable URI>, from,
+             auth, headers}`` — VB sends the INVITE and the leg is ``ringing``.
+          2. await ``leg.connected`` on VSI (the remote answered).
+          3. ``POST /v1/legs/{id}/agent/pipecat {websocket_url}`` — VB dials our
+             worker's per-session WS.
+          4. The WS handler registers the session via ``setup_inbound``, which
+             resolves the future returned here.
         """
         session_id = session_params.session_id
+        to_uri = self._outbound_target_uri(params)
         future: asyncio.Future[_VbGatewaySession] = (
             asyncio.get_running_loop().create_future()
         )
         self._pending_outbound[session_id] = future
 
-        ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
         body: dict[str, Any] = {
-            "destination": params.called_id,
-            "caller_id": params.caller_id,
+            "type": "sip",
+            "to": to_uri,
+            "from": (params.caller_id or "").lstrip("+"),
+            "headers": _custom_headers_for(params),
             "app_id": self.app_id,
-            "agent": {
-                "provider": "pipecat",
-                "agent_id": ws_url,
-            },
-            "custom_headers": _custom_headers_for(params),
-            # Carry our call id through so it shows up on the answer/INVITE
-            # for downstream correlation.
+            # Carry our call id through so it shows up downstream for correlation.
             "metadata": {"aplisay_call_id": params.call_id},
         }
+        auth = self._sip_auth()
+        if auth:
+            body["auth"] = auth
 
+        leg_id: Optional[str] = None
         try:
             resp = await self._call_api("POST", "/v1/legs", body)
             leg_id = (resp or {}).get("id") or (resp or {}).get("leg_id")
@@ -533,15 +574,114 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 ),
                 created_at=asyncio.get_running_loop().time(),
             )
+            # Block until the remote answers, then attach the Pipecat agent so
+            # VB opens the audio WS back to us.
+            await self._await_connected(leg_id, timeout=45.0)
+            await self._attach_pipecat(leg_id, session_id)
         except Exception:
             self._pending_outbound.pop(session_id, None)
             self.pending_attaches.pop(session_id, None)
+            if leg_id is not None:
+                self._pending_connected.pop(leg_id, None)
             raise
 
         try:
             return await asyncio.wait_for(future, timeout=30.0)
         finally:
             self._pending_outbound.pop(session_id, None)
+
+    # ---- Outbound helpers -----------------------------------------------
+
+    def _outbound_target_uri(self, params: OutboundCallParams) -> str:
+        """Turn an outbound :class:`OutboundCallParams` into a routable SIP URI.
+
+        Voiceblender dials the URI verbatim (no outbound proxy of its own), so a
+        bare ``+E164`` won't route. Mirrors the sipbridge contract
+        (``sipbridge_gateway._outbound_target_uri``):
+
+          - **Registration origin** (``registration_endpoint_id`` +
+            ``b2bua_gateway_ip``): route to that registration's B2BUA on :5070.
+          - **Trunk origin**: route to the global Aplisay outbound SBC
+            (``PIPECAT_SIP_OUTBOUND``); the SBC fans out to the carrier using
+            the ``X-Aplisay-Trunk`` header.
+
+        A ``called_id`` that is already a ``sip:``/``sips:`` URI passes through.
+        """
+        dest = (params.called_id or "").strip()
+        if dest.lower().startswith(("sip:", "sips:")):
+            return dest
+        if params.registration_endpoint_id and params.b2bua_gateway_ip:
+            host = _strip_sip_scheme(params.b2bua_gateway_ip)
+            authority = host if ":" in host.split(";", 1)[0] else f"{host}:5070"
+            transport = params.b2bua_gateway_transport or "tcp"
+            sep = "" if ";transport=" in authority else f";transport={transport}"
+            return f"sip:{dest}@{authority}{sep}"
+        return self._target_uri(dest)
+
+    def _target_uri(self, dest: str) -> str:
+        """Trunk-path SIP URI for a bare destination (``sip:`` passes through).
+
+        Used by the consult / dial-bridge paths, which carry only a destination
+        (no registration/B2BUA params), so they always route via the SBC."""
+        dest = (dest or "").strip()
+        if dest.lower().startswith(("sip:", "sips:")):
+            return dest
+        if not self.outbound_sbc:
+            raise RuntimeError(
+                "voiceblender outbound originate has no route for a trunk-origin "
+                "call: set PIPECAT_SIP_OUTBOUND (host[:port][;transport=...]) to "
+                "the Aplisay outbound SBC, or originate with a registration "
+                "endpoint as the caller-ID"
+            )
+        return f"sip:{dest}@{_strip_sip_scheme(self.outbound_sbc)}"
+
+    async def _connect_then_attach(self, leg_id: str, session_id: str) -> None:
+        """Background helper for the fire-and-forget consult path: wait for the
+        leg to answer, then attach the Pipecat agent. Logged-only on failure —
+        the parent bot observes the outcome via ``transfer_status``."""
+        try:
+            await self._await_connected(leg_id, timeout=45.0)
+            await self._attach_pipecat(leg_id, session_id)
+        except Exception as e:  # noqa: BLE001
+            logger.bind(leg_id=leg_id, session_id=session_id).warning(
+                f"voiceblender consult: connect+attach failed: {e}"
+            )
+
+    def _sip_auth(self) -> Optional[dict[str, str]]:
+        """Digest credentials for the outbound INVITE (401/407 challenge from
+        the SBC), from the ``PIPECAT_SIP_*`` triple. ``None`` when unset."""
+        if not self.sip_password:
+            return None
+        return {"username": self.sip_username or "", "password": self.sip_password}
+
+    async def _await_connected(self, leg_id: str, *, timeout: float) -> None:
+        """Block until VSI reports ``leg.connected`` for ``leg_id``.
+
+        The future is resolved by :meth:`_on_leg_connected`, or failed by
+        :meth:`_on_leg_disconnected` if the leg drops before answering
+        (busy / no-answer / 401 unauthorized)."""
+        fut = self._pending_connected.get(leg_id)
+        if fut is None:
+            fut = asyncio.get_running_loop().create_future()
+            self._pending_connected[leg_id] = fut
+        try:
+            await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"voiceblender leg {leg_id} did not answer within {timeout:.0f}s"
+            ) from e
+        finally:
+            self._pending_connected.pop(leg_id, None)
+
+    async def _attach_pipecat(self, leg_id: str, session_id: str) -> None:
+        """Attach our worker as the leg's Pipecat agent — VB then opens the
+        audio WS to ``/voiceblender/agent/{session_id}``."""
+        ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
+        await self._call_api(
+            "POST",
+            f"/v1/legs/{leg_id}/agent/pipecat",
+            {"websocket_url": ws_url},
+        )
 
     # ---- VSI subscriber -------------------------------------------------
 
@@ -598,6 +738,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         etype = event.get("type")
         if etype == "leg.ringing":
             await self._on_leg_ringing(event)
+        elif etype == "leg.connected":
+            await self._on_leg_connected(event)
         elif etype == "leg.disconnected":
             await self._on_leg_disconnected(event)
         elif etype == "dtmf.received":
@@ -615,6 +757,16 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             # scope — they're available on the wire if/when we want them. Log
             # at debug only.
             logger.bind(type=etype).debug("VSI event ignored")
+
+    async def _on_leg_connected(self, event: dict) -> None:
+        """``leg.connected`` — the remote answered. Release the originate /
+        consult answer-gate so the agent can be attached."""
+        leg_id = event.get("leg_id") or event.get("id")
+        if not leg_id:
+            return
+        fut = self._pending_connected.get(leg_id)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
 
     async def _on_leg_dtmf(self, event: dict) -> None:
         """Handle a ``dtmf.received`` VSI event.
@@ -653,6 +805,21 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         leg_id = event.get("leg_id") or event.get("id")
         if not leg_id:
             logger.warning(f"leg.ringing without leg_id: {event!r}")
+            return
+
+        # leg.ringing fires for BOTH inbound INVITEs and our own outbound
+        # originate / consult / transfer legs (``leg_type`` "sip_outbound").
+        # Only an inbound leg should trigger agent dispatch. Guard on leg_type:
+        # the outbound leg's ringing frame can arrive on the VSI socket *before*
+        # ``originate()`` has registered its pending-attach (the POST /v1/legs
+        # response and the VSI frame race on the event loop), so the
+        # pending_attaches check below isn't sufficient on its own — without
+        # this guard we'd reject our own outbound leg as an unrouted inbound.
+        leg_type = event.get("leg_type") or ""
+        if "outbound" in leg_type:
+            logger.bind(leg_id=leg_id, leg_type=leg_type).debug(
+                "leg.ringing for outbound leg, ignoring (handled by originate)"
+            )
             return
 
         # If this leg matches a pending OUTBOUND originate we already kicked
@@ -700,15 +867,15 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 session_id=session_id,
                 called_id=event.get("to"),
                 caller_id=event.get("from"),
-                aplisay_id=(event.get("custom_headers") or {}).get("X-Aplisay-Trunk"),
-                phone_registration=(event.get("custom_headers") or {}).get(
+                aplisay_id=(event.get("sip_headers") or {}).get("X-Aplisay-Trunk"),
+                phone_registration=(event.get("sip_headers") or {}).get(
                     "X-Aplisay-PhoneRegistration"
                 ),
-                b2bua_gateway_ip=(event.get("custom_headers") or {}).get("X-Lk-RealIp"),
-                b2bua_gateway_transport=(event.get("custom_headers") or {}).get(
+                b2bua_gateway_ip=(event.get("sip_headers") or {}).get("X-Lk-RealIp"),
+                b2bua_gateway_transport=(event.get("sip_headers") or {}).get(
                     "X-Lk-Transport"
                 ),
-                call_id=(event.get("custom_headers") or {}).get("X-Aplisay-Call-Id"),
+                call_id=(event.get("sip_headers") or {}).get("X-Aplisay-Call-Id"),
                 raw={"leg_id": leg_id, "vsi_event": event},
             ),
             created_at=asyncio.get_running_loop().time(),
@@ -718,8 +885,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             await self._call_api("POST", f"/v1/legs/{leg_id}/answer", {})
             await self._call_api(
                 "POST",
-                f"/v1/legs/{leg_id}/agent",
-                {"provider": "pipecat", "agent_id": ws_url},
+                f"/v1/legs/{leg_id}/agent/pipecat",
+                {"websocket_url": ws_url},
             )
         except Exception as e:  # noqa: BLE001
             logger.error(f"failed to answer+attach leg {leg_id}: {e}")
@@ -730,6 +897,15 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         leg_id = event.get("leg_id") or event.get("id")
         if not leg_id:
             return
+        # If an originate/consult is still waiting for this leg to answer, the
+        # leg dropping first means the call failed (busy / no-answer / 401).
+        # Reason lives under the CDR (``cdr.reason``) on the flattened envelope.
+        gate = self._pending_connected.get(leg_id)
+        if gate is not None and not gate.done():
+            reason = (event.get("cdr") or {}).get("reason") or "disconnected"
+            gate.set_exception(
+                RuntimeError(f"voiceblender leg {leg_id} ended before answer: {reason}")
+            )
         session_id = self._leg_to_session.get(leg_id)
         if not session_id:
             # No live mapping — call may have ended before our WS arrived,
@@ -786,7 +962,12 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         state_map = {
             "leg.transfer_initiated": ("initiated", "Transfer initiated"),
             "leg.transfer_requested": ("requested", "Transfer requested"),
-            "leg.transfer_progress": ("in_progress", event.get("sip_frag") or "Transfer in progress"),
+            "leg.transfer_progress": (
+                "in_progress",
+                event.get("reason")
+                or (f"SIP {event['status_code']}" if event.get("status_code") else None)
+                or "Transfer in progress",
+            ),
             "leg.transfer_completed": ("completed", "Transfer completed"),
             "leg.transfer_failed": ("failed", event.get("reason") or "Transfer failed"),
         }
@@ -854,6 +1035,19 @@ def _custom_headers_for(params: OutboundCallParams) -> dict[str, str]:
     if params.b2bua_gateway_transport:
         h["X-Lk-Transport"] = params.b2bua_gateway_transport
     return h
+
+
+def _strip_sip_scheme(authority: str) -> str:
+    """Drop a leading ``sip:`` / ``sips:`` from a host/authority value so it can
+    be embedded after ``sip:<user>@`` without producing ``sip:...@sip:...``.
+    Mirrors ``sipbridge_gateway._strip_sip_scheme``."""
+    a = (authority or "").strip()
+    low = a.lower()
+    if low.startswith("sips:"):
+        return a[5:]
+    if low.startswith("sip:"):
+        return a[4:]
+    return a
 
 
 def _vb_reason_for(reason: str) -> str:

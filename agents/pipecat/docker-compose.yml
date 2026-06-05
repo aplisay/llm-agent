@@ -109,17 +109,11 @@ services:
 
   voiceblender:
     profiles: ["voiceblender"]
-    # Pin a release tag in production. v0.6.0 is the first tag with the
-    # Pipecat agent integration on stable footing — see
-    # https://github.com/voiceblender/voiceblender/releases/tag/v0.6.0
-    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
     network_mode: host
     restart: unless-stopped
     environment:
-      # SIP/RTP — defaults are voiceblender's own defaults; set explicitly
-      # here so it's clear which ports get pinned, and so they're easy to
-      # remap (e.g. SIP_PORT=5070) when running alongside another SIP UA on
-      # the same host.
+
       HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
       SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
       SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}  # 0 disables TLS
