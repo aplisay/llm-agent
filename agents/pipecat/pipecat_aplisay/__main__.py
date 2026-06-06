@@ -10,12 +10,20 @@ import os
 
 import uvicorn
 
+from pipecat_aplisay import secretenv
+
 
 def _truthy(value: str | None) -> bool:
     return (value or "").lower() in ("1", "true", "yes", "on")
 
 
 def main() -> None:
+    # Decrypt SECRETENV_BUNDLE into os.environ before anything reads config, so a
+    # single SECRETENV_KEY + SECRETENV_BUNDLE pair can carry every secret. No-op
+    # when those aren't set. Runs in the parent process; with RELOAD the uvicorn
+    # child inherits the already-decrypted environment.
+    secretenv.load()
+
     port = int(os.environ.get("PORT", "8082"))
     # Default to "0.0.0.0" (IPv4 wildcard). Earlier versions used "::"
     # in the hope of dual-binding IPv4+IPv6 — that works on Linux (where

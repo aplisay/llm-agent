@@ -76,16 +76,39 @@ spec:
           volumeMounts:
             - name: node-meta
               mountPath: /etc/node-meta
+        # 3. Drop the secretenv-exec wrapper into the shared volume so the
+        #    FreeSWITCH and Voiceblender overlays — whose images can't decrypt
+        #    the bundle natively — can launch through it. The wrapper decrypts
+        #    SECRETENV_BUNDLE from its own environment into a fresh env and
+        #    syscall.Exec's the wrapped command; secrets never touch disk.
+        #    No-op for sipbridge and the worker (they decrypt in-process).
+        - name: install-secretenv-exec
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/secretenv-exec:latest
+          command:
+            - /bin/sh
+            - -c
+            - cp /usr/local/bin/secretenv-exec /etc/node-meta/secretenv-exec && chmod 0755 /etc/node-meta/secretenv-exec
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
 
       containers:
         # The gateway-agnostic worker. Gateway containers are added per overlay.
         - name: pipecat-worker
           image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/pipecat-worker:latest
+          # Two secret sources, both optional so you can use EITHER: the plain
+          # pipecat-secrets, OR pipecat-secretenv (SECRETENV_KEY + SECRETENV_BUNDLE,
+          # which the worker decrypts into its env at startup), or both (bundle
+          # wins). Create at least one — see the README.
           envFrom:
             - configMapRef:
                 name: pipecat-config
             - secretRef:
                 name: pipecat-secrets
+                optional: true
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
           # SIP_GATEWAY is set by each overlay (sipbridge / freeswitch / ...).
           ports:
             - name: worker-http

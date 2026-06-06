@@ -24,14 +24,22 @@ PIPECAT_JOIN_SECRET=<NEW256bithexstring>
 SERVICE_BASE_URI=https://api.aplisay.example
 SHARED_API_TOKEN=<set-from-secret-manager>
 
+# Outbound trunk (sipbridge + FreeSWITCH) — see env-example-staging for details.
+# Prefer the secretenv bundle for PIPECAT_SIP_PASSWORD.
+PIPECAT_SIP_OUTBOUND=
+PIPECAT_SIP_FROM_DOMAIN=
+PIPECAT_SIP_USERNAME=
+PIPECAT_SIP_PASSWORD=
+
 # FreeSWITCH ingress only.
 PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
 WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 ESL_POLLER_URL=http://127.0.0.1:4001
 
 # Voiceblender ingress only.
-VOICEBLENDER_VERSION=v0.6.0
+VOICEBLENDER_VERSION=v0.7.1
 VOICEBLENDER_API_KEY=<NEW256bithexstring>
+VOICEBLENDER_VSI_TOKEN=
 VOICEBLENDER_APP_ID=aplisay-pipecat
 VOICEBLENDER_BASE_URL=http://127.0.0.1:8080
 VOICEBLENDER_WORKER_WS_BASE=ws://127.0.0.1:8082

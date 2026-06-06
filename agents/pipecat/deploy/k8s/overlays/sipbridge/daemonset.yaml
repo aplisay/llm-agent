@@ -28,11 +28,18 @@ spec:
               export SIPBRIDGE_SIP_SIGNAL_IP="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
               export SIPBRIDGE_MEDIA_IP="$SIPBRIDGE_SIP_SIGNAL_IP"
               exec /sipbridge
+          # sipbridge decrypts SECRETENV_BUNDLE natively at startup, so the
+          # secret sources are both optional (use pipecat-secrets, the bundle,
+          # or both — bundle wins).
           envFrom:
             - configMapRef:
                 name: pipecat-config
             - secretRef:
                 name: pipecat-secrets
+                optional: true
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
           # To use a CA-signed cert instead of the self-signed fallback, create
           # the pipecat-sip-tls Secret (see base/sip-tls-secret.example.yaml) and
           # uncomment:

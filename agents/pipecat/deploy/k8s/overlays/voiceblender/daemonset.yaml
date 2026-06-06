@@ -27,12 +27,23 @@ spec:
               value: voiceblender
 
         - name: voiceblender
-          image: ghcr.io/voiceblender/voiceblender:v0.6.0
-          command: ["/etc/node-meta/busybox", "sh", "-c"]
+          image: ghcr.io/voiceblender/voiceblender:v0.7.1
+          # secretenv-exec decrypts SECRETENV_BUNDLE into the env (Voiceblender
+          # can't decrypt natively), then the busybox shell adds the per-node IP
+          # and execs voiceblender. The secretenv-exec wrapper is a no-op when
+          # SECRETENV_KEY / SECRETENV_BUNDLE are unset.
+          command: ["/etc/node-meta/secretenv-exec", "/etc/node-meta/busybox", "sh", "-c"]
           args:
             - |
               export EXT_IP_ADDRESS="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
               exec voiceblender
+          # Voiceblender expects unprefixed env names, so only individual
+          # config-map keys go via env. Secrets that the bundle is allowed to
+          # override come in via envFrom on a wrapper layer below.
+          envFrom:
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
           env:
             - name: HTTP_ADDR
               valueFrom:

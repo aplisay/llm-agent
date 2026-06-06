@@ -28,6 +28,16 @@ data:
   # llm-agent REST surface (agent-db callbacks). Override per environment.
   SERVICE_BASE_URI: "https://api.aplisay.example"
 
+  # ---- outbound trunk (trunk-origin originate / WebRTC->telephony transfer) --
+  # The platform-wide outbound SBC. Read by the worker, sipbridge and FreeSWITCH
+  # (FS derives PIPECAT_SBC_PROXY from it). These two are non-secret (host +
+  # domain); the matching SIP digest creds (PIPECAT_SIP_USERNAME/PASSWORD) are in
+  # the Secret. Leave blank if you don't place outbound calls / WebRTC transfers.
+  # Format: host[:port][;transport=tls|tcp|udp].
+  PIPECAT_SIP_OUTBOUND: ""
+  # Must equal the SBC's PIPECAT_HANDLER_DOMAIN when the SBC gates on From-domain.
+  PIPECAT_SIP_FROM_DOMAIN: ""
+
   # ---- sipbridge ingress (default overlay) ------------------------------
   # TLS-only on 5061: UDP signalling disabled (all inbound from our SBCs is
   # TLS), self-signed cert unless a real one is mounted (see secret tls below).

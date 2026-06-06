@@ -21,7 +21,10 @@ spec:
 
         - name: freeswitch
           image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch:latest
-          command: ["/bin/sh", "-c"]
+          # secretenv-exec decrypts SECRETENV_BUNDLE into the env (FreeSWITCH
+          # can't decrypt natively), then the shell wrapper adds the per-node IP
+          # and execs FS's entrypoint. Harmless no-op when no bundle is set.
+          command: ["/etc/node-meta/secretenv-exec", "/bin/sh", "-c"]
           args:
             - |
               export EXT_IP_ADDRESS="$(cat /etc/node-meta/ext-ip)"
@@ -31,6 +34,10 @@ spec:
                 name: pipecat-config
             - secretRef:
                 name: pipecat-secrets
+                optional: true
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
           ports:
             - name: sip-udp
               containerPort: 5060
@@ -60,11 +67,17 @@ spec:
 
         - name: esl-poller
           image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller:latest
+          # esl-poller's dotenv (the secretenv fork) already decrypts
+          # SECRETENV_KEY/BUNDLE natively at startup — no wrapper needed.
           envFrom:
             - configMapRef:
                 name: pipecat-config
             - secretRef:
                 name: pipecat-secrets
+                optional: true
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
           readinessProbe:
             tcpSocket:
               port: 4001

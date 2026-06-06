@@ -30,6 +30,13 @@ services:
       EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
       ESL_SECRET: ${ESL_SECRET}
       PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      # Default-SBC next hop. entrypoint.sh derives PIPECAT_SBC_PROXY (scheme-
+      # stripped) from PIPECAT_SIP_OUTBOUND; vars.xml pulls the full quartet
+      # into FreeSWITCH globals (the static sip_profiles/external.xml gateway).
+      PIPECAT_SIP_OUTBOUND: ${PIPECAT_SIP_OUTBOUND:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
 
   esl-poller:
     profiles: ["freeswitch"]
@@ -52,12 +59,16 @@ services:
       WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
       GATEWAY_POLL_ENABLED: "false"
       CALL_API_ENABLED: "true"
+      # Outbound originates run uuid_audio_stream toward this WS and (for b2bua
+      # targets) stamp this From domain. Same values FS uses.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
 
   # ---- Voiceblender ingress (profile: voiceblender) ---------------------
 
   voiceblender:
     profiles: ["voiceblender"]
-    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.6.0}
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
     network_mode: host
     restart: always
     env_file:
@@ -89,6 +100,18 @@ services:
       SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
       SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      # Outbound-trunk identity + auth (read by the Go bridge). FROM_DOMAIN must
+      # equal the SBC's PIPECAT_HANDLER_DOMAIN; USERNAME/PASSWORD must match the
+      # SBC subscriber row in that realm.
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      # sipbridge decrypts SECRETENV_BUNDLE natively at startup. Either set
+      # SECRETENV_KEY / SECRETENV_BUNDLE directly (env_file) or point at Secret
+      # Manager via GOOGLE_SECRETENV_PATH.
+      SECRETENV_KEY: ${SECRETENV_KEY:-}
+      SECRETENV_BUNDLE: ${SECRETENV_BUNDLE:-}
+      GOOGLE_SECRETENV_PATH: ${GOOGLE_SECRETENV_PATH:-}
       SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-info}
 
   # ---- Pipecat worker (all profiles) ------------------------------------
@@ -125,7 +148,18 @@ services:
       SHARED_API_TOKEN: ${SHARED_API_TOKEN}
       PIPECAT_DISPATCH_TOKEN: ${PIPECAT_DISPATCH_TOKEN}
       PIPECAT_JOIN_SECRET: ${PIPECAT_JOIN_SECRET}
+      # Outbound trunk — also read by the worker (e.g. for transfer routing).
+      PIPECAT_SIP_OUTBOUND: ${PIPECAT_SIP_OUTBOUND:-}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      # The worker decrypts SECRETENV_BUNDLE into its env at startup. Either set
+      # the pair directly (env_file) or have the worker fetch from Secret
+      # Manager via GOOGLE_SECRETENV_PATH (the VM's cloud-platform OAuth scope).
+      SECRETENV_KEY: ${SECRETENV_KEY:-}
+      SECRETENV_BUNDLE: ${SECRETENV_BUNDLE:-}
       GOOGLE_SECRETENV_PATH: ${GOOGLE_SECRETENV_PATH:-}
+      VOICEBLENDER_VSI_TOKEN: ${VOICEBLENDER_VSI_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

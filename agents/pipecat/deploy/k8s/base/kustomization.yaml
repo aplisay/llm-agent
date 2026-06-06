@@ -38,6 +38,8 @@ images:
     newTag: latest
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller
     newTag: latest
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/secretenv-exec
+    newTag: latest
 
 labels:
   - includeSelectors: false

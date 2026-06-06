@@ -53,6 +53,7 @@ deploy/k8s/
     namespace.yaml              # namespace + PSA=privileged (hostNetwork needs it)
     configmap.yaml              # pipecat-config (non-secret env)
     secret.example.yaml         # pipecat-secrets template (create out-of-band)
+    secretenv.example.yaml      # alt: pipecat-secretenv (KEY+BUNDLE) template
     sip-tls-secret.example.yaml # optional CA-signed TLS keypair template
     scripts/detect-external-ip.sh
     daemonset.yaml              # hostNetwork pod: initContainers + worker + volumes
@@ -112,6 +113,62 @@ kubectl apply -k overlays/sipbridge
 `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` **must
 match the llm-agent server side**. Also set `SERVICE_BASE_URI` in
 `base/configmap.yaml` to your environment's llm-agent REST base.
+
+## Secrets: two delivery options
+
+Both Secrets below are mounted via `envFrom: secretRef` — Kubernetes injects
+them as environment variables straight from the apiserver into the container.
+**Nothing is written to disk inside the pod**, and decryption (for the bundle
+variant) runs in-process before the worker / gateway starts.
+
+You only need **one** of these — `pipecat-secrets` and `pipecat-secretenv` are
+both `optional: true` in the DaemonSet, so missing either does not block pod
+startup. If both exist, the bundle's decrypted values override the plain Secret.
+
+**Option A — `pipecat-secrets`** (one key per variable, what the Quick Start
+shows). Simple, audit-friendly, edit in place. Template:
+`base/secret.example.yaml`.
+
+**Option B — `pipecat-secretenv`** (one encrypted bundle for every secret). Use
+when you want a *single* Kubernetes Secret to carry every token, key, and
+credential — fewer moving pieces, easier rotation, and you can split the
+**key** and the **bundle** across different storage backends for defence in
+depth (an attacker needs both to rehydrate the environment).
+
+```bash
+# 1. Produce a SECRETENV_KEY + SECRETENV_BUNDLE pair from a local .env file:
+export SECRETENV_KEY=$(openssl rand -base64 36)
+# .env contains every secret: PIPECAT_DISPATCH_TOKEN, SHARED_API_TOKEN,
+# PIPECAT_SIP_PASSWORD, OPENAI_API_KEY, ESL_SECRET, VOICEBLENDER_API_KEY, ...
+export $(npx secretenv -e)    # prints "SECRETENV_BUNDLE=<iv>:<ciphertext>"
+
+# 2. Deliver them as one envFrom-mounted Secret.
+kubectl create secret generic pipecat-secretenv -n pipecat \
+    --from-literal=SECRETENV_KEY="$SECRETENV_KEY" \
+    --from-literal=SECRETENV_BUNDLE="$SECRETENV_BUNDLE"
+```
+
+Each container decrypts on its own at startup:
+
+- **worker** (Python) — `pipecat_aplisay/secretenv.py` is called in `__main__`
+  before any config is read; it HMAC-derives the key and AES-CBC-decrypts the
+  bundle straight into `os.environ`.
+- **sipbridge** (Go) — `internal/secretenv` is called in `main` before
+  `config.Load()`; it `os.Setenv`s the decrypted vars.
+- **esl-poller** (Node) — the upstream `dotenv`/`secretenv` hook already does
+  this; nothing to wire.
+- **FreeSWITCH / Voiceblender** — the container command is `["secretenv-exec",
+  …]` (a static Go wrapper that decrypts the bundle in its own env and
+  `syscall.Exec`s the wrapped command, replacing itself so the wrapped process
+  inherits the decrypted env).
+
+Plaintext secrets only ever exist in process memory and the kernel env page;
+nothing is written to a tmpfs file, no `volumes:` mount of a Secret, no temp
+file on disk.
+
+> See `github.com/rjp44/secretenv` for the bundle format and CLI. The Python and
+> Go decoders in this repo are wire-compatible; both are exercised against a
+> Node-produced fixture in their respective unit tests.
 
 ### Adding per-cloud LB annotations
 
