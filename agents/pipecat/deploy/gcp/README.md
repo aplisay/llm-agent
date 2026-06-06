@@ -105,6 +105,60 @@ generated `.env.staging` / `.env.production` for:
   across deploys, either commit them to Secret Manager and read both ends
   from there, or delete the placeholders from the env template and set them
   in `.env.$ENVIRONMENT` manually before running the script.
+- **Outbound trunk** (only needed if you place outbound calls or do
+  WebRTC→telephony transfers): `PIPECAT_SIP_OUTBOUND` (e.g.
+  `sip:sbc.aplisay.example:5061;transport=tls`), `PIPECAT_SIP_FROM_DOMAIN`,
+  `PIPECAT_SIP_USERNAME`, `PIPECAT_SIP_PASSWORD`. Read by **sipbridge** (Go)
+  and **FreeSWITCH** (`freeswitch/entrypoint.sh` derives `PIPECAT_SBC_PROXY`
+  from the SIP URI). Voiceblender routes outbound inside its own backend, so
+  it doesn't use these.
+
+## secretenv — single-bundle secret delivery (optional)
+
+The worker (Python), sipbridge (Go) and esl-poller (Node) all decrypt
+`SECRETENV_BUNDLE` natively at startup, so you can deliver every secret as one
+encrypted pair instead of listing them individually in `.env`. Build a bundle
+locally with `npx secretenv -e`, then either:
+
+- set `SECRETENV_KEY` + `SECRETENV_BUNDLE` directly in `.env.$ENVIRONMENT`
+  (encrypted-at-rest there; plaintext only ever in container memory), **or**
+- store them in Secret Manager under
+  `${PROJECT_NUMERIC_ID}/secrets/<NAME>_KEY` and `<NAME>_BUNDLE`, set
+  `GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/<NAME>` in
+  `.env.$ENVIRONMENT`, and the worker + esl-poller fetch them at startup via
+  the VM's `cloud-platform` OAuth scope. sipbridge (Go) does not currently
+  fetch from Secret Manager itself — for the sipbridge profile, set
+  `SECRETENV_KEY` / `SECRETENV_BUNDLE` directly.
+
+### Publishing a bundle (`../bundle-secretenv.sh`)
+
+`bundle-secretenv.sh` automates both halves — encrypting a `.env.$ENVIRONMENT`
+into a `KEY+BUNDLE` pair, then writing the pair to Secret Manager under names
+the env templates already point at:
+
+```bash
+cd agents/pipecat/deploy/gcp
+../bundle-secretenv.sh           # interactive: prompts for env (dev/staging/production)
+../bundle-secretenv.sh --env=staging --yes
+../bundle-secretenv.sh --env=production --dry-run    # plan only
+```
+
+The script auto-detects the GCP backend from its cwd, reads `PROJECT_ID` from
+`.env.$ENVIRONMENT`, encrypts via the canonical `secretenv` CLI (pulled by
+`npx`, pinned to v1.0.5, so the bundle is byte-compatible with every
+container's decryption path), and creates / adds a new version to:
+
+```
+projects/$PROJECT_ID/secrets/SECRETENV_PIPECAT_{DEV,STAGING,PRODUCTION}_KEY
+projects/$PROJECT_ID/secrets/SECRETENV_PIPECAT_{DEV,STAGING,PRODUCTION}_BUNDLE
+```
+
+These names match the `GOOGLE_SECRETENV_PATH=projects/.../secrets/SECRETENV_PIPECAT_$ENV`
+already in the env templates (the loaders append `_KEY` / `_BUNDLE`). The
+generated `SECRETENV_KEY` never touches disk — only the encrypted bundle is
+written to Secret Manager. After publishing, the script prints the
+`gcloud secrets add-iam-policy-binding` command to grant the VM's service
+account access to the new secrets if you haven't already at project level.
 
 ## Reusing the same images for local dev
 

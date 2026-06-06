@@ -1,0 +1,23 @@
+# AWS load-balancer settings for the SIP signalling Service.
+#
+# Uses a Network Load Balancer (L4 TCP passthrough) via the AWS Load Balancer
+# Controller. `instance` target type routes to the node's nodePort, which pairs
+# with externalTrafficPolicy: Local so the SBC source IP is preserved.
+#
+# Node pool: run the SIP node group in a PUBLIC subnet with auto-assign public
+# IPv4 (or attach an Elastic IP per node), and open the RTP UDP range + TCP 5061
+# in the node security group to your SBC source ranges. See the README.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          service.beta.kubernetes.io/aws-load-balancer-type: "external"
+          service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "instance"
+          service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"

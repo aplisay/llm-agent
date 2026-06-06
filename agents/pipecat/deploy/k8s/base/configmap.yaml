@@ -1,0 +1,75 @@
+# Non-secret runtime configuration for the Pipecat agent stack.
+#
+# Every container in the per-node pod (worker + gateway) pulls this in via
+# `envFrom`. Because the pod uses hostNetwork, the worker and the SIP gateway
+# reach each other over 127.0.0.1 exactly like the docker-compose deploy.
+#
+# Secrets (tokens, provider API keys) live in the separate `pipecat-secrets`
+# Secret — see secret.example.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipecat-config
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+data:
+  # ---- external-IP detection (detect-ip initContainer) -------------------
+  # Leave NODE_EXT_IP empty to auto-detect from the cloud metadata server.
+  # Set it to a literal IP only if you pin a static external IP per node and
+  # auto-detection can't see it (e.g. behind a SNAT gateway).
+  NODE_EXT_IP: ""
+  EXT_IP_ECHO_URL: "https://checkip.amazonaws.com"
+
+  # ---- worker (all gateways) --------------------------------------------
+  PORT: "8082"
+  HOST: "0.0.0.0"
+  LOGLEVEL: "info"
+  # llm-agent REST surface (agent-db callbacks). Override per environment.
+  SERVICE_BASE_URI: "https://api.aplisay.example"
+
+  # ---- outbound trunk (trunk-origin originate / WebRTC->telephony transfer) --
+  # The platform-wide outbound SBC. Read by the worker, sipbridge and FreeSWITCH
+  # (FS derives PIPECAT_SBC_PROXY from it). These two are non-secret (host +
+  # domain); the matching SIP digest creds (PIPECAT_SIP_USERNAME/PASSWORD) are in
+  # the Secret. Leave blank if you don't place outbound calls / WebRTC transfers.
+  # Format: host[:port][;transport=tls|tcp|udp].
+  PIPECAT_SIP_OUTBOUND: ""
+  # Must equal the SBC's PIPECAT_HANDLER_DOMAIN when the SBC gates on From-domain.
+  PIPECAT_SIP_FROM_DOMAIN: ""
+
+  # ---- sipbridge ingress (default overlay) ------------------------------
+  # TLS-only on 5061: UDP signalling disabled (all inbound from our SBCs is
+  # TLS), self-signed cert unless a real one is mounted (see secret tls below).
+  SIPBRIDGE_SIP_TLS_PORT: "5061"
+  SIPBRIDGE_SIP_UDP_DISABLED: "1"
+  SIPBRIDGE_TLS_AUTO_SELFSIGNED: "1"
+  SIPBRIDGE_SIP_BIND_IP: "0.0.0.0"
+  SIPBRIDGE_MEDIA_BIND_IP: "0.0.0.0"
+  SIPBRIDGE_RTP_PORT_MIN: "10000"
+  SIPBRIDGE_RTP_PORT_MAX: "20000"
+  SIPBRIDGE_API_BIND_ADDR: ":8090"
+  SIPBRIDGE_WORKER_WS_BASE: "ws://127.0.0.1:8082"
+  SIPBRIDGE_BASE_URL: "http://127.0.0.1:8090"
+  SIPBRIDGE_LOG_LEVEL: "info"
+
+  # ---- FreeSWITCH ingress (overlays/freeswitch) -------------------------
+  PIPECAT_WS_URL: "ws://127.0.0.1:8082/freeswitch/audio"
+  WORKER_EVENT_WEBHOOK: "http://127.0.0.1:8082/freeswitch/events"
+  ESL_POLLER_URL: "http://127.0.0.1:4001"
+  ESL_HOST: "127.0.0.1"
+  ESL_PORT: "8021"
+  CALL_API_PORT: "4001"
+  GATEWAY_POLL_ENABLED: "false"
+  CALL_API_ENABLED: "true"
+  NODE_ENV: "production"
+
+  # ---- Voiceblender ingress (overlays/voiceblender) ---------------------
+  VOICEBLENDER_HTTP_ADDR: ":8080"
+  VOICEBLENDER_SIP_PORT: "5060"
+  VOICEBLENDER_SIP_TLS_PORT: "5061"
+  VOICEBLENDER_RTP_PORT_MIN: "10000"
+  VOICEBLENDER_RTP_PORT_MAX: "20000"
+  VOICEBLENDER_BASE_URL: "http://127.0.0.1:8080"
+  VOICEBLENDER_APP_ID: "aplisay-pipecat"
+  VOICEBLENDER_WORKER_WS_BASE: "ws://127.0.0.1:8082"

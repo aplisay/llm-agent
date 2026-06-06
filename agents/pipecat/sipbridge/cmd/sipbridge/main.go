@@ -21,6 +21,7 @@ import (
 	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/api"
 	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/call"
 	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/config"
+	"github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/secretenv"
 	sipx "github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/sip"
 )
 
@@ -28,6 +29,13 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Logger()
+
+	// Decrypt SECRETENV_BUNDLE into the environment before reading config, so a
+	// single SECRETENV_KEY + SECRETENV_BUNDLE secret can carry SIPBRIDGE_API_TOKEN,
+	// the PIPECAT_SIP_* outbound-trunk credentials, etc. No-op when unset.
+	if err := secretenv.Load(); err != nil {
+		log.Warn().Err(err).Msg("secretenv: bundle present but could not be loaded")
+	}
 
 	cfg, err := config.Load()
 	if err != nil {

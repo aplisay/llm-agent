@@ -88,6 +88,33 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
     id: Push-sipbridge
 
+  # ----- secretenv-exec -----
+  # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
+  # Used by the Kubernetes freeswitch / voiceblender overlays so those
+  # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:staging
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
+      - '.'
+    id: Build-secretenv-exec
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+    id: Push-secretenv-exec
+
   # ----- pipecat-worker -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat into the image.
@@ -122,6 +149,8 @@ images:
   - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
   - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+  - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
 
 options:
@@ -138,4 +167,5 @@ tags:
   - freeswitch
   - esl-poller
   - sipbridge
+  - secretenv-exec
   - pipecat-worker
