@@ -129,6 +129,14 @@ startup. If both exist, the bundle's decrypted values override the plain Secret.
 shows). Simple, audit-friendly, edit in place. Template:
 `base/secret.example.yaml`.
 
+> **Bundle source template:** `agents/pipecat/.env.example.k8s` is a
+> k8s-specific `.env` template — correct loopback URLs (the worker and gateway
+> share one hostNetwork pod, so `127.0.0.1` is right), secrets pre-listed, and
+> per-node values (`EXT_IP_ADDRESS`, `SIPBRIDGE_SIP_SIGNAL_IP`/`MEDIA_IP`)
+> deliberately omitted since the `detect-ip` initContainer sets them per node —
+> bundling them would override detection and break media. Copy it to
+> `deploy/k8s/.env.<env>` and feed it to `bundle-secretenv.sh`.
+
 **Option B — `pipecat-secretenv`** (one encrypted bundle for every secret). Use
 when you want a *single* Kubernetes Secret to carry every token, key, and
 credential — fewer moving pieces, easier rotation, and you can split the
