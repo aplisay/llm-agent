@@ -148,6 +148,13 @@ kubectl create secret generic pipecat-secretenv -n pipecat \
     --from-literal=SECRETENV_BUNDLE="$SECRETENV_BUNDLE"
 ```
 
+> **Shortcut:** `../bundle-secretenv.sh` automates this. From inside `deploy/k8s/`,
+> run `../bundle-secretenv.sh` (or `--env=staging --yes` non-interactively); it
+> prompts for the environment, encrypts the matching `.env` file via the canonical
+> `secretenv` CLI, and applies a `pipecat-secretenv-{env}` Secret plus a
+> `pipecat-secretenv` alias (the name the overlays envFrom). See the GCP README
+> for the GCP Secret Manager variant of the same script.
+
 Each container decrypts on its own at startup:
 
 - **worker** (Python) — `pipecat_aplisay/secretenv.py` is called in `__main__`
