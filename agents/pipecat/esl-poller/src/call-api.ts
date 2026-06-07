@@ -18,6 +18,12 @@ import type pino from "pino";
 import axios from "axios";
 import { randomUUID } from "node:crypto";
 import { FreeSwitchClient } from "esl-lite";
+import {
+  ValidationError,
+  validateOriginateBody,
+  validateTransferBody,
+  validateUuid,
+} from "./validate.js";
 
 const CALL_API_PORT = Number(process.env.CALL_API_PORT || 4001);
 const CALL_API_TOKEN = process.env.CALL_API_TOKEN || "";
@@ -222,10 +228,23 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
 
   app.post("/calls/originate", async (req, res) => {
     if (!requireToken(req, res)) return;
-    const body = req.body as OriginateBody;
-    if (!body?.destination || !body?.callerId || !body?.callId) {
+    const raw = req.body as OriginateBody;
+    if (!raw?.destination || !raw?.callerId || !raw?.callId) {
       res.status(400).json({ error: "destination, callerId and callId are required" });
       return;
+    }
+    // Validate/normalize every request value that is interpolated into the ESL
+    // command string before it reaches client.bgapi() (see validate.ts).
+    let body: OriginateBody;
+    try {
+      body = validateOriginateBody(raw);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        logger.warn({ field: err.field, msg: err.message }, "rejected originate");
+        res.status(400).json({ error: err.message, field: err.field });
+        return;
+      }
+      throw err;
     }
     const channelUuid = body.channelUuid || randomUUID();
     const vars = buildOriginateVars(body, channelUuid);
@@ -266,11 +285,25 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
 
   app.post("/calls/:uuid/transfer", async (req, res) => {
     if (!requireToken(req, res)) return;
-    const { uuid } = req.params;
-    const body = req.body as TransferBody;
-    if (!body?.destination || !body?.operation) {
+    const raw = req.body as TransferBody;
+    if (!raw?.destination || !raw?.operation) {
       res.status(400).json({ error: "destination and operation required" });
       return;
+    }
+    // Validate the path uuid and every interpolated body field before they
+    // reach client.bgapi() (see validate.ts).
+    let uuid: string;
+    let body: TransferBody;
+    try {
+      uuid = validateUuid("uuid", req.params.uuid);
+      body = validateTransferBody(raw);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        logger.warn({ field: err.field, msg: err.message }, "rejected transfer");
+        res.status(400).json({ error: err.message, field: err.field });
+        return;
+      }
+      throw err;
     }
     try {
       if (body.callerIdOverride) {
@@ -324,14 +357,26 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
    */
   app.post("/calls/:uuid/bridge", async (req, res) => {
     if (!requireToken(req, res)) return;
-    const { uuid } = req.params;
     const body = req.body as { peerUuid?: string };
     if (!body?.peerUuid) {
       res.status(400).json({ error: "peerUuid required" });
       return;
     }
+    let uuid: string;
+    let peerUuid: string;
     try {
-      const cmd = `uuid_bridge ${uuid} ${body.peerUuid}`;
+      uuid = validateUuid("uuid", req.params.uuid);
+      peerUuid = validateUuid("peerUuid", body.peerUuid);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        logger.warn({ field: err.field, msg: err.message }, "rejected bridge");
+        res.status(400).json({ error: err.message, field: err.field });
+        return;
+      }
+      throw err;
+    }
+    try {
+      const cmd = `uuid_bridge ${uuid} ${peerUuid}`;
       logger.info({ cmd, uuid, peerUuid: body.peerUuid }, "bridging channels");
       await client.bgapi(cmd, ESL_TIMEOUT);
       res.json({ ok: true });
@@ -343,8 +388,21 @@ export function buildCallApi({ client, logger }: CallApiOptions): Express {
 
   app.post("/calls/:uuid/hangup", async (req, res) => {
     if (!requireToken(req, res)) return;
-    const { uuid } = req.params;
-    const cause = (req.body?.cause as string) || "NORMAL_CLEARING";
+    let uuid: string;
+    try {
+      uuid = validateUuid("uuid", req.params.uuid);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        logger.warn({ field: err.field, msg: err.message }, "rejected hangup");
+        res.status(400).json({ error: err.message, field: err.field });
+        return;
+      }
+      throw err;
+    }
+    // Hangup cause is a FreeSWITCH cause keyword ([A-Z_]); reject anything else
+    // so it can't append extra ESL applications to the uuid_kill string.
+    const rawCause = (req.body?.cause as string) || "NORMAL_CLEARING";
+    const cause = /^[A-Z_]{1,48}$/.test(rawCause) ? rawCause : "NORMAL_CLEARING";
     try {
       await client.bgapi(`uuid_kill ${uuid} ${cause}`, ESL_TIMEOUT);
       res.json({ ok: true });
