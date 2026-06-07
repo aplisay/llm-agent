@@ -259,15 +259,20 @@ kubectl apply -k my-eks
 **DigitalOcean — reserved (static) LB IP.** `components/cloud-digitalocean` pins the
 SIP LoadBalancer to a DO **reserved IP** via `spec.loadBalancerIP`, templated as
 `${PIPECAT_SIP_LB_IP}` (the field DO's cloud-controller-manager honours — there is
-no annotation for it). The committed `do-staging/` overlay combines `overlays/sipbridge`
-with this component; the **`apply-sip-lb.sh`** wrapper reads `PIPECAT_SIP_LB_IP` from
-`agents/pipecat/.env.<env>` and renders it in:
+no annotation for it). The committed `do-staging/` and `do-production/` overlays combine `overlays/sipbridge`
+with this component (production also layers `env-production` for `:latest` images);
+the **`apply-sip-lb.sh`** wrapper reads `PIPECAT_SIP_LB_IP` from
+`agents/pipecat/.env.<env>` and renders it in. It defaults the overlay to `do-<env>`:
 
 ```bash
 cd agents/pipecat/deploy/k8s
-./apply-sip-lb.sh --env=staging              # reads .env.staging, applies do-staging
+./apply-sip-lb.sh --env=staging              # reads .env.staging, applies do-staging (:next)
+./apply-sip-lb.sh --env=production           # reads .env.production, applies do-production (:latest)
 ./apply-sip-lb.sh --env=staging --dry-run    # print the rendered YAML, no apply
 ```
+
+Staging and production use **different** reserved IPs — set the right one in each
+environment's `.env.<env>`.
 
 Set `PIPECAT_SIP_LB_IP=<reserved-ip>` in `agents/pipecat/.env.staging` (it's a render
 var, **not** part of the secretenv bundle, so just putting it there is not enough on

@@ -1,0 +1,25 @@
+# DigitalOcean production deploy target for the SIP gateway.
+#
+# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode,
+# and the reserved-IP pin via spec.loadBalancerIP=${PIPECAT_SIP_LB_IP}) +
+# env-production to flip every image from :next to :latest.
+#
+# The only differences from do-staging/ are the env-production component below
+# and that the reserved IP is read from .env.production (a DIFFERENT IP than
+# staging — set PIPECAT_SIP_LB_IP there).
+#
+# DO NOT `kubectl apply -k` this directly: the cloud-digitalocean component
+# leaves a ${PIPECAT_SIP_LB_IP} placeholder that kustomize cannot expand. Render
+# it through the scoped envsubst wrapper, which sources the IP from .env.<env>:
+#
+#     ./apply-sip-lb.sh --env=production              # apply
+#     ./apply-sip-lb.sh --env=production --dry-run     # print rendered YAML only
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../overlays/sipbridge
+
+components:
+  - ../components/env-production
+  - ../components/cloud-digitalocean
