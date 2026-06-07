@@ -8,7 +8,7 @@
 # Artifact Registry (where cloudbuild-staging.yaml pushes images).
 IMAGE_REGISTRY=europe-west1-docker.pkg.dev
 PROJECT_ID=llm-voice
-REPO_NAME=aplisay-pipecat-agent
+REPO_NAME=llm-agent
 # Staging pulls the `next` tag; production pulls `latest` (see env-example-production).
 IMAGE_TAG=next
 PROJECT_NUMERIC_ID=160114196407

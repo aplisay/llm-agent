@@ -82,7 +82,7 @@ deploy/k8s/
      (RTP — FreeSWITCH; see its `vars.xml`)
 3. **Images** — the deploy pulls the same Artifact Registry images that
    [`../gcp/cloudbuild*.yaml`](../gcp) build:
-   `europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/{pipecat-worker,sipbridge,freeswitch,esl-poller}`.
+   `europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/{pipecat-worker,sipbridge,freeswitch,esl-poller}`.
    On GKE the nodes' service account can pull directly. On EKS/DOKS, add an
    imagePullSecret (below) or mirror the images to your own registry and override
    the tags via `kustomize edit set image`.
@@ -234,7 +234,7 @@ kubectl apply -k prod
 ```
 
 For a one-off tag, `cd overlays/sipbridge && kustomize edit set image \
-europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge=*:<tag>`.
+europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge=*:<tag>`.
 
 ### Adding per-cloud LB annotations
 

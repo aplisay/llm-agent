@@ -5,7 +5,7 @@
 
 IMAGE_REGISTRY=europe-west1-docker.pkg.dev
 PROJECT_ID=llm-voice
-REPO_NAME=aplisay-pipecat-agent
+REPO_NAME=llm-agent
 IMAGE_TAG=latest
 PROJECT_NUMERIC_ID=160114196407
 

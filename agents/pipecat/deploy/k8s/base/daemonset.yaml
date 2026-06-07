@@ -83,7 +83,7 @@ spec:
         #    syscall.Exec's the wrapped command; secrets never touch disk.
         #    No-op for sipbridge and the worker (they decrypt in-process).
         - name: install-secretenv-exec
-          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/secretenv-exec:latest
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec:latest
           command:
             - /bin/sh
             - -c
@@ -95,7 +95,7 @@ spec:
       containers:
         # The gateway-agnostic worker. Gateway containers are added per overlay.
         - name: pipecat-worker
-          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/pipecat-worker:latest
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker:latest
           # Two secret sources, both optional so you can use EITHER: the plain
           # pipecat-secrets, OR pipecat-secretenv (SECRETENV_KEY + SECRETENV_BUNDLE,
           # which the worker decrypts into its env at startup), or both (bundle

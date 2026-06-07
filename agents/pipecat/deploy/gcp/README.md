@@ -26,13 +26,16 @@ from `aplisay-b2bua/deploy/gcp/`.
 ## Image registry layout
 
 ```
-${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:{$SHA, staging, latest}
-${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:{$SHA, staging, latest}
-${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:{$SHA, staging, latest}
+${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/<image>:{$SHA, next, latest}
+#   <image> ∈ { freeswitch, esl-poller, sipbridge, secretenv-exec, pipecat-worker }
+#   next   = staging tag (cloudbuild-staging.yaml)
+#   latest = production tag (cloudbuild.yaml)
 ```
 
 Defaults from the env templates: `LOCATION=europe-west1`,
-`PROJECT_ID=llm-voice`, `REPO_NAME=aplisay-pipecat-agent`.
+`PROJECT_ID=llm-voice`, `REPO_NAME=llm-agent` — note `REPO_NAME` here matches the
+Cloud Build built-in `$REPO_NAME` (the source-repo name), which is what the
+cloudbuild image paths actually use.
 
 ## Building images (Cloud Build)
 

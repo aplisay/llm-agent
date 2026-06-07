@@ -33,15 +33,15 @@ configMapGenerator:
 # override ad-hoc with `kustomize edit set image`.) Non-GKE clusters need an
 # imagePullSecret for AR (see README).
 images:
-  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/pipecat-worker
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker
     newTag: next
-  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge
     newTag: next
-  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/freeswitch
     newTag: next
-  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/esl-poller
     newTag: next
-  - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/secretenv-exec
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec
     newTag: next
 
 labels:

@@ -22,7 +22,7 @@ spec:
 
         - name: sipbridge
           # :next = staging default; components/env-production overrides to :latest.
-          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge:next
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge:next
           command: ["/etc/node-meta/busybox", "sh", "-c"]
           args:
             - |
