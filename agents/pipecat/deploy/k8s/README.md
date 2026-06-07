@@ -301,10 +301,30 @@ ranges in the node security group. Requires the AWS Load Balancer Controller.
 
 **DigitalOcean / DOKS.** Worker droplets have public IPs by default. Use
 `components/cloud-digitalocean` (TCP-mode LB), or the ready-made `do-staging` /
-`do-production` overlays. Attach a DO Cloud Firewall to the SIP node pool allowing
-`TCP 5061` and `UDP 10000-20000` from the SBC ranges. DO can't pin a reserved IP to
-a managed LB, so the overlays pin a stable `do-loadbalancer-name` and you wire DNS
-to the IP the LB is assigned — see *Adding per-cloud LB annotations* above.
+`do-production` overlays. DO can't pin a reserved IP to a managed LB, so the
+overlays pin a stable `do-loadbalancer-name` and you wire DNS to the IP the LB is
+assigned — see *Adding per-cloud LB annotations* above.
+
+> **RTP firewall — do NOT edit the DOKS-managed firewall.** DOKS auto-manages a
+> worker-node firewall (named `k8s-<cluster-uuid>`) and continuously reconciles
+> it to mirror the cluster's Services. It opens `TCP 5061` (the LB), but the RTP
+> range (`UDP 10000-20000`) flows **direct to each node's public IP**, bypassing
+> the LB — it's not a Service, so DOKS never opens it, and any rule you add to the
+> managed firewall by hand is **reverted**. This is not controllable from the
+> kustomize overlay. Instead create your **own** Cloud Firewall (DO firewalls are
+> additive; DOKS only touches its own) targeting the worker nodes by their DOKS
+> tag, so it also survives node-pool scaling:
+>
+> ```bash
+> doctl kubernetes cluster list      # note the cluster ID -> node tag k8s:<id>
+> doctl compute firewall create \
+>     --name pipecat-rtp \
+>     --tag-names "k8s:<cluster-id>" \
+>     --inbound-rules "protocol:udp,ports:10000-20000,address:<SBC_CIDR_1>,address:<SBC_CIDR_2>"
+> ```
+>
+> (FreeSWITCH overlay uses `UDP 16384-16484` instead. Scope `address:` to your SBC
+> ranges, not `0.0.0.0/0`.)
 
 **imagePullSecret for Artifact Registry (EKS/DOKS):**
 ```bash
