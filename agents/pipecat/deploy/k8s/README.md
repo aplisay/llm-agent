@@ -92,8 +92,12 @@ deploy/k8s/
 ```bash
 cd agents/pipecat/deploy/k8s
 
-# 1. Namespace (also created by the overlay, but handy for the secret first).
-kubectl create namespace pipecat --dry-run=client -o yaml | kubectl apply -f -
+# 1. Namespace — apply the repo manifest so it carries the Pod Security
+#    'privileged' labels the hostNetwork pods require (the overlay includes it
+#    too; create it first so the Secret in step 2 has a home). Using the
+#    labelled manifest avoids a "missing last-applied-configuration" warning and
+#    an unlabelled-namespace window that a bare `kubectl create namespace` leaves.
+kubectl apply -f base/namespace.yaml
 
 # 2. Real secrets — copy the template, fill in values, apply. Generate the
 #    per-stack tokens with: openssl rand -hex 32

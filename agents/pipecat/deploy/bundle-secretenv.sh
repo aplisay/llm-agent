@@ -44,6 +44,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
 BACKEND=""
@@ -242,9 +244,19 @@ publish_k8s() {
     local per_env_name="pipecat-secretenv-${ENVIRONMENT}"
     local alias_name="pipecat-secretenv"
 
-    # Make sure the namespace exists (idempotent).
-    if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-        echo -e "${YELLOW}  Creating namespace $NAMESPACE${NC}"
+    # Ensure the namespace exists. Prefer the repo's namespace.yaml so it carries
+    # the Pod Security 'privileged' labels the hostNetwork pods require; a bare
+    # `kubectl create namespace` leaves it unlabelled (the overlay's apply -k
+    # reconciles the labels in later, but applying the manifest is cleaner and
+    # avoids the missing-annotation warning).
+    NS_MANIFEST=""
+    for cand in "$SCRIPT_DIR/k8s/base/namespace.yaml" "base/namespace.yaml"; do
+        [ -f "$cand" ] && { NS_MANIFEST="$cand"; break; }
+    done
+    if [ -n "$NS_MANIFEST" ]; then
+        kubectl apply -f "$NS_MANIFEST" >/dev/null
+    elif ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+        echo -e "${YELLOW}  Creating namespace $NAMESPACE (without PSA labels — apply the overlay to add them)${NC}"
         kubectl create namespace "$NAMESPACE" >/dev/null
     fi
 
