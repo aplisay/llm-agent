@@ -259,19 +259,30 @@ kubectl apply -k my-eks
 **DigitalOcean — reserved (static) LB IP.** `components/cloud-digitalocean` pins the
 SIP LoadBalancer to a DO **reserved IP** via `spec.loadBalancerIP`, templated as
 `${PIPECAT_SIP_LB_IP}` (the field DO's cloud-controller-manager honours — there is
-no annotation for it). Because kustomize doesn't interpolate env vars, render this
-overlay through **`envsubst` scoped to that one variable** — unscoped, it would also
-eat the `${...}`/`$(...)` shell expansions in the detect-ip / busybox command strings:
+no annotation for it). The committed `do-staging/` overlay combines `overlays/sipbridge`
+with this component; the **`apply-sip-lb.sh`** wrapper reads `PIPECAT_SIP_LB_IP` from
+`agents/pipecat/.env.<env>` and renders it in:
 
 ```bash
-# my-doks/kustomization.yaml — resources: [../overlays/sipbridge], components: [../components/cloud-digitalocean]
-export PIPECAT_SIP_LB_IP=143.198.248.40        # an existing, unassigned DO reserved IP in the cluster region
-kubectl kustomize my-doks | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+cd agents/pipecat/deploy/k8s
+./apply-sip-lb.sh --env=staging              # reads .env.staging, applies do-staging
+./apply-sip-lb.sh --env=staging --dry-run    # print the rendered YAML, no apply
 ```
 
-Leave `PIPECAT_SIP_LB_IP` unset to fall back to an ephemeral DOKS-assigned IP. The
-var can live in `agents/pipecat/.env.<env>` alongside the secrets (it's a render var,
-not bundled) so the same file is the one place operators edit.
+Set `PIPECAT_SIP_LB_IP=<reserved-ip>` in `agents/pipecat/.env.staging` (it's a render
+var, **not** part of the secretenv bundle, so just putting it there is not enough on
+its own — the wrapper is what pulls it into the manifest). The reserved IP must be an
+existing, unassigned DO reserved IP **in the cluster's region**. Leave it unset to fall
+back to an ephemeral DOKS-assigned IP.
+
+Under the hood the wrapper does a **`envsubst` scoped to that one variable** —
+unscoped, it would also eat the `${...}`/`$(...)` shell expansions in the detect-ip /
+busybox command strings. To apply by hand without the wrapper, replicate the scoping:
+
+```bash
+export PIPECAT_SIP_LB_IP=143.198.248.40
+kubectl kustomize do-staging | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+```
 
 ## Per-cloud notes
 
