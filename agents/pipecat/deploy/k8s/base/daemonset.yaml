@@ -67,8 +67,11 @@ spec:
         #    distroless sipbridge image (no shell of its own) can run a tiny
         #    startup wrapper that exports the detected IP. Harmless no-op for the
         #    other gateways, which have their own shell.
+        #    MUST be the musl (static) variant: busybox:stable is glibc-linked
+        #    and would fail to exec inside distroless-static with "no such file
+        #    or directory" (its ELF loader /lib64/ld-linux-* isn't there).
         - name: install-shim
-          image: busybox:stable
+          image: busybox:musl
           command:
             - sh
             - -c
