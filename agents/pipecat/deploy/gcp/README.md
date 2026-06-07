@@ -9,7 +9,8 @@ from `aplisay-b2bua/deploy/gcp/`.
 - [`cloudbuild-staging.yaml`](cloudbuild-staging.yaml) — Cloud Build pipeline
   for the **staging** images. Build context for `pipecat-worker` is the repo
   root (the Dockerfile pulls in `agents/pipecat/`); the other two services
-  build from their own directories. Tags pushed: `:staging` and `:$COMMIT_SHA`.
+  build from their own directories. Tags pushed: `:next` and `:$COMMIT_SHA`
+  (staging uses the `next` tag).
 - [`cloudbuild.yaml`](cloudbuild.yaml) — same build, tagged `:latest` and
   `:$COMMIT_SHA`. Use for production releases.
 - [`docker-compose.gcp.yml`](docker-compose.gcp.yml) — production / staging

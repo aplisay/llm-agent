@@ -26,20 +26,23 @@ configMapGenerator:
     files:
       - scripts/detect-external-ip.sh
 
-# Pin image tags here (or override per overlay / via `kustomize edit set image`).
-# These default to the Artifact Registry repo that deploy/gcp/cloudbuild*.yaml
-# pushes to. Non-GKE clusters need an imagePullSecret for AR (see README).
+# Image tags follow the repo convention: staging builds publish `next`,
+# production releases publish `latest`. The base defaults to the staging `next`
+# tag (the common iterative case); for a production deploy layer
+# `components/env-production`, which overrides every image to `latest`. (Or
+# override ad-hoc with `kustomize edit set image`.) Non-GKE clusters need an
+# imagePullSecret for AR (see README).
 images:
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/pipecat-worker
-    newTag: latest
+    newTag: next
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge
-    newTag: latest
+    newTag: next
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch
-    newTag: latest
+    newTag: next
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller
-    newTag: latest
+    newTag: next
   - name: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/secretenv-exec
-    newTag: latest
+    newTag: next
 
 labels:
   - includeSelectors: false

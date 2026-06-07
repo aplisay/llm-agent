@@ -21,7 +21,7 @@ services:
 
   freeswitch:
     profiles: ["freeswitch"]
-    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:${IMAGE_TAG:-staging}
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
     env_file:
@@ -40,7 +40,7 @@ services:
 
   esl-poller:
     profiles: ["freeswitch"]
-    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:${IMAGE_TAG:-staging}
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
     depends_on:
@@ -86,7 +86,7 @@ services:
 
   sipbridge:
     profiles: ["sipbridge"]
-    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/sipbridge:${IMAGE_TAG:-staging}
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/sipbridge:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
     env_file:
@@ -118,7 +118,7 @@ services:
 
   pipecat-worker:
     profiles: ["freeswitch", "voiceblender", "sipbridge", "daily"]
-    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:${IMAGE_TAG:-staging}
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
     env_file:

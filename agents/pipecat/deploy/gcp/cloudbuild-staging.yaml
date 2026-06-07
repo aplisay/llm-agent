@@ -24,7 +24,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:next
       - '-f'
       - './agents/pipecat/freeswitch/Dockerfile'
       - './agents/pipecat/freeswitch'
@@ -48,7 +48,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:next
       - '-f'
       - './agents/pipecat/esl-poller/Dockerfile'
       - './agents/pipecat/esl-poller'
@@ -74,7 +74,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:next
       - '-f'
       - './agents/pipecat/sipbridge/Dockerfile'
       - '.'
@@ -101,7 +101,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:next
       - '-f'
       - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
       - '.'
@@ -127,7 +127,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
       - '-t'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:staging
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:next
       - '-f'
       - './agents/pipecat/Dockerfile'
       - '.'

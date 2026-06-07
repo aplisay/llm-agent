@@ -60,8 +60,9 @@ deploy/k8s/
     service-sip.yaml            # LoadBalancer, TCP 5061 (signalling)
     service-worker.yaml         # ClusterIP, 8082 (dispatch / control)
     kustomization.yaml
-  components/                   # per-cloud LB annotations (layer onto an overlay)
-    cloud-gcp/  cloud-aws/  cloud-digitalocean/
+  components/                   # layer onto an overlay
+    cloud-gcp/  cloud-aws/  cloud-digitalocean/   # per-cloud LB annotations
+    env-production/             # override image tags to :latest (base defaults :next)
   overlays/                     # pick one
     sipbridge/                  # DEFAULT — TLS-only, UDP disabled, self-signed fallback
     freeswitch/                 # FreeSWITCH + esl-poller sidecar
@@ -208,11 +209,39 @@ cp base/secret.example.yaml /tmp/pipecat-secret.yaml   # edit it, then:
 kubectl apply -n pipecat -f /tmp/pipecat-secret.yaml
 ```
 
+## Image tags: staging (`next`) vs production (`latest`)
+
+Following the repo convention, staging images are published under the **`next`**
+tag and production releases under **`latest`** (the GCP `cloudbuild-staging.yaml`
+pushes `:next`, `cloudbuild.yaml` pushes `:latest`).
+
+The base — and therefore a bare `kubectl apply -k overlays/<gateway>` — defaults
+to **`next`** (staging, the common iterative case). For a **production** deploy,
+layer `components/env-production`, which overrides every image to `latest`:
+
+```yaml
+# prod/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../overlays/sipbridge
+components:
+  - ../components/env-production    # -> :latest
+  - ../components/cloud-gcp         # optional per-cloud LB annotations
+```
+```bash
+kubectl apply -k prod
+```
+
+For a one-off tag, `cd overlays/sipbridge && kustomize edit set image \
+europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/sipbridge=*:<tag>`.
+
 ### Adding per-cloud LB annotations
 
 The base `pipecat-sip` Service is a plain `type: LoadBalancer`. To apply
 cloud-specific annotations (NLB on AWS, TCP mode on DO), make a thin local
-overlay combining the gateway overlay with a cloud component:
+overlay combining the gateway overlay with a cloud component (and, for
+production, the `env-production` component above):
 
 ```yaml
 # my-eks/kustomization.yaml

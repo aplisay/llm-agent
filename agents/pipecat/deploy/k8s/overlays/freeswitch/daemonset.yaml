@@ -20,7 +20,8 @@ spec:
               value: freeswitch
 
         - name: freeswitch
-          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch:latest
+          # :next = staging default; components/env-production overrides to :latest.
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/freeswitch:next
           # secretenv-exec decrypts SECRETENV_BUNDLE into the env (FreeSWITCH
           # can't decrypt natively), then the shell wrapper adds the per-node IP
           # and execs FS's entrypoint. Harmless no-op when no bundle is set.
@@ -66,7 +67,8 @@ spec:
               memory: 1Gi
 
         - name: esl-poller
-          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller:latest
+          # :next = staging default; components/env-production overrides to :latest.
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-pipecat-agent/esl-poller:next
           # esl-poller's dotenv (the secretenv fork) already decrypts
           # SECRETENV_KEY/BUNDLE natively at startup — no wrapper needed.
           envFrom:
