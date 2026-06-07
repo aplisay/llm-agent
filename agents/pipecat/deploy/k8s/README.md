@@ -87,107 +87,120 @@ deploy/k8s/
    the tags via `kustomize edit set image`.
 4. **Secrets** created in the namespace (next section).
 
-## Quick start (sipbridge, the default)
+## Quick start (sipbridge default)
+
+This uses the **secretenv bundle** — one encrypted Secret for every credential
+("Option B" below). It's our standard for staging and production, and
+`bundle-secretenv.sh` does the namespace + Secret bootstrap for you.
 
 ```bash
-cd agents/pipecat/deploy/k8s
+# 1. Build this environment's source .env from the k8s template, then edit it to
+#    fill in the secrets (tokens, provider keys, PIPECAT_SIP_PASSWORD, …). It
+#    lives next to the template as agents/pipecat/.env.<env>, and is git-ignored.
+cd agents/pipecat
+cp .env.example.k8s .env.staging          # or .env.production
+${EDITOR:-vi} .env.staging                # fill in the SECRETS section
 
-# 1. Namespace — apply the repo manifest so it carries the Pod Security
-#    'privileged' labels the hostNetwork pods require (the overlay includes it
-#    too; create it first so the Secret in step 2 has a home). Using the
-#    labelled manifest avoids a "missing last-applied-configuration" warning and
-#    an unlabelled-namespace window that a bare `kubectl create namespace` leaves.
-kubectl apply -f base/namespace.yaml
+# 2. Encrypt it into the `pipecat-secretenv` Secret. This also creates the
+#    `pipecat` namespace (with the PodSecurity 'privileged' labels hostNetwork
+#    needs) if it isn't there yet.
+cd deploy/k8s
+../bundle-secretenv.sh --env=staging      # interactive confirm; add --yes to skip
 
-# 2. Real secrets — copy the template, fill in values, apply. Generate the
-#    per-stack tokens with: openssl rand -hex 32
-cp base/secret.example.yaml /tmp/pipecat-secret.yaml   # edit /tmp/pipecat-secret.yaml
-kubectl apply -n pipecat -f /tmp/pipecat-secret.yaml
-
-# 3. (Optional) CA-signed TLS cert; otherwise the gateway self-signs.
+# 3. (Optional) a CA-signed SIP TLS cert; otherwise the gateway self-signs.
 # kubectl create secret tls pipecat-sip-tls -n pipecat \
 #     --cert=fullchain.pem --key=privkey.pem
 
-# 4. Apply the gateway overlay.
+# 4. Apply the gateway overlay (sipbridge is the default).
 kubectl apply -k overlays/sipbridge
 
 # 5. Verify (see "Verification" below).
 ```
 
-`PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` **must
-match the llm-agent server side**. Also set `SERVICE_BASE_URI` in
-`base/configmap.yaml` to your environment's llm-agent REST base.
+`PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` in the
+bundle **must match the llm-agent server side**. Also set `SERVICE_BASE_URI` (the
+llm-agent REST base) in `base/configmap.yaml`.
+
+> **Rotate / change a secret:** edit `agents/pipecat/.env.staging`, re-run
+> `../bundle-secretenv.sh --env=staging`, then `kubectl rollout restart
+> daemonset/pipecat-sip -n pipecat` to roll the pods onto the new values.
+>
+> **Dev, or prefer a plain one-key-per-value Secret?** Use Option A in *Secrets*
+> below in place of steps 1–2.
 
 ## Secrets: two delivery options
 
-Both Secrets below are mounted via `envFrom: secretRef` — Kubernetes injects
-them as environment variables straight from the apiserver into the container.
-**Nothing is written to disk inside the pod**, and decryption (for the bundle
-variant) runs in-process before the worker / gateway starts.
+Both Secrets are mounted via `envFrom: secretRef` — Kubernetes injects them as
+environment variables straight from the apiserver into the container. **Nothing
+is written to disk inside the pod**, and bundle decryption runs in-process before
+the worker / gateway starts.
 
-You only need **one** of these — `pipecat-secrets` and `pipecat-secretenv` are
-both `optional: true` in the DaemonSet, so missing either does not block pod
-startup. If both exist, the bundle's decrypted values override the plain Secret.
+You need **one** of them. `pipecat-secrets` and `pipecat-secretenv` are both
+`optional: true` in the DaemonSet, so a missing one doesn't block startup; if
+both exist, the bundle's decrypted values override the plain Secret.
 
-**Option A — `pipecat-secrets`** (one key per variable, what the Quick Start
-shows). Simple, audit-friendly, edit in place. Template:
-`base/secret.example.yaml`.
+### Option B — `pipecat-secretenv` (bundle) — the standard
 
-> **Bundle source template:** `agents/pipecat/.env.example.k8s` is a
-> k8s-specific `.env` template — correct loopback URLs (the worker and gateway
-> share one hostNetwork pod, so `127.0.0.1` is right), secrets pre-listed, and
-> per-node values (`EXT_IP_ADDRESS`, `SIPBRIDGE_SIP_SIGNAL_IP`/`MEDIA_IP`)
-> deliberately omitted since the `detect-ip` initContainer sets them per node —
-> bundling them would override detection and break media. Copy it to
-> `deploy/k8s/.env.<env>` and feed it to `bundle-secretenv.sh`.
+One encrypted `SECRETENV_KEY` + `SECRETENV_BUNDLE` pair carries every secret:
+fewer moving pieces, easy rotation, and you can split the key and the bundle
+across different storage backends for defence in depth (an attacker needs both).
 
-**Option B — `pipecat-secretenv`** (one encrypted bundle for every secret). Use
-when you want a *single* Kubernetes Secret to carry every token, key, and
-credential — fewer moving pieces, easier rotation, and you can split the
-**key** and the **bundle** across different storage backends for defence in
-depth (an attacker needs both to rehydrate the environment).
+`bundle-secretenv.sh` is the supported path (the Quick Start uses it). Run it
+from `deploy/k8s/`; it:
+
+1. reads the source `.env` at **`agents/pipecat/.env.<env>`** (two levels up —
+   build it from `agents/pipecat/.env.example.k8s`),
+2. encrypts it with the canonical `secretenv` CLI (pinned to the version the
+   containers decrypt with, so the bundle is always wire-compatible),
+3. creates the `pipecat` namespace (with PSA labels) if needed, and
+4. applies `pipecat-secretenv-<env>` plus the active `pipecat-secretenv` alias —
+   the name the overlays `envFrom`, so no kustomize change is needed.
 
 ```bash
-# 1. Produce a SECRETENV_KEY + SECRETENV_BUNDLE pair from a local .env file:
-export SECRETENV_KEY=$(openssl rand -base64 36)
-# .env contains every secret: PIPECAT_DISPATCH_TOKEN, SHARED_API_TOKEN,
-# PIPECAT_SIP_PASSWORD, OPENAI_API_KEY, ESL_SECRET, VOICEBLENDER_API_KEY, ...
-export $(npx secretenv -e)    # prints "SECRETENV_BUNDLE=<iv>:<ciphertext>"
+cd agents/pipecat/deploy/k8s
+../bundle-secretenv.sh --env=staging        # or --env=production
+```
 
-# 2. Deliver them as one envFrom-mounted Secret.
+`.env.example.k8s` lists the secrets and deliberately OMITS per-node values
+(`EXT_IP_ADDRESS`, `SIPBRIDGE_SIP_SIGNAL_IP`/`MEDIA_IP`) — the `detect-ip`
+initContainer sets those per node, and bundling them would override detection and
+break media. The `.env.<env>` you create is git-ignored. (The same script with a
+GCP backend publishes to Secret Manager instead — see the GCP README.)
+
+**Manual equivalent (no script):**
+
+```bash
+export SECRETENV_KEY=$(openssl rand -base64 36)
+export $(npx -y -p github:rjp44/secretenv#v1.0.5 secretenv -e -p agents/pipecat/.env.staging)
 kubectl create secret generic pipecat-secretenv -n pipecat \
     --from-literal=SECRETENV_KEY="$SECRETENV_KEY" \
     --from-literal=SECRETENV_BUNDLE="$SECRETENV_BUNDLE"
 ```
 
-> **Shortcut:** `../bundle-secretenv.sh` automates this. From inside `deploy/k8s/`,
-> run `../bundle-secretenv.sh` (or `--env=staging --yes` non-interactively); it
-> prompts for the environment, encrypts the matching `.env` file via the canonical
-> `secretenv` CLI, and applies a `pipecat-secretenv-{env}` Secret plus a
-> `pipecat-secretenv` alias (the name the overlays envFrom). See the GCP README
-> for the GCP Secret Manager variant of the same script.
-
 Each container decrypts on its own at startup:
 
-- **worker** (Python) — `pipecat_aplisay/secretenv.py` is called in `__main__`
-  before any config is read; it HMAC-derives the key and AES-CBC-decrypts the
-  bundle straight into `os.environ`.
-- **sipbridge** (Go) — `internal/secretenv` is called in `main` before
-  `config.Load()`; it `os.Setenv`s the decrypted vars.
-- **esl-poller** (Node) — the upstream `dotenv`/`secretenv` hook already does
-  this; nothing to wire.
-- **FreeSWITCH / Voiceblender** — the container command is `["secretenv-exec",
-  …]` (a static Go wrapper that decrypts the bundle in its own env and
-  `syscall.Exec`s the wrapped command, replacing itself so the wrapped process
-  inherits the decrypted env).
+- **worker** (Python) — `pipecat_aplisay/secretenv.py` runs in `__main__` before
+  any config is read; HMAC-derives the key and AES-CBC-decrypts into `os.environ`.
+- **sipbridge** (Go) — `internal/secretenv` runs in `main` before `config.Load()`.
+- **esl-poller** (Node) — the upstream `dotenv`/`secretenv` hook already does it.
+- **FreeSWITCH / Voiceblender** — launched via `secretenv-exec`, a static Go
+  wrapper that decrypts the bundle in its own env and `syscall.Exec`s the real
+  command so it inherits the decrypted env.
 
-Plaintext secrets only ever exist in process memory and the kernel env page;
-nothing is written to a tmpfs file, no `volumes:` mount of a Secret, no temp
-file on disk.
+Plaintext secrets only ever exist in process memory and the kernel env page — no
+tmpfs file, no `volumes:` mount of a Secret. (The bundle format + CLI is
+`github.com/rjp44/secretenv`; the Python and Go decoders here are wire-compatible
+and tested against a Node-produced fixture.)
 
-> See `github.com/rjp44/secretenv` for the bundle format and CLI. The Python and
-> Go decoders in this repo are wire-compatible; both are exercised against a
-> Node-produced fixture in their respective unit tests.
+### Option A — `pipecat-secrets` (one key per variable) — simple / dev
+
+A plain Secret, one key per value; good for dev or quick edits. Template:
+`base/secret.example.yaml` (generate per-stack tokens with `openssl rand -hex 32`).
+
+```bash
+cp base/secret.example.yaml /tmp/pipecat-secret.yaml   # edit it, then:
+kubectl apply -n pipecat -f /tmp/pipecat-secret.yaml
+```
 
 ### Adding per-cloud LB annotations
 
