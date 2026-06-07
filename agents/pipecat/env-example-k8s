@@ -108,6 +108,24 @@ ULTRAVOX_API_KEY=
 
 
 # ============================================================================
+# MANIFEST RENDER VARS — substituted into the YAML, NOT a container env var
+# ============================================================================
+# These are consumed at deploy time by `envsubst` when rendering kustomize, not
+# read by the worker/gateway at runtime. They don't belong in the secretenv
+# bundle (harmless if bundled, just unused), but keeping them here means the same
+# `.env.<env>` is the single source operators edit.
+#
+# PIPECAT_SIP_LB_IP — DigitalOcean reserved (static) IP to pin the SIP LoadBalancer
+# to, via components/cloud-digitalocean (spec.loadBalancerIP). Must be an existing,
+# unassigned DO reserved IP in the cluster's region. Leave unset to let DOKS assign
+# an ephemeral IP. Render with a SCOPED envsubst so it doesn't clobber the shell
+# expansions in the detect-ip / busybox command strings:
+#     export PIPECAT_SIP_LB_IP=143.198.248.40
+#     kubectl kustomize <do-overlay> | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+# PIPECAT_SIP_LB_IP=143.198.248.40
+
+
+# ============================================================================
 # DO NOT SET IN KUBERNETES — auto-detected per node by the detect-ip initContainer
 # ============================================================================
 # Setting any of these (here or in the bundle) overrides the per-node detected

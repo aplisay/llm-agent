@@ -6,6 +6,25 @@
 #
 # Node pool: open the RTP UDP range + TCP 5061 in a DO Cloud Firewall attached
 # to the SIP node pool, scoped to your SBC source ranges. See the README.
+#
+# Reserved (static) LB IP — IMPORTANT, READ BEFORE `kubectl apply`:
+# `spec.loadBalancerIP` pins the LB to a DigitalOcean *reserved IP* (the field DO's
+# cloud-controller-manager honours — there is no annotation for it). The reserved
+# IP must already exist, be unassigned, and live in the cluster's region. It is
+# templated as ${PIPECAT_SIP_LB_IP} so the IP is supplied from the environment, not
+# hardcoded in git. Because kustomize does NOT interpolate env vars, this component
+# must be rendered through envsubst — and SCOPED to that one variable, or it will
+# also eat the `${...}`/`$(...)` shell expansions in the detect-ip / busybox
+# command strings:
+#
+#     export PIPECAT_SIP_LB_IP=143.198.248.40        # the DO staging reserved IP
+#     kubectl kustomize <do-overlay> | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+#
+# If PIPECAT_SIP_LB_IP is unset, envsubst renders an empty loadBalancerIP, which DO
+# treats as "assign an ephemeral IP" — i.e. the prior behaviour, degraded safely.
+# A bare `kubectl apply -k` WITHOUT the envsubst step would leave the literal
+# placeholder and be rejected, so always pipe through envsubst when using this
+# component.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
@@ -20,3 +39,6 @@ patches:
           service.beta.kubernetes.io/do-loadbalancer-protocol: "tcp"
           service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "tcp"
           service.beta.kubernetes.io/do-loadbalancer-healthcheck-port: "5061"
+      - op: add
+        path: /spec/loadBalancerIP
+        value: "${PIPECAT_SIP_LB_IP}"

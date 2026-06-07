@@ -256,6 +256,23 @@ components:
 kubectl apply -k my-eks
 ```
 
+**DigitalOcean — reserved (static) LB IP.** `components/cloud-digitalocean` pins the
+SIP LoadBalancer to a DO **reserved IP** via `spec.loadBalancerIP`, templated as
+`${PIPECAT_SIP_LB_IP}` (the field DO's cloud-controller-manager honours — there is
+no annotation for it). Because kustomize doesn't interpolate env vars, render this
+overlay through **`envsubst` scoped to that one variable** — unscoped, it would also
+eat the `${...}`/`$(...)` shell expansions in the detect-ip / busybox command strings:
+
+```bash
+# my-doks/kustomization.yaml — resources: [../overlays/sipbridge], components: [../components/cloud-digitalocean]
+export PIPECAT_SIP_LB_IP=143.198.248.40        # an existing, unassigned DO reserved IP in the cluster region
+kubectl kustomize my-doks | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+```
+
+Leave `PIPECAT_SIP_LB_IP` unset to fall back to an ephemeral DOKS-assigned IP. The
+var can live in `agents/pipecat/.env.<env>` alongside the secrets (it's a render var,
+not bundled) so the same file is the one place operators edit.
+
 ## Per-cloud notes
 
 **GCP / GKE.** Public node pools get external IPs by default. `type:
@@ -278,7 +295,10 @@ ranges in the node security group. Requires the AWS Load Balancer Controller.
 
 **DigitalOcean / DOKS.** Worker droplets have public IPs by default. Use
 `components/cloud-digitalocean` (TCP-mode LB). Attach a DO Cloud Firewall to the
-SIP node pool allowing `TCP 5061` and `UDP 10000-20000` from the SBC ranges.
+SIP node pool allowing `TCP 5061` and `UDP 10000-20000` from the SBC ranges. To
+pin the LB to a **reserved IP** instead of an ephemeral one, set
+`PIPECAT_SIP_LB_IP` and render via scoped `envsubst` — see *Adding per-cloud LB
+annotations* above.
 
 **imagePullSecret for Artifact Registry (EKS/DOKS):**
 ```bash
