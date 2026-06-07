@@ -57,7 +57,7 @@ container:
 
 ```bash
 cd agents/pipecat
-cp .env.example .env       # populate tokens, provider keys, EXT_IP_ADDRESS
+cp env-example .env        # populate tokens, provider keys, EXT_IP_ADDRESS
 docker compose --profile freeswitch   up --build   # or
 docker compose --profile voiceblender up --build   # or
 docker compose --profile sipbridge    up --build   # or

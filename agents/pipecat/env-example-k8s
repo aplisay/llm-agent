@@ -1,6 +1,6 @@
 # Pipecat agent stack — Kubernetes environment template.
 #
-# This is the k8s counterpart to .env.example (which targets the docker-compose
+# This is the k8s counterpart to env-example (which targets the docker-compose
 # / VM deploy). It exists because two things differ in Kubernetes:
 #
 #   1. Per-node IPs are auto-detected, NOT set here. The detect-ip initContainer
@@ -24,7 +24,7 @@
 # this template, as agents/pipecat/.env.<env>), fill in the secrets, and feed it
 # to the publisher:
 #
-#     cp agents/pipecat/.env.example.k8s agents/pipecat/.env.staging
+#     cp agents/pipecat/env-example-k8s agents/pipecat/.env.staging
 #     # edit .env.staging — fill in the SECRETS section
 #     cd agents/pipecat/deploy/k8s
 #     ../bundle-secretenv.sh --env=staging        # -> Secret pipecat-secretenv

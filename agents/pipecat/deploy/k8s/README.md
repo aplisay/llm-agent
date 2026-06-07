@@ -98,7 +98,7 @@ This uses the **secretenv bundle** — one encrypted Secret for every credential
 #    fill in the secrets (tokens, provider keys, PIPECAT_SIP_PASSWORD, …). It
 #    lives next to the template as agents/pipecat/.env.<env>, and is git-ignored.
 cd agents/pipecat
-cp .env.example.k8s .env.staging          # or .env.production
+cp env-example-k8s .env.staging           # or .env.production
 ${EDITOR:-vi} .env.staging                # fill in the SECRETS section
 
 # 2. Encrypt it into the `pipecat-secretenv` Secret. This also creates the
@@ -149,7 +149,7 @@ across different storage backends for defence in depth (an attacker needs both).
 from `deploy/k8s/`; it:
 
 1. reads the source `.env` at **`agents/pipecat/.env.<env>`** (two levels up —
-   build it from `agents/pipecat/.env.example.k8s`),
+   build it from `agents/pipecat/env-example-k8s`),
 2. encrypts it with the canonical `secretenv` CLI (pinned to the version the
    containers decrypt with, so the bundle is always wire-compatible),
 3. creates the `pipecat` namespace (with PSA labels) if needed, and
@@ -161,7 +161,7 @@ cd agents/pipecat/deploy/k8s
 ../bundle-secretenv.sh --env=staging        # or --env=production
 ```
 
-`.env.example.k8s` lists the secrets and deliberately OMITS per-node values
+`env-example-k8s` lists the secrets and deliberately OMITS per-node values
 (`EXT_IP_ADDRESS`, `SIPBRIDGE_SIP_SIGNAL_IP`/`MEDIA_IP`) — the `detect-ip`
 initContainer sets those per node, and bundling them would override detection and
 break media. The `.env.<env>` you create is git-ignored. (The same script with a
