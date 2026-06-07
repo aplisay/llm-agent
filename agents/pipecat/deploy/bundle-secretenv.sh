@@ -109,8 +109,8 @@ ENV_UPPER=$(printf '%s' "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
 
 if [ -z "$ENV_FILE" ]; then
     case "$ENVIRONMENT" in
-        dev) ENV_FILE="$(pwd)/.env" ;;
-        *)   ENV_FILE="$(pwd)/.env.$ENVIRONMENT" ;;
+        dev) ENV_FILE="$(pwd)/../../.env" ;;
+        *)   ENV_FILE="$(pwd)/../../.env.$ENVIRONMENT" ;;
     esac
 fi
 if [ ! -f "$ENV_FILE" ]; then
