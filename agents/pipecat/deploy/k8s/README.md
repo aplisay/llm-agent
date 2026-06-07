@@ -256,37 +256,27 @@ components:
 kubectl apply -k my-eks
 ```
 
-**DigitalOcean — reserved (static) LB IP.** `components/cloud-digitalocean` pins the
-SIP LoadBalancer to a DO **reserved IP** via `spec.loadBalancerIP`, templated as
-`${PIPECAT_SIP_LB_IP}` (the field DO's cloud-controller-manager honours — there is
-no annotation for it). The committed `do-staging/` and `do-production/` overlays combine `overlays/sipbridge`
-with this component (production also layers `env-production` for `:latest` images);
-the **`apply-sip-lb.sh`** wrapper reads `PIPECAT_SIP_LB_IP` from
-`agents/pipecat/.env.<env>` and renders it in. It defaults the overlay to `do-<env>`:
+**DigitalOcean — stable LB IP.** DO does **not** let you assign a reserved IP to a
+*managed* load balancer: reserved IPs attach to Droplets only, and the CCM ignores
+`spec.loadBalancerIP` (it just provisions a fresh DO IP). Instead, pin the LB's
+**name** so the CCM always reconciles the same LB and its DO-assigned IP persists.
+The committed `do-staging/` and `do-production/` overlays do this — `overlays/sipbridge`
++ `components/cloud-digitalocean` + a stable `do-loadbalancer-name`
+(`pipecat-sip-staging` / `pipecat-sip-production`); production also layers
+`env-production` for `:latest` images:
 
 ```bash
 cd agents/pipecat/deploy/k8s
-./apply-sip-lb.sh --env=staging              # reads .env.staging, applies do-staging (:next)
-./apply-sip-lb.sh --env=production           # reads .env.production, applies do-production (:latest)
-./apply-sip-lb.sh --env=staging --dry-run    # print the rendered YAML, no apply
+kubectl apply -k do-staging      # sipbridge + DO LB, name pipecat-sip-staging  (:next)
+kubectl apply -k do-production   # + env-production, name pipecat-sip-production (:latest)
 ```
 
-Staging and production use **different** reserved IPs — set the right one in each
-environment's `.env.<env>`.
-
-Set `PIPECAT_SIP_LB_IP=<reserved-ip>` in `agents/pipecat/.env.staging` (it's a render
-var, **not** part of the secretenv bundle, so just putting it there is not enough on
-its own — the wrapper is what pulls it into the manifest). The reserved IP must be an
-existing, unassigned DO reserved IP **in the cluster's region**. Leave it unset to fall
-back to an ephemeral DOKS-assigned IP.
-
-Under the hood the wrapper does a **`envsubst` scoped to that one variable** —
-unscoped, it would also eat the `${...}`/`$(...)` shell expansions in the detect-ip /
-busybox command strings. To apply by hand without the wrapper, replicate the scoping:
+After the first apply, read the assigned IP and wire DNS / SBC ACLs to it — then
+**never delete the Service** (the name pin keeps the IP across Service recreation,
+but a deleted LB returns its IP to the pool):
 
 ```bash
-export PIPECAT_SIP_LB_IP=143.198.248.40
-kubectl kustomize do-staging | envsubst '${PIPECAT_SIP_LB_IP}' | kubectl apply -f -
+kubectl get svc pipecat-sip -n pipecat -o wide   # EXTERNAL-IP is your stable IP
 ```
 
 ## Per-cloud notes
@@ -310,11 +300,11 @@ public IPv4** (or attach an EIP per node). Use `components/cloud-aws` (NLB,
 ranges in the node security group. Requires the AWS Load Balancer Controller.
 
 **DigitalOcean / DOKS.** Worker droplets have public IPs by default. Use
-`components/cloud-digitalocean` (TCP-mode LB). Attach a DO Cloud Firewall to the
-SIP node pool allowing `TCP 5061` and `UDP 10000-20000` from the SBC ranges. To
-pin the LB to a **reserved IP** instead of an ephemeral one, set
-`PIPECAT_SIP_LB_IP` and render via scoped `envsubst` — see *Adding per-cloud LB
-annotations* above.
+`components/cloud-digitalocean` (TCP-mode LB), or the ready-made `do-staging` /
+`do-production` overlays. Attach a DO Cloud Firewall to the SIP node pool allowing
+`TCP 5061` and `UDP 10000-20000` from the SBC ranges. DO can't pin a reserved IP to
+a managed LB, so the overlays pin a stable `do-loadbalancer-name` and you wire DNS
+to the IP the LB is assigned — see *Adding per-cloud LB annotations* above.
 
 **imagePullSecret for Artifact Registry (EKS/DOKS):**
 ```bash

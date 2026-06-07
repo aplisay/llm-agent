@@ -1,18 +1,18 @@
 # DigitalOcean staging deploy target for the SIP gateway.
 #
-# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode,
-# and the reserved-IP pin via spec.loadBalancerIP=${PIPECAT_SIP_LB_IP}).
+# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode) +
+# a stable load-balancer name so the DO-assigned IP persists (see below).
 #
 # Images default to :next (staging) from the base — no env-production component.
-# For a production DO deploy, copy this to do-production/ and add
-# `../components/env-production` to flip images to :latest.
 #
-# DO NOT `kubectl apply -k` this directly: the cloud-digitalocean component
-# leaves a ${PIPECAT_SIP_LB_IP} placeholder that kustomize cannot expand. Render
-# it through the scoped envsubst wrapper, which sources the IP from .env.<env>:
+#     kubectl apply -k do-staging
 #
-#     ./apply-sip-lb.sh --env=staging              # apply
-#     ./apply-sip-lb.sh --env=staging --dry-run    # print rendered YAML only
+# Stable IP: DO can't pin a reserved IP to a managed LB, so we pin the LB *name*
+# (do-loadbalancer-name) instead. A fixed name means the CCM always reconciles the
+# same LB, so its DO-assigned IP stays put for the LB's lifetime. After the first
+# apply, read the IP and wire DNS/SBC to it — then never delete the Service:
+#
+#     kubectl get svc pipecat-sip -n pipecat -o wide   # EXTERNAL-IP = the stable IP
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -21,3 +21,12 @@ resources:
 
 components:
   - ../components/cloud-digitalocean
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
+        value: pipecat-sip-staging
