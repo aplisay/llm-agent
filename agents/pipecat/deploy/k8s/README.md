@@ -107,14 +107,20 @@ ${EDITOR:-vi} .env.staging                # fill in the SECRETS section
 cd deploy/k8s
 ../bundle-secretenv.sh --env=staging      # interactive confirm; add --yes to skip
 
-# 3. (Optional) a CA-signed SIP TLS cert; otherwise the gateway self-signs.
+# 3. Label the node(s) the SIP pod should run on. The DaemonSet ONLY schedules
+#    on nodes with this label — without it you get a DaemonSet with 0 pods.
+#    On a dedicated SIP node pool, label that pool (see Prerequisites). On a
+#    single-node / test cluster:
+kubectl label nodes --all aplisay.com/pipecat-sip=true
+
+# 4. (Optional) a CA-signed SIP TLS cert; otherwise the gateway self-signs.
 # kubectl create secret tls pipecat-sip-tls -n pipecat \
 #     --cert=fullchain.pem --key=privkey.pem
 
-# 4. Apply the gateway overlay (sipbridge is the default).
+# 5. Apply the gateway overlay (sipbridge is the default).
 kubectl apply -k overlays/sipbridge
 
-# 5. Verify (see "Verification" below).
+# 6. Verify (see "Verification" below).
 ```
 
 `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` in the
@@ -314,6 +320,22 @@ kubectl logs -n pipecat ds/pipecat-sip -c pipecat-worker
 # LB address for the SBC to target on 5061/TLS:
 kubectl get svc -n pipecat pipecat-sip
 ```
+
+**No pods?** A DaemonSet only schedules on nodes matching its `nodeSelector`
+(`aplisay.com/pipecat-sip=true`). If `kubectl get pods -n pipecat` is empty,
+check the desired count and node labels:
+
+```bash
+kubectl get ds -n pipecat                       # DESIRED 0 = no labelled node
+kubectl get nodes -L aplisay.com/pipecat-sip    # is any node labelled?
+kubectl label nodes --all aplisay.com/pipecat-sip=true   # label them (test cluster)
+```
+
+If pods exist but stay in `Init:` or `ImagePullBackOff`, `kubectl describe pod
+-n pipecat <pod>` shows why — commonly the private Artifact Registry images need
+an `imagePullSecret` (see *imagePullSecret for Artifact Registry* above), or
+`detect-ip` can't reach a metadata server (set `NODE_EXT_IP` in `pipecat-config`
+for clusters with no cloud metadata).
 
 End-to-end smoke test: point a test SBC at the LB address on **5061/TLS**, place a
 call, and confirm two-way audio (RTP reaching the answering node's external IP).
