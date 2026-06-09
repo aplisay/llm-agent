@@ -22,7 +22,7 @@ import {
   detachPrimaryAgentMediaAfterBridge,
   getLlmForTransferSession,
 } from "./voice-session-resources.js";
-import { userOwnsPhoneNumber } from "./scope.js";
+import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
@@ -183,43 +183,79 @@ async function validateTransferArgs(
     const pn: PhoneNumberInfo | null = await getPhoneEndpointByNumber(
       args.callerId
     );
-    if (!pn) {
-      throw new Error("Invalid callerId: number not found");
-    }
-    // Strict ownership check via userOwnsPhoneNumber. A direct
-    // `pn.organisationId !== agent.organisationId` comparison would let any
-    // no-org agent claim any other no-org tenant's outbound number as
-    // caller-ID (null !== null is false in JS); userOwnsRow alone would
-    // additionally refuse the legitimate no-org case where the user's
-    // listener has claimed a pool number, because PhoneNumber has no userId
-    // column. userOwnsPhoneNumber accepts either direct org match or
-    // transitive ownership via the bound Instance — the agent-db response
-    // attaches `Instance.userId/organisationId` for that branch.
-    if (
-      !userOwnsPhoneNumber(
-        { id: agent.userId, organisationId: agent.organisationId },
-        pn,
-      )
-    ) {
-      throw new Error(
-        "Invalid callerId: number not owned by this organisation"
-      );
-    }
-    if (!pn.outbound) {
-      throw new Error("Invalid callerId: outbound not enabled on this number");
-    }
-    // If inbound has aplisayId, require match
-    if (aplisayId) {
-      if (pn.aplisayId && pn.aplisayId !== aplisayId) {
-        throw new Error("Invalid callerId: aplisayId mismatch");
+    if (pn) {
+      // ---- Owned phone_numbers (E.164) caller-ID ----
+      // Strict ownership check via userOwnsPhoneNumber. A direct
+      // `pn.organisationId !== agent.organisationId` comparison would let any
+      // no-org agent claim any other no-org tenant's outbound number as
+      // caller-ID (null !== null is false in JS); userOwnsRow alone would
+      // additionally refuse the legitimate no-org case where the user's
+      // listener has claimed a pool number, because PhoneNumber has no userId
+      // column. userOwnsPhoneNumber accepts either direct org match or
+      // transitive ownership via the bound Instance — the agent-db response
+      // attaches `Instance.userId/organisationId` for that branch.
+      if (
+        !userOwnsPhoneNumber(
+          { id: agent.userId, organisationId: agent.organisationId },
+          pn,
+        )
+      ) {
+        throw new Error(
+          "Invalid callerId: number not owned by this organisation"
+        );
       }
+      if (!pn.outbound) {
+        throw new Error("Invalid callerId: outbound not enabled on this number");
+      }
+      // If inbound has aplisayId, require match
+      if (aplisayId) {
+        if (pn.aplisayId && pn.aplisayId !== aplisayId) {
+          throw new Error("Invalid callerId: aplisayId mismatch");
+        }
+      } else {
+        // WebRTC: adopt aplisayId from outbound number if available
+        if (pn.aplisayId) {
+          effectiveAplisayId = pn.aplisayId;
+        }
+      }
+      effectiveCallerId = pn.number;
     } else {
-      // WebRTC: adopt aplisayId from outbound number if available
-      if (pn.aplisayId) {
-        effectiveAplisayId = pn.aplisayId;
+      // ---- Phone-registration caller-ID ----
+      // A registration endpoint can originate a transfer (e.g. a WebRTC origin
+      // dialling out via a SIP-registration trunk). Its caller identity is the
+      // registration ROW, not an owned phone_numbers entry, so getPhoneEndpoint
+      // ByNumber (phone_numbers only) returns null and we must resolve the
+      // callerId as a registration endpoint ID. The caller-ID presented on the
+      // outbound leg is the registration's display number.
+      const reg: PhoneRegistrationInfo | null = await getPhoneEndpointById(
+        args.callerId
+      );
+      if (!reg) {
+        throw new Error("Invalid callerId: number not found");
       }
+      if (
+        !userOwnsRow(
+          { id: agent.userId, organisationId: agent.organisationId },
+          reg,
+        )
+      ) {
+        throw new Error(
+          "Invalid callerId: registration not owned by this organisation"
+        );
+      }
+      if (reg.outbound === false) {
+        throw new Error(
+          "Invalid callerId: outbound not enabled on this registration"
+        );
+      }
+      const regCallerNumber = reg.options?.displayNumber || reg.username || "";
+      if (!regCallerNumber) {
+        throw new Error(
+          "Invalid callerId: registration has no outbound caller number"
+        );
+      }
+      effectiveCallerId = regCallerNumber;
     }
-    effectiveCallerId = pn.number;
   }
 
   return { effectiveCallerId, effectiveAplisayId };
