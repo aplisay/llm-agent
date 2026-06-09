@@ -152,12 +152,24 @@ function canParticipantRefer(
 /**
  * Validates transfer arguments and resolves effective caller ID
  */
+interface RegistrationEgress {
+  registrationEndpointId: string;
+  b2buaGatewayIp: string;
+  b2buaGatewayTransport: string;
+  registrationUsername: string | null | undefined;
+}
+
 async function validateTransferArgs(
   args: TransferArgs,
   agent: Agent,
   calledId: string,
   aplisayId: string
-): Promise<{ effectiveCallerId: string; effectiveAplisayId: string }> {
+): Promise<{
+  effectiveCallerId: string;
+  effectiveAplisayId: string;
+  /** Set when the caller-ID is a phone_registration: the B-leg must egress via its B2BUA gateway. */
+  registrationEgress?: RegistrationEgress;
+}> {
   // Validate that transfer number matches the agent's outboundCallFilter if specified
   if (agent.options?.outboundCallFilter) {
     const filterRegexp = new RegExp(agent.options.outboundCallFilter);
@@ -177,6 +189,7 @@ async function validateTransferArgs(
 
   let effectiveCallerId = args.callerId || calledId;
   let effectiveAplisayId = aplisayId;
+  let registrationEgress: RegistrationEgress | undefined;
 
   // Validate overridden callerId if provided
   if (args.callerId) {
@@ -224,15 +237,16 @@ async function validateTransferArgs(
       // A registration endpoint can originate a transfer (e.g. a WebRTC origin
       // dialling out via a SIP-registration trunk). Its caller identity is the
       // registration ROW, not an owned phone_numbers entry, so getPhoneEndpoint
-      // ByNumber (phone_numbers only) returns null and we must resolve the
-      // callerId as a registration endpoint ID. The caller-ID presented on the
-      // outbound leg is the registration's display number.
+      // ByNumber (phone_numbers only) returns null and we resolve it by id.
       const reg: PhoneRegistrationInfo | null = await getPhoneEndpointById(
         args.callerId
       );
       if (!reg) {
         throw new Error("Invalid callerId: number not found");
       }
+      // Org-ownership gate, as for the e164 path. phone_registrations are
+      // organisation-scoped (no userId column), so userOwnsRow matches on the
+      // shared organisationId — which the agent-db `?id=` response must include.
       if (
         !userOwnsRow(
           { id: agent.userId, organisationId: agent.organisationId },
@@ -254,11 +268,32 @@ async function validateTransferArgs(
           "Invalid callerId: registration has no outbound caller number"
         );
       }
+      // The B-leg of a registration caller-ID transfer must egress via the
+      // registration's B2BUA gateway — same as the registration-originated path
+      // in worker.ts — so the bridge/consult dial routes to the registrar with
+      // the X-Aplisay-PhoneRegistration header and the registration username as
+      // the calling number, NOT the default outbound trunk.
+      const b2buaGatewayIp = String(reg.b2buaId ?? "").trim();
+      if (!b2buaGatewayIp) {
+        throw new Error(
+          "Invalid callerId: registration has no B2BUA gateway (b2buaId)"
+        );
+      }
+      registrationEgress = {
+        registrationEndpointId: args.callerId,
+        b2buaGatewayIp,
+        b2buaGatewayTransport: "tcp", // LiveKit↔B2BUA transport; mirrors worker.ts
+        registrationUsername: reg.username ?? null,
+      };
       effectiveCallerId = regCallerNumber;
     }
   }
 
-  return { effectiveCallerId, effectiveAplisayId };
+  return {
+    effectiveCallerId,
+    effectiveAplisayId,
+    ...(registrationEgress ? { registrationEgress } : {}),
+  };
 }
 
 /**
@@ -1511,12 +1546,23 @@ export async function handleTransfer(
   const operation = args.operation || "blind";
 
   // Validate and resolve transfer arguments
-  const { effectiveCallerId, effectiveAplisayId } = await validateTransferArgs(
-    args,
-    agent,
-    calledId,
-    aplisayId
-  );
+  const { effectiveCallerId, effectiveAplisayId, registrationEgress } =
+    await validateTransferArgs(args, agent, calledId, aplisayId);
+
+  // A registration caller-ID must egress via the registration's B2BUA gateway
+  // (X-Aplisay-PhoneRegistration header + the registration username as the
+  // calling number), NOT the default outbound trunk. Apply it onto the context
+  // so BOTH the blind-bridge and consultative dial paths pick it up — they read
+  // these fields from context (telephony.ts bridgeParticipant / consult dialler).
+  // WebRTC origins still bridge: canParticipantRefer returns false for non-SIP
+  // participants regardless of registrationOriginated.
+  if (registrationEgress) {
+    context.registrationOriginated = true;
+    context.registrationEndpointId = registrationEgress.registrationEndpointId;
+    context.b2buaGatewayIp = registrationEgress.b2buaGatewayIp;
+    context.b2buaGatewayTransport = registrationEgress.b2buaGatewayTransport;
+    context.registrationUsername = registrationEgress.registrationUsername;
+  }
 
   // Check canRefer capability (using trunk info from context)
   const canRefer = canParticipantRefer(

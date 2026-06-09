@@ -170,6 +170,7 @@ const phoneEndpointsList = (async (req, res) => {
             status: registration.status,
             state: registration.state,
             outbound: !!registration.outbound,
+            organisationId: registration.organisationId,
             instanceId: registration.instanceId,
             registrar: registration.registrar,
             username: registration.username,
@@ -197,6 +198,7 @@ const phoneEndpointsList = (async (req, res) => {
           status: r.status,
           state: r.state,
           outbound: !!r.outbound,
+          organisationId: r.organisationId,
           instanceId: r.instanceId,
           callReceived: r.callReceived ?? null,
         }));
@@ -372,6 +374,7 @@ phoneEndpointsList.apiDoc = {
                       properties: {
                         name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                         id: { type: 'string', description: 'Registration ID' },
+                        organisationId: { type: 'string', format: 'uuid', nullable: true, description: 'Owning organisation' },
                         status: { type: 'string', description: 'High-level status of the endpoint', enum: ['active', 'failed', 'disabled'] },
                         state: { type: 'string', description: 'Registration state', enum: ['initial', 'registering', 'registered', 'failed'] },
                         handler: { type: 'string', description: 'The handler type for this phone endpoint' },
