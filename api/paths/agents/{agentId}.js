@@ -1,5 +1,6 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
+import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
 
 let log;
 
@@ -131,7 +132,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { name, description, prompt, options, functions, keys, modelName } = req.body;
+  let { name, description, prompt, options, functions, keys, modelName, type } = req.body;
   let { agentId } = req.params;
 
   try {
@@ -139,12 +140,19 @@ const agentUpdate = async (req, res) => {
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    await agent.update({ name, description, prompt, options, functions, keys, modelName });
+    // Static transfer_agent/subagent targets must reference accessible agents of the right type
+    functions && await validateAgentTargets(functions, {
+      lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } })
+    });
+    await agent.update({ name, description, prompt, options, functions, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
     req.log.error(err);
+    if (err instanceof AgentSetValidationError) {
+      return res.status(400).send({ message: err.message });
+    }
     err.message.includes('not found') ? res.status(404).send(err) : res.status(400).send(err);
   }
 };
@@ -180,6 +188,9 @@ agentUpdate.apiDoc = {
             },
             modelName: {
               $ref: '#/components/schemas/ModelName',
+            },
+            type: {
+              $ref: '#/components/schemas/AgentType',
             },
             prompt: {
               $ref: '#/components/schemas/Prompt',

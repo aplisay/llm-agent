@@ -1,10 +1,19 @@
 import { llm } from "@livekit/agents";
+import type { voice } from "@livekit/agents";
 import logger from "./logger.js";
 import { functionHandler } from "../agent-lib/function-handler.js";
+import { invokeSubagent } from "./api-client.js";
 import type { Agent, AgentFunction, Call, CallMetadata } from "./api-client.js";
 import type { MessageData, TransferArgs, FunctionResult } from "./types.js";
 import type { Room } from "@livekit/rtc-node";
 import type { ParticipantInfo } from "./types.js";
+
+/** Resolved arguments of a builtin transfer_agent platform function call. */
+export interface AgentTransferArgs {
+  agent: string;
+  includeHistory?: boolean;
+  summary?: string;
+}
 
 /**
  * Creates tools for the agent based on the agent's functions configuration
@@ -19,6 +28,7 @@ export function createTools({
   onHangup,
   onTransfer,
   getTransferState,
+  onAgentTransfer,
 }: {
   agent: Agent;
   call: Call;
@@ -38,6 +48,13 @@ export function createTools({
     state: "none" | "dialling" | "talking" | "rejected" | "failed";
     description: string;
   };
+  /**
+   * Performs an in-call agent-to-agent handover: resolves the target agent
+   * definition and returns the new voice.Agent to hand the session to.
+   * When provided, builtin `transfer_agent` functions are honoured by
+   * returning an llm.handoff() from the tool execution.
+   */
+  onAgentTransfer?: (args: AgentTransferArgs) => Promise<voice.Agent>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -69,6 +86,11 @@ export function createTools({
                 { name: fnc.name, args, fnc },
                 `Got function call ${fnc.name}`,
               );
+              // Set when a builtin transfer_agent function fires: the handover
+              // itself happens after functionHandler returns, so the resolved
+              // (static/metadata) parameters come from the shared handler but
+              // the tool can still return an llm.handoff() to the session.
+              let pendingAgentTransfer: AgentTransferArgs | null = null;
               let result = (await functionHandler(
                 [{ ...fnc, input: args }],
                 functions,
@@ -87,6 +109,24 @@ export function createTools({
                       description: state.description,
                     };
                   },
+                  ...(onAgentTransfer && {
+                    transfer_agent: async (a: AgentTransferArgs) => {
+                      pendingAgentTransfer = a;
+                      return {
+                        status: "OK",
+                        detail: "handing the caller over to the new agent",
+                      };
+                    },
+                  }),
+                  subagent: async (a: Record<string, unknown>) => {
+                    const { agent: targetAgentId, ...input } = a;
+                    return await invokeSubagent(
+                      String(targetAgentId),
+                      input,
+                      metadata,
+                      { organisationId: agent.organisationId, callId: call.id },
+                    );
+                  },
                 },
                 {
                   allowToolsCallsMetadataPaths: true,
@@ -100,6 +140,27 @@ export function createTools({
                   { data, error, agentId: agent.id, callId: call.id },
                   "error executing function",
                 );
+              }
+              if (pendingAgentTransfer && onAgentTransfer) {
+                try {
+                  const newAgent = await onAgentTransfer(pendingAgentTransfer);
+                  logger.info(
+                    {
+                      from: agent.id,
+                      to: (pendingAgentTransfer as AgentTransferArgs).agent,
+                      callId: call.id,
+                    },
+                    "transfer_agent: handing session to new agent",
+                  );
+                  return llm.handoff({ agent: newAgent, returns: data });
+                } catch (e) {
+                  const message = (e as Error).message;
+                  logger.info(
+                    { error: message, args: pendingAgentTransfer },
+                    "transfer_agent failed",
+                  );
+                  return `FAILED - could not transfer to the requested agent: ${message}`;
+                }
               }
               logger.debug(
                 { data },

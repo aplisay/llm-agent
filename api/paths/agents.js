@@ -1,5 +1,6 @@
 import { Agent, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
 
 let appParameters, log;
 
@@ -17,19 +18,28 @@ export default function (logger, voices, wsServer) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { name, description, modelName, prompt, options, functions, keys } = req.body;
+  let { name, description, modelName, prompt, options, functions, keys, type } = req.body;
   let { id: userId, organisationId } = res.locals.user;
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, userId, organisationId });
+  // Default the agent type from the model's handler prefix when not given explicitly
+  type = type ?? (typeof modelName === 'string' && modelName.startsWith('text:') ? 'text' : 'interactive-audio');
+  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, type, userId, organisationId });
 
-  log.info({ modelName, prompt, options, functions, userId, organisationId}, 'create API call');
+  log.info({ modelName, prompt, options, functions, userId, organisationId, type }, 'create API call');
 
   try {
+    // Static transfer_agent/subagent targets must reference accessible agents of the right type
+    functions && await validateAgentTargets(functions, {
+      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } })
+    });
     await agent.save();
     res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
     req.log.error(err, 'DATABASE ERROR: creating agent');
-    if (err.name === 'SequelizeValidationError') {
+    if (err instanceof AgentSetValidationError) {
+      res.status(400).send({ message: err.message });
+    }
+    else if (err.name === 'SequelizeValidationError') {
       res.status(400).send(err.errors.map((e) => e.message));
     }
     else {
@@ -57,6 +67,9 @@ agentCreate.apiDoc = {
             },
             modelName: {
               $ref: '#/components/schemas/ModelName'
+            },
+            type: {
+              $ref: '#/components/schemas/AgentType'
             },
             prompt: {
               $ref: '#/components/schemas/Prompt'

@@ -61,6 +61,12 @@ tags:
   - name: Listeners
     description: |-
       Listener operations manage agent listener instances, including activation, join, originate, and deletion.
+  - name: Agent Sets
+    description: |-
+      Agent Sets group a number of agents which are created, updated and deleted together from a single JSON document.
+      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent` and
+      `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
+      on creation or update.
 
 components:
   schemas:
@@ -110,6 +116,8 @@ components:
       properties:
         modelName:
           $ref: "#/components/schemas/ModelName"
+        type:
+          $ref: "#/components/schemas/AgentType"
         prompt:
           $ref: "#/components/schemas/Prompt"
         options:
@@ -118,6 +126,111 @@ components:
           $ref: "#/components/schemas/Functions"
         keys:
           $ref: "#/components/schemas/Keys"
+    AgentType:
+      type: string
+      description: |-
+        The interaction type of the agent:
+         * `interactive-audio` (default) — the agent is connected to a live audio session (telephone call or WebRTC room).
+         * `text` — a headless agent which is invoked like a function (via `POST /agents/{agentId}/invoke`, or by a voice
+           agent through a `subagent` builtin function) and returns its work product by calling a builtin `result`
+           platform function. Text agents use `text:`-prefixed model names (e.g. `text:openai/gpt-4o`) and is defaulted
+           from the model name when omitted.
+      enum: ["interactive-audio", "text"]
+      default: interactive-audio
+      example: interactive-audio
+    AgentSetMemberInput:
+      description: |-
+        An agent definition within an agent-set document: a normal agent create body plus the
+        set-unique `label` used for intra-set references.
+      allOf:
+        - type: object
+          required:
+            - label
+          properties:
+            label:
+              type: string
+              description: Shortform label, unique within the set, used in `label:<label>` references
+              pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$'
+              example: sales
+            name:
+              type: string
+            description:
+              type: string
+        - $ref: "#/components/schemas/Agent"
+    AgentSetInput:
+      type: object
+      description: |-
+        Document describing a complete agent set. Within member `functions`, `transfer_agent` and `subagent`
+        builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference other
+        members; these are resolved to real agent IDs when the set is created or updated (the original label is
+        retained in a `fromLabel` annotation so the stored document still round-trips through GET and PUT).
+      required:
+        - agents
+      properties:
+        name:
+          type: string
+          description: Display name for the agent set
+        description:
+          type: string
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSetMemberInput"
+    AgentSet:
+      type: object
+      description: An agent set with its full member agent definitions (member `keys` are never returned).
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        agents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AgentSetListItem:
+      type: object
+      description: Summary row returned by GET /agent-sets.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              label:
+                type: string
+              name:
+                type: string
+              modelName:
+                $ref: "#/components/schemas/ModelName"
+              type:
+                $ref: "#/components/schemas/AgentType"
     AgentListItem:
       type: object
       description: |-
@@ -712,9 +825,29 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata"]
-            description: >  
+            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result"]
+            description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
+                  * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit agents only). Parameters:
+                    - `agent` (string, required): the target agent ID. Must be `static` or `metadata` sourced (never `generated`).
+                      Within an agent-set document a `static` value may be a `label:<label>` reference to another member of the set.
+                      The target must be an `interactive-audio` agent in the same organisation.
+                    - `includeHistory` (boolean, optional, `static`): when `true`, the conversation transcript so far is handed to the
+                      new agent as part of its context. When omitted or `false`, the new agent starts with a clean context.
+                    - `summary` (string, optional, `generated`): a short handover summary the transferring LLM can compose for the
+                      next agent. Delivered to the new agent alongside its prompt.
+                    The call record continues uninterrupted; the new agent's prompt and functions replace the old agent's
+                    for the rest of the call. Note: on Ultravox realtime models the platform cannot swap the *tool set*
+                    mid-call (provider limitation) — prompt/instructions handover works on all LiveKit stacks.
+                  * `subagent` invokes a `text` type agent like a function call (LiveKit and text agents). Parameters:
+                    - `agent` (string, required): the target text agent ID, `static` or `metadata` sourced (never `generated`).
+                      `label:<label>` references are supported within agent-set documents.
+                    - any further `generated` parameters are forwarded to the text agent as its task input.
+                    The platform runs the text agent headlessly until it calls its `result` platform function; those result
+                    arguments are returned to the calling LLM as this function's result.
+                  * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
+                    (generated) arguments the agent passes become the result returned to the invoker. Define its
+                    `input_schema` to describe the output you require from the agent.
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.

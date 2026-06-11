@@ -55,6 +55,11 @@ export interface Agent {
   userId: string;
   modelName: string;
   organisationId: string;
+  /** 'interactive-audio' (default) or 'text' (headless subagent) */
+  type?: string;
+  /** Shortform label within an agent set */
+  label?: string;
+  name?: string;
   prompt?: string;
   options?: {
     /**
@@ -274,6 +279,49 @@ export interface Agent {
  */
 export async function getAgentById(agentId: string): Promise<Agent> {
   return makeApiRequest<Agent>(`/api/agents/${encodeURIComponent(agentId)}`);
+}
+
+/**
+ * Fetch a full agent definition (including keys) via the internal agent-db API.
+ * Used for in-call transfer_agent handover. Always pass the calling call's
+ * organisation id so the server can refuse cross-tenant fetches.
+ */
+export async function getInternalAgentById(
+  agentId: string,
+  expectedOrganisationId?: string,
+): Promise<Agent> {
+  const query = new URLSearchParams({
+    agentId,
+    ...(expectedOrganisationId ? { expectedOrganisationId } : {}),
+  });
+  return makeApiRequest<Agent>(`/api/agent-db/agent?${query.toString()}`);
+}
+
+/**
+ * Invoke a `text` type agent as a subagent via the internal agent-db API.
+ * Returns the subagent's result payload (the arguments it passed to its
+ * builtin `result` function).
+ */
+export async function invokeSubagent(
+  agentId: string,
+  input: Record<string, unknown>,
+  metadata: CallMetadata | undefined,
+  context: { organisationId: string; callId?: string },
+): Promise<unknown> {
+  const data = await makeApiRequest<{ result: unknown; complete: boolean }>(
+    `/api/agent-db/subagent`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId,
+        input,
+        metadata,
+        organisationId: context.organisationId,
+        callId: context.callId,
+      }),
+    },
+  );
+  return data?.result;
 }
 
 export interface AgentFunction {

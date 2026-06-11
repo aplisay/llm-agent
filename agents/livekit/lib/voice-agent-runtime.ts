@@ -1,11 +1,16 @@
-import { voice } from "@livekit/agents";
+import { llm, voice } from "@livekit/agents";
 import type { VAD } from "@livekit/agents";
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
 import logger, { getCaptureStats } from "./logger.js";
 import { withTimeout } from "./utils.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
-import { setCallRecordingData, saveInvocationLog } from "./api-client.js";
+import {
+  setCallRecordingData,
+  saveInvocationLog,
+  getInternalAgentById,
+} from "./api-client.js";
+import type { Agent } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
@@ -553,22 +558,89 @@ export async function runAgentWorker({
     }
   };
 
+  // ---- Agent-to-agent transfer (builtin transfer_agent) ----
+  // Conversation turns are captured so an in-call handover can carry the
+  // history into the next agent's context when `includeHistory` is set.
+  const conversationHistory: Array<{ role: "user" | "agent"; text: string }> =
+    [];
+
+  /**
+   * Resolve a transfer_agent call into a new voice.Agent for llm.handoff().
+   * The target definition is fetched through the internal agent-db API with a
+   * same-organisation guard; its own tools are built recursively (so chained
+   * agent-to-agent transfers work) and its prompt is augmented with the
+   * optional handover summary and conversation history.
+   *
+   * Note: realtime providers vary in how much of a swap they support mid-call
+   * (Ultravox cannot replace the tool set after call creation), so history
+   * exclusion is also reinforced via instructions rather than relying solely
+   * on a fresh chat context.
+   */
+  const onAgentTransfer = async ({
+    agent: targetAgentId,
+    includeHistory,
+    summary,
+  }: {
+    agent: string;
+    includeHistory?: boolean;
+    summary?: string;
+  }): Promise<voice.Agent> => {
+    const newAgentDef = await getInternalAgentById(
+      targetAgentId,
+      agent.organisationId,
+    );
+    if ((newAgentDef.type ?? "interactive-audio") !== "interactive-audio") {
+      throw new Error(
+        `agent ${targetAgentId} is type ${newAgentDef.type} and cannot take over a live call`,
+      );
+    }
+    let instructions = newAgentDef.prompt || "You are a helpful assistant.";
+    instructions +=
+      "\n\nYou have just taken over a live call from another agent." +
+      (includeHistory
+        ? ""
+        : " Treat this as a fresh conversation: disregard any prior context.");
+    if (summary) {
+      instructions += `\n\n# Handover summary from the previous agent\n${summary}`;
+    }
+    if (includeHistory && conversationHistory.length) {
+      instructions += `\n\n# Conversation so far\n${conversationHistory
+        .map(
+          ({ role, text }) =>
+            `${role === "user" ? "Caller" : "Agent"}: ${text}`,
+        )
+        .join("\n")}`;
+    }
+    sendMessage({
+      inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
+    });
+    return new voice.Agent({
+      instructions,
+      tools: buildTools(newAgentDef),
+      ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
+    });
+  };
+
+  const buildTools = (agentDef: Agent) =>
+    createTools({
+      agent: agentDef,
+      call,
+      room: room!,
+      participant,
+      sendMessage,
+      metadata,
+      onHangup,
+      onTransfer,
+      getTransferState,
+      onAgentTransfer,
+    });
+
   try {
     // Wrap setup operations with timeout
     await withTimeout(
       async () => {
         operation = "createTools";
-        const tools = createTools({
-          agent,
-          call,
-          room: room!,
-          participant,
-          sendMessage,
-          metadata,
-          onHangup,
-          onTransfer,
-          getTransferState,
-        });
+        const tools = buildTools(agent);
 
         operation = "createModel";
         const maxDurationString: string = agent?.options?.maxDuration || "305s";
@@ -635,6 +707,10 @@ export async function runAgentWorker({
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
               if (role !== "user" || text !== initialUserTranscriptToSkip) {
+                conversationHistory.push({
+                  role: role === "user" ? "user" : "agent",
+                  text,
+                });
                 sendMessage(
                   {
                     [role === "user" ? "user" : "agent"]: text,

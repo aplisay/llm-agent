@@ -1,0 +1,233 @@
+# Agent Sets, Agent-to-Agent Transfers, and Text Subagents
+
+> Status: experimental (branch `agent-set-experiment`). LiveKit is the reference
+> runtime for the in-call features; see the support matrix below.
+
+Three related features that let a single phone number or room front a *team* of
+agents rather than one monolithic prompt:
+
+1. **Agent-to-agent transfers** — a live call is handed over from one agent
+   definition to another mid-call, with or without the conversation history.
+2. **Agent sets** — a group of agents is created, updated and deleted as a
+   single unit from one JSON document, using shortform labels for the
+   references between members.
+3. **Text subagents** — a new headless `text` agent type which a voice agent
+   invokes like a function; the text agent does its work (its own LLM loop and
+   tool calls) and returns its output by calling a definitive `result`
+   function.
+
+---
+
+## 1. Agent-to-agent transfers (`transfer_agent` builtin)
+
+A new builtin platform function, validated like `transfer` but targeting an
+*agent* rather than a phone number:
+
+```json
+{
+  "name": "transfer_to_sales",
+  "implementation": "builtin",
+  "platform": "transfer_agent",
+  "description": "Hand the caller to the sales agent when they want to buy",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "agent": { "type": "string", "source": "static", "from": "<agent-uuid>" },
+      "includeHistory": { "type": "boolean", "source": "static", "from": true },
+      "summary": {
+        "type": "string",
+        "description": "One or two sentences for the next agent about the caller and what they need"
+      }
+    }
+  }
+}
+```
+
+Parameters:
+
+* `agent` (required): the target agent's UUID. Must be `static` or `metadata`
+  sourced — never `generated`, for the same anti-abuse reasons as the
+  `transfer` function's `number`. Inside an agent-set document this can be a
+  `label:<label>` reference (see below). The target must be an
+  `interactive-audio` agent in the same organisation.
+* `includeHistory` (optional, `static`): when `true` the transcript of the
+  conversation so far is carried into the new agent's context. When omitted or
+  `false` the new agent starts clean and is explicitly told to disregard prior
+  context.
+* `summary` (optional, `generated`): the transferring LLM composes a short
+  handover note which is delivered to the new agent alongside its prompt.
+
+Runtime behaviour (LiveKit worker): the tool resolves the target definition
+through the internal agent API (with a same-organisation guard), builds the new
+agent's tools, and performs an SDK-level agent handoff (`llm.handoff()`) on the
+live session. The call record continues uninterrupted; the progress log gets an
+`inject` entry noting the handover. Chained transfers (A → B → C, or back to A)
+work because each handed-over agent's own `transfer_agent` functions are wired
+the same way.
+
+Caveats:
+
+* The session keeps its existing voice/model: `transfer_agent` swaps prompt,
+  tools and behaviour, not the underlying realtime model or TTS voice.
+* Ultravox realtime cannot replace the *tool set* after call creation
+  (provider limitation). Prompt/instruction handover works on all LiveKit
+  stacks; for full tool swaps use pipeline or OpenAI realtime models.
+
+## 2. Agent sets (`/agent-sets` API)
+
+Create a whole team in one call:
+
+```http
+POST /api/agent-sets
+```
+
+```json
+{
+  "name": "Front office",
+  "description": "Triage, sales and a research subagent",
+  "agents": [
+    {
+      "label": "triage",
+      "name": "Triage",
+      "modelName": "livekit:ultravox/ultravox-70b",
+      "prompt": "You answer the phone, work out what the caller needs...",
+      "functions": [
+        {
+          "name": "transfer_to_sales",
+          "implementation": "builtin",
+          "platform": "transfer_agent",
+          "description": "Hand over to sales",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "agent": { "type": "string", "source": "static", "from": "label:sales" },
+              "includeHistory": { "type": "boolean", "source": "static", "from": true }
+            }
+          }
+        },
+        {
+          "name": "ask_researcher",
+          "implementation": "builtin",
+          "platform": "subagent",
+          "description": "Ask the research agent to look something up",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "agent": { "type": "string", "source": "static", "from": "label:researcher" },
+              "question": { "type": "string", "required": true, "description": "What to research" }
+            }
+          }
+        }
+      ]
+    },
+    { "label": "sales", "modelName": "livekit:ultravox/ultravox-70b", "prompt": "You are the sales agent..." },
+    {
+      "label": "researcher",
+      "type": "text",
+      "modelName": "text:openai/gpt-4o",
+      "prompt": "You answer product questions concisely...",
+      "functions": [
+        {
+          "name": "deliver_result",
+          "implementation": "builtin",
+          "platform": "result",
+          "description": "Deliver your answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "answer": { "type": "string", "required": true, "description": "The answer" }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Semantics:
+
+* Every member needs a `label` (unique within the set,
+  `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`). Members are otherwise ordinary agents —
+  they appear in `GET /agents`, can be activated with listeners, etc.
+* `label:<label>` references in `transfer_agent`/`subagent` `agent` parameters
+  are **fixed up to the real agent UUIDs** when the set is created or updated.
+  The original label is kept alongside the resolved id as `fromLabel`, so a
+  document read back with `GET /agent-sets/{id}` can be edited and `PUT` back
+  without re-writing ids — labelled references are always re-resolved against
+  the current membership.
+* The whole operation is transactional: a bad reference (unknown label,
+  cross-tenant UUID, wrong target type) fails the entire request and leaves
+  nothing behind.
+* `PUT /agent-sets/{id}` reconciles by label: existing labels are updated in
+  place (keeping their agent ids — live listeners stay attached), new labels
+  are created, absent labels are deleted.
+* `DELETE /agent-sets/{id}` removes the set and all member agents.
+
+Endpoints: `POST /agent-sets`, `GET /agent-sets`, `GET /agent-sets/{id}`,
+`PUT /agent-sets/{id}`, `DELETE /agent-sets/{id}`.
+
+Cross-reference rules: `transfer_agent` must target an `interactive-audio`
+agent; `subagent` must target a `text` agent; static UUID targets are checked
+for existence and tenancy at create/update time (this applies to plain
+`POST /agents` too).
+
+## 3. Text subagents (`type: "text"`, `subagent` and `result` builtins)
+
+A new agent type for headless work:
+
+* `Agent.type` is `interactive-audio` (default) or `text`. The type is
+  defaulted from the model name, so any agent with a `text:`-prefixed model is
+  a text agent.
+* Text agents use `text:<provider>/<model>` model names
+  (e.g. `text:openai/gpt-4o`, `text:anthropic/claude-3-5-sonnet-20240620`,
+  `text:gemini/gemini-1.5-pro`, `text:groq/...`) — the same provider
+  implementations as the Jambonz pipeline, with no audio leg.
+* They cannot `listen`; they are invoked:
+  * by a voice agent through a builtin `subagent` platform function — the
+    function's `generated` parameters become the subagent's task input, and
+    the function result delivered back to the calling LLM is whatever the
+    subagent passed to its `result` function; or
+  * directly via `POST /agents/{agentId}/invoke` with
+    `{ "input": {...}, "metadata": {...} }` — handy for testing a text agent in
+    isolation. The response is `{ result, complete, transcript }`.
+* Inside the invocation, the text agent runs a normal tool loop: its own
+  `rest`/`stub` functions are dispatched through the shared function handler,
+  and it may itself call further `subagent` functions (nesting is depth-limited
+  to 3). The loop ends when the agent calls a builtin `result` platform
+  function; the `input_schema` of that function is how you specify the shape of
+  output you require. An agent with no `result` function returns its first
+  plain-text completion as `{ "text": ... }`.
+* Server-side execution is bounded: 10 LLM round trips per invocation and a
+  wall-clock timeout (`SUBAGENT_TIMEOUT` ms, default 60000).
+
+The voice-side `subagent` dispatch is available in the LiveKit worker (via the
+internal `/agent-db/subagent` API) and anywhere the shared function handler
+runs in-process.
+
+## Support matrix
+
+| Capability | livekit | jambonz | pipecat | ultravox | text |
+|---|---|---|---|---|---|
+| `transfer_agent` | ✅ (see Ultravox tool caveat) | ❌ | ❌ (planned) | ❌ | n/a |
+| `subagent` caller | ✅ | ❌ | ❌ (planned) | ❌ | ✅ (nested) |
+| `result` / invokable | n/a | n/a | n/a | n/a | ✅ |
+
+Validation enforces this: saving an agent with a `transfer_agent`/`subagent`
+function on a handler that doesn't support it is rejected with a clear error,
+as is a `result` function on a non-text agent.
+
+## Internal APIs (shared-token, workers only)
+
+* `GET /agent-db/agent?agentId=...&expectedOrganisationId=...` — full agent
+  definition fetch for in-call handover (404 on organisation mismatch).
+* `POST /agent-db/subagent` — `{ agentId, input, metadata, organisationId,
+  callId }` → `{ result, complete }`.
+
+## Schema/database notes
+
+* New `agent_sets` table; `agents` gains `type`, `label`, and `agent_set_id`
+  (unique index on `(agent_set_id, label)`); schema version 37.
+* Function definitions: new builtin platforms `transfer_agent`, `subagent`,
+  `result` (OpenAPI `Functions` schema updated); `fromLabel` annotation on
+  fixed-up `agent` parameters.
