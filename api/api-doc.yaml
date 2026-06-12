@@ -87,6 +87,10 @@ components:
           description: This model supports function calling via the `functions` property
           type: boolean
           example: true
+        supportsMcp:
+          description: This model supports remote MCP servers via the `mcpServers` property
+          type: boolean
+          example: true
         audioModel:
           description: This model is a speech-to-speech audio model
           type: boolean
@@ -124,6 +128,8 @@ components:
           $ref: "#/components/schemas/AgentOptions"
         functions:
           $ref: "#/components/schemas/Functions"
+        mcpServers:
+          $ref: "#/components/schemas/McpServers"
         keys:
           $ref: "#/components/schemas/Keys"
     AgentType:
@@ -235,7 +241,7 @@ components:
       type: object
       description: |-
         Summary row returned by GET /agents: id, display fields, model, and timestamps only.
-        No options, keys, listeners, prompt, or functions — use GET /agents/{agentId} for the full agent.
+        No options, keys, listeners, prompt, functions, or mcpServers — use GET /agents/{agentId} for the full agent.
       properties:
         id:
           type: string
@@ -919,6 +925,47 @@ components:
             example: WEATHER_API_KEY
           input_schema:
             $ref: "#/components/schemas/Parameters"
+    McpServers:
+      type: array
+      description: |-
+        An array of remote MCP (Model Context Protocol) servers whose tools are made available
+        to the LLM as additional callable tools, alongside any `functions`.
+
+        Only consumed by handlers that can act as an MCP client. In the first instance this is the
+        Pipecat worker (e.g. Ultravox realtime on Pipecat): the worker connects to each server,
+        discovers its tools, exposes them to the model, and proxies every invocation. Models that
+        do not advertise `supportsMcp` ignore this property.
+      items:
+        type: object
+        required:
+          - name
+          - url
+        properties:
+          name:
+            type: string
+            description: An identifier for this MCP server. Used to namespace its tool names.
+            pattern: '^[a-zA-Z0-9_-]{1,64}$'
+            example: weather_mcp
+          url:
+            type: string
+            format: uri
+            description: The base URL of the remote MCP server endpoint.
+            example: https://mcp.example.com/mcp
+          transport:
+            type: string
+            description: The MCP transport used to reach the server.
+            enum: ["streamable_http", "sse"]
+            default: streamable_http
+            example: streamable_http
+          headers:
+            type: object
+            description: |-
+              Optional HTTP headers sent on every request to the MCP server, typically for
+              authentication (e.g. an `Authorization` bearer token).
+            additionalProperties:
+              type: string
+            example:
+              Authorization: "Bearer sk-..."
     Keys:
       type: array
       description: An array of keys to be used in API calls

@@ -18,13 +18,13 @@ export default function (logger, voices, wsServer) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { name, description, modelName, prompt, options, functions, keys, type } = req.body;
+  let { name, description, modelName, prompt, options, functions, mcpServers, keys, type } = req.body;
   let { id: userId, organisationId } = res.locals.user;
   // Default the agent type from the model's handler prefix when not given explicitly
   type = type ?? (typeof modelName === 'string' && modelName.startsWith('text:') ? 'text' : 'interactive-audio');
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, type, userId, organisationId });
+  let agent = Agent.build({ name, description, modelName, prompt, options, functions, mcpServers, keys, type, userId, organisationId });
 
-  log.info({ modelName, prompt, options, functions, userId, organisationId, type }, 'create API call');
+  log.info({ modelName, prompt, options, functions, mcpServers, userId, organisationId, type }, 'create API call');
 
   try {
     // Static transfer_agent/subagent targets must reference accessible agents of the right type
@@ -80,6 +80,9 @@ agentCreate.apiDoc = {
             functions: {
               $ref: '#/components/schemas/Functions'
             },
+            mcpServers: {
+              $ref: '#/components/schemas/McpServers'
+            },
             keys: {
               $ref: '#/components/schemas/Keys'
             }
@@ -133,6 +136,9 @@ agentCreate.apiDoc = {
               },
               functions: {
                 $ref: '#/components/schemas/Functions'
+              },
+              mcpServers: {
+                $ref: '#/components/schemas/McpServers'
               },
               keys: {
                 $ref: '#/components/schemas/Keys'

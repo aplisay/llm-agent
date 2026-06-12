@@ -19,6 +19,7 @@ const modelList = async (req, res) => {
         name,
         description,
         supportsFunctions,
+        supportsMcp,
         implementation,
         hasTelephony,
         hasWebRTC,
@@ -30,6 +31,7 @@ const modelList = async (req, res) => {
         {
           description,
           supportsFunctions,
+          supportsMcp,
           audioModel: audioModel ?? implementation.audioModel,
           hasTelephony,
           hasWebRTC,

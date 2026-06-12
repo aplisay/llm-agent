@@ -27,6 +27,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from . import api_client
 from .agent_tools import build_agent_tools
+from .mcp_tools import close_mcp_servers, connect_mcp_servers
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .recording import RecordingSession
 from .sip_gateway.base import (
@@ -187,6 +188,10 @@ class CallSession:
     # Detached task that applies the prompt/tool swap after the transfer_agent
     # tool call has returned its result (survives caller interruption).
     _agent_swap_task: Optional[Any] = None
+    # Closers for any MCP server connections opened in ``prepare_run`` (the
+    # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
+    # the remote sessions don't outlive the call. See mcp_tools.py.
+    _mcp_closers: list = field(default_factory=list)
 
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling."""
@@ -278,6 +283,16 @@ class CallSession:
             }
 
         tools = self._build_tools_for(agent, extra_builtins=extra_builtins)
+
+        # Worker-as-MCP-client: connect to any remote MCP servers configured on
+        # the agent and append their tools to the SAME ``tools`` list, so they
+        # flow through the existing Ultravox ``one_shot_selected_tools`` +
+        # ``register_function`` path with no change to voice_session. Closers are
+        # awaited in ``run_prepared``'s finally. See mcp_tools.py.
+        mcp_descriptors, mcp_closers = await connect_mcp_servers(agent, log=logger)
+        self._mcp_closers = mcp_closers
+        if mcp_descriptors:
+            tools.extend(mcp_descriptors)
 
         # WebRTC-origin sessions (and consult-leg TransferAgents whose parent is
         # a browser session) get a relay endpoint spliced into their pipeline so
@@ -508,6 +523,9 @@ class CallSession:
             # AudioBufferProcessor has already drained any in-flight frames by
             # this point, so no more ``on_audio_data`` events will fire.
             await self._finalise_recording()
+            # Release any MCP server connections opened in prepare_run.
+            await close_mcp_servers(self._mcp_closers, log=logger)
+            self._mcp_closers = []
 
     async def inject_dtmf(self, digit: str) -> bool:
         """Inject a DTMF keypress into the running pipeline as an

@@ -94,6 +94,9 @@ agentGet.apiDoc = {
               functions: {
                 $ref: '#/components/schemas/Functions'
               },
+              mcpServers: {
+                $ref: '#/components/schemas/McpServers'
+              },
               listeners: {
                 type: 'array',
                 items: {
@@ -132,7 +135,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { name, description, prompt, options, functions, keys, modelName, type } = req.body;
+  let { name, description, prompt, options, functions, mcpServers, keys, modelName, type } = req.body;
   let { agentId } = req.params;
 
   try {
@@ -144,7 +147,7 @@ const agentUpdate = async (req, res) => {
     functions && await validateAgentTargets(functions, {
       lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } })
     });
-    await agent.update({ name, description, prompt, options, functions, keys, modelName, type });
+    await agent.update({ name, description, prompt, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -201,6 +204,9 @@ agentUpdate.apiDoc = {
             functions: {
               $ref: '#/components/schemas/Functions'
             },
+            mcpServers: {
+              $ref: '#/components/schemas/McpServers'
+            },
             keys: {
               $ref: '#/components/schemas/Keys'
             }
@@ -244,6 +250,9 @@ agentUpdate.apiDoc = {
               },
               functions: {
                 $ref: '#/components/schemas/Functions'
+              },
+              mcpServers: {
+                $ref: '#/components/schemas/McpServers'
               }
             }
           }
