@@ -20,9 +20,7 @@ A typical composition: a front-desk agent answers every call, hands callers to a
 | `subagent` (call a text agent) | ✅ | ✅ | ❌ | ❌ | ✅ (nested, depth-limited) |
 | `result` / invokable via `/invoke` | n/a | n/a | n/a | n/a | ✅ |
 
-¹ On LiveKit Ultravox realtime models (`livekit:ultravox/…`) the *prompt* is handed over but the *tool set* cannot be replaced mid-call (an Ultravox platform limitation) — the new agent keeps the old agent's tools. Use pipeline or OpenAI realtime models when the incoming agent needs different tools.
-
-² On Pipecat Ultravox realtime models (`pipecat:ultravox/…`) `transfer_agent` is not available at all and returns `FAILED` at call time. All other Pipecat models (pipeline and OpenAI realtime) support the full handover.
+¹ ² Ultravox realtime models cannot change prompt or tools mid-call (one-shot session creation), so `transfer_agent` on them always uses the **full-stack handover** (new session, child call record) even when the model string is unchanged — see "What happens on a transfer" below. On Pipecat, full handover additionally requires a websocket SIP gateway leg (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC and Daily legs refuse it.
 
 Saving an agent that uses one of these builtins on an unsupported model is rejected at create/update time with a clear validation error.
 
@@ -75,11 +73,53 @@ The same anti-fraud rule as the `transfer` function's `number` applies: the targ
 
 ### What happens on a transfer
 
-- The call itself is uninterrupted: same call record, same audio session, same room/leg. From the caller's point of view there is a brief pause and then a different agent speaks.
-- The new agent's **prompt and functions** replace the old agent's for the rest of the call (subject to the Ultravox tool caveat above). The new agent speaks next, so write its prompt to introduce itself on taking over.
-- The session keeps its existing **model and voice** — `transfer_agent` changes who the agent *is*, not what it sounds like. If you need a different voice per department, that is a feature request rather than something to work around.
-- The progress log (websocket / transaction log) records an `inject` entry of the form `Call transferred to agent <name>` so monitoring UIs can show the handover.
-- Transfers chain: the incoming agent's own `transfer_agent` functions work, so a caller can be passed A → B → C, or back to A.
+The platform picks one of two handover modes automatically:
+
+**In-place handover** — used when the target agent has the **same `modelName`** as the
+running session and the stack can apply the swap. The new agent's **prompt and
+functions** replace the old agent's inside the live session: same call record, same
+model, same voice. This is the cheapest, most seamless mode — the caller hears a brief
+pause and a different agent speaks.
+
+**Full-stack handover** — used when the target agent's **model string differs** (a
+different provider, voice stack, or model id), and on Ultravox realtime models (which
+cannot change prompt or tools after call creation, so even a same-model transfer
+restarts). The platform stops the running agent stack and starts the target agent's own
+stack — its model, voice and tools — on the same live call (same room / SIP leg; the
+caller never leaves). Because the model changes:
+
+- a **new call record is created with the original call as `parentId`** (the same
+  lineage convention as bridged telephone transfers), so usage, transcripts and
+  recordings are attributed to the agent + model that actually handled each segment;
+- the original call record ends with a status of the form
+  `transferred to agent <id>, continued as call <child-id>`;
+- transcripts from the handover onward log against the child call.
+
+Prompt-only (in-place) switches deliberately do **not** create a child record.
+
+Common to both modes:
+
+- The audio connection is uninterrupted — the caller stays on the same call throughout.
+- The new agent speaks next, so write its prompt to introduce itself on taking over.
+- The progress log (websocket / transaction log) records an `inject` entry of the form
+  `Call transferred to agent <name>` so monitoring UIs can show the handover.
+- Transfers chain: the incoming agent's own `transfer_agent` functions work, so a caller
+  can be passed A → B → C, or back to A — each model change adds another child call.
+
+Full-stack handover constraints:
+
+- The target agent's model must run on the **same worker** as the live session: a
+  LiveKit room can only hand over to `livekit:` models, a Pipecat call to `pipecat:`
+  models. (The room or SIP leg is owned by that worker; use ordinary call transfer to
+  move a call between platforms.)
+- On Pipecat, full handover is supported on the websocket SIP gateways
+  (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC and Daily legs, and
+  consultation legs, refuse it with a `FAILED` result.
+- Call recording does not follow a full handover on LiveKit (the recording covers up to
+  the handover); on Pipecat each call record segment records separately.
+- If the new stack cannot be started (e.g. the target agent is at its concurrency
+  limit), the handover aborts with a `FAILED` result and the current agent keeps the
+  call.
 
 ### History and the handover summary
 

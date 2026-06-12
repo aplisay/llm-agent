@@ -49,12 +49,14 @@ export function createTools({
     description: string;
   };
   /**
-   * Performs an in-call agent-to-agent handover: resolves the target agent
-   * definition and returns the new voice.Agent to hand the session to.
-   * When provided, builtin `transfer_agent` functions are honoured by
-   * returning an llm.handoff() from the tool execution.
+   * Performs an in-call agent-to-agent handover. For an in-place (same-model)
+   * swap it returns the new voice.Agent, honoured here via llm.handoff(); for
+   * a full-stack handover (model change, child call record) the restart has
+   * already happened by the time it resolves and no handoff is returned.
    */
-  onAgentTransfer?: (args: AgentTransferArgs) => Promise<voice.Agent>;
+  onAgentTransfer?: (
+    args: AgentTransferArgs,
+  ) => Promise<{ handoffAgent?: voice.Agent; detail: string }>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -143,16 +145,25 @@ export function createTools({
               }
               if (pendingAgentTransfer && onAgentTransfer) {
                 try {
-                  const newAgent = await onAgentTransfer(pendingAgentTransfer);
+                  const handover = await onAgentTransfer(pendingAgentTransfer);
                   logger.info(
                     {
                       from: agent.id,
                       to: (pendingAgentTransfer as AgentTransferArgs).agent,
                       callId: call.id,
+                      mode: handover.detail,
                     },
                     "transfer_agent: handing session to new agent",
                   );
-                  return llm.handoff({ agent: newAgent, returns: data });
+                  if (handover.handoffAgent) {
+                    return llm.handoff({
+                      agent: handover.handoffAgent,
+                      returns: data,
+                    });
+                  }
+                  // Full-stack handover: the outgoing session is already being
+                  // replaced; this result has no LLM left to speak it.
+                  return data;
                 } catch (e) {
                   const message = (e as Error).message;
                   logger.info(

@@ -846,11 +846,15 @@ components:
                       new agent as part of its context. When omitted or `false`, the new agent starts with a clean context.
                     - `summary` (string, optional, `generated`): a short handover summary the transferring LLM can compose for the
                       next agent. Delivered to the new agent alongside its prompt.
-                    The call record continues uninterrupted; the new agent's prompt and functions replace the old agent's
-                    for the rest of the call. Note: on LiveKit + Ultravox realtime models the platform cannot swap the *tool set*
-                    mid-call (provider limitation) — prompt/instructions handover works on all LiveKit stacks. On Pipecat,
-                    Ultravox realtime supports neither and the transfer returns `FAILED`; use pipeline or OpenAI realtime
-                    models for full handover.
+                    Two automatic handover modes: when the target agent's `modelName` matches the running session's
+                    (and the stack supports it), the prompt and functions are swapped **in place** — same session, same
+                    call record. When the model string differs (or on Ultravox realtime models, which cannot change
+                    prompt/tools mid-call), the platform performs a **full-stack handover**: the target agent's own
+                    model/voice/tool stack is started on the same live call, and a NEW call record is created with the
+                    original call as `parentId` (the original ends with `transferred to agent <id>, continued as call
+                    <child-id>`). The target model must run on the same worker as the live session (`livekit:` ↔
+                    `livekit:`, `pipecat:` ↔ `pipecat:`); on Pipecat, full handover requires a websocket SIP gateway
+                    leg (browser-WebRTC, Daily and consultation legs refuse it).
                   * `subagent` invokes a `text` type agent like a function call (LiveKit, Pipecat and text agents). Parameters:
                     - `agent` (string, required): the target text agent ID, `static` or `metadata` sourced (never `generated`).
                       `label:<label>` references are supported within agent-set documents.

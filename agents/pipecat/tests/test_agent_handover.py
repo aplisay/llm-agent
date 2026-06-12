@@ -232,11 +232,25 @@ class TestOnAgentTransfer:
         session._active_model_name = model_name
         return session
 
-    def test_refuses_on_ultravox_realtime(self, monkeypatch) -> None:
+    def test_ultravox_realtime_routes_to_full_handover(self, monkeypatch) -> None:
+        # Ultravox realtime can never swap in place; the same-model transfer is
+        # routed to the full-stack handover, which the stub gateway (transport
+        # None — not rebuildable) then refuses.
+        from pipecat_aplisay import api_client
+
+        async def fake_fetch(agent_id: str, expected_organisation_id=None) -> dict:
+            return {
+                "id": agent_id,
+                "type": "interactive-audio",
+                "modelName": "pipecat:ultravox/ultravox-v0.7",
+                "prompt": "specialist",
+            }
+
+        monkeypatch.setattr(api_client, "get_internal_agent_by_id", fake_fetch)
         session = self._session("pipecat:ultravox/ultravox-v0.7")
         result = asyncio.run(session._on_agent_transfer({"agent": TARGET_UUID}))
         assert result["status"] == "FAILED"
-        assert "Ultravox" in result["reason"]
+        assert "full agent handover" in result["reason"]
 
     def test_refuses_missing_target(self) -> None:
         session = self._session("pipecat:openai/gpt-4o")
@@ -297,3 +311,197 @@ class TestOnAgentTransfer:
         assert "Handover summary from the previous agent" in prompt
         assert "wants pricing" in prompt
         assert "disregard any prior context" in prompt
+
+
+class TestNeedsFullHandover:
+    def _session(self, model_name: str):
+        helper = TestOnAgentTransfer()
+        return helper._session(model_name)
+
+    @pytest.mark.parametrize(
+        ("current", "target", "expected"),
+        [
+            # Same non-ultravox model: in place.
+            ("pipecat:openai/gpt-4o", "pipecat:openai/gpt-4o", False),
+            # Target omits modelName: treated as same model.
+            ("pipecat:openai/gpt-4o", None, False),
+            # Model string changes: full restart + child call record.
+            ("pipecat:openai/gpt-4o", "pipecat:google/gemini-2.0-flash-exp", True),
+            ("pipecat:openai/gpt-4o", "pipecat:ultravox/ultravox-v0.7", True),
+            # Ultravox realtime can never swap in place, even same-model.
+            ("pipecat:ultravox/ultravox-v0.7", "pipecat:ultravox/ultravox-v0.7", True),
+        ],
+    )
+    def test_matrix(self, current, target, expected) -> None:
+        session = self._session(current)
+        new_agent = {"id": "x"}
+        if target is not None:
+            new_agent["modelName"] = target
+        assert session._needs_full_handover(new_agent) is expected
+
+
+class _FakeWebsocket:
+    """Minimal stand-in accepted by FastAPIWebsocketTransport's constructor."""
+
+    client_state = None
+    application_state = None
+
+
+class TestFullHandover:
+    def _ws_transport(self):
+        from pipecat.transports.websocket.fastapi import (
+            FastAPIWebsocketParams,
+            FastAPIWebsocketTransport,
+        )
+        from pipecat.serializers.protobuf import ProtobufFrameSerializer
+
+        return FastAPIWebsocketTransport(
+            websocket=_FakeWebsocket(),
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=ProtobufFrameSerializer(),
+            ),
+        )
+
+    def _session_with_ws_transport(self, model_name: str):
+        helper = TestOnAgentTransfer()
+        session = helper._session(model_name)
+        session.gateway_session.transport = self._ws_transport()
+        return session
+
+    def test_rebuild_transport_shares_websocket_and_serializer(self) -> None:
+        from pipecat_aplisay.call_session import CallSession
+
+        old = self._ws_transport()
+        rebuilt = CallSession._rebuild_transport_for_handover(old)
+        assert rebuilt is not None
+        assert rebuilt is not old
+        assert rebuilt._client._websocket is old._client._websocket
+        assert rebuilt._params.serializer is old._params.serializer
+
+    def test_rebuild_refuses_unknown_transport(self) -> None:
+        from pipecat_aplisay.call_session import CallSession
+
+        assert CallSession._rebuild_transport_for_handover(object()) is None
+
+    def test_full_handover_creates_child_call_and_schedules_restart(self, monkeypatch) -> None:
+        from pipecat_aplisay import api_client
+        from pipecat_aplisay import call_session as cs
+
+        async def fake_fetch(agent_id: str, expected_organisation_id=None) -> dict:
+            return {
+                "id": agent_id,
+                "type": "interactive-audio",
+                "name": "Gemini specialist",
+                "modelName": "pipecat:google/gemini-2.0-flash-exp",
+                "prompt": "You are the specialist.",
+                "functions": [],
+            }
+
+        monkeypatch.setattr(api_client, "get_internal_agent_by_id", fake_fetch)
+
+        created: list = []
+        started: list = []
+        ended: list = []
+
+        async def fake_create_call(body: dict):
+            created.append(body)
+            return api_client.CallRecord(
+                id="child-1",
+                userId=body["userId"],
+                organisationId=body["organisationId"],
+                instanceId=body["instanceId"],
+                agentId=body["agentId"],
+                metadata=body.get("metadata") or {},
+                persisted=False,
+            )
+
+        async def fake_start_call(call) -> None:
+            started.append(call.id)
+
+        async def fake_end_call(call, reason=None) -> None:
+            ended.append((call.id, reason))
+
+        monkeypatch.setattr(api_client, "create_call", fake_create_call)
+        monkeypatch.setattr(api_client, "start_call", fake_start_call)
+        monkeypatch.setattr(api_client, "end_call", fake_end_call)
+
+        session = self._session_with_ws_transport("pipecat:openai/gpt-4o")
+        old_transport = session.gateway_session.transport
+
+        async def run() -> dict:
+            result = await session._on_agent_transfer(
+                {"agent": TARGET_UUID, "includeHistory": True, "summary": "wants the specialist"}
+            )
+            if session._agent_swap_task is not None:
+                await session._agent_swap_task
+            return result
+
+        result = asyncio.run(run())
+        assert result["status"] == "OK"
+
+        # Child call record: parentId points at the original, new agent + model.
+        [body] = created
+        assert body["parentId"] == "call-1"
+        assert body["agentId"] == TARGET_UUID
+        assert body["modelName"] == "pipecat:google/gemini-2.0-flash-exp"
+        assert started == ["child-1"]
+        # Original call ended with a pointer to its continuation.
+        [(ended_id, reason)] = ended
+        assert ended_id == "call-1"
+        assert "child-1" in reason
+
+        # The run() loop's continuation state: new agent, prompt, child call,
+        # and a REBUILT transport over the same websocket.
+        pending = session._pending_agent_handover
+        assert pending is not None
+        assert pending["agent"]["name"] == "Gemini specialist"
+        assert pending["call"].id == "child-1"
+        assert pending["transport"] is not old_transport
+        assert (
+            pending["transport"]._client._websocket
+            is old_transport._client._websocket
+        )
+        assert "You are the specialist." in pending["system_prompt"]
+
+        # The old transport's disconnect is suppressed so the shared websocket
+        # survives the old pipeline's teardown.
+        await_result = asyncio.run(old_transport._client.disconnect())
+        assert await_result is None
+
+    def test_full_handover_aborts_cleanly_on_busy(self, monkeypatch) -> None:
+        from pipecat_aplisay import api_client
+
+        async def fake_fetch(agent_id: str, expected_organisation_id=None) -> dict:
+            return {
+                "id": agent_id,
+                "type": "interactive-audio",
+                "modelName": "pipecat:google/gemini-2.0-flash-exp",
+                "prompt": "specialist",
+            }
+
+        async def fake_create_call(body: dict):
+            return api_client.CallRecord(
+                id="child-1",
+                userId="user-1",
+                organisationId="org-1",
+                instanceId="inst-1",
+                agentId="agent-2",
+                persisted=False,
+            )
+
+        async def fake_start_call(call) -> None:
+            raise api_client.AgentConcurrencyLimitExceededBusyError(scope="agent")
+
+        monkeypatch.setattr(api_client, "get_internal_agent_by_id", fake_fetch)
+        monkeypatch.setattr(api_client, "create_call", fake_create_call)
+        monkeypatch.setattr(api_client, "start_call", fake_start_call)
+
+        session = self._session_with_ws_transport("pipecat:openai/gpt-4o")
+        result = asyncio.run(session._on_agent_transfer({"agent": TARGET_UUID}))
+        assert result["status"] == "FAILED"
+        assert "concurrency" in result["reason"]
+        # Nothing committed: no pending handover, old call untouched.
+        assert session._pending_agent_handover is None

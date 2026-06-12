@@ -188,23 +188,54 @@ class CallSession:
     # Detached task that applies the prompt/tool swap after the transfer_agent
     # tool call has returned its result (survives caller interruption).
     _agent_swap_task: Optional[Any] = None
+    # Set by a FULL agent-stack handover (model change, or Ultravox realtime
+    # which can't swap in place): {"agent", "system_prompt", "call", "transport"}.
+    # The run() loop consumes it after the old pipeline task ends and starts
+    # the new agent's pipeline on the rebuilt transport. The "call" is a child
+    # call record (parentId = the call it continues).
+    _pending_agent_handover: Optional[dict] = None
     # Closers for any MCP server connections opened in ``prepare_run`` (the
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
 
     async def run(self, *, system_prompt: str) -> None:
-        """Run the agent session with fallback handling."""
+        """Run the agent session with fallback handling.
+
+        Also the continuation point for FULL agent-stack handovers (builtin
+        ``transfer_agent`` with a model change): when ``_run_once`` returns
+        with ``_pending_agent_handover`` set, the loop swaps in the rebuilt
+        transport + child call record and runs the incoming agent's pipeline
+        on the same live media connection.
+        """
         active_agent = self.agent
         active_model = active_agent["modelName"]
+        active_prompt = system_prompt
         used_fallback_model = False
         used_fallback_agent = False
 
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
             try:
-                await self._run_once(active_agent, active_model, system_prompt)
-                return
+                await self._run_once(active_agent, active_model, active_prompt)
+                pending = self._pending_agent_handover
+                if pending is None:
+                    return
+                # ---- Full agent-stack handover continuation ----
+                self._pending_agent_handover = None
+                self.gateway_session.transport = pending["transport"]
+                self.call = pending["call"]
+                self.agent = pending["agent"]
+                active_agent = pending["agent"]
+                active_model = active_agent["modelName"]
+                active_prompt = pending["system_prompt"]
+                # The incoming agent gets its own fallback budget.
+                used_fallback_model = False
+                used_fallback_agent = False
+                logger.bind(
+                    call_id=self.call.id, agent_id=active_agent.get("id"), model=active_model
+                ).info("agent handover: starting new agent stack on the live transport")
+                continue
             except api_client.AgentConcurrencyLimitExceededBusyError:
                 # Map upstream — caller signals SIP busy / 429 to its caller.
                 raise
@@ -510,8 +541,16 @@ class CallSession:
 
         try:
             await runner.run(task)
-            # Normal completion when transport disconnects or pipeline ends.
-            await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
+            if self._pending_agent_handover is not None:
+                # Full agent-stack handover: the old pipeline was cancelled on
+                # purpose, the old call record is already ended with a pointer
+                # to its continuation, and run() restarts on the live transport.
+                logger.bind(call_id=self.call.id).info(
+                    "pipeline ended for agent handover; not ending the call"
+                )
+            else:
+                # Normal completion when transport disconnects or pipeline ends.
+                await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
         finally:
             if timeout_task and not timeout_task.done():
                 timeout_task.cancel()
@@ -707,31 +746,46 @@ class CallSession:
             call_id=self.call.id,
         )
 
+    def _needs_full_handover(self, new_agent: dict) -> bool:
+        """Whether handing over to ``new_agent`` requires a full agent-stack
+        restart rather than the in-place prompt/tool swap.
+
+        In place is only valid when the model string is unchanged AND the
+        running stack can apply the swap. Ultravox realtime is a one-shot
+        /calls session — neither prompt nor tools can change after creation —
+        so it always restarts.
+        """
+        from .voice_mode import model_id_from_name
+
+        current_model = self._active_model_name or self.agent.get("modelName") or ""
+        target_model = new_agent.get("modelName") or current_model
+        if target_model != current_model:
+            return True
+        return model_id_from_name(current_model).startswith("ultravox/")
+
     async def _on_agent_transfer(self, args: dict) -> dict:
         """Builtin ``transfer_agent`` platform function: hand the live call
         over to another agent definition.
 
         The target definition is fetched through the internal agent-db API
-        with a same-organisation guard, then a detached task swaps the running
-        pipeline's system prompt and tool surface in place (the session keeps
-        its model and voice — see ``_apply_agent_transfer``). Returns the
-        familiar ``{status, detail}`` shape; on ``OK`` the outgoing agent's
-        result-run is suppressed (see ``agent_tools`` / ``voice_session``) so
-        the incoming agent speaks next.
-        """
-        from .voice_mode import model_id_from_name
+        with a same-organisation guard. Two modes:
 
+        - **in place** (same model string, stack supports it): a detached task
+          swaps the running pipeline's system prompt and tool surface — same
+          model, voice, pipeline and call record (``_apply_agent_transfer``).
+        - **full restart** (model string changes, or Ultravox realtime): the
+          old pipeline is stopped, a NEW pipeline for the target agent's model
+          starts on the same live transport, and a child call record
+          (``parentId`` = the current call) carries the continuation
+          (``_begin_agent_handover``).
+
+        Returns the familiar ``{status, detail}`` shape; on ``OK`` the
+        outgoing agent's result-run is suppressed (see ``agent_tools`` /
+        ``voice_session``) so the incoming agent speaks next.
+        """
         target = args.get("agent")
         if not target:
             return self._transfer_failed("transfer_agent call has no agent parameter")
-
-        # Ultravox realtime is a one-shot /calls session: neither the system
-        # prompt nor the tool set can be replaced after call creation.
-        model_name = self._active_model_name or self.agent.get("modelName") or ""
-        if model_id_from_name(model_name).startswith("ultravox/"):
-            return self._transfer_failed(
-                "agent-to-agent transfer is not supported on Ultravox realtime models"
-            )
 
         try:
             new_agent = await api_client.get_internal_agent_by_id(
@@ -761,6 +815,14 @@ class CallSession:
             if transcript:
                 prompt += f"\n\n# Conversation so far\n{transcript}"
 
+        if self._needs_full_handover(new_agent):
+            result = await self._begin_agent_handover(new_agent, prompt)
+            if result.get("status") == "OK":
+                await self._send_message(
+                    {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
+                )
+            return result
+
         await self._send_message(
             {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
         )
@@ -768,7 +830,7 @@ class CallSession:
             from_agent=self.agent.get("id"),
             to_agent=new_agent.get("id"),
             include_history=include_history,
-        ).info("transfer_agent: handing session to new agent")
+        ).info("transfer_agent: handing session to new agent (in place)")
 
         # Apply the swap from a detached task so the tool call's own result
         # (delivered with run_llm=False) lands before the context is replaced,
@@ -778,6 +840,155 @@ class CallSession:
             self._apply_agent_transfer(new_agent, prompt)
         )
         return {"status": "OK", "detail": "handing the caller over to the new agent"}
+
+    @staticmethod
+    def _rebuild_transport_for_handover(old_transport: Any) -> Optional[Any]:
+        """Build a FRESH transport around the same live media connection.
+
+        A Pipecat transport's processors cannot be reused across pipeline
+        tasks, but the underlying connection can: for the websocket gateways
+        (FreeSWITCH / sipbridge / voiceblender) we construct a new
+        ``FastAPIWebsocketTransport`` over the old one's websocket and params
+        (including the serializer, whose state carries over). Returns ``None``
+        for transports we can't rebuild (Daily, browser WebRTC) — full
+        handover is refused there.
+        """
+        try:
+            from pipecat.transports.websocket.fastapi import (
+                FastAPIWebsocketTransport,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(old_transport, FastAPIWebsocketTransport):
+            return None
+        params = getattr(old_transport, "_params", None)
+        client = getattr(old_transport, "_client", None)
+        websocket = getattr(client, "_websocket", None)
+        if params is None or websocket is None:
+            return None
+        return FastAPIWebsocketTransport(websocket=websocket, params=params)
+
+    @staticmethod
+    def _suppress_transport_disconnect(old_transport: Any) -> None:
+        """Stop the old transport's teardown from closing the shared websocket.
+
+        ``FastAPIWebsocketTransport``'s input/output processors call
+        ``client.disconnect()`` on EndFrame/CancelFrame, which closes the
+        socket — exactly what must NOT happen during a handover, because the
+        replacement pipeline runs on the same connection.
+        """
+        client = getattr(old_transport, "_client", None)
+        if client is None:
+            return
+
+        async def _noop_disconnect() -> None:
+            logger.debug("agent handover: suppressed old transport disconnect")
+
+        client.disconnect = _noop_disconnect
+
+    async def _begin_agent_handover(self, new_agent: dict, system_prompt: str) -> dict:
+        """Start a FULL agent-stack handover to ``new_agent``.
+
+        Creates the child call record (``parentId`` = current call) and
+        reserves its concurrency slot FIRST — a busy rejection aborts the
+        handover with the current agent still running. Then the old call is
+        ended with a pointer to its continuation, the old transport's
+        disconnect is suppressed, and the old pipeline task is cancelled from
+        a detached task; the ``run()`` loop picks up ``_pending_agent_handover``
+        and starts the new agent's pipeline on the rebuilt transport.
+        """
+        target_model = new_agent.get("modelName") or ""
+        if not target_model.startswith("pipecat:"):
+            return self._transfer_failed(
+                f"agent {new_agent.get('id')} uses {target_model}; a live Pipecat "
+                "session can only hand over to pipecat: models"
+            )
+        if self.relay_endpoint is not None:
+            return self._transfer_failed(
+                "full agent handover is not available on WebRTC-relay sessions"
+            )
+        if self.parent_session is not None:
+            return self._transfer_failed(
+                "a consultation leg cannot hand over to another agent"
+            )
+
+        old_transport = self.gateway_session.transport
+        new_transport = self._rebuild_transport_for_handover(old_transport)
+        if new_transport is None:
+            return self._transfer_failed(
+                "this transport does not support a full agent handover "
+                "(websocket SIP gateways only)"
+            )
+
+        aplisay_meta = dict((self.call.metadata or {}).get("aplisay") or {})
+        try:
+            child = await api_client.create_call(
+                {
+                    "parentId": self.call.id,
+                    "userId": self.call.userId,
+                    "organisationId": self.call.organisationId,
+                    "instanceId": self.call.instanceId,
+                    "agentId": new_agent.get("id"),
+                    "platform": PLATFORM,
+                    "platformCallId": self.session_id,
+                    "calledId": aplisay_meta.get("calledId") or "unknown",
+                    "callerId": aplisay_meta.get("callerId") or "unknown",
+                    "modelName": target_model,
+                    "options": new_agent.get("options") or {},
+                    "metadata": {
+                        **(self.call.metadata or {}),
+                        "aplisay": {**aplisay_meta, "model": target_model},
+                    },
+                }
+            )
+            await api_client.start_call(child)
+        except api_client.AgentConcurrencyLimitExceededBusyError:
+            return self._transfer_failed(
+                "the target agent is at its concurrency limit; staying on this call"
+            )
+        except api_client.ApiRequestError as e:
+            return self._transfer_failed(f"could not create continuation call: {e}")
+
+        # Commit point: from here the handover happens.
+        self._pending_agent_handover = {
+            "agent": new_agent,
+            "system_prompt": system_prompt,
+            "call": child,
+            "transport": new_transport,
+        }
+        self._suppress_transport_disconnect(old_transport)
+        try:
+            await api_client.end_call(
+                self.call,
+                f"transferred to agent {new_agent.get('id')}, continued as call {child.id}",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"agent handover: ending original call failed: {e}")
+        logger.bind(
+            from_call=self.call.id,
+            to_call=child.id,
+            to_agent=new_agent.get("id"),
+            model=target_model,
+        ).info("agent handover: full stack restart scheduled")
+
+        # Cancel the old pipeline from a detached task so this tool-call
+        # coroutine isn't cancelling the pipeline that is running it.
+        self._agent_swap_task = asyncio.create_task(self._cancel_for_handover())
+        return {
+            "status": "OK",
+            "detail": "handing the caller over to the new agent",
+        }
+
+    async def _cancel_for_handover(self) -> None:
+        await asyncio.sleep(0.2)
+        task = self._task
+        if task is None:
+            logger.warning("agent handover: no running pipeline task to cancel")
+            return
+        try:
+            await task.cancel()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"agent handover: task.cancel raised: {e}")
 
     async def _apply_agent_transfer(self, new_agent: dict, system_prompt: str) -> None:
         """Swap the running pipeline over to ``new_agent``: replace the tool

@@ -6,11 +6,12 @@ import logger, { getCaptureStats } from "./logger.js";
 import { withTimeout } from "./utils.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
 import {
+  createCall,
   setCallRecordingData,
   saveInvocationLog,
   getInternalAgentById,
 } from "./api-client.js";
-import type { Agent } from "./api-client.js";
+import type { Agent, Call } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
@@ -46,6 +47,7 @@ export async function runAgentWorker({
   endTransferActivityIfNeeded,
   getTransferState,
   recordingOptions,
+  setActiveAgentCall,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -564,43 +566,26 @@ export async function runAgentWorker({
   const conversationHistory: Array<{ role: "user" | "agent"; text: string }> =
     [];
 
+  // The agent definition + model currently driving the session. Updated by
+  // both handover modes so chained transfers always compare against the live
+  // configuration rather than the original.
+  let activeAgentDef: Agent = agent;
+  let activeModelName: string = modelName;
+  // Suppresses the session-close / state teardown handlers while we
+  // intentionally close the outgoing session during a full-stack handover.
+  let agentHandoverInProgress = false;
+
   /**
-   * Resolve a transfer_agent call into a new voice.Agent for llm.handoff().
-   * The target definition is fetched through the internal agent-db API with a
-   * same-organisation guard; its own tools are built recursively (so chained
-   * agent-to-agent transfers work) and its prompt is augmented with the
-   * optional handover summary and conversation history.
-   *
-   * Note: realtime providers vary in how much of a swap they support mid-call
-   * (Ultravox cannot replace the tool set after call creation), so history
-   * exclusion is also reinforced via instructions rather than relying solely
-   * on a fresh chat context.
+   * Compose the incoming agent's system prompt for a handover: its own prompt
+   * plus the takeover preamble, the optional LLM-written summary, and (when
+   * `includeHistory`) the conversation transcript so far. Used identically by
+   * the in-place swap and the full-stack restart.
    */
-  const onAgentTransfer = async ({
-    agent: targetAgentId,
-    includeHistory: includeHistoryRaw,
-    summary,
-  }: {
-    agent: string;
-    includeHistory?: boolean | string;
-    summary?: string;
-  }): Promise<voice.Agent> => {
-    // Static flags arrive as booleans or as the legacy "true"/"false" string
-    // idiom (cf. the transfer function's consultFeedback) — treat "false" as
-    // false rather than truthy.
-    const includeHistory =
-      typeof includeHistoryRaw === "string"
-        ? includeHistoryRaw.trim().toLowerCase() === "true"
-        : includeHistoryRaw === true;
-    const newAgentDef = await getInternalAgentById(
-      targetAgentId,
-      agent.organisationId,
-    );
-    if ((newAgentDef.type ?? "interactive-audio") !== "interactive-audio") {
-      throw new Error(
-        `agent ${targetAgentId} is type ${newAgentDef.type} and cannot take over a live call`,
-      );
-    }
+  const buildHandoverInstructions = (
+    newAgentDef: Agent,
+    includeHistory: boolean,
+    summary?: string,
+  ): string => {
     let instructions = newAgentDef.prompt || "You are a helpful assistant.";
     instructions +=
       "\n\nYou have just taken over a live call from another agent." +
@@ -618,14 +603,333 @@ export async function runAgentWorker({
         )
         .join("\n")}`;
     }
+    return instructions;
+  };
+
+  /**
+   * Decide whether a handover can be done in place (same session keeps
+   * running; only prompt/tools change via llm.handoff) or needs a full-stack
+   * restart (new model/session into the same room, with a child call record).
+   *
+   * In place is only valid when the model string is unchanged AND the running
+   * stack can actually apply the swap: Ultravox realtime fixes its tool set at
+   * call creation, so any tool-surface change there forces a restart.
+   */
+  const canSwapAgentInPlace = (newAgentDef: Agent): boolean => {
+    const targetModelName = newAgentDef.modelName || activeModelName;
+    if (targetModelName !== activeModelName) {
+      return false;
+    }
+    const voiceMode =
+      resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options);
+    const isUltravoxRealtime =
+      voiceMode === "realtime" && activeModelName.includes(":ultravox/");
+    if (isUltravoxRealtime) {
+      const names = (def: Agent) =>
+        (def.functions ?? []).map((f) => f.name).sort().join(",");
+      if (names(activeAgentDef) !== names(newAgentDef)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Wire the handlers a freshly-started handover session needs: transcript
+   * capture, agent-initiated hangup, error logging, and close-driven teardown
+   * (suppressed while a further handover is in flight). Mirrors the inline
+   * wiring in the setup path; the startup-error watcher and watchdog are
+   * call-scoped and already running.
+   */
+  const wireHandoverSession = (s: voice.AgentSession, forAgent: Agent): void => {
+    const skipText =
+      forAgent.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.user?.fallback?.text?.trim() ??
+      "";
+    s.on(
+      voice.AgentSessionEventTypes.ConversationItemAdded,
+      ({
+        item: { type, role, content },
+        createdAt,
+      }: voice.ConversationItemAddedEvent) => {
+        if (type === "message" && getConsultInProgress() === false) {
+          const text = content.join("");
+          if (role !== "user" || text !== skipText) {
+            conversationHistory.push({
+              role: role === "user" ? "user" : "agent",
+              text,
+            });
+            sendMessage(
+              { [role === "user" ? "user" : "agent"]: text },
+              createdAt ? new Date(createdAt) : undefined,
+            );
+          }
+        }
+      },
+    );
+    s.on(
+      voice.AgentSessionEventTypes.AgentStateChanged,
+      async (ev: voice.AgentStateChangedEvent) => {
+        sendMessage({ status: ev.newState });
+        if (ev.newState === "listening" && checkForHangup() && room.name) {
+          endTransferActivityIfNeeded(
+            DISCONNECT_REASONS.AGENT_INITIATED_HANGUP,
+          ).catch((transferError) => {
+            logger.error(
+              { transferError },
+              "error ending transfer activity during hangup",
+            );
+          });
+          await cleanupAndClose(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
+        }
+      },
+    );
+    s.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+      logger.error({ ev }, "error (handover session)");
+    });
+    s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+      if (agentHandoverInProgress) {
+        logger.info({ ev }, "session closed during agent handover; teardown suppressed");
+        return;
+      }
+      logger.info({ ev }, "session closed");
+      void endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_CLOSED).catch(
+        (transferError) => {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during session close",
+          );
+        },
+      );
+      void deleteRoomWithRetry(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room on session close");
+      });
+      void getActiveCall()
+        .end(DISCONNECT_REASONS.SESSION_CLOSED)
+        .catch((e) => {
+          logger.error({ e }, "error ending call on session close");
+        });
+    });
+  };
+
+  /**
+   * Full-stack agent handover: stop the current agent session and start an
+   * entirely new one (model, voice stack and all) for `newAgentDef` in the
+   * same room, continuing the conversation with the same caller.
+   *
+   * Because the model string changes, a NEW call record is created with the
+   * original call as `parentId` (mirroring bridged transfers): usage and
+   * transcripts from here on are attributed to the new agent + model, and the
+   * original call ends with a pointer to its continuation. Prompt-only
+   * (in-place) swaps deliberately do NOT do this.
+   */
+  const restartWithAgent = async (
+    newAgentDef: Agent,
+    instructions: string,
+  ): Promise<void> => {
+    const targetModelName = newAgentDef.modelName!;
+    const targetHandler = targetModelName.split(":")[0];
+    if (targetHandler !== "livekit") {
+      throw new Error(
+        `agent ${newAgentDef.id} uses ${targetModelName}; a live LiveKit session can only hand over to livekit: models`,
+      );
+    }
+
+    const oldCall = getActiveCall();
+    // Reserve the continuation call (concurrency slot) BEFORE touching the
+    // running session, so a busy rejection leaves the current agent intact.
+    const newCall = (await createCall({
+      parentId: oldCall.id,
+      userId: oldCall.userId,
+      organisationId: oldCall.organisationId,
+      instanceId: oldCall.instanceId,
+      agentId: newAgentDef.id,
+      platform: "livekit",
+      platformCallId: room?.name,
+      calledId,
+      callerId,
+      modelName: targetModelName,
+      options: newAgentDef.options,
+      metadata: {
+        ...metadata,
+        aplisay: { ...(metadata?.aplisay || {}), model: targetModelName },
+      },
+    })) as Call;
+    await newCall.start();
+
+    agentHandoverInProgress = true;
+    try {
+      // Stop the outgoing session. Bounded: an Ultravox session whose socket
+      // is already winding down can hang in close(); the room and the new
+      // session don't depend on it completing.
+      const oldSession = session;
+      session = null;
+      sessionRef(null);
+      if (oldSession) {
+        await withTimeout(
+          () => oldSession.close(),
+          8_000,
+          new Error("old session close timed out"),
+        ).catch((e) => {
+          logger.warn(
+            { e: e instanceof Error ? e.message : String(e) },
+            "agent handover: old session close failed/timed out; continuing",
+          );
+        });
+      }
+
+      const voiceMode = resolveVoiceMode(targetModelName, newAgentDef.options);
+      const vad =
+        voiceMode === "pipeline"
+          ? (ctx.proc.userData as { vad?: VAD }).vad
+          : undefined;
+      // The factory reads instructions/voice/options from the agent def, so
+      // hand it the composed handover prompt in place of the raw one.
+      const agentForSession: Agent = { ...newAgentDef, prompt: instructions };
+      const tools = buildTools(newAgentDef);
+      const { session: newSession, model: newModel } =
+        createVoiceModelAndSession({
+          voiceMode,
+          modelName: targetModelName,
+          agent: agentForSession,
+          call: newCall,
+          tools,
+          vad,
+        });
+      wireHandoverSession(newSession, newAgentDef);
+
+      session = newSession;
+      sessionRef(newSession);
+      modelRef(newModel);
+      activeAgentDef = newAgentDef;
+      activeModelName = targetModelName;
+      resolvedVoiceMode = voiceMode;
+      setActiveAgentCall?.(newCall);
+
+      // Hand the records over: the original call ends pointing at its child.
+      await oldCall
+        .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
+        .catch((e) => {
+          logger.warn({ e }, "agent handover: ending original call failed");
+        });
+
+      if (recordingOptions?.enabled) {
+        logger.warn(
+          { callId: newCall.id },
+          "recording does not continue across a full agent handover; recorded audio covers up to the handover",
+        );
+      }
+
+      await newSession.start({
+        room: ctx.room,
+        agent: newModel,
+        record: false,
+        inputOptions: { closeOnDisconnect: true },
+      });
+
+      // The incoming agent speaks next. Ultravox realtime greets natively via
+      // firstSpeakerSettings; other stacks need an explicit first turn.
+      if (!targetModelName.includes(":ultravox/")) {
+        try {
+          await (newSession as any).generateReply(
+            voiceMode === "pipeline"
+              ? {
+                  userInput:
+                    "You have just taken over this live call. Greet the caller now according to your instructions.",
+                }
+              : {
+                  instructions:
+                    "You have just taken over this live call. Greet the caller now according to your instructions.",
+                },
+          );
+        } catch (e) {
+          logger.warn({ e }, "agent handover: first-turn kick failed");
+        }
+      }
+      logger.info(
+        {
+          from: oldCall.id,
+          to: newCall.id,
+          agentId: newAgentDef.id,
+          modelName: targetModelName,
+        },
+        "agent handover: new agent stack live",
+      );
+    } catch (e) {
+      // The old session is gone and the new one failed: the caller is in dead
+      // air. Tear the call down cleanly rather than leaving a silent room.
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.error({ error }, "agent handover: restart failed; closing call");
+      await newCall
+        .end(`agent handover failed: ${error.message}`)
+        .catch(() => undefined);
+      await cleanupAndClose(`agent handover failed: ${error.message}`);
+      throw error;
+    } finally {
+      agentHandoverInProgress = false;
+    }
+  };
+
+  /**
+   * Resolve a transfer_agent call. Two modes:
+   *
+   *  - in-place (same model string, stack supports it): returns a voice.Agent
+   *    for llm.handoff() — same session, same call record.
+   *  - full restart (model string changes, or Ultravox realtime cannot apply
+   *    the swap): stops the agent stack and starts the target agent's own
+   *    stack in the room, with a child call record (parentId = current call).
+   *
+   * The target definition is fetched through the internal agent-db API with a
+   * same-organisation guard; its own tools are built recursively (so chained
+   * agent-to-agent transfers work).
+   */
+  const onAgentTransfer = async ({
+    agent: targetAgentId,
+    includeHistory: includeHistoryRaw,
+    summary,
+  }: {
+    agent: string;
+    includeHistory?: boolean | string;
+    summary?: string;
+  }): Promise<{ handoffAgent?: voice.Agent; detail: string }> => {
+    // Static flags arrive as booleans or as the legacy "true"/"false" string
+    // idiom (cf. the transfer function's consultFeedback) — treat "false" as
+    // false rather than truthy.
+    const includeHistory =
+      typeof includeHistoryRaw === "string"
+        ? includeHistoryRaw.trim().toLowerCase() === "true"
+        : includeHistoryRaw === true;
+    const newAgentDef = await getInternalAgentById(
+      targetAgentId,
+      agent.organisationId,
+    );
+    if ((newAgentDef.type ?? "interactive-audio") !== "interactive-audio") {
+      throw new Error(
+        `agent ${targetAgentId} is type ${newAgentDef.type} and cannot take over a live call`,
+      );
+    }
+    const instructions = buildHandoverInstructions(
+      newAgentDef,
+      includeHistory,
+      summary,
+    );
     sendMessage({
       inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
     });
-    return new voice.Agent({
-      instructions,
-      tools: buildTools(newAgentDef),
-      ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
-    });
+
+    if (canSwapAgentInPlace(newAgentDef)) {
+      activeAgentDef = { ...newAgentDef, modelName: activeModelName };
+      return {
+        handoffAgent: new voice.Agent({
+          instructions,
+          tools: buildTools(newAgentDef),
+          ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
+        }),
+        detail: "in-place handover",
+      };
+    }
+
+    await restartWithAgent(newAgentDef, instructions);
+    return { detail: "full agent-stack handover with new call record" };
   };
 
   const buildTools = (agentDef: Agent) =>
@@ -831,6 +1135,15 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
+            if (agentHandoverInProgress) {
+              // A full agent-stack handover is intentionally closing this
+              // session; the replacement session owns the room and call now.
+              logger.info(
+                { ev },
+                "session closed during agent handover; teardown suppressed",
+              );
+              return;
+            }
             logger.info({ ev }, "session closed");
             // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(

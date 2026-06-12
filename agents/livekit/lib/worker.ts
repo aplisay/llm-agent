@@ -257,6 +257,7 @@ export default defineAgent({
         sessionRef,
         modelRef,
         getActiveCall,
+        setActiveAgentCall,
         endTransferActivityIfNeeded: endTransferActivityFn,
         getTransferState,
       } = await setupCallAndUtilities({
@@ -419,6 +420,7 @@ export default defineAgent({
             checkForHangup,
             getConsultInProgress: () => consultInProgress,
             getActiveCall,
+            setActiveAgentCall,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -1169,6 +1171,17 @@ async function setupCallAndUtilities({
   metadata.aplisay = metadata.aplisay || {};
   metadata.aplisay.callId = call.id;
 
+  // The call record the live agent is currently attributed to. A full
+  // agent-stack handover (transfer_agent with a model change) replaces this
+  // with a child call (parentId = original) so transcripts, teardown and
+  // usage follow the new agent + model.
+  let activeAgentCall: Call = call;
+  const setActiveAgentCall = (next: Call) => {
+    (next as any).batchedTransactionLogs =
+      (next as any).batchedTransactionLogs || [];
+    activeAgentCall = next;
+  };
+
   // Array to batch transaction logs when streamLog is false
   const batchedTransactionLogs: Array<{
     userId: string;
@@ -1203,18 +1216,22 @@ async function setupCallAndUtilities({
         const transactionLogData = {
           userId,
           organisationId,
-          callId: call.id,
+          callId: activeAgentCall.id,
           type,
           data: JSON.stringify(data),
           isFinal: true,
           createdAt: logCreatedAt,
         };
 
-        // If streamLog is enabled, push immediately; otherwise batch for end call
+        // If streamLog is enabled, push immediately; otherwise batch for end
+        // call — onto the ACTIVE call so each record's logs end with it.
         if (instance.streamLog === true) {
           await createTransactionLog(transactionLogData);
         } else {
-          batchedTransactionLogs.push(transactionLogData);
+          (
+            ((activeAgentCall as any).batchedTransactionLogs ??
+              batchedTransactionLogs) as typeof batchedTransactionLogs
+          ).push(transactionLogData);
         }
       }
     } catch (e) {
@@ -1328,7 +1345,8 @@ async function setupCallAndUtilities({
     modelRef,
     sessionRef,
     // expose helper to check the currently active call for logging
-    getActiveCall: () => bridgedCallRecord || call,
+    getActiveCall: () => bridgedCallRecord || activeAgentCall,
+    setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,
   };

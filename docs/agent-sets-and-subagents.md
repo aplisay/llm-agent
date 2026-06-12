@@ -77,15 +77,42 @@ instruction) + `LLMMessagesUpdateFrame` (fresh context) + `LLMSetToolsFrame`
 The outgoing agent's tool-result run is suppressed on success so the two
 agents don't talk over each other.
 
+### Handover modes
+
+The runtime picks one of two modes per transfer:
+
+* **In place** (same `modelName`, stack supports the swap): prompt + tools are
+  replaced inside the live session (LiveKit `llm.handoff()`; Pipecat context /
+  settings / tools frames). Same call record, same model and voice.
+* **Full-stack restart** (model string differs, or Ultravox realtime which can
+  swap neither prompt nor tools after call creation): the running agent stack
+  is stopped and the target agent's own stack — model, voice, tools — starts
+  on the same live call. A **child call record** is created with
+  `parentId` = the original call (the bridged-transfer lineage convention);
+  the original ends with `transferred to agent <id>, continued as call <id>`,
+  and transcripts/usage from that point log against the child. LiveKit:
+  the new `AgentSession` is started into the same room with the close/teardown
+  handlers suppressed during the swap (`agentHandoverInProgress`), and the
+  worker's transcript/teardown call pointer is repointed
+  (`setActiveAgentCall`). Pipecat: the old pipeline task is cancelled with the
+  shared websocket's disconnect suppressed, a fresh
+  `FastAPIWebsocketTransport` is rebuilt around the same socket (and
+  serializer), and the `run()` loop starts the new agent's pipeline on it.
+
 Caveats:
 
-* The session keeps its existing voice/model: `transfer_agent` swaps prompt,
-  tools and behaviour, not the underlying realtime model or TTS voice.
-* LiveKit + Ultravox realtime cannot replace the *tool set* after call
-  creation (provider limitation); prompt/instruction handover still works.
-  On Pipecat, Ultravox realtime supports neither (one-shot `/calls` session),
-  so `transfer_agent` returns `FAILED` there. For full agent handover use
-  pipeline models or OpenAI realtime.
+* Full handover requires the target's model to run on the same worker
+  (`livekit:` ↔ `livekit:`, `pipecat:` ↔ `pipecat:`).
+* On Pipecat, full handover works on the websocket SIP gateways
+  (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC relay sessions,
+  Daily legs and consultation legs refuse it with `FAILED`.
+* Concurrency is re-checked for the child call: a busy target agent aborts
+  the handover with `FAILED` and the current agent keeps the call.
+* Recording does not continue across a full handover on LiveKit (covers up to
+  the handover); Pipecat records each call segment separately.
+* On LiveKit, a same-model in-place swap on Ultravox realtime is only used
+  when the tool surface is unchanged; any tool difference forces the full
+  restart.
 
 ## 2. Agent sets (`/agent-sets` API)
 
@@ -223,9 +250,13 @@ shared function handler runs in-process.
 
 | Capability | livekit | jambonz | pipecat | ultravox | text |
 |---|---|---|---|---|---|
-| `transfer_agent` | ✅ (see Ultravox tool caveat) | ❌ | ✅ (not on Ultravox realtime) | ❌ | n/a |
+| `transfer_agent` (in place, same model) | ✅ ¹ | ❌ | ✅ (not Ultravox realtime) | ❌ | n/a |
+| `transfer_agent` (full restart + child call) | ✅ | ❌ | ✅ (websocket SIP gateways) | ❌ | n/a |
 | `subagent` caller | ✅ | ❌ | ✅ | ❌ | ✅ (nested) |
 | `result` / invokable | n/a | n/a | n/a | n/a | ✅ |
+
+¹ LiveKit Ultravox realtime swaps in place only when the tool surface is
+unchanged; otherwise it falls through to the full restart.
 
 Validation enforces this: saving an agent with a `transfer_agent`/`subagent`
 function on a handler that doesn't support it is rejected with a clear error,

@@ -115,6 +115,11 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
+  /**
+   * Repoints transcript logging and teardown at the continuation call created
+   * by a full agent-stack handover (transfer_agent with a model change).
+   */
+  setActiveAgentCall?: (call: Call) => void;
   recordingOptions?: {
     enabled: boolean;
     key?: string;
