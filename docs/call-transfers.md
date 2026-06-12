@@ -13,6 +13,10 @@ Both transfer types are implemented using the builtin `transfer` platform functi
 
 The `transfer.number` parameter must be `static` or `metadata` (never `generated`). Because `metadata` supports arbitrary-depth dot paths, you can also source `transfer.number` from values written into `metadata.toolsCalls` by earlier tool calls (server-side tool result chaining) on **LiveKit agents only**. See [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md) for a DB-backed receptionist example.
 
+### Transferring to another AI agent
+
+This document covers transferring calls to **phone numbers and SIP endpoints**. To hand a live call from one AI agent to *another AI agent* — same call, no new call leg — use the builtin `transfer_agent` platform function instead. It follows the same anti-fraud parameter rules as `transfer` (the target is `static`/`metadata`, never LLM-`generated`), supports carrying the conversation history and an LLM-written handover summary across, and automatically chooses between an in-place prompt/tool swap (same model, same call record) and a full agent-stack restart with a child call record (model change). See [`multi-agent-api.md`](./multi-agent-api.md) for the full guide; the two mechanisms compose — e.g. a front-desk agent can `transfer_agent` between specialists and any of them can `transfer` out to a human.
+
 ## Transfer Mechanisms
 
 ### Blind Transfers

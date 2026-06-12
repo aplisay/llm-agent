@@ -383,5 +383,6 @@ These are enforced on `POST /agents`, `PUT /agents/{id}`, and throughout agent-s
 ## See also
 
 - [`call-transfers.md`](./call-transfers.md) — transferring calls to *phone numbers* (blind and consultative), including REFER vs bridging mechanics. `transfer_agent` complements rather than replaces these: use `transfer` to reach humans and external systems, `transfer_agent` to move between AI agents.
+- [`mcp-servers.md`](./mcp-servers.md) — giving agents remote MCP servers (`mcpServers`, a sibling of `functions`). Agent-set members may carry `mcpServers` like any other agent field.
 - [`agent-sets-and-subagents.md`](./agent-sets-and-subagents.md) — engineering notes on the implementation of the features in this guide.
 - [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md) — sourcing function parameters (including `agent` targets) from earlier tool results via `metadata.toolsCalls`.
