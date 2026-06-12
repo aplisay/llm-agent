@@ -127,3 +127,4 @@ agent.json
 .mcp.json
 **/__pycache__
 *.pyc
+docs/security.md
