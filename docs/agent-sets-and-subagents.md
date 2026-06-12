@@ -1,7 +1,7 @@
 # Agent Sets, Agent-to-Agent Transfers, and Text Subagents
 
-> Status: experimental (branch `agent-set-experiment`). LiveKit is the reference
-> runtime for the in-call features; see the support matrix below.
+> Status: feature branch `feature-agent-set`, validated end-to-end on the LiveKit
+> and Pipecat workers; see the support matrix below.
 >
 > **API users**: this page is engineering notes. The user-level guide with full
 > request/response examples is [`multi-agent-api.md`](./multi-agent-api.md).

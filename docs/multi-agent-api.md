@@ -6,23 +6,36 @@ This document describes how to build *teams* of agents using the LLM Agent API: 
 
 Three features work together:
 
-1. **Agent-to-agent transfers** — the builtin `transfer_agent` platform function hands a live call over to a different agent definition. The caller stays on the same call; the new agent's prompt and tools take over, optionally carrying the conversation history across.
+1. **Agent-to-agent transfers** — the builtin `transfer_agent` platform function hands a live call over to a different agent definition — including one with a **different model, voice stack, or voice**. The caller stays on the same call throughout; the platform picks the right mechanism automatically (an in-place prompt/tool swap for same-model targets, a full agent-stack restart with a child call record when the model changes), optionally carrying the conversation history across.
 2. **Text agents and subagents** — a new agent `type` of `text` defines a headless agent with no audio session. A voice agent invokes it through the builtin `subagent` platform function exactly as it would call any other tool; the text agent runs its own LLM/tool loop and returns its output by calling a definitive builtin `result` function.
 3. **Agent sets** — `POST /agent-sets` creates a group of agents from one document. Members reference each other with shortform labels (`label:sales`) instead of IDs; the platform resolves these to real agent IDs for you and lets you update or delete the whole group as a unit.
 
-A typical composition: a front-desk agent answers every call, hands callers to a sales or support specialist with `transfer_agent`, and any of them can ask a back-office `text` agent to look something up via `subagent` — all defined and deployed in one `POST /agent-sets` call.
+A typical composition: a front-desk agent answers every call, hands callers to a sales or support specialist with `transfer_agent`, and any of them can ask a back-office `text` agent to look something up via `subagent` — all defined and deployed in one `POST /agent-sets` call. Each specialist can run its own model and voice (a cheap fast model on the front desk, a stronger one for the specialist, distinct voices so handovers are audible in recordings) — the transfer mechanism bridges the differences.
 
 ### Where these features work
 
 | Capability | `livekit:` models | `pipecat:` models | `jambonz:` | `ultravox:` | `text:` models |
 |---|---|---|---|---|---|
-| `transfer_agent` (hand over a live call) | ✅ ¹ | ✅ ² | ❌ | ❌ | n/a |
+| `transfer_agent` — in-place handover (same model) | ✅ ¹ | ✅ ² | ❌ | ❌ | n/a |
+| `transfer_agent` — full-stack handover (model/voice change; child call record) | ✅ | ✅ ³ | ❌ | ❌ | n/a |
 | `subagent` (call a text agent) | ✅ | ✅ | ❌ | ❌ | ✅ (nested, depth-limited) |
 | `result` / invokable via `/invoke` | n/a | n/a | n/a | n/a | ✅ |
 
-¹ ² Ultravox realtime models cannot change prompt or tools mid-call (one-shot session creation), so `transfer_agent` on them always uses the **full-stack handover** (new session, child call record) even when the model string is unchanged — see "What happens on a transfer" below. On Pipecat, full handover works on websocket SIP gateway legs (FreeSWITCH / sipbridge / voiceblender) and browser WebRTC sessions; Daily legs refuse it.
+Within a worker, **any two models can hand a call to each other** — realtime ↔ pipeline,
+Ultravox ↔ OpenAI ↔ Gemini, and so on. You never choose the mechanism: the platform
+swaps in place when the model string is unchanged and the stack supports it, and
+otherwise restarts the full agent stack on the live call (see "What happens on a
+transfer" below). In particular, Ultravox realtime agents — whose sessions cannot
+change prompt or tools after creation — are fully operable transfer sources and
+targets via the full-stack mechanism.
 
-Saving an agent that uses one of these builtins on an unsupported model is rejected at create/update time with a clear validation error.
+¹ LiveKit Ultravox realtime swaps in place only when the target's tool surface is unchanged; any tool difference automatically falls through to the full-stack handover.
+
+² Pipecat Ultravox realtime cannot swap in place at all (one-shot session creation); even same-model transfers automatically use the full-stack handover.
+
+³ On Pipecat, the full-stack handover runs on websocket SIP gateway legs (FreeSWITCH / sipbridge / voiceblender) and browser WebRTC sessions; Daily legs and consultation legs refuse it.
+
+Saving an agent that uses one of these builtins on an unsupported handler (`jambonz:`, `ultravox:`) is rejected at create/update time with a clear validation error.
 
 ---
 
