@@ -828,7 +828,7 @@ components:
             enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
-                  * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit agents only). Parameters:
+                  * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
                     - `agent` (string, required): the target agent ID. Must be `static` or `metadata` sourced (never `generated`).
                       Within an agent-set document a `static` value may be a `label:<label>` reference to another member of the set.
                       The target must be an `interactive-audio` agent in the same organisation.
@@ -837,9 +837,11 @@ components:
                     - `summary` (string, optional, `generated`): a short handover summary the transferring LLM can compose for the
                       next agent. Delivered to the new agent alongside its prompt.
                     The call record continues uninterrupted; the new agent's prompt and functions replace the old agent's
-                    for the rest of the call. Note: on Ultravox realtime models the platform cannot swap the *tool set*
-                    mid-call (provider limitation) — prompt/instructions handover works on all LiveKit stacks.
-                  * `subagent` invokes a `text` type agent like a function call (LiveKit and text agents). Parameters:
+                    for the rest of the call. Note: on LiveKit + Ultravox realtime models the platform cannot swap the *tool set*
+                    mid-call (provider limitation) — prompt/instructions handover works on all LiveKit stacks. On Pipecat,
+                    Ultravox realtime supports neither and the transfer returns `FAILED`; use pipeline or OpenAI realtime
+                    models for full handover.
+                  * `subagent` invokes a `text` type agent like a function call (LiveKit, Pipecat and text agents). Parameters:
                     - `agent` (string, required): the target text agent ID, `static` or `metadata` sourced (never `generated`).
                       `label:<label>` references are supported within agent-set documents.
                     - any further `generated` parameters are forwarded to the text agent as its task input.

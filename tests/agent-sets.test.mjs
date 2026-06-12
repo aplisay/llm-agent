@@ -366,6 +366,28 @@ describe('Agent sets', () => {
     expect(res.body.type).toBe('text');
   });
 
+  test('POST /agents accepts transfer_agent and subagent builtins on pipecat agents', async () => {
+    // Create the targets first (a voice agent and a text agent), then a
+    // pipecat agent referencing both.
+    const voiceRes = makeRes(user);
+    await createAgent(makeReq({ modelName: 'pipecat:openai/gpt-4o', prompt: 'voice target' }), voiceRes);
+    expect(voiceRes.statusCode).toBe(200);
+    const textRes = makeRes(user);
+    await createAgent(makeReq({ modelName: TEXT_MODEL, prompt: 'researcher', functions: [resultFunction()] }), textRes);
+    expect(textRes.statusCode).toBe(200);
+
+    const res = makeRes(user);
+    await createAgent(makeReq({
+      modelName: 'pipecat:openai/gpt-4o',
+      prompt: 'front desk',
+      functions: [
+        transferAgentFunction(voiceRes.body.id),
+        subagentFunction(textRes.body.id)
+      ]
+    }), res);
+    expect(res.statusCode).toBe(200);
+  });
+
   test('POST /agents rejects a result function on a voice agent', async () => {
     const res = makeRes(user);
     await createAgent(makeReq({

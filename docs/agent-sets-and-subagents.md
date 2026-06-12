@@ -65,13 +65,24 @@ live session. The call record continues uninterrupted; the progress log gets an
 work because each handed-over agent's own `transfer_agent` functions are wired
 the same way.
 
+Runtime behaviour (Pipecat worker): the same flow, implemented as an in-place
+pipeline swap (`CallSession._apply_agent_transfer`): the target definition is
+fetched with the same organisation guard, the LLM service's tool callbacks are
+re-registered, and the pipeline is sent `LLMUpdateSettingsFrame` (new system
+instruction) + `LLMMessagesUpdateFrame` (fresh context) + `LLMSetToolsFrame`
+(new tool schemas) + `LLMRunFrame` so the incoming agent takes the next turn.
+The outgoing agent's tool-result run is suppressed on success so the two
+agents don't talk over each other.
+
 Caveats:
 
 * The session keeps its existing voice/model: `transfer_agent` swaps prompt,
   tools and behaviour, not the underlying realtime model or TTS voice.
-* Ultravox realtime cannot replace the *tool set* after call creation
-  (provider limitation). Prompt/instruction handover works on all LiveKit
-  stacks; for full tool swaps use pipeline or OpenAI realtime models.
+* LiveKit + Ultravox realtime cannot replace the *tool set* after call
+  creation (provider limitation); prompt/instruction handover still works.
+  On Pipecat, Ultravox realtime supports neither (one-shot `/calls` session),
+  so `transfer_agent` returns `FAILED` there. For full agent handover use
+  pipeline models or OpenAI realtime.
 
 ## 2. Agent sets (`/agent-sets` API)
 
@@ -201,16 +212,16 @@ A new agent type for headless work:
 * Server-side execution is bounded: 10 LLM round trips per invocation and a
   wall-clock timeout (`SUBAGENT_TIMEOUT` ms, default 60000).
 
-The voice-side `subagent` dispatch is available in the LiveKit worker (via the
-internal `/agent-db/subagent` API) and anywhere the shared function handler
-runs in-process.
+The voice-side `subagent` dispatch is available in the LiveKit and Pipecat
+workers (both via the internal `/agent-db/subagent` API) and anywhere the
+shared function handler runs in-process.
 
 ## Support matrix
 
 | Capability | livekit | jambonz | pipecat | ultravox | text |
 |---|---|---|---|---|---|
-| `transfer_agent` | ✅ (see Ultravox tool caveat) | ❌ | ❌ (planned) | ❌ | n/a |
-| `subagent` caller | ✅ | ❌ | ❌ (planned) | ❌ | ✅ (nested) |
+| `transfer_agent` | ✅ (see Ultravox tool caveat) | ❌ | ✅ (not on Ultravox realtime) | ❌ | n/a |
+| `subagent` caller | ✅ | ❌ | ✅ | ❌ | ✅ (nested) |
 | `result` / invokable | n/a | n/a | n/a | n/a | ✅ |
 
 Validation enforces this: saving an agent with a `transfer_agent`/`subagent`

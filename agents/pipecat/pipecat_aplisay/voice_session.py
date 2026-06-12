@@ -395,7 +395,12 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
         )
         schemas.append(schema)
 
-        async def _runner(params: FunctionCallParams, _execute=entry["execute"], _name=s["name"]) -> None:
+        async def _runner(
+            params: FunctionCallParams,
+            _execute=entry["execute"],
+            _name=s["name"],
+            _suppress_result_run=bool(entry.get("suppress_result_run")),
+        ) -> None:
             # Breadcrumb so we can confirm the realtime path actually
             # routes function calls through here (and therefore through
             # function_handler.py's transaction-log emissions). Earlier
@@ -416,6 +421,24 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                 # whole turn.
                 await params.result_callback({"error": str(e)})
                 return
+            if (
+                _suppress_result_run
+                and isinstance(result, dict)
+                and result.get("status") == "OK"
+            ):
+                # Successful transfer_agent handover: deliver the result
+                # without running the (outgoing) LLM — the agent swap triggers
+                # the incoming agent's first turn instead. A FAILED handover
+                # falls through to the normal path so the current agent can
+                # tell the caller and recover. See
+                # CallSession._apply_agent_transfer.
+                from pipecat.frames.frames import FunctionCallResultProperties
+
+                await params.result_callback(
+                    result,
+                    properties=FunctionCallResultProperties(run_llm=False),
+                )
+                return
             await params.result_callback(result)
 
         llm.register_function(s["name"], _runner)
@@ -433,7 +456,7 @@ async def build_voice_session(
     system_prompt: str,
     enable_recording: bool = False,
     relay_endpoint: "Optional[Any]" = None,
-) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext]:
+) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
@@ -463,14 +486,14 @@ async def build_voice_session(
         audio_buffer = AudioBufferProcessor(num_channels=2)
 
     if mode == "realtime":
-        task, context = await _build_realtime(
+        task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
         )
     else:
-        task, context = await _build_pipeline(
+        task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
         )
-    return task, audio_buffer, context
+    return task, audio_buffer, context, llm
 
 
 async def _build_realtime(
@@ -482,7 +505,7 @@ async def _build_realtime(
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
-) -> tuple[PipelineTask, LLMContext]:
+) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
 
@@ -766,7 +789,7 @@ async def _build_realtime(
         is_ultravox=model_id.startswith("ultravox/"),
         relay_endpoint=relay_endpoint,
     )
-    return task, context
+    return task, context, llm
 
 
 async def _build_pipeline(
@@ -778,7 +801,7 @@ async def _build_pipeline(
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
-) -> tuple[PipelineTask, LLMContext]:
+) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
     stt_opts = options.get("stt") or {}
@@ -916,4 +939,4 @@ async def _build_pipeline(
         is_ultravox=False,
         relay_endpoint=relay_endpoint,
     )
-    return task, context
+    return task, context, llm

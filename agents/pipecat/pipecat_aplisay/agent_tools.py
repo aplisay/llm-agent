@@ -100,6 +100,8 @@ def build_agent_tools(
     on_hangup: Callable[[], Awaitable[None]],
     on_transfer: Callable[[dict], Awaitable[Any]],
     get_transfer_state: Callable[[], dict],
+    on_agent_transfer: Optional[Callable[[dict], Awaitable[Any]]] = None,
+    on_subagent: Optional[Callable[[dict, dict], Awaitable[Any]]] = None,
     extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
@@ -107,6 +109,17 @@ def build_agent_tools(
     Each entry is ``{schema: {name, description, properties, required}, execute}``
     and the voice-session layer adapts them to whatever LLMService is in use
     (Pipecat exposes ``FunctionSchema`` / ``register_function`` per service).
+    A descriptor may also carry ``suppress_result_run: True`` — set on
+    ``transfer_agent`` builtins so the in-flight (pre-handover) agent does not
+    generate a reply from the tool result; the handover machinery triggers the
+    new agent's first turn instead.
+
+    ``on_agent_transfer`` handles the builtin ``transfer_agent`` platform
+    function (in-call handover to another agent definition); ``on_subagent``
+    handles the builtin ``subagent`` platform function (invoke a headless
+    ``text`` agent and return its result). Both are optional — when absent the
+    corresponding builtin is unavailable (the server-side agent validation
+    gates which handlers may carry these functions).
 
     ``extra_builtins`` is an optional map of additional platform-built-in
     function names to their handler coroutines. Used by the consultative-
@@ -127,6 +140,10 @@ def build_agent_tools(
         "transfer": _builtin_factory_transfer(on_transfer),
         "transfer_status": _builtin_factory_transfer_status(get_transfer_state),
     }
+    if on_agent_transfer is not None:
+        builtins["transfer_agent"] = _builtin_factory_agent_transfer(on_agent_transfer)
+    if on_subagent is not None:
+        builtins["subagent"] = _builtin_factory_subagent(on_subagent)
     if extra_builtins:
         builtins.update(extra_builtins)
 
@@ -155,16 +172,24 @@ def build_agent_tools(
                 )
                 first = result["function_results"][0]
                 if first.get("error"):
-                    logger.info(
-                        {"name": _fn_def.get("name"), "error": first["error"]},
-                        "function execution returned error",
+                    logger.bind(name=_fn_def.get("name"), error=first["error"]).info(
+                        "function execution returned error"
                     )
                 return first.get("result")
             except Exception as e:  # noqa: BLE001
                 logger.bind(error=str(e)).info("error executing function")
                 raise RuntimeError(f"error executing function: {e}") from e
 
-        descriptors.append({"schema": schema, "execute": execute})
+        descriptor: dict = {"schema": schema, "execute": execute}
+        if (
+            fn_def.get("implementation") == "builtin"
+            and fn_def.get("platform") == "transfer_agent"
+        ):
+            # Don't let the outgoing agent respond to the handover result —
+            # the swap machinery (CallSession._apply_agent_transfer) runs the
+            # incoming agent's first turn once prompt/tools are replaced.
+            descriptor["suppress_result_run"] = True
+        descriptors.append(descriptor)
 
     return descriptors
 
@@ -188,5 +213,19 @@ def _builtin_factory_transfer_status(get_state: Callable[[], dict]):
     async def _impl(_args: dict, _metadata: dict, _options: dict) -> dict:
         state = get_state()
         return {"state": state.get("state"), "description": state.get("description")}
+
+    return _impl
+
+
+def _builtin_factory_agent_transfer(on_agent_transfer: Callable[[dict], Awaitable[Any]]):
+    async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
+        return await on_agent_transfer(args)
+
+    return _impl
+
+
+def _builtin_factory_subagent(on_subagent: Callable[[dict, dict], Awaitable[Any]]):
+    async def _impl(args: dict, metadata: dict, _options: dict) -> Any:
+        return await on_subagent(args, metadata)
 
     return _impl

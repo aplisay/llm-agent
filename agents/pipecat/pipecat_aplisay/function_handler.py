@@ -122,6 +122,15 @@ def _resolve_inputs(
                 "transfer.number must be 'static' or 'metadata' (never 'generated')"
             )
 
+    # transfer_agent / subagent targets follow the same anti-abuse rule as
+    # transfer.number: the target agent may never be LLM-generated.
+    if fn.get("platform") in ("transfer_agent", "subagent"):
+        agent_entry = properties.get("agent") or {}
+        if agent_entry.get("source") not in ("static", "metadata"):
+            raise PermissionError(
+                f"{fn.get('platform')}.agent must be 'static' or 'metadata' (never 'generated')"
+            )
+
     return resolved
 
 

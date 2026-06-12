@@ -60,6 +60,7 @@ async def _request(
     *,
     params: Optional[dict] = None,
     body: Any = None,
+    timeout: float = 30.0,
 ) -> Any:
     url = f"{_base_url()}{endpoint}"
     headers = {"Content-Type": "application/json"}
@@ -68,7 +69,7 @@ async def _request(
         headers["x-shared-token"] = token
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(method, url, params=params, json=body, headers=headers)
     except httpx.ConnectError as e:
         # DNS / TCP failure reaching the llm-agent REST server. Most common
@@ -121,6 +122,51 @@ async def get_instance_by_number(number: str) -> dict:
 
 async def get_agent_by_id(agent_id: str) -> dict:
     return await _request("GET", f"/api/agents/{agent_id}")
+
+
+async def get_internal_agent_by_id(
+    agent_id: str, expected_organisation_id: Optional[str] = None
+) -> dict:
+    """Fetch a full agent definition (including keys) via the internal agent-db API.
+
+    Used for in-call ``transfer_agent`` handover. Always pass the calling
+    call's organisation id so the server can refuse cross-tenant fetches —
+    mirrors ``getInternalAgentById`` in the LiveKit worker's api-client.ts.
+    """
+    params: dict = {"agentId": agent_id}
+    if expected_organisation_id:
+        params["expectedOrganisationId"] = expected_organisation_id
+    return await _request("GET", "/api/agent-db/agent", params=params)
+
+
+async def invoke_subagent(
+    agent_id: str,
+    input_args: dict,
+    metadata: Optional[dict],
+    *,
+    organisation_id: str,
+    call_id: Optional[str] = None,
+) -> Any:
+    """Invoke a ``text`` type agent as a subagent via the internal agent-db API.
+
+    Returns the subagent's result payload (the arguments it passed to its
+    builtin ``result`` function). The server bounds the invocation with its
+    own SUBAGENT_TIMEOUT (default 60s), so the HTTP timeout here is set a
+    little above that.
+    """
+    data = await _request(
+        "POST",
+        "/api/agent-db/subagent",
+        body={
+            "agentId": agent_id,
+            "input": input_args,
+            "metadata": metadata,
+            "organisationId": organisation_id,
+            "callId": call_id,
+        },
+        timeout=75.0,
+    )
+    return (data or {}).get("result") if isinstance(data, dict) else data
 
 
 async def get_phone_number(number: str) -> Optional[dict]:

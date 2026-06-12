@@ -174,6 +174,20 @@ class CallSession:
     # the LLM cancelling the function-call coroutine on caller interruption.
     _webrtc_bg_task: Optional[Any] = None
 
+    # ---- Agent-to-agent transfer (builtin transfer_agent) state ----
+    # Handle to the pipeline's LLM service (set in ``prepare_run``) so the
+    # in-call handover can re-register tool callbacks on it.
+    _llm_service: Optional[Any] = None
+    # The model name the running pipeline was built with (handover keeps the
+    # session's model/voice; only prompt + tools are swapped).
+    _active_model_name: Optional[str] = None
+    # Tool names currently registered on the LLM service, so a handover can
+    # unregister the outgoing agent's tools that the incoming agent lacks.
+    _registered_tool_names: set = field(default_factory=set)
+    # Detached task that applies the prompt/tool swap after the transfer_agent
+    # tool call has returned its result (survives caller interruption).
+    _agent_swap_task: Optional[Any] = None
+
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling."""
         active_agent = self.agent
@@ -263,15 +277,7 @@ class CallSession:
                 "reject_transfer": _builtin_consult_reject(self),
             }
 
-        tools = build_agent_tools(
-            agent=agent,
-            metadata=metadata,
-            send_message=self._send_message,
-            on_hangup=self._on_hangup,
-            on_transfer=self._on_transfer,
-            get_transfer_state=lambda: {"state": self.transfer_state.state, "description": self.transfer_state.description},
-            extra_builtins=extra_builtins,
-        )
+        tools = self._build_tools_for(agent, extra_builtins=extra_builtins)
 
         # WebRTC-origin sessions (and consult-leg TransferAgents whose parent is
         # a browser session) get a relay endpoint spliced into their pipeline so
@@ -286,7 +292,7 @@ class CallSession:
             self.relay_endpoint = RelayEndpoint(name=self.session_id)
 
         recording_opts = _resolve_recording_options(agent, self.instance)
-        task, audio_buffer, llm_context = await build_voice_session(
+        task, audio_buffer, llm_context, llm_service = await build_voice_session(
             transport=self.gateway_session.transport,
             model_name=model_name,
             agent=agent,
@@ -299,6 +305,12 @@ class CallSession:
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
         self._llm_context = llm_context
+        # Handles for the in-call agent handover (builtin transfer_agent):
+        # the LLM service to re-register tools on, the model the pipeline was
+        # built with, and the currently-registered tool names.
+        self._llm_service = llm_service
+        self._active_model_name = model_name
+        self._registered_tool_names = {t["schema"]["name"] for t in tools}
 
         # When recording is enabled, build the RecordingSession now and wire
         # it to the AudioBufferProcessor. We start ``start_recording()`` from
@@ -634,6 +646,191 @@ class CallSession:
         self._wants_hangup = True
         await self._end(DISCONNECT_REASONS["AGENT_INITIATED_HANGUP"])
         await self.gateway_session.shutdown()
+
+    def _build_tools_for(
+        self, agent: dict, *, extra_builtins: Optional[dict] = None
+    ) -> list[dict]:
+        """Build the tool descriptor list for an agent definition with this
+        session's callbacks wired in. Used both at pipeline construction
+        (``prepare_run``) and when a ``transfer_agent`` handover swaps in a
+        new agent definition mid-call (``_apply_agent_transfer``)."""
+        return build_agent_tools(
+            agent=agent,
+            metadata=self.call.metadata,
+            send_message=self._send_message,
+            on_hangup=self._on_hangup,
+            on_transfer=self._on_transfer,
+            get_transfer_state=lambda: {
+                "state": self.transfer_state.state,
+                "description": self.transfer_state.description,
+            },
+            on_agent_transfer=self._on_agent_transfer,
+            on_subagent=self._on_subagent,
+            extra_builtins=extra_builtins,
+        )
+
+    async def _on_subagent(self, args: dict, metadata: dict) -> Any:
+        """Builtin ``subagent`` platform function: invoke a headless ``text``
+        agent via the internal agent-db API and return its result to the LLM.
+
+        ``args`` carries the resolved ``agent`` target (static/metadata only —
+        enforced by ``function_handler._resolve_inputs`` and by server-side
+        agent validation) plus the LLM-generated task input parameters.
+        """
+        target = args.get("agent")
+        if not target:
+            raise RuntimeError("subagent function call has no agent parameter")
+        input_args = {k: v for k, v in args.items() if k != "agent"}
+        return await api_client.invoke_subagent(
+            str(target),
+            input_args,
+            metadata,
+            organisation_id=self.call.organisationId,
+            call_id=self.call.id,
+        )
+
+    async def _on_agent_transfer(self, args: dict) -> dict:
+        """Builtin ``transfer_agent`` platform function: hand the live call
+        over to another agent definition.
+
+        The target definition is fetched through the internal agent-db API
+        with a same-organisation guard, then a detached task swaps the running
+        pipeline's system prompt and tool surface in place (the session keeps
+        its model and voice — see ``_apply_agent_transfer``). Returns the
+        familiar ``{status, detail}`` shape; on ``OK`` the outgoing agent's
+        result-run is suppressed (see ``agent_tools`` / ``voice_session``) so
+        the incoming agent speaks next.
+        """
+        from .voice_mode import model_id_from_name
+
+        target = args.get("agent")
+        if not target:
+            return self._transfer_failed("transfer_agent call has no agent parameter")
+
+        # Ultravox realtime is a one-shot /calls session: neither the system
+        # prompt nor the tool set can be replaced after call creation.
+        model_name = self._active_model_name or self.agent.get("modelName") or ""
+        if model_id_from_name(model_name).startswith("ultravox/"):
+            return self._transfer_failed(
+                "agent-to-agent transfer is not supported on Ultravox realtime models"
+            )
+
+        try:
+            new_agent = await api_client.get_internal_agent_by_id(
+                str(target), expected_organisation_id=self.call.organisationId
+            )
+        except api_client.ApiRequestError as e:
+            return self._transfer_failed(f"could not load target agent: {e}")
+
+        if (new_agent.get("type") or "interactive-audio") != "interactive-audio":
+            return self._transfer_failed(
+                f"agent {target} is type {new_agent.get('type')} and cannot take over a live call"
+            )
+
+        include_history = bool(args.get("includeHistory"))
+        summary = args.get("summary")
+
+        prompt = new_agent.get("prompt") or "You are a helpful assistant."
+        prompt += "\n\nYou have just taken over a live call from another agent." + (
+            ""
+            if include_history
+            else " Treat this as a fresh conversation: disregard any prior context."
+        )
+        if isinstance(summary, str) and summary.strip():
+            prompt += f"\n\n# Handover summary from the previous agent\n{summary.strip()}"
+        if include_history:
+            transcript = self.get_parent_transcript()
+            if transcript:
+                prompt += f"\n\n# Conversation so far\n{transcript}"
+
+        await self._send_message(
+            {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
+        )
+        logger.bind(
+            from_agent=self.agent.get("id"),
+            to_agent=new_agent.get("id"),
+            include_history=include_history,
+        ).info("transfer_agent: handing session to new agent")
+
+        # Apply the swap from a detached task so the tool call's own result
+        # (delivered with run_llm=False) lands before the context is replaced,
+        # and so the swap survives the LLM cancelling this coroutine on a
+        # caller interruption.
+        self._agent_swap_task = asyncio.create_task(
+            self._apply_agent_transfer(new_agent, prompt)
+        )
+        return {"status": "OK", "detail": "handing the caller over to the new agent"}
+
+    async def _apply_agent_transfer(self, new_agent: dict, system_prompt: str) -> None:
+        """Swap the running pipeline over to ``new_agent``: replace the tool
+        callbacks on the LLM service, then queue frames that update the
+        service's system instruction, replace the context messages, set the
+        new tool schemas, and run the incoming agent's first turn.
+
+        The pipeline (and therefore the model, voice and transport) is
+        untouched — only prompt and tools change, mirroring the LiveKit
+        worker's ``llm.handoff()`` semantics.
+        """
+        try:
+            # Let the in-flight function-call lifecycle settle (result
+            # delivered, context updated) before replacing the context.
+            await asyncio.sleep(0.2)
+            task = self._task
+            llm = self._llm_service
+            if task is None or llm is None:
+                logger.warning("agent transfer: no running pipeline; dropping handover")
+                return
+
+            from pipecat.frames.frames import (
+                LLMMessagesUpdateFrame,
+                LLMRunFrame,
+                LLMSetToolsFrame,
+                LLMUpdateSettingsFrame,
+            )
+            from pipecat.services.settings import LLMSettings
+
+            from .voice_session import _register_tools_on_llm
+
+            tools = self._build_tools_for(new_agent)
+            new_names = {t["schema"]["name"] for t in tools}
+            # Drop outgoing-agent tools the incoming agent doesn't declare;
+            # register_function below overwrites the survivors in place.
+            for name in self._registered_tool_names - new_names:
+                try:
+                    llm.unregister_function(name)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"agent transfer: unregister {name} raised: {e}")
+            schemas = _register_tools_on_llm(llm, tools)
+            self._registered_tool_names = new_names
+
+            await task.queue_frames(
+                [
+                    # New system prompt at the service level (pipeline services
+                    # inject Settings.system_instruction per inference; OpenAI
+                    # realtime maps settings changes to a session.update).
+                    LLMUpdateSettingsFrame(
+                        delta=LLMSettings(system_instruction=system_prompt)
+                    ),
+                    # Replace the context wholesale: history is carried (when
+                    # requested) inside the prompt itself, so the incoming
+                    # agent starts from a clean message list either way.
+                    LLMMessagesUpdateFrame(
+                        [{"role": "developer", "content": system_prompt}],
+                        run_llm=False,
+                    ),
+                    # New tool surface on the context (and forwarded to
+                    # speech-to-speech services that need it).
+                    LLMSetToolsFrame(tools=schemas),
+                    # The incoming agent takes its first turn.
+                    LLMRunFrame(),
+                ]
+            )
+            self.agent = new_agent
+            logger.bind(agent_id=new_agent.get("id")).info(
+                "agent transfer: prompt and tools swapped"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.bind(error=str(e)).error("agent transfer: swap failed")
 
     def get_parent_transcript(self) -> str:
         """Render this session's chat history in the LiveKit-parity
