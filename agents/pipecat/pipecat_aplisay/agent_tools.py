@@ -189,6 +189,17 @@ def build_agent_tools(
             # the swap machinery (CallSession._apply_agent_transfer) runs the
             # incoming agent's first turn once prompt/tools are replaced.
             descriptor["suppress_result_run"] = True
+        if fn_def.get("implementation") == "builtin":
+            # Platform builtins have side effects (transfers, handovers,
+            # hangup, subagent invocations) that must not be killed by
+            # Pipecat's cancel-on-interruption: an LLM often emits the tool
+            # call while the caller's trailing speech is still end-pointing,
+            # and the resulting interruption cancelled the call milliseconds
+            # in — leaving e.g. a transfer_agent handover announced by the
+            # model but never performed. The runner shields these executions
+            # so they run to completion even if the LLM-side call is
+            # cancelled (see voice_session._register_tools_on_llm).
+            descriptor["protect_from_interruption"] = True
         descriptors.append(descriptor)
 
     return descriptors

@@ -386,6 +386,23 @@ class TestFullHandover:
 
         assert CallSession._rebuild_transport_for_handover(object()) is None
 
+    def test_rebuild_supports_smallwebrtc_sharing_connection(self) -> None:
+        from pipecat.transports.base_transport import TransportParams
+        from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+        from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+        from pipecat_aplisay.call_session import CallSession
+
+        connection = SmallWebRTCConnection()
+        old = SmallWebRTCTransport(
+            webrtc_connection=connection,
+            params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
+        )
+        rebuilt = CallSession._rebuild_transport_for_handover(old)
+        assert rebuilt is not None
+        assert rebuilt is not old
+        assert rebuilt._client._webrtc_connection is connection
+
     def test_full_handover_creates_child_call_and_schedules_restart(self, monkeypatch) -> None:
         from pipecat_aplisay import api_client
         from pipecat_aplisay import call_session as cs

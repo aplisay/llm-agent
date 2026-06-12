@@ -194,6 +194,9 @@ class CallSession:
     # the new agent's pipeline on the rebuilt transport. The "call" is a child
     # call record (parentId = the call it continues).
     _pending_agent_handover: Optional[dict] = None
+    # Rebuilt transport awaiting a manual client-connected kick (SmallWebRTC
+    # only — its connected event has already fired for the old client).
+    _handover_webrtc_kick: Optional[Any] = None
     # Closers for any MCP server connections opened in ``prepare_run`` (the
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
@@ -217,25 +220,11 @@ class CallSession:
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
             try:
+                # Full agent-stack handovers are consumed inside run_prepared
+                # (shared with the browser /webrtc/offer path, which drives
+                # run_prepared directly and never enters this loop).
                 await self._run_once(active_agent, active_model, active_prompt)
-                pending = self._pending_agent_handover
-                if pending is None:
-                    return
-                # ---- Full agent-stack handover continuation ----
-                self._pending_agent_handover = None
-                self.gateway_session.transport = pending["transport"]
-                self.call = pending["call"]
-                self.agent = pending["agent"]
-                active_agent = pending["agent"]
-                active_model = active_agent["modelName"]
-                active_prompt = pending["system_prompt"]
-                # The incoming agent gets its own fallback budget.
-                used_fallback_model = False
-                used_fallback_agent = False
-                logger.bind(
-                    call_id=self.call.id, agent_id=active_agent.get("id"), model=active_model
-                ).info("agent handover: starting new agent stack on the live transport")
-                continue
+                return
             except api_client.AgentConcurrencyLimitExceededBusyError:
                 # Map upstream — caller signals SIP busy / 429 to its caller.
                 raise
@@ -530,7 +519,47 @@ class CallSession:
     async def run_prepared(self, task, max_duration_secs: Optional[int]) -> None:
         """Execute a ``PipelineTask`` built by :meth:`prepare_run` to
         completion (or until ``maxDuration`` fires).
+
+        Also the continuation point for FULL agent-stack handovers (builtin
+        ``transfer_agent`` with a model change, or Ultravox realtime): when a
+        pipeline ends with ``_pending_agent_handover`` set, the incoming
+        agent's pipeline is prepared on the rebuilt transport and run in the
+        same loop. This must live HERE (not in :meth:`run`) because the
+        browser ``/webrtc/offer`` path drives ``run_prepared`` directly and
+        tears the gateway down the moment it returns.
         """
+        while True:
+            await self._run_prepared_once(task, max_duration_secs)
+            pending = self._pending_agent_handover
+            if pending is None:
+                return
+            # ---- Full agent-stack handover continuation ----
+            self._pending_agent_handover = None
+            self.gateway_session.transport = pending["transport"]
+            # A browser session's (inert) relay endpoint is built from
+            # FrameProcessors that cannot be reused across pipeline tasks;
+            # clear it so prepare_run splices a fresh one into the new
+            # pipeline.
+            self.relay_endpoint = None
+            # A rebuilt SmallWebRTC transport sits on an ALREADY-connected
+            # peer, so the connection's "connected" event (which wires the
+            # media tracks and fires on_client_connected → greeting /
+            # recorder) will never re-fire; kick it manually once the new
+            # pipeline has started.
+            self._handover_webrtc_kick = pending["transport"]
+            self.call = pending["call"]
+            self.agent = pending["agent"]
+            logger.bind(
+                call_id=self.call.id,
+                agent_id=self.agent.get("id"),
+                model=self.agent.get("modelName"),
+            ).info("agent handover: starting new agent stack on the live transport")
+            task, max_duration_secs = await self.prepare_run(
+                self.agent, self.agent["modelName"], pending["system_prompt"]
+            )
+
+    async def _run_prepared_once(self, task, max_duration_secs: Optional[int]) -> None:
+        """One pipeline execution (see :meth:`run_prepared`)."""
         runner = PipelineRunner(handle_sigint=False)
         self._runner = runner
         self._task = task
@@ -538,6 +567,14 @@ class CallSession:
         timeout_task: Optional[asyncio.Task] = None
         if max_duration_secs:
             timeout_task = asyncio.create_task(self._timeout_watchdog(max_duration_secs))
+
+        kick_transport = self._handover_webrtc_kick
+        self._handover_webrtc_kick = None
+        kick_task: Optional[asyncio.Task] = None
+        if kick_transport is not None:
+            kick_task = asyncio.create_task(
+                self._fire_rebuilt_webrtc_connected(kick_transport)
+            )
 
         try:
             await runner.run(task)
@@ -552,6 +589,8 @@ class CallSession:
                 # Normal completion when transport disconnects or pipeline ends.
                 await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
         finally:
+            if kick_task and not kick_task.done():
+                kick_task.cancel()
             if timeout_task and not timeout_task.done():
                 timeout_task.cancel()
             # Tear down any WebRTC-origin relay leg / consult leg this session
@@ -853,20 +892,35 @@ class CallSession:
         for transports we can't rebuild (Daily, browser WebRTC) — full
         handover is refused there.
         """
+        params = getattr(old_transport, "_params", None)
+        client = getattr(old_transport, "_client", None)
+        if params is None or client is None:
+            return None
         try:
             from pipecat.transports.websocket.fastapi import (
                 FastAPIWebsocketTransport,
             )
+
+            if isinstance(old_transport, FastAPIWebsocketTransport):
+                websocket = getattr(client, "_websocket", None)
+                if websocket is None:
+                    return None
+                return FastAPIWebsocketTransport(websocket=websocket, params=params)
         except Exception:  # noqa: BLE001
-            return None
-        if not isinstance(old_transport, FastAPIWebsocketTransport):
-            return None
-        params = getattr(old_transport, "_params", None)
-        client = getattr(old_transport, "_client", None)
-        websocket = getattr(client, "_websocket", None)
-        if params is None or websocket is None:
-            return None
-        return FastAPIWebsocketTransport(websocket=websocket, params=params)
+            pass
+        try:
+            from pipecat.transports.smallwebrtc.transport import (
+                SmallWebRTCTransport,
+            )
+
+            if isinstance(old_transport, SmallWebRTCTransport):
+                connection = getattr(client, "_webrtc_connection", None)
+                if connection is None:
+                    return None
+                return SmallWebRTCTransport(webrtc_connection=connection, params=params)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     @staticmethod
     def _suppress_transport_disconnect(old_transport: Any) -> None:
@@ -903,9 +957,9 @@ class CallSession:
                 f"agent {new_agent.get('id')} uses {target_model}; a live Pipecat "
                 "session can only hand over to pipecat: models"
             )
-        if self.relay_endpoint is not None:
+        if self.relay_endpoint is not None and getattr(self.relay_endpoint, "engaged", False):
             return self._transfer_failed(
-                "full agent handover is not available on WebRTC-relay sessions"
+                "full agent handover is not available while a WebRTC media relay is engaged"
             )
         if self.parent_session is not None:
             return self._transfer_failed(
@@ -989,6 +1043,45 @@ class CallSession:
             await task.cancel()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"agent handover: task.cancel raised: {e}")
+
+    @staticmethod
+    async def _fire_rebuilt_webrtc_connected(transport: Any) -> None:
+        """Manually fire the client-connected path on a rebuilt SmallWebRTC
+        transport.
+
+        A rebuilt transport wraps an ALREADY-connected peer: ``connect()``
+        short-circuits and the connection's "connected" event (which derives
+        the media tracks via ``_handle_client_connected`` and fires
+        ``on_client_connected`` → greeting / recorder wiring) never re-fires
+        for the new client. ``_handle_client_connected`` is the SDK's own
+        renegotiation path — it re-reads the input tracks and swaps a fresh
+        output track onto the live peer connection — so invoking it once the
+        new pipeline's StartFrame has configured the client gives the new
+        pipeline full media. No-op for transports whose client lacks the
+        method (the websocket gateways fire client-connected in setup()).
+        """
+        client = getattr(transport, "_client", None)
+        handler = getattr(client, "_handle_client_connected", None)
+        if handler is None:
+            return
+        try:
+            # Wait for the new pipeline's StartFrame to configure the client
+            # (input.setup sets _params); bail out after 10s.
+            for _ in range(100):
+                if getattr(client, "_params", None) is not None:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                logger.warning(
+                    "agent handover: rebuilt WebRTC client never initialised; no media kick"
+                )
+                return
+            await handler()
+            logger.info("agent handover: rebuilt WebRTC transport media kicked")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"agent handover: WebRTC media kick failed: {e}")
 
     async def _apply_agent_transfer(self, new_agent: dict, system_prompt: str) -> None:
         """Swap the running pipeline over to ``new_agent``: replace the tool

@@ -20,7 +20,7 @@ A typical composition: a front-desk agent answers every call, hands callers to a
 | `subagent` (call a text agent) | ✅ | ✅ | ❌ | ❌ | ✅ (nested, depth-limited) |
 | `result` / invokable via `/invoke` | n/a | n/a | n/a | n/a | ✅ |
 
-¹ ² Ultravox realtime models cannot change prompt or tools mid-call (one-shot session creation), so `transfer_agent` on them always uses the **full-stack handover** (new session, child call record) even when the model string is unchanged — see "What happens on a transfer" below. On Pipecat, full handover additionally requires a websocket SIP gateway leg (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC and Daily legs refuse it.
+¹ ² Ultravox realtime models cannot change prompt or tools mid-call (one-shot session creation), so `transfer_agent` on them always uses the **full-stack handover** (new session, child call record) even when the model string is unchanged — see "What happens on a transfer" below. On Pipecat, full handover works on websocket SIP gateway legs (FreeSWITCH / sipbridge / voiceblender) and browser WebRTC sessions; Daily legs refuse it.
 
 Saving an agent that uses one of these builtins on an unsupported model is rejected at create/update time with a clear validation error.
 
@@ -113,8 +113,9 @@ Full-stack handover constraints:
   models. (The room or SIP leg is owned by that worker; use ordinary call transfer to
   move a call between platforms.)
 - On Pipecat, full handover is supported on the websocket SIP gateways
-  (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC and Daily legs, and
-  consultation legs, refuse it with a `FAILED` result.
+  (FreeSWITCH / sipbridge / voiceblender) and on browser WebRTC sessions; Daily
+  legs, consultation legs, and calls with an engaged media relay refuse it with
+  a `FAILED` result.
 - Call recording does not follow a full handover on LiveKit (the recording covers up to
   the handover); on Pipecat each call record segment records separately.
 - If the new stack cannot be started (e.g. the target agent is at its concurrency

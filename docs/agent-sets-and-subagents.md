@@ -95,17 +95,23 @@ The runtime picks one of two modes per transfer:
   handlers suppressed during the swap (`agentHandoverInProgress`), and the
   worker's transcript/teardown call pointer is repointed
   (`setActiveAgentCall`). Pipecat: the old pipeline task is cancelled with the
-  shared websocket's disconnect suppressed, a fresh
-  `FastAPIWebsocketTransport` is rebuilt around the same socket (and
-  serializer), and the `run()` loop starts the new agent's pipeline on it.
+  shared connection's disconnect suppressed, a fresh transport is rebuilt
+  around the same connection (`FastAPIWebsocketTransport` over the same
+  websocket + serializer; `SmallWebRTCTransport` over the same peer
+  connection, with a manual client-connected kick since the peer's
+  "connected" event has already fired), and the `run_prepared` continuation
+  loop starts the new agent's pipeline on it. Side-effecting builtin tool
+  executions are shielded from Pipecat's cancel-on-interruption so a caller
+  speaking over the tool call cannot kill the handover mid-flight.
 
 Caveats:
 
 * Full handover requires the target's model to run on the same worker
   (`livekit:` ↔ `livekit:`, `pipecat:` ↔ `pipecat:`).
 * On Pipecat, full handover works on the websocket SIP gateways
-  (FreeSWITCH / sipbridge / voiceblender); browser-WebRTC relay sessions,
-  Daily legs and consultation legs refuse it with `FAILED`.
+  (FreeSWITCH / sipbridge / voiceblender) and browser WebRTC sessions;
+  Daily legs, consultation legs, and calls with an ENGAGED media relay
+  refuse it with `FAILED`.
 * Concurrency is re-checked for the child call: a busy target agent aborts
   the handover with `FAILED` and the current agent keeps the call.
 * Recording does not continue across a full handover on LiveKit (covers up to
@@ -251,7 +257,7 @@ shared function handler runs in-process.
 | Capability | livekit | jambonz | pipecat | ultravox | text |
 |---|---|---|---|---|---|
 | `transfer_agent` (in place, same model) | ✅ ¹ | ❌ | ✅ (not Ultravox realtime) | ❌ | n/a |
-| `transfer_agent` (full restart + child call) | ✅ | ❌ | ✅ (websocket SIP gateways) | ❌ | n/a |
+| `transfer_agent` (full restart + child call) | ✅ | ❌ | ✅ (ws SIP gateways + browser WebRTC) | ❌ | n/a |
 | `subagent` caller | ✅ | ❌ | ✅ | ❌ | ✅ (nested) |
 | `result` / invokable | n/a | n/a | n/a | n/a | ✅ |
 

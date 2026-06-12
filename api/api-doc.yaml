@@ -853,8 +853,8 @@ components:
                     model/voice/tool stack is started on the same live call, and a NEW call record is created with the
                     original call as `parentId` (the original ends with `transferred to agent <id>, continued as call
                     <child-id>`). The target model must run on the same worker as the live session (`livekit:` ↔
-                    `livekit:`, `pipecat:` ↔ `pipecat:`); on Pipecat, full handover requires a websocket SIP gateway
-                    leg (browser-WebRTC, Daily and consultation legs refuse it).
+                    `livekit:`, `pipecat:` ↔ `pipecat:`); on Pipecat, full handover works on websocket SIP gateway
+                    legs and browser WebRTC sessions (Daily and consultation legs refuse it).
                   * `subagent` invokes a `text` type agent like a function call (LiveKit, Pipecat and text agents). Parameters:
                     - `agent` (string, required): the target text agent ID, `static` or `metadata` sourced (never `generated`).
                       `label:<label>` references are supported within agent-set documents.

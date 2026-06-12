@@ -15,6 +15,7 @@ Function-tool registration is uniform across modes: tools described by
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Awaitable, Callable, Optional
 
@@ -379,6 +380,12 @@ def _build_tools_schema(tools: list[dict]) -> ToolsSchema:
     return ToolsSchema(standard_tools=schemas)
 
 
+# Strong references to shielded builtin executions so an interruption-cancelled
+# tool call's underlying work (e.g. an agent handover) is never garbage
+# collected mid-flight. Tasks remove themselves on completion.
+_protected_tool_tasks: set = set()
+
+
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     """Register the platform's tool descriptors against a Pipecat LLM service.
 
@@ -400,6 +407,7 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
             _execute=entry["execute"],
             _name=s["name"],
             _suppress_result_run=bool(entry.get("suppress_result_run")),
+            _protect=bool(entry.get("protect_from_interruption")),
         ) -> None:
             # Breadcrumb so we can confirm the realtime path actually
             # routes function calls through here (and therefore through
@@ -411,7 +419,28 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                 "tool runner invoked"
             )
             try:
-                result = await _execute(params.arguments)
+                if _protect:
+                    # Side-effecting platform builtins must survive Pipecat's
+                    # cancel-on-interruption: the LLM frequently emits the tool
+                    # call while the caller's trailing speech is still
+                    # end-pointing, and the interruption would cancel the call
+                    # milliseconds in (observed: a transfer_agent handover the
+                    # model believed it had performed, but which never ran).
+                    # Shield the execution: a cancelled LLM-side call no longer
+                    # kills the underlying work, which runs to completion in a
+                    # tracked background task.
+                    exec_task = asyncio.create_task(_execute(params.arguments))
+                    _protected_tool_tasks.add(exec_task)
+                    exec_task.add_done_callback(_protected_tool_tasks.discard)
+                    try:
+                        result = await asyncio.shield(exec_task)
+                    except asyncio.CancelledError:
+                        _logger.bind(tool=_name).info(
+                            "tool call cancelled by interruption; protected builtin continues in background"
+                        )
+                        raise
+                else:
+                    result = await _execute(params.arguments)
             except Exception as e:  # noqa: BLE001
                 _logger.bind(tool=_name, error=str(e)).warning(
                     "tool runner _execute raised"
