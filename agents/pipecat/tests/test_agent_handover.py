@@ -179,6 +179,26 @@ class TestBuildAgentTools:
         assert asyncio.run(descriptor["execute"]({"question": "q"})) is None
 
 
+class TestParseBoolFlag:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("True ", True),
+            ("false", False),
+            ("anything-else", False),
+            (None, False),
+            (1, False),
+        ],
+    )
+    def test_values(self, value, expected) -> None:
+        from pipecat_aplisay.call_session import _parse_bool_flag
+
+        assert _parse_bool_flag(value) is expected
+
+
 class TestOnAgentTransfer:
     """CallSession._on_agent_transfer guard rails, with stubbed collaborators."""
 

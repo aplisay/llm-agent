@@ -727,7 +727,7 @@ class CallSession:
                 f"agent {target} is type {new_agent.get('type')} and cannot take over a live call"
             )
 
-        include_history = bool(args.get("includeHistory"))
+        include_history = _parse_bool_flag(args.get("includeHistory"))
         summary = args.get("summary")
 
         prompt = new_agent.get("prompt") or "You are a helpful assistant."
@@ -1578,6 +1578,17 @@ def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions
     if isinstance(key, str) and not key.strip():
         key = None
     return _RecordingOptions(enabled=bool(enabled), key=key)
+
+
+def _parse_bool_flag(value: Any) -> bool:
+    """Interpret a static boolean flag that may arrive as a real boolean or as
+    the legacy "true"/"false" string idiom (cf. the transfer function's
+    consultFeedback). Treats the string "false" as False rather than truthy."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
 
 
 def _parse_duration(value: Any) -> Optional[int]:

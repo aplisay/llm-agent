@@ -578,13 +578,20 @@ export async function runAgentWorker({
    */
   const onAgentTransfer = async ({
     agent: targetAgentId,
-    includeHistory,
+    includeHistory: includeHistoryRaw,
     summary,
   }: {
     agent: string;
-    includeHistory?: boolean;
+    includeHistory?: boolean | string;
     summary?: string;
   }): Promise<voice.Agent> => {
+    // Static flags arrive as booleans or as the legacy "true"/"false" string
+    // idiom (cf. the transfer function's consultFeedback) — treat "false" as
+    // false rather than truthy.
+    const includeHistory =
+      typeof includeHistoryRaw === "string"
+        ? includeHistoryRaw.trim().toLowerCase() === "true"
+        : includeHistoryRaw === true;
     const newAgentDef = await getInternalAgentById(
       targetAgentId,
       agent.organisationId,

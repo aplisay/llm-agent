@@ -309,10 +309,14 @@ components:
                default: "generated"
                example: "static"
              from:
-               type: string
+               oneOf:
+                 - type: string
+                 - type: boolean
+                 - type: number
                description: |-
-                 The source value of the parameter for `static` or `metadata` parameters, either a constant string value for `static` parameters, or a key to the metadata object for `metadata` parameters.
-                 Metadata keys consist of one or two levels of keys separated by a dot. 
+                 The source value of the parameter for `static` or `metadata` parameters, either a constant literal value for `static` parameters, or a key to the metadata object for `metadata` parameters.
+                 `static` literals may be strings, booleans, or numbers (e.g. the boolean `includeHistory` flag on a `transfer_agent` function); `metadata` keys are always strings.
+                 Metadata keys consist of one or two levels of keys separated by a dot.
                  All builtin keys sit under an `aplisay` top level namespace, e.g. `aplisay.callerId`, `aplisay.isWebrtc`.
                  Custom metadata keys can be added by the caller in certain setup calls.
                  Whilst these can be any string, it is recommended to use a namespace to avoid clashes, *e.g.* `myapp.mykey`.
