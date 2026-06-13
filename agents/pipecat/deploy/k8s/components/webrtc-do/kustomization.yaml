@@ -1,28 +1,48 @@
-# WebRTC public endpoint for DigitalOcean (DOKS).
+# WebRTC on the EXISTING SIP load balancer (DigitalOcean).
 #
-# Adds a DO LoadBalancer that terminates TLS on 443 and forwards to the worker's
-# :8082, so browsers can reach POST /webrtc/offer (and an external llm-agent can
-# reach /dispatch). Layer it onto a gateway overlay alongside the cloud LB:
+# Rather than a second LB, this extends the `pipecat-sip` Service (the LB that
+# already fronts TCP 5061) with a TLS-terminated 443 -> worker :8082 port. DO
+# supports a mix on one LB: 5061 stays TCP passthrough (the gateway does its own
+# SIP TLS), 443 terminates with a cert and forwards plain HTTP to the worker. The
+# LB keeps its IP (it's the same Service / do-loadbalancer-name).
 #
-#     # do-staging/kustomization.yaml
-#     resources:  [../overlays/sipbridge]
-#     components: [../components/cloud-digitalocean, ../components/webrtc-do]
+# Browsers POST /webrtc/offer to https://<fqdn>/ ; an off-cluster llm-agent POSTs
+# /dispatch there too. The offer is self-contained from the join token, so any
+# node can answer — no session affinity needed.
 #
-# Prerequisites (see the README "WebRTC" section):
-#   - a TLS cert for the worker FQDN. DNS is external (not DO), so DO-managed LE
-#     won't validate: upload an externally-issued LE cert as a CUSTOM DO cert and
-#     put its ID in the Service (or use cert-manager + an Ingress instead of this
-#     LB, which also lets you path-restrict to /dispatch + /webrtc/offer).
-#   - external DNS for that FQDN -> the LB's IP
-#   - an additional DO firewall opening the WebRTC media UDP range to browsers
-#   - BOTH PIPECAT_PUBLIC_URL and PIPECAT_WORKER_URL on the (external) llm-agent
-#     side -> https://<FQDN>  (llm-agent runs off-cluster, so dispatch needs the
-#     public route too)
+# Layer AFTER cloud-digitalocean (which creates the annotations object), then set
+# the per-env cert ID + LB name in the overlay:
 #
-# Other clouds (GKE/EKS): use an Ingress controller + cert-manager (Let's
-# Encrypt) instead of these DO-specific annotations.
+#     components:
+#       - ../components/cloud-digitalocean
+#       - ../components/webrtc-do
+#     patches: [ ... do-loadbalancer-certificate-id: <DO cert ID>, ... ]
+#
+# Prerequisites (see README "WebRTC"): a Let's Encrypt cert for the FQDN uploaded
+# to DO as a CUSTOM cert (external DNS, so DO-managed LE can't validate); external
+# DNS A record -> the LB IP; a DO firewall opening the WebRTC media UDP range to
+# browsers; PIPECAT_PUBLIC_URL + PIPECAT_WORKER_URL on the llm-agent side.
+#
+# Surface note: this exposes ALL worker routes on :8082, not just /webrtc/offer +
+# /dispatch (they're token-gated; /daily/dialin is unauthenticated but no-ops off
+# a Daily gateway). To expose only the two paths, front with an Ingress instead.
+#
+# Other clouds (GKE/EKS): use an Ingress controller + cert-manager.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-resources:
-  - service-worker-public.yaml
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /spec/ports/-
+        value:
+          name: webrtc-https
+          port: 443
+          targetPort: 8082
+          protocol: TCP
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-tls-ports
+        value: "443"

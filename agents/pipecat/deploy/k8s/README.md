@@ -63,7 +63,7 @@ deploy/k8s/
   components/                   # layer onto an overlay
     cloud-gcp/  cloud-aws/  cloud-digitalocean/   # per-cloud LB annotations
     env-production/             # override image tags to :latest (base defaults :next)
-    webrtc-do/                  # DO TLS LB on :8082 for browser WebRTC (see WebRTC)
+    webrtc-do/                  # adds 443->:8082 (WebRTC TLS) to the SIP LB (see WebRTC)
   overlays/                     # pick one
     sipbridge/                  # DEFAULT — TLS-only, UDP disabled, self-signed fallback
     freeswitch/                 # FreeSWITCH + esl-poller sidecar
@@ -389,48 +389,82 @@ The flow: the browser calls the llm-agent server's `…/join`, gets back
 answering node** directly. The offer is self-contained from the join token, so
 any worker node can answer any offer (no session affinity).
 
-**1. Public TLS endpoint for the worker `:8082`.** The base `pipecat-worker`
-Service is ClusterIP — fine if llm-agent runs in-cluster, but browsers (and an
-external llm-agent) can't reach it. Layer **`components/webrtc-do`** to add a DO
-LoadBalancer that terminates HTTPS on 443 and forwards to `:8082`:
+**1. Public TLS endpoint — on the EXISTING SIP LB.** The base `pipecat-worker`
+Service is ClusterIP (in-cluster only). Rather than a second LB, the
+**`components/webrtc-do`** component (already wired into `do-staging` /
+`do-production`) extends the existing `pipecat-sip` LB with a **443 → :8082**
+TLS-terminated listener. DO runs both on one LB: `5061` stays TCP passthrough
+(the gateway does its own SIP TLS); `443` terminates with a Let's Encrypt cert
+and forwards plain HTTP to the worker. The LB keeps its IP (same Service/name) —
+e.g. the staging LB at **129.212.220.15**.
 
-```yaml
-# do-staging/kustomization.yaml
-resources:  [../overlays/sipbridge]
-components:
-  - ../components/cloud-digitalocean
-  - ../components/webrtc-do
+llm-agent runs **off-cluster**, so point **both** `PIPECAT_PUBLIC_URL`
+(browser → `/webrtc/offer`) and `PIPECAT_WORKER_URL` (server → `/dispatch`) at
+`https://staging.pipecat.aplisay.net` — the only route to the worker. HTTPS is
+mandatory (a browser on an HTTPS page can't POST to plain HTTP). The LB listens
+on **443** (no port in the URL); to use `:8082` as the public port instead, set
+`port: 8082` in `components/webrtc-do`.
+
+> **Surface note:** putting `:8082` on the LB exposes *all* worker routes, not
+> just `/dispatch` + `/webrtc/offer` (the SIP-internal `/freeswitch/events`,
+> `/sipbridge/agent`, … are token-gated; `/daily/dialin` is unauthenticated but
+> no-ops off a Daily gateway). Acceptable behind the per-endpoint tokens; to
+> expose only the two paths, front with an Ingress (path allowlist) instead.
+
+### Worked cert strategy — Let's Encrypt into DO (external DNS)
+
+DNS for `*.pipecat.aplisay.net` is **external** (not DO), so DO's *managed* LE
+cert can't DNS-validate. Issue the cert yourself and upload it as a DO **custom**
+cert — one hostname per env, no wildcard.
+
+```bash
+# 1. Issue the LE cert (DNS-01 — works with any DNS provider). Manual TXT:
+certbot certonly --manual --preferred-challenges dns --agree-tos -m ops@aplisay.net \
+    -d staging.pipecat.aplisay.net
+#    certbot prints a record to create:
+#      _acme-challenge.staging.pipecat.aplisay.net  TXT  <value>
+#    add it in your DNS, let it propagate, continue. Output ->
+#    /etc/letsencrypt/live/staging.pipecat.aplisay.net/{cert,chain,privkey}.pem
+#    (For hands-off renewal, use certbot/lego with your DNS provider's API plugin.)
+
+# 2. Upload it to DO as a CUSTOM certificate; note the returned ID (UUID):
+LE=/etc/letsencrypt/live/staging.pipecat.aplisay.net
+doctl compute certificate create --type custom --name pipecat-staging-$(date +%Y%m%d) \
+    --leaf-certificate-path  "$LE/cert.pem" \
+    --certificate-chain-path "$LE/chain.pem" \
+    --private-key-path        "$LE/privkey.pem"
+doctl compute certificate list      # copy the new cert's ID
+
+# 3. Wire the ID + roll the LB:
+#    edit do-staging/kustomization.yaml -> do-loadbalancer-certificate-id: <ID>
+kubectl apply -k do-staging         # DO updates the SAME LB: adds 443->8082 TLS,
+                                    # keeps 5061 + the IP (129.212.220.15)
+
+# 4. DNS + app config:
+#    A   staging.pipecat.aplisay.net -> 129.212.220.15
+#    llm-agent server: PIPECAT_PUBLIC_URL = PIPECAT_WORKER_URL =
+#                      https://staging.pipecat.aplisay.net
+#    (plus the WebRTC media UDP firewall — step 2 below)
 ```
 
-Then on the **llm-agent server** point **both** `PIPECAT_PUBLIC_URL`
-(browser→`/webrtc/offer`) **and** `PIPECAT_WORKER_URL` (server→`/dispatch`) at
-`https://<that LB's FQDN>`. llm-agent runs **outside this cluster** (a different
-cloud), so it reaches the worker only via this public endpoint — there's no
-in-cluster route. HTTPS is mandatory (a browser on an HTTPS page can't POST to
-plain HTTP).
+**Renewal (~90 days).** DO custom certs are immutable, so rotate by ID: re-issue
+(step 1), upload a NEW cert (step 2, new `--name`), point the annotation at the
+new ID and `kubectl apply -k do-staging`, then delete the old (you can't delete a
+cert an LB still references):
 
-> **Surface note:** a bare LB on `:8082` exposes *all* the worker's routes
-> publicly, not just `/dispatch` + `/webrtc/offer` (the SIP-internal
-> `/freeswitch/events`, `/sipbridge/agent`, … are also there — they're
-> token-gated and otherwise loopback-only). That's acceptable behind the
-> per-endpoint bearer tokens, but to expose only the two public paths, front it
-> with an Ingress (path allowlist) instead of the bare LB.
+```bash
+doctl compute certificate delete <old-cert-id>
+```
 
-**Certificate: Let's Encrypt is enough — no paid wildcard** (one hostname, not a
-wildcard). **DNS is external (not DO),** so DO's *managed* LE cert (which
-validates via DO-hosted DNS) won't issue. Two ways that do work:
+Automate with a CronJob running `lego`/`certbot` (DNS-01 via your provider's API)
++ `doctl` + `kubectl apply`. **Production** is identical with
+`production.pipecat.aplisay.net` + `do-production/` (its own cert ID).
 
-- **Upload an externally-issued cert to DO** and keep the LB doing TLS: get an LE
-  cert with DNS-01 against your DNS provider (e.g. `certbot`/`lego`), then
-  `doctl compute certificate create --type custom --certificate-path fullchain.pem
-  --private-key-path privkey.pem --name pipecat-worker`; put the printed ID in
-  `do-loadbalancer-certificate-id`. Renewal = re-upload every ~90 days (scriptable).
-- **cert-manager + an Ingress controller** (recommended for hands-off renewal):
-  a Let's Encrypt `ClusterIssuer` with a **DNS-01** solver for your DNS provider
-  issues the cert into a Secret, the Ingress terminates TLS, and the DO LB just
-  passes TCP through. This also gives the path allowlist from the surface note.
-
-A paid wildcard is only worth it if you front many per-tenant subdomains.
+> Prefer hands-off renewal? Use **cert-manager + an Ingress** (LE DNS-01
+> ClusterIssuer) and make the DO LB pass `443` *through* to the Ingress instead of
+> terminating — auto-renews and gives the path allowlist, at the cost of running
+> an ingress controller. The DO-custom-cert path above keeps the existing LB and
+> adds no in-cluster components.
 
 **2. WebRTC media UDP — a separate, internet-open range.** You **cannot** reuse
 the SIP RTP range (`10000-20000`): that's bound by sipbridge on the same

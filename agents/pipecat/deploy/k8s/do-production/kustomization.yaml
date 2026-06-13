@@ -22,6 +22,7 @@ resources:
 components:
   - ../components/env-production
   - ../components/cloud-digitalocean
+  - ../components/webrtc-do        # adds 443 -> :8082 (WebRTC) on the SAME LB
 
 patches:
   - target:
@@ -31,3 +32,9 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
         value: pipecat-sip-production
+      # WebRTC TLS cert for production.pipecat.aplisay.net. Paste the DO custom-
+      # cert ID (README "WebRTC"). MUST be a real cert ID before `kubectl apply`.
+      # (Remove this op + the webrtc-do component to deploy SIP-only.)
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
+        value: REPLACE_WITH_PRODUCTION_DO_CERT_ID
