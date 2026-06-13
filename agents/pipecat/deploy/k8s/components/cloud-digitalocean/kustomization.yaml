@@ -1,8 +1,11 @@
 # DigitalOcean load-balancer settings for the SIP signalling Service.
 #
-# A DO load balancer in TCP mode (L4 passthrough) forwards 5061 without
-# terminating TLS. DOKS worker droplets get public IPs by default, so RTP can
-# reach each node directly.
+# 5061 is L4 TCP passthrough (the gateway terminates SIP TLS itself). We do NOT
+# set a global `do-loadbalancer-protocol` here: DO defaults non-listed ports to
+# tcp (so 5061 stays passthrough), and an explicit global `tcp` would suppress
+# the per-port `do-loadbalancer-tls-ports` that the webrtc-do component uses to
+# make 443 HTTPS-terminate — leaving 443 as a plain-TCP rule with no cert.
+# DOKS worker droplets get public IPs by default, so RTP can reach each node.
 #
 # Node pool: open the RTP UDP range + TCP 5061 in a DO Cloud Firewall attached
 # to the SIP node pool, scoped to your SBC source ranges. See the README.
@@ -24,6 +27,7 @@ patches:
       - op: add
         path: /metadata/annotations
         value:
-          service.beta.kubernetes.io/do-loadbalancer-protocol: "tcp"
+          # No global do-loadbalancer-protocol — see header. 5061 defaults to tcp;
+          # webrtc-do's tls-ports makes 443 https.
           service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "tcp"
           service.beta.kubernetes.io/do-loadbalancer-healthcheck-port: "5061"
