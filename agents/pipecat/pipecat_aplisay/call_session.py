@@ -46,6 +46,15 @@ class _WebrtcEgressError(Exception):
     resolved or validated. Surfaced to the agent as a FAILED transfer."""
 
 
+def _org_owns(agent: dict, organisation_id: Optional[str]) -> bool:
+    """Conservative org-ownership predicate, mirroring ``userOwnsRow`` in the
+    JS ``lib/scope.js``: a match requires both sides non-null and equal. A
+    null/empty ``organisation_id`` is never owned (so no-org pool rows are not
+    claimable across tenants by coincidental null==null)."""
+    agent_org = agent.get("organisationId")
+    return bool(agent_org) and bool(organisation_id) and agent_org == organisation_id
+
+
 # UUID form of a registration-endpoint id supplied as callerId (vs an E.164
 # number). Mirrors the discriminator in LiveKit worker.ts outbound resolution.
 _UUID_RE = re.compile(
@@ -1405,6 +1414,11 @@ class CallSession:
                     f"registration endpoint {caller_id!r} is not enabled for "
                     "outbound calling"
                 )
+            if not _org_owns(self.agent, reg.get("organisationId")):
+                raise _WebrtcEgressError(
+                    f"registration endpoint {caller_id!r} is not owned by this "
+                    "agent's organisation"
+                )
             opts = reg.get("options") or {}
             cli = str(opts.get("displayNumber") or reg.get("username") or "").strip()
             if not cli:
@@ -1433,21 +1447,26 @@ class CallSession:
             raise _WebrtcEgressError(
                 f"callerId {caller_id!r} does not have outbound calling enabled"
             )
-        # Best-effort ownership check: the number's bound instance should belong
-        # to this agent's organisation. Logged (not hard-rejected) for v1 so
-        # bring-up isn't blocked by no-org / pool-number edge cases LiveKit
-        # handles explicitly; tighten to a hard reject once validated live.
+        owned = _org_owns(self.agent, row.get("organisationId"))
         instance_id = row.get("instanceId")
-        if instance_id:
+        if not owned and instance_id:
             try:
                 owner = await api_client.get_instance_by_id(instance_id)
                 owner_agent = (owner or {}).get("Agent") or {}
-                if owner_agent.get("organisationId") != self.agent.get("organisationId"):
-                    logger.bind(caller_id=caller_id).warning(
-                        "webrtc egress: callerId org does not match agent org"
-                    )
+                owned = _org_owns(self.agent, owner_agent.get("organisationId")) or (
+                    bool(self.agent.get("userId"))
+                    and owner_agent.get("userId") == self.agent.get("userId")
+                )
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"webrtc egress: ownership check skipped: {e}")
+                # Fail closed: if we cannot prove ownership, do not allow egress.
+                raise _WebrtcEgressError(
+                    f"could not verify ownership of caller-ID {caller_id!r}: {e}"
+                )
+        if not owned:
+            raise _WebrtcEgressError(
+                f"caller-ID {caller_id!r} is not owned by this agent's "
+                "organisation"
+            )
         aplisay_id = row.get("aplisayId")
         if not aplisay_id:
             logger.bind(caller_id=caller_id).warning(

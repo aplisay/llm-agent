@@ -1,4 +1,5 @@
 import { Agent, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { scopeWhereForUser } from '../../../../lib/scope.js';
 import handlers from '../../../../lib/handlers/index.js';
 
 let appParameters, log;
@@ -9,7 +10,9 @@ export default function (wsServer) {
     let { number, options = {}, websocket, id } = req.body;
     let agent, handler, activation;
     try {
-      agent = await Agent.findByPk(agentId);
+      agent = await Agent.findOne({
+        where: { id: agentId, ...scopeWhereForUser(res.locals.user) }
+      });
       if (!agent?.id) {
         throw new Error(`no agent`);
       }

@@ -685,9 +685,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await getPhoneEndpoint(req, res);
 
-      // getPhoneEndpoint handles null user gracefully, returns 200 with empty organisationId
-      expect(res._status).toBe(200);
-      expect(res._body).toBeDefined();
+      // An unauthenticated/owner-less caller must NOT be able to read an
+      // org-owned endpoint. (Previously this leaked the row as 200 because the
+      // org check was skipped when the caller had no organisationId.)
+      expect(res._status).toBe(403);
+      expect(res._body).toHaveProperty('error');
     });
   });
 
@@ -2288,6 +2290,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
+      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Debug: Check what error we're getting
@@ -2325,6 +2328,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
+      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Should return an error for non-existent registration
@@ -2371,6 +2375,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
+      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Should return 404 for non-existent agent

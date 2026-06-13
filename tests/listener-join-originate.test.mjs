@@ -276,6 +276,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -311,6 +312,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -352,6 +354,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
     expect(listenerRes._body).toHaveProperty('id');
@@ -402,6 +405,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -454,6 +458,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { id: regId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     const regListenerId = listenerRes._body.id;
 
@@ -497,6 +502,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { id: regId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     const regListenerId = listenerRes._body.id;
 
@@ -529,6 +535,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -561,6 +568,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testRegistrationListenerId = listenerRes._body.id;
 
@@ -593,6 +601,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testWebRTCListenerId = listenerRes._body.id;
 
@@ -635,6 +644,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -687,6 +697,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -720,6 +731,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -763,6 +775,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -808,6 +821,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -852,6 +866,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -902,6 +917,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -960,6 +976,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
+    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 

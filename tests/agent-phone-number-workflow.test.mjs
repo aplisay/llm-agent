@@ -236,7 +236,8 @@ describe('Agent Phone Number Workflow Test', () => {
         body: { number: testPhoneNumberId }
       });
       const listenerRes = createMockResponse();
-      
+      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+
       await createListener(listenerReq, listenerRes);
       
       // Listener creation succeeds if we have a body with an id

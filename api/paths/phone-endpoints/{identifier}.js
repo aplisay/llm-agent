@@ -1,6 +1,7 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
 import { normalizeE164, validateSipUri } from '../../../lib/validation.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
+import { userOwnsRow } from '../../../lib/scope.js';
 
 let log;
 
@@ -37,7 +38,7 @@ const getPhoneEndpoint = async (req, res) => {
       if (!registration) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
-      if (registration.organisationId && organisationId && registration.organisationId !== organisationId) {
+      if (!userOwnsRow(res.locals.user, registration)) {
         return res.status(403).send({ error: 'Access denied' });
       }
       return res.send({
@@ -60,7 +61,7 @@ const getPhoneEndpoint = async (req, res) => {
       return res.status(404).send({ error: 'Phone endpoint not found' });
     }
 
-    if (record.organisationId && organisationId && record.organisationId !== organisationId) {
+    if (record.organisationId != null && !userOwnsRow(res.locals.user, record)) {
       return res.status(403).send({ error: 'Access denied' });
     }
 
