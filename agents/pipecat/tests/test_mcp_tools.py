@@ -124,6 +124,61 @@ def test_connect_empty_when_no_servers():
     assert closers == []
 
 
+# --- key-based authentication (mcpServers[].key -> agent keys) ---------------
+
+def _resolve(key_name, keys, url="https://mcp.example.com/mcp"):
+    return mcp_tools._resolve_key_auth(
+        key_name, keys, url, log=_NullLog(), server_name="srv"
+    )
+
+
+def test_resolve_bearer_key_sets_authorization_header():
+    headers, url = _resolve("k", [{"name": "k", "in": "bearer", "value": "sk-tok"}])
+    assert headers == {"Authorization": "Bearer sk-tok"}
+    assert url == "https://mcp.example.com/mcp"
+
+
+def test_resolve_basic_key_uses_precomputed_value():
+    headers, _ = _resolve("k", [{"name": "k", "in": "basic", "value": "dXNlcjpwYXNz"}])
+    assert headers == {"Authorization": "Basic dXNlcjpwYXNz"}
+
+
+def test_resolve_basic_key_encodes_username_password_when_no_value():
+    headers, _ = _resolve(
+        "k", [{"name": "k", "in": "basic", "username": "user", "password": "pass"}]
+    )
+    # base64("user:pass") == "dXNlcjpwYXNz"
+    assert headers == {"Authorization": "Basic dXNlcjpwYXNz"}
+
+
+def test_resolve_custom_header_key_uses_header_name():
+    headers, _ = _resolve(
+        "k", [{"name": "k", "in": "header", "header": "X-Api-Key", "value": "abc"}]
+    )
+    assert headers == {"X-Api-Key": "abc"}
+
+
+def test_resolve_query_key_appends_to_url():
+    headers, url = _resolve(
+        "api_key",
+        [{"name": "api_key", "in": "query", "value": "abc"}],
+        url="https://mcp.example.com/mcp?x=1",
+    )
+    assert headers == {}
+    assert url == "https://mcp.example.com/mcp?x=1&api_key=abc"
+
+
+def test_resolve_unknown_key_yields_no_auth():
+    headers, url = _resolve("missing", [{"name": "other", "in": "bearer", "value": "v"}])
+    assert headers == {}
+    assert url == "https://mcp.example.com/mcp"
+
+
+def test_resolve_unsupported_in_yields_no_auth():
+    headers, _ = _resolve("k", [{"name": "k", "in": "path", "value": "v"}])
+    assert headers == {}
+
+
 class _NullLog:
     """Minimal loguru-style logger: ``.bind(...).debug/info/warning(...)``."""
 

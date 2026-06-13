@@ -961,11 +961,29 @@ components:
             enum: ["streamable_http", "sse"]
             default: streamable_http
             example: streamable_http
+          key:
+            type: string
+            description: |-
+              The `name` of an entry in the agent's `keys` array used to authenticate to this
+              server. This is the recommended way to supply a credential: the secret lives in
+              `keys` (which is never returned by the API), so it is not exposed to clients, unlike
+              an inline `headers` token.
+
+              The worker resolves the named key into the request according to the key's `in` type:
+                * `bearer` → `Authorization: Bearer <value>` header
+                * `basic`  → `Authorization: Basic <value>` header (value is the base64 `user:pass`)
+                * `header` → a custom header named by the key's `header` field
+                * `query`  → a query-string parameter named by the key's `name`
+
+              Any explicit `headers` below take precedence over a header derived from the key.
+            pattern: '^[a-zA-Z0-9_]{1,64}$'
+            example: weather_api_key
           headers:
             type: object
             description: |-
               Optional HTTP headers sent on every request to the MCP server, typically for
-              authentication (e.g. an `Authorization` bearer token).
+              authentication (e.g. an `Authorization` bearer token). Prefer `key` for secrets —
+              values set here are stored on the agent and returned to clients verbatim.
             additionalProperties:
               type: string
             example:

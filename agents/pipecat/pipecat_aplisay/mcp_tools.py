@@ -25,8 +25,10 @@ teardown. The connect/close dance mirrors Pipecat's own ``MCPClient.start()`` /
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 from typing import Any, Awaitable, Callable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from loguru import logger as _logger
 
@@ -99,8 +101,65 @@ def _make_descriptor(
     return {"schema": schema, "execute": execute}
 
 
+def _resolve_key_auth(
+    key_name: str,
+    keys: list[dict],
+    url: str,
+    *,
+    log: Any,
+    server_name: str,
+) -> tuple[dict[str, str], str]:
+    """Resolve an agent ``keys`` entry referenced by an MCP server into auth.
+
+    Mirrors the native model's ``getAuth`` mapping (``lib/models/ultravox.js``)
+    so MCP servers authenticate the same way REST functions do, but with the
+    secret living in the (API-redacted) ``keys`` array instead of inline
+    ``headers``. Returns ``(headers, url)`` — ``query`` auth appends to the URL;
+    every other type contributes a header.
+
+    An unknown key name or unsupported ``in`` type is logged and yields no auth
+    (``({}, url)``) rather than failing the connection.
+    """
+    key = next((k for k in (keys or []) if k.get("name") == key_name), None)
+    if key is None:
+        log.bind(server=server_name, key=key_name).warning(
+            "MCP server references unknown API key; sending no auth"
+        )
+        return {}, url
+
+    where = (key.get("in") or "").lower()
+    value = key.get("value")
+
+    if where == "bearer":
+        return {"Authorization": f"Bearer {value or ''}"}, url
+    if where == "basic":
+        token = value
+        if not token and (key.get("username") or key.get("password")):
+            raw = f"{key.get('username', '')}:{key.get('password', '')}".encode()
+            token = base64.b64encode(raw).decode()
+        return {"Authorization": f"Basic {token or ''}"}, url
+    if where == "header":
+        header_name = key.get("header") or key.get("name")
+        if not header_name:
+            log.bind(server=server_name, key=key_name).warning(
+                "MCP server 'header' key has no header name; sending no auth"
+            )
+            return {}, url
+        return {header_name: value or ""}, url
+    if where == "query":
+        parts = urlsplit(url)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        query.append((key.get("name") or key_name, value or ""))
+        return {}, urlunsplit(parts._replace(query=urlencode(query)))
+
+    log.bind(server=server_name, key=key_name, **{"in": where}).warning(
+        "MCP server API key has an 'in' type unsupported for MCP auth; sending no auth"
+    )
+    return {}, url
+
+
 async def _connect_one(
-    server: dict, log: Any
+    server: dict, keys: list[dict], log: Any
 ) -> tuple[list[dict], Callable[[], Awaitable[None]]] | None:
     """Open a session to one MCP server and return its descriptors + a closer.
 
@@ -124,7 +183,18 @@ async def _connect_one(
         log.bind(server=name).warning("MCP server has no url; skipping")
         return None
     transport = (server.get("transport") or "streamable_http").lower()
-    headers = server.get("headers") or None
+
+    # Auth: a referenced ``key`` (secret stays in the API-redacted ``keys``
+    # array) is resolved into headers / a query param; any explicit ``headers``
+    # on the server take precedence over a key-derived header.
+    explicit_headers = dict(server.get("headers") or {})
+    auth_headers: dict[str, str] = {}
+    if server.get("key"):
+        auth_headers, url = _resolve_key_auth(
+            server["key"], keys, url, log=log, server_name=name
+        )
+    merged_headers = {**auth_headers, **explicit_headers}
+    headers = merged_headers or None
 
     loop = asyncio.get_running_loop()
     ready: asyncio.Future = loop.create_future()
@@ -203,10 +273,11 @@ async def connect_mcp_servers(
       to release the MCP connections.
     """
     servers = agent.get("mcpServers") or []
+    keys = agent.get("keys") or []
     descriptors: list[dict] = []
     closers: list[Callable[[], Awaitable[None]]] = []
     for server in servers:
-        result = await _connect_one(server, log)
+        result = await _connect_one(server, keys, log)
         if result is None:
             continue
         server_descriptors, closer = result
