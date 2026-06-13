@@ -83,6 +83,24 @@ from .sip_gateway import (
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 
+# WebRTC (browser) ICE servers for the SmallWebRTC transport. Defaults to
+# Google's public STUN so the worker gathers a server-reflexive candidate (the
+# node's public IP:port). Required on clouds that 1:1-NAT the public IP off the
+# NIC (GCP/AWS, where the host candidate would otherwise be a private IP);
+# harmless on DigitalOcean, where the public IP is already on the interface.
+# Comma-separated STUN/TURN URLs; set WEBRTC_ICE_SERVERS="" to disable. No TURN
+# by default — browser media goes direct to the node's public IP, so the WebRTC
+# UDP media ports must be reachable (see deploy/k8s firewall notes).
+WEBRTC_ICE_SERVERS = [
+    s.strip()
+    for s in os.environ.get(
+        "WEBRTC_ICE_SERVERS",
+        "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302",
+    ).split(",")
+    if s.strip()
+]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
@@ -606,7 +624,7 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     if not sdp or not sdp_type:
         raise HTTPException(status_code=400, detail="missing sdp / type")
 
-    pc = SmallWebRTCConnection()
+    pc = SmallWebRTCConnection(ice_servers=WEBRTC_ICE_SERVERS)
     await pc.initialize(sdp, sdp_type)
     answer = pc.get_answer()
     if not answer:

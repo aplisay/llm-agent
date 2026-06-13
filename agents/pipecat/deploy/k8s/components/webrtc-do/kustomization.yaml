@@ -1,0 +1,28 @@
+# WebRTC public endpoint for DigitalOcean (DOKS).
+#
+# Adds a DO LoadBalancer that terminates TLS on 443 and forwards to the worker's
+# :8082, so browsers can reach POST /webrtc/offer (and an external llm-agent can
+# reach /dispatch). Layer it onto a gateway overlay alongside the cloud LB:
+#
+#     # do-staging/kustomization.yaml
+#     resources:  [../overlays/sipbridge]
+#     components: [../components/cloud-digitalocean, ../components/webrtc-do]
+#
+# Prerequisites (see the README "WebRTC" section):
+#   - a TLS cert for the worker FQDN. DNS is external (not DO), so DO-managed LE
+#     won't validate: upload an externally-issued LE cert as a CUSTOM DO cert and
+#     put its ID in the Service (or use cert-manager + an Ingress instead of this
+#     LB, which also lets you path-restrict to /dispatch + /webrtc/offer).
+#   - external DNS for that FQDN -> the LB's IP
+#   - an additional DO firewall opening the WebRTC media UDP range to browsers
+#   - BOTH PIPECAT_PUBLIC_URL and PIPECAT_WORKER_URL on the (external) llm-agent
+#     side -> https://<FQDN>  (llm-agent runs off-cluster, so dispatch needs the
+#     public route too)
+#
+# Other clouds (GKE/EKS): use an Ingress controller + cert-manager (Let's
+# Encrypt) instead of these DO-specific annotations.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - service-worker-public.yaml

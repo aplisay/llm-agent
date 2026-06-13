@@ -63,6 +63,7 @@ deploy/k8s/
   components/                   # layer onto an overlay
     cloud-gcp/  cloud-aws/  cloud-digitalocean/   # per-cloud LB annotations
     env-production/             # override image tags to :latest (base defaults :next)
+    webrtc-do/                  # DO TLS LB on :8082 for browser WebRTC (see WebRTC)
   overlays/                     # pick one
     sipbridge/                  # DEFAULT — TLS-only, UDP disabled, self-signed fallback
     freeswitch/                 # FreeSWITCH + esl-poller sidecar
@@ -375,6 +376,87 @@ the SBC skips cert validation. For a real cert, create the `pipecat-sip-tls`
 Secret (see `base/sip-tls-secret.example.yaml`); it is mounted optionally into the
 gateway containers. For sipbridge, also uncomment `SIPBRIDGE_TLS_CERT_FILE/KEY_FILE`
 in `overlays/sipbridge/daemonset.yaml`.
+
+## WebRTC (browser clients)
+
+Everything above is the SIP/telephony path. Browser WebRTC needs **three extra
+things** the SIP wiring does not provide — the worker's HTTP API and its WebRTC
+media must be reachable from the public internet, not just the SBC.
+
+The flow: the browser calls the llm-agent server's `…/join`, gets back
+`offerUrl = ${PIPECAT_PUBLIC_URL}/webrtc/offer?token=…`, and sends its SDP offer
+**straight to the worker** (`:8082`). Media (SRTP/ICE) then flows **browser ⇄ the
+answering node** directly. The offer is self-contained from the join token, so
+any worker node can answer any offer (no session affinity).
+
+**1. Public TLS endpoint for the worker `:8082`.** The base `pipecat-worker`
+Service is ClusterIP — fine if llm-agent runs in-cluster, but browsers (and an
+external llm-agent) can't reach it. Layer **`components/webrtc-do`** to add a DO
+LoadBalancer that terminates HTTPS on 443 and forwards to `:8082`:
+
+```yaml
+# do-staging/kustomization.yaml
+resources:  [../overlays/sipbridge]
+components:
+  - ../components/cloud-digitalocean
+  - ../components/webrtc-do
+```
+
+Then on the **llm-agent server** point **both** `PIPECAT_PUBLIC_URL`
+(browser→`/webrtc/offer`) **and** `PIPECAT_WORKER_URL` (server→`/dispatch`) at
+`https://<that LB's FQDN>`. llm-agent runs **outside this cluster** (a different
+cloud), so it reaches the worker only via this public endpoint — there's no
+in-cluster route. HTTPS is mandatory (a browser on an HTTPS page can't POST to
+plain HTTP).
+
+> **Surface note:** a bare LB on `:8082` exposes *all* the worker's routes
+> publicly, not just `/dispatch` + `/webrtc/offer` (the SIP-internal
+> `/freeswitch/events`, `/sipbridge/agent`, … are also there — they're
+> token-gated and otherwise loopback-only). That's acceptable behind the
+> per-endpoint bearer tokens, but to expose only the two public paths, front it
+> with an Ingress (path allowlist) instead of the bare LB.
+
+**Certificate: Let's Encrypt is enough — no paid wildcard** (one hostname, not a
+wildcard). **DNS is external (not DO),** so DO's *managed* LE cert (which
+validates via DO-hosted DNS) won't issue. Two ways that do work:
+
+- **Upload an externally-issued cert to DO** and keep the LB doing TLS: get an LE
+  cert with DNS-01 against your DNS provider (e.g. `certbot`/`lego`), then
+  `doctl compute certificate create --type custom --certificate-path fullchain.pem
+  --private-key-path privkey.pem --name pipecat-worker`; put the printed ID in
+  `do-loadbalancer-certificate-id`. Renewal = re-upload every ~90 days (scriptable).
+- **cert-manager + an Ingress controller** (recommended for hands-off renewal):
+  a Let's Encrypt `ClusterIssuer` with a **DNS-01** solver for your DNS provider
+  issues the cert into a Secret, the Ingress terminates TLS, and the DO LB just
+  passes TCP through. This also gives the path allowlist from the surface note.
+
+A paid wildcard is only worth it if you front many per-tenant subdomains.
+
+**2. WebRTC media UDP — a separate, internet-open range.** You **cannot** reuse
+the SIP RTP range (`10000-20000`): that's bound by sipbridge on the same
+hostNetwork node (collision), and it's firewalled to **SBC** source IPs, whereas
+browser media arrives from **anywhere**. The worker's ICE layer (aioice) binds
+**OS-ephemeral UDP ports** — there is no port-range knob — so open the node's
+ephemeral range to browsers (default Linux `net.ipv4.ip_local_port_range` is
+**32768-60999**):
+
+```bash
+doctl compute firewall create \
+    --name pipecat-webrtc \
+    --tag-names "k8s:<cluster-id>" \
+    --inbound-rules "protocol:udp,ports:32768-60999,address:0.0.0.0/0,address:::/0"
+```
+
+(To narrow it you'd have to shrink `net.ipv4.ip_local_port_range` on the nodes via
+sysctl — affects all node processes — or add a TURN relay. We use neither here.)
+
+**3. STUN (no TURN).** The worker is configured with **Google public STUN** by
+default (`WEBRTC_ICE_SERVERS` in `pipecat-config`, consumed at
+`worker.py` → `SmallWebRTCConnection(ice_servers=…)`), so it advertises a
+server-reflexive candidate (the node's public IP:port). On DigitalOcean the
+public IP is already on the NIC so the host candidate also works; STUN matters on
+GCP/AWS (public IP is 1:1-NAT'd off the NIC). No TURN — media is direct, which is
+why step 2's UDP range must be open.
 
 ## Verification
 
