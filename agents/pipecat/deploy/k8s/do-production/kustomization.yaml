@@ -32,8 +32,10 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
         value: pipecat-sip-production
-      # WebRTC TLS cert for production.pipecat.aplisay.net. Paste the DO custom-
-      # cert ID (README "WebRTC"). MUST be a real cert ID before `kubectl apply`.
+      # WebRTC TLS — DO-managed Let's Encrypt cert for production.pipecat.aplisay.net:
+      #   doctl compute certificate create --type lets_encrypt \
+      #     --name pipecat-production --dns-names production.pipecat.aplisay.net
+      # Paste its ID below. MUST be a real cert ID before `kubectl apply`.
       # (Remove this op + the webrtc-do component to deploy SIP-only.)
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id

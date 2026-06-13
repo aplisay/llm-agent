@@ -31,10 +31,13 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
         value: pipecat-sip-staging
-      # WebRTC TLS cert for staging.pipecat.aplisay.net. Paste the DO custom-cert
-      # ID from the worked strategy in README "WebRTC". MUST be a real cert ID
-      # before `kubectl apply` — a placeholder makes the DO LB reject the 443
-      # listener. (Remove this op + the webrtc-do component to deploy SIP-only.)
+      # WebRTC TLS — DO-managed Let's Encrypt cert for staging.pipecat.aplisay.net
+      # (pipecat.aplisay.net is delegated to DO, so DO issues + auto-renews it):
+      #   doctl compute certificate create --type lets_encrypt \
+      #     --name pipecat-staging --dns-names staging.pipecat.aplisay.net
+      # Paste its ID below. MUST be a real cert ID before `kubectl apply` — a
+      # placeholder makes the DO LB reject the 443 listener. (Remove this op + the
+      # webrtc-do component to deploy SIP-only.)
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
         value: REPLACE_WITH_STAGING_DO_CERT_ID

@@ -411,68 +411,38 @@ on **443** (no port in the URL); to use `:8082` as the public port instead, set
 > no-ops off a Daily gateway). Acceptable behind the per-endpoint tokens; to
 > expose only the two paths, front with an Ingress (path allowlist) instead.
 
-### Worked cert strategy — Let's Encrypt into DO (external DNS)
+### Certificate — DO-managed Let's Encrypt
 
-DNS for `*.pipecat.aplisay.net` is **external** (not DO), so DO's *managed* LE
-cert can't DNS-validate. Issue the cert yourself and upload it as a DO **custom**
-cert — one hostname per env, no wildcard.
-
-```bash
-# 1. Issue the LE cert (DNS-01 — works with any DNS provider). Manual TXT:
-certbot certonly --manual --preferred-challenges dns --agree-tos -m ops@aplisay.net \
-    -d staging.pipecat.aplisay.net
-#    certbot prints a record to create:
-#      _acme-challenge.staging.pipecat.aplisay.net  TXT  <value>
-#    add it in your DNS, let it propagate, continue. Output ->
-#    /etc/letsencrypt/live/staging.pipecat.aplisay.net/{cert,chain,privkey}.pem
-#    (For hands-off renewal, use certbot/lego with your DNS provider's API plugin.)
-
-# 2. Upload it to DO as a CUSTOM certificate; note the returned ID (UUID):
-LE=/etc/letsencrypt/live/staging.pipecat.aplisay.net
-doctl compute certificate create --type custom --name pipecat-staging-$(date +%Y%m%d) \
-    --leaf-certificate-path  "$LE/cert.pem" \
-    --certificate-chain-path "$LE/chain.pem" \
-    --private-key-path        "$LE/privkey.pem"
-doctl compute certificate list      # copy the new cert's ID
-
-# 3. Wire the ID + roll the LB:
-#    edit do-staging/kustomization.yaml -> do-loadbalancer-certificate-id: <ID>
-kubectl apply -k do-staging         # DO updates the SAME LB: adds 443->8082 TLS,
-                                    # keeps 5061 + the IP (129.212.220.15)
-
-# 4. DNS + app config:
-#    A   staging.pipecat.aplisay.net -> 129.212.220.15
-#    llm-agent server: PIPECAT_PUBLIC_URL = PIPECAT_WORKER_URL =
-#                      https://staging.pipecat.aplisay.net
-#    (plus the WebRTC media UDP firewall — step 2 below)
-```
-
-**Renewal (~90 days).** DO custom certs are immutable, so rotate by ID: re-issue
-(step 1), upload a NEW cert (step 2, new `--name`), point the annotation at the
-new ID and `kubectl apply -k do-staging`, then delete the old (you can't delete a
-cert an LB still references):
+`pipecat.aplisay.net` is delegated to **DigitalOcean DNS**, so DO can DNS-validate
+and issue a **managed Let's Encrypt cert that it auto-renews** — no certbot, no
+uploads, no renewal job. Create one per environment and reference its ID:
 
 ```bash
-doctl compute certificate delete <old-cert-id>
+# 1. DO provisions + auto-renews the LE cert (validates via the delegated zone):
+doctl compute certificate create --type lets_encrypt \
+    --name pipecat-staging --dns-names staging.pipecat.aplisay.net
+doctl compute certificate list      # copy the cert's ID (UUID)
+
+# 2. Put the ID in do-staging/kustomization.yaml -> do-loadbalancer-certificate-id,
+#    then roll the LB (adds 443->8082 TLS, keeps 5061 + the IP 129.212.220.15):
+kubectl apply -k do-staging
 ```
 
-Automate it: `aplisay.net` is on **Google Cloud DNS**, so DNS-01 is fully
-scriptable. [`cert-renew-cronjob.example.yaml`](components/webrtc-do/cert-renew-cronjob.example.yaml)
-is a monthly CronJob that re-issues with `lego --dns gcloud`, uploads a new DO
-custom cert, repoints the `do-loadbalancer-certificate-id` annotation (the CCM
-rolls the live LB), and prunes old certs — needing only a GCP SA key
-(`roles/dns.admin` on the zone) and a DO API token. **Once it runs, drop the
-hardcoded cert-id op from `do-staging`/`do-production`** so a later `apply` can't
-revert the LB to a deleted cert. **Production** is identical with
-`production.pipecat.aplisay.net` + `do-production/`.
+The A record (`staging.pipecat.aplisay.net` → 129.212.220.15) is already in place.
+On the **llm-agent server** set `PIPECAT_PUBLIC_URL` = `PIPECAT_WORKER_URL` =
+`https://staging.pipecat.aplisay.net`. **Production** is identical with
+`production.pipecat.aplisay.net` + `do-production/` (its own cert).
 
-> Prefer no cert juggling at all? With Cloud DNS, **cert-manager + an Ingress** is
-> the cleanest: a `ClusterIssuer` with the native **clouddns** DNS-01 solver
-> auto-renews the cert in a Secret (no DO cert IDs, no CCM fight, no CronJob), the
-> Ingress terminates TLS (and path-restricts to `/dispatch` + `/webrtc/offer`),
-> and the DO LB just passes `443` *through* to it. The trade-off is running an
-> ingress controller + cert-manager; the DO-custom-cert path above keeps the
-> existing LB and adds no in-cluster components.
+> **Renewal is automatic** — DO renews the managed cert and the DOKS
+> cloud-controller keeps the live LB pointed at it; no CronJob, no manual
+> rotation. Treat the cert ID committed in `do-staging` as the *bootstrap*
+> reference: if DO assigns a new ID at renewal, the CCM updates the live Service,
+> so re-read the live value before re-committing rather than re-applying a stale
+> one:
+> ```bash
+> kubectl get svc pipecat-sip -n pipecat -o \
+>   jsonpath='{.metadata.annotations.service\.beta\.kubernetes\.io/do-loadbalancer-certificate-id}'
+> ```
 
 **2. WebRTC media UDP — a separate, internet-open range.** You **cannot** reuse
 the SIP RTP range (`10000-20000`): that's bound by sipbridge on the same

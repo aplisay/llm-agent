@@ -18,10 +18,12 @@
 #       - ../components/webrtc-do
 #     patches: [ ... do-loadbalancer-certificate-id: <DO cert ID>, ... ]
 #
-# Prerequisites (see README "WebRTC"): a Let's Encrypt cert for the FQDN uploaded
-# to DO as a CUSTOM cert (external DNS, so DO-managed LE can't validate); external
-# DNS A record -> the LB IP; a DO firewall opening the WebRTC media UDP range to
-# browsers; PIPECAT_PUBLIC_URL + PIPECAT_WORKER_URL on the llm-agent side.
+# Prerequisites (see README "WebRTC"): a DO-managed Let's Encrypt cert for the
+# FQDN (pipecat.aplisay.net is delegated to DO, so `doctl compute certificate
+# create --type lets_encrypt --dns-names <fqdn>` issues + auto-renews it) — put
+# its ID in the overlay; a DNS A record -> the LB IP; a DO firewall opening the
+# WebRTC media UDP range to browsers; PIPECAT_PUBLIC_URL + PIPECAT_WORKER_URL on
+# the llm-agent side.
 #
 # Surface note: this exposes ALL worker routes on :8082, not just /webrtc/offer +
 # /dispatch (they're token-gated; /daily/dialin is unauthenticated but no-ops off
