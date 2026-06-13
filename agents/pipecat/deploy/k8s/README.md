@@ -456,15 +456,23 @@ cert an LB still references):
 doctl compute certificate delete <old-cert-id>
 ```
 
-Automate with a CronJob running `lego`/`certbot` (DNS-01 via your provider's API)
-+ `doctl` + `kubectl apply`. **Production** is identical with
-`production.pipecat.aplisay.net` + `do-production/` (its own cert ID).
+Automate it: `aplisay.net` is on **Google Cloud DNS**, so DNS-01 is fully
+scriptable. [`cert-renew-cronjob.example.yaml`](components/webrtc-do/cert-renew-cronjob.example.yaml)
+is a monthly CronJob that re-issues with `lego --dns gcloud`, uploads a new DO
+custom cert, repoints the `do-loadbalancer-certificate-id` annotation (the CCM
+rolls the live LB), and prunes old certs — needing only a GCP SA key
+(`roles/dns.admin` on the zone) and a DO API token. **Once it runs, drop the
+hardcoded cert-id op from `do-staging`/`do-production`** so a later `apply` can't
+revert the LB to a deleted cert. **Production** is identical with
+`production.pipecat.aplisay.net` + `do-production/`.
 
-> Prefer hands-off renewal? Use **cert-manager + an Ingress** (LE DNS-01
-> ClusterIssuer) and make the DO LB pass `443` *through* to the Ingress instead of
-> terminating — auto-renews and gives the path allowlist, at the cost of running
-> an ingress controller. The DO-custom-cert path above keeps the existing LB and
-> adds no in-cluster components.
+> Prefer no cert juggling at all? With Cloud DNS, **cert-manager + an Ingress** is
+> the cleanest: a `ClusterIssuer` with the native **clouddns** DNS-01 solver
+> auto-renews the cert in a Secret (no DO cert IDs, no CCM fight, no CronJob), the
+> Ingress terminates TLS (and path-restricts to `/dispatch` + `/webrtc/offer`),
+> and the DO LB just passes `443` *through* to it. The trade-off is running an
+> ingress controller + cert-manager; the DO-custom-cert path above keeps the
+> existing LB and adds no in-cluster components.
 
 **2. WebRTC media UDP — a separate, internet-open range.** You **cannot** reuse
 the SIP RTP range (`10000-20000`): that's bound by sipbridge on the same
