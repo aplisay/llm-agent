@@ -40,6 +40,10 @@ import {
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
 import { withTimeout } from "./utils.js";
+import {
+  ConfidenceTonePlayer,
+  toneConfigFromOptions,
+} from "./confidence-tone.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
@@ -1134,12 +1138,27 @@ async function setupCallAndUtilities({
     state: "none",
     description: "No transfer in progress",
   };
+  // Confidence tone during transfers (options.transferTone): a comfort beep
+  // toward the caller while a blind transfer is being placed, and to fill
+  // the silent gaps during a consultation. Armed in onTransfer; play/stop is
+  // derived from the transfer state via the setTransferState funnel below.
+  // Null (zero behaviour change) when the option is unset.
+  const toneConfig = toneConfigFromOptions(options);
+  const tonePlayer = toneConfig
+    ? new ConfidenceTonePlayer(
+        toneConfig,
+        () => ctx.room as Room | null | undefined,
+        () => sessionRef(null),
+      )
+    : null;
+
   const getTransferState = () => transferState;
   const setTransferState = (
     state: "none" | "dialling" | "talking" | "rejected" | "failed",
     description: string,
   ) => {
     transferState = { state, description };
+    tonePlayer?.notifyTransferState(state);
     logger.debug({ state, description }, "Transfer state updated");
   };
 
@@ -1251,6 +1270,14 @@ async function setupCallAndUtilities({
     participant: ParticipantInfo;
   }) => {
     try {
+      // Arm the confidence tone for this transfer (skip if a transfer is
+      // already in flight — handleTransfer will reject it without touching
+      // the transfer state, and the in-flight one still owns the tone).
+      if (tonePlayer && !getConsultInProgress()) {
+        tonePlayer.arm(
+          args.operation === "consultative" ? "consult" : "blind",
+        );
+      }
       const transferContext: TransferContext = {
         ctx,
         room,
@@ -1294,6 +1321,9 @@ async function setupCallAndUtilities({
 
       return await handleTransfer(transferContext);
     } catch (e: any) {
+      // A throw here means the transfer died (often before any state change,
+      // e.g. argument validation) — don't leave the tone armed for it.
+      tonePlayer?.disarm();
       let error = e as Error;
       if (!(e instanceof Error)) {
         logger.error(

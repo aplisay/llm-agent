@@ -174,6 +174,10 @@ class CallSession:
     # Detached task that performs the WebRTC transfer dial+bridge, so it survives
     # the LLM cancelling the function-call coroutine on caller interruption.
     _webrtc_bg_task: Optional[Any] = None
+    # Confidence-tone injector (options.transferTone) spliced into the caller
+    # leg's pipeline; None when the option is unset. Armed when a transfer
+    # starts; play/stop is derived from transfer_state. See confidence_tone.py.
+    _tone_injector: Optional[Any] = None
 
     # ---- Agent-to-agent transfer (builtin transfer_agent) state ----
     # Handle to the pipeline's LLM service (set in ``prepare_run``) so the
@@ -326,6 +330,19 @@ class CallSession:
 
             self.relay_endpoint = RelayEndpoint(name=self.session_id)
 
+        # Confidence tone during transfers (options.transferTone). Only on the
+        # caller's own leg — a consult-side TransferAgent talks to the target,
+        # who must not hear hold tone while conversing with the bot.
+        if self.parent_session is None and self._tone_injector is None:
+            from .confidence_tone import ConfidenceToneInjector, tone_config_from_options
+
+            tone_config = tone_config_from_options(agent.get("options"))
+            if tone_config is not None:
+                self._tone_injector = ConfidenceToneInjector(
+                    tone_config,
+                    get_transfer_state=lambda: self.transfer_state,
+                )
+
         recording_opts = _resolve_recording_options(agent, self.instance)
         task, audio_buffer, llm_context, llm_service = await build_voice_session(
             transport=self.gateway_session.transport,
@@ -336,6 +353,7 @@ class CallSession:
             system_prompt=system_prompt,
             enable_recording=recording_opts.enabled,
             relay_endpoint=self.relay_endpoint,
+            tone_injector=self._tone_injector,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -1312,6 +1330,10 @@ class CallSession:
                 if op != "consultative"
                 else "Dialling transfer target...",
             )
+            # Confidence tone toward the caller while the transfer is placed
+            # (blind: until refer/bridge completes; consult: silence-gap fill
+            # for the whole consultation). Derives stop from transfer_state.
+            self._tone_arm("consult" if op == "consultative" else "blind")
             await self.gateway_session.transfer(req)
             # For consultative, the gateway returns immediately while
             # consultation is in flight — accept/reject tools on the
@@ -1332,6 +1354,12 @@ class CallSession:
             logger.error(f"transfer failed: {e}")
             self.transfer_state = TransferState("failed", str(e))
             return {"error": str(e), "status": "FAILED", "reason": str(e)}
+
+    def _tone_arm(self, mode: str) -> None:
+        """Arm the confidence tone for an in-flight transfer (no-op when
+        ``options.transferTone`` is unset). ``mode``: "blind" | "consult"."""
+        if self._tone_injector is not None:
+            self._tone_injector.arm(mode)
 
     # ---- WebRTC-origin transfer (worker-side media relay) ----
 
@@ -1501,6 +1529,9 @@ class CallSession:
         self.transfer_state = TransferState(
             "dialling", f"Transferring to {args['number']}"
         )
+        # Confidence tone toward the browser caller while the leg dials; the
+        # transition out of "dialling" (talking / failed) stops it.
+        self._tone_arm("blind")
         # Detach — survive function-call cancellation. Keep a reference so the
         # task isn't garbage-collected mid-flight.
         self._webrtc_bg_task = asyncio.create_task(self._webrtc_bridge_bg(dict(args)))
@@ -1632,6 +1663,10 @@ class CallSession:
         logger.info(f"webrtc consult initiated (consultFeedback={self._consult_feedback})")
 
         self.transfer_state = TransferState("dialling", "Dialling transfer target...")
+        # Confidence tone toward the browser caller for the consultation —
+        # gap-fill while neither the caller nor the local bot is speaking,
+        # until accept/reject/failure moves transfer_state to a terminal state.
+        self._tone_arm("consult")
         # Snapshot the parent transcript NOW (in the function-call coroutine, with
         # the LLM context fresh) before detaching — the background task can't
         # safely touch the live context mid-cancellation.

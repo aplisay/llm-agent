@@ -485,6 +485,7 @@ async def build_voice_session(
     system_prompt: str,
     enable_recording: bool = False,
     relay_endpoint: "Optional[Any]" = None,
+    tone_injector: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
@@ -516,11 +517,11 @@ async def build_voice_session(
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
         )
     else:
         task, context, llm = await _build_pipeline(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
         )
     return task, audio_buffer, context, llm
 
@@ -534,6 +535,7 @@ async def _build_realtime(
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
+    tone_injector: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -785,6 +787,9 @@ async def _build_realtime(
     # and emit the peer leg's audio). Inert until engaged — see media_relay.
     relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
+    # Confidence tone (options.transferTone) sits upstream of the relay
+    # injector so an engaged relay drops tone frames too — see confidence_tone.
+    tone = [tone_injector] if tone_injector is not None else []
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped.
@@ -795,6 +800,7 @@ async def _build_realtime(
         dtmf_aggregator,
         user_aggregator,
         llm,
+        *tone,
         *relay_inject,
         transport.output(),
     ]
@@ -830,6 +836,7 @@ async def _build_pipeline(
     system_prompt: str,
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
+    tone_injector: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -938,6 +945,9 @@ async def _build_pipeline(
     # for a WebRTC-origin transfer (see media_relay / _build_realtime).
     relay_tap = [relay_endpoint.tap] if relay_endpoint is not None else []
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
+    # Confidence tone (options.transferTone) sits upstream of the relay
+    # injector so an engaged relay drops tone frames too — see confidence_tone.
+    tone = [tone_injector] if tone_injector is not None else []
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
     # audio frames, so ordering relative to it is immaterial.
@@ -950,6 +960,7 @@ async def _build_pipeline(
         user_aggregator,
         llm,
         tts,
+        *tone,
         *relay_inject,
         transport.output(),
     ]

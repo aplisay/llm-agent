@@ -588,6 +588,69 @@ components:
             - `^(\+44[1237]\d{6,15}|\d{3,6})$` - UK numbers or extensions
           type: string
           example: "^\\+44[1237]\\d{6,15}$"
+        transferTone:
+          description: |-
+            Confidence tone during call transfers: plays a periodic comfort beep to the caller while a
+            transfer is in flight, so they are not left listening to dead air.
+
+            - During a **blind** transfer the tone plays from the moment the transfer starts dialling
+              until it succeeds (the SIP REFER completes or the bridged media is established) or fails.
+            - During a **consultative** transfer the tone plays for the whole consultation, but only in
+              the gaps when neither the caller nor the agent is audibly speaking — it yields to live
+              conversation and resumes after `graceMs` of silence.
+
+            Set to `true` to enable with the default tone (a short 425 Hz burst every ~3 s at low
+            volume), or to an object to tune it. If omitted (or `false` / `enabled: false`) the feature
+            is off and there is no behavioural change.
+
+            Honoured by both the LiveKit and Pipecat workers for all transfer mechanisms (bridging,
+            SIP REFER, and the WebRTC worker-side media relay). See docs/call-transfers.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                frequency:
+                  description: Tone frequency in Hz.
+                  type: number
+                  minimum: 50
+                  maximum: 2000
+                  default: 425
+                onMs:
+                  description: Burst length in milliseconds.
+                  type: number
+                  minimum: 20
+                  maximum: 10000
+                  default: 250
+                offMs:
+                  description: Silence between bursts in milliseconds.
+                  type: number
+                  minimum: 0
+                  maximum: 60000
+                  default: 2750
+                volume:
+                  description: Linear amplitude of the tone (0..1).
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 0.15
+                graceMs:
+                  description: |-
+                    Quiet time in milliseconds required after either party last spoke before the
+                    tone starts (or resumes).
+                  type: number
+                  minimum: 0
+                  maximum: 30000
+                  default: 1200
+          example:
+            frequency: 425
+            onMs: 250
+            offMs: 2750
+            volume: 0.15
+            graceMs: 1200
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
