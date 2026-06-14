@@ -51,6 +51,9 @@ import { voice } from "@livekit/agents";
 import logger from "./logger.js";
 import type { TransferState } from "./transfer-handler.js";
 
+// Resolved, internal tone parameters consumed by the generator below. NOT the
+// public interface — `toneConfigFromOptions` maps the coarse shorthand onto
+// these numeric values.
 export interface ToneConfig {
   frequency: number; // Hz
   onMs: number; // burst length
@@ -59,13 +62,27 @@ export interface ToneConfig {
   graceMs: number; // quiet time required after speech before tone
 }
 
-// Defaults give a discreet UK-style comfort beep: a short 425 Hz burst
-// every ~3 s at low volume. Keep aligned with the pipecat worker.
+// The public `options.transferTone` interface is deliberately coarse — the
+// tone *shape* (pitch, burst length, volume) is chosen from small discrete sets
+// rather than free-form Hz/ms/amplitude. Only the silence timings
+// (`gapMs`/`graceMs`) are continuous. This keeps the set of possible on-bursts
+// tiny (one per frequency×length×volume combination) so the live sine generator
+// below could later be swapped for a lookup of pre-generated PCM tone tables
+// without any change to the agent-facing config. Keep these maps in sync with
+// the Pipecat worker (agents/pipecat/pipecat_aplisay/confidence_tone.py) and
+// lib/database.js.
+const FREQUENCY_HZ: Record<string, number> = { low: 350, medium: 425, high: 550 };
+const LENGTH_MS: Record<string, number> = { short: 150, medium: 250, long: 400 };
+// Linear amplitude, 0..1. `medium` of everything is the UK-style comfort beep.
+const VOLUME_LEVEL: Record<string, number> = { low: 0.08, medium: 0.15, high: 0.3 };
+
+// Defaults: a discreet UK-style comfort beep — a 250 ms 425 Hz burst every
+// ~3 s at low volume. Keep aligned with the pipecat worker.
 const DEFAULTS: ToneConfig = {
-  frequency: 425,
-  onMs: 250,
+  frequency: FREQUENCY_HZ.medium,
+  onMs: LENGTH_MS.medium,
   offMs: 2750,
-  volume: 0.15,
+  volume: VOLUME_LEVEL.medium,
   graceMs: 1200,
 };
 
@@ -78,24 +95,38 @@ const QUEUE_MS = 200;
 
 /**
  * Parse `options.transferTone` into a {@link ToneConfig}. Accepts `true`
- * (all defaults) or an object with any of `frequency`, `onMs`, `offMs`,
- * `volume`, `graceMs`; `enabled: false` (or any other falsy/malformed
- * value) disables the feature. Out-of-range values are clamped — agent
- * save-time validation in lib/database.js is the authoritative gate.
+ * (all defaults) or an object with any of:
+ *   - `frequency` — one of `"low"` / `"medium"` / `"high"`
+ *   - `length` — one of `"short"` / `"medium"` / `"long"`
+ *   - `volume` — one of `"low"` / `"medium"` / `"high"`
+ *   - `gapMs` — silence between bursts, milliseconds
+ *   - `graceMs` — quiet time after speech before the tone (re)starts, ms
+ * `enabled: false` (or any other falsy/malformed value) disables the feature.
+ * Unrecognised enum values fall back to `"medium"` and out-of-range numbers
+ * are clamped — agent save-time validation in lib/database.js is the
+ * authoritative gate.
  */
 export function toneConfigFromOptions(options: any): ToneConfig | null {
   const raw = options?.transferTone;
   if (raw === true) return { ...DEFAULTS };
   if (!raw || typeof raw !== "object" || raw.enabled === false) return null;
+  const pick = (
+    value: unknown,
+    table: Record<string, number>,
+    dflt: string,
+  ): number =>
+    typeof value === "string" && table[value.toLowerCase()] !== undefined
+      ? table[value.toLowerCase()]
+      : table[dflt];
   const num = (value: unknown, dflt: number, lo: number, hi: number): number =>
     typeof value === "number" && Number.isFinite(value)
       ? Math.min(hi, Math.max(lo, value))
       : dflt;
   return {
-    frequency: num(raw.frequency, DEFAULTS.frequency, 50, 2000),
-    onMs: Math.round(num(raw.onMs, DEFAULTS.onMs, 20, 10000)),
-    offMs: Math.round(num(raw.offMs, DEFAULTS.offMs, 0, 60000)),
-    volume: num(raw.volume, DEFAULTS.volume, 0, 1),
+    frequency: pick(raw.frequency, FREQUENCY_HZ, "medium"),
+    onMs: pick(raw.length, LENGTH_MS, "medium"),
+    offMs: Math.round(num(raw.gapMs, DEFAULTS.offMs, 0, 60000)),
+    volume: pick(raw.volume, VOLUME_LEVEL, "medium"),
     graceMs: Math.round(num(raw.graceMs, DEFAULTS.graceMs, 0, 30000)),
   };
 }

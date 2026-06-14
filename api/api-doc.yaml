@@ -599,9 +599,13 @@ components:
               the gaps when neither the caller nor the agent is audibly speaking — it yields to live
               conversation and resumes after `graceMs` of silence.
 
-            Set to `true` to enable with the default tone (a short 425 Hz burst every ~3 s at low
-            volume), or to an object to tune it. If omitted (or `false` / `enabled: false`) the feature
-            is off and there is no behavioural change.
+            Set to `true` to enable with the default tone (a medium-pitched, medium-length comfort
+            beep every ~3 s at low volume), or to an object to tune it. If omitted (or `false` /
+            `enabled: false`) the feature is off and there is no behavioural change.
+
+            The tone *shape* is chosen from a small fixed set rather than free-form Hz/ms — `frequency`,
+            `length`, and `volume` are enumerated — so the platform can serve pre-generated tones for
+            efficiency. Only the silence timings (`gapMs`, `graceMs`) are continuous.
 
             Honoured by both the LiveKit and Pipecat workers for all transfer mechanisms (bridging,
             SIP REFER, and the WebRTC worker-side media relay). See docs/call-transfers.md.
@@ -614,29 +618,26 @@ components:
                   type: boolean
                   default: true
                 frequency:
-                  description: Tone frequency in Hz.
-                  type: number
-                  minimum: 50
-                  maximum: 2000
-                  default: 425
-                onMs:
-                  description: Burst length in milliseconds.
-                  type: number
-                  minimum: 20
-                  maximum: 10000
-                  default: 250
-                offMs:
+                  description: Tone pitch. `low` ≈ 350 Hz, `medium` ≈ 425 Hz, `high` ≈ 550 Hz.
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                length:
+                  description: Burst length. `short` ≈ 150 ms, `medium` ≈ 250 ms, `long` ≈ 400 ms.
+                  type: string
+                  enum: [short, medium, long]
+                  default: medium
+                volume:
+                  description: Tone loudness. `low` ≈ 0.08, `medium` ≈ 0.15, `high` ≈ 0.30 (linear amplitude).
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                gapMs:
                   description: Silence between bursts in milliseconds.
                   type: number
                   minimum: 0
                   maximum: 60000
                   default: 2750
-                volume:
-                  description: Linear amplitude of the tone (0..1).
-                  type: number
-                  minimum: 0
-                  maximum: 1
-                  default: 0.15
                 graceMs:
                   description: |-
                     Quiet time in milliseconds required after either party last spoke before the
@@ -646,10 +647,10 @@ components:
                   maximum: 30000
                   default: 1200
           example:
-            frequency: 425
-            onMs: 250
-            offMs: 2750
-            volume: 0.15
+            frequency: medium
+            length: medium
+            volume: medium
+            gapMs: 2750
             graceMs: 1200
         transferPrompt:
           description: |-

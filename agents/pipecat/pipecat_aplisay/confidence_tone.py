@@ -68,28 +68,53 @@ _CHUNK_SECS = 0.02
 _DEFAULT_SAMPLE_RATE = 16000
 
 
+# The public ``options.transferTone`` interface is deliberately coarse — the
+# tone *shape* (pitch, burst length, volume) is chosen from small discrete sets
+# rather than free-form Hz/ms/amplitude. Only the silence timings
+# (``gapMs``/``graceMs``) are continuous. This keeps the set of possible
+# on-bursts tiny (one per frequency×length×volume combination) so the live sine
+# generator below can later be swapped for a lookup of pre-generated PCM tone
+# tables without any change to the agent-facing config. Keep these maps in sync
+# with the LiveKit worker (agents/livekit/lib/confidence-tone.ts) and the
+# validation in lib/database.js.
+_FREQUENCY_HZ = {"low": 350.0, "medium": 425.0, "high": 550.0}
+_LENGTH_MS = {"short": 150, "medium": 250, "long": 400}
+# ``medium`` of everything is the discreet UK-style comfort beep.
+_VOLUME = {"low": 0.08, "medium": 0.15, "high": 0.30}  # linear amplitude, 0..1
+
+
 @dataclass
 class ToneConfig:
-    """Shape of ``options.transferTone`` with platform defaults.
+    """Resolved, internal tone parameters consumed by the generator.
 
-    The defaults give a discreet UK-style comfort beep: a short 425 Hz burst
+    Not the public interface — :func:`tone_config_from_options` maps the
+    coarse ``options.transferTone`` shorthand (``frequency``/``length``/
+    ``volume`` enums + ``gapMs``/``graceMs``) onto these numeric values. The
+    defaults give a discreet UK-style comfort beep: a 250 ms 425 Hz burst
     every ~3 s at low volume.
     """
 
-    frequency: float = 425.0  # Hz
-    on_ms: int = 250  # burst length
-    off_ms: int = 2750  # silence between bursts
-    volume: float = 0.15  # linear amplitude, 0..1
-    grace_ms: int = 1200  # quiet time required after speech before tone
+    frequency: float = 425.0  # Hz (from the `frequency` enum)
+    on_ms: int = 250  # burst length (from the `length` enum)
+    off_ms: int = 2750  # silence between bursts (from `gapMs`)
+    volume: float = _VOLUME["medium"]  # linear amplitude, 0..1 (from the `volume` enum)
+    grace_ms: int = 1200  # quiet time required after speech before tone (`graceMs`)
 
 
 def tone_config_from_options(options: Any) -> Optional[ToneConfig]:
     """Parse ``options.transferTone`` into a :class:`ToneConfig`.
 
-    Accepts ``true`` (all defaults) or an object with any of ``frequency``,
-    ``onMs``, ``offMs``, ``volume``, ``graceMs``; ``enabled: false`` (or any
-    other falsy/malformed value) disables the feature. Out-of-range values
-    are clamped rather than rejected — agent save-time validation in
+    Accepts ``true`` (all defaults) or an object with any of:
+
+    - ``frequency`` — one of ``"low"`` / ``"medium"`` / ``"high"``
+    - ``length`` — one of ``"short"`` / ``"medium"`` / ``"long"``
+    - ``volume`` — one of ``"low"`` / ``"medium"`` / ``"high"``
+    - ``gapMs`` — silence between bursts, milliseconds
+    - ``graceMs`` — quiet time after speech before the tone (re)starts, ms
+
+    ``enabled: false`` (or any non-dict/non-``true`` value) disables the
+    feature. Unrecognised enum values fall back to ``"medium"`` and
+    out-of-range numbers are clamped — agent save-time validation in
     lib/database.js is the authoritative gate; the worker just refuses to
     produce something unplayable.
     """
@@ -99,6 +124,12 @@ def tone_config_from_options(options: Any) -> Optional[ToneConfig]:
     if not isinstance(raw, dict) or raw.get("enabled") is False:
         return None
 
+    def _enum(key: str, table: dict, default: str):
+        value = raw.get(key)
+        if isinstance(value, str) and value.lower() in table:
+            return table[value.lower()]
+        return table[default]
+
     def _num(key: str, default: float, lo: float, hi: float) -> float:
         value = raw.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -106,10 +137,10 @@ def tone_config_from_options(options: Any) -> Optional[ToneConfig]:
         return min(hi, max(lo, float(value)))
 
     return ToneConfig(
-        frequency=_num("frequency", 425.0, 50.0, 2000.0),
-        on_ms=int(_num("onMs", 250, 20, 10000)),
-        off_ms=int(_num("offMs", 2750, 0, 60000)),
-        volume=_num("volume", 0.15, 0.0, 1.0),
+        frequency=_enum("frequency", _FREQUENCY_HZ, "medium"),
+        on_ms=int(_enum("length", _LENGTH_MS, "medium")),
+        off_ms=int(_num("gapMs", 2750, 0, 60000)),
+        volume=_enum("volume", _VOLUME, "medium"),
         grace_ms=int(_num("graceMs", 1200, 0, 30000)),
     )
 

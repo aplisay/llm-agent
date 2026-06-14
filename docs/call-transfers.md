@@ -539,24 +539,26 @@ Or, with explicit tuning (all fields optional — the values below are the defau
   "options": {
     "transferTone": {
       "enabled": true,
-      "frequency": 425,
-      "onMs": 250,
-      "offMs": 2750,
-      "volume": 0.15,
+      "frequency": "medium",
+      "length": "medium",
+      "volume": "medium",
+      "gapMs": 2750,
       "graceMs": 1200
     }
   }
 }
 ```
 
-| Field | Default | Range | Description |
-|-------|---------|-------|-------------|
-| `enabled` | `true` | — | Set `false` to disable without removing the object |
-| `frequency` | `425` | 50–2000 | Tone frequency in Hz |
-| `onMs` | `250` | 20–10000 | Burst length in milliseconds |
-| `offMs` | `2750` | 0–60000 | Silence between bursts in milliseconds |
-| `volume` | `0.15` | 0–1 | Linear amplitude |
+| Field | Default | Values | Description |
+|-------|---------|--------|-------------|
+| `enabled` | `true` | boolean | Set `false` to disable without removing the object |
+| `frequency` | `"medium"` | `low` \| `medium` \| `high` | Tone pitch (`low` ≈ 350 Hz, `medium` ≈ 425 Hz, `high` ≈ 550 Hz) |
+| `length` | `"medium"` | `short` \| `medium` \| `long` | Burst length (`short` ≈ 150 ms, `medium` ≈ 250 ms, `long` ≈ 400 ms) |
+| `volume` | `"medium"` | `low` \| `medium` \| `high` | Tone loudness (`low` ≈ 0.08, `medium` ≈ 0.15, `high` ≈ 0.30 linear amplitude) |
+| `gapMs` | `2750` | 0–60000 | Silence between bursts in milliseconds |
 | `graceMs` | `1200` | 0–30000 | Quiet time required after either party last spoke before the tone starts |
+
+The tone *shape* (`frequency`, `length`, and `volume`) is chosen from a small fixed set rather than free-form Hz/ms/amplitude, so the platform can serve pre-generated tones for efficiency; only the silence timings (`gapMs`, `graceMs`) are continuous.
 
 **Behaviour:**
 
