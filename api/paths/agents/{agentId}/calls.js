@@ -27,7 +27,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
+        attributes: ['id', 'parentId', 'instanceId', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
         where,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),

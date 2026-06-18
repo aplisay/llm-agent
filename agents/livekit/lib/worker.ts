@@ -193,6 +193,12 @@ export default defineAgent({
     let endTransferActivityIfNeeded:
       | ((reason: string) => Promise<void>)
       | null = null;
+    // Reference to the call row so the outer catch can mark it failed (with the
+    // error reason) if setup throws. Without this a setup failure (e.g. an
+    // unusable TTS vendor) leaves an orphaned call with no endedAt/reason and
+    // nothing for the diagnosis loop to read.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let recordedCall: any = null;
 
     try {
       const tGetCallInfo = Date.now();
@@ -305,6 +311,7 @@ export default defineAgent({
         requestHangup: () => {},
         participant: participant,
       });
+      recordedCall = call; // so the outer catch can mark it failed on a setup error
 
       if (outboundCall && outboundInfo && !participant) {
         try {
@@ -613,6 +620,16 @@ export default defineAgent({
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`,
       );
+      // Mark the call failed so it isn't left orphaned (no endedAt/reason): this
+      // records the failure reason on the call and lets the diagnosis loop find
+      // it. The InvocationLog is persisted by ctx.shutdown() below. Best-effort.
+      try {
+        if (recordedCall && !recordedCall._endCalled) {
+          await recordedCall.end(`Agent setup failed: ${(e as Error).message}`);
+        }
+      } catch (endErr) {
+        logger.error({ endErr }, "error marking call failed during cleanup");
+      }
       // End transfer activity if in progress
       // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
       if (endTransferActivityIfNeeded) {

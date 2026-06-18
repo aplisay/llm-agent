@@ -124,10 +124,12 @@ callCreate.apiDoc = {
             },
             options: {
               type: 'object',
-              description: 'Call options'
+              nullable: true,
+              description: 'Call options (an agent may have null options)'
             },
             metadata: {
               type: 'object',
+              nullable: true,
               description: 'Call metadata'
             }
           }

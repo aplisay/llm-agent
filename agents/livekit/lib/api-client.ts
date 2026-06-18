@@ -333,6 +333,9 @@ export interface AgentFunction {
       required?: boolean;
       [key: string]: any;
     }>;
+    // JSON-Schema style top-level required list (the set builder emits this;
+    // some definitions instead set `required: true` on each property).
+    required?: string[];
   };
 }
 
@@ -492,10 +495,14 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
         body = { raw: errorText };
       }
 
+      // Include the server's error detail in the message so callers (and the
+      // agent/diagnosis loop that surfaces this as a function result) see the
+      // real cause, not just a generic "500 Internal Server Error".
+      const detail = body?.error || body?.message || body?.raw;
       throw new ApiRequestError(
         response.status,
         body,
-        `API request failed: ${response.status} ${response.statusText}`,
+        `API request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
       );
     }
 

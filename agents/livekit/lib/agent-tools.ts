@@ -67,21 +67,43 @@ export function createTools({
         ...acc,
         [fnc.name]: llm.tool({
           description: fnc.description,
-          parameters: {
-            type: "object",
-            properties: Object.fromEntries(
-              Object.entries(fnc.input_schema.properties)
-                .filter(([, value]) => value.source === "generated")
-                .map(([key, value]: [string, any]) => [
+          parameters: (() => {
+            // Expose to the model exactly the parameters the function handler
+            // does NOT resolve itself. The handler injects `source: "static"`
+            // (from `from`) and `source: "metadata"` values post-dispatch; every
+            // other parameter — INCLUDING one with no `source` at all — is
+            // model-provided by convention (see function-handler.js and
+            // lib/subagent.js `llmFunctions`). The previous `=== "generated"`
+            // filter dropped no-source params, so e.g. a subagent's `question`
+            // was neither exposed here nor injected by the handler and silently
+            // vanished (Ultravox stripped the value the model still sent).
+            const exposed = Object.entries(fnc.input_schema.properties || {}).filter(
+              ([, value]: [string, any]) =>
+                value.source !== "static" && value.source !== "metadata",
+            );
+            // `required` may be a JSON-Schema top-level array or a per-property
+            // `required: true` flag — honour both, but only for exposed params.
+            const topLevelRequired: string[] = Array.isArray(
+              fnc.input_schema.required,
+            )
+              ? fnc.input_schema.required
+              : [];
+            return {
+              type: "object",
+              properties: Object.fromEntries(
+                exposed.map(([key, value]: [string, any]) => [
                   key,
                   { ...value, required: undefined },
                 ]),
-            ),
-            required:
-              Object.keys(fnc.input_schema.properties).filter(
-                (key) => fnc.input_schema.properties[key].required,
-              ) || [],
-          },
+              ),
+              required: exposed
+                .filter(
+                  ([key, value]: [string, any]) =>
+                    topLevelRequired.includes(key) || value.required,
+                )
+                .map(([key]) => key),
+            };
+          })(),
           execute: async (args: unknown) => {
             try {
               logger.debug(

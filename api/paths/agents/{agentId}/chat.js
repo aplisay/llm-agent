@@ -29,8 +29,10 @@ const agentChat = async (req, res) => {
         message: `Agent ${agentId} is type ${agent.type || 'interactive-audio'}; only text agents support chat`,
       });
     }
-    const session = createChatSession({ agent, logger: req.log });
-    log.info({ agentId, sessionId: session.id }, 'agent chat session started');
+    // Optional seed: an existing set to edit, and/or a prior test result to diagnose.
+    const { set, testResult } = req.body || {};
+    const session = createChatSession({ agent, set, testResult, logger: req.log });
+    log.info({ agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult }, 'agent chat session started');
     res.send({ id: session.id, socket: `/chat/${session.id}` });
   }
   catch (err) {
@@ -56,6 +58,21 @@ agentChat.apiDoc = {
       schema: { type: 'string' },
     },
   ],
+  requestBody: {
+    description: 'Optional seed for the session: an existing set to edit, and/or a prior test result to diagnose.',
+    required: false,
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          properties: {
+            set: { type: 'object', nullable: true, description: 'An existing agent-set document to edit (seeds the builder).' },
+            testResult: { type: 'object', nullable: true, description: 'A prior test run (transcript/functions/invocation log) to diagnose.' },
+          },
+        },
+      },
+    },
+  },
   responses: {
     200: {
       description: 'Chat session created.',
