@@ -120,6 +120,12 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
    * by a full agent-stack handover (transfer_agent with a model change).
    */
   setActiveAgentCall?: (call: Call) => void;
+  /**
+   * Start/stop the comfort tone (options.transferTone) over the dead-air gap of
+   * a full-stack agent-to-agent handover. No-ops when the option is unset.
+   */
+  startHandoverTone?: () => void;
+  stopHandoverTone?: () => void;
   recordingOptions?: {
     enabled: boolean;
     key?: string;

@@ -55,18 +55,24 @@ export async function renderSet(setId, user) {
  * transaction: build/refresh rows, resolve label references against the new
  * membership, validate cross-references, then save.
  */
-export async function reconcileMembers({ set, byLabel, existing = [], user, transaction }) {
+export async function reconcileMembers({ set, byLabel, existing = [], user, transaction, patch = false, removeLabels = [] }) {
   const existingByLabel = new Map(existing.map((agent) => [agent.label, agent]));
+  const removeSet = new Set(removeLabels);
 
-  // Remove members whose label is no longer in the document
-  for (const agent of existing) {
-    if (!byLabel.has(agent.label)) {
-      await agent.destroy({ transaction });
-    }
+  // Deletion.
+  //  - replace mode (default): full-state reconcile — destroy any existing
+  //    member whose label is no longer in the document.
+  //  - patch mode: never delete by omission — only destroy members whose label
+  //    was explicitly listed in `removeLabels`.
+  const toRemove = existing.filter((agent) =>
+    patch ? removeSet.has(agent.label) : !byLabel.has(agent.label));
+  for (const agent of toRemove) {
+    await agent.destroy({ transaction });
   }
 
   // Build new rows / pair up existing ones. Rows are built before fixup so
-  // every member has a UUID for the label map.
+  // every member has a UUID for the label map. In replace mode `byLabel` is the
+  // whole set; in patch mode it is only the subset being upserted.
   const members = [...byLabel.entries()].map(([label, def]) => ({
     label,
     def,
@@ -79,8 +85,23 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
     })
   }));
 
-  const labelMap = new Map(members.map(({ label, agent }) => [label, agent.id]));
-  const membersById = new Map(members.map(({ agent, def }) => [agent.id, { type: defaultType(def) }]));
+  // `label:` references and in-set target-type checks must resolve against the
+  // WHOLE resulting set. In patch mode that includes existing members left
+  // untouched, so seed the maps with them (minus any being removed) before
+  // overlaying the members written this call. In replace mode the document IS
+  // the whole set, so these seeds stay empty and behaviour is unchanged.
+  const removedIds = new Set(toRemove.map((a) => a.id));
+  const labelMap = new Map();
+  const membersById = new Map();
+  if (patch) {
+    for (const agent of existing) {
+      if (removedIds.has(agent.id)) continue;
+      labelMap.set(agent.label, agent.id);
+      membersById.set(agent.id, { type: agent.type || 'interactive-audio' });
+    }
+  }
+  for (const { label, agent } of members) labelMap.set(label, agent.id);
+  for (const { agent, def } of members) membersById.set(agent.id, { type: defaultType(def) });
 
   const lookupAgent = (agentId) => Agent.findOne({
     where: { id: agentId, ...scopeWhereForUser(user) },

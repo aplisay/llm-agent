@@ -270,6 +270,8 @@ export default defineAgent({
         setActiveAgentCall,
         endTransferActivityIfNeeded: endTransferActivityFn,
         getTransferState,
+        startHandoverTone,
+        stopHandoverTone,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -432,6 +434,8 @@ export default defineAgent({
             getConsultInProgress: () => consultInProgress,
             getActiveCall,
             setActiveAgentCall,
+            startHandoverTone,
+            stopHandoverTone,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -1396,5 +1400,9 @@ async function setupCallAndUtilities({
     setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,
+    // Comfort tone over a full-stack agent handover gap (no-ops when
+    // options.transferTone is unset, i.e. tonePlayer is null).
+    startHandoverTone: () => tonePlayer?.startHandover(),
+    stopHandoverTone: () => tonePlayer?.stopHandover(),
   };
 }

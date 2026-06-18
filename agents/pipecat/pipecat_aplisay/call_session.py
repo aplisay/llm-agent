@@ -568,6 +568,10 @@ class CallSession:
             # clear it so prepare_run splices a fresh one into the new
             # pipeline.
             self.relay_endpoint = None
+            # The confidence-tone injector is also a FrameProcessor bound to the
+            # ended pipeline; clear it so prepare_run builds a fresh one (when
+            # options.transferTone is set) for the incoming agent's pipeline.
+            self._tone_injector = None
             # A rebuilt SmallWebRTC transport sits on an ALREADY-connected
             # peer, so the connection's "connected" event (which wires the
             # media tracks and fires on_client_connected → greeting /
@@ -584,6 +588,12 @@ class CallSession:
             task, max_duration_secs = await self.prepare_run(
                 self.agent, self.agent["modelName"], pending["system_prompt"]
             )
+            # Cover the dead-air gap until the incoming agent first speaks. The
+            # injector is spliced into the new pipeline's caller leg; arm it in
+            # handover mode (plays on speech grace, stops on the new agent's
+            # first BotStartedSpeakingFrame). No-op when transferTone is unset.
+            if self._tone_injector is not None:
+                self._tone_injector.arm_handover()
 
     async def _run_prepared_once(self, task, max_duration_secs: Optional[int]) -> None:
         """One pipeline execution (see :meth:`run_prepared`)."""

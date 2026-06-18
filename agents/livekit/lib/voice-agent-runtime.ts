@@ -48,6 +48,8 @@ export async function runAgentWorker({
   getTransferState,
   recordingOptions,
   setActiveAgentCall,
+  startHandoverTone,
+  stopHandoverTone,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -575,6 +577,16 @@ export async function runAgentWorker({
   // intentionally close the outgoing session during a full-stack handover.
   let agentHandoverInProgress = false;
 
+  // Every AgentSession event handler is wired to one specific session
+  // instance. After a full-stack agent handover the OLD session is superseded
+  // by the new one but keeps draining — and an Ultravox session whose close()
+  // we abandoned on timeout can emit its `Close` (and other) events *seconds*
+  // later, once `agentHandoverInProgress` has already been cleared. A stale
+  // session's late events must NOT drive teardown: doing so would end the new
+  // child call and delete the room out from under the still-connected caller.
+  // Only the session that is currently active may act on its events.
+  const isStaleSession = (s: voice.AgentSession | null): boolean => s !== session;
+
   /**
    * Compose the incoming agent's system prompt for a handover: its own prompt
    * plus the takeover preamble, the optional LLM-written summary, and (when
@@ -651,6 +663,7 @@ export async function runAgentWorker({
         item: { type, role, content },
         createdAt,
       }: voice.ConversationItemAddedEvent) => {
+        if (isStaleSession(s)) return;
         if (type === "message" && getConsultInProgress() === false) {
           const text = content.join("");
           if (role !== "user" || text !== skipText) {
@@ -669,6 +682,12 @@ export async function runAgentWorker({
     s.on(
       voice.AgentSessionEventTypes.AgentStateChanged,
       async (ev: voice.AgentStateChangedEvent) => {
+        if (isStaleSession(s)) return;
+        // The incoming agent has produced audio — the handover gap is over, so
+        // stop any comfort tone covering it (idempotent / no-op otherwise).
+        if (ev.newState === "speaking") {
+          stopHandoverTone?.();
+        }
         sendMessage({ status: ev.newState });
         if (ev.newState === "listening" && checkForHangup() && room.name) {
           endTransferActivityIfNeeded(
@@ -687,6 +706,13 @@ export async function runAgentWorker({
       logger.error({ ev }, "error (handover session)");
     });
     s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+      if (isStaleSession(s)) {
+        logger.info(
+          { ev },
+          "superseded session closed after handover; teardown suppressed",
+        );
+        return;
+      }
       if (agentHandoverInProgress) {
         logger.info({ ev }, "session closed during agent handover; teardown suppressed");
         return;
@@ -755,6 +781,23 @@ export async function runAgentWorker({
       },
     })) as Call;
     await newCall.start();
+
+    // Slot reserved and the continuation call accepted: the handover will
+    // proceed. Announce it now — before the outgoing session is torn down and
+    // the incoming agent greets — so the transcript marker precedes the new
+    // agent's first turn. A busy rejection throws at newCall.start() above,
+    // before this point, so a failed transfer leaves no marker.
+    sendMessage({
+      inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
+    });
+
+    // Cover the dead-air gap: from here until the incoming agent first speaks
+    // (or fails) the caller would otherwise hear silence while the old session
+    // tears down and the new model stack connects. The tone publishes its own
+    // room track so it survives the session swap; it is stopped on the new
+    // agent's first "speaking" state change (see wireHandoverSession), on
+    // failure (catch below), or by the player's own max-duration backstop.
+    startHandoverTone?.();
 
     agentHandoverInProgress = true;
     try {
@@ -859,6 +902,7 @@ export async function runAgentWorker({
       // air. Tear the call down cleanly rather than leaving a silent room.
       const error = e instanceof Error ? e : new Error(String(e));
       logger.error({ error }, "agent handover: restart failed; closing call");
+      stopHandoverTone?.();
       await newCall
         .end(`agent handover failed: ${error.message}`)
         .catch(() => undefined);
@@ -912,22 +956,27 @@ export async function runAgentWorker({
       includeHistory,
       summary,
     );
-    sendMessage({
-      inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
-    });
 
     if (canSwapAgentInPlace(newAgentDef)) {
       activeAgentDef = { ...newAgentDef, modelName: activeModelName };
-      return {
-        handoffAgent: new voice.Agent({
-          instructions,
-          tools: buildTools(newAgentDef),
-          ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
-        }),
-        detail: "in-place handover",
-      };
+      const handoffAgent = new voice.Agent({
+        instructions,
+        tools: buildTools(newAgentDef),
+        ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
+      });
+      // In-place swaps create no new call record, so they cannot hit the
+      // concurrency limit — the handover is committed here. Announce it only
+      // now: a failed transfer (e.g. agent not found above) must leave no
+      // "Call transferred" marker in the transcript.
+      sendMessage({
+        inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
+      });
+      return { handoffAgent, detail: "in-place handover" };
     }
 
+    // The full-stack restart announces the handover itself, once the
+    // continuation call's concurrency slot has been reserved (a busy rejection
+    // throws before that point, leaving the outgoing agent intact).
     await restartWithAgent(newAgentDef, instructions);
     return { detail: "full agent-stack handover with new call record" };
   };
@@ -995,6 +1044,10 @@ export async function runAgentWorker({
         session = builtSession;
         modelRef(model);
         sessionRef(session);
+        // The handlers below are wired to this first session instance; after a
+        // full-stack handover replaces `session`, their late events must be
+        // ignored (see isStaleSession).
+        const setupSession = builtSession;
 
         // Listen on all the things for now (debug)
         Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
@@ -1015,6 +1068,7 @@ export async function runAgentWorker({
             item: { type, role, content },
             createdAt,
           }: voice.ConversationItemAddedEvent) => {
+            if (isStaleSession(setupSession)) return;
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
               if (role !== "user" || text !== initialUserTranscriptToSkip) {
@@ -1036,6 +1090,7 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,
           async (ev: voice.AgentStateChangedEvent) => {
+            if (isStaleSession(setupSession)) return;
             logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
@@ -1135,6 +1190,18 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
+            if (isStaleSession(setupSession)) {
+              // This (now superseded) session was replaced by a full-stack
+              // handover and has closed late — possibly seconds after the new
+              // agent went live, because an abandoned Ultravox close() finally
+              // resolved. The replacement session owns the room and call; doing
+              // teardown here would kill the live caller's continuation call.
+              logger.info(
+                { ev },
+                "superseded session closed after handover; teardown suppressed",
+              );
+              return;
+            }
             if (agentHandoverInProgress) {
               // A full agent-stack handover is intentionally closing this
               // session; the replacement session owns the room and call now.
