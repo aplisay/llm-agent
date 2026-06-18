@@ -1,6 +1,7 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
 
 let log;
 
@@ -21,6 +22,12 @@ function agentWhere(req, res) {
 
 const agentGet = async (req, res) => {
   let { agentId } = req.params;
+  if (isBuiltinAgentId(agentId)) {
+    const builtin = renderBuiltinAgent(agentId, res.locals.user);
+    return builtin
+      ? res.send(builtin)
+      : res.status(404).send({ error: `Agent with ID ${agentId} not found` });
+  }
   try {
     let agent = await Agent.findOne({
       where: agentWhere(req, res),
@@ -138,6 +145,9 @@ const agentUpdate = async (req, res) => {
   let { name, description, prompt, options, functions, mcpServers, keys, modelName, type } = req.body;
   let { agentId } = req.params;
 
+  if (isBuiltinAgentId(agentId)) {
+    return res.status(403).send({ message: `Agent ${agentId} is a read-only built-in and cannot be modified` });
+  }
   try {
     let agent = await Agent.findOne({ where: agentWhere(req, res) });
     if (!agent) {
@@ -276,6 +286,9 @@ agentUpdate.apiDoc = {
 
 const agentDelete = async (req, res) => {
   let { agentId } = req.params;
+  if (isBuiltinAgentId(agentId)) {
+    return res.status(403).send({ message: `Agent ${agentId} is a read-only built-in and cannot be deleted` });
+  }
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
     let data = await Agent.destroy({
