@@ -33,69 +33,79 @@ describe('isPlausibleSipHost', () => {
   });
 });
 
-describe('validatePhoneRegistration — registrar OR proxy must be a routable FQDN', () => {
-  test('FQDN registrar with no proxy is valid (existing behaviour)', () => {
+describe('validatePhoneRegistration — registrar OR options.register_proxy must be routable', () => {
+  test('FQDN registrar with no register_proxy is valid (existing behaviour)', () => {
     const r = validatePhoneRegistration({ ...base, registrar: 'provider.example.com:5060' });
     expect(r.isValid).toBe(true);
     expect(r.errors).toEqual([]);
   });
 
-  test('non-FQDN registrar with no proxy is rejected (existing behaviour)', () => {
+  test('non-FQDN registrar with no register_proxy is rejected (existing behaviour)', () => {
     const r = validatePhoneRegistration({ ...base, registrar: 'pbx-internal' });
     expect(r.isValid).toBe(false);
-    expect(r.errors.some((e) => /registrar/.test(e))).toBe(true);
+    expect(r.errors.some((e) => /register_proxy/.test(e))).toBe(true);
   });
 
-  test('non-FQDN registrar is ACCEPTED when a routable proxy is supplied', () => {
+  test('non-FQDN registrar is ACCEPTED when a routable register_proxy is supplied', () => {
     const r = validatePhoneRegistration({
       ...base,
       registrar: 'pbx-internal',
-      options: { proxy: 'proxy.provider.example.com:5060' },
+      options: { register_proxy: 'proxy.provider.example.com:5060' },
     });
     expect(r.isValid).toBe(true);
     expect(r.errors).toEqual([]);
   });
 
-  test('FQDN registrar with a (redundant) routable proxy is valid', () => {
+  test("the user's payload: registrar 'nathan' + sip: register_proxy is accepted", () => {
+    const r = validatePhoneRegistration({
+      ...base,
+      registrar: 'nathan',
+      options: { transport: 'tls', register: true, register_proxy: 'sip:proxy.example.com:5060', realm: '' },
+    });
+    expect(r.isValid).toBe(true);
+    expect(r.errors).toEqual([]);
+  });
+
+  test('FQDN registrar with a (redundant) routable register_proxy is valid', () => {
     const r = validatePhoneRegistration({
       ...base,
       registrar: 'provider.example.com',
-      options: { proxy: '203.0.113.10' },
+      options: { register_proxy: '203.0.113.10' },
     });
     expect(r.isValid).toBe(true);
   });
 
-  test('rejected when NEITHER registrar nor proxy is routable', () => {
+  test('rejected when NEITHER registrar nor register_proxy is routable', () => {
     const r = validatePhoneRegistration({
       ...base,
       registrar: 'pbx-internal',
-      options: { proxy: 'also-not-fqdn' },
+      options: { register_proxy: 'also-not-fqdn' },
     });
     expect(r.isValid).toBe(false);
-    expect(r.errors.some((e) => /options\.proxy/.test(e))).toBe(true);
+    expect(r.errors.some((e) => /register_proxy/.test(e))).toBe(true);
   });
 
-  test('rejected when proxy is a private IP (not internet-routable)', () => {
+  test('rejected when register_proxy is a private IP (not internet-routable)', () => {
     const r = validatePhoneRegistration({
       ...base,
       registrar: 'pbx-internal',
-      options: { proxy: '192.168.1.10' },
+      options: { register_proxy: '192.168.1.10' },
     });
     expect(r.isValid).toBe(false);
-    expect(r.errors.some((e) => /options\.proxy/.test(e))).toBe(true);
+    expect(r.errors.some((e) => /register_proxy/.test(e))).toBe(true);
   });
 
-  test('registrar with XML-breaking characters is rejected even with a valid proxy', () => {
+  test('registrar with XML-breaking characters is rejected even with a valid register_proxy', () => {
     const r = validatePhoneRegistration({
       ...base,
       registrar: 'bad"/><x',
-      options: { proxy: 'proxy.example.com' },
+      options: { register_proxy: 'proxy.example.com' },
     });
     expect(r.isValid).toBe(false);
   });
 
   test('missing registrar is always rejected', () => {
-    const r = validatePhoneRegistration({ ...base, options: { proxy: 'proxy.example.com' } });
+    const r = validatePhoneRegistration({ ...base, options: { register_proxy: 'proxy.example.com' } });
     expect(r.isValid).toBe(false);
     expect(r.errors.some((e) => /registrar/.test(e))).toBe(true);
   });
