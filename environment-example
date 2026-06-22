@@ -14,3 +14,24 @@ SHARED_API_TOKEN=your_secure_shared_token_here
 
 # Base URI for the main LLM agent API service
 SERVICE_BASE_URI=http://localhost:5000/api
+
+# ── Better-Auth (parallel to Firebase — Phase 0 WIP) ────────────────────────
+# Off by default: when unset/!= "true" the better-auth package is never loaded
+# and auth behaves exactly as before (Firebase + AuthKey + instance + shared).
+BETTER_AUTH_ENABLED=true
+# Random 32+ char secret: `openssl rand -base64 32`
+BETTER_AUTH_SECRET=<RANDOM SECRET>
+# Public base URL of THIS api service (used to build OAuth callback URLs)
+BETTER_AUTH_URL=http://localhost:4000
+# Comma-separated SPA origins allowed to call the auth endpoints
+BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:3000
+# Mirror Firebase's verified-email gate (default false for easy WIP testing)
+BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=false
+# Google OAuth (server-side) — create credentials with redirect URI
+#   <BETTER_AUTH_URL>/api/auth/callback/google
+BETTER_AUTH_GOOGLE_CLIENT_ID=<GOOGLE OAUTH CLIENT ID>
+BETTER_AUTH_GOOGLE_CLIENT_SECRET=<GOOGLE OAUTH CLIENT SECRET>
+#
+# Better-Auth owns its satellite tables (session/account/verification); create
+# them once against this DB with:  npx @better-auth/cli@latest migrate
+# The shared `users` table stays Sequelize-owned (do NOT let the CLI alter it).

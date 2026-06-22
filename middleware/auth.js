@@ -2,6 +2,8 @@ import { initializeApp, applicationDefault } from 'firebase-admin/app';
 import { Instance, User, AuthKey } from '../lib/database.js';
 import { scopeWhereForUser } from '../lib/scope.js';
 import * as firebase from 'firebase-admin/auth';
+import { auth as betterAuth } from '../lib/auth/index.js';
+import { fromNodeHeaders } from 'better-auth/node';
 
 function init(app, logger) {
 
@@ -22,6 +24,7 @@ function init(app, logger) {
       req.method === 'OPTIONS'
       || req.originalUrl.startsWith('/api/api-docs') 
       || req.originalUrl.startsWith('/api/hooks')
+      || req.originalUrl.startsWith('/api/auth')
      ) {
       next();
       return;
@@ -89,17 +92,42 @@ function init(app, logger) {
             next();
           }
           else {
-            let user = await firebase
-              .getAuth()
-              .verifyIdToken(token);
-            req.log.debug({ user, token }, 'firebase auth');
-            if (user) {
-              res.locals.user = await User.import({ ...user, id: user.user_id });
+            // Better-Auth session (parallel to Firebase). The session token is
+            // carried as a Bearer token via the bearer plugin; getSession returns
+            // null for a non-Better-Auth token (e.g. a Firebase JWT), so we fall
+            // through to Firebase verification below.
+            let baUser = null;
+            if (betterAuth) {
+              try {
+                const session = await betterAuth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+                baUser = session?.user || null;
+              }
+              catch (e) {
+                req.log.debug({ e: e.message }, 'not a better-auth session');
+              }
+            }
+            if (baUser) {
+              // Unified table: the Better-Auth user row IS our app `users` row.
+              // Load the Sequelize instance for parity with the other principals
+              // (so scoping + any model behaviour work identically).
+              res.locals.user = await User.findByPk(baUser.id) || baUser;
+              res.locals.userAuth = true;
               res.locals.user.sql = { where: scopeWhereForUser(res.locals.user) };
               next();
             }
             else {
-              throw new Error('firebase auth error');
+              let user = await firebase
+                .getAuth()
+                .verifyIdToken(token);
+              req.log.debug({ user, token }, 'firebase auth');
+              if (user) {
+                res.locals.user = await User.import({ ...user, id: user.user_id });
+                res.locals.user.sql = { where: scopeWhereForUser(res.locals.user) };
+                next();
+              }
+              else {
+                throw new Error('firebase auth error');
+              }
             }
           }
         }

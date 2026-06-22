@@ -32,6 +32,7 @@
     "@livekit/rtc-node": "^0.13.12",
     "async-mutex": "^0.4.1",
     "axios": "^1.9.0",
+    "better-auth": "^1.6.20",
     "command-line-args": "^6.0.1",
     "config": "^3.3.12",
     "cors": "^2.8.5",
