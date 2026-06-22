@@ -1338,8 +1338,8 @@ components:
       description: |-
         SIP contact URI for phone registration endpoints. This is the SIP account
         identity (it is used as the SIP realm / from-domain). It must be a routable
-        FQDN or public IP unless a routable `options.proxy` is supplied, in which
-        case the registrar may be a non-FQDN host (e.g. an internal PBX name).
+        FQDN or public IP unless a routable `options.register_proxy` is supplied, in
+        which case the registrar may be a non-FQDN host (e.g. an internal PBX name).
       pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
       example: sip.example.com:5060
     PhoneRegistrationOptions:
@@ -1354,26 +1354,21 @@ components:
             - tls
           default: tls
           description: Transport protocol for SIP registration
-        proxy:
-          type: string
-          description: |-
-            Optional routable next hop (outbound proxy) for this registration. When set,
-            SIP REGISTER and calls are sent to this host (which must be a routable FQDN or
-            public IP) instead of the registrar, and the registrar is used only as the SIP
-            realm / from-domain. Use this when the SIP provider's registrar is a non-FQDN
-            host but reachability is via a separate internet-reachable proxy.
-          example: proxy.provider.example.com:5060
         register_proxy:
           type: string
           description: |-
-            Optional override for the SIP REGISTER next hop only. Defaults to `proxy` (when
-            set) or the registrar. Most deployments should use `proxy` instead.
-          example: register.provider.example.com:5060
+            Optional routable next hop (outbound proxy / SBC) for this registration. When the
+            registrar is a non-FQDN host, set this to the reachable host (which must be a
+            routable FQDN or public IP): SIP REGISTER and calls are sent here while the
+            registrar is used only as the SIP realm / from-domain. Use this for SIP providers
+            whose registrar is a non-FQDN host but whose proxy is internet-reachable.
+          example: proxy.provider.example.com:5060
         realm:
           type: string
           description: |-
-            Optional SIP realm. Defaults to the registrar host when a separate `proxy` is
-            configured, otherwise left to the gateway default.
+            Optional SIP realm. Defaults to the registrar host when the registrar is a
+            non-FQDN host (and `register_proxy` carries reachability), otherwise left to the
+            gateway default.
           example: provider.example.com
         auth_username:
           type: string

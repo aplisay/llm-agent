@@ -925,17 +925,17 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should ACCEPT a non-FQDN registrar when a routable proxy is supplied in options', async () => {
+    test('should ACCEPT a non-FQDN registrar when a routable register_proxy is supplied in options', async () => {
       const { PhoneRegistration } = models;
       const req = createMockRequest({
         body: {
           type: 'phone-registration',
-          name: 'Non-FQDN registrar via proxy',
-          registrar: 'pbx-internal',
-          username: 'acct42',
+          name: 'no domain',
+          registrar: 'nathan',
+          username: 'fred',
           password: 'testpass',
           handler: 'livekit',
-          options: { transport: 'tls', proxy: 'proxy.provider.example.com:5060' }
+          options: { transport: 'tls', register: true, register_proxy: 'sip:proxy.example.com:5060', realm: '' }
         },
         headers: {}
       });
@@ -948,15 +948,15 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body?.success).toBe(true);
       expect(res._body?.id).toBeTruthy();
 
-      // The proxy is persisted in options so the b2bua can route to it.
+      // The register_proxy is persisted in options so the b2bua can route to it.
       const created = await PhoneRegistration.findByPk(res._body.id);
-      expect(created.registrar).toBe('pbx-internal');
-      expect(created.options?.proxy).toBe('proxy.provider.example.com:5060');
+      expect(created.registrar).toBe('nathan');
+      expect(created.options?.register_proxy).toBe('sip:proxy.example.com:5060');
 
       await created.destroy();
     });
 
-    test('should return 400 when neither registrar nor proxy is a routable FQDN', async () => {
+    test('should return 400 when neither registrar nor register_proxy is a routable FQDN', async () => {
       const req = createMockRequest({
         body: {
           type: 'phone-registration',
@@ -965,7 +965,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           username: 'acct42',
           password: 'testpass',
           handler: 'livekit',
-          options: { proxy: 'also-not-fqdn' }
+          options: { register_proxy: 'also-not-fqdn' }
         },
         headers: {}
       });
@@ -976,7 +976,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       expect(res._status).toBe(400);
       expect(res._body).toHaveProperty('error');
-      expect(res._body.details.some((d) => /options\.proxy/.test(d))).toBe(true);
+      expect(res._body.details.some((d) => /register_proxy/.test(d))).toBe(true);
     });
 
     test('should return 400 for non-existent trunk', async () => {

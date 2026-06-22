@@ -1,5 +1,5 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164, validateSipUri, isPlausibleSipHost } from '../../../lib/validation.js';
+import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy } from '../../../lib/validation.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
 
@@ -261,24 +261,21 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // validate credentials if provided. The registrar may be a non-FQDN host
-      // when a routable proxy carries reachability — mirror the create rule
-      // (see validatePhoneRegistration). The effective proxy is the one in the
-      // incoming options (a full replace) if options is being updated, otherwise
-      // the proxy already stored on the registration.
+      // when a routable register_proxy carries reachability — mirror the create
+      // rule (see validatePhoneRegistration). The effective options are the
+      // incoming ones (a full replace) when options is being updated, otherwise
+      // those already stored on the registration.
       const effectiveOptions = updateFields.options !== undefined ? updateFields.options : registration.options;
-      const effectiveProxy = effectiveOptions?.proxy;
-      const hasProxy = typeof effectiveProxy === 'string' && effectiveProxy.trim().length > 0;
-
-      if (updateFields.options !== undefined && typeof effectiveProxy === 'string' && effectiveProxy.trim() && !validateSipUri(effectiveProxy)) {
-        return res.status(400).send({ error: 'options.proxy must be a valid SIP contact URI (a routable FQDN or public IP)' });
-      }
+      const registerProxyRoutable = hasRoutableRegisterProxy(effectiveOptions);
       if (updateFields.registrar !== undefined) {
-        if (hasProxy) {
+        if (validateSipUri(updateFields.registrar)) {
+          // routable registrar — fine
+        } else if (registerProxyRoutable) {
           if (!isPlausibleSipHost(updateFields.registrar)) {
             return res.status(400).send({ error: 'registrar must be a valid SIP host' });
           }
-        } else if (!validateSipUri(updateFields.registrar)) {
-          return res.status(400).send({ error: 'registrar must be a valid SIP contact URI, or options.proxy must be set to a routable FQDN or public IP' });
+        } else {
+          return res.status(400).send({ error: 'registrar must be a valid SIP contact URI, or options.register_proxy must be set to a routable FQDN or public IP' });
         }
       }
 
