@@ -811,7 +811,10 @@ async def _build_realtime(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    task = PipelineTask(pipeline, params=PipelineParams())
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+    )
     # Inactivity "kick": speak options.inactivity.message after a silent
     # window. Inert unless options.inactivity is configured (the user
     # aggregator's user_idle_timeout stays 0 otherwise). Ultravox needs the
@@ -968,7 +971,10 @@ async def _build_pipeline(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    task = PipelineTask(pipeline, params=PipelineParams())
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+    )
     # Inactivity "kick" — pipeline mode pushes the literal phrase straight to
     # TTS. Inert unless options.inactivity is configured.
     _wire_inactivity_kick(

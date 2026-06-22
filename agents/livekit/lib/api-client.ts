@@ -755,6 +755,36 @@ export async function saveInvocationLog(payload: InvocationLogPayload): Promise<
   });
 }
 
+// One metered unit reading for the platform usage ledger.
+export interface UsageRecordPayload {
+  sessionId?: string;
+  callId?: string;
+  organisationId?: string;
+  userId?: string;
+  agentId?: string;
+  technology: string;
+  provider?: string;
+  detail?: string;
+  unit: string;
+  quantity: number;
+  finalised?: boolean;
+  mode?: 'set' | 'increment';
+  metadata?: any;
+}
+
+// Post one or more usage meters (LLM tokens, TTS characters, STT audio, …) to
+// the platform usage ledger (POST /api/agent-db/usage). Accepts a single record
+// or an array; never throws fatally for the caller (errors are logged upstream).
+export async function saveUsage(
+  records: UsageRecordPayload | UsageRecordPayload[],
+): Promise<any> {
+  const body = Array.isArray(records) ? { records } : records;
+  return makeApiRequest('/api/agent-db/usage', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 
 
 export { getApiBaseUrl, makeApiRequest };

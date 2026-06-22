@@ -413,6 +413,14 @@ class CallSession:
             TranscriptForwardingObserver(self._send_message, mode=mode)
         )
 
+        # Meter LLM token + TTS character usage into the platform usage ledger.
+        # Flushed (finalised) from _end(); requires the pipeline's usage metrics
+        # to be enabled (see voice_session.py PipelineParams).
+        from .usage import UsageMeteringObserver
+
+        self._usage_observer = UsageMeteringObserver()
+        task.add_observer(self._usage_observer)
+
         # Wire client-disconnect to PipelineTask.cancel(). Without this, the
         # SmallWebRTCTransport tries to auto-reconnect for up to 3 attempts
         # before giving up — meaning the agent session stays alive on the
@@ -1796,6 +1804,14 @@ class CallSession:
     # ---- Lifecycle ----
 
     async def _end(self, reason: str) -> None:
+        # Flush accumulated token/character usage to the ledger before ending
+        # the call so it lands as the finalised session total (best-effort).
+        usage_observer = getattr(self, "_usage_observer", None)
+        if usage_observer is not None:
+            try:
+                await usage_observer.flush(self.call, finalised=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"usage flush failed: {e}")
         try:
             await api_client.end_call(self.call, reason=reason)
         except Exception as e:  # noqa: BLE001

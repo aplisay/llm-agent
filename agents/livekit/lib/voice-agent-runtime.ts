@@ -9,6 +9,7 @@ import {
   createCall,
   setCallRecordingData,
   saveInvocationLog,
+  saveUsage,
   getInternalAgentById,
 } from "./api-client.js";
 import type { Agent, Call } from "./api-client.js";
@@ -442,6 +443,96 @@ export async function runAgentWorker({
     );
   }
 
+  // ---- Usage metering ----
+  // Accumulate token / character / audio-duration counts emitted by the LiveKit
+  // metrics pipeline and flush them to the platform usage ledger
+  // (POST /api/agent-db/usage). Keyed per (technology, component label) so each
+  // model/vendor meters separately; flushed with mode "set" so a re-flush is
+  // idempotent. Shared across the main session and any post-handover sessions.
+  const usageMeters = new Map<
+    string,
+    { technology: string; provider?: string; detail?: string; units: Record<string, number> }
+  >();
+  const addMeter = (
+    technology: string,
+    label: string | undefined,
+    unit: string,
+    quantity: number | undefined,
+  ): void => {
+    if (!quantity || quantity <= 0) return;
+    const detail = label || modelName;
+    // Derive a coarse vendor from a "vendor.Component" / "vendor/model" label.
+    const provider = label ? label.split(/[./]/)[0] || undefined : undefined;
+    const key = `${technology}|${detail}`;
+    const meter = usageMeters.get(key) || { technology, provider, detail, units: {} };
+    meter.units[unit] = (meter.units[unit] || 0) + quantity;
+    usageMeters.set(key, meter);
+  };
+  const onMetrics = (m: any): void => {
+    try {
+      switch (m?.type) {
+        case "llm_metrics":
+          addMeter("llm", m.label, "input_tokens", m.promptTokens);
+          addMeter("llm", m.label, "output_tokens", m.completionTokens);
+          addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
+          break;
+        case "realtime_model_metrics":
+          addMeter("llm", m.label, "input_tokens", m.inputTokens);
+          addMeter("llm", m.label, "output_tokens", m.outputTokens);
+          addMeter("llm", m.label, "cache_read_tokens", m.inputTokenDetails?.cachedTokens);
+          break;
+        case "tts_metrics":
+          addMeter("tts", m.label, "characters", m.charactersCount);
+          addMeter("tts", m.label, "milliseconds", m.audioDurationMs);
+          break;
+        case "stt_metrics":
+          addMeter("stt", m.label, "milliseconds", m.audioDurationMs);
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      logger.debug({ e }, "usage metrics accumulation failed");
+    }
+  };
+  const wireUsageMetrics = (s: voice.AgentSession): void => {
+    s.on(voice.AgentSessionEventTypes.MetricsCollected, (ev: any) => {
+      if (isStaleSession(s)) return;
+      onMetrics(ev?.metrics);
+    });
+  };
+  const flushUsage = async (finalised: boolean): Promise<void> => {
+    try {
+      const c: any = getActiveCall();
+      if (!c?.id) return;
+      const records: any[] = [];
+      for (const meter of usageMeters.values()) {
+        for (const [unit, quantity] of Object.entries(meter.units)) {
+          if (!quantity) continue;
+          records.push({
+            sessionId: c.id,
+            callId: c.id,
+            organisationId: c.organisationId,
+            userId: c.userId,
+            agentId: c.agentId,
+            technology: meter.technology,
+            provider: meter.provider,
+            detail: meter.detail,
+            unit,
+            quantity,
+            mode: "set",
+            finalised,
+          });
+        }
+      }
+      if (records.length) {
+        await saveUsage(records);
+      }
+    } catch (e) {
+      logger.warn({ e }, "failed to flush usage to ledger");
+    }
+  };
+
   const cleanupAndClose = async (
     reason: string,
     logEndCall: boolean = false,
@@ -509,6 +600,10 @@ export async function runAgentWorker({
         dtmfBuffer = "";
       }
 
+
+      // Flush accumulated usage (tokens / characters / audio) to the ledger
+      // before ending the call so it lands as the finalised session total.
+      await flushUsage(true);
 
       await getActiveCall()
         .end(reason)
@@ -705,6 +800,8 @@ export async function runAgentWorker({
     s.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
       logger.error({ ev }, "error (handover session)");
     });
+    // Keep metering the post-handover session into the same usage accumulator.
+    wireUsageMetrics(s);
     s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
       if (isStaleSession(s)) {
         logger.info(
@@ -1060,6 +1157,9 @@ export async function runAgentWorker({
             },
           );
         });
+
+        // Accumulate usage metrics (LLM tokens, TTS characters, STT audio) for billing.
+        wireUsageMetrics(setupSession);
 
         // Listen on the user input transcribed event
         session.on(

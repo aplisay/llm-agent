@@ -48,7 +48,7 @@ else if (command === 'upgrade-db') {
 
 async function main() {
 
-  const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize } = (await import('../lib/database.js'));
+  const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize, UsageRecord } = (await import('../lib/database.js'));
   await databaseStarted;
   started = stopDatabase;
   try {
@@ -401,6 +401,49 @@ async function main() {
           console.log('--------------------------------');
           console.log(`dropped ${data.length - cdrs.length} calls with no duration`);
           console.log(`corrected ${corrected} calls where billingDuration > requested maxDuration`);
+
+          // ---- Usage ledger (tokens / characters / minutes / invocations) ----
+          // Summarise the broad usage ledger for the same period and principal.
+          //  Unlike the minute summary above (derived from Call rows), this reads
+          //  the usage_records table populated by all runtimes.
+          try {
+            const usageWhere = {
+              createdAt: { [Op.gte]: new Date(options.start), [Op.lte]: new Date(options.end) }
+            };
+            if (options.orgId) usageWhere.organisationId = options.orgId;
+            if (options.userId) usageWhere.userId = options.userId;
+            if (options.email) {
+              const users = await User.findAll({ where: { email: { [Op.iLike]: options.email } }, attributes: ['id'] });
+              usageWhere.userId = { [Op.in]: users.map(u => u.id) };
+            }
+            if (options.orgName) {
+              const orgs = await Organisation.findAll({ where: { name: { [Op.iLike]: `%${options.orgName}%` } }, attributes: ['id'] });
+              usageWhere.organisationId = { [Op.in]: orgs.map(o => o.id) };
+            }
+            const ledger = await UsageRecord.findAll({
+              attributes: [
+                'technology', 'provider', 'detail', 'unit',
+                [Sequelize.fn('SUM', Sequelize.col('quantity')), 'quantity'],
+                [Sequelize.fn('COUNT', Sequelize.col('id')), 'meters'],
+              ],
+              where: usageWhere,
+              group: ['technology', 'provider', 'detail', 'unit'],
+              order: [['technology', 'ASC'], ['provider', 'ASC'], ['detail', 'ASC'], ['unit', 'ASC']],
+              raw: true,
+            });
+            console.log('--------------------------------');
+            console.log('Usage ledger (tokens / characters / minutes):');
+            if (!ledger.length) {
+              console.log('  (no usage rows for this period)');
+            } else {
+              ledger.forEach(r => {
+                console.log(`  ${r.technology} | ${r.provider || '-'} | ${r.detail || '-'} | ${r.unit}: ${Number(r.quantity)} (${Number(r.meters)} meters)`);
+              });
+            }
+          } catch (ledgerErr) {
+            logger.error(ledgerErr, 'usage ledger query error');
+          }
+
           exit(0);
         } catch (err) {
           logger.error(err, 'query error');
