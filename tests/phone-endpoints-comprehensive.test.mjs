@@ -925,6 +925,60 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
+    test('should ACCEPT a non-FQDN registrar when a routable proxy is supplied in options', async () => {
+      const { PhoneRegistration } = models;
+      const req = createMockRequest({
+        body: {
+          type: 'phone-registration',
+          name: 'Non-FQDN registrar via proxy',
+          registrar: 'pbx-internal',
+          username: 'acct42',
+          password: 'testpass',
+          handler: 'livekit',
+          options: { transport: 'tls', proxy: 'proxy.provider.example.com:5060' }
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(201);
+      expect(res._body?.success).toBe(true);
+      expect(res._body?.id).toBeTruthy();
+
+      // The proxy is persisted in options so the b2bua can route to it.
+      const created = await PhoneRegistration.findByPk(res._body.id);
+      expect(created.registrar).toBe('pbx-internal');
+      expect(created.options?.proxy).toBe('proxy.provider.example.com:5060');
+
+      await created.destroy();
+    });
+
+    test('should return 400 when neither registrar nor proxy is a routable FQDN', async () => {
+      const req = createMockRequest({
+        body: {
+          type: 'phone-registration',
+          name: 'Both non-FQDN',
+          registrar: 'pbx-internal',
+          username: 'acct42',
+          password: 'testpass',
+          handler: 'livekit',
+          options: { proxy: 'also-not-fqdn' }
+        },
+        headers: {}
+      });
+      const res = createMockResponse();
+      res.locals.user = { organisationId: testOrgId };
+
+      await createPhoneEndpoint(req, res);
+
+      expect(res._status).toBe(400);
+      expect(res._body).toHaveProperty('error');
+      expect(res._body.details.some((d) => /options\.proxy/.test(d))).toBe(true);
+    });
+
     test('should return 400 for non-existent trunk', async () => {
       const req = createMockRequest({
         body: {
