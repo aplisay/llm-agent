@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import { Agent } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { runSubagent, SubagentError } from '../../../../lib/subagent.js';
+import { recordSubagentUsage } from '../../../../lib/usage.js';
 
 let log;
 
@@ -30,11 +32,21 @@ const agentInvoke = async (req, res) => {
       timer = setTimeout(() => reject(new SubagentError(`Subagent invocation timed out after ${SUBAGENT_TIMEOUT}ms`, 504)), SUBAGENT_TIMEOUT);
     });
     try {
-      const { result, complete, transcript } = await Promise.race([
+      const { result, complete, transcript, usage } = await Promise.race([
         runSubagent({ agent, input, metadata, logger: req.log }),
         timeout
       ]);
       res.send({ result, complete, transcript });
+      // Record token usage for this one-shot invocation (best-effort; never
+      //  blocks the response and never throws).
+      recordSubagentUsage({
+        sessionId: crypto.randomUUID(),
+        organisationId: res.locals.user?.organisationId || null,
+        userId: res.locals.user?.id || null,
+        usage,
+        finalised: true,
+        log: req.log,
+      });
     } finally {
       clearTimeout(timer);
     }

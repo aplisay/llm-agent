@@ -330,6 +330,13 @@ async def save_invocation_log(payload: dict) -> None:
     await _request("POST", "/api/agent-db/invocation-log", body=payload)
 
 
+async def save_usage(records: Any) -> None:
+    """Post one or more usage meters (LLM tokens, TTS characters, STT audio, …)
+    to the platform usage ledger. Accepts a single record dict or a list."""
+    body = {"records": records} if isinstance(records, list) else records
+    await _request("POST", "/api/agent-db/usage", body=body)
+
+
 # ---- Recording metadata ----
 
 

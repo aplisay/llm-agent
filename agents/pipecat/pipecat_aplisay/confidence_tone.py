@@ -66,6 +66,11 @@ _CHUNK_SECS = 0.02
 # Fallback when no bot audio has been seen yet (telephony-standard 16 kHz,
 # the rate every SIP gateway transport here runs at).
 _DEFAULT_SAMPLE_RATE = 16000
+# Backstop for handover mode: a full-stack agent handover normally completes
+# (incoming agent's first BotStartedSpeakingFrame) within a few seconds. If
+# the new agent never speaks — a stuck/failed continuation — cap the comfort
+# tone so the caller isn't beeped at indefinitely.
+_HANDOVER_MAX_SECS = 25.0
 
 
 # The public ``options.transferTone`` interface is deliberately coarse — the
@@ -167,6 +172,12 @@ class ConfidenceToneInjector(FrameProcessor):
         # Returns the owning CallSession's TransferState (``.state`` str).
         self._get_transfer_state = get_transfer_state
         self._mode: Optional[str] = None  # None | "blind" | "consult"
+        # True while covering a full-stack agent-to-agent handover gap. In this
+        # mode play is gated only by speech grace, NOT by the transfer state
+        # machine (there is no transfer; CallSession drives start via
+        # ``arm_handover`` and the incoming agent's first speech stops it).
+        self._handover = False
+        self._handover_started_at = 0.0
         self._user_speaking = False
         self._bot_speaking = False
         # Last time either party was (still) speaking — the grace window
@@ -198,6 +209,26 @@ class ConfidenceToneInjector(FrameProcessor):
         if self._mode is not None:
             logger.bind(mode=self._mode).info("confidence tone disarmed")
         self._mode = None
+        self._handover = False
+
+    def arm_handover(self) -> None:
+        """Start the comfort tone to cover the dead-air gap of a full-stack
+        agent-to-agent handover (the outgoing agent's pipeline is torn down and
+        the incoming agent's model stack spins up — several seconds of
+        silence). Play is gated only by speech grace here; the tone stops on the
+        incoming agent's first ``BotStartedSpeakingFrame`` (see
+        :meth:`process_frame`) or the max-duration backstop. Call on the freshly
+        built injector of the continuation pipeline."""
+        self._handover = True
+        # ``_mode`` is the "armed" sentinel the generator guards check; the
+        # actual play condition is the handover branch in ``_should_play``.
+        self._mode = "blind"
+        self._cycle_pos = 0
+        self._handover_started_at = time.monotonic()
+        # Grace: the outgoing agent usually just spoke (e.g. "putting you
+        # through") before the pipeline swap.
+        self._last_voice = time.monotonic()
+        logger.info("confidence tone started for agent handover")
 
     # ---- Frame plumbing ----
 
@@ -227,6 +258,11 @@ class ConfidenceToneInjector(FrameProcessor):
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
             self._last_voice = time.monotonic()
+            if self._handover:
+                # The incoming agent has produced audio — the handover gap is
+                # over. Stop the comfort tone (the new agent is now speaking).
+                logger.info("confidence tone stopped (agent handover complete)")
+                self.disarm()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
             self._last_voice = time.monotonic()
@@ -248,22 +284,30 @@ class ConfidenceToneInjector(FrameProcessor):
     def _should_play(self) -> bool:
         if self._mode is None:
             return False
-        try:
-            state = getattr(self._get_transfer_state(), "state", None)
-        except Exception:  # noqa: BLE001
-            return False
-        if self._mode == "blind":
-            # Tone strictly while placing the transfer; leaving "dialling"
-            # (talking = media up / refer done, failed, none) ends service.
-            if state != "dialling":
+        if self._handover:
+            # Handover backstop: the incoming agent never signalled speaking.
+            if (time.monotonic() - self._handover_started_at) > _HANDOVER_MAX_SECS:
                 self.disarm()
                 return False
-        else:  # consult
-            if state in ("none", "failed", "rejected"):
-                self.disarm()
+            # Otherwise fall straight through to the speech-grace gate below:
+            # play continuously until the incoming agent first speaks.
+        else:
+            try:
+                state = getattr(self._get_transfer_state(), "state", None)
+            except Exception:  # noqa: BLE001
                 return False
-            if state not in ("dialling", "talking"):
-                return False
+            if self._mode == "blind":
+                # Tone strictly while placing the transfer; leaving "dialling"
+                # (talking = media up / refer done, failed, none) ends service.
+                if state != "dialling":
+                    self.disarm()
+                    return False
+            else:  # consult
+                if state in ("none", "failed", "rejected"):
+                    self.disarm()
+                    return False
+                if state not in ("dialling", "talking"):
+                    return False
         if self._user_speaking or self._bot_speaking:
             self._cycle_pos = 0
             return False

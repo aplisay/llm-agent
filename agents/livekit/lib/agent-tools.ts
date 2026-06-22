@@ -67,32 +67,60 @@ export function createTools({
         ...acc,
         [fnc.name]: llm.tool({
           description: fnc.description,
-          parameters: {
-            type: "object",
-            properties: Object.fromEntries(
-              Object.entries(fnc.input_schema.properties)
-                .filter(([, value]) => value.source === "generated")
-                .map(([key, value]: [string, any]) => [
+          parameters: (() => {
+            // Expose to the model exactly the parameters the function handler
+            // does NOT resolve itself. The handler injects `source: "static"`
+            // (from `from`) and `source: "metadata"` values post-dispatch; every
+            // other parameter — INCLUDING one with no `source` at all — is
+            // model-provided by convention (see function-handler.js and
+            // lib/subagent.js `llmFunctions`). The previous `=== "generated"`
+            // filter dropped no-source params, so e.g. a subagent's `question`
+            // was neither exposed here nor injected by the handler and silently
+            // vanished (Ultravox stripped the value the model still sent).
+            const exposed = Object.entries(fnc.input_schema.properties || {}).filter(
+              ([, value]: [string, any]) =>
+                value.source !== "static" && value.source !== "metadata",
+            );
+            // `required` may be a JSON-Schema top-level array or a per-property
+            // `required: true` flag — honour both, but only for exposed params.
+            const topLevelRequired: string[] = Array.isArray(
+              fnc.input_schema.required,
+            )
+              ? fnc.input_schema.required
+              : [];
+            return {
+              type: "object",
+              properties: Object.fromEntries(
+                exposed.map(([key, value]: [string, any]) => [
                   key,
                   { ...value, required: undefined },
                 ]),
-            ),
-            required:
-              Object.keys(fnc.input_schema.properties).filter(
-                (key) => fnc.input_schema.properties[key].required,
-              ) || [],
-          },
+              ),
+              required: exposed
+                .filter(
+                  ([key, value]: [string, any]) =>
+                    topLevelRequired.includes(key) || value.required,
+                )
+                .map(([key]) => key),
+            };
+          })(),
           execute: async (args: unknown) => {
             try {
               logger.debug(
                 { name: fnc.name, args, fnc },
                 `Got function call ${fnc.name}`,
               );
-              // Set when a builtin transfer_agent function fires: the handover
-              // itself happens after functionHandler returns, so the resolved
-              // (static/metadata) parameters come from the shared handler but
-              // the tool can still return an llm.handoff() to the session.
-              let pendingAgentTransfer: AgentTransferArgs | null = null;
+              // A builtin transfer_agent performs its handover INSIDE the
+              // handler below (not after functionHandler returns) so the result
+              // the shared handler records and emits — the persisted tool
+              // result and the userland transcript — is the true outcome: a
+              // busy/concurrency rejection is reported as a failure rather than
+              // an optimistic "handing the caller over". On success the resolved
+              // handover is stashed so this tool can still return llm.handoff().
+              let pendingHandoff: {
+                handoffAgent?: voice.Agent;
+                detail: string;
+              } | null = null;
               let result = (await functionHandler(
                 [{ ...fnc, input: args }],
                 functions,
@@ -113,7 +141,40 @@ export function createTools({
                   },
                   ...(onAgentTransfer && {
                     transfer_agent: async (a: AgentTransferArgs) => {
-                      pendingAgentTransfer = a;
+                      let handover: {
+                        handoffAgent?: voice.Agent;
+                        detail: string;
+                      };
+                      try {
+                        handover = await onAgentTransfer(a);
+                      } catch (e) {
+                        const message = (e as Error).message;
+                        logger.info(
+                          { error: message, args: a, callId: call.id },
+                          "transfer_agent failed",
+                        );
+                        // Return a FAILED result (don't throw) so the shared
+                        // handler records the failure as THIS tool's result:
+                        // the handover never happened, so the caller must not
+                        // be told it succeeded. Shape matches the pipecat
+                        // transfer handler and the documented contract, so a
+                        // failed handover looks identical across platforms.
+                        return {
+                          status: "FAILED",
+                          error: `could not transfer to the requested agent: ${message}`,
+                          reason: message,
+                        };
+                      }
+                      pendingHandoff = handover;
+                      logger.info(
+                        {
+                          from: agent.id,
+                          to: a.agent,
+                          callId: call.id,
+                          mode: handover.detail,
+                        },
+                        "transfer_agent: handing session to new agent",
+                      );
                       return {
                         status: "OK",
                         detail: "handing the caller over to the new agent",
@@ -143,35 +204,15 @@ export function createTools({
                   "error executing function",
                 );
               }
-              if (pendingAgentTransfer && onAgentTransfer) {
-                try {
-                  const handover = await onAgentTransfer(pendingAgentTransfer);
-                  logger.info(
-                    {
-                      from: agent.id,
-                      to: (pendingAgentTransfer as AgentTransferArgs).agent,
-                      callId: call.id,
-                      mode: handover.detail,
-                    },
-                    "transfer_agent: handing session to new agent",
-                  );
-                  if (handover.handoffAgent) {
-                    return llm.handoff({
-                      agent: handover.handoffAgent,
-                      returns: data,
-                    });
-                  }
-                  // Full-stack handover: the outgoing session is already being
-                  // replaced; this result has no LLM left to speak it.
-                  return data;
-                } catch (e) {
-                  const message = (e as Error).message;
-                  logger.info(
-                    { error: message, args: pendingAgentTransfer },
-                    "transfer_agent failed",
-                  );
-                  return `FAILED - could not transfer to the requested agent: ${message}`;
+              if (pendingHandoff) {
+                const { handoffAgent } = pendingHandoff;
+                if (handoffAgent) {
+                  // In-place swap: hand the live session to the new agent.
+                  return llm.handoff({ agent: handoffAgent, returns: data });
                 }
+                // Full-stack handover: the outgoing session is already being
+                // replaced; this result has no LLM left to speak it.
+                return data;
               }
               logger.debug(
                 { data },

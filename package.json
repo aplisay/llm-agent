@@ -23,7 +23,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.20.9",
+    "@anthropic-ai/sdk": "^0.104.2",
     "@deepgram/sdk": "^3.13.0",
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
     "@google-cloud/text-to-speech": "^4.2.3",

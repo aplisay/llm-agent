@@ -333,6 +333,9 @@ export interface AgentFunction {
       required?: boolean;
       [key: string]: any;
     }>;
+    // JSON-Schema style top-level required list (the set builder emits this;
+    // some definitions instead set `required: true` on each property).
+    required?: string[];
   };
 }
 
@@ -492,10 +495,14 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
         body = { raw: errorText };
       }
 
+      // Include the server's error detail in the message so callers (and the
+      // agent/diagnosis loop that surfaces this as a function result) see the
+      // real cause, not just a generic "500 Internal Server Error".
+      const detail = body?.error || body?.message || body?.raw;
       throw new ApiRequestError(
         response.status,
         body,
-        `API request failed: ${response.status} ${response.statusText}`,
+        `API request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
       );
     }
 
@@ -745,6 +752,36 @@ export async function saveInvocationLog(payload: InvocationLogPayload): Promise<
   return makeApiRequest('/api/agent-db/invocation-log', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+// One metered unit reading for the platform usage ledger.
+export interface UsageRecordPayload {
+  sessionId?: string;
+  callId?: string;
+  organisationId?: string;
+  userId?: string;
+  agentId?: string;
+  technology: string;
+  provider?: string;
+  detail?: string;
+  unit: string;
+  quantity: number;
+  finalised?: boolean;
+  mode?: 'set' | 'increment';
+  metadata?: any;
+}
+
+// Post one or more usage meters (LLM tokens, TTS characters, STT audio, …) to
+// the platform usage ledger (POST /api/agent-db/usage). Accepts a single record
+// or an array; never throws fatally for the caller (errors are logged upstream).
+export async function saveUsage(
+  records: UsageRecordPayload | UsageRecordPayload[],
+): Promise<any> {
+  const body = Array.isArray(records) ? { records } : records;
+  return makeApiRequest('/api/agent-db/usage', {
+    method: 'POST',
+    body: JSON.stringify(body),
   });
 }
 

@@ -1,6 +1,7 @@
 import { Agent, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
+import { listBuiltinAgentSummaries } from '../../lib/builtin-agents.js';
 
 let appParameters, log;
 
@@ -211,7 +212,19 @@ const agentList = (async (req, res) => {
     });
 
     const next = count > startOffset + agents.length ? startOffset + size : false;
-    return res.send({ agents, next });
+    // Read-only built-in agents (available to every tenant) sit at the top of the first page.
+    const builtins = startOffset === 0
+      ? listBuiltinAgentSummaries().filter((b) => {
+        if (!searchRaw) return true;
+        const p = searchRaw.toLowerCase();
+        const inName = (b.name || '').toLowerCase().includes(p);
+        const inModel = (b.modelName || '').toLowerCase().includes(p);
+        if (validField === 'name') return inName;
+        if (validField === 'model') return inModel;
+        return inName || inModel;
+      })
+      : [];
+    return res.send({ agents: [...builtins, ...agents], next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');

@@ -180,10 +180,13 @@ describe('function-handler subagent builtin', () => {
     expect(JSON.parse(function_results[0].result)).toEqual({ answer: 'meaning? -> 42' });
   });
 
-  test('errors cleanly when no invoker and no SERVICE_BASE_URI', async () => {
+  test('throws (does not return to the model) when no invoker and no SERVICE_BASE_URI', async () => {
     const previous = process.env.SERVICE_BASE_URI;
     delete process.env.SERVICE_BASE_URI;
     try {
+      // Missing service config is an infrastructure error the model can't fix by
+      // retrying, so the handler lets it propagate and abort the turn rather than
+      // feeding it back as a tool result (see lib/errors.js → InfrastructureError).
       await expect(functionHandler(
         [{ name: 'ask_researcher', input: { question: 'meaning?' } }],
         [subagentFunction],
@@ -196,5 +199,26 @@ describe('function-handler subagent builtin', () => {
     } finally {
       previous !== undefined && (process.env.SERVICE_BASE_URI = previous);
     }
+  });
+
+  test('returns model-fixable invoker failures to the model instead of throwing', async () => {
+    // A plain Error from the subagent invocation (e.g. the model passed a bad
+    // argument shape) is model-fixable: the handler returns it as the tool result
+    // so the model can read the message, correct the call and retry.
+    const invokeSubagent = jest.fn(async () => { throw new Error('bad question: expected a non-empty string'); });
+    const { function_results } = await functionHandler(
+      [{ name: 'ask_researcher', input: { question: 'meaning?' } }],
+      [subagentFunction],
+      [],
+      () => { },
+      {},
+      {},
+      { invokeSubagent }
+    );
+    expect(function_results).toHaveLength(1);
+    expect(function_results[0].error?.message).toMatch(/bad question/);
+    expect(JSON.parse(function_results[0].result)).toEqual({
+      error: expect.stringMatching(/bad question/),
+    });
   });
 });

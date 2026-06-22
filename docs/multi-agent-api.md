@@ -20,6 +20,7 @@ A typical composition: a front-desk agent answers every call, hands callers to a
 | `transfer_agent` — full-stack handover (model/voice change; child call record) | ✅ | ✅ ³ | ❌ | ❌ | n/a |
 | `subagent` (call a text agent) | ✅ | ✅ | ❌ | ❌ | ✅ (nested, depth-limited) |
 | `result` / invokable via `/invoke` | n/a | n/a | n/a | n/a | ✅ |
+| `mcpServers` (remote MCP tools) | ❌ ⁴ | ✅ | ❌ ⁴ | ❌ ⁴ | ✅ (`text:anthropic/…` only) |
 
 Within a worker, **any two models can hand a call to each other** — realtime ↔ pipeline,
 Ultravox ↔ OpenAI ↔ Gemini, and so on. You never choose the mechanism: the platform
@@ -35,7 +36,7 @@ targets via the full-stack mechanism.
 
 ³ On Pipecat, the full-stack handover runs on websocket SIP gateway legs (FreeSWITCH / sipbridge / voiceblender) and browser WebRTC sessions; Daily legs and consultation legs refuse it.
 
-Saving an agent that uses one of these builtins on an unsupported handler (`jambonz:`, `ultravox:`) is rejected at create/update time with a clear validation error.
+⁴ `mcpServers` is **stored but ignored** on these handlers — the definition is kept so the agent can move to an MCP-capable model later. `supportsMcp` on `GET /models` is the source of truth. To use a remote MCP knowledgebase from a voice agent on any handler, put the MCP server on a `text:anthropic/…` subagent and call it via `subagent` (see [`mcp-servers.md`](./mcp-servers.md)).
 
 ---
 
@@ -263,7 +264,8 @@ You can of course give the voice agent the weather tools directly. Subagents ear
 - the task needs **multi-step reasoning over tools** that would bloat the voice agent's prompt and tool list (and its latency on *every* turn);
 - you want **one specialist maintained in one place** and shared by many voice agents;
 - the work should produce a **structured result** (the `result` schema) rather than free conversation;
-- you want to **test the capability in isolation** via `POST /agents/{id}/invoke`.
+- you want to **test the capability in isolation** via `POST /agents/{id}/invoke`;
+- the specialist needs a **remote MCP knowledgebase**: put the MCP server on a `text:anthropic/…` subagent's `mcpServers` and any voice agent in the set can consult it through `subagent` — even handlers that don't honour `mcpServers` themselves (`livekit:`, `jambonz:`, `ultravox:`). See [`mcp-servers.md`](./mcp-servers.md).
 
 ---
 

@@ -1,4 +1,6 @@
+import crypto from 'crypto';
 import { runSubagentById, SubagentError } from '../../../lib/subagent.js';
+import { recordSubagentUsage } from '../../../lib/usage.js';
 
 let log;
 
@@ -34,20 +36,32 @@ const subagentInvoke = async (req, res) => {
   });
 
   try {
-    const { result, complete } = await Promise.race([
+    const { result, complete, usage } = await Promise.race([
       runSubagentById({ agentId, input, metadata, organisationId, logger: log.child({ callId, agentId }) }),
       timeout
     ]);
     log.info({ agentId, callId, complete }, 'subagent invocation complete');
     res.send({ result, complete });
+    // Attribute the subagent's token usage to the originating call/session
+    //  (best-effort; never blocks the response and never throws).
+    recordSubagentUsage({
+      sessionId: callId || crypto.randomUUID(),
+      callId: callId || null,
+      organisationId,
+      usage,
+      log,
+    });
   }
   catch (err) {
     if (err instanceof SubagentError) {
       log.info({ agentId, callId, message: err.message }, 'subagent invocation failed');
       return res.status(err.status || 400).send({ error: err.message });
     }
+    // Surface the real cause (this is an internal, shared-token endpoint called
+    // by our own workers). A generic 500 here left the calling agent — and the
+    // set builder — blind, mis-attributing subagent failures to the MCP server.
     log.error(err, 'error invoking subagent');
-    res.status(500).send({ error: 'Internal server error' });
+    res.status(500).send({ error: `Subagent invocation failed: ${err?.message || err}` });
   }
   finally {
     clearTimeout(timer);

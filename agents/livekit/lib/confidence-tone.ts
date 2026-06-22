@@ -92,6 +92,11 @@ const CHUNK_SAMPLES = (SAMPLE_RATE * 20) / 1000; // 20 ms
 // Small internal AudioSource queue so a stop decision reaches the caller's
 // ear within ~this many ms rather than the default 1000 ms buffer.
 const QUEUE_MS = 200;
+// Backstop for handover mode: a full-stack agent handover normally completes
+// (new agent first speaks) in a few seconds. If the incoming agent never
+// signals "speaking" — a stuck/failed start that didn't go through the catch
+// path — cap the comfort tone so the caller isn't beeped at indefinitely.
+const HANDOVER_MAX_MS = 25_000;
 
 /**
  * Parse `options.transferTone` into a {@link ToneConfig}. Accepts `true`
@@ -138,6 +143,13 @@ export class ConfidenceTonePlayer {
    * isn't mistaken for completion. */
   private engagedSeen = false;
   private transferState: TransferState = "none";
+  /** True while covering a full-stack agent-to-agent handover gap. In this
+   * mode play is gated only by speech grace, NOT by the transfer state machine
+   * (there is no transfer; the caller drives start/stop via startHandover /
+   * stopHandover). */
+  private handover = false;
+  /** Wall-clock start of the current handover, for the max-duration backstop. */
+  private handoverStartedAt = 0;
   private agentSpeaking = false;
   private userSpeaking = false;
   private lastVoice = 0;
@@ -172,6 +184,39 @@ export class ConfidenceTonePlayer {
     if (this.mode !== null) {
       logger.info({ mode: this.mode }, "confidence tone disarmed");
     }
+    this.mode = null;
+    this.handover = false;
+  }
+
+  /**
+   * Start the comfort tone to cover the dead-air gap of a full-stack
+   * agent-to-agent handover (the outgoing agent's session is torn down and the
+   * incoming agent's model stack spins up — several seconds of silence). The
+   * tone publishes its own room track, so it survives the session swap. Play is
+   * gated only by speech grace here; the caller stops it via {@link stopHandover}
+   * once the incoming agent takes over. Idempotent.
+   */
+  startHandover(): void {
+    if (this.closed) return;
+    this.handover = true;
+    // `mode` is the "armed" sentinel the play/loop guards check; the actual
+    // play condition is the `handover` branch in shouldPlay().
+    this.mode = "blind";
+    this.cyclePos = 0;
+    this.handoverStartedAt = Date.now();
+    // Grace: the outgoing agent usually just spoke (e.g. "putting you through").
+    this.lastVoice = Date.now();
+    void this.ensureStarted();
+    logger.info({}, "confidence tone started for agent handover");
+  }
+
+  /** Stop a handover comfort tone (incoming agent has taken over, or the
+   * handover failed). Idempotent. */
+  stopHandover(): void {
+    if (this.handover) {
+      logger.info({}, "confidence tone stopped (agent handover complete)");
+    }
+    this.handover = false;
     this.mode = null;
   }
 
@@ -255,22 +300,31 @@ export class ConfidenceTonePlayer {
 
   private shouldPlay(): boolean {
     if (this.mode === null) return false;
-    const state = this.transferState;
-    const active =
-      this.mode === "blind"
-        ? state === "dialling"
-        : state === "dialling" || state === "talking";
-    if (active) {
-      this.engagedSeen = true;
-    } else {
-      // Hard failures end service even if the transfer never got going
-      // (e.g. argument validation threw before "dialling"); otherwise only
-      // a transition OUT of the active set means the transfer concluded.
-      if (this.engagedSeen || state === "failed" || state === "rejected") {
-        this.disarm();
+    if (!this.handover) {
+      // Transfer-driven play: gated by the worker's transfer state machine.
+      const state = this.transferState;
+      const active =
+        this.mode === "blind"
+          ? state === "dialling"
+          : state === "dialling" || state === "talking";
+      if (active) {
+        this.engagedSeen = true;
+      } else {
+        // Hard failures end service even if the transfer never got going
+        // (e.g. argument validation threw before "dialling"); otherwise only
+        // a transition OUT of the active set means the transfer concluded.
+        if (this.engagedSeen || state === "failed" || state === "rejected") {
+          this.disarm();
+        }
+        return false;
       }
+    } else if (Date.now() - this.handoverStartedAt > HANDOVER_MAX_MS) {
+      // Handover backstop: the incoming agent never signalled "speaking".
+      this.stopHandover();
       return false;
     }
+    // Handover mode falls straight through to the speech-grace gate below: it
+    // plays continuously until the caller calls stopHandover().
     if (this.agentSpeaking || this.userSpeaking) {
       this.cyclePos = 0;
       return false;

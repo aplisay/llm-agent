@@ -413,6 +413,14 @@ class CallSession:
             TranscriptForwardingObserver(self._send_message, mode=mode)
         )
 
+        # Meter LLM token + TTS character usage into the platform usage ledger.
+        # Flushed (finalised) from _end(); requires the pipeline's usage metrics
+        # to be enabled (see voice_session.py PipelineParams).
+        from .usage import UsageMeteringObserver
+
+        self._usage_observer = UsageMeteringObserver()
+        task.add_observer(self._usage_observer)
+
         # Wire client-disconnect to PipelineTask.cancel(). Without this, the
         # SmallWebRTCTransport tries to auto-reconnect for up to 3 attempts
         # before giving up — meaning the agent session stays alive on the
@@ -568,6 +576,10 @@ class CallSession:
             # clear it so prepare_run splices a fresh one into the new
             # pipeline.
             self.relay_endpoint = None
+            # The confidence-tone injector is also a FrameProcessor bound to the
+            # ended pipeline; clear it so prepare_run builds a fresh one (when
+            # options.transferTone is set) for the incoming agent's pipeline.
+            self._tone_injector = None
             # A rebuilt SmallWebRTC transport sits on an ALREADY-connected
             # peer, so the connection's "connected" event (which wires the
             # media tracks and fires on_client_connected → greeting /
@@ -584,6 +596,12 @@ class CallSession:
             task, max_duration_secs = await self.prepare_run(
                 self.agent, self.agent["modelName"], pending["system_prompt"]
             )
+            # Cover the dead-air gap until the incoming agent first speaks. The
+            # injector is spliced into the new pipeline's caller leg; arm it in
+            # handover mode (plays on speech grace, stops on the new agent's
+            # first BotStartedSpeakingFrame). No-op when transferTone is unset.
+            if self._tone_injector is not None:
+                self._tone_injector.arm_handover()
 
     async def _run_prepared_once(self, task, max_duration_secs: Optional[int]) -> None:
         """One pipeline execution (see :meth:`run_prepared`)."""
@@ -1786,6 +1804,14 @@ class CallSession:
     # ---- Lifecycle ----
 
     async def _end(self, reason: str) -> None:
+        # Flush accumulated token/character usage to the ledger before ending
+        # the call so it lands as the finalised session total (best-effort).
+        usage_observer = getattr(self, "_usage_observer", None)
+        if usage_observer is not None:
+            try:
+                await usage_observer.flush(self.call, finalised=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"usage flush failed: {e}")
         try:
             await api_client.end_call(self.call, reason=reason)
         except Exception as e:  # noqa: BLE001
