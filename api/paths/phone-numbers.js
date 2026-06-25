@@ -1,5 +1,6 @@
 import { PhoneNumber, Op } from '../../lib/database.js';
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 // DEPRECATED: This endpoint is deprecated. Use /api/phone-endpoints instead.
 
@@ -18,6 +19,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const phoneNumberList = (async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   let { organisationId } = res.locals.user;
   let { originate, handler } = req.query;
 

@@ -2,7 +2,12 @@ import { User } from '../lib/database.js';
 
 const defaultUser = {
   user_id: 'defaultNotAuthenticated',
-  name: 'Default User (this instance has no authentication)'
+  name: 'Default User (this instance has no authentication)',
+  // No-auth = single-tenant, allow-all: give the default principal full RBAC so
+  // route-level requirePermission()/model gates never lock out this mode.
+  // (can() resolves 'superAdmin' via the fallback; _allowedModels stays
+  // undefined => unrestricted.)
+  role: 'superAdmin',
 }
 
 function init(app, logger) {

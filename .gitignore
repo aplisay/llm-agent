@@ -12,6 +12,7 @@ lerna-debug.log*
 *.code-workspace
 
 *.code-workspace
+.codex
 .claude
 .claude/**
 .cursor*

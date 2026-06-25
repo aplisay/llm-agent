@@ -1,5 +1,6 @@
 import { UsageRecord, Sequelize, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { requirePermission, can } from '../../lib/auth/permissions.js';
 
 let log;
 
@@ -22,6 +23,7 @@ export default function (logger) {
 }
 
 const getUsage = async (req, res) => {
+  if (!requirePermission(res, 'usage', 'read')) return;
   try {
     let { startDate, endDate, groupBy, period, technology, provider, unit } = req.query;
 
@@ -43,8 +45,10 @@ const getUsage = async (req, res) => {
     ];
     const group = [...dimensions, ...(periodBucket ? [periodBucket] : [])];
 
-    // Always tenant-scoped: a caller only sees their own / their org's usage.
-    const where = { [Op.and]: [scopeWhereForUser(res.locals.user)] };
+    // Own-org by default; a usage:readAll holder (support / superAdmin) sees
+    // cross-tenant usage (the one admin-surface read that is NOT own-org-only).
+    const usageScope = can(res.locals.user, 'usage', 'readAll') ? {} : scopeWhereForUser(res.locals.user);
+    const where = { [Op.and]: [usageScope] };
     if (startDate || endDate) {
       where.createdAt = {};
       if (startDate) where.createdAt[Op.gte] = new Date(startDate);

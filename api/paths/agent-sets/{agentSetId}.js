@@ -2,6 +2,7 @@ import { Agent, AgentSet } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateSetLabels } from '../../../lib/agent-set-labels.js';
 import { reconcileMembers, renderSet, sendAgentSetError } from '../agent-sets.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 let log;
 
@@ -26,6 +27,7 @@ const agentSetIdParameter = {
 };
 
 const agentSetGet = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'read')) return;
   const { agentSetId } = req.params;
   try {
     const rendered = await renderSet(agentSetId, res.locals.user);
@@ -70,6 +72,7 @@ agentSetGet.apiDoc = {
 };
 
 const agentSetUpdate = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'update')) return;
   const { agentSetId } = req.params;
   const { name, description, agents } = req.body;
   const user = res.locals.user;
@@ -140,6 +143,7 @@ agentSetUpdate.apiDoc = {
 };
 
 const agentSetDelete = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'delete')) return;
   const { agentSetId } = req.params;
   try {
     const set = await AgentSet.findOne({ where: { id: agentSetId, ...scopeWhereForUser(res.locals.user) } });

@@ -1,4 +1,5 @@
 import { Instance, Op } from '../../../../../lib/database.js';
+import { requirePermission } from '../../../../../lib/auth/permissions.js';
 
 let log;
 
@@ -10,6 +11,7 @@ export default function (logger) {
 };
 
 const listenerDelete = async (req, res) => {
+  if (!requirePermission(res, 'agent', 'deploy')) return;
   const { listenerId } = req.params;
   const { id: userId, organisationId } = res.locals.user;
   req.log.info({ id: listenerId }, 'instance delete called');

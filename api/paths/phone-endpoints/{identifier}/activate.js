@@ -2,6 +2,7 @@ import { PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 import { registrationSimulator } from '../../../../lib/registration-simulation.js';
 import { userOwnsRow } from '../../../../lib/scope.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 let log;
 
@@ -13,6 +14,7 @@ export default function (logger) {
 };
 
 const activateRegistration = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'update')) return;
   const { identifier } = req.params;
 
   try {

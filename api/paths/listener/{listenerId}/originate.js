@@ -3,6 +3,7 @@ import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/
 import { getHandler } from '../../../../lib/handlers/index.js';
 import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 let appParameters, log;
 
@@ -21,6 +22,7 @@ export default function (logger, voices, wsServer) {
 
 
 const originateCall = (async (req, res) => {
+  if (!requirePermission(res, 'agent', 'originate')) return;
   let { listenerId } = req.params;
   let { calledId, callerId, metadata } = req.body;
   let { organisationId } = res.locals.user;

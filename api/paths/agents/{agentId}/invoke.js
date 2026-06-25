@@ -3,6 +3,7 @@ import { Agent } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { runSubagent, SubagentError } from '../../../../lib/subagent.js';
 import { recordSubagentUsage } from '../../../../lib/usage.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 let log;
 
@@ -18,6 +19,7 @@ export default function (logger) {
 const agentInvoke = async (req, res) => {
   const { agentId } = req.params;
   const { input, metadata } = req.body || {};
+  if (!requirePermission(res, 'agent', 'invoke')) return;
 
   try {
     const agent = await Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } });

@@ -14,3 +14,50 @@ SHARED_API_TOKEN=your_secure_shared_token_here
 
 # Base URI for the main LLM agent API service
 SERVICE_BASE_URI=http://localhost:5000/api
+
+# ── Better-Auth (parallel to Firebase — Phase 0 WIP) ────────────────────────
+# Off by default: when unset/!= "true" the better-auth package is never loaded
+# and auth behaves exactly as before (Firebase + AuthKey + instance + shared).
+BETTER_AUTH_ENABLED=true
+# Random 32+ char secret: `openssl rand -base64 32`
+BETTER_AUTH_SECRET=<RANDOM SECRET>
+# Public base URL of THIS api service (used to build OAuth callback URLs)
+BETTER_AUTH_URL=http://localhost:4000
+# Comma-separated SPA origins allowed to call the auth endpoints
+BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:3000
+# Mirror Firebase's verified-email gate (default false for easy WIP testing)
+BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=false
+# Google OAuth (server-side) — create credentials with redirect URI
+#   <BETTER_AUTH_URL>/api/auth/callback/google
+BETTER_AUTH_GOOGLE_CLIENT_ID=<GOOGLE OAUTH CLIENT ID>
+BETTER_AUTH_GOOGLE_CLIENT_SECRET=<GOOGLE OAUTH CLIENT SECRET>
+#
+# Better-Auth owns its satellite tables (session/account/verification); create
+# them once against this DB with:  npx @better-auth/cli@latest migrate
+# The shared `users` table stays Sequelize-owned (do NOT let the CLI alter it).
+#
+# NOTE: BETTER_AUTH_TRUSTED_ORIGINS must include the polite-ai origin whose
+# /confirmed page is the waitlist verification callbackURL (e.g.
+# http://localhost:5173 in dev, https://polite.ai in prod) or the post-verify
+# redirect is origin-rejected.
+
+# ── Waitlist (polite.ai coming-soon) ────────────────────────────────────────
+# Where better-auth redirects after the waitlist confirmation link is clicked
+# (polite-ai's ${SITE_URL}/confirmed). On success it redirects with no query;
+# on failure it appends ?error=<code>.
+WAITLIST_CALLBACK_URL=http://localhost:5173/confirmed
+
+# ── Admin gate for the /api/users management routes ─────────────────────────
+# Comma-separated user ids allowed to call the admin /api/users list/create/
+# modify routes. The public POST /api/users/signup is ungated. Empty => only the
+# internal x-shared-token principal counts as admin. Swap for RBAC later.
+ADMIN_USER_IDS=
+
+# ── Outbound email (@aplisay/email) — used by the verification/reset hooks ───
+# With EMAIL_SEND_TYPE unset, emails are logged to the console (dev/preview).
+EMAIL_SEND_TYPE=smtp2go
+# Optional endpoint override (defaults to the SMTP2GO public API):
+# EMAIL_SEND_URL=https://api.smtp2go.com/v3/email/send
+EMAIL_SEND_KEY=<SMTP2GO API KEY>
+EMAIL_FROM_ADDRESS=hello@aplisay.com
+EMAIL_FROM_NAME="polite.ai"

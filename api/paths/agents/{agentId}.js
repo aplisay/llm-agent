@@ -2,6 +2,8 @@ import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
+import { isModelAllowed } from '../../../lib/auth/model-access.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 let log;
 
@@ -23,6 +25,10 @@ function agentWhere(req, res) {
 const agentGet = async (req, res) => {
   let { agentId } = req.params;
   if (isBuiltinAgentId(agentId)) {
+    // R1/F7 — built-ins are gated by their `builtin:<id>` access prefix.
+    if (!isModelAllowed(agentId, res.locals.user?._allowedModels)) {
+      return res.status(404).send({ error: `Agent with ID ${agentId} not found` });
+    }
     const builtin = renderBuiltinAgent(agentId, res.locals.user);
     return builtin
       ? res.send(builtin)
@@ -46,6 +52,10 @@ const agentGet = async (req, res) => {
     });
     if (!agent) {
       return res.status(404).send({ error: `Agent with ID ${agentId} not found` });
+    }
+    // R1 — reading is restricted to models in the principal's effective allow-list.
+    if (!isModelAllowed(agent.modelName, res.locals.user?._allowedModels)) {
+      return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for your account.` });
     }
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent fetched');
     res.send({ ...agent.dataValues, keys: undefined });
@@ -147,6 +157,13 @@ const agentUpdate = async (req, res) => {
 
   if (isBuiltinAgentId(agentId)) {
     return res.status(403).send({ message: `Agent ${agentId} is a read-only built-in and cannot be modified` });
+  }
+  if (!requirePermission(res, 'agent', 'update')) return;
+  // R1 — a modelName CHANGE must stay within the principal's allow-list, else a
+  // restricted user could PUT an existing agent onto a disallowed model (escaping
+  // the create-time gate).
+  if (modelName !== undefined && !isModelAllowed(modelName, res.locals.user?._allowedModels)) {
+    return res.status(403).json({ message: 'model_not_permitted', detail: `Model ${modelName} is not permitted for your account.` });
   }
   try {
     let agent = await Agent.findOne({ where: agentWhere(req, res) });
@@ -289,6 +306,7 @@ const agentDelete = async (req, res) => {
   if (isBuiltinAgentId(agentId)) {
     return res.status(403).send({ message: `Agent ${agentId} is a read-only built-in and cannot be deleted` });
   }
+  if (!requirePermission(res, 'agent', 'delete')) return;
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
     let data = await Agent.destroy({

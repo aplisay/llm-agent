@@ -1,5 +1,6 @@
 import { Call, Agent, Op } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 // Safety caps: a single call's transfer chain is small in practice.
 const MAX_LINKED = 50;   // total legs returned
@@ -26,6 +27,7 @@ export default function (logger) {
   log = logger;
 
   const linkedCalls = async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     try {
       const { callId } = req.params;
       const { limit } = req.query;

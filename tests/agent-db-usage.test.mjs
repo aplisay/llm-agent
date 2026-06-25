@@ -30,7 +30,7 @@ describe('Agent DB Usage ingest endpoint (POST /api/agent-db/usage)', () => {
     await Organisation.create({ id: orgId, name: 'Ingest Test Org' });
     await User.create({
       id: userId, name: 'Ingest Test User', email: `ingest-${userId}@example.com`,
-      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: {},
+      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: 'owner',
       organisationId: orgId,
     });
   }, 30000);

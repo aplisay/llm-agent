@@ -189,7 +189,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -225,7 +225,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -249,7 +249,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         phone: '+10000000001',
         phoneVerified: true,
         picture: 'https://example.com/p.png',
-        role: { admin: true }
+        role: 'owner'
       });
       const agent = await Agent.create({
         name: 'Deployed list agent',
@@ -276,7 +276,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { id: userId, organisationId: testOrgId };
+      res.locals.user = { role: 'owner', id: userId, organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -299,7 +299,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -320,7 +320,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -347,7 +347,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -371,7 +371,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -388,7 +388,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await phoneEndpointList(req, res);
 
@@ -406,7 +406,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await phoneEndpointList(req, res);
 
@@ -514,7 +514,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res1 = createMockResponse();
-        res1.locals.user = { organisationId: org1Id };
+        res1.locals.user = { role: 'owner', organisationId: org1Id };
 
         await phoneEndpointList(req1, res1);
 
@@ -541,7 +541,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res2 = createMockResponse();
-        res2.locals.user = { organisationId: org2Id };
+        res2.locals.user = { role: 'owner', organisationId: org2Id };
 
         await phoneEndpointList(req2, res2);
 
@@ -594,7 +594,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(req, res);
 
@@ -616,7 +616,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(req, res);
 
@@ -639,7 +639,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(req, res);
 
@@ -653,7 +653,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await getPhoneEndpoint(req, res);
 
@@ -667,7 +667,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(req, res);
 
@@ -689,7 +689,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       // org-owned endpoint. (Previously this leaked the row as 200 because the
       // org check was skipped when the caller had no organisationId.)
       expect(res._status).toBe(403);
-      expect(res._body).toHaveProperty('error');
+      expect(res._body).toHaveProperty('message'); // requirePermission 403 shape: { message, detail }
     });
   });
 
@@ -708,7 +708,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -731,7 +731,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -756,7 +756,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -775,7 +775,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -794,7 +794,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -832,7 +832,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: org1Id };
+        res.locals.user = { role: 'owner', organisationId: org1Id };
 
         await createPhoneEndpoint(req, res);
 
@@ -871,7 +871,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res1 = createMockResponse();
-        res1.locals.user = { organisationId: orgId };
+        res1.locals.user = { role: 'owner', organisationId: orgId };
 
         await createPhoneEndpoint(createReq1, res1);
         expect(res1._status).toBe(201);
@@ -892,7 +892,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res2 = createMockResponse();
-        res2.locals.user = { organisationId: orgId };
+        res2.locals.user = { role: 'owner', organisationId: orgId };
 
         await createPhoneEndpoint(createReq2, res2);
         expect(res2._status).toBe(400);
@@ -917,7 +917,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -940,7 +940,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -970,7 +970,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -991,7 +991,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -1031,7 +1031,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await createPhoneEndpoint(req, res);
 
@@ -1077,7 +1077,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await createPhoneEndpoint(req, res);
 
@@ -1127,7 +1127,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await createPhoneEndpoint(req, res);
 
@@ -1161,7 +1161,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -1192,7 +1192,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -1226,7 +1226,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(req, res);
 
@@ -1281,7 +1281,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1299,7 +1299,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1320,7 +1320,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1344,7 +1344,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1369,7 +1369,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1390,7 +1390,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1407,7 +1407,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await updatePhoneEndpoint(req, res);
 
@@ -1431,7 +1431,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await updatePhoneEndpoint(req, res);
 
@@ -1451,7 +1451,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(req, res);
 
@@ -1493,7 +1493,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(req, res);
 
@@ -1508,7 +1508,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(req, res);
 
@@ -1523,7 +1523,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(req, res);
 
@@ -1538,7 +1538,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(req, res);
 
@@ -1553,7 +1553,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await deletePhoneEndpoint(req, res);
 
@@ -1577,7 +1577,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await deletePhoneEndpoint(req, res);
 
@@ -1595,7 +1595,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(req, res);
 
@@ -1632,7 +1632,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await deletePhoneEndpoint(req, res);
 
@@ -1649,7 +1649,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const getRes = createMockResponse();
-        getRes.locals.user = { organisationId: testOrgId };
+        getRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await getPhoneEndpoint(getReq, getRes);
         expect(getRes._status).toBe(404);
@@ -1692,7 +1692,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
 
@@ -1709,7 +1709,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
 
@@ -1723,7 +1723,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
 
@@ -1737,7 +1737,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await activateRegistration(req, res);
 
@@ -1751,7 +1751,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
 
@@ -1769,9 +1769,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await activateRegistration(req, res);
 
-      // activateRegistration returns 403 for missing authentication
+      // activateRegistration returns 403 for missing authentication (RBAC gate)
       expect(res._status).toBe(403);
-      expect(res._body).toHaveProperty('error');
+      expect(res._body).toHaveProperty('message');
     });
   });
 
@@ -1784,7 +1784,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(req, res);
 
@@ -1801,7 +1801,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(req, res);
 
@@ -1815,7 +1815,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(req, res);
 
@@ -1829,7 +1829,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: randomUUID() }; // Use valid UUID
+      res.locals.user = { role: 'owner', organisationId: randomUUID() }; // Use valid UUID
 
       await disableRegistration(req, res);
 
@@ -1843,7 +1843,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(req, res);
 
@@ -1861,9 +1861,9 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await disableRegistration(req, res);
 
-      // disableRegistration returns 403 for missing authentication
+      // disableRegistration returns 403 for missing authentication (RBAC gate)
       expect(res._status).toBe(403);
-      expect(res._body).toHaveProperty('error');
+      expect(res._body).toHaveProperty('message');
     });
   });
 
@@ -1925,7 +1925,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       // Activate the registration
       await activateRegistration(req, res);
@@ -1950,7 +1950,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
       expect(res._status).toBe(200);
@@ -1970,7 +1970,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       // First activation
       await activateRegistration(req, res);
@@ -1998,7 +1998,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const activateRes = createMockResponse();
-      activateRes.locals.user = { organisationId: testOrgId };
+      activateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(activateReq, activateRes);
       expect(activateRes._status).toBe(200);
@@ -2012,7 +2012,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const disableRes = createMockResponse();
-      disableRes.locals.user = { organisationId: testOrgId };
+      disableRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(disableReq, disableRes);
       expect(disableRes._status).toBe(200);
@@ -2032,7 +2032,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const activateRes = createMockResponse();
-      activateRes.locals.user = { organisationId: testOrgId };
+      activateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(activateReq, activateRes);
       expect(activateRes._status).toBe(200);
@@ -2047,7 +2047,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const deleteRes = createMockResponse();
-      deleteRes.locals.user = { organisationId: testOrgId };
+      deleteRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(deleteReq, deleteRes);
       expect(deleteRes._status).toBe(200);
@@ -2067,7 +2067,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(req, res);
       expect(res._status).toBe(200);
@@ -2104,7 +2104,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res1 = createMockResponse();
-        res1.locals.user = { organisationId: testOrgId };
+        res1.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await activateRegistration(req1, res1);
         expect(res1._status).toBe(200);
@@ -2115,7 +2115,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res2 = createMockResponse();
-        res2.locals.user = { organisationId: testOrgId };
+        res2.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await activateRegistration(req2, res2);
         expect(res2._status).toBe(200);
@@ -2161,7 +2161,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await activateRegistration(req, res);
         expect(res._status).toBe(200);
@@ -2222,7 +2222,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           phone: '+1234567890',
           phoneVerified: true,
           picture: 'https://example.com/pic.jpg',
-          role: { admin: true }
+          role: 'owner'
         });
         testUserId = testUser.id;
 
@@ -2304,7 +2304,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const registrationRes = createMockResponse();
-      registrationRes.locals.user = { organisationId: testOrgId };
+      registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(registrationReq, registrationRes);
       expect(registrationRes._status).toBe(201);
@@ -2318,7 +2318,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const verifyRes = createMockResponse();
-      verifyRes.locals.user = { organisationId: testOrgId };
+      verifyRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(verifyReq, verifyRes);
       expect(verifyRes._status).toBe(200);
@@ -2344,7 +2344,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
-      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Debug: Check what error we're getting
@@ -2382,7 +2382,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
-      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Should return an error for non-existent registration
@@ -2407,7 +2407,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const registrationRes = createMockResponse();
-      registrationRes.locals.user = { organisationId: testOrgId };
+      registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(registrationReq, registrationRes);
       expect(registrationRes._status).toBe(201);
@@ -2429,7 +2429,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       const { default: listenModule } = await import('../api/paths/agents/{agentId}/listen.js');
       const listenHandler = listenModule(mockWsServer);
 
-      listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
       await listenHandler.POST(listenerReq, listenerRes);
 
       // Should return 404 for non-existent agent
@@ -2452,7 +2452,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const registrationRes = createMockResponse();
-      registrationRes.locals.user = { organisationId: testOrgId };
+      registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(registrationReq, registrationRes);
       expect(registrationRes._status).toBe(201);
@@ -2466,7 +2466,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const verifyRes = createMockResponse();
-      verifyRes.locals.user = { organisationId: testOrgId };
+      verifyRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(verifyReq, verifyRes);
       expect(verifyRes._status).toBe(200);
@@ -2487,7 +2487,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const updateRes = createMockResponse();
-      updateRes.locals.user = { organisationId: testOrgId };
+      updateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await updatePhoneEndpoint(updateReq, updateRes);
       expect(updateRes._status).toBe(200);
@@ -2499,7 +2499,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const verifyUpdateRes = createMockResponse();
-      verifyUpdateRes.locals.user = { organisationId: testOrgId };
+      verifyUpdateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(verifyUpdateReq, verifyUpdateRes);
       expect(verifyUpdateRes._status).toBe(200);
@@ -2513,7 +2513,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const activateRes = createMockResponse();
-      activateRes.locals.user = { organisationId: testOrgId };
+      activateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await activateRegistration(activateReq, activateRes);
       expect(activateRes._status).toBe(200);
@@ -2525,7 +2525,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const disableRes = createMockResponse();
-      disableRes.locals.user = { organisationId: testOrgId };
+      disableRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await disableRegistration(disableReq, disableRes);
       expect(disableRes._status).toBe(200);
@@ -2538,7 +2538,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const deleteRes = createMockResponse();
-      deleteRes.locals.user = { organisationId: testOrgId };
+      deleteRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(deleteReq, deleteRes);
       expect(deleteRes._status).toBe(200);
@@ -2550,7 +2550,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const verifyDeleteRes = createMockResponse();
-      verifyDeleteRes.locals.user = { organisationId: testOrgId };
+      verifyDeleteRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await getPhoneEndpoint(verifyDeleteReq, verifyDeleteRes);
       expect(verifyDeleteRes._status).toBe(404);
@@ -2571,7 +2571,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const validDdiRes = createMockResponse();
-      validDdiRes.locals.user = { organisationId: testOrgId };
+      validDdiRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(validDdiReq, validDdiRes);
       expect(validDdiRes._status).toBe(201);
@@ -2589,7 +2589,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         headers: {}
       });
       const invalidDdiRes = createMockResponse();
-      invalidDdiRes.locals.user = { organisationId: testOrgId };
+      invalidDdiRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(invalidDdiReq, invalidDdiRes);
       expect(invalidDdiRes._status).toBe(400);
@@ -2654,7 +2654,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
           headers: {}
         });
         const res = createMockResponse();
-        res.locals.user = { organisationId: testOrgId };
+        res.locals.user = { role: 'owner', organisationId: testOrgId };
 
         await listTrunks(req, res);
 

@@ -11,9 +11,10 @@ const mockLogger = {
 
 function mockReqRes(user, query = {}) {
   const req = { query, log: mockLogger };
-  const res = { locals: { user }, statusCode: 200, body: undefined };
+  const res = { locals: { user: user ? { role: 'owner', ...user } : user }, statusCode: 200, body: undefined };
   res.status = (code) => { res.statusCode = code; return res; };
   res.send = (body) => { res.body = body; return res; };
+  res.json = (body) => { res.body = body; return res; };
   return { req, res };
 }
 
@@ -29,8 +30,8 @@ describe('Tenant usage API (GET /api/usage)', () => {
     orgB = randomUUID(); userB = randomUUID();
     await Organisation.bulkCreate([{ id: orgA, name: 'Org A' }, { id: orgB, name: 'Org B' }]);
     await User.bulkCreate([
-      { id: userA, name: 'A', email: `a-${userA}@x.com`, emailVerified: true, phone: '', phoneVerified: false, picture: '', role: {}, organisationId: orgA },
-      { id: userB, name: 'B', email: `b-${userB}@x.com`, emailVerified: true, phone: '', phoneVerified: false, picture: '', role: {}, organisationId: orgB },
+      { id: userA, name: 'A', email: `a-${userA}@x.com`, emailVerified: true, phone: '', phoneVerified: false, picture: '', role: 'owner', organisationId: orgA },
+      { id: userB, name: 'B', email: `b-${userB}@x.com`, emailVerified: true, phone: '', phoneVerified: false, picture: '', role: 'owner', organisationId: orgB },
     ]);
 
     // bulkCreate does not run the per-row beforeValidate hook that derives

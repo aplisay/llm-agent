@@ -39,6 +39,10 @@ describe('Agent mcpServers API round-trip', () => {
       this._body = data;
       return this;
     },
+    json(data) {
+      this._body = data;
+      return this;
+    },
   });
 
   beforeAll(async () => {
@@ -101,7 +105,7 @@ describe('Agent mcpServers API round-trip', () => {
       },
     });
     const createRes = createMockResponse({
-      user: { id: testUserId, organisationId: testOrgId },
+      user: { id: testUserId, role: 'owner', organisationId: testOrgId },
     });
 
     await createAgent(createReq, createRes);
@@ -112,7 +116,7 @@ describe('Agent mcpServers API round-trip', () => {
     // Fetch it back
     const getReq = createMockRequest({ params: { agentId: createdAgentId } });
     const getRes = createMockResponse({
-      user: { id: testUserId, organisationId: testOrgId },
+      user: { id: testUserId, role: 'owner', organisationId: testOrgId },
     });
     await getAgent(getReq, getRes);
     expect(getRes._status === 200 || getRes._status === null).toBe(true);
@@ -128,7 +132,7 @@ describe('Agent mcpServers API round-trip', () => {
       body: { mcpServers: updated },
     });
     const putRes = createMockResponse({
-      user: { id: testUserId, organisationId: testOrgId },
+      user: { id: testUserId, role: 'owner', organisationId: testOrgId },
     });
     await updateAgent(putReq, putRes);
     expect(putRes._body).toHaveProperty('mcpServers');

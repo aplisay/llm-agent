@@ -21,7 +21,7 @@ describe('Usage ledger: recordUsage / recordLlmTokens', () => {
     await Organisation.create({ id: orgId, name: 'Usage Test Org' });
     await User.create({
       id: userId, name: 'Usage Test User', email: `usage-${userId}@example.com`,
-      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: {},
+      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: 'owner',
       organisationId: orgId,
     });
   }, 30000);

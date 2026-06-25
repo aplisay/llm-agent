@@ -1,5 +1,6 @@
 import { Agent, AgentSet } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 import {
   validateSetLabels,
   fixupLabelReferences,
@@ -138,6 +139,7 @@ export function sendAgentSetError(req, res, err) {
 }
 
 const agentSetCreate = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'create')) return;
   const { name, description, agents } = req.body;
   const user = res.locals.user;
 
@@ -204,6 +206,7 @@ agentSetCreate.apiDoc = {
 };
 
 const agentSetList = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'read')) return;
   try {
     const sets = await AgentSet.findAll({
       where: scopeWhereForUser(res.locals.user),

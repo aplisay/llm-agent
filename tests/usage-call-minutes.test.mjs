@@ -17,7 +17,7 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     await Organisation.create({ id: orgId, name: 'Minutes Org' });
     await User.create({
       id: userId, name: 'Minutes User', email: `min-${userId}@example.com`,
-      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: {}, organisationId: orgId,
+      emailVerified: true, phone: '', phoneVerified: false, picture: '', role: 'owner', organisationId: orgId,
     });
     // validate:false skips the heavy handler/voice validation (irrelevant here).
     await Agent.create(

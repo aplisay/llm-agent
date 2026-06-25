@@ -2,6 +2,8 @@ import cors from 'cors';
 import { Agent, Instance } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import handlers from '../../../../lib/handlers/index.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { userOwnsRow } from '../../../../lib/scope.js';
 
 let appParameters, log;
 
@@ -11,6 +13,7 @@ export default function () {
       req.log.debug({ listenerId, body: req.body }, 'join called');
       let { options } = req.body || {};
       res.set('Access-Control-Allow-Origin', '*');
+      if (!requirePermission(res, 'agent', 'invoke')) return;
 
       // Look up the instance / agent first so a genuine 404 stays a 404.
       // Anything that goes wrong *after* the lookup (handler.join() throwing
@@ -25,6 +28,10 @@ export default function () {
         return res.status(500).send({ error: err?.message || 'lookup failed' });
       }
       if (!instance || !agent) {
+        return res.status(404).send({ error: `no listener ${listenerId}` });
+      }
+      // Tenancy (IDOR fix): only the listener's owner (or the agent's owner) may join.
+      if (!userOwnsRow(res.locals.user, instance) && !userOwnsRow(res.locals.user, agent)) {
         return res.status(404).send({ error: `no listener ${listenerId}` });
       }
       req.log.debug({ agent, instance }, 'join instance');
