@@ -153,8 +153,10 @@ and run `better-auth generate` only to **diff** what BA expects — never
   **before `express.json()`** (BA needs the raw body — documented footgun; json
   is currently first at `index.mjs:44`).
 - Add a `/api/auth` skip + a **fifth verification branch** to `middleware/auth.js`,
-  ordered: shared-token → instance → AuthKey → **Better-Auth JWT verify** →
-  Firebase. First success wins. JWT verified statelessly against `/api/auth/jwks`.
+  ordered: shared-token → instance → AuthKey → **Better-Auth** → Firebase. First
+  success wins. (Verification mechanism — superseded by §8.1: implemented as
+  `getSession` + a short-TTL in-process cache, **not** stateless JWKS. See
+  `better-auth-hardening-plan.md` item F.)
 - Add the temporary `User.import` field restriction. (Identity bridge is
   Better-Auth-native — see §2.4 — so no custom resolver is needed.)
 - Ship dark behind `BETTER_AUTH_ENABLED` (default off); enable dev → staging → prod.
@@ -414,9 +416,12 @@ to `role = 'owner'` — preserves current behaviour exactly. Bump `schemaVersion
 
 ## 8. Open decisions
 
-1. **Transport** — JWT-as-Bearer for the parallel phase (recommended; mirrors
-   Firebase + existing middleware), with native cookie sessions as a Phase-3
-   hardening option. Confirm.
+1. **Transport / session-verification** — **DECIDED (2026-06-24): JWT-as-Bearer
+   stays the session-token transport, verified server-side via `getSession`
+   wrapped in a short-TTL in-process cache** (so no Postgres read per call). NOT
+   the `jwt()`/JWKS stateless path (rejected — needs a frontend token-exchange),
+   and NOT `secondaryStorage`/Redis (rejected — adds infra). See
+   `better-auth-hardening-plan.md` item F + risk 6.
 2. **Sign-in methods** — mirror current Firebase (email/password + Google), or
    add/drop any (magic link, GitHub…)?
 3. **Org model** — keep the simple `users.organisationId` (one org per user) for

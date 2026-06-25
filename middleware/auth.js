@@ -5,6 +5,42 @@ import * as firebase from 'firebase-admin/auth';
 import { auth as betterAuth } from '../lib/auth/index.js';
 import { fromNodeHeaders } from 'better-auth/node';
 
+const BA_SESSION_TTL_MS = 60_000;
+const BA_SESSION_MAX = 5000;
+const baSessionCache = new Map(); // token -> { user, exp }
+
+function getCachedBaUser(token) {
+  const hit = baSessionCache.get(token);
+  if (hit && hit.exp > Date.now()) return hit.user;
+  if (hit) baSessionCache.delete(token);
+  return null;
+}
+function setCachedBaUser(token, user) {
+  if (baSessionCache.size >= BA_SESSION_MAX) {
+    const now = Date.now();
+    for (const [k, v] of baSessionCache) if (v.exp <= now) baSessionCache.delete(k);
+    if (baSessionCache.size >= BA_SESSION_MAX) baSessionCache.delete(baSessionCache.keys().next().value);
+  }
+  baSessionCache.set(token, { user, exp: Date.now() + BA_SESSION_TTL_MS });
+}
+
+// Provisional gate: a loaded HUMAN principal (better-auth or Firebase) must be
+// status==='active' to perform API operations. provisional/suspended/deactivated
+// — or a status-less row we couldn't load — is blocked fail-CLOSED with a 403
+// `account_pending`. System (x-shared-token), instance join tokens, and AuthKey
+// principals never reach this gate: their branches call next() earlier.
+function isActive(user) {
+  const status = (user && typeof user.get === 'function') ? user.get('status') : user?.status;
+  return status === 'active';
+}
+function gateProvisional(res) {
+  if (!isActive(res.locals.user)) {
+    res.status(403).json({ message: 'account_pending', detail: 'Your account is awaiting activation.' });
+    return false;
+  }
+  return true;
+}
+
 function init(app, logger) {
 
   try {
@@ -25,6 +61,7 @@ function init(app, logger) {
       || req.originalUrl.startsWith('/api/api-docs') 
       || req.originalUrl.startsWith('/api/hooks')
       || req.originalUrl.startsWith('/api/auth')
+      || req.originalUrl.startsWith('/api/users/signup')
      ) {
       next();
       return;
@@ -93,14 +130,19 @@ function init(app, logger) {
           }
           else {
             // Better-Auth session (parallel to Firebase). The session token is
-            // carried as a Bearer token via the bearer plugin; getSession returns
-            // null for a non-Better-Auth token (e.g. a Firebase JWT), so we fall
-            // through to Firebase verification below.
-            let baUser = null;
-            if (betterAuth) {
+            // carried as a Bearer token via the bearer plugin. Resolved sessions
+            // are cached in-process (keyed on the token) so getSession's Postgres
+            // lookup runs at most once per token per TTL; getSession returns null
+            // for a non-Better-Auth token (e.g. a Firebase JWT) without a DB read,
+            // so we fall through to Firebase verification below.
+            let baUser = getCachedBaUser(token);
+            if (!baUser && betterAuth) {
               try {
                 const session = await betterAuth.api.getSession({ headers: fromNodeHeaders(req.headers) });
-                baUser = session?.user || null;
+                if (session?.user) {
+                  baUser = await User.findByPk(session.user.id);
+                  if (baUser) setCachedBaUser(token, baUser);
+                }
               }
               catch (e) {
                 req.log.debug({ e: e.message }, 'not a better-auth session');
@@ -108,11 +150,10 @@ function init(app, logger) {
             }
             if (baUser) {
               // Unified table: the Better-Auth user row IS our app `users` row.
-              // Load the Sequelize instance for parity with the other principals
-              // (so scoping + any model behaviour work identically).
-              res.locals.user = await User.findByPk(baUser.id) || baUser;
+              res.locals.user = baUser;
               res.locals.userAuth = true;
               res.locals.user.sql = { where: scopeWhereForUser(res.locals.user) };
+              if (!gateProvisional(res)) return;   // provisional/suspended => 403 account_pending
               next();
             }
             else {
@@ -123,6 +164,7 @@ function init(app, logger) {
               if (user) {
                 res.locals.user = await User.import({ ...user, id: user.user_id });
                 res.locals.user.sql = { where: scopeWhereForUser(res.locals.user) };
+                if (!gateProvisional(res)) return;   // suspended/deactivated => 403 account_pending
                 next();
               }
               else {

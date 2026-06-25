@@ -66,7 +66,6 @@ if (betterAuth) {
 }
 
 server.use(express.json({ limit: '5mb' }));
-
 const pino = PinoHttp({
   logger
 });
