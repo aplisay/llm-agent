@@ -2,6 +2,7 @@ import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, O
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 let appParameters, log;
 
@@ -34,6 +35,7 @@ function stripPhoneNumberInstancesForUser(rows, user) {
 }
 
 const phoneEndpointList = (async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   let { originate, handler, type, offset, pageSize, search, trunkId: rawTrunkId } = req.query;
   const trunkIds = [].concat(rawTrunkId ?? []).map((id) => String(id).trim()).filter(Boolean);
 
@@ -233,6 +235,7 @@ const phoneEndpointList = (async (req, res) => {
 });
 
 const createPhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'claim')) return;
   const { organisationId } = res.locals.user;
   const { type, ...data } = req.body;
 

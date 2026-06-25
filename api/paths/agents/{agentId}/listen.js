@@ -1,11 +1,13 @@
 import { Agent, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import handlers from '../../../../lib/handlers/index.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 let appParameters, log;
 
 export default function (wsServer) {
   const activate = (async (req, res) => {
+    if (!requirePermission(res, 'agent', 'deploy')) return;
     let { agentId } = req.params;
     let { number, options = {}, websocket, id } = req.body;
     let agent, handler, activation;

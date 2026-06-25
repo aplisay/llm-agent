@@ -1,28 +1,32 @@
 import { randomUUID } from 'node:crypto';
 import { User, Organisation, Op } from '../../lib/database.js';
 import { auth } from '../../lib/auth/index.js';
-import { requireAdmin } from '../../lib/admin-gate.js';
+import { requirePermission, can, actorCanGrant, validateRbacFields } from '../../lib/auth/permissions.js';
+import { adminScope } from '../../lib/auth/admin-scope.js';
 
 /**
- * /api/users (collection) — ADMIN-gated.
- *   GET  list users (status/search filter, pagination -> { users, next }).
- *   POST admin-create a user (same primitive as /users/signup, but the admin may
- *        set status directly, e.g. mint an already-`active` user).
+ * /api/users (collection) — RBAC-gated (`user:*`), org-scoped.
+ *   GET  list users — orgAdmin sees only their own org, superAdmin/support see all
+ *        (the cross-tenant `user:readAll`). status/search filter, pagination.
+ *   POST admin-create a user. orgAdmin may only create in their own org and may
+ *        not grant a cross-tenant role; superAdmin may target any org / role.
  * The PUBLIC sign-up lives at the sibling POST /api/users/signup (skip-listed).
  */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const LIST_ATTRS = ['id', 'name', 'email', 'emailVerified', 'status', 'role', 'signupMethod', 'organisationId', 'agentLimit', 'createdAt', 'updatedAt'];
+const VALID_ROLES = ['owner', 'member', 'textOnly', 'audioOnly', 'support', 'orgAdmin', 'superAdmin'];
+const LIST_ATTRS = ['id', 'name', 'email', 'emailVerified', 'status', 'role', 'signupMethod', 'organisationId', 'agentLimit', 'allowedModels', 'createdAt', 'updatedAt'];
 const sanitize = (raw) => String(raw ?? '').trim().replace(/[%_\\]/g, '');
 
 export default function (logger) {
   const list = async (req, res) => {
-    if (!requireAdmin(res.locals.user)) return res.status(403).json({ message: 'Admin only' });
+    if (!requirePermission(res, 'user', 'read')) return;
     const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
     const status = req.query.status ? String(req.query.status) : null;
     const search = sanitize(req.query.search);
 
-    const where = {};
+    // Tenancy: orgAdmin is confined to their own org; readAll principals see all.
+    const where = { ...adminScope(res.locals.user, 'user') };
     if (status) where.status = status;
     if (search) {
       const p = `%${search}%`;
@@ -45,7 +49,7 @@ export default function (logger) {
     }
   };
   list.apiDoc = {
-    summary: 'List users (admin).',
+    summary: 'List users (admin). orgAdmin: own org only; superAdmin/support: all.',
     operationId: 'listUsers',
     tags: ['Users'],
     parameters: [
@@ -74,36 +78,44 @@ export default function (logger) {
     },
   };
 
-  // Admin-create — same primitive as signup, but the admin may pass status/role.
+  // Admin-create — same primitive as signup, but the admin may pass status/role/org.
   const create = async (req, res) => {
-    if (!requireAdmin(res.locals.user)) return res.status(403).json({ message: 'Admin only' });
+    if (!requirePermission(res, 'user', 'create')) return;
     if (!auth) return res.status(503).json({ message: 'Sign-up is temporarily unavailable.' });
 
     const email = String(req.body?.email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'A valid email is required.' });
     const password = req.body?.password ? String(req.body.password) : null;
     const status = req.body?.status || 'provisional';
-    const role = req.body?.role ?? {};
+    const role = typeof req.body?.role === 'string' ? req.body.role : 'owner';
+    if (!VALID_ROLES.includes(role)) return res.status(400).json({ message: `Unknown role '${role}'.` });
+    const rbacErr = validateRbacFields(req.body);
+    if (rbacErr) return res.status(400).json({ message: rbacErr });
+
+    // Escalation guards: a non-cross-tenant actor (orgAdmin) may only create users
+    // in their OWN org and may not grant a cross-tenant role / permission set.
+    const actorReadAll = can(res.locals.user, 'user', 'readAll');
+    const organisationId = actorReadAll ? (req.body?.organisationId ?? null) : (res.locals.user.organisationId ?? null);
+    const permissions = req.body?.permissions ?? null;
+    const allowedModels = req.body?.allowedModels ?? null;
+    // An admin may only grant a role/permission set within their OWN effective
+    // permissions — blocks cross-tenant readAll AND intra-tenant capability escalation.
+    if (!actorCanGrant(res.locals.user, { role, permissions })) {
+      return res.status(403).json({ message: 'forbidden', detail: 'You may only grant capabilities you hold.' });
+    }
 
     try {
       if (await User.findOne({ where: { email } })) {
         return res.status(409).json({ message: 'A user with that email already exists.' });
       }
+      const extra = { role, status, signupMethod: 'admin-create', organisationId, permissions, allowedModels };
       if (password) {
         // Credentialed: better-auth writes the hash + account row; then set the
-        // admin-chosen status/role (signUpEmail can't take a data bag).
+        // admin-chosen fields (signUpEmail can't take a data bag).
         await auth.api.signUpEmail({ body: { email, password, name: email.split('@')[0] } });
-        await User.update({ role, status, signupMethod: 'admin-create' }, { where: { email } });
+        await User.update(extra, { where: { email } });
       } else {
-        await User.upsert({
-          id: randomUUID(),
-          email,
-          name: email.split('@')[0],
-          emailVerified: false,
-          role,
-          status,
-          signupMethod: 'admin-create',
-        });
+        await User.upsert({ id: randomUUID(), email, name: email.split('@')[0], emailVerified: false, ...extra });
       }
       const created = await User.findOne({ where: { email }, attributes: LIST_ATTRS });
       return res.status(201).send(created);
@@ -113,7 +125,7 @@ export default function (logger) {
     }
   };
   create.apiDoc = {
-    summary: 'Create a user (admin). May set status/role directly.',
+    summary: 'Create a user (admin). May set status/role/organisation/permissions/allowedModels.',
     operationId: 'adminCreateUser',
     tags: ['Users'],
     requestBody: {
@@ -125,7 +137,10 @@ export default function (logger) {
               email: { type: 'string', format: 'email' },
               password: { type: 'string', minLength: 8 },
               status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'], default: 'provisional' },
-              role: { type: 'object' },
+              role: { type: 'string', enum: VALID_ROLES, default: 'owner' },
+              organisationId: { type: 'string', nullable: true },
+              permissions: { type: 'object', nullable: true },
+              allowedModels: { type: 'array', items: { type: 'string' }, nullable: true },
             },
             required: ['email'],
           },

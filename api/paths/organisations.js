@@ -1,19 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import { Organisation } from '../../lib/database.js';
-import { requireAdmin } from '../../lib/admin-gate.js';
+import { requirePermission, actorCanGrant, validateRbacFields } from '../../lib/auth/permissions.js';
+import { adminScope } from '../../lib/auth/admin-scope.js';
 
 /**
- * /api/organisations (collection) — ADMIN-gated.
- *   GET list organisations as `{ organisations: [{id, name}] }`.
- *
- * Used by the SPA Users admin tab to populate the org-filter list. No
- * pagination — the org set is bounded and small.
+ * /api/organisations (collection) — RBAC-gated (`organisation:*`), org-scoped.
+ *   GET  list organisations. orgAdmin sees only their own; superAdmin/support
+ *        see all (cross-tenant `organisation:readAll`). Feeds both the SPA Users
+ *        admin tab org-filter and the (super-admin-only) org-edit modal.
+ *   POST create an organisation — superAdmin only (`organisation:create`).
  */
+const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'role', 'allowedModels', 'permissions'];
+
 export default function (logger) {
   const list = async (req, res) => {
-    if (!requireAdmin(res.locals.user)) return res.status(403).json({ message: 'Admin only' });
+    if (!requirePermission(res, 'organisation', 'read')) return;
     try {
       const rows = await Organisation.findAll({
-        attributes: ['id', 'name'],
+        where: { ...adminScope(res.locals.user, 'organisation') },
+        attributes: LIST_ATTRS,
         order: [['name', 'ASC']],
       });
       return res.send({ organisations: rows });
@@ -23,7 +28,7 @@ export default function (logger) {
     }
   };
   list.apiDoc = {
-    summary: 'List organisations (admin).',
+    summary: 'List organisations (admin). orgAdmin: own org only; superAdmin/support: all.',
     operationId: 'listOrganisations',
     tags: ['Organisations'],
     responses: {
@@ -34,28 +39,73 @@ export default function (logger) {
             schema: {
               type: 'object',
               properties: {
-                organisations: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      id: { type: 'string' },
-                      name: { type: 'string' },
-                    },
-                  },
-                },
+                organisations: { type: 'array', items: { type: 'object' } },
               },
               required: ['organisations'],
             },
           },
         },
       },
-      default: {
-        description: 'An error occurred',
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
-      },
+      default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
 
-  return { GET: list };
+  const create = async (req, res) => {
+    if (!requirePermission(res, 'organisation', 'create')) return; // superAdmin only
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ message: 'A name is required.' });
+    const role = typeof req.body?.role === 'string' ? req.body.role : null;
+    const permissions = req.body?.permissions ?? null;
+    const rbacErr = validateRbacFields(req.body);
+    if (rbacErr) return res.status(400).json({ message: rbacErr });
+    // An org baseline applies to every member — only grant within the actor's own
+    // effective permissions (defence-in-depth; this route is superAdmin-only).
+    if (!actorCanGrant(res.locals.user, { role, permissions })) {
+      return res.status(403).json({ message: 'forbidden', detail: 'You may only set an org baseline within capabilities you hold.' });
+    }
+    try {
+      const org = await Organisation.create({
+        id: randomUUID(),
+        name,
+        agentLimit: req.body?.agentLimit ?? null,
+        status: req.body?.status || 'active',
+        role,
+        permissions,
+        allowedModels: req.body?.allowedModels ?? null,
+      });
+      return res.status(201).send(org);
+    } catch (err) {
+      logger.error({ err: err?.message }, 'creating organisation');
+      return res.status(400).json({ message: err?.message || 'Failed to create organisation' });
+    }
+  };
+  create.apiDoc = {
+    summary: 'Create an organisation (super admin).',
+    operationId: 'createOrganisation',
+    tags: ['Organisations'],
+    requestBody: {
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              agentLimit: { type: 'integer', nullable: true },
+              status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'], default: 'active' },
+              role: { type: 'string', nullable: true },
+              permissions: { type: 'object', nullable: true },
+              allowedModels: { type: 'array', items: { type: 'string' }, nullable: true },
+            },
+            required: ['name'],
+          },
+        },
+      },
+    },
+    responses: {
+      201: { description: 'Created organisation' },
+      default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+    },
+  };
+
+  return { GET: list, POST: create };
 }

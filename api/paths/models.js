@@ -1,4 +1,5 @@
 import handlers from '../../lib/handlers/index.js';
+import { isModelAllowed } from '../../lib/auth/model-access.js';
 
 let appParameters, log;
 
@@ -14,8 +15,12 @@ export default function (logger) {
 
 const modelList = async (req, res) => {
   try {
+    // R1 — only surface models permitted by this principal's effective allow-list.
+    const allowed = res.locals?.user?._allowedModels;
     res.send(Object.fromEntries(
-      (await handlers()).models.map(({
+      (await handlers()).models
+        .filter(({ name }) => isModelAllowed(name, allowed))
+        .map(({
         name,
         description,
         supportsFunctions,

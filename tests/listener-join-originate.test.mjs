@@ -154,7 +154,9 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const res = {
       _status: null,
       _body: null,
-      locals: {}
+      // Default to the test owner so RBAC gates pass + ownership checks resolve;
+      // individual tests override res.locals.user for cross-tenant cases.
+      locals: { user: { role: 'owner', id: testUserId, organisationId: testOrgId } }
     };
     
     res.status = (code) => {
@@ -166,7 +168,12 @@ describe('Listener Join and Originate Endpoints Test', () => {
       res._body = body;
       return res;
     };
-    
+
+    res.json = (body) => {
+      res._body = body;
+      return res;
+    };
+
     res.set = (key, value) => {
       res.headers = res.headers || {};
       res.headers[key] = value;
@@ -213,7 +220,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const agentRes = createMockResponse();
-    agentRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    agentRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
 
     await createAgent(agentReq, agentRes);
     testAgentId = agentRes._body.id;
@@ -234,7 +241,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const phoneRes = createMockResponse();
-    phoneRes.locals.user = { organisationId: testOrgId };
+    phoneRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await createPhoneEndpoint(phoneReq, phoneRes);
     testPhoneNumberId = phoneRes._body.number;
@@ -257,7 +264,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const registrationRes = createMockResponse();
-    registrationRes.locals.user = { organisationId: testOrgId };
+    registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await createPhoneEndpoint(registrationReq, registrationRes);
     testRegistrationId = registrationRes._body.id;
@@ -276,7 +283,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -312,7 +319,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -330,7 +337,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq, originateRes);
 
@@ -354,7 +361,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
     expect(listenerRes._body).toHaveProperty('id');
@@ -375,7 +382,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq, originateRes);
 
@@ -405,7 +412,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
 
     expect(listenerRes._status === 200 || listenerRes._status === null).toBe(true);
@@ -423,7 +430,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq, originateRes);
 
@@ -449,7 +456,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const registrationRes = createMockResponse();
-    registrationRes.locals.user = { organisationId: testOrgId };
+    registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
     await createPhoneEndpoint(registrationReq, registrationRes);
     const regId = registrationRes._body.id;
 
@@ -458,7 +465,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { id: regId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     const regListenerId = listenerRes._body.id;
 
@@ -471,7 +478,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq, originateRes);
 
     expect(originateRes._status).toBe(400);
@@ -493,7 +500,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const registrationRes = createMockResponse();
-    registrationRes.locals.user = { organisationId: testOrgId };
+    registrationRes.locals.user = { role: 'owner', organisationId: testOrgId };
     await createPhoneEndpoint(registrationReq, registrationRes);
     const regId = registrationRes._body.id;
 
@@ -502,7 +509,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { id: regId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     const regListenerId = listenerRes._body.id;
 
@@ -515,7 +522,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq, originateRes);
 
     expect(originateRes._status).toBe(400);
@@ -535,7 +542,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -568,7 +575,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testRegistrationListenerId = listenerRes._body.id;
 
@@ -601,7 +608,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testWebRTCListenerId = listenerRes._body.id;
 
@@ -616,7 +623,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq, originateRes);
 
@@ -644,7 +651,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -657,7 +664,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes1 = createMockResponse();
-    originateRes1.locals.user = { organisationId: testOrgId };
+    originateRes1.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq1, originateRes1);
 
@@ -674,7 +681,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq2, originateRes2);
 
@@ -697,7 +704,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     });
     const listenerRes = createMockResponse();
 
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -710,7 +717,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
     await originateCall(originateReq, originateRes);
 
@@ -731,7 +738,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -744,7 +751,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes1 = createMockResponse();
-    originateRes1.locals.user = { organisationId: testOrgId };
+    originateRes1.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq1, originateRes1);
     expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
     expect(originateRes1._body).toHaveProperty('success', true);
@@ -758,7 +765,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq2, originateRes2);
     expect(originateRes2._status === 200 || originateRes2._status === null).toBe(true);
     expect(originateRes2._body).toHaveProperty('success', true);
@@ -775,7 +782,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -788,7 +795,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes1 = createMockResponse();
-    originateRes1.locals.user = { organisationId: testOrgId };
+    originateRes1.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq1, originateRes1);
     expect(originateRes1._status).toBe(400);
     expect(originateRes1._body).toHaveProperty('error');
@@ -803,7 +810,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq2, originateRes2);
     expect(originateRes2._status).toBe(400);
     expect(originateRes2._body).toHaveProperty('error');
@@ -821,7 +828,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -834,7 +841,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes = createMockResponse();
-    originateRes.locals.user = { organisationId: testOrgId };
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq, originateRes);
     expect(originateRes._status === 200 || originateRes._status === null).toBe(true);
     expect(originateRes._body).toHaveProperty('success', true);
@@ -848,7 +855,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq2, originateRes2);
     expect(originateRes2._status).toBe(400);
     expect(originateRes2._body).toHaveProperty('error');
@@ -866,7 +873,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -881,7 +888,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
         }
       });
       const originateRes = createMockResponse();
-      originateRes.locals.user = { organisationId: testOrgId };
+      originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
       await originateCall(originateReq, originateRes);
       expect(originateRes._status === 200 || originateRes._status === null).toBe(true);
       expect(originateRes._body).toHaveProperty('success', true);
@@ -898,7 +905,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
         }
       });
       const originateRes = createMockResponse();
-      originateRes.locals.user = { organisationId: testOrgId };
+      originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
       await originateCall(originateReq, originateRes);
       expect(originateRes._status).toBe(400);
       expect(originateRes._body).toHaveProperty('error');
@@ -917,7 +924,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -930,7 +937,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes1 = createMockResponse();
-    originateRes1.locals.user = { organisationId: testOrgId };
+    originateRes1.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq1, originateRes1);
     expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
     expect(originateRes1._body).toHaveProperty('success', true);
@@ -944,7 +951,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq2, originateRes2);
     expect(originateRes2._status === 200 || originateRes2._status === null).toBe(true);
     expect(originateRes2._body).toHaveProperty('success', true);
@@ -958,7 +965,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes3 = createMockResponse();
-    originateRes3.locals.user = { organisationId: testOrgId };
+    originateRes3.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq3, originateRes3);
     expect(originateRes3._status).toBe(400);
     expect(originateRes3._body).toHaveProperty('error');
@@ -976,7 +983,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       body: { number: testPhoneNumberId }
     });
     const listenerRes = createMockResponse();
-    listenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
     await createListener(listenerReq, listenerRes);
     testPhoneListenerId = listenerRes._body.id;
 
@@ -989,7 +996,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes1 = createMockResponse();
-    originateRes1.locals.user = { organisationId: testOrgId };
+    originateRes1.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq1, originateRes1);
     expect(originateRes1._status === 200 || originateRes1._status === null).toBe(true);
     expect(originateRes1._body).toHaveProperty('success', true);
@@ -1003,7 +1010,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
       }
     });
     const originateRes2 = createMockResponse();
-    originateRes2.locals.user = { organisationId: testOrgId };
+    originateRes2.locals.user = { role: 'owner', organisationId: testOrgId };
     await originateCall(originateReq2, originateRes2);
     expect(originateRes2._status).toBe(400);
     expect(originateRes2._body).toHaveProperty('error');

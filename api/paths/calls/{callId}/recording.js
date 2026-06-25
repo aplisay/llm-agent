@@ -1,5 +1,6 @@
 import { Call, CallRecordingDownload } from '../../../../lib/database.js';
 import { Storage } from '@google-cloud/storage';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 import {
   GcmDecryptStream,
   parseGcsPath,
@@ -10,6 +11,7 @@ export default function (logger) {
   const storage = new Storage();
 
   const getCallRecording = async (req, res) => {
+    if (!requirePermission(res, 'recording', 'download')) return;
     const { callId } = req.params;
 
     const where = { id: callId, ...res.locals.user.sql.where };
@@ -167,6 +169,7 @@ export default function (logger) {
 }
 
 async function deleteCallRecording(req, res) {
+  if (!requirePermission(res, 'recording', 'delete')) return;
   const { callId } = req.params;
   const storage = new Storage();
 

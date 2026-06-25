@@ -1,5 +1,6 @@
 import { Call, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 let appParameters, log;
 
 export default function (logger) {
@@ -7,6 +8,7 @@ export default function (logger) {
   log = logger;
 
   const listAllCalls = (async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     try {
       let { startDate, endDate, lastIndex = 0, limit = 50 } = req.query;
       let where = {

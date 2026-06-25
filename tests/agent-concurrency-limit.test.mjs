@@ -52,7 +52,7 @@ describe('Agent concurrency limits', () => {
       phone: '+10000000000',
       phoneVerified: true,
       picture: 'https://example.com/p.png',
-      role: { admin: true },
+      role: 'owner',
       agentLimit: agentLimitUser,
     });
     const agent = await Agent.create({
@@ -112,7 +112,7 @@ describe('Agent concurrency limits', () => {
       phone: '+10000000000',
       phoneVerified: true,
       picture: 'https://example.com/p.png',
-      role: { admin: true },
+      role: 'owner',
       agentLimit: agentLimitUser,
     });
 
@@ -184,7 +184,7 @@ describe('Agent concurrency limits', () => {
         phone: '+1',
         phoneVerified: true,
         picture: 'x',
-        role: { admin: true },
+        role: 'owner',
       });
     }
     const a1 = await Agent.create({

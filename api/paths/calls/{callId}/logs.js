@@ -1,10 +1,12 @@
 import { TransactionLog  } from '../../../../lib/database.js';;
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 
 
 export default function (logger) {
   
   const callTransactionLog = async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     let { callId } = req.params;
 
     let where = { callId, ...res.locals.user.sql.where };

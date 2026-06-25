@@ -198,6 +198,22 @@ can be built without another migration churn. It does **not** design that server
 
 ## 4. RBAC model
 
+> **Build spec:** the concrete, file-level implementation of everything in this
+> section — plus four requirements added 2026-06-25 (prefix-based **model access
+> control**, **org-inherited baseline permissions**, an **org-scoped user admin**
+> `orgAdmin`, and a **cross-tenant super admin** `superAdmin`) — lives in
+> [rbac-implementation-plan.md](./rbac-implementation-plan.md). Key deltas from the
+> sketch below: roles are plain provider-agnostic functions (no Better-Auth
+> `admin()`/`createAccessControl`); the named role is migrated **in place**
+> JSONB→STRING; effective perms = `resolve(org) ∪ resolve(user)` (org is the
+> floor); `*:readAll` is the cross-tenant marker distinguishing `orgAdmin` from
+> `superAdmin`; a per-user/per-org `allowedModels` prefix list gates
+> `/models`, agent create, list and get; and — superseding §4.2/§4.4 — the
+> `voiceAgent`/`textAgent` resource split is **collapsed into one `agent`
+> resource**. Text-vs-audio is enforced **solely** by the `allowedModels` prefix
+> list (`textOnly`=`['text:']`, `audioOnly`=`['livekit:','pipecat:','ultravox:']`),
+> not by separate permissions — one mechanism.
+
 ### 4.1 Two orthogonal axes — do not conflate
 
 | Axis | Question | Where it lives |

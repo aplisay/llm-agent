@@ -1,5 +1,7 @@
 import { createChatSession } from '../../../../lib/text-chat.js';
 import { resolveAgentForUser } from '../../../../lib/builtin-agents.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { isModelAllowed } from '../../../../lib/auth/model-access.js';
 
 let log;
 
@@ -19,9 +21,14 @@ export default function (logger) {
  */
 const agentChat = async (req, res) => {
   const { agentId } = req.params;
+  if (!requirePermission(res, 'agent', 'invoke')) return;
   try {
-    const { agent } = await resolveAgentForUser(agentId, res.locals.user);
+    const { agent, builtin } = await resolveAgentForUser(agentId, res.locals.user);
     if (!agent) {
+      return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
+    }
+    // R1/F7 — built-ins are gated by their `builtin:<id>` access prefix.
+    if (builtin && !isModelAllowed(agentId, res.locals.user?._allowedModels)) {
       return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
     }
     if ((agent.type || 'interactive-audio') !== 'text') {

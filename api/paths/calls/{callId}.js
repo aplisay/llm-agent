@@ -1,8 +1,10 @@
 import { Call } from '../../../lib/database.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 export default function (logger) {
 
   const getCall = async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     const { callId } = req.params;
 
     const where = { id: callId, ...res.locals.user.sql.where };

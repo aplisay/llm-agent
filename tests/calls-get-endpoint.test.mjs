@@ -43,7 +43,7 @@ describe('GET /calls/{callId} Endpoint Test', () => {
 
   // Build a mock response whose locals.user is scoped to the given org/user,
   // mirroring what the auth middleware attaches (`user.sql.where`).
-  const createMockResponse = (user = { id: 'test-user-id', organisationId: 'test-org-id' }) => {
+  const createMockResponse = (user = { id: 'test-user-id', organisationId: 'test-org-id', role: 'owner' }) => {
     const res = {
       _status: null,
       _body: null,
@@ -62,6 +62,11 @@ describe('GET /calls/{callId} Endpoint Test', () => {
       return res;
     };
 
+    res.json = (body) => {
+      res._body = body;
+      return res;
+    };
+
     return res;
   };
 
@@ -75,7 +80,7 @@ describe('GET /calls/{callId} Endpoint Test', () => {
       phone: '0000',
       phoneVerified: false,
       picture: '',
-      role: { admin: true }
+      role: 'owner'
     });
 
     // hooks: false and an explicit index avoids the custom beforeCreate logic
@@ -152,7 +157,7 @@ describe('GET /calls/{callId} Endpoint Test', () => {
 
     // A user from a different organisation must not be able to read the call.
     const req = createMockRequest({ params: { callId: call.id } });
-    const res = createMockResponse({ id: 'other-user-id', organisationId: 'other-org-id' });
+    const res = createMockResponse({ id: 'other-user-id', organisationId: 'other-org-id', role: 'owner' });
 
     await getCall(req, res);
 

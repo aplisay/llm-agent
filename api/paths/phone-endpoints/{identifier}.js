@@ -2,6 +2,7 @@ import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
 import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy } from '../../../lib/validation.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 let log;
 
@@ -15,6 +16,7 @@ export default function (logger) {
 };
 
 const getPhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   const { organisationId } = res.locals.user || {};
   const { identifier } = req.params;
 
@@ -167,6 +169,7 @@ getPhoneEndpoint.apiDoc = {
 };
 
 const updatePhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'update')) return;
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
   const updateData = req.body;
@@ -311,6 +314,7 @@ const updatePhoneEndpoint = async (req, res) => {
 };
 
 const deletePhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'release')) return;
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
 

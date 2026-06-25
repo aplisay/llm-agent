@@ -12,6 +12,7 @@
 import { Agent, AgentSet } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { renderSet, sendAgentSetError } from '../agent-sets.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 let log;
 
@@ -31,6 +32,7 @@ function labelFor(name) {
 }
 
 const agentSetFromAgent = async (req, res) => {
+  if (!requirePermission(res, 'agentSet', 'create')) return;
   const { agentId, name } = req.body;
   const user = res.locals.user;
 

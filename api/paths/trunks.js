@@ -1,4 +1,5 @@
 import { Trunk, Organisation, Op } from '../../lib/database.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 let log;
 
@@ -10,6 +11,7 @@ export default function (logger) {
 };
 
 const listTrunks = async (req, res) => {
+  if (!requirePermission(res, 'trunk', 'read')) return;
   const { organisationId } = res.locals.user || {};
   const { offset, pageSize } = req.query || {};
   try {

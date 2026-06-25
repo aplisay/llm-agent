@@ -25,7 +25,8 @@ function makeRes(user) {
     statusCode: 200,
     body: undefined,
     status(code) { this.statusCode = code; return this; },
-    send(payload) { this.body = payload; return this; }
+    send(payload) { this.body = payload; return this; },
+    json(payload) { this.body = payload; return this; }
   };
   return res;
 }
@@ -145,10 +146,10 @@ describe('Agent sets', () => {
       phone: '+15550000000',
       phoneVerified: false,
       picture: '',
-      role: { admin: true },
+      role: 'owner',
       organisationId: org.id
     });
-    user = { id: dbUser.id, organisationId: org.id };
+    user = { id: dbUser.id, organisationId: org.id, role: 'owner' };
   });
 
   test('creates a set, fixing up label references to member UUIDs', async () => {
@@ -328,7 +329,7 @@ describe('Agent sets', () => {
     const createRes = makeRes(user);
     await createAgentSet(makeReq(setDocument()), createRes);
 
-    const stranger = { id: randomUUID(), organisationId: null };
+    const stranger = { id: randomUUID(), organisationId: null, role: 'owner' };
     const getRes = makeRes(stranger);
     await getAgentSet(makeReq({}, { agentSetId: createRes.body.id }), getRes);
     expect(getRes.statusCode).toBe(404);

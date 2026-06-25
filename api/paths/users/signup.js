@@ -60,7 +60,8 @@ export default function (logger) {
         // perform API ops until an admin activates it. `autoSignIn` creates a
         // session we don't use (the user is gated regardless). signUpEmail also
         // fires the verification email (emailVerification.sendOnSignUp), so we do
-        // NOT send it again below. Then override the admin role-default to {}.
+        // NOT send it again below. role defaults to 'owner' (PG/model default) and
+        // status stays 'provisional', so the user is gated until an admin activates.
         // (NB: users-api-design.md named auth.api.createUser — switched to
         // signUpEmail to avoid enabling the admin() plugin.)
         await auth.api.signUpEmail({
@@ -68,16 +69,16 @@ export default function (logger) {
         });
         const organisationId = await createProvisionalOrg(orgName);
         await User.update(
-          { role: {}, signupMethod: 'self-signup', ...(organisationId ? { organisationId } : {}) },
+          { signupMethod: 'self-signup', ...(organisationId ? { organisationId } : {}) },
           { where: { email } },
         );
         return res.json({ ok: true, status: 'pending', message: 'Check your inbox to confirm.' });
       }
 
       if (!existing) {
-        // Credential-less waitlist row (no `account` => cannot log in). role={}
-        // overrides the admin column-default; status defaults 'provisional'. The
-        // provisional org + user are created atomically so a failure leaves neither.
+        // Credential-less waitlist row (no `account` => cannot log in). role
+        // defaults to 'owner'; status 'provisional' gates the user until an admin
+        // activates. The provisional org + user are created atomically.
         await User.sequelize.transaction(async (t) => {
           const organisationId = await createProvisionalOrg(orgName, { transaction: t });
           await User.upsert({
@@ -85,7 +86,6 @@ export default function (logger) {
             email,
             name,
             emailVerified: false,
-            role: {},
             status: 'provisional',
             signupMethod: 'waitlist',
             ...(organisationId ? { organisationId } : {}),

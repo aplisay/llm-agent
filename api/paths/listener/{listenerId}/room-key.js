@@ -1,5 +1,6 @@
 import { Agent, Instance, PhoneNumber } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 /**
  * Room key + id for embedding @aplisay/react-widget (see https://widget.aplisay.com).
@@ -11,6 +12,7 @@ export default function (logger) {
 }
 
 const roomKeyGet = async (req, res) => {
+  if (!requirePermission(res, 'agent', 'read')) return;
   const { listenerId } = req.params;
   const agentScope = scopeWhereForUser(res.locals.user);
 

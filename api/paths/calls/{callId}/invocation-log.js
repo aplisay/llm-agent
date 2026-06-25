@@ -1,8 +1,10 @@
 import { InvocationLog } from '../../../../lib/database.js';
 import { gunzipSync } from 'zlib';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 export default function (logger) {
   const getInvocationLog = async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     const { callId } = req.params;
 
     const where = { callId, ...res.locals.user.sql.where };
