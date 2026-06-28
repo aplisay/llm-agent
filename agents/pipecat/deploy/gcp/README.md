@@ -11,8 +11,10 @@ from `aplisay-b2bua/deploy/gcp/`.
   root (the Dockerfile pulls in `agents/pipecat/`); the other two services
   build from their own directories. Tags pushed: `:next` and `:$COMMIT_SHA`
   (staging uses the `next` tag).
-- [`cloudbuild.yaml`](cloudbuild.yaml) — same build, tagged `:latest` and
-  `:$COMMIT_SHA`. Use for production releases.
+- [`cloudbuild.yaml`](cloudbuild.yaml) — same build, **per commit to main**.
+  Tags `:$COMMIT_SHA` only — it no longer tags `:latest`. Promotion to
+  `:latest` / `:$TAG_NAME` is done as a group at release time by the top-level
+  [`cloudbuild-release.yaml`](../../../../cloudbuild-release.yaml).
 - [`docker-compose.gcp.yml`](docker-compose.gcp.yml) — production / staging
   compose that **pulls** from Artifact Registry rather than building locally.
 - [`env-example-staging`](env-example-staging) /
@@ -29,7 +31,8 @@ from `aplisay-b2bua/deploy/gcp/`.
 ${LOCATION}-docker.pkg.dev/${PROJECT_ID}/containers/${REPO_NAME}/<image>:{$SHA, next, latest}
 #   <image> ∈ { freeswitch, esl-poller, sipbridge, secretenv-exec, pipecat-worker }
 #   next   = staging tag (cloudbuild-staging.yaml)
-#   latest = production tag (cloudbuild.yaml)
+#   latest = production tag — applied at release time by cloudbuild-release.yaml
+#            (top level), which promotes a verified :$SHA build as a group
 ```
 
 Defaults from the env templates: `LOCATION=europe-west1`,
@@ -46,12 +49,18 @@ gcloud builds submit \
     --substitutions LOCATION=europe-west1 \
     .
 
-# Production
+# Production (per-commit build — :$COMMIT_SHA only, no :latest)
 gcloud builds submit \
     --config agents/pipecat/deploy/gcp/cloudbuild.yaml \
     --substitutions LOCATION=europe-west1 \
     .
 ```
+
+Production `:latest` is **not** produced here. A versioned release tag on main
+runs the top-level [`cloudbuild-release.yaml`](../../../../cloudbuild-release.yaml),
+which verifies that every image (the five Pipecat images plus the Cloud Run
+services) exists at the release `:$COMMIT_SHA`, **aborts if any is missing**, and
+then promotes them all to `:latest` / `:$TAG_NAME` as a group before deploying.
 
 The build runs from the repo root so the `pipecat-worker` Dockerfile can pull
 in `agents/pipecat/` files. Both other services have self-contained build

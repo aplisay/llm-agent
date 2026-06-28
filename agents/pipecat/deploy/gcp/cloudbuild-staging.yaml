@@ -1,11 +1,13 @@
 # Cloud Build — Pipecat agent stack (staging).
 #
-# Builds and pushes four images to Artifact Registry:
+# Builds and pushes five images to Artifact Registry:
 #   - freeswitch       (agents/pipecat/freeswitch)
 #   - esl-poller       (agents/pipecat/esl-poller)
 #   - sipbridge        (agents/pipecat/sipbridge — Go SIP UAS, build context
 #                       is the repo root because its Dockerfile COPYs
 #                       agents/pipecat/sipbridge into the image)
+#   - secretenv-exec   (agents/pipecat/sipbridge/Dockerfile.secretenv-exec —
+#                       static decrypt-and-exec wrapper; build context repo root)
 #   - pipecat-worker   (Dockerfile lives in agents/pipecat/, build context is
 #                       the repo root because the worker Dockerfile COPYs
 #                       agents/pipecat into the image)

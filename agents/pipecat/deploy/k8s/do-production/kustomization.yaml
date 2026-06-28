@@ -39,4 +39,4 @@ patches:
       # (Remove this op + the webrtc-do component to deploy SIP-only.)
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
-        value: REPLACE_WITH_PRODUCTION_DO_CERT_ID
+        value: 00e0dbb7-ccbc-4ec6-925e-c418c7c679db

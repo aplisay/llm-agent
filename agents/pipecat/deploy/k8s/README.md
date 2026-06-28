@@ -77,10 +77,11 @@ deploy/k8s/
    ```
    kubectl label node <node> aplisay.com/pipecat-sip=true
    ```
-2. **Firewall** opened on those nodes, scoped to your SBC source ranges:
-   - `TCP 5061` (SIP TLS)
+2. **Firewall** opened on those nodes:
+   - `TCP 5061` (SIP TLS) — from your SBC source ranges
    - `UDP 10000-20000` (RTP — sipbridge / voiceblender) **or** `UDP 16384-16484`
-     (RTP — FreeSWITCH; see its `vars.xml`)
+     (RTP — FreeSWITCH; see its `vars.xml`) — **open to all sources** (`0.0.0.0/0`):
+     we take direct media from any source IP, so the RTP range is not source-scoped
 3. **Images** — the deploy pulls the same Artifact Registry images that
    [`../gcp/cloudbuild*.yaml`](../gcp) build:
    `europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/{pipecat-worker,sipbridge,freeswitch,esl-poller}`.
@@ -289,7 +290,8 @@ what we want. Firewall:
 gcloud compute firewall-rules create pipecat-sip-tls \
     --allow tcp:5061 --target-tags <node-pool-tag> --source-ranges <SBC_CIDRS>
 gcloud compute firewall-rules create pipecat-rtp \
-    --allow udp:10000-20000 --target-tags <node-pool-tag> --source-ranges <SBC_CIDRS>
+    --allow udp:10000-20000 --target-tags <node-pool-tag> \
+    --source-ranges 0.0.0.0/0   # RTP media: direct from any source, not SBC-scoped
 ```
 The worker can also pull provider keys from Secret Manager via
 `GOOGLE_SECRETENV_PATH` (as in the VM deploy) instead of the `pipecat-secrets`
@@ -297,8 +299,9 @@ Secret — add it to `pipecat-config` and grant the nodes' SA access.
 
 **AWS / EKS.** Run the SIP node group in a **public subnet with auto-assign
 public IPv4** (or attach an EIP per node). Use `components/cloud-aws` (NLB,
-`instance` target type). Open `TCP 5061` and `UDP 10000-20000` from the SBC
-ranges in the node security group. Requires the AWS Load Balancer Controller.
+`instance` target type). Open `TCP 5061` from the SBC ranges and `UDP 10000-20000`
+(RTP media) from **all sources** in the node security group — we take direct media
+from any source IP. Requires the AWS Load Balancer Controller.
 
 **DigitalOcean / DOKS.** Worker droplets have public IPs by default. Use
 `components/cloud-digitalocean` (TCP-mode LB), or the ready-made `do-staging` /
@@ -321,11 +324,13 @@ assigned — see *Adding per-cloud LB annotations* above.
 > doctl compute firewall create \
 >     --name pipecat-rtp \
 >     --tag-names "k8s:<cluster-id>" \
->     --inbound-rules "protocol:udp,ports:10000-20000,address:<SBC_CIDR_1>,address:<SBC_CIDR_2>"
+>     --inbound-rules "protocol:udp,ports:10000-20000,address:0.0.0.0/0,address:::/0"
 > ```
 >
-> (FreeSWITCH overlay uses `UDP 16384-16484` instead. Scope `address:` to your SBC
-> ranges, not `0.0.0.0/0`.)
+> (FreeSWITCH overlay uses `UDP 16384-16484` instead.) The RTP range is **open to
+> all sources** (`0.0.0.0/0` + `::/0`): we take direct media from any source IP, so
+> it is not source-scoped. (sipbridge only processes RTP on ports it negotiated per
+> active call, so stray packets to the range are ignored.)
 
 **imagePullSecret for Artifact Registry (EKS/DOKS):**
 ```bash
@@ -396,7 +401,7 @@ Service is ClusterIP (in-cluster only). Rather than a second LB, the
 TLS-terminated listener. DO runs both on one LB: `5061` stays TCP passthrough
 (the gateway does its own SIP TLS); `443` terminates with a Let's Encrypt cert
 and forwards plain HTTP to the worker. The LB keeps its IP (same Service/name) —
-e.g. the staging LB at **129.212.220.15**.
+e.g. the staging LB at **134.209.137.127**.
 
 llm-agent runs **off-cluster**, so point **both** `PIPECAT_PUBLIC_URL`
 (browser → `/webrtc/offer`) and `PIPECAT_WORKER_URL` (server → `/dispatch`) at
@@ -424,11 +429,11 @@ doctl compute certificate create --type lets_encrypt \
 doctl compute certificate list      # copy the cert's ID (UUID)
 
 # 2. Put the ID in do-staging/kustomization.yaml -> do-loadbalancer-certificate-id,
-#    then roll the LB (adds 443->8082 TLS, keeps 5061 + the IP 129.212.220.15):
+#    then roll the LB (adds 443->8082 TLS, keeps 5061 + the IP 134.209.137.127):
 kubectl apply -k do-staging
 ```
 
-The A record (`staging.pipecat.aplisay.net` → 129.212.220.15) is already in place.
+The A record (`staging.pipecat.aplisay.net` → 134.209.137.127) is already in place.
 On the **llm-agent server** set `PIPECAT_PUBLIC_URL` = `PIPECAT_WORKER_URL` =
 `https://staging.pipecat.aplisay.net`. **Production** is identical with
 `production.pipecat.aplisay.net` + `do-production/` (its own cert).
@@ -444,10 +449,11 @@ On the **llm-agent server** set `PIPECAT_PUBLIC_URL` = `PIPECAT_WORKER_URL` =
 >   jsonpath='{.metadata.annotations.service\.beta\.kubernetes\.io/do-loadbalancer-certificate-id}'
 > ```
 
-**2. WebRTC media UDP — a separate, internet-open range.** You **cannot** reuse
-the SIP RTP range (`10000-20000`): that's bound by sipbridge on the same
-hostNetwork node (collision), and it's firewalled to **SBC** source IPs, whereas
-browser media arrives from **anywhere**. The worker's ICE layer (aioice) binds
+**2. WebRTC media UDP — a separate range.** You **cannot** reuse the SIP RTP
+range (`10000-20000`): it's already bound by sipbridge on the same hostNetwork
+node, so a second media handler would collide on those ports. (Both ranges are
+open to all sources, so it's a port-collision constraint, not a firewall one.)
+The worker's ICE layer (aioice) binds
 **OS-ephemeral UDP ports** — there is no port-range knob — so open the node's
 ephemeral range to browsers (default Linux `net.ipv4.ip_local_port_range` is
 **32768-60999**):
@@ -508,8 +514,8 @@ for clusters with no cloud metadata).
 
 End-to-end smoke test: point a test SBC at the LB address on **5061/TLS**, place a
 call, and confirm two-way audio (RTP reaching the answering node's external IP).
-Confirm the firewall only exposes `TCP 5061` + the RTP UDP range to your SBC
-ranges.
+Confirm the firewall scopes `TCP 5061` to your SBC ranges; the RTP/WebRTC media
+UDP ranges are intentionally open to all sources (direct media from any source IP).
 
 ## Out of scope (follow-ups)
 

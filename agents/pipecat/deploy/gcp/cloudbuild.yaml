@@ -1,10 +1,13 @@
-# Cloud Build — Pipecat agent stack (production / `latest`).
+# Cloud Build — Pipecat agent stack (per-commit build).
 #
-# Same three-image build as cloudbuild-staging.yaml but tags the result with
-# `latest` instead of `staging`. Use a tag-triggered build for releases:
-#
-#   gcloud builds submit --config agents/pipecat/deploy/gcp/cloudbuild.yaml \
-#       --substitutions LOCATION=europe-west1
+# Runs on every commit to main. Builds and pushes the five images (freeswitch,
+# esl-poller, sipbridge, secretenv-exec, pipecat-worker) tagged with the commit
+# SHA only — it does NOT tag :latest. Promotion to :latest / :$TAG_NAME happens
+# as a group at release time via the top-level cloudbuild-release.yaml
+# (triggered by a version tag); the K8s daemonsets pull :latest in the
+# env-production overlay, so the release :latest promotion + a kubectl rollout
+# is their deploy path. The :next staging tag is produced separately by
+# cloudbuild-staging.yaml.
 #
 # Adapted from aplisay-b2bua/deploy/gcp/cloudbuild.yaml.
 steps:
@@ -17,9 +20,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:latest
       - '-f'
       - './agents/pipecat/freeswitch/Dockerfile'
       - './agents/pipecat/freeswitch'
@@ -28,9 +28,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
     id: Push-freeswitch
 
   - name: gcr.io/cloud-builders/docker
@@ -40,9 +39,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:latest
       - '-f'
       - './agents/pipecat/esl-poller/Dockerfile'
       - './agents/pipecat/esl-poller'
@@ -51,9 +47,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
     id: Push-esl-poller
 
   # ----- sipbridge -----
@@ -64,9 +59,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:latest
       - '-f'
       - './agents/pipecat/sipbridge/Dockerfile'
       - '.'
@@ -75,9 +67,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
     id: Push-sipbridge
 
   # ----- secretenv-exec -----
@@ -91,9 +82,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:latest
       - '-f'
       - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
       - '.'
@@ -102,9 +90,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
     id: Push-secretenv-exec
 
   - name: gcr.io/cloud-builders/docker
@@ -114,9 +101,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:latest
       - '-f'
       - './agents/pipecat/Dockerfile'
       - '.'
@@ -125,9 +109,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
     id: Push-pipecat-worker
 
 images:
@@ -152,7 +135,7 @@ substitutions:
   _AR_HOSTNAME: $LOCATION-docker.pkg.dev
 
 tags:
-  - pipecat-agent-latest
+  - pipecat-agent
   - freeswitch
   - esl-poller
   - sipbridge
