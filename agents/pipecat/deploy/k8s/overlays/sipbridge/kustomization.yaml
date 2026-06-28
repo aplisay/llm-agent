@@ -1,0 +1,21 @@
+# sipbridge ingress — the DEFAULT Kubernetes gateway for the Pipecat agent.
+#
+# Best fit for the "all inbound is TLS on 5061" assumption: native TLS listener,
+# self-signed fallback, UDP signalling disabled, and a single static Go binary.
+#
+# Apply directly:
+#     kubectl apply -k overlays/sipbridge
+#
+# To add per-cloud LB annotations, create a thin local overlay that references
+# this overlay plus a cloud component, e.g.:
+#     resources: [../../overlays/sipbridge]
+#     components: [../../components/cloud-aws]
+# (or add the `components:` line below in your own copy).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: daemonset.yaml

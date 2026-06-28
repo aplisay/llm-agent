@@ -1,11 +1,18 @@
-import { voice } from "@livekit/agents";
+import { llm, voice } from "@livekit/agents";
 import type { VAD } from "@livekit/agents";
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
 import logger, { getCaptureStats } from "./logger.js";
 import { withTimeout } from "./utils.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
-import { setCallRecordingData, saveInvocationLog } from "./api-client.js";
+import {
+  createCall,
+  setCallRecordingData,
+  saveInvocationLog,
+  saveUsage,
+  getInternalAgentById,
+} from "./api-client.js";
+import type { Agent, Call } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
@@ -13,7 +20,10 @@ import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
-import { createVoiceModelAndSession } from "./voice-session-factory.js";
+import {
+  createVoiceModelAndSession,
+  inactivityAwayTimeoutSecs,
+} from "./voice-session-factory.js";
 
 export async function runAgentWorker({
   ctx,
@@ -38,6 +48,9 @@ export async function runAgentWorker({
   endTransferActivityIfNeeded,
   getTransferState,
   recordingOptions,
+  setActiveAgentCall,
+  startHandoverTone,
+  stopHandoverTone,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -222,11 +235,22 @@ export async function runAgentWorker({
   let watchdogInterval: NodeJS.Timeout | null = null;
   const WATCHDOG_INTERVAL_MS = 120 * 1000;
 
-  // DTMF buffering: accumulate digits and send as a single input after timeout
+  // DTMF buffering: accumulate digits and send as a single input after timeout.
+  // Both values default here and may be overridden per-agent from
+  // `agent.options.dtmfTimeout` / `agent.options.dtmfTerminator` once the agent
+  // is resolved (see below).
   let dtmfBuffer: string = "";
   let dtmfTimeout: NodeJS.Timeout | null = null;
-  const DTMF_TIMEOUT_MS = 1500; // 1.5 seconds of silence before sending
-  const DTMF_TERMINATOR = "#"; // Send immediately when this is pressed
+  let dtmfTimeoutMs = 1500; // 1.5 seconds of silence before sending
+  let dtmfTerminator = "#"; // Send immediately when this is pressed
+
+  // Inactivity "kick": repeating timer that re-speaks options.inactivity.message
+  // every `timeout` seconds while the user is in the "away" state. The first
+  // kick fires from the SDK `user_state_changed` → "away" event (driven by
+  // `voiceOptions.userAwayTimeout`); subsequent kicks come from this interval.
+  // Cleared when the user becomes active again or on teardown. Null/unset when
+  // options.inactivity is absent — zero behavioural change in that case.
+  let inactivityInterval: NodeJS.Timeout | null = null;
 
   let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
@@ -419,6 +443,96 @@ export async function runAgentWorker({
     );
   }
 
+  // ---- Usage metering ----
+  // Accumulate token / character / audio-duration counts emitted by the LiveKit
+  // metrics pipeline and flush them to the platform usage ledger
+  // (POST /api/agent-db/usage). Keyed per (technology, component label) so each
+  // model/vendor meters separately; flushed with mode "set" so a re-flush is
+  // idempotent. Shared across the main session and any post-handover sessions.
+  const usageMeters = new Map<
+    string,
+    { technology: string; provider?: string; detail?: string; units: Record<string, number> }
+  >();
+  const addMeter = (
+    technology: string,
+    label: string | undefined,
+    unit: string,
+    quantity: number | undefined,
+  ): void => {
+    if (!quantity || quantity <= 0) return;
+    const detail = label || modelName;
+    // Derive a coarse vendor from a "vendor.Component" / "vendor/model" label.
+    const provider = label ? label.split(/[./]/)[0] || undefined : undefined;
+    const key = `${technology}|${detail}`;
+    const meter = usageMeters.get(key) || { technology, provider, detail, units: {} };
+    meter.units[unit] = (meter.units[unit] || 0) + quantity;
+    usageMeters.set(key, meter);
+  };
+  const onMetrics = (m: any): void => {
+    try {
+      switch (m?.type) {
+        case "llm_metrics":
+          addMeter("llm", m.label, "input_tokens", m.promptTokens);
+          addMeter("llm", m.label, "output_tokens", m.completionTokens);
+          addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
+          break;
+        case "realtime_model_metrics":
+          addMeter("llm", m.label, "input_tokens", m.inputTokens);
+          addMeter("llm", m.label, "output_tokens", m.outputTokens);
+          addMeter("llm", m.label, "cache_read_tokens", m.inputTokenDetails?.cachedTokens);
+          break;
+        case "tts_metrics":
+          addMeter("tts", m.label, "characters", m.charactersCount);
+          addMeter("tts", m.label, "milliseconds", m.audioDurationMs);
+          break;
+        case "stt_metrics":
+          addMeter("stt", m.label, "milliseconds", m.audioDurationMs);
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      logger.debug({ e }, "usage metrics accumulation failed");
+    }
+  };
+  const wireUsageMetrics = (s: voice.AgentSession): void => {
+    s.on(voice.AgentSessionEventTypes.MetricsCollected, (ev: any) => {
+      if (isStaleSession(s)) return;
+      onMetrics(ev?.metrics);
+    });
+  };
+  const flushUsage = async (finalised: boolean): Promise<void> => {
+    try {
+      const c: any = getActiveCall();
+      if (!c?.id) return;
+      const records: any[] = [];
+      for (const meter of usageMeters.values()) {
+        for (const [unit, quantity] of Object.entries(meter.units)) {
+          if (!quantity) continue;
+          records.push({
+            sessionId: c.id,
+            callId: c.id,
+            organisationId: c.organisationId,
+            userId: c.userId,
+            agentId: c.agentId,
+            technology: meter.technology,
+            provider: meter.provider,
+            detail: meter.detail,
+            unit,
+            quantity,
+            mode: "set",
+            finalised,
+          });
+        }
+      }
+      if (records.length) {
+        await saveUsage(records);
+      }
+    } catch (e) {
+      logger.warn({ e }, "failed to flush usage to ledger");
+    }
+  };
+
   const cleanupAndClose = async (
     reason: string,
     logEndCall: boolean = false,
@@ -462,6 +576,11 @@ export async function runAgentWorker({
         clearTimeout(dtmfTimeout);
         dtmfTimeout = null;
       }
+      // Stop the inactivity-kick repeat timer
+      if (inactivityInterval) {
+        clearInterval(inactivityInterval);
+        inactivityInterval = null;
+      }
       // Stop the leak watchdog
       if (watchdogInterval) {
         clearInterval(watchdogInterval);
@@ -482,6 +601,10 @@ export async function runAgentWorker({
       }
 
 
+      // Flush accumulated usage (tokens / characters / audio) to the ledger
+      // before ending the call so it lands as the finalised session total.
+      await flushUsage(true);
+
       await getActiveCall()
         .end(reason)
         .catch((e) => {
@@ -501,8 +624,28 @@ export async function runAgentWorker({
         "cleanup and close completed (pre-shutdown)",
       );
       logger.debug("cleanup and close: shutting down context");
-      await ctx.shutdown(reason);
-      logger.debug("cleanup and close: context shutdown complete");
+      // Bound ctx.shutdown. After a blind-bridge call the SDK cannot fully
+      // drain the AgentSession (the underlying Ultravox pipeline is dead)
+      // and shutdown hangs until the 120s hard-exit timer fires. Cap it at
+      // 10s; if shutdown hangs, force-exit immediately rather than burning
+      // another 110 seconds of wall clock holding the worker slot. Our
+      // cleanup (room delete, call.end) already completed above so the DB
+      // state is consistent; only the SDK's internal teardown is incomplete.
+      try {
+        await withTimeout(
+          () => ctx.shutdown(reason),
+          10_000,
+          new Error("ctx.shutdown timed out after 10s"),
+        );
+        logger.debug("cleanup and close: context shutdown complete");
+      } catch (shutdownErr) {
+        logger.info(
+          { shutdownErr, reason },
+          "ctx.shutdown failed or timed out; forcing process exit",
+        );
+        // Defer one tick so the log line above is flushed before we exit.
+        setImmediate(() => process.exit(0));
+      }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       logger.info(
@@ -514,27 +657,466 @@ export async function runAgentWorker({
     }
   };
 
+  // ---- Agent-to-agent transfer (builtin transfer_agent) ----
+  // Conversation turns are captured so an in-call handover can carry the
+  // history into the next agent's context when `includeHistory` is set.
+  const conversationHistory: Array<{ role: "user" | "agent"; text: string }> =
+    [];
+
+  // The agent definition + model currently driving the session. Updated by
+  // both handover modes so chained transfers always compare against the live
+  // configuration rather than the original.
+  let activeAgentDef: Agent = agent;
+  let activeModelName: string = modelName;
+  // Suppresses the session-close / state teardown handlers while we
+  // intentionally close the outgoing session during a full-stack handover.
+  let agentHandoverInProgress = false;
+
+  // Every AgentSession event handler is wired to one specific session
+  // instance. After a full-stack agent handover the OLD session is superseded
+  // by the new one but keeps draining — and an Ultravox session whose close()
+  // we abandoned on timeout can emit its `Close` (and other) events *seconds*
+  // later, once `agentHandoverInProgress` has already been cleared. A stale
+  // session's late events must NOT drive teardown: doing so would end the new
+  // child call and delete the room out from under the still-connected caller.
+  // Only the session that is currently active may act on its events.
+  const isStaleSession = (s: voice.AgentSession | null): boolean => s !== session;
+
+  /**
+   * Compose the incoming agent's system prompt for a handover: its own prompt
+   * plus the takeover preamble, the optional LLM-written summary, and (when
+   * `includeHistory`) the conversation transcript so far. Used identically by
+   * the in-place swap and the full-stack restart.
+   */
+  const buildHandoverInstructions = (
+    newAgentDef: Agent,
+    includeHistory: boolean,
+    summary?: string,
+  ): string => {
+    let instructions = newAgentDef.prompt || "You are a helpful assistant.";
+    instructions +=
+      "\n\nYou have just taken over a live call from another agent." +
+      (includeHistory
+        ? ""
+        : " Treat this as a fresh conversation: disregard any prior context.");
+    if (summary) {
+      instructions += `\n\n# Handover summary from the previous agent\n${summary}`;
+    }
+    if (includeHistory && conversationHistory.length) {
+      instructions += `\n\n# Conversation so far\n${conversationHistory
+        .map(
+          ({ role, text }) =>
+            `${role === "user" ? "Caller" : "Agent"}: ${text}`,
+        )
+        .join("\n")}`;
+    }
+    return instructions;
+  };
+
+  /**
+   * Decide whether a handover can be done in place (same session keeps
+   * running; only prompt/tools change via llm.handoff) or needs a full-stack
+   * restart (new model/session into the same room, with a child call record).
+   *
+   * In place is only valid when the model string is unchanged AND the running
+   * stack can actually apply the swap: Ultravox realtime fixes its tool set at
+   * call creation, so any tool-surface change there forces a restart.
+   */
+  const canSwapAgentInPlace = (newAgentDef: Agent): boolean => {
+    const targetModelName = newAgentDef.modelName || activeModelName;
+    if (targetModelName !== activeModelName) {
+      return false;
+    }
+    const voiceMode =
+      resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options);
+    const isUltravoxRealtime =
+      voiceMode === "realtime" && activeModelName.includes(":ultravox/");
+    if (isUltravoxRealtime) {
+      const names = (def: Agent) =>
+        (def.functions ?? []).map((f) => f.name).sort().join(",");
+      if (names(activeAgentDef) !== names(newAgentDef)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Wire the handlers a freshly-started handover session needs: transcript
+   * capture, agent-initiated hangup, error logging, and close-driven teardown
+   * (suppressed while a further handover is in flight). Mirrors the inline
+   * wiring in the setup path; the startup-error watcher and watchdog are
+   * call-scoped and already running.
+   */
+  const wireHandoverSession = (s: voice.AgentSession, forAgent: Agent): void => {
+    const skipText =
+      forAgent.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.user?.fallback?.text?.trim() ??
+      "";
+    s.on(
+      voice.AgentSessionEventTypes.ConversationItemAdded,
+      ({
+        item: { type, role, content },
+        createdAt,
+      }: voice.ConversationItemAddedEvent) => {
+        if (isStaleSession(s)) return;
+        if (type === "message" && getConsultInProgress() === false) {
+          const text = content.join("");
+          if (role !== "user" || text !== skipText) {
+            conversationHistory.push({
+              role: role === "user" ? "user" : "agent",
+              text,
+            });
+            sendMessage(
+              { [role === "user" ? "user" : "agent"]: text },
+              createdAt ? new Date(createdAt) : undefined,
+            );
+          }
+        }
+      },
+    );
+    s.on(
+      voice.AgentSessionEventTypes.AgentStateChanged,
+      async (ev: voice.AgentStateChangedEvent) => {
+        if (isStaleSession(s)) return;
+        // The incoming agent has produced audio — the handover gap is over, so
+        // stop any comfort tone covering it (idempotent / no-op otherwise).
+        if (ev.newState === "speaking") {
+          stopHandoverTone?.();
+        }
+        sendMessage({ status: ev.newState });
+        if (ev.newState === "listening" && checkForHangup() && room.name) {
+          endTransferActivityIfNeeded(
+            DISCONNECT_REASONS.AGENT_INITIATED_HANGUP,
+          ).catch((transferError) => {
+            logger.error(
+              { transferError },
+              "error ending transfer activity during hangup",
+            );
+          });
+          await cleanupAndClose(DISCONNECT_REASONS.AGENT_INITIATED_HANGUP);
+        }
+      },
+    );
+    s.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
+      logger.error({ ev }, "error (handover session)");
+    });
+    // Keep metering the post-handover session into the same usage accumulator.
+    wireUsageMetrics(s);
+    s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
+      if (isStaleSession(s)) {
+        logger.info(
+          { ev },
+          "superseded session closed after handover; teardown suppressed",
+        );
+        return;
+      }
+      if (agentHandoverInProgress) {
+        logger.info({ ev }, "session closed during agent handover; teardown suppressed");
+        return;
+      }
+      logger.info({ ev }, "session closed");
+      void endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_CLOSED).catch(
+        (transferError) => {
+          logger.error(
+            { transferError },
+            "error ending transfer activity during session close",
+          );
+        },
+      );
+      void deleteRoomWithRetry(room.name).catch((e) => {
+        logger.error({ e }, "error deleting room on session close");
+      });
+      void getActiveCall()
+        .end(DISCONNECT_REASONS.SESSION_CLOSED)
+        .catch((e) => {
+          logger.error({ e }, "error ending call on session close");
+        });
+    });
+  };
+
+  /**
+   * Full-stack agent handover: stop the current agent session and start an
+   * entirely new one (model, voice stack and all) for `newAgentDef` in the
+   * same room, continuing the conversation with the same caller.
+   *
+   * Because the model string changes, a NEW call record is created with the
+   * original call as `parentId` (mirroring bridged transfers): usage and
+   * transcripts from here on are attributed to the new agent + model, and the
+   * original call ends with a pointer to its continuation. Prompt-only
+   * (in-place) swaps deliberately do NOT do this.
+   */
+  const restartWithAgent = async (
+    newAgentDef: Agent,
+    instructions: string,
+  ): Promise<void> => {
+    const targetModelName = newAgentDef.modelName!;
+    const targetHandler = targetModelName.split(":")[0];
+    if (targetHandler !== "livekit") {
+      throw new Error(
+        `agent ${newAgentDef.id} uses ${targetModelName}; a live LiveKit session can only hand over to livekit: models`,
+      );
+    }
+
+    const oldCall = getActiveCall();
+    // Reserve the continuation call (concurrency slot) BEFORE touching the
+    // running session, so a busy rejection leaves the current agent intact.
+    const newCall = (await createCall({
+      parentId: oldCall.id,
+      userId: oldCall.userId,
+      organisationId: oldCall.organisationId,
+      instanceId: oldCall.instanceId,
+      agentId: newAgentDef.id,
+      platform: "livekit",
+      platformCallId: room?.name,
+      calledId,
+      callerId,
+      modelName: targetModelName,
+      options: newAgentDef.options,
+      metadata: {
+        ...metadata,
+        aplisay: { ...(metadata?.aplisay || {}), model: targetModelName },
+      },
+    })) as Call;
+    await newCall.start();
+
+    // Slot reserved and the continuation call accepted: the handover will
+    // proceed. Announce it now — before the outgoing session is torn down and
+    // the incoming agent greets — so the transcript marker precedes the new
+    // agent's first turn. A busy rejection throws at newCall.start() above,
+    // before this point, so a failed transfer leaves no marker.
+    sendMessage({
+      inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
+    });
+
+    // Cover the dead-air gap: from here until the incoming agent first speaks
+    // (or fails) the caller would otherwise hear silence while the old session
+    // tears down and the new model stack connects. The tone publishes its own
+    // room track so it survives the session swap; it is stopped on the new
+    // agent's first "speaking" state change (see wireHandoverSession), on
+    // failure (catch below), or by the player's own max-duration backstop.
+    startHandoverTone?.();
+
+    agentHandoverInProgress = true;
+    try {
+      // Stop the outgoing session. Bounded: an Ultravox session whose socket
+      // is already winding down can hang in close(); the room and the new
+      // session don't depend on it completing.
+      const oldSession = session;
+      session = null;
+      sessionRef(null);
+      if (oldSession) {
+        await withTimeout(
+          () => oldSession.close(),
+          8_000,
+          new Error("old session close timed out"),
+        ).catch((e) => {
+          logger.warn(
+            { e: e instanceof Error ? e.message : String(e) },
+            "agent handover: old session close failed/timed out; continuing",
+          );
+        });
+      }
+
+      const voiceMode = resolveVoiceMode(targetModelName, newAgentDef.options);
+      const vad =
+        voiceMode === "pipeline"
+          ? (ctx.proc.userData as { vad?: VAD }).vad
+          : undefined;
+      // The factory reads instructions/voice/options from the agent def, so
+      // hand it the composed handover prompt in place of the raw one.
+      const agentForSession: Agent = { ...newAgentDef, prompt: instructions };
+      const tools = buildTools(newAgentDef);
+      const { session: newSession, model: newModel } =
+        createVoiceModelAndSession({
+          voiceMode,
+          modelName: targetModelName,
+          agent: agentForSession,
+          call: newCall,
+          tools,
+          vad,
+        });
+      wireHandoverSession(newSession, newAgentDef);
+
+      session = newSession;
+      sessionRef(newSession);
+      modelRef(newModel);
+      activeAgentDef = newAgentDef;
+      activeModelName = targetModelName;
+      resolvedVoiceMode = voiceMode;
+      setActiveAgentCall?.(newCall);
+
+      // Hand the records over: the original call ends pointing at its child.
+      await oldCall
+        .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
+        .catch((e) => {
+          logger.warn({ e }, "agent handover: ending original call failed");
+        });
+
+      if (recordingOptions?.enabled) {
+        logger.warn(
+          { callId: newCall.id },
+          "recording does not continue across a full agent handover; recorded audio covers up to the handover",
+        );
+      }
+
+      await newSession.start({
+        room: ctx.room,
+        agent: newModel,
+        record: false,
+        inputOptions: { closeOnDisconnect: true },
+      });
+
+      // The incoming agent speaks next. Ultravox realtime greets natively via
+      // firstSpeakerSettings; other stacks need an explicit first turn.
+      if (!targetModelName.includes(":ultravox/")) {
+        try {
+          await (newSession as any).generateReply(
+            voiceMode === "pipeline"
+              ? {
+                  userInput:
+                    "You have just taken over this live call. Greet the caller now according to your instructions.",
+                }
+              : {
+                  instructions:
+                    "You have just taken over this live call. Greet the caller now according to your instructions.",
+                },
+          );
+        } catch (e) {
+          logger.warn({ e }, "agent handover: first-turn kick failed");
+        }
+      }
+      logger.info(
+        {
+          from: oldCall.id,
+          to: newCall.id,
+          agentId: newAgentDef.id,
+          modelName: targetModelName,
+        },
+        "agent handover: new agent stack live",
+      );
+    } catch (e) {
+      // The old session is gone and the new one failed: the caller is in dead
+      // air. Tear the call down cleanly rather than leaving a silent room.
+      const error = e instanceof Error ? e : new Error(String(e));
+      logger.error({ error }, "agent handover: restart failed; closing call");
+      stopHandoverTone?.();
+      await newCall
+        .end(`agent handover failed: ${error.message}`)
+        .catch(() => undefined);
+      await cleanupAndClose(`agent handover failed: ${error.message}`);
+      throw error;
+    } finally {
+      agentHandoverInProgress = false;
+    }
+  };
+
+  /**
+   * Resolve a transfer_agent call. Two modes:
+   *
+   *  - in-place (same model string, stack supports it): returns a voice.Agent
+   *    for llm.handoff() — same session, same call record.
+   *  - full restart (model string changes, or Ultravox realtime cannot apply
+   *    the swap): stops the agent stack and starts the target agent's own
+   *    stack in the room, with a child call record (parentId = current call).
+   *
+   * The target definition is fetched through the internal agent-db API with a
+   * same-organisation guard; its own tools are built recursively (so chained
+   * agent-to-agent transfers work).
+   */
+  const onAgentTransfer = async ({
+    agent: targetAgentId,
+    includeHistory: includeHistoryRaw,
+    summary,
+  }: {
+    agent: string;
+    includeHistory?: boolean | string;
+    summary?: string;
+  }): Promise<{ handoffAgent?: voice.Agent; detail: string }> => {
+    // Static flags arrive as booleans or as the legacy "true"/"false" string
+    // idiom (cf. the transfer function's consultFeedback) — treat "false" as
+    // false rather than truthy.
+    const includeHistory =
+      typeof includeHistoryRaw === "string"
+        ? includeHistoryRaw.trim().toLowerCase() === "true"
+        : includeHistoryRaw === true;
+    const newAgentDef = await getInternalAgentById(
+      targetAgentId,
+      agent.organisationId,
+    );
+    if ((newAgentDef.type ?? "interactive-audio") !== "interactive-audio") {
+      throw new Error(
+        `agent ${targetAgentId} is type ${newAgentDef.type} and cannot take over a live call`,
+      );
+    }
+    const instructions = buildHandoverInstructions(
+      newAgentDef,
+      includeHistory,
+      summary,
+    );
+
+    if (canSwapAgentInPlace(newAgentDef)) {
+      activeAgentDef = { ...newAgentDef, modelName: activeModelName };
+      const handoffAgent = new voice.Agent({
+        instructions,
+        tools: buildTools(newAgentDef),
+        ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
+      });
+      // In-place swaps create no new call record, so they cannot hit the
+      // concurrency limit — the handover is committed here. Announce it only
+      // now: a failed transfer (e.g. agent not found above) must leave no
+      // "Call transferred" marker in the transcript.
+      sendMessage({
+        inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
+      });
+      return { handoffAgent, detail: "in-place handover" };
+    }
+
+    // The full-stack restart announces the handover itself, once the
+    // continuation call's concurrency slot has been reserved (a busy rejection
+    // throws before that point, leaving the outgoing agent intact).
+    await restartWithAgent(newAgentDef, instructions);
+    return { detail: "full agent-stack handover with new call record" };
+  };
+
+  const buildTools = (agentDef: Agent) =>
+    createTools({
+      agent: agentDef,
+      call,
+      room: room!,
+      participant,
+      sendMessage,
+      metadata,
+      onHangup,
+      onTransfer,
+      getTransferState,
+      onAgentTransfer,
+    });
+
   try {
     // Wrap setup operations with timeout
     await withTimeout(
       async () => {
         operation = "createTools";
-        const tools = createTools({
-          agent,
-          call,
-          room: room!,
-          participant,
-          sendMessage,
-          metadata,
-          onHangup,
-          onTransfer,
-          getTransferState,
-        });
+        const tools = buildTools(agent);
 
         operation = "createModel";
         const maxDurationString: string = agent?.options?.maxDuration || "305s";
         maxDuration =
           1000 * parseInt(maxDurationString.match(/(\d+)s/)?.[1] || "305");
+
+        // Resolve per-agent DTMF buffering options, falling back to defaults.
+        const dtmfTimeoutOption = agent?.options?.dtmfTimeout;
+        if (typeof dtmfTimeoutOption === "number" && dtmfTimeoutOption >= 0) {
+          dtmfTimeoutMs = dtmfTimeoutOption;
+        }
+        const dtmfTerminatorOption = agent?.options?.dtmfTerminator;
+        if (typeof dtmfTerminatorOption === "string") {
+          dtmfTerminator = dtmfTerminatorOption;
+        }
+        logger.debug(
+          { dtmfTimeoutMs, dtmfTerminator },
+          "Resolved DTMF buffering options",
+        );
 
         const voiceMode = resolveVoiceMode(modelName, agent.options);
         resolvedVoiceMode = voiceMode;
@@ -559,6 +1141,10 @@ export async function runAgentWorker({
         session = builtSession;
         modelRef(model);
         sessionRef(session);
+        // The handlers below are wired to this first session instance; after a
+        // full-stack handover replaces `session`, their late events must be
+        // ignored (see isStaleSession).
+        const setupSession = builtSession;
 
         // Listen on all the things for now (debug)
         Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
@@ -572,6 +1158,9 @@ export async function runAgentWorker({
           );
         });
 
+        // Accumulate usage metrics (LLM tokens, TTS characters, STT audio) for billing.
+        wireUsageMetrics(setupSession);
+
         // Listen on the user input transcribed event
         session.on(
           voice.AgentSessionEventTypes.ConversationItemAdded,
@@ -579,9 +1168,14 @@ export async function runAgentWorker({
             item: { type, role, content },
             createdAt,
           }: voice.ConversationItemAddedEvent) => {
+            if (isStaleSession(setupSession)) return;
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
               if (role !== "user" || text !== initialUserTranscriptToSkip) {
+                conversationHistory.push({
+                  role: role === "user" ? "user" : "agent",
+                  text,
+                });
                 sendMessage(
                   {
                     [role === "user" ? "user" : "agent"]: text,
@@ -596,6 +1190,7 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,
           async (ev: voice.AgentStateChangedEvent) => {
+            if (isStaleSession(setupSession)) return;
             logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
@@ -695,6 +1290,27 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
+            if (isStaleSession(setupSession)) {
+              // This (now superseded) session was replaced by a full-stack
+              // handover and has closed late — possibly seconds after the new
+              // agent went live, because an abandoned Ultravox close() finally
+              // resolved. The replacement session owns the room and call; doing
+              // teardown here would kill the live caller's continuation call.
+              logger.info(
+                { ev },
+                "superseded session closed after handover; teardown suppressed",
+              );
+              return;
+            }
+            if (agentHandoverInProgress) {
+              // A full agent-stack handover is intentionally closing this
+              // session; the replacement session owns the room and call now.
+              logger.info(
+                { ev },
+                "session closed during agent handover; teardown suppressed",
+              );
+              return;
+            }
             logger.info({ ev }, "session closed");
             // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
@@ -778,6 +1394,89 @@ export async function runAgentWorker({
           "timing: session.start done",
         );
         logger.info({ callId: call.id }, "session started");
+
+        // ---- Inactivity "kick" ----
+        // When options.inactivity is configured, the session was built with
+        // `voiceOptions.userAwayTimeout` = inactivity.timeout (see
+        // voice-session-factory.ts), so LiveKit emits a `user_state_changed`
+        // event with newState === "away" after that many seconds of silence.
+        // We speak the literal message on that event and then re-speak it on a
+        // repeat interval for as long as the user stays away, cancelling the
+        // moment any activity flips the user back to speaking/listening. This
+        // gives the "re-fire every `timeout` of continued silence, reset on
+        // activity" contract. Inert (handler never registered) when unset.
+        const inactivityMessage =
+          typeof agent?.options?.inactivity?.message === "string"
+            ? agent.options.inactivity.message.trim()
+            : "";
+        const inactivityTimeoutSecs = inactivityAwayTimeoutSecs(agent);
+        // Ultravox realtime handles inactivity NATIVELY via
+        // `vendorSpecific.ultravox.inactivityMessages` (wired in
+        // voice-session-factory.ts): Ultravox is speech-to-speech with no
+        // separate TTS, so a JS-side say()/generateReply kick is unreliable for
+        // it. Only wire the generic SDK user-away kick for NON-ultravox models
+        // (pipeline TTS / OpenAI / Gemini realtime), which have real TTS.
+        const isUltravoxRealtime =
+          (resolvedVoiceMode || resolveVoiceMode(modelName, agent.options)) ===
+            "realtime" && modelName.includes("livekit:ultravox/");
+        if (
+          inactivityMessage &&
+          inactivityTimeoutSecs !== undefined &&
+          session &&
+          !isUltravoxRealtime
+        ) {
+          const speakInactivity = async () => {
+            // Suppress during/after a transfer bridge — the local agent's audio
+            // is no longer what the caller hears.
+            if (getBridgedParticipant()) return;
+            const s = session;
+            if (!s) return;
+            try {
+              const maybeSay = (s as any).say as
+                | ((t: string, opts?: { allowInterruptions?: boolean }) => any)
+                | undefined;
+              if (typeof maybeSay === "function") {
+                await maybeSay.call(s, inactivityMessage, {
+                  allowInterruptions: true,
+                });
+              } else {
+                await (s as any).generateReply({
+                  userInput: inactivityMessage,
+                });
+              }
+            } catch (e) {
+              logger.info({ e }, "inactivity kick failed");
+            }
+          };
+
+          session.on(
+            voice.AgentSessionEventTypes.UserStateChanged,
+            (event: { newState?: string }) => {
+              if (event?.newState === "away") {
+                // First kick immediately on becoming away, then repeat every
+                // `timeout` seconds of continued silence.
+                if (inactivityInterval) {
+                  clearInterval(inactivityInterval);
+                  inactivityInterval = null;
+                }
+                void speakInactivity();
+                inactivityInterval = setInterval(() => {
+                  void speakInactivity();
+                }, inactivityTimeoutSecs * 1000);
+              } else {
+                // User became active again (speaking / listening) — stop kicking.
+                if (inactivityInterval) {
+                  clearInterval(inactivityInterval);
+                  inactivityInterval = null;
+                }
+              }
+            },
+          );
+          logger.debug(
+            { inactivityTimeoutSecs, isUltravoxRealtime },
+            "inactivity kick wired",
+          );
+        }
 
         // Leak watchdog. Periodically verify the room still has at least one
         // remote participant. If not, and there is no transfer or consult in
@@ -1063,7 +1762,7 @@ export async function runAgentWorker({
       }
 
       // If terminator is pressed, send immediately (don't add terminator to buffer)
-      if (digit === DTMF_TERMINATOR) {
+      if (dtmfTerminator !== "" && digit === dtmfTerminator) {
         logger.debug(
           { buffer: dtmfBuffer },
           "DTMF terminator pressed, sending immediately",
@@ -1087,7 +1786,7 @@ export async function runAgentWorker({
           "DTMF timeout reached, flushing buffer",
         );
         flushDtmfBuffer();
-      }, DTMF_TIMEOUT_MS);
+      }, dtmfTimeoutMs);
     });
     logger.debug("DTMF listener registered");
 

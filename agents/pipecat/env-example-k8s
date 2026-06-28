@@ -1,0 +1,117 @@
+# Pipecat agent stack — Kubernetes environment template.
+#
+# This is the k8s counterpart to env-example (which targets the docker-compose
+# / VM deploy). It exists because two things differ in Kubernetes:
+#
+#   1. Per-node IPs are auto-detected, NOT set here. The detect-ip initContainer
+#      discovers each node's public IP at startup. Setting EXT_IP_ADDRESS /
+#      SIPBRIDGE_SIP_SIGNAL_IP / SIPBRIDGE_MEDIA_IP here (or in the bundle) would
+#      OVERRIDE that per-node value and make every node advertise the same wrong
+#      address in SDP — i.e. broken/one-way audio. They are deliberately absent.
+#
+#   2. There is no host.docker.internal. The worker and the SIP gateway run as
+#      containers in ONE hostNetwork DaemonSet pod, so they share the host's
+#      network namespace and reach each other on 127.0.0.1 — exactly like the
+#      compose `network_mode: host` setup. The loopback URLs below are therefore
+#      correct as-is; do NOT change them to Service DNS unless you split the
+#      worker and gateway into separate pods (not the shipped topology).
+#
+# HOW TO USE THIS FILE
+# --------------------
+# Non-secret config (the URLs/ports below) normally lives in the ConfigMap
+# (deploy/k8s/base/configmap.yaml) and you don't need to repeat it. This file's
+# primary job is to be the *source for the secretenv bundle*: copy it (alongside
+# this template, as agents/pipecat/.env.<env>), fill in the secrets, and feed it
+# to the publisher:
+#
+#     cp agents/pipecat/env-example-k8s agents/pipecat/.env.staging
+#     # edit .env.staging — fill in the SECRETS section
+#     cd agents/pipecat/deploy/k8s
+#     ../bundle-secretenv.sh --env=staging        # -> Secret pipecat-secretenv
+#
+# Anything you leave in the bundle OVERRIDES the ConfigMap at container start
+# (the native loaders use Object.assign semantics). So: bundle secrets, and only
+# include a config URL here if you intend to override the ConfigMap default.
+
+
+# ============================================================================
+# SECRETS — bundle these (or put them in the pipecat-secrets Secret instead)
+# ============================================================================
+
+# Shared with lib/handlers/pipecat.js on the llm-agent server side — must match.
+PIPECAT_DISPATCH_TOKEN=change-me-dispatch
+PIPECAT_JOIN_SECRET=change-me-join
+# x-shared-token header value for the llm-agent agent-db API — must match server.
+SHARED_API_TOKEN=change-me-shared
+
+# Outbound-trunk SIP digest creds (sipbridge + FreeSWITCH). Leave blank if the
+# SBC authenticates outbound by source-IP allowlist rather than digest.
+PIPECAT_SIP_USERNAME=
+PIPECAT_SIP_PASSWORD=
+
+# sipbridge REST control-API bearer (worker <-> sipbridge, loopback).
+SIPBRIDGE_API_TOKEN=change-me-sipbridge
+
+# FreeSWITCH ingress secrets.
+ESL_SECRET=change-me-esl
+CALL_API_TOKEN=change-me-call-api
+WORKER_EVENT_TOKEN=change-me-call-api   # default: same as CALL_API_TOKEN
+ESL_POLLER_TOKEN=change-me-call-api     # = CALL_API_TOKEN
+
+# Voiceblender ingress secrets.
+VOICEBLENDER_API_KEY=change-me-vb
+VOICEBLENDER_VSI_TOKEN=
+
+# Model / provider API keys — set the ones you use.
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+ELEVENLABS_API_KEY=
+ULTRAVOX_API_KEY=
+
+
+# ============================================================================
+# CONFIG — already set in the ConfigMap; uncomment here only to override
+# ============================================================================
+#
+# These loopback URLs are CORRECT for Kubernetes: the worker (:8082) and every
+# gateway share one hostNetwork pod, so 127.0.0.1 is the same loopback for all
+# of them. They mirror deploy/k8s/base/configmap.yaml.
+
+# --- worker <-> FreeSWITCH + esl-poller (all 127.0.0.1, same pod) ---
+# PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+# WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+# ESL_POLLER_URL=http://127.0.0.1:4001
+
+# --- worker <-> sipbridge (same pod) ---
+# SIPBRIDGE_BASE_URL=http://127.0.0.1:8090
+# SIPBRIDGE_WORKER_WS_BASE=ws://127.0.0.1:8082
+
+# --- worker <-> voiceblender (same pod) ---
+# VOICEBLENDER_BASE_URL=http://127.0.0.1:8080
+# VOICEBLENDER_WORKER_WS_BASE=ws://127.0.0.1:8082
+
+# --- outbound trunk host (non-secret half; creds are in SECRETS above) ---
+# PIPECAT_SIP_OUTBOUND=sbc.aplisay.example:5061;transport=tls
+# PIPECAT_SIP_FROM_DOMAIN=pipecat.sbc.aplisay.example
+
+# llm-agent REST surface. This is the ONE URL that is genuinely topology-
+# dependent:
+#   - llm-agent OUTSIDE the cluster -> use its public HTTPS URL (as below).
+#   - llm-agent INSIDE the cluster  -> use its in-cluster Service DNS, e.g.
+#     http://llm-agent.<namespace>.svc.cluster.local:<port>
+# SERVICE_BASE_URI=https://api.aplisay.example
+
+# LOGLEVEL=info
+
+
+# ============================================================================
+# DO NOT SET IN KUBERNETES — auto-detected per node by the detect-ip initContainer
+# ============================================================================
+# Setting any of these (here or in the bundle) overrides the per-node detected
+# public IP and breaks RTP media. Listed only as a warning.
+#   EXT_IP_ADDRESS
+#   SIPBRIDGE_SIP_SIGNAL_IP
+#   SIPBRIDGE_MEDIA_IP

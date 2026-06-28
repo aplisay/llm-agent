@@ -1,5 +1,7 @@
 import { Agent, Instance, PhoneNumber, PhoneRegistration, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { HANDLER_NAMES } from '../../lib/handlers/index.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 /**
  * Flat list of active listener instances with parent agent name, for dashboards.
@@ -11,6 +13,7 @@ export default function (logger) {
 }
 
 const listenerDeploymentsList = async (req, res) => {
+  if (!requirePermission(res, 'agent', 'read')) return;
   const scopeWhere = scopeWhereForUser(res.locals.user);
 
   const filterAgentId = req.query.agentId;
@@ -112,7 +115,7 @@ listenerDeploymentsList.apiDoc = {
                     agentId: { type: 'string', format: 'uuid' },
                     agentName: { type: 'string' },
                     listenerId: { type: 'string', format: 'uuid' },
-                    type: { type: 'string', enum: ['jambonz', 'ultravox', 'livekit'] },
+                    type: { type: 'string', enum: HANDLER_NAMES },
                     kind: { type: 'string', enum: ['phone', 'registration', 'webrtc'] },
                     phoneNumber: { type: 'string', nullable: true },
                     registrationId: { type: 'string', nullable: true },

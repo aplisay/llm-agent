@@ -1,0 +1,65 @@
+# Pipecat agent stack — example environment file.
+#
+# Copy to .env in the same directory as docker-compose.yml.
+# Most values are mandatory in production; defaults exist for local dev only.
+
+# Public IP FreeSWITCH advertises in SDP (and in SIP Via/Contact).
+# For local development, your machine's LAN IP. In production, the public IP
+# the upstream SBC routes to.
+EXT_IP_ADDRESS=127.0.0.1
+
+# Shared secrets — generate with `openssl rand -hex 32`.
+ESL_SECRET=change-me-esl
+CALL_API_TOKEN=change-me-call-api
+WORKER_EVENT_TOKEN=change-me-call-api    # default: same as CALL_API_TOKEN
+
+# Auth shared with lib/handlers/pipecat.js on the llm-agent server side.
+PIPECAT_DISPATCH_TOKEN=change-me-dispatch
+PIPECAT_JOIN_SECRET=change-me-join
+
+# llm-agent REST server (agent-db callbacks).
+SERVICE_BASE_URI=https://api.aplisay.example
+SHARED_API_TOKEN=change-me-shared
+
+# Override these if your container layout is different from host networking.
+PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+
+# Provider keys — uncomment for those you actually use.
+# OPENAI_API_KEY=
+# GEMINI_API_KEY=
+# ANTHROPIC_API_KEY=
+# DEEPGRAM_API_KEY=
+# CARTESIA_API_KEY=
+# ELEVENLABS_API_KEY=
+
+# Platform-wide outbound SBC for trunk-origin outbound calls / WebRTC→telephony
+# transfers (named to line up with the LiveKit stack). The bridge INVITEs this
+# host and the SBC fans out to the carrier using the X-Aplisay-Trunk header.
+# Format: host[:port][;transport=tls|tcp|udp].
+# Consumed only by the sipbridge gateway (SIP_GATEWAY=sipbridge), whose SIP UA
+# has no outbound proxy of its own. FreeSWITCH (esl-poller) and voiceblender
+# route outbound inside their own backends from the aplisayId/trunk header, so
+# they don't need this. Registration-origin calls route to the registration's
+# own B2BUA gateway (b2buaId) regardless of transport, so they don't use it.
+# PIPECAT_SIP_OUTBOUND=sbc.aplisay.example:5061;transport=tls
+
+# SIP digest credentials for the outbound SBC, presented when it challenges an
+# outbound INVITE (401/407). The auth half of the "outbound trunk" config —
+# the analogue of LiveKit's LIVEKIT_SIP_USERNAME / LIVEKIT_SIP_PASSWORD set on
+# its outbound trunk. Consumed by the sipbridge gateway. Leave unset if the SBC
+# authenticates by IP allowlist rather than digest. Registration-origin legs
+# (to a B2BUA gateway) don't authenticate, so these don't apply there.
+# PIPECAT_SIP_USERNAME=
+# PIPECAT_SIP_PASSWORD=
+
+# From-domain presented on outbound INVITEs (the From user is the per-call
+# CLI). The SBC's outbound-trunk routing only admits INVITEs whose From domain
+# matches a recognised handler domain, so this MUST equal the SBC's
+# PIPECAT_HANDLER_DOMAIN, and a subscriber (realm=this domain,
+# PIPECAT_SIP_USERNAME/PASSWORD) must exist on the SBC for digest auth.
+# Consumed by the sipbridge gateway. Leave unset for SBCs that authenticate by
+# source IP and don't gate on the From domain.
+# PIPECAT_SIP_FROM_DOMAIN=pipecat.sbc.aplisay.example
+
+LOGLEVEL=info

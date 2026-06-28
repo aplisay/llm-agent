@@ -1,5 +1,6 @@
 import { Call, Op } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 let appParameters, log;
 
 export default function (logger) {
@@ -7,6 +8,7 @@ export default function (logger) {
   log = logger;
 
   const callsList = (async (req, res) => {
+    if (!requirePermission(res, 'call', 'read')) return;
     try {
       let { agentId } = req.params;
       let { startDate, endDate, offset = 0, limit = 50 } = req.query;
@@ -27,7 +29,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
+        attributes: ['id', 'parentId', 'instanceId', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
         where,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),

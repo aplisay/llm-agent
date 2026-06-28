@@ -158,6 +158,9 @@ instanceGet.apiDoc = {
                   functions: {
                     type: 'array'
                   },
+                  mcpServers: {
+                    type: 'array'
+                  },
                   keys: {
                     type: 'array'
                   },

@@ -41,20 +41,31 @@ else if (process.env.NODE_ENV === 'staging') {
   apiDoc.servers.unshift({ url: `https://llm-agent-staging.aplisay.com/api` });
 }
 
-server.use(express.json({ limit: '5mb' }));
-
+// CORS first — it must apply to the Better-Auth routes (mounted next) as well as
+// the API. `set-auth-token` is exposed so the SPA can capture the bearer token
+// from the cross-origin sign-in response.
 server.use(cors({
   origin: [
     'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /https:\/\/.*\.aplisay\.com$/,
     'https://feature-registration-db--playground-next.netlify.app'
   ],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
-  exposedHeaders: ['Link',],
+  exposedHeaders: ['Link', 'set-auth-token'],
   credentials: true,
   preflightContinue: true,
 
 }));
 
+// Better-Auth (parallel to Firebase) must mount BEFORE express.json — its node
+// handler reads the raw request body. Inert unless BETTER_AUTH_ENABLED=true.
+const { auth: betterAuth } = await import('./lib/auth/index.js');
+if (betterAuth) {
+  const { toNodeHandler } = await import('better-auth/node');
+  server.all('/api/auth/*', toNodeHandler(betterAuth));
+  logger.info('mounted better-auth at /api/auth/*');
+}
+
+server.use(express.json({ limit: '5mb' }));
 const pino = PinoHttp({
   logger
 });

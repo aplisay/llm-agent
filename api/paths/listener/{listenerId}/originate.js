@@ -2,6 +2,8 @@ import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
+import { normalizeE164 } from '../../../../lib/validation.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 let appParameters, log;
 
@@ -20,6 +22,7 @@ export default function (logger, voices, wsServer) {
 
 
 const originateCall = (async (req, res) => {
+  if (!requirePermission(res, 'agent', 'originate')) return;
   let { listenerId } = req.params;
   let { calledId, callerId, metadata } = req.body;
   let { organisationId } = res.locals.user;
@@ -31,6 +34,11 @@ const originateCall = (async (req, res) => {
         error: 'Missing required parameters: calledId and callerId are required'
       });
     }
+
+    // Phone numbers are stored without a leading '+' (e.g. 442080996945), so canonicalise
+    // an E.164-style callerId to the DB format before lookup. A registration UUID is left
+    // untouched since it has no '+' prefix.
+    callerId = normalizeE164(callerId);
 
     const instance = await Instance.findByPk(listenerId, { include: [{ model: Agent }] });
     const agent = instance?.Agent;

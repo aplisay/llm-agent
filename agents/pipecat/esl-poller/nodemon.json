@@ -1,0 +1,11 @@
+{
+  "watch": ["src"],
+  "ext": "ts,js,json",
+  "exec": "node --loader ts-node/esm src/index.ts",
+  "env": {
+    "LOGLEVEL": "debug",
+    "TS_NODE_ESM": "true"
+  }
+}
+
+

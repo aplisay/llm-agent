@@ -1,0 +1,44 @@
+# DigitalOcean load-balancer settings for the SIP signalling Service.
+#
+# type=REGIONAL (a standard L7-capable LB) is REQUIRED. DOKS' CCM defaults new
+# LBs to REGIONAL_NETWORK (pure L4 passthrough) in some regions, and a network LB
+# CANNOT terminate TLS — it silently ignores tls-ports/certificate-id, leaving 443
+# as a raw tcp rule with no cert. A standard REGIONAL LB does TCP passthrough on
+# 5061 AND HTTPS-terminates 443. NOTE: DO can't change an LB's type in place — if
+# an existing LB is REGIONAL_NETWORK, delete the Service and re-apply to recreate
+# it as REGIONAL (this yields a NEW IP; update DNS + SBC next-hop afterwards).
+#
+# 5061 is L4 TCP passthrough (the gateway terminates SIP TLS itself). We do NOT
+# set a global `do-loadbalancer-protocol` here: DO defaults non-listed ports to
+# tcp (so 5061 stays passthrough), and an explicit global `tcp` would suppress
+# the per-port `do-loadbalancer-tls-ports` that the webrtc-do component uses to
+# make 443 HTTPS-terminate — leaving 443 as a plain-TCP rule with no cert.
+# DOKS worker droplets get public IPs by default, so RTP can reach each node.
+#
+# Node pool: open the RTP UDP range + TCP 5061 in a DO Cloud Firewall attached
+# to the SIP node pool, scoped to your SBC source ranges. See the README.
+#
+# Stable IP: DigitalOcean does NOT support assigning a reserved IP to a *managed*
+# load balancer (reserved IPs attach to Droplets only, and the CCM ignores
+# spec.loadBalancerIP). Instead, the per-env overlays (do-staging / do-production)
+# set a stable `do-loadbalancer-name`. A fixed name makes the CCM always reconcile
+# the SAME LB, so the DO-assigned IP persists for the LB's lifetime and even
+# survives Service recreation. Read that IP off the Service and pin DNS/SBC to it.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          # Standard L7-capable LB (NOT the REGIONAL_NETWORK default) so 443 can
+          # TLS-terminate. See header — changing type needs an LB recreate.
+          service.beta.kubernetes.io/do-loadbalancer-type: "REGIONAL"
+          # No global do-loadbalancer-protocol — see header. 5061 defaults to tcp;
+          # webrtc-do's tls-ports makes 443 https.
+          service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "tcp"
+          service.beta.kubernetes.io/do-loadbalancer-healthcheck-port: "5061"

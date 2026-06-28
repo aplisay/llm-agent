@@ -120,11 +120,12 @@ describe('PhoneRegistration Basic Tests', () => {
       log: mockLogger
     };
     const res = {
-      locals: { user: { organisationId: testOrgId } },
+      locals: { user: { role: 'owner', organisationId: testOrgId } },
       _status: null,
       _body: null,
       status(code) { this._status = code; return this; },
-      send(body) { this._body = body; this._status = this._status || 200; }
+      send(body) { this._body = body; this._status = this._status || 200; },
+      json(body) { this._body = body; this._status = this._status || 200; return this; }
     };
 
     try {

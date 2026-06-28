@@ -1,0 +1,130 @@
+# Cloud Build — grouped release promotion + deploy.
+#
+# Trigger this with a version tag (e.g. v0.9.43) on main. Every commit to main
+# has already built and pushed per-service images tagged :$COMMIT_SHA (see the
+# per-service cloudbuild.yaml files — they no longer tag :latest or deploy).
+#
+# This build promotes that one already-built commit to a release, as a group:
+#
+#   1. VERIFY — confirm every release image exists at :$COMMIT_SHA (the commit
+#      the tag points at) and capture its digest. If ANY image is missing — its
+#      per-commit build never ran, failed, or the tag was placed on a commit
+#      whose images were not all built — the whole release ABORTS before a
+#      single tag is moved or anything is deployed.
+#   2. PROMOTE — add :latest and :$TAG_NAME to the exact digest verified in
+#      step 1, for all images at once (server-side tag, no re-push).
+#   3. DEPLOY — roll the Cloud Run services (llm-agent, jambonz-agent) to the
+#      released :$COMMIT_SHA image. livekit-agent (docker-compose on GCE) and
+#      the pipecat K8s daemonsets pull :latest and are restarted out of band —
+#      the :latest promotion in step 2 is their release action.
+#
+# Manual run:
+#   gcloud builds submit --no-source --config cloudbuild-release.yaml \
+#     --substitutions=LOCATION=europe-west1,PROJECT_ID=llm-voice,REPO_NAME=llm-agent,COMMIT_SHA=<sha>,TAG_NAME=v0.9.43
+#
+# Note: the release verifies images that the per-commit builds produced, so tag
+# the release only once those builds for that commit have finished pushing.
+
+steps:
+  # 1) Verify every release image exists at :$COMMIT_SHA. Abort if any is missing.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: Verify
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -uo pipefail
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        : > /workspace/digests.env
+        missing=0
+        for img in $_RELEASE_IMAGES; do
+          ref="$$REG/$$img:$COMMIT_SHA"
+          echo "Checking $$ref ..."
+          digest=$$(gcloud artifacts docker images describe "$$ref" \
+                      --format='value(image_summary.digest)' 2>/dev/null)
+          if [ -n "$$digest" ]; then
+            echo "  ok   $$img@$$digest"
+            echo "$$img $$digest" >> /workspace/digests.env
+          else
+            echo "  MISSING: no $$img image for commit $COMMIT_SHA"
+            missing=1
+          fi
+        done
+        if [ "$$missing" -ne 0 ]; then
+          echo "ABORT: one or more images do not correspond to commit $COMMIT_SHA — not promoting or deploying."
+          exit 1
+        fi
+        echo "All images verified at $COMMIT_SHA:"
+        cat /workspace/digests.env
+
+  # 2) Promote the whole group: add :latest and :$TAG_NAME to the verified digest.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: Promote
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        while read -r img digest; do
+          src="$$REG/$$img@$$digest"
+          echo "Promoting $$img ($$digest) -> :latest and :$TAG_NAME"
+          gcloud artifacts docker tags add "$$src" "$$REG/$$img:latest" --quiet
+          if [ -n "$TAG_NAME" ]; then
+            gcloud artifacts docker tags add "$$src" "$$REG/$$img:$TAG_NAME" --quiet
+          fi
+        done < /workspace/digests.env
+
+  # 3) Deploy the Cloud Run services to the released commit image.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: Deploy-llm-agent
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_MAIN_SERVICE
+      - '--platform=managed'
+      - >-
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_MAIN_SERVICE:$COMMIT_SHA
+      - >-
+        --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      - '--region=$_DEPLOY_REGION'
+      - '--quiet'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: Deploy-jambonz-agent
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_JAMBONZ_SERVICE
+      - '--platform=managed'
+      - >-
+        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_JAMBONZ_SERVICE:$COMMIT_SHA
+      - >-
+        --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      - '--region=$_DEPLOY_REGION'
+      - '--quiet'
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+  _DEPLOY_REGION: $LOCATION
+  _MAIN_SERVICE: llm-agent
+  _JAMBONZ_SERVICE: jambonz-agent
+  # Every image promoted + (where applicable) deployed as one release group.
+  # Cloud Run / GCE: llm-agent jambonz-agent livekit-agent
+  # Pipecat / K8s:   freeswitch esl-poller sipbridge secretenv-exec pipecat-worker
+  _RELEASE_IMAGES: >-
+    llm-agent jambonz-agent livekit-agent freeswitch esl-poller sipbridge
+    secretenv-exec pipecat-worker
+
+tags:
+  - release
+  - gcp-cloud-build-deploy-cloud-run

@@ -38,6 +38,10 @@ describe('Agent options.greeting API round-trip', () => {
       this._body = data;
       return this;
     },
+    json(data) {
+      this._body = data;
+      return this;
+    },
   });
 
   beforeAll(async () => {
@@ -101,7 +105,7 @@ describe('Agent options.greeting API round-trip', () => {
       },
     });
     const createRes = createMockResponse({
-      user: { id: testUserId, organisationId: testOrgId },
+      user: { id: testUserId, role: 'owner', organisationId: testOrgId },
     });
 
     await createAgent(createReq, createRes);
@@ -112,7 +116,7 @@ describe('Agent options.greeting API round-trip', () => {
       params: { agentId: createdAgentId },
     });
     const getRes = createMockResponse({
-      user: { id: testUserId, organisationId: testOrgId },
+      user: { id: testUserId, role: 'owner', organisationId: testOrgId },
     });
 
     await getAgent(getReq, getRes);

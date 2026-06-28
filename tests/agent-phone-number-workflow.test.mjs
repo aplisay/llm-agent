@@ -166,7 +166,7 @@ describe('Agent Phone Number Workflow Test', () => {
         }
       });
       const phoneRes = createMockResponse();
-      phoneRes.locals.user = { organisationId: testOrgId };
+      phoneRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await createPhoneEndpoint(phoneReq, phoneRes);
 
@@ -217,7 +217,7 @@ describe('Agent Phone Number Workflow Test', () => {
         }
       });
       const agentRes = createMockResponse();
-      agentRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      agentRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
 
       await createAgent(agentReq, agentRes);
 
@@ -236,7 +236,8 @@ describe('Agent Phone Number Workflow Test', () => {
         body: { number: testPhoneNumberId }
       });
       const listenerRes = createMockResponse();
-      
+      listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
+
       await createListener(listenerReq, listenerRes);
       
       // Listener creation succeeds if we have a body with an id
@@ -253,7 +254,7 @@ describe('Agent Phone Number Workflow Test', () => {
         params: { listenerId: testListenerId }
       });
       const deleteListenerRes = createMockResponse();
-      deleteListenerRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      deleteListenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
 
       await deleteListener(deleteListenerReq, deleteListenerRes);
 
@@ -267,7 +268,7 @@ describe('Agent Phone Number Workflow Test', () => {
         params: { agentId: testAgentId }
       });
       const deleteAgentRes = createMockResponse();
-      deleteAgentRes.locals.user = { id: testUserId, organisationId: testOrgId };
+      deleteAgentRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
 
       await deleteAgent(deleteAgentReq, deleteAgentRes);
 
@@ -281,7 +282,7 @@ describe('Agent Phone Number Workflow Test', () => {
         params: { identifier: testPhoneNumberId }
       });
       const deletePhoneRes = createMockResponse();
-      deletePhoneRes.locals.user = { organisationId: testOrgId };
+      deletePhoneRes.locals.user = { role: 'owner', organisationId: testOrgId };
 
       await deletePhoneEndpoint(deletePhoneReq, deletePhoneRes);
 

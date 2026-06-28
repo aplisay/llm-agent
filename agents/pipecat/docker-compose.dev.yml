@@ -1,0 +1,246 @@
+#
+# Pipecat agent stack — DEVELOPMENT layout.
+#
+# Containers under Docker provide the SIP/media ingress; the pipecat-worker
+# runs in your terminal foreground via `uv run python -m pipecat_aplisay`.
+# That gives you live reload, tracebacks in the foreground, and easy
+# debugger attachment without round-tripping through a container build.
+#
+# Profiles match the production compose file:
+#
+#   `--profile freeswitch`    freeswitch + esl-poller containers
+#   `--profile voiceblender`  voiceblender container only
+#   `--profile sipbridge`     sipbridge container only
+#
+# Networking model:
+# - Linux: `network_mode: host` works as expected — the containers share
+#   the host's loopback, so `127.0.0.1` resolves the same for everyone
+#   (worker on host, FS / voiceblender in container).
+# - macOS / Windows (Docker Desktop): `network_mode: host` shares the
+#   Docker VM's loopback, NOT the host's. Containers reach the host worker
+#   via `host.docker.internal`; the host reaches container ports via
+#   `localhost` if they're explicitly published. PIPECAT_WS_URL,
+#   WORKER_EVENT_WEBHOOK, and VOICEBLENDER_WORKER_WS_BASE must be set to
+#   `host.docker.internal:8082` on those platforms — see README "Running
+#   the dev stack".
+#
+# Bring up the containers, then run the worker:
+#
+#     # one terminal — FreeSWITCH-backed dev
+#     docker compose -f docker-compose.dev.yml --profile freeswitch up --build
+#     # another terminal
+#     cd agents/pipecat && SIP_GATEWAY=freeswitch uv run python -m pipecat_aplisay
+#
+#     # OR — voiceblender-backed dev
+#     docker compose -f docker-compose.dev.yml --profile voiceblender up --build
+#     cd agents/pipecat && SIP_GATEWAY=voiceblender uv run python -m pipecat_aplisay
+#
+services:
+  freeswitch:
+    profiles: ["freeswitch"]
+    build:
+      context: ./freeswitch/
+    network_mode: host
+    restart: unless-stopped
+    # mod_audio_stream's libwebsockets resolves the worker WS host via
+    # getaddrinfo (/etc/hosts), NOT Docker's embedded DNS — so host.docker.internal
+    # must be a real /etc/hosts entry or the WS connect fails ("connection error").
+    # host-gateway makes it resolve to the host on every platform (same as sipbridge).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      # mod_audio_stream's outbound WS target. Override to
+      # ws://host.docker.internal:8082/freeswitch/audio on macOS/Windows.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      # Default-SBC next hop. FreeSWITCH is the SBC client: the static "sbc"
+      # sofia gateway (sip_profiles/external.xml) is built from this triple.
+      # entrypoint.sh derives PIPECAT_SBC_PROXY (scheme-stripped) from
+      # PIPECAT_SIP_OUTBOUND; vars.xml pulls all four into FS globals.
+      PIPECAT_SIP_OUTBOUND: ${PIPECAT_SIP_OUTBOUND:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+    healthcheck:
+      test: ["CMD", "/usr/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Bind-mount the conf tree so you can iterate on the dialplan / sofia
+    # profile without rebuilding the FS image. Use `fs_cli` (built-in) or
+    # `docker exec freeswitch /usr/local/freeswitch/bin/fs_cli -x reloadxml`
+    # to pick up changes.
+    volumes:
+      - ./freeswitch/conf:/usr/local/freeswitch/conf:ro
+
+  esl-poller:
+    profiles: ["freeswitch"]
+    build:
+      context: ./esl-poller/
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      freeswitch:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      LOGLEVEL: ${LOGLEVEL:-debug}
+      ESL_HOST: 127.0.0.1
+      ESL_PORT: 8021
+      ESL_SECRET: ${ESL_SECRET:-ClueCon}
+      CALL_API_PORT: 4001
+      CALL_API_TOKEN: ${CALL_API_TOKEN}
+      # Where esl-poller POSTs CHANNEL_HANGUP / _BRIDGE / _ANSWER events. On
+      # macOS/Windows, override to http://host.docker.internal:8082/freeswitch/events.
+      WORKER_EVENT_WEBHOOK: ${WORKER_EVENT_WEBHOOK:-http://127.0.0.1:8082/freeswitch/events}
+      WORKER_EVENT_TOKEN: ${WORKER_EVENT_TOKEN:-${CALL_API_TOKEN}}
+      GATEWAY_POLL_ENABLED: "false"
+      CALL_API_ENABLED: "true"
+      # Outbound originates run uuid_audio_stream toward this WS and (for b2bua
+      # targets) stamp this From domain. Same values the worker/FS container use.
+      PIPECAT_WS_URL: ${PIPECAT_WS_URL:-ws://127.0.0.1:8082/freeswitch/audio}
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+
+  # ---- Voiceblender ingress (profile: voiceblender) ---------------------
+  #
+  # Single Go container that owns SIP signalling, RTP media, and the
+  # REST/VSI control surface. The worker connects to it via REST + the
+  # VSI WebSocket; voiceblender dials the worker on the audio WS
+  # (`/voiceblender/agent/{session_id}`) after `POST /v1/legs/{id}/agent`.
+  #
+  # On macOS/Windows override VOICEBLENDER_WORKER_WS_BASE to
+  # `ws://host.docker.internal:8082` so voiceblender can reach the
+  # foreground worker.
+  voiceblender:
+    profiles: ["voiceblender"]
+    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
+    network_mode: host
+    restart: unless-stopped
+    # VB (in container) dials the host-side worker's audio WS at
+    # VOICEBLENDER_WORKER_WS_BASE (ws://host.docker.internal:8082). That name
+    # must resolve inside the container — host-gateway provides it on Linux and
+    # is harmless on Docker Desktop, which injects it anyway. Same lesson as the
+    # freeswitch/sipbridge services.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
+      SIP_PORT: ${VOICEBLENDER_SIP_PORT:-5060}
+      SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}
+      RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
+      RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
+      # v0.7.x reads SIP_EXTERNAL_IP (advertised in SDP/Contact/Via for
+      # NAT/Docker) and SIP_BIND_IP (socket bind) — NOT the old EXT_IP_ADDRESS.
+      SIP_BIND_IP: ${SIP_BIND_IP:-0.0.0.0}
+      SIP_EXTERNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # From host stamped on outbound INVITEs; must equal the SBC's gating
+      # domain. The worker sends only the From user part (the E.164), so VB
+      # supplies the host from here.
+      SIP_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      LOG_LEVEL: ${LOGLEVEL:-debug}
+      # NB: v0.7.x has no REST/VSI API_KEY auth on these control routes, so the
+      # worker's optional VOICEBLENDER_API_KEY Bearer is simply ignored here.
+
+  # ---- sipbridge ingress (profile: sipbridge) ---------------------------
+  #
+  # Minimal in-tree SIP UAS. See agents/pipecat/sipbridge for source.
+  # Default ports: 5060/udp SIP, 10000-20000/udp RTP, :8090/tcp REST.
+  # On macOS/Windows override SIPBRIDGE_WORKER_WS_BASE to
+  # ``ws://host.docker.internal:8082`` so the bridge can reach a
+  # foreground worker process.
+  sipbridge:
+    profiles: ["sipbridge"]
+    build:
+      context: ../../
+      dockerfile: agents/pipecat/sipbridge/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    # ``host.docker.internal`` is auto-injected on Docker Desktop (macOS /
+    # Windows) but absent on Linux. ``host-gateway`` makes the same hostname
+    # resolve to the host's bridge gateway on Linux, so the bridge can reach
+    # a worker running on the host with the same URL on every platform.
+    # Necessary in dev because the worker runs on the host (uv run) while
+    # sipbridge runs in a container — the container's loopback ≠ host's
+    # loopback even with ``network_mode: host`` on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Advertised IPs (stamped into Via/Contact and SDP c=/m=). Must be
+      # reachable by the upstream B2BUA / SBC.
+      SIPBRIDGE_SIP_SIGNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIPBRIDGE_SIP_SIGNAL_PORT: ${SIPBRIDGE_SIP_PORT:-5060}
+      SIPBRIDGE_MEDIA_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      # Bind IPs (where the kernel actually accepts packets). Default to
+      # wildcard — Docker is always behind some form of NAT (Docker Desktop
+      # VM, bridge networks, port-forwarded host network on Linux), so the
+      # advertised IP is rarely the same as the address packets actually
+      # arrive on. Binding wildcard catches loopback, LAN, and VPN; the
+      # advertised IPs above tell peers where to route replies.
+      SIPBRIDGE_SIP_BIND_IP: ${SIPBRIDGE_SIP_BIND_IP:-0.0.0.0}
+      SIPBRIDGE_MEDIA_BIND_IP: ${SIPBRIDGE_MEDIA_BIND_IP:-0.0.0.0}
+      # Narrower RTP port range than prod (10000–20000) because Docker
+      # Desktop on macOS / Windows port-forwards each UDP port
+      # individually and 10 000 forwarded ports adds noticeable startup
+      # latency + RAM. 250 ports = 125 simultaneous calls (RTP uses
+      # even ports only), which is plenty for dev. Override per-shell
+      # if you need more concurrency.
+      SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
+      SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-10249}
+      # Reach the worker via host.docker.internal so this works on Docker
+      # Desktop (where the container's 127.0.0.1 is the VM's loopback, not
+      # the host's). The ``extra_hosts`` directive above makes the same
+      # name resolve correctly on Linux too.
+      SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://host.docker.internal:8082}
+      SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
+      SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
+      # Outbound-trunk identity + auth for trunk-origin originate / WebRTC
+      # transfers. PIPECAT_SIP_FROM_DOMAIN is the From host the SBC gates on
+      # (must equal the SBC's PIPECAT_HANDLER_DOMAIN); USERNAME/PASSWORD answer
+      # the SBC's 401/407 digest challenge (must match the SBC subscriber row
+      # in that realm). Read by the Go bridge — NOT the worker — so they must
+      # be passed into this container explicitly.
+      PIPECAT_SIP_FROM_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      PIPECAT_SIP_USERNAME: ${PIPECAT_SIP_USERNAME:-}
+      PIPECAT_SIP_PASSWORD: ${PIPECAT_SIP_PASSWORD:-}
+      SIPBRIDGE_LOG_LEVEL: ${LOGLEVEL:-debug}
+      # Full SIP message dumps on every transaction (in + out). Heavy
+      # but indispensable for debugging dialog-level issues — set this
+      # back to 0 once you're done. Has no effect when SIPBRIDGE_LOG_LEVEL
+      # is higher than info.
+      SIPBRIDGE_SIP_TRACE: ${SIPBRIDGE_SIP_TRACE:-1}
+
+      # ---- TLS / SIPS ----
+      #
+      # Docker Desktop on macOS/Windows mangles inbound UDP source
+      # addresses to ``[::1]`` (the VM's loopback), which breaks UDP SIP
+      # responses (they loop back to the bridge instead of reaching the
+      # peer). TLS sidesteps this entirely: TCP keeps the connection
+      # 4-tuple in the kernel, so responses go back on the same socket
+      # regardless of NAT.
+      #
+      # By default the bridge listens on TCP+TLS at the port below and
+      # — if no cert/key pair is mounted — mints an ephemeral self-
+      # signed cert at startup. That's enough for any upstream SBC you
+      # can tell to skip cert validation. The fingerprint is logged on
+      # boot so you can pin it on the SBC if you'd rather.
+      #
+      # To use TLS-only, set ``SIPBRIDGE_SIP_UDP_DISABLED=1`` and point
+      # your SIP trunk / SBC at ``transport=tls`` on the TLS port.
+      #
+      # For production: mount a real cert + key into the container and
+      # set SIPBRIDGE_TLS_CERT_FILE / _KEY_FILE to the in-container
+      # paths (see the commented ``volumes`` block below). The self-
+      # signed fallback can be turned off entirely with
+      # ``SIPBRIDGE_TLS_AUTO_SELFSIGNED=0``.
+      SIPBRIDGE_SIP_TLS_PORT: ${SIPBRIDGE_SIP_TLS_PORT:-5061}
+      SIPBRIDGE_TLS_CERT_FILE: ${SIPBRIDGE_TLS_CERT_FILE:-}
+      SIPBRIDGE_TLS_KEY_FILE: ${SIPBRIDGE_TLS_KEY_FILE:-}
+      SIPBRIDGE_TLS_AUTO_SELFSIGNED: ${SIPBRIDGE_TLS_AUTO_SELFSIGNED:-1}
+      SIPBRIDGE_SIP_UDP_DISABLED: ${SIPBRIDGE_SIP_UDP_DISABLED:-0}
+    # Uncomment + adjust to make a real cert available to the container.
+    # The paths inside the container must match what
+    # ``SIPBRIDGE_TLS_CERT_FILE`` / ``SIPBRIDGE_TLS_KEY_FILE`` point at.
+    # volumes:
+    #   - /etc/letsencrypt/live/sip.example.com/fullchain.pem:/certs/cert.pem:ro
+    #   - /etc/letsencrypt/live/sip.example.com/privkey.pem:/certs/key.pem:ro

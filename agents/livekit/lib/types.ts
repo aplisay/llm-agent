@@ -42,9 +42,11 @@ export interface CallScenario {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
 }
 
@@ -85,9 +87,11 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
+  registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
   registrationEndpointId?: string | null;
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
+  aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
 }
 
@@ -111,6 +115,17 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
+  /**
+   * Repoints transcript logging and teardown at the continuation call created
+   * by a full agent-stack handover (transfer_agent with a model change).
+   */
+  setActiveAgentCall?: (call: Call) => void;
+  /**
+   * Start/stop the comfort tone (options.transferTone) over the dead-air gap of
+   * a full-stack agent-to-agent handover. No-ops when the option is unset.
+   */
+  startHandoverTone?: () => void;
+  stopHandoverTone?: () => void;
   recordingOptions?: {
     enabled: boolean;
     key?: string;

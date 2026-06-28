@@ -61,6 +61,12 @@ tags:
   - name: Listeners
     description: |-
       Listener operations manage agent listener instances, including activation, join, originate, and deletion.
+  - name: Agent Sets
+    description: |-
+      Agent Sets group a number of agents which are created, updated and deleted together from a single JSON document.
+      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent` and
+      `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
+      on creation or update.
 
 components:
   schemas:
@@ -79,6 +85,10 @@ components:
           $ref: "#/components/schemas/VoiceList"
         supportsFunctions:
           description: This model supports function calling via the `functions` property
+          type: boolean
+          example: true
+        supportsMcp:
+          description: This model supports remote MCP servers via the `mcpServers` property
           type: boolean
           example: true
         audioModel:
@@ -110,19 +120,128 @@ components:
       properties:
         modelName:
           $ref: "#/components/schemas/ModelName"
+        type:
+          $ref: "#/components/schemas/AgentType"
         prompt:
           $ref: "#/components/schemas/Prompt"
         options:
           $ref: "#/components/schemas/AgentOptions"
         functions:
           $ref: "#/components/schemas/Functions"
+        mcpServers:
+          $ref: "#/components/schemas/McpServers"
         keys:
           $ref: "#/components/schemas/Keys"
+    AgentType:
+      type: string
+      description: |-
+        The interaction type of the agent:
+         * `interactive-audio` (default) — the agent is connected to a live audio session (telephone call or WebRTC room).
+         * `text` — a headless agent which is invoked like a function (via `POST /agents/{agentId}/invoke`, or by a voice
+           agent through a `subagent` builtin function) and returns its work product by calling a builtin `result`
+           platform function. Text agents use `text:`-prefixed model names (e.g. `text:openai/gpt-4o`) and is defaulted
+           from the model name when omitted.
+      enum: ["interactive-audio", "text"]
+      default: interactive-audio
+      example: interactive-audio
+    AgentSetMemberInput:
+      description: |-
+        An agent definition within an agent-set document: a normal agent create body plus the
+        set-unique `label` used for intra-set references.
+      allOf:
+        - type: object
+          required:
+            - label
+          properties:
+            label:
+              type: string
+              description: Shortform label, unique within the set, used in `label:<label>` references
+              pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$'
+              example: sales
+            name:
+              type: string
+            description:
+              type: string
+        - $ref: "#/components/schemas/Agent"
+    AgentSetInput:
+      type: object
+      description: |-
+        Document describing a complete agent set. Within member `functions`, `transfer_agent` and `subagent`
+        builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference other
+        members; these are resolved to real agent IDs when the set is created or updated (the original label is
+        retained in a `fromLabel` annotation so the stored document still round-trips through GET and PUT).
+      required:
+        - agents
+      properties:
+        name:
+          type: string
+          description: Display name for the agent set
+        description:
+          type: string
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSetMemberInput"
+    AgentSet:
+      type: object
+      description: An agent set with its full member agent definitions (member `keys` are never returned).
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        agents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AgentSetListItem:
+      type: object
+      description: Summary row returned by GET /agent-sets.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              label:
+                type: string
+              name:
+                type: string
+              modelName:
+                $ref: "#/components/schemas/ModelName"
+              type:
+                $ref: "#/components/schemas/AgentType"
     AgentListItem:
       type: object
       description: |-
         Summary row returned by GET /agents: id, display fields, model, and timestamps only.
-        No options, keys, listeners, prompt, or functions — use GET /agents/{agentId} for the full agent.
+        No options, keys, listeners, prompt, functions, or mcpServers — use GET /agents/{agentId} for the full agent.
       properties:
         id:
           type: string
@@ -196,10 +315,14 @@ components:
                default: "generated"
                example: "static"
              from:
-               type: string
+               oneOf:
+                 - type: string
+                 - type: boolean
+                 - type: number
                description: |-
-                 The source value of the parameter for `static` or `metadata` parameters, either a constant string value for `static` parameters, or a key to the metadata object for `metadata` parameters.
-                 Metadata keys consist of one or two levels of keys separated by a dot. 
+                 The source value of the parameter for `static` or `metadata` parameters, either a constant literal value for `static` parameters, or a key to the metadata object for `metadata` parameters.
+                 `static` literals may be strings, booleans, or numbers (e.g. the boolean `includeHistory` flag on a `transfer_agent` function); `metadata` keys are always strings.
+                 Metadata keys consist of one or two levels of keys separated by a dot.
                  All builtin keys sit under an `aplisay` top level namespace, e.g. `aplisay.callerId`, `aplisay.isWebrtc`.
                  Custom metadata keys can be added by the caller in certain setup calls.
                  Whilst these can be any string, it is recommended to use a namespace to avoid clashes, *e.g.* `myapp.mykey`.
@@ -381,6 +504,77 @@ components:
           type: string
           default: "It has been great chatting with you, but we have exceeded our time now."
           example: "We've reached the end of our scheduled time — thanks for calling, goodbye!"
+        dtmfTimeout:
+          description: |-
+            Inter-digit timeout for DTMF (keypad tone) collection, in milliseconds.
+
+            While the caller is pressing keys, digits are accumulated into a buffer rather than
+            being sent to the model one at a time. The buffer is flushed to the model once no
+            further digit has been received for `dtmfTimeout` milliseconds, allowing multi-digit
+            inputs (e.g. an account number) to arrive as a single turn.
+
+            Defaults to `1500` (1.5 seconds). Set to `0` to flush each digit immediately with no
+            buffering delay. A pressed `dtmfTerminator` always flushes the buffer immediately,
+            regardless of this value.
+
+            Honoured by the LiveKit worker and by the Pipecat worker across its SIP gateways:
+            FreeSWITCH, Daily, sipbridge, and Voiceblender (the latter two decode RFC 4733
+            telephone-event tones in their media layer and forward them to the worker).
+          type: integer
+          minimum: 0
+          default: 1500
+          example: 2000
+        dtmfTerminator:
+          description: |-
+            DTMF digit that, when pressed, immediately flushes the buffered digits to the model
+            without waiting for `dtmfTimeout` to elapse. The terminator itself is not added to the
+            buffer.
+
+            Defaults to `"#"`. Set to an empty string (`""`) to disable the immediate-send
+            terminator so the buffer is only ever flushed on the `dtmfTimeout`.
+
+            Honoured by the LiveKit worker and by the Pipecat worker across its SIP gateways:
+            FreeSWITCH, Daily, sipbridge, and Voiceblender (the latter two decode RFC 4733
+            telephone-event tones in their media layer and forward them to the worker).
+          type: string
+          default: "#"
+          example: "#"
+        inactivity:
+          description: |-
+            Inactivity "kick": while a call is live, if there has been no conversational activity
+            (no user speech and the agent is not currently speaking) for `timeout`, the agent
+            speaks `message` verbatim via TTS (deterministic literal speech, not an LLM prompt —
+            e.g. "Are you still there?"). The kick re-fires on each further `timeout` of continued
+            silence, and the idle timer resets whenever there is activity (the user starts/stops
+            speaking, or the agent speaks). It stops at call teardown.
+
+            If omitted (or `message` is empty / `timeout` is not a positive duration) the feature is
+            off and there is no behavioural change.
+
+            Honoured by both the Pipecat worker (via Pipecat's built-in user-idle detection) and the
+            LiveKit worker (via the session `userAwayTimeout` / `user_state_changed` → "away" event),
+            including the Ultravox realtime path on both stacks.
+
+            Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
+            which is handled entirely server-side by Ultravox and is not portable across workers.
+          type: object
+          properties:
+            timeout:
+              description: |-
+                Idle timeout before the kick fires. Either a whole number of seconds, or a duration
+                string with a trailing `s` (e.g. `"8s"`) — the same convention as `maxDuration`.
+              oneOf:
+                - type: number
+                - type: string
+                  pattern: "^\\d+(\\.\\d+)?s?$"
+              example: "30s"
+            message:
+              description: The literal phrase the agent speaks verbatim on each idle kick.
+              type: string
+              example: "Are you still there?"
+          required:
+            - timeout
+            - message
         outboundCallFilter:
           description: |-
             A regular expression pattern that will be used to filter outbound calls generated by this agent.
@@ -394,6 +588,70 @@ components:
             - `^(\+44[1237]\d{6,15}|\d{3,6})$` - UK numbers or extensions
           type: string
           example: "^\\+44[1237]\\d{6,15}$"
+        transferTone:
+          description: |-
+            Confidence tone during call transfers: plays a periodic comfort beep to the caller while a
+            transfer is in flight, so they are not left listening to dead air.
+
+            - During a **blind** transfer the tone plays from the moment the transfer starts dialling
+              until it succeeds (the SIP REFER completes or the bridged media is established) or fails.
+            - During a **consultative** transfer the tone plays for the whole consultation, but only in
+              the gaps when neither the caller nor the agent is audibly speaking — it yields to live
+              conversation and resumes after `graceMs` of silence.
+
+            Set to `true` to enable with the default tone (a medium-pitched, medium-length comfort
+            beep every ~3 s at low volume), or to an object to tune it. If omitted (or `false` /
+            `enabled: false`) the feature is off and there is no behavioural change.
+
+            The tone *shape* is chosen from a small fixed set rather than free-form Hz/ms — `frequency`,
+            `length`, and `volume` are enumerated — so the platform can serve pre-generated tones for
+            efficiency. Only the silence timings (`gapMs`, `graceMs`) are continuous.
+
+            Honoured by both the LiveKit and Pipecat workers for all transfer mechanisms (bridging,
+            SIP REFER, and the WebRTC worker-side media relay). See docs/call-transfers.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                frequency:
+                  description: Tone pitch. `low` ≈ 350 Hz, `medium` ≈ 425 Hz, `high` ≈ 550 Hz.
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                length:
+                  description: Burst length. `short` ≈ 150 ms, `medium` ≈ 250 ms, `long` ≈ 400 ms.
+                  type: string
+                  enum: [short, medium, long]
+                  default: medium
+                volume:
+                  description: Tone loudness. `low` ≈ 0.08, `medium` ≈ 0.15, `high` ≈ 0.30 (linear amplitude).
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                gapMs:
+                  description: Silence between bursts in milliseconds.
+                  type: number
+                  minimum: 0
+                  maximum: 60000
+                  default: 2750
+                graceMs:
+                  description: |-
+                    Quiet time in milliseconds required after either party last spoke before the
+                    tone starts (or resumes).
+                  type: number
+                  minimum: 0
+                  maximum: 30000
+                  default: 1200
+          example:
+            frequency: medium
+            length: medium
+            volume: medium
+            gapMs: 2750
+            graceMs: 1200
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
@@ -641,9 +899,35 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata"]
-            description: >  
+            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result"]
+            description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
+                  * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
+                    - `agent` (string, required): the target agent ID. Must be `static` or `metadata` sourced (never `generated`).
+                      Within an agent-set document a `static` value may be a `label:<label>` reference to another member of the set.
+                      The target must be an `interactive-audio` agent in the same organisation.
+                    - `includeHistory` (boolean, optional, `static`): when `true`, the conversation transcript so far is handed to the
+                      new agent as part of its context. When omitted or `false`, the new agent starts with a clean context.
+                    - `summary` (string, optional, `generated`): a short handover summary the transferring LLM can compose for the
+                      next agent. Delivered to the new agent alongside its prompt.
+                    Two automatic handover modes: when the target agent's `modelName` matches the running session's
+                    (and the stack supports it), the prompt and functions are swapped **in place** — same session, same
+                    call record. When the model string differs (or on Ultravox realtime models, which cannot change
+                    prompt/tools mid-call), the platform performs a **full-stack handover**: the target agent's own
+                    model/voice/tool stack is started on the same live call, and a NEW call record is created with the
+                    original call as `parentId` (the original ends with `transferred to agent <id>, continued as call
+                    <child-id>`). The target model must run on the same worker as the live session (`livekit:` ↔
+                    `livekit:`, `pipecat:` ↔ `pipecat:`); on Pipecat, full handover works on websocket SIP gateway
+                    legs and browser WebRTC sessions (Daily and consultation legs refuse it).
+                  * `subagent` invokes a `text` type agent like a function call (LiveKit, Pipecat and text agents). Parameters:
+                    - `agent` (string, required): the target text agent ID, `static` or `metadata` sourced (never `generated`).
+                      `label:<label>` references are supported within agent-set documents.
+                    - any further `generated` parameters are forwarded to the text agent as its task input.
+                    The platform runs the text agent headlessly until it calls its `result` platform function; those result
+                    arguments are returned to the calling LLM as this function's result.
+                  * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
+                    (generated) arguments the agent passes become the result returned to the invoker. Define its
+                    `input_schema` to describe the output you require from the agent.
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
@@ -654,15 +938,16 @@ components:
                     - `operation` (string, optional): Specify a transfer operation/mode used by the underlying platform; allowed values are `blind` (default) or `consultative`
                       - `blind`: Immediately transfers the call. Returns `OK` when complete or `FAILED` with a reason if it fails. The system automatically chooses between SIP REFER and bridging based on participant capabilities.
                       - `consultative`: For "warm" transfers where the agent first speaks with the transfer target before connecting them to the caller. Returns immediately after the consultation call is placed with status `OK` and a message indicating the consultation has started. The transfer continues in the background. Use the builtin `transfer_status` function to check progress. A separate call record is created for the consultation leg, including its transcript.
-                   - `transferPrompt` (string, optional): Custom prompt to be used by the TransferAgent during consultative transfers. This overrides any `transferPrompt` set at the agent level (see `AgentOptions.transferPrompt`). The prompt can include the placeholder `${parentTranscript}` which will be replaced with the conversation history. Priority order: 1) `transferPrompt` parameter in transfer call, 2) `options.transferPrompt` in agent configuration, 3) default system prompt. Only applies when `operation` is `consultative`. Must be specified as `static` source (cannot be `generated` or `metadata`).
-                   - `consultFeedback` (boolean, optional): When set to `true`, enables returning detailed rejection feedback from consultative transfers in the `description` field of `transfer_status`. When omitted or `false`, only a generic "Transfer failed" message is returned to the original agent, keeping the detailed reasons confidential. Defaults to `false`. Only applies when `operation` is `consultative`.
-                    - `forceBridged` (boolean, optional): When set to `true`, forces a bridged transfer even when the trunk or registration endpoint supports SIP REFER. This overrides the automatic selection between bridging and REFER. Defaults to `false`. Only applies to blind transfers (`operation: "blind"`). Use this when you need to maintain control over the call path, preserve custom SIP headers, or ensure consistent billing behavior.
+                    - `transferPrompt` (string, optional): Custom prompt to be used by the TransferAgent during consultative transfers. This overrides any `transferPrompt` set at the agent level (see `AgentOptions.transferPrompt`). The prompt can include the placeholder `${parentTranscript}` which will be replaced with the conversation history. Priority order: 1) `transferPrompt` parameter in transfer call, 2) `options.transferPrompt` in agent configuration, 3) default system prompt. Only applies when `operation` is `consultative`. Must be specified as `static` source (cannot be `generated` or `metadata`).
+                    - `consultFeedback` (boolean, optional): When set to `true`, enables returning detailed rejection feedback from consultative transfers in the `description` field of `transfer_status`. When omitted or `false`, only a generic "Transfer failed" message is returned to the original agent, keeping the detailed reasons confidential. Defaults to `false`. Only applies when `operation` is `consultative`.
+                    - `forceBridged` (boolean, optional): When set to `true`, forces a bridged transfer even when the trunk or registration endpoint supports SIP REFER. This overrides the automatic selection between bridging and REFER. Defaults to `false`. Applies to both blind transfers and the finalisation hop of consultative transfers (`operation: "blind"` or `"consultative"`). Use this when you need to maintain control over the call path, preserve custom SIP headers, or ensure consistent billing behavior.
+                    - `forceRefer` (boolean, optional): When set to `true`, forces a SIP REFER transfer even when the platform would otherwise bridge the call (for example when the trunk or registration endpoint is configured to bridge by default). This overrides the automatic selection between bridging and REFER. Defaults to `false`. Applies to both blind transfers and the finalisation hop of consultative transfers (`operation: "blind"` or `"consultative"`), and only on SIP participants that are capable of REFER — WebRTC participants can never REFER, so this flag is ignored for them. `forceRefer` takes precedence over `forceBridged` if both are set. Use this to release the call to the carrier and free up platform media resources when you do not need to retain control of the call path.
                   * `transfer_status` is a builtin function that is always available to telephone agents. It takes no parameters and returns the current state of any in-progress transfer:
                     - Returns an object with `state` (one of: `none`, `dialling`, `talking`, `rejected`, `failed`) and `description` (a textual description of the current state)
                     - `none`: No transfer in progress
                     - `dialling`: The transfer target is being called
                     - `talking`: The agent is speaking with the transfer target (consultative transfers only)
-                   - `rejected`: The transfer target declined the transfer (consultative transfers only). If `consultFeedback` was set to `true`, the description will contain detailed rejection feedback; otherwise it will be a generic "Transfer failed" message.
+                    - `rejected`: The transfer target declined the transfer (consultative transfers only). If `consultFeedback` was set to `true`, the description will contain detailed rejection feedback; otherwise it will be a generic "Transfer failed" message.
                     - `failed`: The transfer failed
                     - Use this to monitor the progress of consultative transfers. For blind transfers, the function returns immediately when the transfer completes.
                 
@@ -672,8 +957,8 @@ components:
                   `metadata` supports arbitrary-depth dot paths, so you can also reference tool call outputs primed into `metadata.toolsCalls` (e.g. `toolsCalls.lookupDirectory.result.transferNumber`).
                 - For anti-fraud reasons, it is not possible to use a LLM `generated` parameter as the number to transfer a call to
                 - Only one transfer can be in progress at a time. If a transfer is already in progress, subsequent transfer requests will return `FAILED`
-                - By default, blind transfers automatically choose between bridging and SIP REFER based on trunk/endpoint capabilities. Use `forceBridged: true` to override this and always use bridging
-                - Consultative transfers always use bridging (SIP REFER for consultative transfers is currently disabled)
+                - By default, transfers automatically choose between bridging and SIP REFER based on trunk/endpoint capabilities. This applies both to blind transfers and to the finalisation hop of consultative transfers (when the agent connects the caller to the consulted target). Use `forceBridged: true` to override this and always use bridging, or `forceRefer: true` to always use SIP REFER (on REFER-capable SIP participants). If both are supplied, `forceRefer` wins. These per-transfer flags take precedence over any trunk (`forceReferTransfer`) or registration (`bridged_transfer`) endpoint defaults.
+                - For calls that originate from a **WebRTC / browser** participant, transfers are always bridged: the platform dials the target and relays media inside the worker (there is no SIP dialog to REFER), so `forceRefer` is ignored. Both `blind` and `consultative` operations are supported. Because a browser call has no inbound trunk, `callerId` is **required** for these transfers and must be a number owned by your organisation with outbound calling enabled — its trunk is used as the egress path.
                 - The `transferPrompt` parameter can only be specified as `static` - it cannot be generated by the LLM or sourced from metadata
 
                 The `metadata` function will only currently be available to telephone agents, and the `keys` parameter 
@@ -708,6 +993,65 @@ components:
             example: WEATHER_API_KEY
           input_schema:
             $ref: "#/components/schemas/Parameters"
+    McpServers:
+      type: array
+      description: |-
+        An array of remote MCP (Model Context Protocol) servers whose tools are made available
+        to the LLM as additional callable tools, alongside any `functions`.
+
+        Only consumed by handlers that can act as an MCP client. In the first instance this is the
+        Pipecat worker (e.g. Ultravox realtime on Pipecat): the worker connects to each server,
+        discovers its tools, exposes them to the model, and proxies every invocation. Models that
+        do not advertise `supportsMcp` ignore this property.
+      items:
+        type: object
+        required:
+          - name
+          - url
+        properties:
+          name:
+            type: string
+            description: An identifier for this MCP server. Used to namespace its tool names.
+            pattern: '^[a-zA-Z0-9_-]{1,64}$'
+            example: weather_mcp
+          url:
+            type: string
+            format: uri
+            description: The base URL of the remote MCP server endpoint.
+            example: https://mcp.example.com/mcp
+          transport:
+            type: string
+            description: The MCP transport used to reach the server.
+            enum: ["streamable_http", "sse"]
+            default: streamable_http
+            example: streamable_http
+          key:
+            type: string
+            description: |-
+              The `name` of an entry in the agent's `keys` array used to authenticate to this
+              server. This is the recommended way to supply a credential: the secret lives in
+              `keys` (which is never returned by the API), so it is not exposed to clients, unlike
+              an inline `headers` token.
+
+              The worker resolves the named key into the request according to the key's `in` type:
+                * `bearer` → `Authorization: Bearer <value>` header
+                * `basic`  → `Authorization: Basic <value>` header (value is the base64 `user:pass`)
+                * `header` → a custom header named by the key's `header` field
+                * `query`  → a query-string parameter named by the key's `name`
+
+              Any explicit `headers` below take precedence over a header derived from the key.
+            pattern: '^[a-zA-Z0-9_]{1,64}$'
+            example: weather_api_key
+          headers:
+            type: object
+            description: |-
+              Optional HTTP headers sent on every request to the MCP server, typically for
+              authentication (e.g. an `Authorization` bearer token). Prefer `key` for secrets —
+              values set here are stored on the agent and returned to clients verbatim.
+            additionalProperties:
+              type: string
+            example:
+              Authorization: "Bearer sk-..."
     Keys:
       type: array
       description: An array of keys to be used in API calls
@@ -836,6 +1180,10 @@ components:
           type: string
           description: unique ID of this call
           example: 648aa45d-204a-4c0c-a1e1-419406254134
+        index:
+          type: number
+          description: Monotonically increasing index of this call, used for cursor pagination in list endpoints
+          example: 1
         parentId:
           type: string
           nullable: true
@@ -849,14 +1197,6 @@ components:
           type: string
           description: The name of the model used for this call, if specified
           example: gpt-4.1-mini
-        from:
-          type: string
-          description: Caller number (as received, no format guaranteed)
-          example: "03300889471"
-        to:
-          type: string
-          description: Called number for this call
-          example: "+442080996945"
         startedAt:
           type: string
           description: The time this call started
@@ -995,7 +1335,11 @@ components:
           example: "Not supported: 1234 routes to jambonz but this agent uses livekit"
     Registrar:
       type: string
-      description: SIP contact URI for phone registration endpoints
+      description: |-
+        SIP contact URI for phone registration endpoints. This is the SIP account
+        identity (it is used as the SIP realm / from-domain). It must be a routable
+        FQDN or public IP unless a routable `options.register_proxy` is supplied, in
+        which case the registrar may be a non-FQDN host (e.g. an internal PBX name).
       pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
       example: sip.example.com:5060
     PhoneRegistrationOptions:
@@ -1010,6 +1354,22 @@ components:
             - tls
           default: tls
           description: Transport protocol for SIP registration
+        register_proxy:
+          type: string
+          description: |-
+            Optional routable next hop (outbound proxy / SBC) for this registration. When the
+            registrar is a non-FQDN host, set this to the reachable host (which must be a
+            routable FQDN or public IP): SIP REGISTER and calls are sent here while the
+            registrar is used only as the SIP realm / from-domain. Use this for SIP providers
+            whose registrar is a non-FQDN host but whose proxy is internet-reachable.
+          example: proxy.provider.example.com:5060
+        realm:
+          type: string
+          description: |-
+            Optional SIP realm. Defaults to the registrar host when the registrar is a
+            non-FQDN host (and `register_proxy` carries reachability), otherwise left to the
+            gateway default.
+          example: provider.example.com
         auth_username:
           type: string
           description: |-
@@ -1056,6 +1416,7 @@ components:
               enum:
                 - livekit
                 - jambonz
+                - pipecat
               default: livekit
             outbound:
               type: boolean
@@ -1119,6 +1480,7 @@ components:
           enum:
             - livekit
             - jambonz
+            - pipecat
           description: Handler for this endpoint
         registrar:
           $ref: '#/components/schemas/Registrar'

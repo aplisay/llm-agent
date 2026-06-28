@@ -1,0 +1,29 @@
+# Production image tags.
+#
+# The base defaults every image to the staging `next` tag. Layer this component
+# onto a gateway overlay for a production deploy to pin them to `latest` instead:
+#
+#     # prod/kustomization.yaml
+#     apiVersion: kustomize.config.k8s.io/v1beta1
+#     kind: Kustomization
+#     resources:
+#       - ../overlays/sipbridge
+#     components:
+#       - ../components/env-production
+#       - ../components/cloud-gcp        # optional per-cloud LB annotations
+#
+#     kubectl apply -k prod
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker
+    newTag: latest
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge
+    newTag: latest
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/freeswitch
+    newTag: latest
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/esl-poller
+    newTag: latest
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec
+    newTag: latest

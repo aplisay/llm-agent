@@ -1,3 +1,11 @@
+# Cloud Build — livekit-agent (per-commit build).
+#
+# Runs on every commit to main. Builds and pushes the image tagged with the
+# commit SHA only — it does NOT tag :latest. Promotion to :latest / :$TAG_NAME
+# happens as a group at release time via the top-level cloudbuild-release.yaml
+# (triggered by a version tag). livekit-agent runs as a docker-compose container
+# on GCE that pulls :latest, so the release :latest promotion + a manual restart
+# is its deploy path.
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
@@ -10,12 +18,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:latest
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME
       - '-f'
       - agents/livekit/Dockerfile
       - .
@@ -26,9 +28,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
     id: Push
 images:
   - >-

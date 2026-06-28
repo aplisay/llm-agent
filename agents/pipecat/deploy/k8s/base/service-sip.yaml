@@ -1,0 +1,34 @@
+# L3 load balancer for inbound SIP signalling (TLS on 5061/TCP only).
+#
+# Assumption: all inbound calls from our SBCs arrive over TLS on 5061, so a
+# plain L4/L3 (TCP passthrough) load balancer is sufficient — no UDP signalling.
+#
+# IMPORTANT: media (RTP) does NOT flow through this LB. Whichever node terminates
+# the TLS dialog advertises ITS OWN node external IP in SDP, so the SBC sends RTP
+# straight to that node's public IP + RTP port range. The LB only spreads the
+# signalling TCP connections across nodes; no session affinity is required
+# because each call is self-contained on the node that answered it.
+#
+# externalTrafficPolicy: Local preserves the SBC source IP (useful for SIP ACLs)
+# and routes each connection to a node that runs a pod — every SIP node does,
+# via the DaemonSet. Per-cloud LB annotations are layered in by the cloud
+# components (components/cloud-*).
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipecat-sip
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+  ports:
+    - name: sip-tls
+      port: 5061
+      targetPort: 5061
+      protocol: TCP

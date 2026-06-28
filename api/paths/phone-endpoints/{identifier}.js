@@ -1,5 +1,8 @@
 import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164, validateSipUri } from '../../../lib/validation.js';
+import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy } from '../../../lib/validation.js';
+import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
+import { userOwnsRow } from '../../../lib/scope.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 
 let log;
 
@@ -13,6 +16,7 @@ export default function (logger) {
 };
 
 const getPhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   const { organisationId } = res.locals.user || {};
   const { identifier } = req.params;
 
@@ -36,7 +40,7 @@ const getPhoneEndpoint = async (req, res) => {
       if (!registration) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
-      if (registration.organisationId && organisationId && registration.organisationId !== organisationId) {
+      if (!userOwnsRow(res.locals.user, registration)) {
         return res.status(403).send({ error: 'Access denied' });
       }
       return res.send({
@@ -59,7 +63,7 @@ const getPhoneEndpoint = async (req, res) => {
       return res.status(404).send({ error: 'Phone endpoint not found' });
     }
 
-    if (record.organisationId && organisationId && record.organisationId !== organisationId) {
+    if (record.organisationId != null && !userOwnsRow(res.locals.user, record)) {
       return res.status(403).send({ error: 'Access denied' });
     }
 
@@ -108,7 +112,7 @@ getPhoneEndpoint.apiDoc = {
                 properties: {
                   name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                   number: { type: 'string', description: 'The phone number' },
-                  handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
+                  handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   trunkId: { type: 'string', nullable: true, description: 'Identifier of the trunk this number is assigned to (if any)' },
                   provisioned: { type: 'boolean', description: 'Whether the number provisioning onto the underlying telephony platforms has completed. This does not guarantee calls will arrive, only that local provisioning steps are complete.' },
@@ -127,7 +131,7 @@ getPhoneEndpoint.apiDoc = {
                   status: { type: 'string', enum: ['active', 'failed', 'disabled'] },
                   state: { type: 'string', enum: ['initial', 'registering', 'registered', 'failed'] },
                   error: { type: 'string', description: 'Error message if failed' },
-                  handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'Handler for this endpoint' },
+                  handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'Handler for this endpoint' },
                   outbound: { type: 'boolean', description: 'Supports outbound' },
                   callReceived: { type: 'string', format: 'date-time', nullable: true, description: 'Timestamp of the first inbound call received for this endpoint' },
                 }
@@ -165,6 +169,7 @@ getPhoneEndpoint.apiDoc = {
 };
 
 const updatePhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'update')) return;
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
   const updateData = req.body;
@@ -200,8 +205,8 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
         return res.status(400).send({ error: 'outbound must be a boolean value' });
       }
-      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
-        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      if (updateFields.handler !== undefined && !TELEPHONY_HANDLER_NAMES.includes(updateFields.handler)) {
+        return res.status(400).send({ error: `handler must be one of: ${TELEPHONY_HANDLER_NAMES.join(', ')}` });
       }
       await phoneNumber.update(updateFields);
       return res.send({ success: true });
@@ -230,8 +235,8 @@ const updatePhoneEndpoint = async (req, res) => {
       if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
         return res.status(400).send({ error: 'outbound must be a boolean value' });
       }
-      if (updateFields.handler !== undefined && !['livekit', 'jambonz'].includes(updateFields.handler)) {
-        return res.status(400).send({ error: 'handler must be one of: livekit, jambonz' });
+      if (updateFields.handler !== undefined && !TELEPHONY_HANDLER_NAMES.includes(updateFields.handler)) {
+        return res.status(400).send({ error: `handler must be one of: ${TELEPHONY_HANDLER_NAMES.join(', ')}` });
       }
       if (updateFields.name !== undefined && typeof updateFields.name !== 'string') {
         return res.status(400).send({ error: 'name must be a string' });
@@ -258,11 +263,25 @@ const updatePhoneEndpoint = async (req, res) => {
         }
       }
 
-      // validate credentials if provided
-      if (updateFields.registrar !== undefined && !validateSipUri(updateFields.registrar)) {
-        return res.status(400).send({ error: 'registrar must be a valid SIP contact URI' });
+      // validate credentials if provided. The registrar may be a non-FQDN host
+      // when a routable register_proxy carries reachability — mirror the create
+      // rule (see validatePhoneRegistration). The effective options are the
+      // incoming ones (a full replace) when options is being updated, otherwise
+      // those already stored on the registration.
+      const effectiveOptions = updateFields.options !== undefined ? updateFields.options : registration.options;
+      const registerProxyRoutable = hasRoutableRegisterProxy(effectiveOptions);
+      if (updateFields.registrar !== undefined) {
+        if (validateSipUri(updateFields.registrar)) {
+          // routable registrar — fine
+        } else if (registerProxyRoutable) {
+          if (!isPlausibleSipHost(updateFields.registrar)) {
+            return res.status(400).send({ error: 'registrar must be a valid SIP host' });
+          }
+        } else {
+          return res.status(400).send({ error: 'registrar must be a valid SIP contact URI, or options.register_proxy must be set to a routable FQDN or public IP' });
+        }
       }
-      
+
       // Strip sip:/sips: prefix from registrar if present
       if (updateFields.registrar !== undefined) {
         updateFields.registrar = updateFields.registrar.replace(/^sips?:/i, '');
@@ -295,6 +314,7 @@ const updatePhoneEndpoint = async (req, res) => {
 };
 
 const deletePhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'release')) return;
   const { organisationId } = res.locals.user;
   const { identifier } = req.params;
 

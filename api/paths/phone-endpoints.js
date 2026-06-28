@@ -1,7 +1,8 @@
 import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
-import { getTelephonyHandler } from '../../lib/handlers/index.js';
+import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 let appParameters, log;
 
@@ -34,6 +35,7 @@ function stripPhoneNumberInstancesForUser(rows, user) {
 }
 
 const phoneEndpointList = (async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   let { originate, handler, type, offset, pageSize, search, trunkId: rawTrunkId } = req.query;
   const trunkIds = [].concat(rawTrunkId ?? []).map((id) => String(id).trim()).filter(Boolean);
 
@@ -233,6 +235,7 @@ const phoneEndpointList = (async (req, res) => {
 });
 
 const createPhoneEndpoint = async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'claim')) return;
   const { organisationId } = res.locals.user;
   const { type, ...data } = req.body;
 
@@ -388,7 +391,7 @@ phoneEndpointList.apiDoc = {
       required: false,
       schema: {
         type: 'string',
-        enum: ['livekit', 'jambonz', 'ultravox']
+        enum: HANDLER_NAMES
       }
     },
     {
@@ -458,7 +461,7 @@ phoneEndpointList.apiDoc = {
                       properties: {
                         name: { type: 'string', description: 'User-defined descriptive name', nullable: true },
                         number: { type: 'string', description: 'The phone number' },
-                        handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },
+                        handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'The handler type for this phone endpoint' },
                         outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false },
                         trunkId: { type: 'string', nullable: true, description: 'Trunk this number is assigned to' },
                         createdAt: { type: 'string', format: 'date-time', nullable: true, description: 'When the number was created' },
@@ -476,7 +479,7 @@ phoneEndpointList.apiDoc = {
                         username: { type: 'string', description: 'Registration username' },
                         status: { type: 'string', description: 'High-level status of the endpoint', enum: ['active', 'failed', 'disabled'] },
                         state: { type: 'string', description: 'Registration state', enum: ['initial', 'registering', 'registered', 'failed'] },
-                        handler: { type: 'string', enum: ['livekit', 'jambonz'], description: 'The handler type for this phone endpoint' },
+                        handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, description: 'The handler type for this phone endpoint' },
                         outbound: { type: 'boolean', description: 'Whether this endpoint supports outbound calls', default: false }
                       }
                     }

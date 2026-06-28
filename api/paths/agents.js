@@ -1,5 +1,9 @@
 import { Agent, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
+import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
+import { listBuiltinAgentSummaries } from '../../lib/builtin-agents.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
+import { isModelAllowed, allowedModelsWhere } from '../../lib/auth/model-access.js';
 
 let appParameters, log;
 
@@ -17,19 +21,34 @@ export default function (logger, voices, wsServer) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { name, description, modelName, prompt, options, functions, keys } = req.body;
+  let { name, description, modelName, prompt, options, functions, mcpServers, keys, type } = req.body;
   let { id: userId, organisationId } = res.locals.user;
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, keys, userId, organisationId });
+  // RBAC: a single `agent` resource — text-vs-audio is NOT a separate permission.
+  if (!requirePermission(res, 'agent', 'create')) return;
+  // R1: the chosen model must be within this principal's effective allow-list.
+  if (!isModelAllowed(modelName, res.locals.user?._allowedModels)) {
+    return res.status(403).json({ message: 'model_not_permitted', detail: `Model ${modelName} is not permitted for your account.` });
+  }
+  // Default the agent type from the model's handler prefix when not given explicitly
+  type = type ?? (typeof modelName === 'string' && modelName.startsWith('text:') ? 'text' : 'interactive-audio');
+  let agent = Agent.build({ name, description, modelName, prompt, options, functions, mcpServers, keys, type, userId, organisationId });
 
-  log.info({ modelName, prompt, options, functions, userId, organisationId}, 'create API call');
+  log.info({ modelName, prompt, options, functions, mcpServers, userId, organisationId, type }, 'create API call');
 
   try {
+    // Static transfer_agent/subagent targets must reference accessible agents of the right type
+    functions && await validateAgentTargets(functions, {
+      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } })
+    });
     await agent.save();
     res.send({ ...agent.dataValues, keys: undefined });
   }
   catch (err) {
     req.log.error(err, 'DATABASE ERROR: creating agent');
-    if (err.name === 'SequelizeValidationError') {
+    if (err instanceof AgentSetValidationError) {
+      res.status(400).send({ message: err.message });
+    }
+    else if (err.name === 'SequelizeValidationError') {
       res.status(400).send(err.errors.map((e) => e.message));
     }
     else {
@@ -58,6 +77,9 @@ agentCreate.apiDoc = {
             modelName: {
               $ref: '#/components/schemas/ModelName'
             },
+            type: {
+              $ref: '#/components/schemas/AgentType'
+            },
             prompt: {
               $ref: '#/components/schemas/Prompt'
             },
@@ -66,6 +88,9 @@ agentCreate.apiDoc = {
             },
             functions: {
               $ref: '#/components/schemas/Functions'
+            },
+            mcpServers: {
+              $ref: '#/components/schemas/McpServers'
             },
             keys: {
               $ref: '#/components/schemas/Keys'
@@ -120,6 +145,9 @@ agentCreate.apiDoc = {
               },
               functions: {
                 $ref: '#/components/schemas/Functions'
+              },
+              mcpServers: {
+                $ref: '#/components/schemas/McpServers'
               },
               keys: {
                 $ref: '#/components/schemas/Keys'
@@ -180,6 +208,12 @@ const agentList = (async (req, res) => {
       where = { [Op.and]: [scopeWhere, searchWhere] };
     }
 
+    // R1 — confine the listing to models in the principal's effective allow-list
+    // (in SQL, so pagination/`next` stay correct). Builtins are platform tooling
+    // and are intentionally NOT model-gated.
+    const modelWhere = allowedModelsWhere(res.locals.user?._allowedModels, Op);
+    if (modelWhere) where = { [Op.and]: [where, modelWhere] };
+
     const listAttrs = ['id', 'name', 'description', 'modelName', 'createdAt', 'updatedAt'];
     const order = [['updatedAt', 'DESC'], ['name', 'ASC'], ['id', 'ASC']];
 
@@ -192,7 +226,21 @@ const agentList = (async (req, res) => {
     });
 
     const next = count > startOffset + agents.length ? startOffset + size : false;
-    return res.send({ agents, next });
+    // Read-only built-in agents (available to every tenant) sit at the top of the first page.
+    const builtins = startOffset === 0
+      ? listBuiltinAgentSummaries().filter((b) => {
+        // R1/F7 — built-ins gated by their `builtin:<id>` access prefix.
+        if (!isModelAllowed(b.id, res.locals.user?._allowedModels)) return false;
+        if (!searchRaw) return true;
+        const p = searchRaw.toLowerCase();
+        const inName = (b.name || '').toLowerCase().includes(p);
+        const inModel = (b.modelName || '').toLowerCase().includes(p);
+        if (validField === 'name') return inName;
+        if (validField === 'model') return inModel;
+        return inName || inModel;
+      })
+      : [];
+    return res.send({ agents: [...builtins, ...agents], next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');

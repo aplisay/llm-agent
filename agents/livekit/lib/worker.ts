@@ -40,6 +40,10 @@ import {
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
 import { withTimeout } from "./utils.js";
+import {
+  ConfidenceTonePlayer,
+  toneConfigFromOptions,
+} from "./confidence-tone.js";
 import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
@@ -189,6 +193,12 @@ export default defineAgent({
     let endTransferActivityIfNeeded:
       | ((reason: string) => Promise<void>)
       | null = null;
+    // Reference to the call row so the outer catch can mark it failed (with the
+    // error reason) if setup throws. Without this a setup failure (e.g. an
+    // unusable TTS vendor) leaves an orphaned call with no endedAt/reason and
+    // nothing for the diagnosis loop to read.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let recordedCall: any = null;
 
     try {
       const tGetCallInfo = Date.now();
@@ -215,9 +225,11 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp = null,
         b2buaGatewayTransport = null,
+        aLegEncrypted = true,
         forceBridged,
       } = scenario;
 
@@ -255,8 +267,11 @@ export default defineAgent({
         sessionRef,
         modelRef,
         getActiveCall,
+        setActiveAgentCall,
         endTransferActivityIfNeeded: endTransferActivityFn,
         getTransferState,
+        startHandoverTone,
+        stopHandoverTone,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -289,13 +304,16 @@ export default defineAgent({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp: capturedB2buaIp,
         b2buaGatewayTransport: capturedB2buaTransport,
+        aLegEncrypted,
         forceBridged,
         requestHangup: () => {},
         participant: participant,
       });
+      recordedCall = call; // so the outer catch can mark it failed on a setup error
 
       if (outboundCall && outboundInfo && !participant) {
         try {
@@ -320,6 +338,8 @@ export default defineAgent({
             b2buaGatewayTransport,
             registrationEndpointId,
             call?.id,
+            aLegEncrypted,
+            registrationUsername,
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -413,6 +433,9 @@ export default defineAgent({
             checkForHangup,
             getConsultInProgress: () => consultInProgress,
             getActiveCall,
+            setActiveAgentCall,
+            startHandoverTone,
+            stopHandoverTone,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -601,6 +624,16 @@ export default defineAgent({
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`,
       );
+      // Mark the call failed so it isn't left orphaned (no endedAt/reason): this
+      // records the failure reason on the call and lets the diagnosis loop find
+      // it. The InvocationLog is persisted by ctx.shutdown() below. Best-effort.
+      try {
+        if (recordedCall && !recordedCall._endCalled) {
+          await recordedCall.end(`Agent setup failed: ${(e as Error).message}`);
+        }
+      } catch (endErr) {
+        logger.error({ endErr }, "error marking call failed during cleanup");
+      }
       // End transfer activity if in progress
       // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
       if (endTransferActivityIfNeeded) {
@@ -669,9 +702,20 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let trunkInfo: TrunkInfo | null = null;
   let registrationRegistrar: string | null = null;
   let registrationTransport: string | null = null;
+  // Registration trunk username (e.g. "8092"), used as the calling number toward
+  // the gateway on transfer/bridge B-legs so PBXs that reject an unknown calling
+  // number (e.g. Wildix -> 603 Decline) accept the call.
+  let registrationUsername: string | null = null;
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
+  // Whether the inbound A-leg media is encrypted (SRTP). Drives the
+  // media-encryption policy of the B-leg registration trunk used for transfers:
+  // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
+  // force plain RTP to avoid 603 Decline from plain-RTP-only endpoints (e.g.
+  // some Wildix configurations). Defaults to true (offer SRTP) to preserve
+  // prior behaviour when the B2BUA does not stamp the signal.
+  let aLegEncrypted = true;
   let forceBridged: boolean | undefined = undefined;
   /*
 
@@ -798,12 +842,27 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 sipHostname: sipHostnameAttr,
                 sipHXLkRealIp: b2buaGatewayIpAttr,
                 sipHXLkTransport: b2buaGatewayTransportAttr,
+                sipHXLkMediaEncryption: aLegMediaEncryptionAttr,
               } = participant.attributes || {};
 
               calledId = calledIdAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
               phoneRegistration = phoneRegistrationAttr;
+
+              // Determine A-leg media encryption from the B2BUA-stamped header
+              // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
+              // header is absent we keep the default (true) to preserve prior
+              // behaviour. The value is treated as plain RTP only when it
+              // explicitly indicates no/disabled encryption.
+              if (aLegMediaEncryptionAttr != null && aLegMediaEncryptionAttr !== '') {
+                const enc = String(aLegMediaEncryptionAttr).trim().toLowerCase();
+                aLegEncrypted = !['disable', 'disabled', 'none', 'off', 'no', 'false', '0', 'rtp', 'plain', 'unencrypted'].includes(enc);
+                logger.info(
+                  { aLegMediaEncryption: aLegMediaEncryptionAttr, aLegEncrypted },
+                  "Extracted A-leg media encryption from participant attributes",
+                );
+              }
 
               // Store registration endpoint ID for transfer operations
               if (phoneRegistration) {
@@ -857,6 +916,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 // Store registrar and transport for transfer operations
                 registrationRegistrar = regInfo.registrar || null;
                 registrationTransport = regInfo.options?.transport || null;
+                // Trunk username (= the A-leg's To-user / SIP extension), used as
+                // the calling number presented toward the gateway on transfers.
+                registrationUsername = regInfo.username || null;
                 // Store forceBridged option from phone registration endpoint
                 if (regInfo.options?.forceBridged !== undefined) {
                   forceBridged = regInfo.options.forceBridged === true;
@@ -950,9 +1012,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     trunkInfo,
     registrationRegistrar,
     registrationTransport,
+    registrationUsername,
     registrationEndpointId,
     b2buaGatewayIp,
     b2buaGatewayTransport,
+    aLegEncrypted,
     forceBridged,
   };
 }
@@ -1035,9 +1099,11 @@ async function setupCallAndUtilities({
   trunkInfo,
   registrationRegistrar,
   registrationTransport,
+  registrationUsername,
   registrationEndpointId,
   b2buaGatewayIp,
   b2buaGatewayTransport,
+  aLegEncrypted = true,
   forceBridged,
   requestHangup,
   participant: originalParticipant,
@@ -1093,12 +1159,27 @@ async function setupCallAndUtilities({
     state: "none",
     description: "No transfer in progress",
   };
+  // Confidence tone during transfers (options.transferTone): a comfort beep
+  // toward the caller while a blind transfer is being placed, and to fill
+  // the silent gaps during a consultation. Armed in onTransfer; play/stop is
+  // derived from the transfer state via the setTransferState funnel below.
+  // Null (zero behaviour change) when the option is unset.
+  const toneConfig = toneConfigFromOptions(options);
+  const tonePlayer = toneConfig
+    ? new ConfidenceTonePlayer(
+        toneConfig,
+        () => ctx.room as Room | null | undefined,
+        () => sessionRef(null),
+      )
+    : null;
+
   const getTransferState = () => transferState;
   const setTransferState = (
     state: "none" | "dialling" | "talking" | "rejected" | "failed",
     description: string,
   ) => {
     transferState = { state, description };
+    tonePlayer?.notifyTransferState(state);
     logger.debug({ state, description }, "Transfer state updated");
   };
 
@@ -1129,6 +1210,17 @@ async function setupCallAndUtilities({
   const { metadata } = call;
   metadata.aplisay = metadata.aplisay || {};
   metadata.aplisay.callId = call.id;
+
+  // The call record the live agent is currently attributed to. A full
+  // agent-stack handover (transfer_agent with a model change) replaces this
+  // with a child call (parentId = original) so transcripts, teardown and
+  // usage follow the new agent + model.
+  let activeAgentCall: Call = call;
+  const setActiveAgentCall = (next: Call) => {
+    (next as any).batchedTransactionLogs =
+      (next as any).batchedTransactionLogs || [];
+    activeAgentCall = next;
+  };
 
   // Array to batch transaction logs when streamLog is false
   const batchedTransactionLogs: Array<{
@@ -1164,18 +1256,22 @@ async function setupCallAndUtilities({
         const transactionLogData = {
           userId,
           organisationId,
-          callId: call.id,
+          callId: activeAgentCall.id,
           type,
           data: JSON.stringify(data),
           isFinal: true,
           createdAt: logCreatedAt,
         };
 
-        // If streamLog is enabled, push immediately; otherwise batch for end call
+        // If streamLog is enabled, push immediately; otherwise batch for end
+        // call — onto the ACTIVE call so each record's logs end with it.
         if (instance.streamLog === true) {
           await createTransactionLog(transactionLogData);
         } else {
-          batchedTransactionLogs.push(transactionLogData);
+          (
+            ((activeAgentCall as any).batchedTransactionLogs ??
+              batchedTransactionLogs) as typeof batchedTransactionLogs
+          ).push(transactionLogData);
         }
       }
     } catch (e) {
@@ -1195,6 +1291,14 @@ async function setupCallAndUtilities({
     participant: ParticipantInfo;
   }) => {
     try {
+      // Arm the confidence tone for this transfer (skip if a transfer is
+      // already in flight — handleTransfer will reject it without touching
+      // the transfer state, and the in-flight one still owns the tone).
+      if (tonePlayer && !getConsultInProgress()) {
+        tonePlayer.arm(
+          args.operation === "consultative" ? "consult" : "blind",
+        );
+      }
       const transferContext: TransferContext = {
         ctx,
         room,
@@ -1210,9 +1314,11 @@ async function setupCallAndUtilities({
         trunkInfo,
         registrationRegistrar,
         registrationTransport,
+        registrationUsername,
         registrationEndpointId,
         b2buaGatewayIp: b2buaGatewayIp ?? null,
         b2buaGatewayTransport: b2buaGatewayTransport ?? null,
+        aLegEncrypted,
         forceBridged,
         options,
         sessionRef,
@@ -1236,6 +1342,9 @@ async function setupCallAndUtilities({
 
       return await handleTransfer(transferContext);
     } catch (e: any) {
+      // A throw here means the transfer died (often before any state change,
+      // e.g. argument validation) — don't leave the tone armed for it.
+      tonePlayer?.disarm();
       let error = e as Error;
       if (!(e instanceof Error)) {
         logger.error(
@@ -1287,8 +1396,13 @@ async function setupCallAndUtilities({
     modelRef,
     sessionRef,
     // expose helper to check the currently active call for logging
-    getActiveCall: () => bridgedCallRecord || call,
+    getActiveCall: () => bridgedCallRecord || activeAgentCall,
+    setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,
+    // Comfort tone over a full-stack agent handover gap (no-ops when
+    // options.transferTone is unset, i.e. tonePlayer is null).
+    startHandoverTone: () => tonePlayer?.startHandover(),
+    stopHandoverTone: () => tonePlayer?.stopHandover(),
   };
 }

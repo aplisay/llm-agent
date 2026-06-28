@@ -9,7 +9,9 @@ export default function (logger, voices) {
 
   const voicesList = (async (req, res) => {
       try {
-        let voices = Object.fromEntries(await Promise.all((await handlers()).implementations.map(async ({ name, voices }) => ([name, await voices]))));
+        let voices = Object.fromEntries((await Promise.all((await handlers()).implementations.map(async ({ name, voices }) => ([name, await voices]))))
+          // Headless handlers (e.g. `text` agents) have no TTS leg so don't belong in the voices list
+          .filter(([, handlerVoices]) => handlerVoices && Object.keys(handlerVoices).length));
         res.send(voices);
       }
       catch (err) {

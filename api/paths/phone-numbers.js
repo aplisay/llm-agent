@@ -1,5 +1,6 @@
 import { PhoneNumber, Op } from '../../lib/database.js';
-import { getTelephonyHandler } from '../../lib/handlers/index.js';
+import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
+import { requirePermission } from '../../lib/auth/permissions.js';
 
 // DEPRECATED: This endpoint is deprecated. Use /api/phone-endpoints instead.
 
@@ -18,6 +19,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const phoneNumberList = (async (req, res) => {
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
   let { organisationId } = res.locals.user;
   let { originate, handler } = req.query;
 
@@ -81,7 +83,7 @@ phoneNumberList.apiDoc = {
       required: false,
       schema: {
         type: 'string',
-        enum: ['livekit', 'jambonz', 'ultravox']
+        enum: HANDLER_NAMES
       }
     }
   ],
@@ -101,7 +103,7 @@ phoneNumberList.apiDoc = {
                 },
                 handler: {
                   type: 'string',
-                  enum: ['livekit', 'jambonz'],
+                  enum: TELEPHONY_HANDLER_NAMES,
                   description: 'The handler type for this phone number'
                 },
                 outbound: {

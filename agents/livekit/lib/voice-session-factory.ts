@@ -22,6 +22,34 @@ import {
 } from "./pipeline-provider-keys.js";
 
 /**
+ * Parse the inactivity-kick idle timeout (`options.inactivity.timeout`) into
+ * seconds for LiveKit's `voiceOptions.userAwayTimeout`. Accepts a number of
+ * seconds or a string like `"8s"` (the same convention as `maxDuration`).
+ *
+ * Returns `undefined` when `options.inactivity` is absent or malformed (no
+ * usable timeout, or no non-empty `message`). In that case the caller omits
+ * `userAwayTimeout` entirely, so the session keeps the SDK default
+ * (`15s`) but no kick handler is wired — behaviour is unchanged.
+ */
+export function inactivityAwayTimeoutSecs(agent: Agent): number | undefined {
+  const inactivity = agent?.options?.inactivity;
+  if (!inactivity || typeof inactivity !== "object") return undefined;
+  const message = inactivity.message;
+  if (typeof message !== "string" || !message.trim()) return undefined;
+
+  const raw = inactivity.timeout;
+  let secs: number | undefined;
+  if (typeof raw === "number" && isFinite(raw)) {
+    secs = raw;
+  } else if (typeof raw === "string") {
+    const m = raw.trim().match(/^(\d+(?:\.\d+)?)s?$/);
+    if (m) secs = parseFloat(m[1]);
+  }
+  if (secs === undefined || !(secs > 0)) return undefined;
+  return secs;
+}
+
+/**
  * Google Cloud voice ids (e.g. en-GB-Wavenet-N) are not LiveKit Inference models.
  * Node agents use Gemini TTS (`@livekit/agents-plugin-google` beta); map Cloud ids to a Gemini prebuilt voice.
  */
@@ -162,6 +190,15 @@ export function createVoiceModelAndSession(
       ? new PipelineVoiceAgent(agentOptions)
       : new voice.Agent(agentOptions);
 
+  // Inactivity "kick": when options.inactivity is configured, set LiveKit's
+  // user-away timeout so the session emits a `user_state_changed` → "away"
+  // event after `timeout` of silence. The runtime (voice-agent-runtime.ts)
+  // listens for that and speaks options.inactivity.message. Omitted entirely
+  // when unset, so the default behaviour is unchanged.
+  const userAwayTimeout = inactivityAwayTimeoutSecs(agent);
+  const inactivityVoiceOptions =
+    userAwayTimeout !== undefined ? { voiceOptions: { userAwayTimeout } } : {};
+
   if (voiceMode === "pipeline") {
     const providerSeg = parseProviderModelName(modelName);
     const useProviderKeys = pipelineUsesProviderApiKeys();
@@ -191,6 +228,7 @@ export function createVoiceModelAndSession(
       stt: sttModel,
       llm: pipelineLlm,
       tts: ttsModel,
+      ...inactivityVoiceOptions,
     } as any);
     return { session, model };
   }
@@ -247,6 +285,44 @@ export function createVoiceModelAndSession(
     llmOptions.vendorSpecific = vendorSpecific;
   }
 
+  // Ultravox realtime: map portable `options.inactivity` → provider-native
+  // `inactivityMessages` so Ultravox itself does the idle detection and speaks
+  // the phrase in-model. Ultravox is speech-to-speech with no separate TTS, so
+  // the JS-side say()/generateReply kick is unreliable for it; the generic SDK
+  // user-away kick (voice-agent-runtime.ts) is gated to NON-ultravox models, and
+  // we omit `userAwayTimeout` on the Ultravox session below. A native
+  // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
+  const isUltravox = modelName.includes("livekit:ultravox/");
+  if (isUltravox) {
+    const inactivitySecs = inactivityAwayTimeoutSecs(agent);
+    const inactivityMsg =
+      typeof agent?.options?.inactivity?.message === "string"
+        ? agent.options.inactivity.message.trim()
+        : "";
+    const base =
+      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+      vendorSpecific ||
+      undefined;
+    const alreadyNative = (base as any)?.ultravox?.inactivityMessages;
+    if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
+      // Ultravox fires each entry once, in sequence, after `duration` of further
+      // user inactivity — so a short run of identical entries gives the
+      // "re-fire every `timeout` of continued silence" behaviour (here up to 3
+      // nudges). endBehavior left default: do NOT hang up after the last one.
+      const entry = { duration: `${inactivitySecs}s`, message: inactivityMsg };
+      llmOptions.vendorSpecific = {
+        ...(base || {}),
+        ultravox: {
+          ...((base && base.ultravox) || {}),
+          inactivityMessages: [entry, entry, entry],
+        },
+      };
+    }
+  }
+  // Ultravox does idle natively (above); only NON-ultravox realtime uses the
+  // SDK user-away timer + say()/generateReply kick.
+  const realtimeInactivityVoiceOptions = isUltravox ? {} : inactivityVoiceOptions;
+
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),
     // Drop early user audio while agent speech is uninterruptible (greeting mode).
@@ -255,6 +331,7 @@ export function createVoiceModelAndSession(
         discardAudioIfUninterruptible: true,
       },
     },
+    ...realtimeInactivityVoiceOptions,
   } as any);
   return { session, model };
 }

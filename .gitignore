@@ -12,6 +12,7 @@ lerna-debug.log*
 *.code-workspace
 
 *.code-workspace
+.codex
 .claude
 .claude/**
 .cursor*
@@ -125,3 +126,6 @@ tests/fixtures/agents/test-agent.js
 agent.json
 .cursorignore
 .mcp.json
+**/__pycache__
+*.pyc
+docs/security.md

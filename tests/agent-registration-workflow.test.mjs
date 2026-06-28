@@ -154,9 +154,10 @@ describe('Agent Registration Workflow Test', () => {
     const res = {
       _status: null,
       _body: null,
-      locals: { user: { id: testUserId, organisationId: testOrgId } },
+      locals: { user: { id: testUserId, role: 'owner', organisationId: testOrgId } },
       status: function(code) { this._status = code; return this; },
-      send: function(data) { this._body = data; return this; }
+      send: function(data) { this._body = data; return this; },
+      json: function(data) { this._body = data; return this; }
     };
     return res;
   };
@@ -168,7 +169,7 @@ describe('Agent Registration Workflow Test', () => {
     while (Date.now() - startTime < timeoutMs) {
       const req = createMockRequest({ params: { identifier: registrationId } });
       const res = createMockResponse();
-      res.locals.user = { organisationId: testOrgId };
+      res.locals.user = { role: 'owner', organisationId: testOrgId };
       await getPhoneEndpoint(req, res);
 
       

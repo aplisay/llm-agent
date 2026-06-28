@@ -1,0 +1,43 @@
+# DigitalOcean staging deploy target for the SIP gateway.
+#
+# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode) +
+# a stable load-balancer name so the DO-assigned IP persists (see below).
+#
+# Images default to :next (staging) from the base — no env-production component.
+#
+#     kubectl apply -k do-staging
+#
+# Stable IP: DO can't pin a reserved IP to a managed LB, so we pin the LB *name*
+# (do-loadbalancer-name) instead. A fixed name means the CCM always reconciles the
+# same LB, so its DO-assigned IP stays put for the LB's lifetime. After the first
+# apply, read the IP and wire DNS/SBC to it — then never delete the Service:
+#
+#     kubectl get svc pipecat-sip -n pipecat -o wide   # EXTERNAL-IP = the stable IP
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../overlays/sipbridge
+
+components:
+  - ../components/cloud-digitalocean
+  - ../components/webrtc-do        # adds 443 -> :8082 (WebRTC) on the SAME LB
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
+        value: pipecat-sip-staging
+      # WebRTC TLS — DO-managed Let's Encrypt cert for staging.pipecat.aplisay.net
+      # (pipecat.aplisay.net is delegated to DO, so DO issues + auto-renews it):
+      #   doctl compute certificate create --type lets_encrypt \
+      #     --name pipecat-staging --dns-names staging.pipecat.aplisay.net
+      # Paste its ID below. MUST be a real cert ID before `kubectl apply` — a
+      # placeholder makes the DO LB reject the 443 listener. (Remove this op + the
+      # webrtc-do component to deploy SIP-only.)
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
+        value: b0d6588d-fd3e-4280-8e98-4b6da8b3cb8b

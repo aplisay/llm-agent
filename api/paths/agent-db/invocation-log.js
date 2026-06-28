@@ -1,6 +1,14 @@
 import { InvocationLog } from '../../../lib/database.js';
 import { gzipSync } from 'zlib';
 
+/**
+ * Subsystems allowed to post invocation logs. Must stay in sync with
+ * the ``enum_invocation_logs_subsystem`` Postgres enum (see
+ * ``lib/database.js`` — addEnumValueIfMissing(...)). One entry per
+ * registered worker tier.
+ */
+const SUBSYSTEM_NAMES = ['livekit-agent', 'pipecat-agent'];
+
 let appParameters, log;
 
 function pruneJson(value, maxSize = 256 * 1024) {
@@ -72,9 +80,9 @@ const invocationLogCreate = (async (req, res) => {
   }
 
   const effectiveSubsystem = subsystem || 'livekit-agent';
-  if (effectiveSubsystem !== 'livekit-agent') {
+  if (!SUBSYSTEM_NAMES.includes(effectiveSubsystem)) {
     return res.status(400).send({
-      error: 'Invalid subsystem; currently only "livekit-agent" is supported',
+      error: `Invalid subsystem; must be one of: ${SUBSYSTEM_NAMES.join(', ')}`,
     });
   }
 
@@ -136,8 +144,8 @@ invocationLogCreate.apiDoc = {
             },
             subsystem: {
               type: 'string',
-              description: 'Subsystem that produced this log (currently always "livekit-agent")',
-              enum: ['livekit-agent'],
+              description: 'Subsystem that produced this log',
+              enum: SUBSYSTEM_NAMES,
             },
             log: {
               description: 'Raw JSON structure containing the pino logs for this agent run. Will be pruned and compressed server-side.',

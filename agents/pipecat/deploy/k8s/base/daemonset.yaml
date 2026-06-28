@@ -1,0 +1,149 @@
+# Per-node Pipecat SIP node.
+#
+# A DaemonSet gives us EXACTLY ONE pod per (matching) node — the hard
+# requirement for media: the SIP/media gateway owns a 1:1-mapped RTP UDP port
+# range on the host and advertises the node's external IP in SDP, so two media
+# handlers on one node would fight over the same ports. `hostNetwork: true`
+# makes the gateway bind the node's real interfaces (no CNI translation), and
+# co-locating the worker in the same pod lets them talk over 127.0.0.1 — a 1:1
+# translation of the docker-compose `network_mode: host` topology.
+#
+# This base carries the worker + the external-IP plumbing. Each overlay
+# (sipbridge / freeswitch / voiceblender) patches in the gateway container(s)
+# and sets SIP_GATEWAY on the worker.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pipecat-sip
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pipecat-agent
+      app.kubernetes.io/component: sip-node
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pipecat-agent
+        app.kubernetes.io/component: sip-node
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Restrict to a dedicated SIP node pool that has external IPs and the RTP
+      # UDP range opened in the cloud firewall. Label nodes with:
+      #   kubectl label node <node> aplisay.com/pipecat-sip=true
+      nodeSelector:
+        aplisay.com/pipecat-sip: "true"
+      # If the SIP pool is tainted to keep other workloads off, tolerate it:
+      # tolerations:
+      #   - key: aplisay.com/pipecat-sip
+      #     operator: Exists
+      #     effect: NoSchedule
+      terminationGracePeriodSeconds: 30
+
+      initContainers:
+        # 1. Discover the node's public IPv4 (advertised in SDP for RTP) and
+        #    write it to the shared volume for the gateway to read at startup.
+        - name: detect-ip
+          image: curlimages/curl:8.11.1
+          command: ["sh", "/opt/scripts/detect-external-ip.sh", "/etc/node-meta/ext-ip"]
+          envFrom:
+            - configMapRef:
+                name: pipecat-config
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+            - name: scripts
+              mountPath: /opt/scripts
+              readOnly: true
+        # 2. Drop a statically-linked busybox into the shared volume so the
+        #    distroless sipbridge image (no shell of its own) can run a tiny
+        #    startup wrapper that exports the detected IP. Harmless no-op for the
+        #    other gateways, which have their own shell.
+        #    MUST be the musl (static) variant: busybox:stable is glibc-linked
+        #    and would fail to exec inside distroless-static with "no such file
+        #    or directory" (its ELF loader /lib64/ld-linux-* isn't there).
+        - name: install-shim
+          image: busybox:musl
+          command:
+            - sh
+            - -c
+            - cp /bin/busybox /etc/node-meta/busybox && chmod 0755 /etc/node-meta/busybox
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+        # 3. Drop the secretenv-exec wrapper into the shared volume so the
+        #    FreeSWITCH and Voiceblender overlays — whose images can't decrypt
+        #    the bundle natively — can launch through it. The wrapper decrypts
+        #    SECRETENV_BUNDLE from its own environment into a fresh env and
+        #    syscall.Exec's the wrapped command; secrets never touch disk.
+        #    No-op for sipbridge and the worker (they decrypt in-process).
+        - name: install-secretenv-exec
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec:latest
+          command:
+            - /bin/sh
+            - -c
+            - cp /usr/local/bin/secretenv-exec /etc/node-meta/secretenv-exec && chmod 0755 /etc/node-meta/secretenv-exec
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+
+      containers:
+        # The gateway-agnostic worker. Gateway containers are added per overlay.
+        - name: pipecat-worker
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker:latest
+          # Two secret sources, both optional so you can use EITHER: the plain
+          # pipecat-secrets, OR pipecat-secretenv (SECRETENV_KEY + SECRETENV_BUNDLE,
+          # which the worker decrypts into its env at startup), or both (bundle
+          # wins). Create at least one — see the README.
+          envFrom:
+            - configMapRef:
+                name: pipecat-config
+            - secretRef:
+                name: pipecat-secrets
+                optional: true
+            - secretRef:
+                name: pipecat-secretenv
+                optional: true
+          # SIP_GATEWAY is set by each overlay (sipbridge / freeswitch / ...).
+          ports:
+            - name: worker-http
+              containerPort: 8082
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+
+      volumes:
+        - name: node-meta
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: pipecat-scripts
+            defaultMode: 0755
+        # Optional CA-signed TLS keypair for the SIP TLS listener. `optional`
+        # lets the pod start when the Secret is absent (gateways self-sign).
+        - name: sip-tls
+          secret:
+            secretName: pipecat-sip-tls
+            optional: true

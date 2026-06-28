@@ -13,12 +13,16 @@ Both transfer types are implemented using the builtin `transfer` platform functi
 
 The `transfer.number` parameter must be `static` or `metadata` (never `generated`). Because `metadata` supports arbitrary-depth dot paths, you can also source `transfer.number` from values written into `metadata.toolsCalls` by earlier tool calls (server-side tool result chaining) on **LiveKit agents only**. See [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md) for a DB-backed receptionist example.
 
+### Transferring to another AI agent
+
+This document covers transferring calls to **phone numbers and SIP endpoints**. To hand a live call from one AI agent to *another AI agent* — same call, no new call leg — use the builtin `transfer_agent` platform function instead. It follows the same anti-fraud parameter rules as `transfer` (the target is `static`/`metadata`, never LLM-`generated`), supports carrying the conversation history and an LLM-written handover summary across, and automatically chooses between an in-place prompt/tool swap (same model, same call record) and a full agent-stack restart with a child call record (model change). See [`multi-agent-api.md`](./multi-agent-api.md) for the full guide; the two mechanisms compose — e.g. a front-desk agent can `transfer_agent` between specialists and any of them can `transfer` out to a human.
+
 ## Transfer Mechanisms
 
 ### Blind Transfers
 
 Blind transfers may be implemented using two different mechanisms, depending on the capabilities of the original caller's connection.
-The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation. However, you can force bridging by setting the `forceBridged` parameter to `true`, which will override the automatic selection and always use bridging even when SIP REFER is available.
+The decision on which to use is transparent to the LLM tools call and the most appropriate method will be chosen by the implementation based on the call's origin (see [Transfer mode selection](#transfer-mode-selection) below). You can override the automatic selection per transfer with the `forceBridged` or `forceRefer` parameters, or change the default for an endpoint with the `forceReferTransfer` (trunk) / `bridged_transfer` (registration) options.
 
 #### 1. Bridging (Case 1)
 
@@ -64,9 +68,48 @@ The decision on which to use is transparent to the LLM tools call and the most a
 
 **Caller ID behaviour:** When SIP REFER (deflect) is used, the call is effectively handed back to the upstream system, which then redirects the caller to the target. The upstream PBX or carrier is responsible for generating the Caller ID that the transfer target sees. Because the call never re-enters our media path, we cannot attach custom headers such as `X-Aplisay-Origin-Caller-Id` and we have no control over which Caller ID the upstream system presents. If you need guarantees about Caller ID propagation in REFER flows, speak with the telco architect who designed the redirect path to understand the limitations imposed by that infrastructure.
 
+#### 3. Worker-side media relay (WebRTC origin)
+
+Bridging (Case 1) and REFER (Case 2) both rely on the original caller being a **SIP** participant: bridging loops the two legs together *inside a SIP gateway*, and REFER hands a SIP dialog back upstream. A **WebRTC / browser** caller has neither — their media terminates in the worker's `SmallWebRTCTransport`, not in any SIP gateway. So a transfer from a browser caller to a telephony endpoint is always bridged, but the bridge is built in the **one place both media endpoints meet — the worker itself**:
+
+1. The worker resolves the egress trunk + caller ID (see below), then **originates a new outbound telephony leg** to the target through the configured SIP gateway.
+2. A pair of lightweight processors (a *tap* after the transport input, an *injector* before the transport output — see `agents/pipecat/pipecat_aplisay/media_relay.py`) are spliced into both legs' Pipecat pipelines. Engaging them relays raw PCM audio between the browser peer and the telephony leg in both directions; the agent goes silent and idle, and the two parties hear only each other.
+3. **Nothing is torn down** to install the relay — both pipelines keep running — so the WebRTC peer connection (which would otherwise disconnect on pipeline end) stays up across the cutover.
+
+Because the relay carries decoded PCM, the browser's Opus/48 kHz audio and the telephony leg's G.711/8 kHz audio are reconciled by Pipecat's normal resampling at each transport sink — there is no same-codec constraint (unlike the in-gateway bridge, which is G.711-only).
+
+`forceRefer` is meaningless for a WebRTC origin (there is no SIP dialog to REFER) and is ignored. Consultative transfers from a WebRTC caller use the **same** relay for their finalise step: the consultation runs a TransferAgent on the outbound leg as usual, and on `accept_transfer` the worker engages the browser↔target relay instead of an in-gateway bridge.
+
+**Caller ID behaviour (WebRTC origin):** a browser call has no inbound trunk, so the outbound leg dials out on the egress trunk belonging to the supplied `callerId` number. The `callerId` is therefore **required** for transfers from a browser session, and must be a number known to the platform with outbound calling enabled (its trunk becomes the egress path). This mirrors LiveKit's caller-ID resolution.
+
+### Transfer mode selection
+
+Whether a transfer is completed by **bridging** (media stays on the platform) or by **SIP REFER** (the call is handed back to the upstream and leaves the platform) is decided by the call's origin, with optional overrides. The same logic governs the final hop of a [consultative transfer](#consultative-transfers).
+
+**Origin defaults:**
+
+| Origin | Default mechanism | Rationale |
+| --- | --- | --- |
+| Registration endpoint | SIP REFER | The registered endpoint / its B2BUA is normally REFER-capable, and REFER frees the platform from carrying the call. |
+| SIP trunk | Bridging | Most carrier trunks don't handle REFER (let alone REFER-with-Replaces) reliably, so bridging is the safe default. |
+| WebRTC / browser | Bridging | No SIP signalling path to REFER over. |
+
+**Overrides**, in order of precedence (highest first):
+
+1. **Per-transfer parameter** on the `transfer` tool call:
+   - `forceRefer: true` — force the transfer to complete via SIP REFER.
+   - `forceBridged: true` — force the transfer to stay bridged on the platform.
+   - `forceRefer` wins if both are somehow set.
+2. **Endpoint / trunk option** (configured against the phone endpoint, not per call):
+   - `forceReferTransfer: true` in a **trunk's** options — make this trunk default to REFER instead of bridging.
+   - `bridged_transfer: true` in a **registration endpoint's** options — make this endpoint default to bridging instead of REFER. (Registration options are snake_case to match the other keys on that structure; in code the value surfaces as the camelCase `forceBridged`. See [phone-endpoints-api.md](./phone-endpoints-api.md).)
+3. **Origin default** from the table above.
+
 ### Consultative Transfers
 
-Consultative transfers always use the bridging mechanism, regardless of the original caller's connection type. SIP REFER for consultative transfers is currently not possible due to limitations in SIP signalling in the architecture we use, although this is under investigation so may change in future.
+Consultative transfers run a consultation phase first and then finalise either by **bridging** the two legs together or, where the origin supports it, by an **attended SIP REFER (REFER-with-Replaces, RFC 3891)** that hands both legs off to the upstream and drops the platform out of the media path entirely. The choice follows exactly the same [Transfer mode selection](#transfer-mode-selection) rules as blind transfers: bridging is the default on SIP trunks, attended REFER is the default for registration endpoints, and `forceRefer` / `forceBridged` (per transfer) or `forceReferTransfer` (trunk) / `bridged_transfer` (registration) override it.
+
+When the attended-REFER path is taken, the platform sends the original caller a `REFER` whose `Refer-To` embeds `?Replaces=<consult-dialog>` identifying the consultation leg; the caller re-INVITEs the transfer target directly, replacing the consultation dialog, and both bot legs drop out. If a gateway cannot drive an attended REFER, it transparently falls back to bridging so the transfer still completes.
 
 **How it works:**
 
@@ -85,14 +128,14 @@ Consultative transfers always use the bridging mechanism, regardless of the orig
    - The consultation room is deleted
    - The TransferAgent session is closed
    - A consultation call record is created and ended with a transcript
-   - The original call record is ended and a new bridged call record is created
+   - The two parties are connected either by **bridging** (a new bridged call record is created and the platform keeps carrying the call) or, on origins that support it, by an **attended SIP REFER with Replaces** (the original call record is ended and the call leaves the platform). Which one is used follows the [Transfer mode selection](#transfer-mode-selection) rules.
 
 **Key Features:**
 - The `transfer` function returns immediately after the consultation call is placed
 - The transfer continues asynchronously in the background
 - The main agent can check transfer status using the `transfer_status` function
 - A separate call record is created for the consultation leg, including its transcript
-- If the transfer is accepted then a bridged transfer between the two parties takes place.
+- If the transfer is accepted, the two parties are connected via either a bridge or an attended SIP REFER, depending on the call's origin and any `forceRefer` / `forceBridged` overrides.
 
 ## Building Agents with Transfers
 
@@ -151,7 +194,14 @@ All transfer functions use the `transfer` platform function with the following s
         "type": "boolean",
         "source": "static",
         "required": false,
-        "description": "When true, forces a bridged transfer even when the trunk or registration endpoint supports SIP REFER. Defaults to false. Only applies to blind transfers."
+        "description": "When true, forces the transfer to stay bridged on the platform even when the origin would default to SIP REFER. Defaults to false. Applies to both blind and consultative transfers (overriding the origin default for the final hop). See 'Transfer mode selection'."
+      },
+      "forceRefer": {
+        "in": "query",
+        "type": "boolean",
+        "source": "static",
+        "required": false,
+        "description": "When true, forces the transfer to complete via SIP REFER (with ?Replaces for the consultative finalize) even when the origin would default to bridging. Defaults to false. Takes precedence over forceBridged when both are set. See 'Transfer mode selection'."
       }
     }
   },
@@ -198,9 +248,9 @@ export default {
 - The `operation` parameter is omitted, defaulting to `"blind"`
 - The function returns `OK` when the transfer completes
 - The agent session ends immediately after the transfer
-- The system automatically chooses between SIP REFER and bridging based on capabilities
+- The system automatically chooses between SIP REFER and bridging based on the call's origin (see [Transfer mode selection](#transfer-mode-selection))
 - Optional `callerId` can be specified to override the caller ID presented to the transfer target
-- Optional `forceBridged` can be set to `true` to force bridging even when REFER is available
+- Optional `forceBridged` can be set to `true` to force bridging, or `forceRefer` to force SIP REFER, overriding the origin default
 
 ### Example 2: Consultative Transfer Agent
 
@@ -469,9 +519,60 @@ Use the `consultFeedback` parameter to enable returning detailed rejection feedb
 - Opting in to share detailed consultative feedback with the original agent when appropriate
 - Keeping the default behavior privacy-preserving unless feedback is explicitly enabled
 
-### Force Bridged Transfers
+### Confidence Tone
 
-By default, the system automatically selects the most appropriate transfer method (bridging or SIP REFER) based on the capabilities of the trunk or registration endpoint. However, you can force the system to use bridging even when SIP REFER is available by setting the `forceBridged` parameter to `true`.
+While a transfer is in flight the caller can otherwise be left listening to dead air: a blind transfer may spend several seconds dialling the target before the SIP REFER completes or the bridged media comes up, and a consultative transfer parks the caller while the TransferAgent speaks with the target on a separate leg. Setting `options.transferTone` plays a periodic comfort beep to the caller during these windows so they know the call is still alive.
+
+```json
+{
+  "name": "My Agent",
+  "options": {
+    "transferTone": true
+  }
+}
+```
+
+Or, with explicit tuning (all fields optional — the values below are the defaults):
+
+```json
+{
+  "options": {
+    "transferTone": {
+      "enabled": true,
+      "frequency": "medium",
+      "length": "medium",
+      "volume": "medium",
+      "gapMs": 2750,
+      "graceMs": 1200
+    }
+  }
+}
+```
+
+| Field | Default | Values | Description |
+|-------|---------|--------|-------------|
+| `enabled` | `true` | boolean | Set `false` to disable without removing the object |
+| `frequency` | `"medium"` | `low` \| `medium` \| `high` | Tone pitch (`low` ≈ 350 Hz, `medium` ≈ 425 Hz, `high` ≈ 550 Hz) |
+| `length` | `"medium"` | `short` \| `medium` \| `long` | Burst length (`short` ≈ 150 ms, `medium` ≈ 250 ms, `long` ≈ 400 ms) |
+| `volume` | `"medium"` | `low` \| `medium` \| `high` | Tone loudness (`low` ≈ 0.08, `medium` ≈ 0.15, `high` ≈ 0.30 linear amplitude) |
+| `gapMs` | `2750` | 0–60000 | Silence between bursts in milliseconds |
+| `graceMs` | `1200` | 0–30000 | Quiet time required after either party last spoke before the tone starts |
+
+The tone *shape* (`frequency`, `length`, and `volume`) is chosen from a small fixed set rather than free-form Hz/ms/amplitude, so the platform can serve pre-generated tones for efficiency; only the silence timings (`gapMs`, `graceMs`) are continuous.
+
+**Behaviour:**
+
+- **Blind transfers** — the tone plays from the moment the transfer starts dialling until it succeeds (the SIP REFER completes, or the bridged media is established) or fails. It then stops permanently for that transfer.
+- **Consultative transfers** — the tone plays for the whole consultation (dialling and while the TransferAgent speaks with the target), but only in the gaps where **neither the caller nor the agent is audibly speaking**: the original agent can still converse with the caller mid-consultation, and the tone yields to that conversation, resuming after `graceMs` of silence. It stops when the consultation concludes (accepted, rejected, or failed).
+- **Agent-to-agent handover** — when a full-stack agent transfer (`transfer_agent` with a model change, or an Ultravox realtime agent) tears down the outgoing agent's session and spins up the incoming agent's model stack, the same comfort tone covers that dead-air gap. It plays in the silence once the new pipeline is live and stops the instant the incoming agent first speaks (with a safety backstop if it never does). As with the consultative case, the tone yields to any speech and resumes after `graceMs` of silence.
+
+The tone is generated by the worker and is supported on both the LiveKit and Pipecat stacks for all transfer mechanisms (bridging, SIP REFER, the WebRTC worker-side media relay, and full-stack agent-to-agent handover). When `transferTone` is unset, behaviour is unchanged and no tone path is constructed.
+
+### Forcing the transfer mechanism
+
+By default, the system selects the transfer mechanism (bridging or SIP REFER) from the call's origin — see [Transfer mode selection](#transfer-mode-selection). You can override this per transfer with `forceBridged: true` (force bridging) or `forceRefer: true` (force SIP REFER, including the attended REFER-with-Replaces finalize for consultative transfers). `forceRefer` takes precedence if both are set. To change the default for a whole endpoint instead of per call, use the `forceReferTransfer` (trunk) or `bridged_transfer` (registration) endpoint options documented in [phone-endpoints-api.md](./phone-endpoints-api.md).
+
+The example below forces bridging; set `forceRefer` instead to force SIP REFER.
 
 ```json
 {
@@ -510,7 +611,7 @@ By default, the system automatically selects the most appropriate transfer metho
 - When you need consistent billing behavior (bridged calls continue to incur platform charges)
 - When the upstream system's REFER implementation has limitations or issues
 
-**Note:** The `forceBridged` parameter only applies to blind transfers. Consultative transfers always use bridging regardless of this setting.
+**Note:** `forceBridged` and `forceRefer` apply to both blind and consultative transfers — for a consultative transfer they select how the *final hop* is completed (media bridge vs attended SIP REFER with Replaces) once the transfer target accepts. If a gateway can't honour an attended REFER it falls back to bridging automatically.
 
 ## Outbound Call Filter
 

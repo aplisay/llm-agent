@@ -1,0 +1,51 @@
+# Base for the Pipecat agent Kubernetes deploy.
+#
+# This base is gateway-agnostic and is NOT meant to be applied directly — pick a
+# gateway overlay (overlays/sipbridge is the default) and, if you want per-cloud
+# load-balancer annotations, layer in a cloud component (components/cloud-*).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pipecat
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - daemonset.yaml
+  - service-sip.yaml
+  - service-worker.yaml
+  # NOTE: secret.example.yaml / sip-tls-secret.example.yaml are intentionally
+  # NOT listed — create the real Secrets out-of-band (see README) so pods fail
+  # closed until secrets exist rather than running with placeholders.
+
+# detect-external-ip.sh is shipped as a real, testable file and mounted into the
+# detect-ip initContainer via this generated ConfigMap. The name-suffix hash
+# means editing the script triggers a DaemonSet rollout automatically.
+configMapGenerator:
+  - name: pipecat-scripts
+    files:
+      - scripts/detect-external-ip.sh
+
+# Image tags follow the repo convention: staging builds publish `next`,
+# production releases publish `latest`. The base defaults to the staging `next`
+# tag (the common iterative case); for a production deploy layer
+# `components/env-production`, which overrides every image to `latest`. (Or
+# override ad-hoc with `kustomize edit set image`.) Non-GKE clusters need an
+# imagePullSecret for AR (see README).
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker
+    newTag: next
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge
+    newTag: next
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/freeswitch
+    newTag: next
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/esl-poller
+    newTag: next
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec
+    newTag: next
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: aplisay
+      app.kubernetes.io/managed-by: kustomize

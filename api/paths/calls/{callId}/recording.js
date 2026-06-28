@@ -1,95 +1,17 @@
 import { Call, CallRecordingDownload } from '../../../../lib/database.js';
 import { Storage } from '@google-cloud/storage';
-import { createDecipheriv } from 'crypto';
-import { Transform } from 'stream';
-
-const { RECORDING_STORAGE_PATH, NODE_ENV } = process.env;
-
-function parseGcsPath(baseUrl) {
-  if (!baseUrl.startsWith('gs://')) {
-    throw new Error('RECORDING_STORAGE_PATH must be a gs:// URL');
-  }
-  const withoutScheme = baseUrl.slice('gs://'.length);
-  const firstSlash = withoutScheme.indexOf('/');
-  if (firstSlash === -1) {
-    return { bucket: withoutScheme, prefix: '' };
-  }
-  const bucket = withoutScheme.slice(0, firstSlash);
-  let prefix = withoutScheme.slice(firstSlash + 1);
-  if (prefix.length > 0 && !prefix.endsWith('/')) {
-    prefix += '/';
-  }
-  return { bucket, prefix };
-}
-
-/**
- * Streaming decrypt: expects IV (12 bytes) then ciphertext + auth tag (16 bytes).
- * Only keeps a small trailing buffer (16 bytes) for the auth tag instead of buffering the whole stream.
- */
-class GcmDecryptStream extends Transform {
-  constructor(key) {
-    super();
-    this.key = key;
-    this.ivBuffer = Buffer.alloc(0);
-    this.trailingBuffer = Buffer.alloc(0); // ciphertext we hold back (last 16 bytes = auth tag)
-    this.decipher = null;
-  }
-
-  _transform(chunk, _encoding, callback) {
-    try {
-      if (!this.decipher) {
-        this.ivBuffer = Buffer.concat([this.ivBuffer, chunk]);
-        if (this.ivBuffer.length < 12) {
-          return callback();
-        }
-        const iv = this.ivBuffer.subarray(0, 12);
-        const remaining = this.ivBuffer.subarray(12);
-        this.decipher = createDecipheriv('aes-256-gcm', this.key, iv);
-        this.trailingBuffer = remaining;
-        return callback();
-      }
-
-      this.trailingBuffer = Buffer.concat([this.trailingBuffer, chunk]);
-      // Stream through all but the last 16 bytes (auth tag)
-      const authTagLen = 16;
-      while (this.trailingBuffer.length > authTagLen) {
-        const toDecrypt = this.trailingBuffer.subarray(0, this.trailingBuffer.length - authTagLen);
-        this.trailingBuffer = this.trailingBuffer.subarray(this.trailingBuffer.length - authTagLen);
-        const decrypted = this.decipher.update(toDecrypt);
-        if (decrypted.length > 0) {
-          this.push(decrypted);
-        }
-      }
-      callback();
-    } catch (err) {
-      callback(err);
-    }
-  }
-
-  _flush(callback) {
-    try {
-      if (!this.decipher) {
-        return callback();
-      }
-      if (this.trailingBuffer.length !== 16) {
-        return callback(new Error('Invalid ciphertext: auth tag must be 16 bytes'));
-      }
-      this.decipher.setAuthTag(this.trailingBuffer);
-      const finalData = this.decipher.final();
-      if (finalData.length > 0) {
-        this.push(finalData);
-      }
-      callback();
-    } catch (err) {
-      callback(err);
-    }
-  }
-}
+import { requirePermission } from '../../../../lib/auth/permissions.js';
+import {
+  GcmDecryptStream,
+  parseGcsPath,
+  defaultRecordingBaseUrl,
+} from '../../../../lib/recording/index.js';
 
 export default function (logger) {
   const storage = new Storage();
 
   const getCallRecording = async (req, res) => {
+    if (!requirePermission(res, 'recording', 'download')) return;
     const { callId } = req.params;
 
     const where = { id: callId, ...res.locals.user.sql.where };
@@ -117,9 +39,7 @@ export default function (logger) {
       logger.error({ err, callId: call.id }, 'failed to log recording download');
     }
 
-  const basePath =
-      RECORDING_STORAGE_PATH || `gs://llm-voice/${NODE_ENV || 'development'}-recordings`;
-    const { bucket } = parseGcsPath(basePath);
+    const { bucket } = parseGcsPath(defaultRecordingBaseUrl());
     const objectName = call.recordingId;
     const file = storage.bucket(bucket).file(objectName);
 
@@ -249,6 +169,7 @@ export default function (logger) {
 }
 
 async function deleteCallRecording(req, res) {
+  if (!requirePermission(res, 'recording', 'delete')) return;
   const { callId } = req.params;
   const storage = new Storage();
 
@@ -266,9 +187,7 @@ async function deleteCallRecording(req, res) {
       return res.status(404).send({ error: 'Recording not found for this call' });
     }
 
-    const basePath =
-      RECORDING_STORAGE_PATH || `gs://llm-voice/${NODE_ENV || 'development'}-recordings`;
-    const { bucket } = parseGcsPath(basePath);
+    const { bucket } = parseGcsPath(defaultRecordingBaseUrl());
     const objectName = call.recordingId;
     const file = storage.bucket(bucket).file(objectName);
 
@@ -291,4 +210,3 @@ async function deleteCallRecording(req, res) {
     return res.status(500).send({ error: 'Internal server error' });
   }
 }
-

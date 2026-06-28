@@ -1,0 +1,42 @@
+# DigitalOcean production deploy target for the SIP gateway.
+#
+# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode) +
+# env-production (flip every image :next -> :latest) + a stable load-balancer name
+# so the DO-assigned IP persists.
+#
+# The only differences from do-staging/ are the env-production component and the
+# distinct LB name (so staging and production never reconcile the same LB).
+#
+#     kubectl apply -k do-production
+#
+# After the first apply, read the stable IP and wire DNS/SBC to it; never delete
+# the Service:
+#
+#     kubectl get svc pipecat-sip -n pipecat -o wide   # EXTERNAL-IP = the stable IP
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../overlays/sipbridge
+
+components:
+  - ../components/env-production
+  - ../components/cloud-digitalocean
+  - ../components/webrtc-do        # adds 443 -> :8082 (WebRTC) on the SAME LB
+
+patches:
+  - target:
+      kind: Service
+      name: pipecat-sip
+    patch: |-
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
+        value: pipecat-sip-production
+      # WebRTC TLS — DO-managed Let's Encrypt cert for production.pipecat.aplisay.net:
+      #   doctl compute certificate create --type lets_encrypt \
+      #     --name pipecat-production --dns-names production.pipecat.aplisay.net
+      # Paste its ID below. MUST be a real cert ID before `kubectl apply`.
+      # (Remove this op + the webrtc-do component to deploy SIP-only.)
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
+        value: 00e0dbb7-ccbc-4ec6-925e-c418c7c679db

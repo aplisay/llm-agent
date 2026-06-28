@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<include>
+  <X-PRE-PROCESS cmd="set" data="domain=$${domain}"/>
+  <X-PRE-PROCESS cmd="set" data="local_ip_v4=$${local_ip_v4}"/>
+  <X-PRE-PROCESS cmd="set" data="sip_port=5060"/>
+  <X-PRE-PROCESS cmd="set" data="sip_tls_port=5061"/>
+  <X-PRE-PROCESS cmd="set" data="rtp_start_port=16384"/>
+  <X-PRE-PROCESS cmd="set" data="rtp_end_port=16484"/>
+
+  <X-PRE-PROCESS cmd="env-set" data="esl_secret=$ESL_SECRET"/>
+  <X-PRE-PROCESS cmd="env-set" data="ext_ipv4_address=$EXT_IP_ADDRESS"/>
+
+  <!-- The Pipecat worker's mod_audio_stream WebSocket endpoint.
+       Container-to-container: ws://pipecat-worker:8082/freeswitch/audio
+       The dialplan substitutes this into the audio_stream application. -->
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_ws_url=$PIPECAT_WS_URL"/>
+
+  <!-- Default-SBC next-hop, derived from the platform-wide PIPECAT_SIP_* triple
+       (the same source sipbridge consumes). pipecat_sbc_proxy is the scheme-
+       stripped host[:port][;transport=…] computed in entrypoint.sh; the others
+       feed the static "sbc" sofia gateway's From identity + digest auth. -->
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sbc_proxy=$PIPECAT_SBC_PROXY"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_username=$PIPECAT_SIP_USERNAME"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_password=$PIPECAT_SIP_PASSWORD"/>
+  <X-PRE-PROCESS cmd="env-set" data="pipecat_sip_from_domain=$PIPECAT_SIP_FROM_DOMAIN"/>
+
+  <X-PRE-PROCESS cmd="set" data="global_codec_prefs=PCMU,PCMA,G722"/>
+  <X-PRE-PROCESS cmd="set" data="outbound_codec_prefs=PCMU,PCMA,G722"/>
+</include>

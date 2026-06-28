@@ -1,0 +1,173 @@
+# Cloud Build — Pipecat agent stack (staging).
+#
+# Builds and pushes five images to Artifact Registry:
+#   - freeswitch       (agents/pipecat/freeswitch)
+#   - esl-poller       (agents/pipecat/esl-poller)
+#   - sipbridge        (agents/pipecat/sipbridge — Go SIP UAS, build context
+#                       is the repo root because its Dockerfile COPYs
+#                       agents/pipecat/sipbridge into the image)
+#   - secretenv-exec   (agents/pipecat/sipbridge/Dockerfile.secretenv-exec —
+#                       static decrypt-and-exec wrapper; build context repo root)
+#   - pipecat-worker   (Dockerfile lives in agents/pipecat/, build context is
+#                       the repo root because the worker Dockerfile COPYs
+#                       agents/pipecat into the image)
+#
+# Adapted from aplisay-b2bua/deploy/gcp/cloudbuild-staging.yaml.
+steps:
+  # ----- FreeSWITCH -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - BUILD_ENV=production
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:next
+      - '-f'
+      - './agents/pipecat/freeswitch/Dockerfile'
+      - './agents/pipecat/freeswitch'
+    id: Build-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+    id: Push-freeswitch
+
+  # ----- esl-poller -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:next
+      - '-f'
+      - './agents/pipecat/esl-poller/Dockerfile'
+      - './agents/pipecat/esl-poller'
+    id: Build-esl-poller
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+    id: Push-esl-poller
+
+  # ----- sipbridge -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat/sipbridge into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:next
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+    id: Push-sipbridge
+
+  # ----- secretenv-exec -----
+  # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
+  # Used by the Kubernetes freeswitch / voiceblender overlays so those
+  # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:next
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
+      - '.'
+    id: Build-secretenv-exec
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+    id: Push-secretenv-exec
+
+  # ----- pipecat-worker -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:next
+      - '-f'
+      - './agents/pipecat/Dockerfile'
+      - '.'
+    id: Build-pipecat-worker
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+    id: Push-pipecat-worker
+
+images:
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+substitutions:
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+
+tags:
+  - pipecat-agent-staging
+  - freeswitch
+  - esl-poller
+  - sipbridge
+  - secretenv-exec
+  - pipecat-worker

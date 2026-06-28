@@ -47,12 +47,11 @@ describe('Jambonz', () => {
       let t;
       if (t = numbers.find(n => n.number === testNumber)) {
         try {
-          jambonz.deleteNumber(t.phone_number_sid);
+          await jambonz.deleteNumber(t.phone_number_sid);
         }
         catch (e) {
           console.log({ message: e.message, request: e.request.path }, 'delete number error');
         }
-        
       }
       makeNumbers = needNumbers.filter(n => {
         return !numbers.find(nn => nn.number === n);
@@ -84,7 +83,9 @@ describe('Jambonz', () => {
 
 
     test('Add missing numbers', async () => {
-      return await expect(Promise.all(makeNumbers?.map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })) || [Promise.resolve()])).resolves;
+      // `expect(promise).resolves` with no matcher chained never awaits, so the
+      // adds would be fire-and-forget. Await the real promises instead.
+      await Promise.all((makeNumbers || []).map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })));
     });
 
     test('List applications', async () => {
@@ -149,20 +150,32 @@ describe('Jambonz', () => {
     });
 
     test('link application to number', async () => {
-      return await expect(jambonz.updateNumber(numberSid, { application: applicationSid })).resolves;
+      // Actually await the PUT. `expect(promise).resolves` with no matcher
+      // chained is a no-op that never awaits, leaving the request in flight.
+      await jambonz.updateNumber(numberSid, { application: applicationSid });
     });
 
     test('DeleteNumber', async () => {
       expect(numberSid).toContain('-');
+      // Must be awaited and complete BEFORE the application delete below:
+      // jambonz returns 422 ("cannot delete application with phone numbers") if
+      // the application still has a number linked. The old
+      // `expect(promise).resolves` (no matcher) never awaited, so this delete
+      // raced the application delete and the resulting 422 surfaced as an
+      // unhandled promise rejection that crashed the process *after* the suite
+      // had already reported success.
       if (numberSid) {
-        return expect(jambonz.deleteNumber(numberSid))
-          .resolves;
+        await jambonz.deleteNumber(numberSid);
       }
     });
 
     test('Delete Application', async () => {
       expect(applicationSid).toContain('-');
-      return await expect(jambonz.deleteApplication(applicationSid)).resolves;
+      // The number was deleted (and awaited) above, so the application no longer
+      // has a linked number and this DELETE succeeds. Awaiting it also means any
+      // failure is a normal test failure, not a process-killing unhandled
+      // rejection.
+      await jambonz.deleteApplication(applicationSid);
     });
 
   }

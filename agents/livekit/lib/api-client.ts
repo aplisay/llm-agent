@@ -55,6 +55,11 @@ export interface Agent {
   userId: string;
   modelName: string;
   organisationId: string;
+  /** 'interactive-audio' (default) or 'text' (headless subagent) */
+  type?: string;
+  /** Shortform label within an agent set */
+  label?: string;
+  name?: string;
   prompt?: string;
   options?: {
     /**
@@ -86,6 +91,31 @@ export interface Agent {
      * Used by worker when constructing RealtimeModel.
      */
     maxDuration?: string;
+    /**
+     * Inter-digit DTMF timeout in milliseconds. Buffered DTMF digits are flushed
+     * to the LLM after this period of keypad silence. Defaults to 1500ms.
+     * Set to 0 to flush each digit individually (no buffering delay).
+     */
+    dtmfTimeout?: number;
+    /**
+     * DTMF digit that, when pressed, immediately flushes the buffered digits
+     * (without itself being added to the buffer). Defaults to "#".
+     * Set to an empty string to disable the immediate-send terminator.
+     */
+    dtmfTerminator?: string;
+    /**
+     * Inactivity "kick": while the call is live, if there has been no
+     * conversational activity (no user speech and the agent is not speaking)
+     * for `timeout`, the agent speaks `message` verbatim via TTS. Re-fires on
+     * each further `timeout` of continued silence and resets on any activity.
+     * Absent/malformed ⇒ feature off (behaviour unchanged).
+     */
+    inactivity?: {
+      /** Idle timeout, seconds (number) or a string like "8s" (maxDuration convention). */
+      timeout: number | string;
+      /** Literal phrase spoken verbatim on each idle kick (deterministic, not an LLM prompt). */
+      message: string;
+    };
     /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
     temperature?: number;
     stt?: {
@@ -251,6 +281,49 @@ export async function getAgentById(agentId: string): Promise<Agent> {
   return makeApiRequest<Agent>(`/api/agents/${encodeURIComponent(agentId)}`);
 }
 
+/**
+ * Fetch a full agent definition (including keys) via the internal agent-db API.
+ * Used for in-call transfer_agent handover. Always pass the calling call's
+ * organisation id so the server can refuse cross-tenant fetches.
+ */
+export async function getInternalAgentById(
+  agentId: string,
+  expectedOrganisationId?: string,
+): Promise<Agent> {
+  const query = new URLSearchParams({
+    agentId,
+    ...(expectedOrganisationId ? { expectedOrganisationId } : {}),
+  });
+  return makeApiRequest<Agent>(`/api/agent-db/agent?${query.toString()}`);
+}
+
+/**
+ * Invoke a `text` type agent as a subagent via the internal agent-db API.
+ * Returns the subagent's result payload (the arguments it passed to its
+ * builtin `result` function).
+ */
+export async function invokeSubagent(
+  agentId: string,
+  input: Record<string, unknown>,
+  metadata: CallMetadata | undefined,
+  context: { organisationId: string; callId?: string },
+): Promise<unknown> {
+  const data = await makeApiRequest<{ result: unknown; complete: boolean }>(
+    `/api/agent-db/subagent`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId,
+        input,
+        metadata,
+        organisationId: context.organisationId,
+        callId: context.callId,
+      }),
+    },
+  );
+  return data?.result;
+}
+
 export interface AgentFunction {
   name: string;
   description: string;
@@ -260,6 +333,9 @@ export interface AgentFunction {
       required?: boolean;
       [key: string]: any;
     }>;
+    // JSON-Schema style top-level required list (the set builder emits this;
+    // some definitions instead set `required: true` on each property).
+    required?: string[];
   };
 }
 
@@ -308,6 +384,9 @@ export interface TrunkInfo {
   outbound: boolean;
   flags?: {
     canRefer?: boolean;
+    // When true, transfers on this trunk default to SIP REFER instead of the
+    // bridged default for SIP trunk calls.
+    forceReferTransfer?: boolean;
     [key: string]: any;
   } | null;
 }
@@ -416,10 +495,14 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
         body = { raw: errorText };
       }
 
+      // Include the server's error detail in the message so callers (and the
+      // agent/diagnosis loop that surfaces this as a function result) see the
+      // real cause, not just a generic "500 Internal Server Error".
+      const detail = body?.error || body?.message || body?.raw;
       throw new ApiRequestError(
         response.status,
         body,
-        `API request failed: ${response.status} ${response.statusText}`,
+        `API request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
       );
     }
 
@@ -669,6 +752,36 @@ export async function saveInvocationLog(payload: InvocationLogPayload): Promise<
   return makeApiRequest('/api/agent-db/invocation-log', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+// One metered unit reading for the platform usage ledger.
+export interface UsageRecordPayload {
+  sessionId?: string;
+  callId?: string;
+  organisationId?: string;
+  userId?: string;
+  agentId?: string;
+  technology: string;
+  provider?: string;
+  detail?: string;
+  unit: string;
+  quantity: number;
+  finalised?: boolean;
+  mode?: 'set' | 'increment';
+  metadata?: any;
+}
+
+// Post one or more usage meters (LLM tokens, TTS characters, STT audio, …) to
+// the platform usage ledger (POST /api/agent-db/usage). Accepts a single record
+// or an array; never throws fatally for the caller (errors are logged upstream).
+export async function saveUsage(
+  records: UsageRecordPayload | UsageRecordPayload[],
+): Promise<any> {
+  const body = Array.isArray(records) ? { records } : records;
+  return makeApiRequest('/api/agent-db/usage', {
+    method: 'POST',
+    body: JSON.stringify(body),
   });
 }
 

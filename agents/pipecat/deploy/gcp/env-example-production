@@ -1,0 +1,72 @@
+# Pipecat agent stack — production env template.
+#
+# Same shape as env-example-staging but points at the production image tag and
+# the production llm-agent API. deploy-node.sh handles the rest.
+
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=llm-agent
+IMAGE_TAG=latest
+PROJECT_NUMERIC_ID=160114196407
+
+EXT_IP_ADDRESS=your-external-ip
+
+# SIP ingress selection — see env-example-staging for the full explanation.
+COMPOSE_PROFILES=freeswitch
+SIP_GATEWAY=freeswitch
+
+ESL_SECRET=<NEW256bithexstring>
+CALL_API_TOKEN=<NEW256bithexstring>
+WORKER_EVENT_TOKEN=<NEW256bithexstring>
+PIPECAT_DISPATCH_TOKEN=<NEW256bithexstring>
+PIPECAT_JOIN_SECRET=<NEW256bithexstring>
+
+SERVICE_BASE_URI=https://api.aplisay.example
+SHARED_API_TOKEN=<set-from-secret-manager>
+
+# Outbound trunk (sipbridge + FreeSWITCH) — see env-example-staging for details.
+# Prefer the secretenv bundle for PIPECAT_SIP_PASSWORD.
+PIPECAT_SIP_OUTBOUND=
+PIPECAT_SIP_FROM_DOMAIN=
+PIPECAT_SIP_USERNAME=
+PIPECAT_SIP_PASSWORD=
+
+# FreeSWITCH ingress only.
+PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
+WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
+ESL_POLLER_URL=http://127.0.0.1:4001
+
+# Voiceblender ingress only.
+VOICEBLENDER_VERSION=v0.7.1
+VOICEBLENDER_API_KEY=<NEW256bithexstring>
+VOICEBLENDER_VSI_TOKEN=
+VOICEBLENDER_APP_ID=aplisay-pipecat
+VOICEBLENDER_BASE_URL=http://127.0.0.1:8080
+VOICEBLENDER_WORKER_WS_BASE=ws://127.0.0.1:8082
+VOICEBLENDER_HTTP_PORT=8080
+VOICEBLENDER_SIP_PORT=5060
+VOICEBLENDER_SIP_TLS_PORT=0
+VOICEBLENDER_RTP_PORT_MIN=10000
+VOICEBLENDER_RTP_PORT_MAX=20000
+
+# sipbridge ingress only.
+SIPBRIDGE_BASE_URL=http://127.0.0.1:8090
+SIPBRIDGE_API_TOKEN=<NEW256bithexstring>
+SIPBRIDGE_API_PORT=8090
+SIPBRIDGE_SIP_PORT=5060
+SIPBRIDGE_RTP_PORT_MIN=10000
+SIPBRIDGE_RTP_PORT_MAX=20000
+SIPBRIDGE_WORKER_WS_BASE=ws://127.0.0.1:8082
+
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV_PIPECAT_PRODUCTION
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+ELEVENLABS_API_KEY=
+ULTRAVOX_API_KEY=
+
+LOGLEVEL=info
+
+APIBAN_KEY=

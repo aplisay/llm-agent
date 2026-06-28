@@ -1,0 +1,143 @@
+# Cloud Build — Pipecat agent stack (per-commit build).
+#
+# Runs on every commit to main. Builds and pushes the five images (freeswitch,
+# esl-poller, sipbridge, secretenv-exec, pipecat-worker) tagged with the commit
+# SHA only — it does NOT tag :latest. Promotion to :latest / :$TAG_NAME happens
+# as a group at release time via the top-level cloudbuild-release.yaml
+# (triggered by a version tag); the K8s daemonsets pull :latest in the
+# env-production overlay, so the release :latest promotion + a kubectl rollout
+# is their deploy path. The :next staging tag is produced separately by
+# cloudbuild-staging.yaml.
+#
+# Adapted from aplisay-b2bua/deploy/gcp/cloudbuild.yaml.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - BUILD_ENV=production
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+      - '-f'
+      - './agents/pipecat/freeswitch/Dockerfile'
+      - './agents/pipecat/freeswitch'
+    id: Build-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+    id: Push-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+      - '-f'
+      - './agents/pipecat/esl-poller/Dockerfile'
+      - './agents/pipecat/esl-poller'
+    id: Build-esl-poller
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+    id: Push-esl-poller
+
+  # ----- sipbridge -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+    id: Push-sipbridge
+
+  # ----- secretenv-exec -----
+  # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
+  # Used by the Kubernetes freeswitch / voiceblender overlays so those
+  # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
+      - '.'
+    id: Build-secretenv-exec
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+    id: Push-secretenv-exec
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+      - '-f'
+      - './agents/pipecat/Dockerfile'
+      - '.'
+    id: Build-pipecat-worker
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+    id: Push-pipecat-worker
+
+images:
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+substitutions:
+  _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+
+tags:
+  - pipecat-agent
+  - freeswitch
+  - esl-poller
+  - sipbridge
+  - secretenv-exec
+  - pipecat-worker
