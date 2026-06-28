@@ -14,6 +14,11 @@ RUN rm -f tests/setup
 RUN mkdir -p agent-lib
 RUN mkdir -p tests/setup
 COPY lib agent-lib
+# agent-lib/models/livekit.js statically imports the LiveKit agent's *compiled*
+# registry from agents/livekit/dist, which is not part of this image. Until the
+# shared lib/models/livekit.js is made self-contained (aplisay/llm-agent#123),
+# vendor a copy at the exact path the import expects.
+COPY agents/jambonz/vendor/livekit-model-registry.js agents/livekit/dist/lib/livekit-model-registry.js
 COPY tests/setup tests/setup
 RUN yarn test
 ENV NODE_ENV production

@@ -189,6 +189,18 @@ describe('permissions — keyRestrictionStatements (legacy-safe)', () => {
   test('a new-vocab statement map is honoured', () => {
     expect(keyRestrictionStatements({ agent: ['read'] })).toEqual({ agent: ['read'] });
   });
+  test('the join-only key shape emitted by tools/agent-admin.js restricts to agent:invoke', () => {
+    // tools/agent-admin.js --joinOnly now writes { agent: ['invoke'] } (new vocab)
+    // instead of the legacy { join: true } bag, which keyRestrictionStatements reads
+    // as "no restriction" — silently minting a FULL owner-perms key.
+    const restriction = keyRestrictionStatements({ agent: ['invoke'] });
+    expect(restriction).toEqual({ agent: ['invoke'] });
+    // Intersected with an owner key, the key can ONLY invoke (join) agents.
+    const owner = effectivePermissions({ role: 'owner' }, null);
+    expect(intersectStatements(owner, restriction)).toEqual({ agent: ['invoke'] });
+    // Contrast: the legacy shape would have left the key fully unrestricted.
+    expect(keyRestrictionStatements({ join: true })).toBeNull();
+  });
 });
 
 describe('permissions — validateRbacFields', () => {

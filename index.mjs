@@ -72,6 +72,15 @@ const pino = PinoHttp({
 
 server.use(pino);
 
+// Rate limiters for abuse-prone / unauthenticated paths. Mounted BEFORE the auth
+// middleware and express-openapi so they shed load ahead of any DB work or the
+// route handler. (The /api/auth/* limiter is configured inside better-auth in
+// lib/auth/index.js, mounted further up.)
+const { signupLimiter, webhookLimiter, roomJoinLimiter } = await import('./middleware/rate-limit.js');
+server.use('/api/users/signup', signupLimiter);              // global cap
+server.use('/api/hooks', webhookLimiter);                    // per-IP
+server.use('/api/rooms/:listenerId/join', roomJoinLimiter);  // per-IP, before auth
+
 // Import middleware dynamically based on environment
 if (process.env.AUTHENTICATE_USERS === "NO") {
   const { default: initNoAuth } = await import('./middleware/no-auth.js');
