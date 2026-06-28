@@ -80,7 +80,9 @@ async function main() {
           defaults: {
             email: options.email,
             name: options.email,
-            role: { admin: true },
+            // RBAC (schema v43): users.role is a STRING named role, not the legacy
+            // JSONB {admin} bag. 'owner' == full control of the user's own org.
+            role: 'owner',
           }
         });
         logger.info({ user }, 'created User');
@@ -101,10 +103,14 @@ async function main() {
           let authKey = await AuthKey.create({
             key: options.key || token,
             userId: user.id,
-            roleRestriction: options.joinOnly && { join: true },
+            // RBAC: a join-only key may only invoke (join) agents. Emit the new-vocab
+            // statement map — keyRestrictionStatements() now reads the legacy
+            // {join:true} bag as "no restriction" (i.e. full owner perms). null/omitted
+            // = unrestricted key (capped at its owner's perms anyway).
+            roleRestriction: options.joinOnly ? { agent: ['invoke'] } : null,
             expiry: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10,
           });
-          logger.info({ authKey }, 'created AuthKey');
+          logger.info({ key: options.key || token, userId: user.id, joinOnly: options.joinOnly }, 'created AuthKey');
         }
         break;
 
@@ -166,7 +172,7 @@ async function main() {
           exit(1);
         }
         await authKey.destroy();
-        logger.info({ authKey }, 'deleted AuthKey');
+        logger.info({  }, 'deleted AuthKey');
         break;
       case 'upgrade-db':
         break;

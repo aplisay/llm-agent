@@ -495,10 +495,10 @@ async function main() {
         throw new Error('Password is required');
       }
     } else {
-      console.log(`Using TEST_PASSWORD: ${password} ${'*'.repeat(password.length)}`);
+      console.log(`Using TEST_PASSWORD: ${'*'.repeat(password.length)}`);
     }
 
-    console.log(`Using transport: ${transport}, auth_username: ${auth_username}, register_proxy: ${register_proxy || '(not set)'}, realm: ${realm || '(not set)'}, forceBridged: ${forceBridged}`);
+    console.log(`Using transport: ${transport}, register_proxy: ${register_proxy || '(not set)'}, realm: ${realm || '(not set)'}, forceBridged: ${forceBridged}`);
 
     // Step 3: Create or update registration endpoint
     console.log('\n=== Step 3: Creating registration endpoint ===');
