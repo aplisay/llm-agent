@@ -1,3 +1,9 @@
+# Cloud Build — llm-agent server (per-commit build).
+#
+# Runs on every commit to main. Builds and pushes the image tagged with the
+# commit SHA only — it does NOT tag :latest and does NOT deploy. Promotion to
+# :latest / :$TAG_NAME and the Cloud Run deploy happen as a group at release
+# time via the top-level cloudbuild-release.yaml (triggered by a version tag).
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
@@ -10,12 +16,6 @@ steps:
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:latest
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME
       - .
       - '-f'
       - Dockerfile
@@ -26,25 +26,9 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '--all-tags'
       - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
     id: Push
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
-    args:
-      - run
-      - services
-      - update
-      - $_SERVICE_NAME
-      - '--platform=managed'
-      - >-
-        --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
-      - >-
-        --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
-      - '--region=$_DEPLOY_REGION'
-      - '--quiet'
-    id: Deploy
-    entrypoint: gcloud
 images:
   - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
