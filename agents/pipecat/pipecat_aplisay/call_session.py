@@ -416,9 +416,11 @@ class CallSession:
         # Meter LLM token + TTS character usage into the platform usage ledger.
         # Flushed (finalised) from _end(); requires the pipeline's usage metrics
         # to be enabled (see voice_session.py PipelineParams).
-        from .usage import UsageMeteringObserver
+        from .usage import UsageMeteringObserver, usage_vendors
 
-        self._usage_observer = UsageMeteringObserver()
+        self._usage_observer = UsageMeteringObserver(
+            services=usage_vendors(agent, model_name)
+        )
         task.add_observer(self._usage_observer)
 
         # Wire client-disconnect to PipelineTask.cancel(). Without this, the
