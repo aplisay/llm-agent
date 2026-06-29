@@ -24,6 +24,7 @@ import {
   createVoiceModelAndSession,
   inactivityAwayTimeoutSecs,
 } from "./voice-session-factory.js";
+import { resolveUsageVendors } from "./usage-vendors.js";
 
 export async function runAgentWorker({
   ctx,
@@ -453,6 +454,10 @@ export async function runAgentWorker({
     string,
     { technology: string; provider?: string; detail?: string; units: Record<string, number> }
   >();
+  // Canonical {vendor, detail} per technology from the configured services, so
+  // rows carry the real vendor even on the LiveKit-Inference path (whose metric
+  // label is vendor-blind, e.g. "inference.TTS"). Resolved once per worker.
+  const usageVendors = resolveUsageVendors(agent, modelName);
   const addMeter = (
     technology: string,
     label: string | undefined,
@@ -460,9 +465,14 @@ export async function runAgentWorker({
     quantity: number | undefined,
   ): void => {
     if (!quantity || quantity <= 0) return;
-    const detail = label || modelName;
-    // Derive a coarse vendor from a "vendor.Component" / "vendor/model" label.
-    const provider = label ? label.split(/[./]/)[0] || undefined : undefined;
+    // Prefer the configured vendor/model; fall back to the SDK label
+    // ("vendor.Component" / "vendor/model") then the bare modelName.
+    const resolved = (usageVendors as Record<string, { vendor?: string; detail?: string }>)[
+      technology
+    ];
+    const detail = resolved?.detail || label || modelName;
+    const provider =
+      resolved?.vendor || (label ? label.split(/[./]/)[0] || undefined : undefined);
     const key = `${technology}|${detail}`;
     const meter = usageMeters.get(key) || { technology, provider, detail, units: {} };
     meter.units[unit] = (meter.units[unit] || 0) + quantity;
@@ -499,6 +509,14 @@ export async function runAgentWorker({
     s.on(voice.AgentSessionEventTypes.MetricsCollected, (ev: any) => {
       if (isStaleSession(s)) return;
       onMetrics(ev?.metrics);
+    });
+    // STT characters: the STT metric only carries audio ms, so count transcript
+    // characters from the final user-input transcription (Q-G dual-basis).
+    s.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev: any) => {
+      if (isStaleSession(s)) return;
+      if (ev?.isFinal && typeof ev?.transcript === "string") {
+        addMeter("stt", undefined, "characters", ev.transcript.length);
+      }
     });
   };
   const flushUsage = async (finalised: boolean): Promise<void> => {
