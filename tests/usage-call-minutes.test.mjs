@@ -87,6 +87,23 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(Call.mediaFromIds(null, null)).toBeNull();
   });
 
+  it('persisted startedAt survives findByPk + Call.end() -> duration + voice row (repro)', async () => {
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC', platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 30_000);
+    await call.save();
+    // Simulate the /call/:id/end endpoint: fresh load, then end (NOT the same instance).
+    const fresh = await Call.findByPk(call.id);
+    expect(fresh.startedAt).toBeTruthy();
+    await fresh.end();
+    const reloaded = await Call.findByPk(call.id);
+    expect(Number(reloaded.duration)).toBeGreaterThan(0);
+    const voice = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(voice).toBeTruthy();
+  });
+
   it("GET /api/usage?callId= returns only that call's per-call rows", async () => {
     const silent = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, child() { return silent; } };
     const GET = (await import('../api/paths/usage.js')).default(silent).GET;
