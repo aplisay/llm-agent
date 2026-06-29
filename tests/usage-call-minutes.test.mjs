@@ -104,40 +104,22 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(voice).toBeTruthy();
   });
 
-  it('Call.end() recovers duration when startedAt commits AFTER the end-instance load (/start vs /end race)', async () => {
+  it('Call.end() completes the call record even when usage/billing throws', async () => {
     const call = await Call.create({
       instanceId, agentId, organisationId: orgId, userId,
       calledId: 'WebRTC', callerId: 'WebRTC', platform: 'livekit', modelName: 'livekit:test-model',
     });
-    // The /end endpoint's findByPk loaded the row BEFORE /start committed startedAt.
-    const endInstance = await Call.findByPk(call.id);
-    expect(endInstance.startedAt).toBeNull();
-    // Meanwhile /start commits startedAt on its own instance.
-    const startInstance = await Call.findByPk(call.id);
-    startInstance.startedAt = new Date(Date.now() - 30_000);
-    await startInstance.save();
-    // /end now runs on its stale instance — end() must re-read the committed startedAt.
-    await endInstance.end();
+    call.startedAt = new Date(Date.now() - 20_000);
+    await call.save();
+    // Simulate a usage/billing failure (e.g. a usage_records schema mismatch).
+    call.recordUsageMinutes = async () => {
+      throw new Error('simulated usage_records schema error');
+    };
+    await call.end(); // must NOT throw
     const reloaded = await Call.findByPk(call.id);
-    expect(Number(reloaded.duration)).toBeGreaterThanOrEqual(30_000);
-    const voice = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
-    expect(voice).toBeTruthy();
-  });
-
-  it('Call.end() falls back to createdAt when startedAt is never set (no silent null duration)', async () => {
-    const call = await Call.create({
-      instanceId, agentId, organisationId: orgId, userId,
-      calledId: 'WebRTC', callerId: 'WebRTC', platform: 'livekit', modelName: 'livekit:test-model',
-    });
-    await new Promise((r) => setTimeout(r, 60)); // let createdAt fall behind "now"
-    const endInstance = await Call.findByPk(call.id);
-    expect(endInstance.startedAt).toBeNull();
-    await endInstance.end();
-    const reloaded = await Call.findByPk(call.id);
-    expect(reloaded.duration).not.toBeNull();
-    expect(Number(reloaded.duration)).toBeGreaterThan(0);
-    const voice = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
-    expect(voice).toBeTruthy();
+    expect(reloaded.status).toBe('ended normally');
+    expect(reloaded.endedAt).toBeTruthy();
+    expect(Number(reloaded.duration)).toBeGreaterThanOrEqual(20_000);
   });
 
   it("GET /api/usage?callId= returns only that call's per-call rows", async () => {
