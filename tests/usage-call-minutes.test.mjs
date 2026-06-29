@@ -49,6 +49,7 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(row.finalised).toBe(true);
     expect(row.provider).toBe('livekit');
     expect(row.detail).toBe('livekit:test-model');
+    expect(row.media).toBe('telephony');
     expect(Number(row.quantity)).toBeGreaterThanOrEqual(60_000);
     expect(row.sessionId).toBe(call.id);
   });
@@ -65,5 +66,24 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
 
     await call.destroy();
     expect(await UsageRecord.count({ where: { callId: call.id } })).toBe(0);
+  });
+
+  it('stamps media=webrtc on a browser (WebRTC) call voice row', async () => {
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 20_000);
+    await call.end();
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(row.media).toBe('webrtc');
+  });
+
+  it("Call.mediaFromIds classifies by the leg's own ids", () => {
+    expect(Call.mediaFromIds('WebRTC', 'WebRTC')).toBe('webrtc');
+    expect(Call.mediaFromIds('447700900000', '441234567890')).toBe('telephony');
+    expect(Call.mediaFromIds('WebRTC', '441234567890')).toBe('webrtc');
+    expect(Call.mediaFromIds(null, null)).toBeNull();
   });
 });
