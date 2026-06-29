@@ -643,7 +643,14 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 4: Dial transfer target into consultation room
+    // Step 4: Move to "dialling" BEFORE placing the SIP call. This is the
+    // dead-air gap the confidence tone must cover, and transfer_status should
+    // report an in-progress dial rather than "none" while the target rings.
+    // (Previously this was only set after the target answered, so the tone
+    // never covered the dial — and never played at all when the dial failed.)
+    context.setTransferState("dialling", "Dialling transfer target...");
+
+    // Dial transfer target into consultation room
     const transferTargetParticipant = await dialTransferTargetToConsultation(
       consultRoomName,
       args.number,
@@ -832,10 +839,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       "created consultation call record"
     );
 
-    // Step 8: Update state to dialling
-    context.setTransferState("dialling", "Dialling transfer target...");
-
-    // Step 9: Start the consultation call (transfer target has answered)
+    // Step 8: Start the consultation call (transfer target has answered).
+    // State is already "dialling" from before the dial; it stays in the
+    // tone's active set through this brief setup window until "talking" below.
     await consultCallRecord.start();
     logger.info(
       { consultCallId: consultCallRecord.id },

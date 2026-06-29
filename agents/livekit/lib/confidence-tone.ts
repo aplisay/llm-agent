@@ -71,7 +71,14 @@ export interface ToneConfig {
 // without any change to the agent-facing config. Keep these maps in sync with
 // the Pipecat worker (agents/pipecat/pipecat_aplisay/confidence_tone.py) and
 // lib/database.js.
-const FREQUENCY_HZ: Record<string, number> = { low: 350, medium: 425, high: 550 };
+// NB: these deliberately avoid telephony call-progress frequencies — the old
+// `medium` 425 Hz is the UK/EU network tone (dial/busy/ringing all live at
+// 425 Hz, just different cadences), and US progress uses 350/440/480/620 — and
+// stay clear of the DTMF bands (697-941 / 1209-1633). A periodic 425 Hz burst on
+// a SIP leg is easily swallowed by carrier/SBC call-progress handling or echo
+// cancellation; 523/587/659 sit clear of both. (Pipecat confidence_tone.py and
+// lib/database.js carry the same map — sync them if this resolves it.)
+const FREQUENCY_HZ: Record<string, number> = { low: 523, medium: 587, high: 659 };
 const LENGTH_MS: Record<string, number> = { short: 150, medium: 250, long: 400 };
 // Linear amplitude, 0..1. `medium` of everything is the UK-style comfort beep.
 const VOLUME_LEVEL: Record<string, number> = { low: 0.08, medium: 0.15, high: 0.3 };
@@ -86,7 +93,10 @@ const DEFAULTS: ToneConfig = {
   graceMs: 1200,
 };
 
-// Telephony-standard rate; LiveKit resamples per-subscriber as needed.
+// Telephony-standard rate; LiveKit resamples per-subscriber as needed. (48 kHz
+// was tried to "fix" SIP delivery and made it worse — total silence on the
+// telephony leg vs the partial tone at 16 kHz — so keep ONE generator for both
+// WebRTC and SIP. The suppression is downstream of the track, not the rate.)
 const SAMPLE_RATE = 16000;
 const CHUNK_SAMPLES = (SAMPLE_RATE * 20) / 1000; // 20 ms
 // Small internal AudioSource queue so a stop decision reaches the caller's
@@ -156,6 +166,9 @@ export class ConfidenceTonePlayer {
   /** Sample position within the on/off burst cycle (phase continuity). */
   private cyclePos = 0;
   private source: AudioSource | null = null;
+  /** Whether the loop is currently writing tone (vs silence) frames. Tracked
+   * only to log audible/silent transitions for diagnosis. */
+  private emitting = false;
   private starting: Promise<void> | null = null;
   private closed = false;
   private subscribedSession: voice.AgentSession | null = null;
@@ -366,7 +379,19 @@ export class ConfidenceTonePlayer {
   private async runLoop(): Promise<void> {
     while (!this.closed && this.source) {
       const data = new Int16Array(CHUNK_SAMPLES);
-      if (this.shouldPlay()) {
+      const play = this.shouldPlay();
+      if (play !== this.emitting) {
+        this.emitting = play;
+        // One line per transition so a call log shows whether the tone is
+        // actually generating audio toward the room (proves generation), vs
+        // being gated by speech/state. If "now audible" appears but the caller
+        // heard nothing, the loss is downstream (SIP egress mixing/delivery).
+        logger.info(
+          { mode: this.mode, state: this.transferState, handover: this.handover },
+          play ? "confidence tone now audible" : "confidence tone now silent",
+        );
+      }
+      if (play) {
         this.fillTone(data);
       }
       try {
