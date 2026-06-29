@@ -86,4 +86,32 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(Call.mediaFromIds('WebRTC', '441234567890')).toBe('webrtc');
     expect(Call.mediaFromIds(null, null)).toBeNull();
   });
+
+  it("GET /api/usage?callId= returns only that call's per-call rows", async () => {
+    const silent = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, child() { return silent; } };
+    const GET = (await import('../api/paths/usage.js')).default(silent).GET;
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: '441234567890', callerId: '447700900000',
+      platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 45_000);
+    await call.end();
+
+    const req = { query: { callId: call.id }, log: silent };
+    const res = {
+      locals: { user: { role: 'owner', id: userId, organisationId: orgId } },
+      statusCode: 200,
+      status(c) { this.statusCode = c; return this; },
+      send(b) { this.body = b; return this; },
+      json(b) { this.body = b; return this; },
+    };
+    await GET(req, res);
+
+    const usage = res.body?.usage || [];
+    const voice = usage.filter((u) => u.technology === 'voice');
+    expect(voice).toHaveLength(1);
+    expect(voice[0].provider).toBe('livekit');
+    expect(Number(voice[0].quantity)).toBeGreaterThanOrEqual(40_000);
+  });
 });

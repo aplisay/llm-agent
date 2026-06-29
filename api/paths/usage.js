@@ -12,6 +12,7 @@ const DIMENSIONS = {
   unit: 'unit',
   agent: 'agentId',
   user: 'userId',
+  call: 'callId',
 };
 const DEFAULT_GROUP_BY = ['technology', 'provider', 'detail', 'unit'];
 
@@ -25,7 +26,7 @@ export default function (logger) {
 const getUsage = async (req, res) => {
   if (!requirePermission(res, 'usage', 'read')) return;
   try {
-    let { startDate, endDate, groupBy, period, technology, provider, unit } = req.query;
+    let { startDate, endDate, groupBy, period, technology, provider, unit, callId } = req.query;
 
     const requested = (groupBy ? String(groupBy).split(',') : DEFAULT_GROUP_BY)
       .map((d) => d.trim())
@@ -57,6 +58,7 @@ const getUsage = async (req, res) => {
     if (technology) where.technology = technology;
     if (provider) where.provider = provider;
     if (unit) where.unit = unit;
+    if (callId) where.callId = callId;
 
     const rows = await UsageRecord.findAll({
       attributes,
@@ -104,7 +106,7 @@ getUsage.apiDoc = {
       schema: { type: 'string' },
       description:
         'Comma-separated dimensions to group by: technology, provider, detail, unit, '
-        + 'agent, user. Defaults to "technology,provider,detail,unit".',
+        + 'agent, user, call. Defaults to "technology,provider,detail,unit".',
     },
     {
       name: 'period', in: 'query', required: false,
@@ -123,6 +125,11 @@ getUsage.apiDoc = {
     {
       name: 'unit', in: 'query', required: false,
       schema: { type: 'string' }, description: 'Filter to a single unit.',
+    },
+    {
+      name: 'callId', in: 'query', required: false,
+      schema: { type: 'string' },
+      description: 'Filter to a single call id (the per-call usage breakdown).',
     },
   ],
   responses: {
