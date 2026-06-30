@@ -7,6 +7,7 @@ import {
   resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName,
   resolveRateCard, settle, costUsageRow,
 } from '../lib/rates.js';
+import { recordUsage, finaliseSession } from '../lib/usage.js';
 
 // Phase-2 costing engine (lib/rates.js): the additive-by-dimension resolver,
 // temporal rate lookup, the idempotent balance settle(), and the never-throw
@@ -252,5 +253,59 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(fresh.costStatus).toBe('no_rate');
     expect(fresh.costMicros).toBeNull();
     expect(fresh.billedAt).toBeTruthy();
+  });
+
+  // --- cost-at-finalisation WIRING (the triggers, not just the engine) ---
+
+  const assignRate = async (name, lines, balance) => {
+    await RateCard.create({ name, startDate: new Date('2026-01-01Z'), detail: { lines } });
+    await Organisation.update(
+      { rateHistory: [{ name, startDate: '2026-01-01T00:00:00Z' }], balance },
+      { where: { id: orgId } },
+    );
+  };
+
+  it('Call.end() costs the voice row end-to-end and decrements balance', async () => {
+    const name = `${PREFIX}e2e`;
+    await assignRate(name, [
+      { dim: 'audio-path', match: { technology: 'voice', provider: 'livekit', media: 'telephony' }, unit: 'minute', priceMicros: 1_000_000 },
+      { dim: 'model', match: { technology: 'voice', detail: 'livekit:ultravox/ultravox-v0.6' }, unit: 'minute', priceMicros: 6_000_000 },
+    ], 50_000_000);
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId, callerId: '441234567890', calledId: '447700900000',
+      platform: 'livekit', modelName: 'livekit:ultravox/ultravox-v0.6',
+    });
+    call.startedAt = new Date(Date.now() - 60_000); // 1 minute
+    await call.end();
+
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(row.costStatus).toBe('matched');
+    expect(row.media).toBe('telephony');
+    expect(Number(row.costMicros)).toBe(7_000_000); // telephony 1M + Ultravox 6M
+    expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(43_000_000);
+  });
+
+  it('finaliseSession costs the session’s finalised text rows', async () => {
+    const name = `${PREFIX}text`;
+    await assignRate(name, [
+      { dim: 'model', match: { technology: 'llm', provider: 'anthropic', detail: 'claude-opus-4-8', unit: 'output_tokens' }, unit: 'token', priceMicros: 4_000 },
+    ], 20_000_000);
+    const sessionId = randomUUID();
+    // A provisional (un-finalised) increment row — not costed until the session ends.
+    await recordUsage({
+      sessionId, organisationId: orgId, userId,
+      technology: 'llm', provider: 'anthropic', detail: 'claude-opus-4-8', unit: 'output_tokens',
+      quantity: 1000, mode: 'increment', finalised: false,
+      metadata: { startedAt: '2026-02-01T00:00:00Z' },
+    });
+    const before = await UsageRecord.findOne({ where: { sessionId } });
+    expect(before.costStatus).toBeNull(); // not costed while provisional
+
+    await finaliseSession(sessionId);
+    const after = await UsageRecord.findOne({ where: { sessionId } });
+    expect(after.finalised).toBe(true);
+    expect(after.costStatus).toBe('matched');
+    expect(Number(after.costMicros)).toBe(4_000_000); // 1000 tokens * 4_000
+    expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(16_000_000);
   });
 });
