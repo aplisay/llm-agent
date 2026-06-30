@@ -5,7 +5,7 @@ import {
 import { randomUUID } from 'crypto';
 import {
   resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName,
-  resolveRateCard, settle, costUsageRow,
+  resolveRateCard, settle, costUsageRow, sweepUncostedRows,
 } from '../lib/rates.js';
 import { recordUsage, finaliseSession } from '../lib/usage.js';
 
@@ -328,5 +328,30 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(after.costStatus).toBe('matched');
     expect(Number(after.costMicros)).toBe(4_000_000); // 1000 tokens * 4_000
     expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(16_000_000);
+  });
+
+  it('sweepUncostedRows backfills uncosted + re-costs no_rate, leaving matched frozen', async () => {
+    const name = `${PREFIX}sweep`;
+    await assignRate(name, [
+      { dim: 'audio-path', match: { technology: 'voice', provider: 'livekit', media: 'webrtc' }, unit: 'minute', priceMicros: 500_000 },
+      { dim: 'model', match: { technology: 'voice', detail: 'livekit:ultravox/ultravox-v0.6' }, unit: 'minute', priceMicros: 6_000_000 },
+    ], 100_000_000);
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId, callerId: 'WebRTC', calledId: 'WebRTC',
+      platform: 'livekit', modelName: 'livekit:ultravox/ultravox-v0.6',
+    });
+    await call.update({ startedAt: new Date('2026-02-01T12:00:00Z') });
+
+    const uncosted = await mkRow({ callId: call.id, quantity: 60_000 });                                  // costStatus null
+    const noRate = await mkRow({ callId: call.id, quantity: 60_000, costStatus: 'no_rate' });             // pre-rate
+    const frozen = await mkRow({ callId: call.id, quantity: 60_000, costStatus: 'matched', costMicros: 123, appliedCostMicros: 123 });
+
+    const res = await sweepUncostedRows();
+    expect(res.costed).toBeGreaterThanOrEqual(2);
+    expect((await uncosted.reload()).costStatus).toBe('matched');
+    expect((await noRate.reload()).costStatus).toBe('matched');
+    expect(Number((await frozen.reload()).costMicros)).toBe(123); // untouched (not scanned)
+    // 100M - 6.5M (uncosted) - 6.5M (no_rate) = 87M; the frozen row was never settled here.
+    expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(87_000_000);
   });
 });
