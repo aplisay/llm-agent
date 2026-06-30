@@ -11,6 +11,8 @@ const DIMENSIONS = {
   detail: 'detail',
   unit: 'unit',
   media: 'media',
+  currency: 'currency',
+  rateName: 'rateName',
   agent: 'agentId',
   user: 'userId',
   call: 'callId',
@@ -34,9 +36,11 @@ const getUsage = async (req, res) => {
       .filter((d) => DIMENSIONS[d]);
     const dimensions = (requested.length ? requested : DEFAULT_GROUP_BY).map((d) => DIMENSIONS[d]);
 
-    // Optional time bucketing via date_trunc on created_at.
+    // Time bucketing on the billing instant (billedAt), the canonical period
+    // anchor — falling back to created_at for rows not yet costed (billedAt null).
+    const billedAtCol = Sequelize.fn('COALESCE', Sequelize.col('billed_at'), Sequelize.col('created_at'));
     const periodBucket = ['day', 'week', 'month'].includes(period)
-      ? Sequelize.fn('date_trunc', period, Sequelize.col('created_at'))
+      ? Sequelize.fn('date_trunc', period, billedAtCol)
       : null;
 
     const attributes = [
@@ -44,6 +48,11 @@ const getUsage = async (req, res) => {
       ...(periodBucket ? [[periodBucket, 'period']] : []),
       [Sequelize.fn('SUM', Sequelize.col('quantity')), 'quantity'],
       [Sequelize.fn('COUNT', Sequelize.col('id')), 'meters'],
+      // Frozen cost (micro-pence) summed, plus an EXPLICIT count of rows not yet
+      // costed (cost_micros IS NULL) so a consumer never mistakes "uncosted" for
+      // "free" — a partial total is visibly partial.
+      [Sequelize.fn('SUM', Sequelize.col('cost_micros')), 'costMicros'],
+      [Sequelize.literal('COUNT(*) FILTER (WHERE cost_micros IS NULL)'), 'uncostedMeters'],
     ];
     const group = [...dimensions, ...(periodBucket ? [periodBucket] : [])];
 
@@ -73,6 +82,10 @@ const getUsage = async (req, res) => {
       ...row,
       quantity: Number(row.quantity) || 0,
       meters: Number(row.meters) || 0,
+      // costMicros is null (not 0) when NO row in the bucket is costed, so a
+      // consumer can distinguish "priced at zero" from "not yet priced".
+      costMicros: row.costMicros == null ? null : Number(row.costMicros),
+      uncostedMeters: Number(row.uncostedMeters) || 0,
     }));
 
     res.send({ usage });
@@ -107,8 +120,9 @@ getUsage.apiDoc = {
       schema: { type: 'string' },
       description:
         'Comma-separated dimensions to group by: technology, provider, detail, unit, '
-        + 'media, agent, user, call. Defaults to "technology,provider,detail,unit". '
-        + "media (webrtc/telephony) is the audio transport, populated on voice rows.",
+        + 'media, currency, rateName, agent, user, call. Defaults to '
+        + '"technology,provider,detail,unit". media (webrtc/telephony) is the audio '
+        + 'transport on voice rows; rateName/currency identify the card that valued the row.',
     },
     {
       name: 'period', in: 'query', required: false,
@@ -152,11 +166,15 @@ getUsage.apiDoc = {
                     detail: { type: 'string', nullable: true },
                     unit: { type: 'string' },
                     media: { type: 'string', nullable: true, description: 'Audio transport (webrtc/telephony) on voice rows.' },
+                    currency: { type: 'string', nullable: true },
+                    rateName: { type: 'string', nullable: true, description: 'Rate card that valued the row.' },
                     agentId: { type: 'string', nullable: true },
                     userId: { type: 'string', nullable: true },
-                    period: { type: 'string', format: 'date-time', nullable: true },
+                    period: { type: 'string', format: 'date-time', nullable: true, description: 'Bucket on billedAt (the billing instant), not created_at.' },
                     quantity: { type: 'number' },
                     meters: { type: 'number', description: 'Number of ledger rows aggregated.' },
+                    costMicros: { type: 'number', nullable: true, description: 'Summed frozen cost in micro-pence; null when no row in the bucket is yet costed.' },
+                    uncostedMeters: { type: 'number', description: 'Rows in the bucket with no cost yet (cost_micros IS NULL) — a partial total is visibly partial.' },
                   },
                 },
               },

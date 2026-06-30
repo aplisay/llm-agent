@@ -95,4 +95,27 @@ describe('Tenant usage API (GET /api/usage)', () => {
     expect(voice).toBeDefined();
     expect(voice.media).toBe('webrtc');
   });
+
+  it('sums frozen cost (cost_micros) and counts uncosted meters explicitly', async () => {
+    const rows = [
+      { sessionId: `${orgA}-k1`, organisationId: orgA, userId: userA, technology: 'voice', provider: 'livekit', detail: 'cost-test', unit: 'milliseconds', quantity: 60000, media: 'webrtc', costMicros: 6500000, costStatus: 'matched', rateName: 'r1', currency: 'gbp', finalised: true },
+      { sessionId: `${orgA}-k2`, organisationId: orgA, userId: userA, technology: 'voice', provider: 'livekit', detail: 'cost-test', unit: 'milliseconds', quantity: 30000, media: 'webrtc', costStatus: 'no_rate', finalised: true },
+    ].map((r) => ({ ...r, meterKey: UsageRecord.meterKey(r) }));
+    await UsageRecord.bulkCreate(rows);
+
+    // One bucket over both rows: cost sums the costed one, uncostedMeters counts the other.
+    const { req, res } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'technology,detail' });
+    await GET(req, res);
+    const bucket = res.body.usage.find((u) => u.detail === 'cost-test');
+    expect(bucket.costMicros).toBe(6500000); // only the costed row contributes
+    expect(bucket.uncostedMeters).toBe(1);    // the no_rate row
+    expect(bucket.meters).toBe(2);
+
+    // rateName is a usable groupBy dimension (the costed row carries it).
+    const { req: r2, res: s2 } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'detail,rateName' });
+    await GET(r2, s2);
+    expect(s2.body.usage.some((u) => u.detail === 'cost-test' && u.rateName === 'r1')).toBe(true);
+
+    await UsageRecord.destroy({ where: { detail: 'cost-test' } });
+  });
 });
