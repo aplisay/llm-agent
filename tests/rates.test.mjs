@@ -154,6 +154,7 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     await UsageRecord.destroy({ where: { organisationId: orgId } });
     await RateCard.destroy({ where: { name: { [Op.like]: `${PREFIX}%` } } });
     await Organisation.update({ rateHistory: null, balance: null }, { where: { id: orgId } });
+    await User.update({ rateHistory: null }, { where: { id: userId } });
   });
 
   afterAll(async () => {
@@ -253,6 +254,26 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(fresh.costStatus).toBe('no_rate');
     expect(fresh.costMicros).toBeNull();
     expect(fresh.billedAt).toBeTruthy();
+  });
+
+  it('costUsageRow: a per-user rate override wins over the org rate', async () => {
+    const orgCard = `${PREFIX}org`;
+    const userCard = `${PREFIX}user`;
+    const line = (priceMicros) => ({ lines: [{ dim: 'audio-path', match: { technology: 'voice', provider: 'livekit', media: 'webrtc' }, unit: 'minute', priceMicros }] });
+    await RateCard.create({ name: orgCard, startDate: new Date('2026-01-01Z'), detail: line(100_000) });
+    await RateCard.create({ name: userCard, startDate: new Date('2026-01-01Z'), detail: line(999_000) });
+    await Organisation.update({ rateHistory: [{ name: orgCard, startDate: '2026-01-01T00:00:00Z' }], balance: 50_000_000 }, { where: { id: orgId } });
+    await User.update({ rateHistory: [{ name: userCard, startDate: '2026-01-01T00:00:00Z' }] }, { where: { id: userId } });
+    const call = await Call.create({ instanceId, agentId, organisationId: orgId, userId, callerId: 'WebRTC', calledId: 'WebRTC', platform: 'livekit', modelName: 'livekit:ultravox/ultravox-v0.6' });
+    await call.update({ startedAt: new Date('2026-02-01T12:00:00Z') });
+    const row = await mkRow({ callId: call.id, quantity: 60_000 });
+
+    await costUsageRow(row);
+    const fresh = await row.reload();
+    expect(fresh.rateName).toBe(userCard);       // the user override won over the org
+    expect(Number(fresh.costMicros)).toBe(999_000);
+    // …and the ORG's balance is what gets settled (per-user pricing, org wallet).
+    expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(50_000_000 - 999_000);
   });
 
   // --- cost-at-finalisation WIRING (the triggers, not just the engine) ---
