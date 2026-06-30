@@ -2,6 +2,7 @@ import { voice } from "@livekit/agents";
 import defaultLogger from "./logger.js";
 import { saveUsage as defaultSaveUsage } from "./api-client.js";
 import type { UsageVendors } from "./usage-vendors.js";
+import type { VoiceMode } from "./voice-mode.js";
 
 interface MeterEntry {
   technology: string;
@@ -29,6 +30,13 @@ export interface MakeUsageMeterOptions {
   getCall: () => MeterCall | null | undefined;
   /** Canonical {vendor, detail} per technology (see resolveUsageVendors). */
   usageVendors: UsageVendors;
+  /**
+   * Realtime vs pipeline. Realtime (speech-to-speech) models bundle STT+TTS into
+   * the model charge, so this meter must suppress separate stt/tts component rows
+   * for them (the UserInputTranscribed listener fires for realtime agents too).
+   * Defaults to pipeline behaviour (emit) when unset.
+   */
+  voiceMode?: VoiceMode;
   /** Fallback detail when neither the configured vendor nor the SDK label is known. */
   fallbackDetail?: string;
   /** Skip events from a session that is no longer the active one. */
@@ -49,6 +57,7 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
   const {
     getCall,
     usageVendors,
+    voiceMode,
     fallbackDetail,
     isStale = () => false,
     log = defaultLogger,
@@ -63,6 +72,9 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
     quantity: number | undefined,
   ): void => {
     if (!quantity || quantity <= 0) return;
+    // Realtime models bundle STT+TTS into the model charge — never emit separate
+    // stt/tts rows for them (mirrors voice-agent-runtime's addMeter gate).
+    if (voiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
     // Prefer the configured vendor/model; fall back to the SDK label then the
     // supplied fallbackDetail (kept identical to voice-agent-runtime's addMeter).
     const resolved = (usageVendors as Record<string, { vendor?: string; detail?: string }>)[

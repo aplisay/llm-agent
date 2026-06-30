@@ -80,6 +80,38 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(row.media).toBe('webrtc');
   });
 
+  it('pins the bridged tail leg to media=telephony despite inherited WebRTC ids', async () => {
+    // The blind-bridge tail carries the WebRTC-origin ids but is a telephony bridge;
+    // recordUsageMinutes must override mediaFromIds for the telephony:bridged-call sentinel.
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'livekit', modelName: 'telephony:bridged-call',
+    });
+    call.startedAt = new Date(Date.now() - 15_000);
+    await call.end();
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(row.media).toBe('telephony');
+  });
+
+  it('Call.end({ endedAt }) honours an authoritative platform end time for duration', async () => {
+    // The Ultravox webhook reports the real call-end instant; Call.end must use it
+    // (not "now") so duration/minutes reflect the platform timing.
+    const started = new Date('2026-06-30T10:00:00.000Z');
+    const ended = new Date('2026-06-30T10:00:42.000Z'); // 42s
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'ultravox', modelName: 'ultravox:ultravox/ultravox-v0.6',
+    });
+    call.startedAt = started;
+    await call.end('ultravox call ended', { endedAt: ended });
+    expect(call.endedAt.valueOf()).toBe(ended.valueOf());
+    expect(call.duration).toBe(42_000);
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(Number(row.quantity)).toBe(42_000);
+  });
+
   it("Call.mediaFromIds classifies by the leg's own ids", () => {
     expect(Call.mediaFromIds('WebRTC', 'WebRTC')).toBe('webrtc');
     expect(Call.mediaFromIds('447700900000', '441234567890')).toBe('telephony');

@@ -46,6 +46,7 @@ export async function runAgentWorker({
   modelRef,
   getConsultInProgress,
   getActiveCall,
+  getAgentCall,
   endTransferActivityIfNeeded,
   getTransferState,
   recordingOptions,
@@ -465,6 +466,13 @@ export async function runAgentWorker({
     quantity: number | undefined,
   ): void => {
     if (!quantity || quantity <= 0) return;
+    // Realtime (speech-to-speech) models bundle STT+TTS into the model charge
+    // (per-minute for Ultravox, per-token for gpt-realtime), so they must NOT
+    // emit separate stt/tts component rows. The UserInputTranscribed listener
+    // fires for realtime agents too, so without this gate it tags the user's
+    // transcript characters with the *pipeline-default* STT vendor (deepgram) —
+    // a phantom row that double-charges. LLM token rows still flow (gpt-realtime).
+    if (resolvedVoiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
     // Prefer the configured vendor/model; fall back to the SDK label
     // ("vendor.Component" / "vendor/model") then the bare modelName.
     const resolved = (usageVendors as Record<string, { vendor?: string; detail?: string }>)[
@@ -521,7 +529,12 @@ export async function runAgentWorker({
   };
   const flushUsage = async (finalised: boolean): Promise<void> => {
     try {
-      const c: any = getActiveCall();
+      // Attribute the agent session's accumulated token/stt/tts meters to the
+      // AGENT's call, not getActiveCall() — after a blind-bridge transfer the
+      // latter flips to the no-agent bridged tail leg, so these component meters
+      // would otherwise mis-attribute there (the bridged leg is billed only for
+      // its own audio-path minutes via its Call.end()). Falls back when unset.
+      const c: any = (getAgentCall ?? getActiveCall)();
       if (!c?.id) return;
       const records: any[] = [];
       for (const meter of usageMeters.values()) {

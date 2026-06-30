@@ -1397,6 +1397,10 @@ async function setupCallAndUtilities({
     sessionRef,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || activeAgentCall,
+    // The agent's own call WITHOUT the bridge override — usage attribution must
+    // target this so agent-session component meters never land on the no-agent
+    // bridged tail leg (whose only billable component is its audio-path minutes).
+    getAgentCall: () => activeAgentCall,
     setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,

@@ -12,12 +12,25 @@ vendor**, the **media** (webrtc/telephony), and a **billedAt** anchor, across ll
 Pipecat workers, plus an eval harness that asserts it on real calls. **Phases 2–5 remain** (costing engine,
 admin API/RBAC, polite-ai UI, deferred items).
 
-**⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the v44 migration.** The v44 *model* references columns the
-un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …). On a v43 DB every full-model `UsageRecord`
-read/write throws `column "billed_at" does not exist` → zero usage rows. Fix: boot llm-agent once with
-`DB_FORCE_SYNC=true` (the `tests-postgres-test-1` container already auto-migrates). The `RateCard`
-EXCLUDE-gist constraint needs `btree_gist`; if the DB role can't `CREATE EXTENSION` it logs+skips — the
-`usage_records` columns still get added, so billing works.
+**⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the migration (now schemaVersion 45).** The model references
+columns an un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …); on such a DB every full-model
+`UsageRecord` read/write throws `column "billed_at" does not exist` → zero usage rows. Fix: boot llm-agent
+once with `DB_FORCE_SYNC=true` (or in `NODE_ENV=development`, which forces sync; the `tests-postgres-test-1`
+container also auto-migrates). The `RateCard` EXCLUDE-gist constraint needs `btree_gist` — the Cloud SQL
+`postgres` role can `CREATE EXTENSION` it; if a role can't, it logs+skips and the `usage_records` columns
+still land, so billing works.
+
+**Why 45, not 44 — the partial-44 trap (resolved 2026-06-29).** The dev DB `llmvoicedev` reached
+`dbVersion=44` from an *intermediate* `database.js` whose model had only the `organisations.*` billing
+columns; the `usage_records` billing columns and the `rate_cards` table were added to the model *later under
+the same version number*. With `44===44` the gate `schemaVersion > dbVersion` was false, so even
+`DB_FORCE_SYNC=true` skipped the alter-sync — boot logged `version mismatch, wont upgrade` while serving
+against the half-migrated table. Fix: bumped `schemaVersion` 44→45 (idempotent on DBs already fully on v44).
+A forced re-sync then added the 8 usage cols + 2 indexes, created `rate_cards`, installed `btree_gist`, and
+added the EXCLUDE constraint; a full model-vs-DB drift audit came back clean. **Lesson: bump `schemaVersion`
+on EVERY schema change** — adding columns under an unchanged number strands them on any DB already at that
+version. **Staging/prod likely have the same partial-44 state** — the 44→45 bump heals them on next deploy
+booted with `DB_FORCE_SYNC=true`.
 
 ## Done — commits
 
@@ -52,11 +65,32 @@ EXCLUDE-gist constraint needs `btree_gist`; if the DB role can't `CREATE EXTENSI
 - **LiveKit:** `cd agents/livekit && node --import tsx --test test/usage-vendors.test.ts test/usage-meter.test.ts` → **9 green**; `npx tsup --clean` builds.
 - **test-agent:** `cd /Users/rob/test-agent && npx vitest run src/eval/verify/usageLedger.test.ts` → **4 green**.
 
+## Phase 1 hardening — capture bugs found via live eval + DB inspection (2026-06-30)
+
+Testing 1c/d through the eval surfaced **wrong Ultravox usage rows** (a `stt/deepgram/characters` row on
+Ultravox legs; the eval only saw one of three consult legs). DB inspection of two real calls confirmed the
+diagnosis and these fixes landed (all unit-verified; the LiveKit `dist` was rebuilt with A+C):
+
+| # | bug | fix | files |
+|---|---|---|---|
+| **A** | `UserInputTranscribed` fired for **realtime** (Ultravox/gpt-realtime) agents too and tagged transcript chars with the *pipeline-default* STT vendor (`deepgram/nova-3`) → phantom `stt` row that double-charges. Realtime bundles STT+TTS into the model charge. | Single guard in `addMeter`: `voiceMode==='realtime'` ⇒ drop `stt`/`tts` (llm tokens still flow for gpt-realtime). Consult meter gained a `voiceMode` opt wired from `resolveVoiceMode`. | `voice-agent-runtime.ts`, `usage-meter.ts`, `transfer-handler.ts` |
+| **B** | The `telephony:bridged-call` tail leg inherited `WebRTC` caller/called ids → `media` mis-derived `webrtc`; it wouldn't match the telephony bridged-call rate line. | `recordUsageMinutes` pins `media='telephony'` for the sentinel (covers LiveKit **and** Pipecat bridge paths). | `lib/database.js` |
+| **C** | After a blind bridge, `getActiveCall()` flips to the **no-agent bridged record**, so the agent session's component meters (the stray stt; llm/tts in a pipeline transfer) flushed onto the bridge. | Added `getAgentCall` (= `activeAgentCall`, no bridge override); `flushUsage` targets it. | `worker.ts`, `types.ts`, `voice-agent-runtime.ts` |
+| **D** | The prod Ultravox webhook (`callEnded`) set timing+usage but never marked the call `live=false`/`status` nor released the `Call.start()` concurrency reservation (a prod slot **leak**); not idempotent. | `callEnded` bails if `!call.live`, else delegates to the canonical `Call.end()` (now takes an optional authoritative `endedAt`). Pure tidying — **not** an eval gate. | `lib/handlers/ultravox.js`, `lib/database.js` |
+| **E** | The consult eval asserted only the consult leg, so all 3 legs *looked* missing when they were metered. | `verifyCallLineageUsage` + `getLinkedCalls` (`GET /calls/{id}/linked` — durable `parentId` tree; survives the **null `agentId`** on worker legs). Asserts each leg has its voice row and realtime/bridged legs carry no stt/tts. | test-agent `usageLedger.ts`, `client.ts`, `consultWebrtc.ts` |
+
+The voice row already carried the Ultravox model in `detail` and the transport in `media` (one voice row,
+two dimensions, per §2) — the "missing ultravox model" was an eval **display** gap, not a capture gap.
+**Phase-2 carry-over:** the §3.1 example matches the **model** dimension on `provider:'ultravox'`, but a
+realtime voice row's provider is the *handler* (`livekit`); the resolver must match the model dimension on
+`detail`/modelName, not provider. Fix the example when building `lib/rates.js`.
+
 ## Live validation status (eval)
 
 The eval asserts per-call usage **non-fatally** (`usage.present`, `usage.providerLabelled` = non-null & not
-`inference`, `usage.has.voice`) on `weatherPair`, `weatherWebrtc`, `consultWebrtc`. Grep the eval output for
-`usage ledger:`.
+`inference`, `usage.has.voice`, and — per leg via `verifyCallLineageUsage` — `usage.noComponentRows` on
+realtime/bridged legs) on `weatherPair`, `weatherWebrtc`, `consultWebrtc`. Grep the eval output for
+`usage ledger:` / `usage lineage leg`.
 
 **OPEN ITEM — can't validate pipeline capture via the eval yet.** All default WebRTC targets run **Ultravox**
 (`*:ultravox/ultravox-v0.6`), a managed bundle with no separate vendors and no token metrics → nothing for

@@ -10,6 +10,7 @@ const DIMENSIONS = {
   provider: 'provider',
   detail: 'detail',
   unit: 'unit',
+  media: 'media',
   agent: 'agentId',
   user: 'userId',
   call: 'callId',
@@ -106,7 +107,8 @@ getUsage.apiDoc = {
       schema: { type: 'string' },
       description:
         'Comma-separated dimensions to group by: technology, provider, detail, unit, '
-        + 'agent, user, call. Defaults to "technology,provider,detail,unit".',
+        + 'media, agent, user, call. Defaults to "technology,provider,detail,unit". '
+        + "media (webrtc/telephony) is the audio transport, populated on voice rows.",
     },
     {
       name: 'period', in: 'query', required: false,
@@ -149,6 +151,7 @@ getUsage.apiDoc = {
                     provider: { type: 'string', nullable: true },
                     detail: { type: 'string', nullable: true },
                     unit: { type: 'string' },
+                    media: { type: 'string', nullable: true, description: 'Audio transport (webrtc/telephony) on voice rows.' },
                     agentId: { type: 'string', nullable: true },
                     userId: { type: 'string', nullable: true },
                     period: { type: 'string', format: 'date-time', nullable: true },

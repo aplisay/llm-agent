@@ -59,6 +59,38 @@ test("accumulates llm/tts/stt and flushes vendor-correct per-call records", asyn
   assert.ok(saved.every((r) => r.mode === "set" && r.finalised === true));
 });
 
+test("realtime voiceMode suppresses stt/tts component rows but keeps llm", async () => {
+  const saved: any[] = [];
+  const meter = makeUsageMeter({
+    getCall: () => ({ id: "consult-rt", organisationId: "o1", userId: "u1", agentId: "a1" }),
+    usageVendors: vendors,
+    voiceMode: "realtime",
+    saveUsageFn: async (records) => {
+      saved.push(...(records as any[]));
+    },
+  });
+  const s = fakeSession();
+  meter.wire(s);
+
+  // A realtime (e.g. Ultravox) agent bundles STT+TTS; the SDK should not emit
+  // tts/stt_metrics, but UserInputTranscribed DOES fire — and previously tagged
+  // the transcript chars with the pipeline-default STT vendor (deepgram). Assert
+  // none of these become rows, while llm tokens (gpt-realtime) still flow.
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, {
+    metrics: { type: "llm_metrics", label: "inference.LLM", promptTokens: 100, completionTokens: 20 },
+  });
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, {
+    metrics: { type: "tts_metrics", label: "inference.TTS", charactersCount: 42, audioDurationMs: 1500 },
+  });
+  s.emit(voice.AgentSessionEventTypes.UserInputTranscribed, { isFinal: true, transcript: "hello there" });
+
+  await meter.flush(true);
+
+  assert.ok(saved.every((r) => r.technology !== "stt"), "no stt rows for realtime");
+  assert.ok(saved.every((r) => r.technology !== "tts"), "no tts rows for realtime");
+  assert.equal(saved.find((r) => r.technology === "llm" && r.unit === "input_tokens")?.quantity, 100);
+});
+
 test("flush is a no-op when no call is resolved", async () => {
   let called = false;
   const meter = makeUsageMeter({
