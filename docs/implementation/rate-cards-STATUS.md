@@ -14,10 +14,12 @@ on real calls. Phase 2: `lib/rates.js` values each finalised row against the org
 (additive-by-dimension, frozen cost-at-write) and settles `Organisation.balance`, wired into the meter choke
 points. Phase 3: admin API + RBAC. Phase 4: polite-ai rate-card editor + billing rewire (stamped cost + balance SoT +
 Stripe credit seam) — typecheck/build-green, **needs run-verification**. Phase 5: deferred items WIRED
-(billingBlocked refusal, sweep endpoint, balance callbacks, per-user rate). **All 5 phases code-complete**
-(Phases 0–3,5 unit-verified; Phase 4 build-green). Schema is now **v47** (DB_FORCE_SYNC). Remaining: Phase-4
-run-verify + the `billingService` AuthKey, full RATE_CARD removal, the agentless-passthrough product, and
-SSRF hardening across outbound webhooks.
+(billingBlocked refusal, sweep endpoint, balance callbacks, per-user rate). **All 5 phases code-complete + SSRF-hardened**
+(Phases 0–3,5 + the webhook SSRF guard unit-verified, the guard adversarially verified — 0 bypasses; Phase 4
+build-green). Schema **v47** (dev DB confirmed migrated; staging/prod need `DB_FORCE_SYNC`). **Remaining = the
+USER's live run-verification** — see **`rate-cards-RUNBOOK-phase4.md`** (mint the `billingService` token, the
+Stripe test webhook, the 7-step checklist). Genuinely deferred: full RATE_CARD removal, the agentless-passthrough
+product, deeper DNS-rebind IP-pinning.
 
 **⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the migration (now schemaVersion 45).** The model references
 columns an un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …); on such a DB every full-model
