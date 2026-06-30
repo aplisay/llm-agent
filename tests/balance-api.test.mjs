@@ -121,6 +121,17 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(await BalanceCredit.count({ where: { organisationId: orgId } })).toBe(2);
   });
 
+  it('the billingService role can credit but cannot assign rates (least privilege)', async () => {
+    const c = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { idempotencyKey: 'svc-1', amountPennies: 300 } });
+    await creditPOST(c.req, c.res);
+    expect(c.res.statusCode).toBe(200);
+    expect(c.res.body.balancePennies).toBe(300);
+    // …but not rate assignment (organisation:setRate) — that stays superAdmin-only.
+    const r = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { rateHistory: [] } });
+    await rateHistPUT(r.req, r.res);
+    expect(r.res.statusCode).toBe(403);
+  });
+
   it('credit 400s missing key / non-positive amount, and 403s a non-super', async () => {
     const bad1 = mockReqRes({ params: { organisationId: orgId }, body: { amountPennies: 100 } });
     await creditPOST(bad1.req, bad1.res);

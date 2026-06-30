@@ -12,12 +12,14 @@ import { penniesToMicros, microsToPennies } from '../../../../../lib/rates.js';
  * success (returns the current balance). On any OTHER failure it returns **500** so
  * Stripe retries (the unique key makes that retry safe). The credit + balance bump
  * are one transaction; the first credit transitions a null (untracked) balance to a
- * tracked numeric one. Gated on `organisation:setRate` (super admin / internal
- * system token). The API edge speaks **pennies**.
+ * tracked numeric one. Gated on `organisation:credit` — held by superAdmin and by
+ * the least-privilege `billingService` role (the polite-ai Stripe-webhook seam
+ * authenticates with a synthetic service user's AuthKey). The API edge speaks
+ * **pennies**.
  */
 export default function (logger) {
   const post = async (req, res) => {
-    if (!requirePermission(res, 'organisation', 'setRate')) return;
+    if (!requirePermission(res, 'organisation', 'credit')) return;
     const { organisationId } = req.params;
     const { idempotencyKey, amountPennies, currency = 'gbp' } = req.body || {};
     if (!idempotencyKey) return res.status(400).send({ message: 'idempotencyKey is required' });
