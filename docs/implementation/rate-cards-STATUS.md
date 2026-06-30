@@ -12,10 +12,12 @@ chars+ms, STT chars+ms) is metered with the **real vendor**, the **media** (webr
 **billedAt** anchor, across llm-agent + the LiveKit and Pipecat workers, plus an eval harness that asserts it
 on real calls. Phase 2: `lib/rates.js` values each finalised row against the org's effective `RateCard`
 (additive-by-dimension, frozen cost-at-write) and settles `Organisation.balance`, wired into the meter choke
-points. Phase 3: admin API + RBAC — `/api/rates` CRUD, `/api/rate-components` catalogue,
-`/api/organisations/{id}/{rate-history,balance,balance/credit}` (idempotent Stripe-top-up seam, schema v46),
-and `cost` in `/api/usage`. **Phases 4–5 remain** (polite-ai UI + billing rewire; deferred items —
-incl. the nightly-sweep scheduler trigger).
+points. Phase 3: admin API + RBAC. Phase 4: polite-ai rate-card editor + billing rewire (stamped cost + balance SoT +
+Stripe credit seam) — typecheck/build-green, **needs run-verification**. Phase 5: deferred items WIRED
+(billingBlocked refusal, sweep endpoint, balance callbacks, per-user rate). **All 5 phases code-complete**
+(Phases 0–3,5 unit-verified; Phase 4 build-green). Schema is now **v47** (DB_FORCE_SYNC). Remaining: Phase-4
+run-verify + the `billingService` AuthKey, full RATE_CARD removal, the agentless-passthrough product, and
+SSRF hardening across outbound webhooks.
 
 **⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the migration (now schemaVersion 45).** The model references
 columns an un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …); on such a DB every full-model
@@ -154,9 +156,38 @@ New **`lib/rates.js`** (cost-at-write / frozen); 21 tests in `tests/rates.test.m
   pennies at the API edge).
 - **⚠️ schema v45→v46** (the `balance_credits` table) — needs one `DB_FORCE_SYNC` deploy.
 
-## What remains (next phases — see the plan for full detail)
+## Phase 4 — polite-ai UI + billing rewire: DONE, typecheck/build-green (2026-06-30, polite-ai `billing`)
 
-- **Phase 4 — polite-ai** (`/Users/rob/Aplisay/code/polite-ai`): `dashboard.rates.tsx` (component-grid editor
+New polite-ai `billing` branch off `next` (RR8 + Stripe 17). NOT yet run-verified.
+- **`dashboard.rates.tsx`** (superAdmin) — rate-card list + catalogue-driven line editor (from
+  `/api/rate-components`) + org rate-name assignment. Money helpers in client-safe `app/lib/money.ts` (1e4).
+- **Reads** — `usageCostPennies` prefers stamped `costMicros/1e4`, RATE_CARD = transitional fallback;
+  billing/wallet balance from llm-agent `GET /balance` (tracked ? llm-agent : local wallet).
+- **Stripe** — `payment_intent.succeeded` credits llm-agent `POST /balance/credit` (idempotencyKey=pi.id) as
+  the least-privilege **`billingService`** AuthKey (`LLM_AGENT_BILLING_TOKEN`); throw→500→Stripe-retry.
+- **Seed** — superAdmin "Seed balances" action (idempotent `seed:<orgId>`) from the local wallet.
+- llm-agent side: `organisation:credit` action + `billingService` role (least privilege).
+- **OPS:** mint an AuthKey on a synthetic `billingService` user → polite-ai `LLM_AGENT_BILLING_TOKEN`; run-verify
+  a Stripe test top-up + seed; remove `RATE_CARD` once all usage is stamped.
+
+## Phase 5 — deferred items, WIRED + unit-verified (2026-06-30, llm-agent `billing`)
+
+- **billingBlocked hot-path refusal** — `Call.start()` refuses an org with `billingBlocked=true` (code
+  `BILLING_BLOCKED`) before reserving concurrency.
+- **Nightly sweep trigger** — `POST /api/agent-db/sweep` (internal x-shared-token) runs `sweepUncostedRows`
+  in bounded batches; point a scheduler at it.
+- **Balance callbacks** — `lib/balance-callback.js` fires `balanceLow`/`balanceNegative`
+  (`Organisation.billingConfig {callbackUrl,hashKey,balanceLowPennies}`) edge-triggered from `settle()` via the
+  HMAC call-hook transport, with a basic SSRF guard (full DNS-rebind hardening across all webhooks = follow-up).
+- **Per-user rate override** — `users.rate_history` (schema **v47**); resolver prefers the user's rate over the
+  org's, settling the ORG balance.
+- **⚠️ schema v46→v47** (`users.rate_history`) — another `DB_FORCE_SYNC`.
+- **Still deferred:** agentless passthrough *product* (a feature, not wiring); full RATE_CARD removal.
+
+## What remains
+
+- **Phase 4 run-verification** (the live Stripe/balance flows) + the `billingService` AuthKey provisioning.
+- (Was Phase 4 — polite-ai): `dashboard.rates.tsx` (component-grid editor
   driven by `/api/rate-components`); retire the flat `RATE_CARD`; `Organisation.balance` becomes the
   spendable-funds SoT, Stripe top-up webhook credits it.
 - **Phase 5 — deferred**: balance callbacks (`balanceLow`/`balanceNegative`, model on `lib/call-hook.js`);
