@@ -5,14 +5,10 @@ import { isSafeCallbackUrl, signBalanceCallback, maybeFireBalanceCallbacks } fro
 
 const quietLog = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, child() { return quietLog; } };
 
-function stubFetch() {
-  const calls = [];
-  global.fetch = async (url, opts) => {
-    calls.push({ url, body: JSON.parse(opts.body) });
-    return { ok: true, status: 200, text: async () => '' };
-  };
-  return calls;
-}
+// Inject a capturing `send` so the edge-detection logic is tested in isolation,
+// without going through sendCallHook's DNS/SSRF layer (which has its own test).
+const fire = (org, prev, next, calls) =>
+  maybeFireBalanceCallbacks(org, prev, next, { log: quietLog, send: async ({ callHook, payload }) => calls.push({ url: callHook.url, body: payload }) });
 
 const cfg = { callbackUrl: 'https://hooks.example.com/billing', hashKey: 'secret', balanceLowPennies: 100 };
 const org = (over = {}) => ({ id: 'org-1', billingConfig: cfg, ...over });
@@ -37,39 +33,36 @@ describe('balance-callback', () => {
   });
 
   it('fires balanceLow only when a settle CROSSES the low threshold', async () => {
-    const calls = stubFetch();
-    // 200p -> 50p crosses 100p low.
-    await maybeFireBalanceCallbacks(org(), 2_000_000, 500_000, { log: quietLog });
+    const calls = [];
+    await fire(org(), 2_000_000, 500_000, calls); // 200p -> 50p crosses 100p low
     expect(calls).toHaveLength(1);
     expect(calls[0].body.event).toBe('balanceLow');
     expect(calls[0].body.balancePennies).toBe(50);
     expect(calls[0].body.thresholdPennies).toBe(100);
     expect(typeof calls[0].body.hash).toBe('string');
 
-    // 200p -> 150p stays above the low → no fire.
-    const calls2 = stubFetch();
-    await maybeFireBalanceCallbacks(org(), 2_000_000, 1_500_000, { log: quietLog });
+    const calls2 = [];
+    await fire(org(), 2_000_000, 1_500_000, calls2); // 200p -> 150p stays above the low
     expect(calls2).toHaveLength(0);
   });
 
   it('fires balanceNegative when crossing zero', async () => {
-    const calls = stubFetch();
-    await maybeFireBalanceCallbacks(org(), 500_000, -100_000, { log: quietLog });
-    const events = calls.map((c) => c.body.event);
-    expect(events).toContain('balanceNegative');
+    const calls = [];
+    await fire(org(), 500_000, -100_000, calls);
+    expect(calls.map((c) => c.body.event)).toContain('balanceNegative');
   });
 
   it('does not fire without config, on an increase, or for an unsafe URL', async () => {
-    let calls = stubFetch();
-    await maybeFireBalanceCallbacks({ id: 'o', billingConfig: null }, 2_000_000, 0, { log: quietLog });
-    expect(calls).toHaveLength(0);
+    const a = [];
+    await fire({ id: 'o', billingConfig: null }, 2_000_000, 0, a);
+    expect(a).toHaveLength(0);
 
-    calls = stubFetch();
-    await maybeFireBalanceCallbacks(org(), 0, 2_000_000, { log: quietLog }); // increase
-    expect(calls).toHaveLength(0);
+    const b = [];
+    await fire(org(), 0, 2_000_000, b); // increase
+    expect(b).toHaveLength(0);
 
-    calls = stubFetch();
-    await maybeFireBalanceCallbacks(org({ billingConfig: { ...cfg, callbackUrl: 'http://127.0.0.1/x' } }), 2_000_000, -1, { log: quietLog });
-    expect(calls).toHaveLength(0);
+    const c = [];
+    await fire(org({ billingConfig: { ...cfg, callbackUrl: 'http://127.0.0.1/x' } }), 2_000_000, -1, c);
+    expect(c).toHaveLength(0);
   });
 });
