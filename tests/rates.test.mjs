@@ -285,6 +285,27 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(43_000_000);
   });
 
+  it('RateCard is immutable once referenced; cosmetic edits + unreferenced cards are free', async () => {
+    const startDate = new Date('2026-01-01Z');
+    await RateCard.create({ name: `${PREFIX}imm`, startDate, detail: { lines: [] } });
+    await RateCard.create({ name: `${PREFIX}free`, startDate, detail: { lines: [] } });
+    // A costed usage row pins the referenced card (rateName + rateCardStart).
+    await mkRow({ rateName: `${PREFIX}imm`, rateCardStart: startDate, costMicros: 1, costStatus: 'matched' });
+
+    // Each fetch is a fresh instance (clean changed-state), as a real API request is.
+    const imm = () => RateCard.findOne({ where: { name: `${PREFIX}imm` } });
+    const free = () => RateCard.findOne({ where: { name: `${PREFIX}free` } });
+
+    await expect((await imm()).update({ detail: { lines: [{ dim: 'model', match: {}, unit: 'minute', priceMicros: 1 }] } }))
+      .rejects.toThrow(/immutable once referenced/);
+    await expect((await imm()).update({ startDate: new Date('2026-02-01Z') })).rejects.toThrow(/immutable/);
+    // Cosmetic edit on the referenced card is allowed.
+    await expect((await imm()).update({ description: 'note' })).resolves.toBeTruthy();
+    // The unreferenced card can have its pricing edited freely.
+    await expect((await free()).update({ detail: { lines: [{ dim: 'model', match: {}, unit: 'minute', priceMicros: 5 }] } }))
+      .resolves.toBeTruthy();
+  });
+
   it('finaliseSession costs the session’s finalised text rows', async () => {
     const name = `${PREFIX}text`;
     await assignRate(name, [
