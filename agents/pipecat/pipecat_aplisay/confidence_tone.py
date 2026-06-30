@@ -82,7 +82,11 @@ _HANDOVER_MAX_SECS = 25.0
 # tables without any change to the agent-facing config. Keep these maps in sync
 # with the LiveKit worker (agents/livekit/lib/confidence-tone.ts) and the
 # validation in lib/database.js.
-_FREQUENCY_HZ = {"low": 350.0, "medium": 425.0, "high": 550.0}
+# NB: avoid telephony call-progress frequencies — 425 Hz (the old ``medium``)
+# is the UK/EU network dial/busy/ring tone, a poor "still connected" signal —
+# and the DTMF bands (697-941 / 1209-1633). 523/587/659 sit clear of both.
+# Keep in sync with agents/livekit/lib/confidence-tone.ts.
+_FREQUENCY_HZ = {"low": 523.0, "medium": 587.0, "high": 659.0}
 _LENGTH_MS = {"short": 150, "medium": 250, "long": 400}
 # ``medium`` of everything is the discreet UK-style comfort beep.
 _VOLUME = {"low": 0.08, "medium": 0.15, "high": 0.30}  # linear amplitude, 0..1
@@ -95,11 +99,11 @@ class ToneConfig:
     Not the public interface — :func:`tone_config_from_options` maps the
     coarse ``options.transferTone`` shorthand (``frequency``/``length``/
     ``volume`` enums + ``gapMs``/``graceMs``) onto these numeric values. The
-    defaults give a discreet UK-style comfort beep: a 250 ms 425 Hz burst
+    defaults give a discreet comfort beep: a 250 ms 587 Hz burst
     every ~3 s at low volume.
     """
 
-    frequency: float = 425.0  # Hz (from the `frequency` enum)
+    frequency: float = 587.0  # Hz (from the `frequency` enum)
     on_ms: int = 250  # burst length (from the `length` enum)
     off_ms: int = 2750  # silence between bursts (from `gapMs`)
     volume: float = _VOLUME["medium"]  # linear amplitude, 0..1 (from the `volume` enum)
