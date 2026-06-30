@@ -6,11 +6,13 @@ harness test-agent (`/Users/rob/test-agent`, branched off `agent-set-experiment`
 
 ## TL;DR
 
-**Phase 0 (schema) + Phase 1 (capture)** are **code-complete and unit-verified**. Phase 1 means: every
-priced component (voice/audio-path, LLM tokens, TTS chars+ms, STT chars+ms) is metered with the **real
-vendor**, the **media** (webrtc/telephony), and a **billedAt** anchor, across llm-agent + the LiveKit and
-Pipecat workers, plus an eval harness that asserts it on real calls. **Phases 2–5 remain** (costing engine,
-admin API/RBAC, polite-ai UI, deferred items).
+**Phase 0 (schema) + Phase 1 (capture, + 2026-06-30 hardening) + Phase 2 (costing engine)** are
+**code-complete and unit-verified**. Phase 1: every priced component (voice/audio-path, LLM tokens, TTS
+chars+ms, STT chars+ms) is metered with the **real vendor**, the **media** (webrtc/telephony), and a
+**billedAt** anchor, across llm-agent + the LiveKit and Pipecat workers, plus an eval harness that asserts it
+on real calls. Phase 2: `lib/rates.js` values each finalised row against the org's effective `RateCard`
+(additive-by-dimension, frozen cost-at-write) and settles `Organisation.balance`, wired into the meter choke
+points (inert until Phase 3 assigns rates). **Phases 3–5 remain** (admin API/RBAC, polite-ai UI, deferred).
 
 **⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the migration (now schemaVersion 45).** The model references
 columns an un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …); on such a DB every full-model
@@ -60,7 +62,9 @@ booted with `DB_FORCE_SYNC=true`.
 
 - **llm-agent DB tests** (need the `tests-postgres-test-1` container; PG15 :5433, db `llmvoicetest`/`testuser`; it auto-syncs v44):
   `LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --coverage=false <file>`
-  — usage-call-minutes, usage-model, usage-api, agent-db-usage, rate-card-model → **27 green**.
+  — usage-call-minutes, usage-model, usage-api, agent-db-usage, rate-card-model, **rates** →
+  **51 green** (run the DB set with `--runInBand`: the suites share one PG connection and flake on parallel
+  teardown). `tests/rates.test.mjs` (21) covers the Phase-2 resolver/settle/costUsageRow/sweep + immutability.
 - **Pipecat:** `cd agents/pipecat && uv run pytest` → **95 green** (incl. `tests/test_usage.py`).
 - **LiveKit:** `cd agents/livekit && node --import tsx --test test/usage-vendors.test.ts test/usage-meter.test.ts` → **9 green**; `npx tsup --clean` builds.
 - **test-agent:** `cd /Users/rob/test-agent && npx vitest run src/eval/verify/usageLedger.test.ts` → **4 green**.
@@ -102,13 +106,32 @@ sample-agent or an env/flag to swap the tts/stt block alongside the model. Once 
 a migrated DB, the `usage ledger:` line should show `voice/llm/tts/stt` rows with **real vendors**
 (`openai`/`cartesia`/`deepgram`) = R3 working.
 
+## Phase 2 — costing engine: DONE + unit-verified (2026-06-30, `billing`)
+
+New **`lib/rates.js`** (cost-at-write / frozen); 21 tests in `tests/rates.test.mjs` (run serially —
+`--runInBand`; the DB suites share one PG connection so parallel runs flake on teardown):
+- **`resolveRowCost`** — additive-by-dimension resolver: most-specific matching line WITHIN each dim
+  (`audio-path | model | tts | stt`), SUM across. One minute-billed realtime `voice/ms` row prices on BOTH
+  audio-path (handler+media) and model (the model id in `detail`). **The model dimension matches on `detail`,
+  NOT `provider`** (a realtime voice row's provider is the handler, `livekit`) — corrects the §3.1 example.
+- **`toLineUnits`** (ms/seconds→minute; tokens/chars 1:1), **`resolveOrgRateName`** / **`resolveRateCard`** /
+  **`resolveBilledAt`** (two-level temporal: `org.rateHistory@billedAt` → `RateCard` effective@billedAt).
+- **`settle`** — atomic `balance -= (costMicros − appliedCostMicros)`, then `appliedCostMicros = costMicros`
+  (idempotent + convergent: reflush / sweep / re-cost never double-apply; null balance = untracked, skipped).
+- **`costUsageRow`** — never-throw orchestrator: stamps `billedAt`/`costMicros`/`currency`/`rateName`/
+  `rateCardStart`/`costStatus` (`matched`/`no_rate`/`no_line`/`errored`) + per-line breakdown in `metadata`;
+  settles. A resolver throw → `costStatus='errored'`, quantity untouched.
+- **Trigger wiring** (cost-at-finalisation, isolated from the meter write): `lib/usage.js` `recordUsage`
+  (finalised rows) + `finaliseSession` (session-end); `lib/database.js` `recordUsageMinutes` at `Call.end()`
+  (lazy `import('./rates.js')` avoids a module cycle). Inert until Phase 3 assigns rates (`no_rate`).
+- **Immutability guard** — `RateCard` `beforeUpdate` rejects pricing edits once a usage row references it
+  (supersede via a new later-`startDate` card); cosmetic edits free.
+- **`sweepUncostedRows`** — reconciliation: costs finalised rows that are uncosted / `no_rate` / `errored`
+  (backfill + retry + re-cost-on-correction); frozen `matched` rows untouched. **Nightly trigger
+  (scheduler → admin endpoint) lands in Phase 3.**
+
 ## What remains (next phases — see the plan for full detail)
 
-- **Phase 2 — costing engine** (llm-agent, new `lib/rates.js`): additive-by-dimension resolver
-  (audio-path | model | tts | stt; most-specific line WITHIN each dimension; SUM across), `billedAt`
-  resolution, two-level temporal lookup (`org.rateHistory` → `RateCard` effective@billedAt), `settle()`
-  (atomic delta-decrement of `Organisation.balance` via `appliedCostMicros`), never-throw
-  cost-at-finalisation hooked in `lib/usage.js` + a nightly reconciliation sweep. **Fully unit-testable.**
 - **Phase 3 — admin API + RBAC**: `rate` permission resource + `organisation:setRate`; `/api/rates` CRUD;
   `/api/rate-components` (env-independent atomic catalogue); `/api/organisations/{id}/{rate-history,balance,balance/credit}`;
   add `cost` to `/api/usage`.
