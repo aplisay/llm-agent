@@ -12,7 +12,10 @@ chars+ms, STT chars+ms) is metered with the **real vendor**, the **media** (webr
 **billedAt** anchor, across llm-agent + the LiveKit and Pipecat workers, plus an eval harness that asserts it
 on real calls. Phase 2: `lib/rates.js` values each finalised row against the org's effective `RateCard`
 (additive-by-dimension, frozen cost-at-write) and settles `Organisation.balance`, wired into the meter choke
-points (inert until Phase 3 assigns rates). **Phases 3–5 remain** (admin API/RBAC, polite-ai UI, deferred).
+points. Phase 3: admin API + RBAC — `/api/rates` CRUD, `/api/rate-components` catalogue,
+`/api/organisations/{id}/{rate-history,balance,balance/credit}` (idempotent Stripe-top-up seam, schema v46),
+and `cost` in `/api/usage`. **Phases 4–5 remain** (polite-ai UI + billing rewire; deferred items —
+incl. the nightly-sweep scheduler trigger).
 
 **⚠️ BEFORE CAPTURE WORKS AGAINST ANY DB: run the migration (now schemaVersion 45).** The model references
 columns an un-migrated DB lacks (`billed_at`, `media`, `cost_micros`, …); on such a DB every full-model
@@ -62,9 +65,11 @@ booted with `DB_FORCE_SYNC=true`.
 
 - **llm-agent DB tests** (need the `tests-postgres-test-1` container; PG15 :5433, db `llmvoicetest`/`testuser`; it auto-syncs v44):
   `LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --coverage=false <file>`
-  — usage-call-minutes, usage-model, usage-api, agent-db-usage, rate-card-model, **rates** →
-  **51 green** (run the DB set with `--runInBand`: the suites share one PG connection and flake on parallel
-  teardown). `tests/rates.test.mjs` (21) covers the Phase-2 resolver/settle/costUsageRow/sweep + immutability.
+  — usage-call-minutes, usage-model, usage-api, agent-db-usage, rate-card-model, rates, **rates-api,
+  rate-components, balance-api, rbac-permissions** → **105 green** (run the DB set with `--runInBand`: the
+  suites share one PG connection and flake on parallel teardown). Phase-2 engine: `tests/rates.test.mjs` (21);
+  Phase-3 API: rates-api (CRUD), rate-components (catalogue), balance-api (rate-history/balance/credit + money
+  scale).
 - **Pipecat:** `cd agents/pipecat && uv run pytest` → **95 green** (incl. `tests/test_usage.py`).
 - **LiveKit:** `cd agents/livekit && node --import tsx --test test/usage-vendors.test.ts test/usage-meter.test.ts` → **9 green**; `npx tsup --clean` builds.
 - **test-agent:** `cd /Users/rob/test-agent && npx vitest run src/eval/verify/usageLedger.test.ts` → **4 green**.
@@ -127,14 +132,30 @@ New **`lib/rates.js`** (cost-at-write / frozen); 21 tests in `tests/rates.test.m
 - **Immutability guard** — `RateCard` `beforeUpdate` rejects pricing edits once a usage row references it
   (supersede via a new later-`startDate` card); cosmetic edits free.
 - **`sweepUncostedRows`** — reconciliation: costs finalised rows that are uncosted / `no_rate` / `errored`
-  (backfill + retry + re-cost-on-correction); frozen `matched` rows untouched. **Nightly trigger
-  (scheduler → admin endpoint) lands in Phase 3.**
+  (backfill + retry + re-cost-on-correction); frozen `matched` rows untouched. Nightly trigger
+  (scheduler → admin endpoint) still TODO.
+
+## Phase 3 — admin API + RBAC: DONE + unit-verified (2026-06-30, `billing`)
+
+- **RBAC** — new `rate` resource (read/readAll/create/update/delete) + `organisation:setRate`, superAdmin-only.
+- **`/api/rates`** (list/create) + **`/api/rates/{id}`** (get/update/delete), gated on `rate`. Honours the
+  invariants: per-name overlap → 409, immutable-once-referenced → 409 on edit, referenced → 409 on delete.
+  `validateRateLines` (lib/rates.js) structural gate.
+- **`/api/rate-components`** — env-independent priceable-component catalogue (lib/rate-components.js) from the
+  handler registry + metered TTS/STT engines: audio-path(handler×media + bridged sentinel) / model(Ultravox
+  minute on voice `detail`, else token on llm rows) / tts / stt, each with a match TEMPLATE + billing units.
+- **`/api/organisations/{id}/rate-history`** (GET; PUT assign super-only, validated sorted/no-dup/covering-card),
+  **`/balance`** (GET pennies, `usage:read`, own-org), **`/balance/credit`** (POST idempotent Stripe-top-up seam
+  — `idempotencyKey` UNIQUE via the new **`balance_credits`** table (schema **v46**), credit+bump in one txn,
+  dup key = idempotent success, other failure = 500-for-Stripe-retry, first credit null→tracked via COALESCE).
+- **`cost` in `/api/usage`** — `SUM(cost_micros)` + explicit `uncostedMeters` + `currency`/`rateName` dims,
+  bucketed on `billedAt`.
+- **Money helper** (lib/rates.js): `penniesToMicros`/`microsToPennies` at the 1e4 scale (micro-pence internal,
+  pennies at the API edge).
+- **⚠️ schema v45→v46** (the `balance_credits` table) — needs one `DB_FORCE_SYNC` deploy.
 
 ## What remains (next phases — see the plan for full detail)
 
-- **Phase 3 — admin API + RBAC**: `rate` permission resource + `organisation:setRate`; `/api/rates` CRUD;
-  `/api/rate-components` (env-independent atomic catalogue); `/api/organisations/{id}/{rate-history,balance,balance/credit}`;
-  add `cost` to `/api/usage`.
 - **Phase 4 — polite-ai** (`/Users/rob/Aplisay/code/polite-ai`): `dashboard.rates.tsx` (component-grid editor
   driven by `/api/rate-components`); retire the flat `RATE_CARD`; `Organisation.balance` becomes the
   spendable-funds SoT, Stripe top-up webhook credits it.
