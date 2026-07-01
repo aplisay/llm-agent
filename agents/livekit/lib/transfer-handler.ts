@@ -1073,9 +1073,13 @@ async function finaliseConsultativeTransfer(
   try {
     const transferTargetIdentity = "transfer-target";
 
-    // Clear the in-progress flag and update state
+    // Clear the in-progress flag. NOTE: do NOT mark the transfer "none"/completed
+    // here — that must only happen AFTER the underlying REFER/move actually
+    // succeeds (below). Setting it up-front means transfer_status reports success
+    // while the REFER is still in flight (or about to 408), so the middle agent
+    // tells the caller they are connected when they are not. On any failure the
+    // outer catch sets "failed"; each success branch sets "none" once it is real.
     setConsultInProgress(false);
-    setTransferState("none", "Transfer completed successfully");
 
     // Stop the TransferAgent bot and flush + end the consult CALL RECORD. This is
     // DB/bookkeeping only — it does NOT touch the consult SIP dialog or room. Kept
@@ -1210,6 +1214,12 @@ async function finaliseConsultativeTransfer(
         }
       }
 
+      // The REFER completed — either cleanly, or with a known false-failure we
+      // swallowed above; a real failure (e.g. 408) would have re-thrown to the
+      // outer catch. Only NOW is the caller actually handed to the target, so
+      // this is the first point it is correct to report the transfer complete.
+      setTransferState("none", "Transfer completed successfully");
+
       // Cleanup only AFTER the REFER — by now the Replaces has taken over (and
       // BYE'd) the consult dialog, or the caller has left. Best-effort; may race
       // the caller-disconnect shutdown, which is fine since the record is ended.
@@ -1231,6 +1241,9 @@ async function finaliseConsultativeTransfer(
       await deleteConsultationRoom();
 
       await finaliseBridgedCallFn();
+
+      // Target is in the caller room and the bridged tail is live: complete.
+      setTransferState("none", "Transfer completed successfully");
     }
 
     return {

@@ -60,11 +60,16 @@ export async function transferParticipant(
     transferUri += `?Replaces=${encodeURIComponent(replaces)}`;
   }
 
+  // NB: we deliberately do NOT send `Refer-Sub: false` / `Supported: norefersub`.
+  // Keeping the implicit RFC 3515 REFER subscription means the far end
+  // (carrier/PBX) NOTIFYs us the transfer outcome as a sipfrag, so LiveKit can
+  // observe the real result of the referred INVITE instead of only inferring
+  // success from the caller leg leaving the room. This is what surfaces, e.g., a
+  // carrier accepting the REFER ("202") and then failing the ?Replaces swap —
+  // which otherwise looks identical to "still in progress" until we time out.
   const sipTransferOptions = {
     playDialtone: false,
     headers: {
-      "Refer-Sub": "false",
-      "Supported": "norefersub",
       ...(callerId ? { "X-Aplisay-Origin-Caller-Id": callerId } : {}),
       ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
     },
