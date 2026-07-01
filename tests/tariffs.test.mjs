@@ -4,7 +4,8 @@ import {
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import {
-  normaliseDestination, callingCodeFor, longestPrefixMatch, destinationCostMicros,
+  normaliseDestination, callingCodeFor, longestPrefixMatch, computeDestinationCost,
+  isPeak, roundUpSeconds, validateSchedule,
   validatePrefixes, validateTariffInput, resolveTariff, matchTariffPrefix, isTariffReferenced,
 } from '../lib/tariffs.js';
 
@@ -48,24 +49,63 @@ describe('tariff core (pure)', () => {
     expect(longestPrefixMatch('33123456', deck)).toBeNull();                 // no prefix matches
   });
 
-  it('destinationCostMicros = connect + perMinute × minutes', () => {
-    expect(destinationCostMicros({ connectMicros: 50_000, perMinuteMicros: 20_000 }, 2.5)).toBe(100_000);
-    expect(destinationCostMicros({ connectMicros: 0, perMinuteMicros: 80_000 }, 3)).toBe(240_000);
-    expect(destinationCostMicros(null, 5)).toBe(0);
+  it('rounds duration UP to the next 6-second increment', () => {
+    expect(roundUpSeconds(0, 6)).toBe(0);
+    expect(roundUpSeconds(1, 6)).toBe(6);
+    expect(roundUpSeconds(6, 6)).toBe(6);
+    expect(roundUpSeconds(7, 6)).toBe(12);
+    expect(roundUpSeconds(61, 6)).toBe(66);
   });
 
-  it('validates prefix decks and tariff input', () => {
-    expect(validatePrefixes([{ prefix: '447', connectMicros: 0, perMinuteMicros: 20000 }])).toBeNull();
-    expect(validatePrefixes([{ prefix: '44a', connectMicros: 0, perMinuteMicros: 0 }])).toMatch(/1-15 digits/);
-    expect(validatePrefixes([{ prefix: '44', connectMicros: 0, perMinuteMicros: 0 }, { prefix: '44', connectMicros: 1, perMinuteMicros: 1 }])).toMatch(/duplicate/);
-    expect(validatePrefixes([{ prefix: '44', connectMicros: -1, perMinuteMicros: 0 }])).toMatch(/connectMicros/);
+  it('isPeak evaluates the schedule in the tariff timezone (peak = window, off-peak = complement)', () => {
+    // Magrathea: peak 08:00–18:00 Mon–Fri Europe/London. 2026-01-05 is a Monday (GMT).
+    const sched = {
+      mon: { start: '08:00', end: '18:00' }, tue: { start: '08:00', end: '18:00' },
+      wed: { start: '08:00', end: '18:00' }, thu: { start: '08:00', end: '18:00' },
+      fri: { start: '08:00', end: '18:00' }, sat: null, sun: null,
+    };
+    expect(isPeak(new Date('2026-01-05T10:00:00Z'), 'Europe/London', sched)).toBe(true);   // Mon 10:00 GMT
+    expect(isPeak(new Date('2026-01-05T07:59:00Z'), 'Europe/London', sched)).toBe(false);  // before 08:00
+    expect(isPeak(new Date('2026-01-05T18:30:00Z'), 'Europe/London', sched)).toBe(false);  // after 18:00
+    expect(isPeak(new Date('2026-01-10T10:00:00Z'), 'Europe/London', sched)).toBe(false);  // Saturday
+    // DST: 2026-07-06 Mon 09:00 local = 08:00 UTC (BST) — must be peak via the timezone.
+    expect(isPeak(new Date('2026-07-06T08:00:00Z'), 'Europe/London', sched)).toBe(true);
+  });
+
+  it('computeDestinationCost = callStart + connect + perMinute(peak?) × roundUp(duration)', () => {
+    const tariff = {
+      timezone: 'Europe/London', callStartMicros: 1_000, roundingSeconds: 6,
+      schedule: { mon: { start: '08:00', end: '18:00' } },
+    };
+    const prefix = { connectMicros: 50_000, peakPerMinuteMicros: 120_000, offPeakPerMinuteMicros: 60_000 };
+    // Mon 10:00 GMT → peak; 61s → rounds to 66s = 1.1 min → 1_000 + 50_000 + 120_000×1.1 = 183_000.
+    const peak = computeDestinationCost(tariff, prefix, { billedAt: new Date('2026-01-05T10:00:00Z'), durationMs: 61_000 });
+    expect(peak.peak).toBe(true);
+    expect(peak.billedSeconds).toBe(66);
+    expect(peak.costMicros).toBe(1_000 + 50_000 + 132_000);
+    // Saturday → off-peak; 30s → rounds to 30s = 0.5 min → 1_000 + 50_000 + 60_000×0.5 = 81_000.
+    const off = computeDestinationCost(tariff, prefix, { billedAt: new Date('2026-01-10T10:00:00Z'), durationMs: 30_000 });
+    expect(off.peak).toBe(false);
+    expect(off.costMicros).toBe(1_000 + 50_000 + 30_000);
+  });
+
+  it('validates prefix decks, schedule and tariff input', () => {
+    const good = { connectMicros: 0, peakPerMinuteMicros: 20000, offPeakPerMinuteMicros: 10000 };
+    expect(validatePrefixes([{ prefix: '447', ...good }])).toBeNull();
+    expect(validatePrefixes([{ prefix: '44a', ...good }])).toMatch(/1-15 digits/);
+    expect(validatePrefixes([{ prefix: '44', ...good }, { prefix: '44', ...good }])).toMatch(/duplicate/);
+    expect(validatePrefixes([{ prefix: '44', ...good, offPeakPerMinuteMicros: -1 }])).toMatch(/offPeakPerMinuteMicros/);
+    expect(validateSchedule({ mon: { start: '08:00', end: '18:00' }, sat: null })).toBeNull();
+    expect(validateSchedule({ funday: { start: '08:00', end: '18:00' } })).toMatch(/unknown weekday/);
+    expect(validateSchedule({ mon: { start: '18:00', end: '08:00' } })).toMatch(/start must be <= end/);
     expect(validateTariffInput({ name: '', startDate: '2026-01-01' })).toMatch(/name/);
-    expect(validateTariffInput({ name: 'x', startDate: '2026-01-01', defaultCountry: 'ZZ' })).toMatch(/calling code/);
-    expect(validateTariffInput({ name: 'x', startDate: '2026-01-01', defaultCountry: 'GB', prefixes: [] })).toBeNull();
+    expect(validateTariffInput({ name: 'x', startDate: '2026-01-01', timezone: 'Mars/Olympus' })).toMatch(/not a valid IANA/);
+    expect(validateTariffInput({ name: 'x', startDate: '2026-01-01', callStartMicros: -1 })).toMatch(/callStartMicros/);
+    expect(validateTariffInput({ name: 'x', startDate: '2026-01-01', timezone: 'Europe/London', schedule: {}, prefixes: [] })).toBeNull();
   });
 });
 
-describe('Tariff model (schema v48)', () => {
+describe('Tariff model (schema v51)', () => {
   beforeAll(async () => {
     await setupRealDatabase();
     await databaseStarted;
@@ -98,13 +138,13 @@ describe('Tariff model (schema v48)', () => {
     const name = `${PREFIX}deck`;
     const t = await mkTariff(name);
     await TariffPrefix.bulkCreate([
-      { tariffId: t.id, prefix: '44', connectMicros: 0, perMinuteMicros: 10_000 },
-      { tariffId: t.id, prefix: '447', connectMicros: 0, perMinuteMicros: 20_000 },
-      { tariffId: t.id, prefix: '447970', connectMicros: 50_000, perMinuteMicros: 80_000 },
+      { tariffId: t.id, prefix: '44', connectMicros: 0, peakPerMinuteMicros: 10_000, offPeakPerMinuteMicros: 5_000 },
+      { tariffId: t.id, prefix: '447', connectMicros: 0, peakPerMinuteMicros: 20_000, offPeakPerMinuteMicros: 10_000 },
+      { tariffId: t.id, prefix: '447970', connectMicros: 50_000, peakPerMinuteMicros: 80_000, offPeakPerMinuteMicros: 40_000 },
     ]);
     const m1 = await matchTariffPrefix(t.id, '4471234577');
     expect(m1.prefix).toBe('447');
-    expect(Number(m1.perMinuteMicros)).toBe(20_000);
+    expect(Number(m1.peakPerMinuteMicros)).toBe(20_000);
     const m2 = await matchTariffPrefix(t.id, '44797012234');
     expect(m2.prefix).toBe('447970');
     expect(Number(m2.connectMicros)).toBe(50_000);

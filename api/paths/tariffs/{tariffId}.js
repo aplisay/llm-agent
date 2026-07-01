@@ -51,6 +51,10 @@ export default function (logger) {
       name: body.name ?? tariff.name,
       startDate: body.startDate ?? tariff.startDate,
       defaultCountry: body.defaultCountry ?? tariff.defaultCountry,
+      timezone: body.timezone ?? tariff.timezone,
+      schedule: body.schedule ?? tariff.schedule,
+      callStartMicros: body.callStartMicros ?? tariff.callStartMicros,
+      roundingSeconds: body.roundingSeconds ?? tariff.roundingSeconds,
       prefixes: hasPrefixes ? body.prefixes : null,
     });
     if (err) return res.status(400).send({ message: err });
@@ -64,7 +68,7 @@ export default function (logger) {
       });
     }
 
-    const EDITABLE = ['name', 'startDate', 'endDate', 'currency', 'defaultCountry', 'description'];
+    const EDITABLE = ['name', 'startDate', 'endDate', 'currency', 'defaultCountry', 'timezone', 'schedule', 'callStartMicros', 'roundingSeconds', 'description'];
     try {
       await Tariff.sequelize.transaction(async (transaction) => {
         for (const k of EDITABLE) if (k in body) tariff[k] = body[k];
@@ -77,7 +81,8 @@ export default function (logger) {
                 tariffId: tariff.id,
                 prefix: String(p.prefix),
                 connectMicros: Math.round(Number(p.connectMicros) || 0),
-                perMinuteMicros: Math.round(Number(p.perMinuteMicros) || 0),
+                peakPerMinuteMicros: Math.round(Number(p.peakPerMinuteMicros) || 0),
+                offPeakPerMinuteMicros: Math.round(Number(p.offPeakPerMinuteMicros) || 0),
                 label: p.label ?? null,
               })),
               { transaction },

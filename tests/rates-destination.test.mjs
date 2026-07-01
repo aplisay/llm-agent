@@ -36,9 +36,10 @@ describe('destination dimension (D2)', () => {
     // Tariff: 44 → 1p/min (no connect); 447970 → 5p connect + 8p/min.
     const tariff = await Tariff.create({ name: tariffName, startDate: START });
     tariffId = tariff.id;
+    // peak == off-peak here (no schedule) so the cost math is time-independent.
     await TariffPrefix.bulkCreate([
-      { tariffId, prefix: '44', connectMicros: 0, perMinuteMicros: 100_000 },
-      { tariffId, prefix: '447970', connectMicros: 500_000, perMinuteMicros: 800_000 },
+      { tariffId, prefix: '44', connectMicros: 0, peakPerMinuteMicros: 100_000, offPeakPerMinuteMicros: 100_000 },
+      { tariffId, prefix: '447970', connectMicros: 500_000, peakPerMinuteMicros: 800_000, offPeakPerMinuteMicros: 800_000 },
     ]);
     // Rate card: bridged audio-path 2p/min + a destination line → the tariff.
     await RateCard.create({

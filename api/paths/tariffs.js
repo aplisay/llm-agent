@@ -46,14 +46,18 @@ export default function (logger) {
     if (!requirePermission(res, 'tariff', 'create')) return;
     const {
       name, startDate, endDate = null, currency = 'gbp', defaultCountry = 'GB',
+      timezone = 'Europe/London', schedule = {}, callStartMicros = 0, roundingSeconds = 6,
       description = null, prefixes = [],
     } = req.body || {};
-    const err = validateTariffInput({ name, startDate, defaultCountry, prefixes });
+    const err = validateTariffInput({ name, startDate, defaultCountry, timezone, schedule, callStartMicros, roundingSeconds, prefixes });
     if (err) return res.status(400).send({ message: err });
     try {
       const created = await Tariff.sequelize.transaction(async (transaction) => {
         const tariff = await Tariff.create({
-          name, startDate, endDate, currency, defaultCountry, description,
+          name, startDate, endDate, currency, defaultCountry, timezone, schedule,
+          callStartMicros: Math.round(Number(callStartMicros) || 0),
+          roundingSeconds: Math.round(Number(roundingSeconds) || 6),
+          description,
           createdBy: res.locals.user?.id ?? null,
         }, { transaction });
         if (prefixes.length) {
@@ -62,7 +66,8 @@ export default function (logger) {
               tariffId: tariff.id,
               prefix: String(p.prefix),
               connectMicros: Math.round(Number(p.connectMicros) || 0),
-              perMinuteMicros: Math.round(Number(p.perMinuteMicros) || 0),
+              peakPerMinuteMicros: Math.round(Number(p.peakPerMinuteMicros) || 0),
+              offPeakPerMinuteMicros: Math.round(Number(p.offPeakPerMinuteMicros) || 0),
               label: p.label ?? null,
             })),
             { transaction },
@@ -99,17 +104,22 @@ export default function (logger) {
               endDate: { type: 'string', format: 'date-time', nullable: true },
               currency: { type: 'string', default: 'gbp' },
               defaultCountry: { type: 'string', default: 'GB', description: 'ISO-3166 alpha-2 home country for normalising local-format numbers.' },
+              timezone: { type: 'string', default: 'Europe/London', description: 'IANA timezone the peak schedule is evaluated in.' },
+              schedule: { type: 'object', description: 'Per-weekday peak window { mon:{start,end}|null, ... }; off-peak is the complement.' },
+              callStartMicros: { type: 'integer', default: 0, description: 'Flat per-call start cost (micro-pence) on every billed call.' },
+              roundingSeconds: { type: 'integer', default: 6, description: 'Duration round-up granularity (seconds).' },
               description: { type: 'string', nullable: true },
               prefixes: {
                 type: 'array',
-                description: 'Prefix deck: each { prefix (intl digits), connectMicros, perMinuteMicros, label? }.',
+                description: 'Prefix deck: each { prefix (intl digits), connectMicros, peakPerMinuteMicros, offPeakPerMinuteMicros, label? } — micro-pence.',
                 items: {
                   type: 'object',
                   required: ['prefix'],
                   properties: {
                     prefix: { type: 'string' },
                     connectMicros: { type: 'integer', default: 0 },
-                    perMinuteMicros: { type: 'integer', default: 0 },
+                    peakPerMinuteMicros: { type: 'integer', default: 0 },
+                    offPeakPerMinuteMicros: { type: 'integer', default: 0 },
                     label: { type: 'string', nullable: true },
                   },
                 },
