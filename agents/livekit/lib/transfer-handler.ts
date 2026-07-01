@@ -668,8 +668,34 @@ async function startConsultativeTransfer(
     // never covered the dial — and never played at all when the dial failed.)
     context.setTransferState("dialling", "Dialling transfer target...");
 
+    // Holds the consult target across the attribute-sync listener below and the
+    // dial. Starts null so the listener's `&& transferTargetParticipant` guard
+    // no-ops until the dial assigns it (avoids a temporal-dead-zone error).
+    let transferTargetParticipant: any = null;
+
+    // The Aplisay B2BUA reflects the gateway-facing consult dialog's RFC 3891
+    // Replaces back to us on the consult leg as the X-Aplisay-Refer-Replaces
+    // header (surfaced as sip.h.x-aplisay-refer-replaces once
+    // includeHeaders=SIP_ALL_HEADERS is set on the dial). It can arrive on a
+    // post-answer dialog refresh, after the initial 200 OK snapshot, so also
+    // catch it here. finaliseConsultativeTransfer uses it to build the ?Replaces
+    // on the caller's REFER so the target is not rung twice (attended transfer).
+    // See aplisay-b2bua/freeswitch/scripts/refer_reflect.lua.
+    consultRoom.on(
+      RoomEvent.ParticipantAttributesChanged,
+      (_changed: Record<string, string>, participant: any) => {
+        if (participant?.identity !== transferTargetIdentity) return;
+        const reflected = (participant?.attributes ?? {})[
+          "sip.h.x-aplisay-refer-replaces"
+        ];
+        if (reflected && transferTargetParticipant) {
+          transferTargetParticipant.referReplaces = reflected;
+        }
+      }
+    );
+
     // Dial transfer target into consultation room
-    const transferTargetParticipant = await dialTransferTargetToConsultation(
+    transferTargetParticipant = await dialTransferTargetToConsultation(
       consultRoomName,
       args.number,
       effectiveCallerId,
@@ -685,6 +711,40 @@ async function startConsultativeTransfer(
       context.registrationUsername,
     );
     setBridgedParticipant(transferTargetParticipant);
+
+    // Record the consult target so finaliseConsultativeTransfer can build the
+    // REFER ?Replaces from its dialog, and capture the consult leg's SIP dialog
+    // identifiers from the 200 OK headers (mapped to sip.h.* via
+    // includeHeaders=SIP_ALL_HEADERS): the B2BUA-reflected pre-assembled Replaces
+    // (X-Aplisay-Refer-Replaces) for the proxy path, plus the LiveKit-facing
+    // Call-ID/to-tag/from-tag as the SBC-path fallback.
+    context.setCurrentBridged(transferTargetParticipant);
+    try {
+      const targetParticipant = Array.from(
+        consultRoom.remoteParticipants.values()
+      ).find((p: any) => p?.identity === transferTargetIdentity);
+      const attrs = ((targetParticipant as any)?.attributes ?? {}) as Record<
+        string,
+        string
+      >;
+      const parseTag = (header?: string): string | undefined =>
+        header?.match(/;tag=([^;>\s]+)/i)?.[1];
+      const callIdFull = attrs["sip.callIDFull"] || attrs["sip.h.call-id"];
+      const toTag = parseTag(attrs["sip.h.to"]);
+      const fromTag = parseTag(attrs["sip.h.from"]);
+      const referReplaces = attrs["sip.h.x-aplisay-refer-replaces"];
+      if (callIdFull) transferTargetParticipant.callIdFull = callIdFull;
+      if (toTag) transferTargetParticipant.toTag = toTag;
+      if (fromTag) transferTargetParticipant.fromTag = fromTag;
+      if (referReplaces) transferTargetParticipant.referReplaces = referReplaces;
+      logger.info(
+        { consultRoomName, callIdFull, toTag, fromTag, referReplaces },
+        "consult target answered: captured SIP dialog tags for Replaces"
+      );
+    } catch (error) {
+      logger.error({ error }, "failed to capture consult target dialog tags");
+    }
+
     // Step 5: Create TransferAgent with conversation history
     const prevCtx = session.chatCtx;
     const ctxCopy = prevCtx.copy({
@@ -1017,8 +1077,54 @@ async function finaliseConsultativeTransfer(
     setConsultInProgress(false);
     setTransferState("none", "Transfer completed successfully");
 
+    // Stop the TransferAgent bot and flush + end the consult CALL RECORD. This is
+    // DB/bookkeeping only — it does NOT touch the consult SIP dialog or room. Kept
+    // separate from room teardown because on the REFER+Replaces path the consult
+    // dialog must stay alive until the caller's REFER (whose ?Replaces names that
+    // dialog) has been honoured by the carrier.
+    const endConsultationRecord = async () => {
+      if (transferSession) {
+        try {
+          transferSession.close();
+        } catch (e) {
+          logger.error({ e }, "failed to close transfer session");
+        }
+      }
+      const consultCall = getConsultCall();
+      if (consultCall) {
+        const consultMeter = consultUsageMeters.get(consultCall);
+        if (consultMeter) {
+          await consultMeter.flush(true);
+          consultUsageMeters.delete(consultCall);
+        }
+        await consultCall.end("Transfer completed");
+        logger.info(
+          { consultCallId: consultCall.id },
+          "ended consultation call"
+        );
+      }
+    };
+
+    // Delete the consult room (drops any remaining consult SIP leg). Best-effort.
+    const deleteConsultationRoom = async () => {
+      await deleteRoomWithRetry(consultRoomName);
+      logger.info({}, "consultation room cleaned up");
+    };
+
     if (useRefer) {
-      // Case 4: Use SIP REFER to transfer the original caller to the transfer target
+      // Case 4: SIP REFER the original caller to the transfer target (attended
+      // transfer when a Replaces token is available).
+      //
+      // End the consult call RECORD BEFORE the (blocking) REFER — transferParticipant
+      // does not return until the caller's SIP leg leaves the room, and the
+      // caller-disconnect graceful shutdown then races the record teardown
+      // (destroyInProgressTransfer no-ops because setConsultInProgress(false) ran
+      // above), which previously orphaned the consult record. BUT keep the consult
+      // SIP dialog ALIVE: the REFER carries ?Replaces naming the B2BUA<->carrier
+      // consult dialog, which the carrier can only honour while that dialog still
+      // exists — so the room is deleted AFTER the REFER, not before.
+      await endConsultationRecord();
+
       // Determine registrar and transport for the transfer
       let registrar: string | null = null;
       let transport: string | null = null;
@@ -1033,21 +1139,86 @@ async function finaliseConsultativeTransfer(
         );
       }
 
-      // Use SIP REFER to transfer the original participant to the transfer target
-      await transferParticipant(
-        room.name!,
-        participant.identity!,
-        args.number,
-        aplisayId!,
-        registrar,
-        transport,
-        callerId,
-        context.call?.id
-      );
+      // Build the RFC 3891 Replaces from the consult leg so the caller's endpoint
+      // replaces the consultation dialog instead of ringing the target again.
+      // Prefer the B2BUA-reflected value (correct for the proxy-refer path);
+      // otherwise fall back to the LiveKit-facing dialog tags (SBC path), then to
+      // a call-id-only Replaces, then to a plain REFER.
+      const consultTarget = context.getCurrentBridged();
+      const callId = consultTarget?.callIdFull || consultTarget?.sipCallId || null;
+      const toTag = consultTarget?.toTag || null;
+      const fromTag = consultTarget?.fromTag || null;
+      let replaces: string | null = null;
+      if (consultTarget?.referReplaces) {
+        replaces = consultTarget.referReplaces;
+        logger.info(
+          { referReplaces: replaces },
+          "using B2BUA-reflected RFC 3891 Replaces (gateway-facing consult dialog)"
+        );
+      } else if (callId && toTag && fromTag) {
+        replaces = `${callId};to-tag=${toTag};from-tag=${fromTag}`;
+        logger.info(
+          { callId, toTag, fromTag },
+          "built RFC 3891 Replaces from LiveKit-facing consult dialog tags"
+        );
+      } else if (callId) {
+        replaces = callId;
+        logger.warn(
+          { callId, toTag, fromTag },
+          "incomplete consult dialog tags; sending call-id-only Replaces (may be rejected upstream)"
+        );
+      } else {
+        logger.warn(
+          { consultTarget },
+          "no consult dialog id available; falling back to plain REFER without Replaces"
+        );
+      }
 
-      logger.info({}, "transfer executed via SIP REFER");
+      // Use SIP REFER to transfer the original participant to the transfer target.
+      // LiveKit can report a spurious failure even when the REFER actually
+      // completed (same race as handleBlindReferTransfer); swallow the known
+      // false-failures so a successful transfer is not marked as failed.
+      try {
+        await transferParticipant(
+          room.name!,
+          participant.identity!,
+          args.number,
+          aplisayId!,
+          registrar,
+          transport,
+          callerId,
+          context.call?.id,
+          replaces
+        );
+        logger.info(
+          { replaces },
+          "transfer executed via SIP REFER (+Replaces best-effort)"
+        );
+      } catch (referError: any) {
+        const e =
+          referError instanceof Error ? referError : new Error(String(referError));
+        if (
+          e.message?.includes("500: Internal Server Error") ||
+          e.message?.includes("twirp error unknown: participant does not exist")
+        ) {
+          logger.info(
+            { message: e.message, replaces },
+            "consult REFER reported failure but actually succeeded; continuing"
+          );
+        } else {
+          throw e;
+        }
+      }
+
+      // Cleanup only AFTER the REFER — by now the Replaces has taken over (and
+      // BYE'd) the consult dialog, or the caller has left. Best-effort; may race
+      // the caller-disconnect shutdown, which is fine since the record is ended.
+      await deleteConsultationRoom();
     } else {
-      // Case 3: Move transfer target from consultation room to caller room
+      // Case 3: Move the transfer target from the consultation room into the
+      // caller room. The target must still be present, so move FIRST, then tear
+      // the consultation down and emit the telephony:bridged-call child for the
+      // in-room caller<->target bridge.
       await roomService.moveParticipant(
         consultRoomName,
         transferTargetIdentity,
@@ -1055,40 +1226,10 @@ async function finaliseConsultativeTransfer(
       );
 
       logger.info({}, "transfer target moved to caller room");
-    }
 
-    // Step 3: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      transferSession.close();
-    }
+      await endConsultationRecord();
+      await deleteConsultationRoom();
 
-    // Step 4: Delete consultation room
-    await deleteRoomWithRetry(consultRoomName);
-
-
-    logger.info({}, "consultation room cleaned up");
-
-    // Step 5: End consultation call and create transaction logs for transcript
-    const consultCall = getConsultCall();
-    if (consultCall) {
-      // Flush the consult leg's accumulated usage before ending the call.
-      const consultMeter = consultUsageMeters.get(consultCall);
-      if (consultMeter) {
-        await consultMeter.flush(true);
-        consultUsageMeters.delete(consultCall);
-      }
-      await consultCall.end("Transfer completed");
-      logger.info({ consultCallId: consultCall.id }, "ended consultation call");
-    }
-
-    // Step 6: Finalize the call record.
-    // Only the bridge (moveParticipant) branch leaves the caller and target
-    // bridged INSIDE the LiveKit room, so only it should emit a
-    // telephony:bridged-call child. On the REFER branch the caller has been
-    // REFER'd out of the room (handed to the far end), so there is no in-room
-    // bridge; the original call is ended by the participant-disconnect handler
-    // when the REFER'd caller drops, exactly as the blind-REFER path relies on.
-    if (!useRefer) {
       await finaliseBridgedCallFn();
     }
 

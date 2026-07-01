@@ -19,6 +19,19 @@ export interface SipParticipant {
   participantIdentity: string;
   roomName: string;
   sipCallId: string;
+  // Full SIP dialog identifiers captured from the consult leg's 200 OK headers
+  // (via includeHeaders=SIP_ALL_HEADERS -> sip.h.*). Used to build an RFC 3891
+  // Replaces for the SBC (transparent-proxy) telephony path, where the dialog
+  // LiveKit sees is the same one the referred party will replace.
+  callIdFull?: string;
+  toTag?: string;
+  fromTag?: string;
+  // Pre-assembled RFC 3891 Replaces ("call-id;to-tag=...;from-tag=...") reflected
+  // back by the Aplisay B2BUA on its gateway-facing consult leg, via the
+  // X-Aplisay-Refer-Replaces header (surfaced as sip.h.x-aplisay-refer-replaces).
+  // On the B2BUA path the REFER is proxied upstream to the carrier, so the
+  // Replaces must describe the B2BUA<->carrier dialog, not the LiveKit-facing one.
+  referReplaces?: string;
 }
 import { voice } from "@livekit/agents";
 

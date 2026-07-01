@@ -1,5 +1,5 @@
 import { SipClient } from "livekit-server-sdk";
-import { SIPMediaEncryption, SIPTransport } from "@livekit/protocol";
+import { SIPMediaEncryption, SIPHeaderOptions, SIPTransport } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers } from "./api-client.js";
 
@@ -27,8 +27,16 @@ export async function transferParticipant(
   transport?: string | null,
   callerId?: string | null,
   originatingCallId?: string | null,
+  // RFC 3891 dialog identifier ("call-id;to-tag=...;from-tag=...") of the leg the
+  // referred party should replace, for the consultative (attended) finalise so the
+  // caller's endpoint replaces the consultation dialog instead of ringing the
+  // target a second time. On the B2BUA path this is the gateway-facing consult
+  // dialog, reflected to us via X-Aplisay-Refer-Replaces; the B2BUA sofia profile
+  // has proxy-refer=true, so it relays this REFER (?Replaces intact) upstream to
+  // the carrier. See finaliseConsultativeTransfer and aplisay-b2bua refer_reflect.lua.
+  replaces?: string | null,
 ): Promise<any> {
-  logger.info({ roomName, participant, transferTo, registrar, transport }, "transfer participant initiated");
+  logger.info({ roomName, participant, transferTo, registrar, transport, replaces }, "transfer participant initiated");
 
   // If registrar is provided, construct SIP URI for registration endpoint
   let transferUri = `tel:${transferTo}`;
@@ -40,6 +48,16 @@ export async function transferParticipant(
     if (transport) {
       transferUri += `;transport=${transport as string}`;
     }
+  }
+
+  // Attended transfer: embed Replaces in the Refer-To URI so the referred party
+  // replaces the existing (consultation) dialog. tel: URIs cannot carry a
+  // Replaces param, so upgrade to a sip: URI targeting the same number.
+  if (replaces) {
+    if (transferUri.startsWith("tel:")) {
+      transferUri = `sip:${transferTo}`;
+    }
+    transferUri += `?Replaces=${encodeURIComponent(replaces)}`;
   }
 
   const sipTransferOptions = {
@@ -375,6 +393,11 @@ export async function dialTransferTargetToConsultation(
         fromNumber: registrationUsername || origin,
         krispEnabled: true,
         waitUntilAnswered: true,
+        // Map all SIP response headers (incl. To/From dialog tags + Call-ID and
+        // the B2BUA-reflected X-Aplisay-Refer-Replaces) to sip.h.* attributes so
+        // the consultative REFER can build an RFC 3891 Replaces from the consult
+        // leg. See startConsultativeTransfer / finaliseConsultativeTransfer.
+        includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
       }
     );
 
@@ -409,6 +432,10 @@ export async function dialTransferTargetToConsultation(
       fromNumber: origin,
       krispEnabled: true,
       waitUntilAnswered: true,
+      // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
+      // sip.h.* attributes so the consultative REFER can build an RFC 3891
+      // Replaces from the consult leg. See finaliseConsultativeTransfer.
+      includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
     }
   );
 
