@@ -718,6 +718,23 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   // prior behaviour when the B2BUA does not stamp the signal.
   let aLegEncrypted = true;
   let forceBridged: boolean | undefined = undefined;
+  // Resolve a registration endpoint's "bridge instead of REFER" transfer default
+  // from its options. The DOCUMENTED, snake_case key is `bridged_transfer` (see
+  // docs/phone-endpoints-api.md / call-transfers.md); `forceBridged` is accepted as
+  // a camelCase alias — that is the internal name the value maps to. Returns
+  // undefined when neither key is present so the flag is only touched when the
+  // endpoint actually specifies it. Truthy = boolean true or the string "true".
+  const resolveRegistrationForceBridged = (
+    options: Record<string, any> | null | undefined,
+  ): boolean | undefined => {
+    if (!options || typeof options !== "object") return undefined;
+    const raw = options.bridged_transfer ?? options.forceBridged;
+    if (raw === undefined) return undefined;
+    return (
+      raw === true ||
+      (typeof raw === "string" && raw.trim().toLowerCase() === "true")
+    );
+  };
   /*
 
   Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
@@ -785,6 +802,19 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
             }
             registrationOriginated = true;
             registrationEndpointId = callerIdStr;
+            // Honour the registration's bridged_transfer default for OUTBOUND-
+            // originated calls too, so a transfer later in the call bridges rather
+            // than REFERs when the endpoint (or its carrier) can't do REFER.
+            const regForceBridged = resolveRegistrationForceBridged(
+              regInfo.options,
+            );
+            if (regForceBridged !== undefined) {
+              forceBridged = regForceBridged;
+              logger.info(
+                { forceBridged, registrationEndpointId: callerIdStr },
+                "Extracted bridged_transfer (forceBridged) from outbound registration options",
+              );
+            }
             const gatewayHost = String(regInfo.b2buaId ?? "").trim();
             const gatewayTransport = "tcp";
             if (!gatewayHost) {
@@ -920,12 +950,18 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 // Trunk username (= the A-leg's To-user / SIP extension), used as
                 // the calling number presented toward the gateway on transfers.
                 registrationUsername = regInfo.username || null;
-                // Store forceBridged option from phone registration endpoint
-                if (regInfo.options?.forceBridged !== undefined) {
-                  forceBridged = regInfo.options.forceBridged === true;
+                // Registration transfer default: documented as
+                // options.bridged_transfer (snake_case); surfaces internally as
+                // forceBridged. Accepts the forceBridged alias too. See
+                // docs/phone-endpoints-api.md / call-transfers.md.
+                const regForceBridged = resolveRegistrationForceBridged(
+                  regInfo.options,
+                );
+                if (regForceBridged !== undefined) {
+                  forceBridged = regForceBridged;
                   logger.info(
                     { forceBridged, phoneRegistration },
-                    "Extracted forceBridged from phone registration options",
+                    "Extracted bridged_transfer (forceBridged) from phone registration options",
                   );
                 }
                 // PhoneRegistration now has instanceId, so we can lookup the instance

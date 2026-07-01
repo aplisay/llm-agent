@@ -1073,12 +1073,14 @@ async function finaliseConsultativeTransfer(
   try {
     const transferTargetIdentity = "transfer-target";
 
-    // Clear the in-progress flag. NOTE: do NOT mark the transfer "none"/completed
-    // here — that must only happen AFTER the underlying REFER/move actually
-    // succeeds (below). Setting it up-front means transfer_status reports success
-    // while the REFER is still in flight (or about to 408), so the middle agent
-    // tells the caller they are connected when they are not. On any failure the
-    // outer catch sets "failed"; each success branch sets "none" once it is real.
+    // Clear the in-progress flag, but do NOT mark the transfer "none"/completed
+    // here. Terminal state is owned by the background accept_transfer handler,
+    // which sets "none" only once this function RETURNS ok (reached only after the
+    // REFER/move actually completes) and "failed" if it throws. Marking "none"
+    // up-front — as the old code did — reported success while the REFER was still
+    // in flight (or about to 408), so the middle agent told the caller they were
+    // connected when they were not. During the REFER flight transfer_status
+    // correctly stays at the in-progress "talking" set when the target answered.
     setConsultInProgress(false);
 
     // Stop the TransferAgent bot and flush + end the consult CALL RECORD. This is
@@ -1214,12 +1216,6 @@ async function finaliseConsultativeTransfer(
         }
       }
 
-      // The REFER completed — either cleanly, or with a known false-failure we
-      // swallowed above; a real failure (e.g. 408) would have re-thrown to the
-      // outer catch. Only NOW is the caller actually handed to the target, so
-      // this is the first point it is correct to report the transfer complete.
-      setTransferState("none", "Transfer completed successfully");
-
       // Cleanup only AFTER the REFER — by now the Replaces has taken over (and
       // BYE'd) the consult dialog, or the caller has left. Best-effort; may race
       // the caller-disconnect shutdown, which is fine since the record is ended.
@@ -1241,9 +1237,6 @@ async function finaliseConsultativeTransfer(
       await deleteConsultationRoom();
 
       await finaliseBridgedCallFn();
-
-      // Target is in the caller room and the bridged tail is live: complete.
-      setTransferState("none", "Transfer completed successfully");
     }
 
     return {
