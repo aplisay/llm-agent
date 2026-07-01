@@ -156,6 +156,54 @@ describe('tariff-compress (lossless prefix-deck compression)', () => {
     assertEquivalent(deck, '0123456789', 6, 6);
   });
 
+  it('ADVERSARY: a full node over an uncovered region is NOT aggregated across the hole', () => {
+    // "1" has all ten children (so it is a "free" node) but is itself uncovered; 10..18
+    // -> rate5, and 19 has only 190 -> rate5, leaving 191..199 a genuine uncovered hole.
+    // Aggregating "1"->rate5 would wrongly cover 19x. (This is the class the real import
+    // hit — emitting UNCOVERED to restore the hole is impossible under LPM.)
+    const deck = [];
+    for (let d = 0; d <= 8; d++) deck.push(mk('1' + d, 5));
+    deck.push(mk('190', 5));
+    const c = compressDeck(deck); // must not throw
+    expect(valueKey(lpm('105555', c))).toBe('5|5|5|5');
+    expect(valueKey(lpm('190555', c))).toBe('5|5|5|5');
+    expect(valueKey(lpm('191555', c))).toBe(UNCOVERED); // the hole stays open
+    expect(valueKey(lpm('195555', c))).toBe(UNCOVERED);
+    expect(valueKey(lpm('205555', c))).toBe(UNCOVERED);
+    // exhaustive over every six-digit number in the "1" subtree
+    for (const n of allStrings('0123456789', 5)) {
+      const N = '1' + n;
+      expect(valueKey(lpm(N, c))).toBe(valueKey(lpm(N, deck)));
+    }
+  });
+
+  it('fuzz: full nodes over partially-uncovered regions never mis-cover a hole', () => {
+    for (let s = 1; s <= 200; s++) {
+      seed(0x9e3779b1 ^ (s * 40503));
+      const d = [];
+      const ds = new Set();
+      const nVals = 1 + ri(3);
+      for (const rootDigit of ['1', '2']) {
+        const nChildren = 5 + ri(6); // 5..10 -> sometimes full, sometimes gap
+        for (let cc = 0; cc < nChildren; cc++) {
+          const child = rootDigit + cc;
+          for (let k = 0, runs = 1 + ri(3); k < runs; k++) {
+            const p = child + String(ri(1000)).padStart(3, '0'); // leaves a gap in the child
+            if (!ds.has(p)) { ds.add(p); d.push({ prefix: p, ...randValue(nVals) }); }
+          }
+        }
+      }
+      const comp = compressDeck(d); // must not throw
+      for (let t = 0; t < 1500; t++) {
+        const rootDigit = ri(2) ? '1' : '2';
+        let n = rootDigit;
+        const L = 6 + ri(4);
+        while (n.length < L) n += '0123456789'[ri(10)];
+        expect(valueKey(lpm(n, comp))).toBe(valueKey(lpm(n, d)));
+      }
+    }
+  });
+
   it('preserves a matched all-zero (free) rate as distinct from UNCOVERED', () => {
     const deck = [{ prefix: '44', connectMicros: 0, peakPerMinuteMicros: 0, offPeakPerMinuteMicros: 0, minimumMicros: 0, label: 'free' }];
     const c = compressDeck(deck);
