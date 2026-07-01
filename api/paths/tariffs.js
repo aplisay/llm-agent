@@ -1,7 +1,6 @@
 import { Tariff, TariffPrefix, Sequelize } from '../../lib/database.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { validateTariffInput } from '../../lib/tariffs.js';
-import { compressDeckStats } from '../../lib/tariff-compress.js';
 
 /**
  * /api/tariffs (collection) — the named, date-ranged destination prefix decks
@@ -52,17 +51,6 @@ export default function (logger) {
     } = req.body || {};
     const err = validateTariffInput({ name, startDate, defaultCountry, timezone, schedule, callStartMicros, roundingSeconds, prefixes });
     if (err) return res.status(400).send({ message: err });
-    // Losslessly compress the deck to the minimal longest-prefix-match-equivalent set
-    // before persisting — carrier sheets enumerate one row per destination, but the
-    // engine only ever longest-prefix-matches, so most rows are redundant.
-    let deck = prefixes;
-    try {
-      const c = compressDeckStats(prefixes);
-      deck = c.prefixes;
-      if (c.before !== c.after) req.log.info({ tariff: name, before: c.before, after: c.after, skipped: c.skipped }, 'compressed tariff prefix deck');
-    } catch (e) {
-      return res.status(400).send({ message: `Invalid prefix deck: ${e.message}` });
-    }
     try {
       const created = await Tariff.sequelize.transaction(async (transaction) => {
         const tariff = await Tariff.create({
@@ -72,9 +60,9 @@ export default function (logger) {
           description,
           createdBy: res.locals.user?.id ?? null,
         }, { transaction });
-        if (deck.length) {
+        if (prefixes.length) {
           await TariffPrefix.bulkCreate(
-            deck.map((p) => ({
+            prefixes.map((p) => ({
               tariffId: tariff.id,
               prefix: String(p.prefix),
               connectMicros: Math.round(Number(p.connectMicros) || 0),

@@ -1,7 +1,6 @@
 import { Tariff, TariffPrefix } from '../../../lib/database.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
 import { validateTariffInput, isTariffReferenced } from '../../../lib/tariffs.js';
-import { compressDeckStats } from '../../../lib/tariff-compress.js';
 
 /**
  * /api/tariffs/{tariffId} (item) — superAdmin (`tariff` resource).
@@ -69,18 +68,6 @@ export default function (logger) {
       });
     }
 
-    // Losslessly compress a replacement deck to the minimal LPM-equivalent set.
-    let deck = hasPrefixes ? body.prefixes : null;
-    if (hasPrefixes) {
-      try {
-        const c = compressDeckStats(body.prefixes);
-        deck = c.prefixes;
-        if (c.before !== c.after) req.log.info({ tariff: tariff.name, before: c.before, after: c.after, skipped: c.skipped }, 'compressed tariff prefix deck');
-      } catch (e) {
-        return res.status(400).send({ message: `Invalid prefix deck: ${e.message}` });
-      }
-    }
-
     const EDITABLE = ['name', 'startDate', 'endDate', 'currency', 'defaultCountry', 'timezone', 'schedule', 'callStartMicros', 'roundingSeconds', 'description'];
     try {
       await Tariff.sequelize.transaction(async (transaction) => {
@@ -88,9 +75,9 @@ export default function (logger) {
         await tariff.save({ transaction });
         if (hasPrefixes) {
           await TariffPrefix.destroy({ where: { tariffId: tariff.id }, transaction });
-          if (deck.length) {
+          if (body.prefixes.length) {
             await TariffPrefix.bulkCreate(
-              deck.map((p) => ({
+              body.prefixes.map((p) => ({
                 tariffId: tariff.id,
                 prefix: String(p.prefix),
                 connectMicros: Math.round(Number(p.connectMicros) || 0),
