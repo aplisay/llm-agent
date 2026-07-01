@@ -83,6 +83,10 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
+  // True when this is an org-originated OUTBOUND (originate API) call — the main
+  // leg is then carried on our public trunk and destination-billed (unless the CLI
+  // is a registration, handled by registrationOriginated). Absent/false for inbound.
+  outbound?: boolean;
   registrationOriginated?: boolean;
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;

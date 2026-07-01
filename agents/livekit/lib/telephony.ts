@@ -5,6 +5,19 @@ import { getPhoneNumbers } from "./api-client.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
+/**
+ * The DB `Trunk.id` of our chargeable public outbound trunk — stamped onto
+ * `Call.outboundTrunkId` for CARRIED (non-registration) outbound legs so the
+ * server's destination-billing gate (`Trunk.chargeable`) fires. A
+ * registration-originated leg egresses the customer's own B2BUA (their PBX, never
+ * our carrier), so it is NOT stamped. If `APLISAY_OUTBOUND_TRUNK_ID` is unset the
+ * helper returns undefined → nothing is destination-charged (fail-safe).
+ */
+export function chargeableOutboundTrunkId(registrationOriginated?: boolean): string | undefined {
+  if (registrationOriginated) return undefined;
+  return process.env.APLISAY_OUTBOUND_TRUNK_ID || undefined;
+}
+
 export async function transferParticipant(
   roomName: string, 
   participant: string, 

@@ -18,6 +18,7 @@ SIP leg is a Daily room, a FreeSWITCH bridge, or anything else.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -82,6 +83,17 @@ class _WebrtcEgress:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+
+
+def _chargeable_outbound_trunk_id(egress: "_WebrtcEgress") -> Optional[str]:
+    """The DB ``Trunk.id`` of our chargeable public outbound trunk, for the
+    server's destination-billing gate (``Trunk.chargeable``). Set only when the
+    leg egresses our public SBC (a trunk), NOT a registration B2BUA (the
+    customer's own PBX, never our carrier). Unset ``APLISAY_OUTBOUND_TRUNK_ID`` env
+    → ``None`` (fail-safe: nothing is destination-charged)."""
+    if egress.registration_endpoint_id or not egress.aplisay_id:
+        return None
+    return os.environ.get("APLISAY_OUTBOUND_TRUNK_ID") or None
 
 
 @dataclass
@@ -1507,7 +1519,8 @@ class CallSession:
         return None
 
     async def _create_bridge_call(
-        self, *, caller_id: str, destination: str, consult: bool
+        self, *, caller_id: str, destination: str, consult: bool,
+        outbound_trunk_id: Optional[str] = None
     ) -> tuple[api_client.CallRecord, str]:
         """Create + start the telephony-leg Call record (child of the browser
         call) and return it with its session id."""
@@ -1538,6 +1551,10 @@ class CallSession:
                 "calledId": destination,
                 "callerId": caller_id,
                 "modelName": self.agent["modelName"],
+                # Destination billing (D3): the carried dial to the transfer target is
+                # chargeable when it egresses our public trunk (set by the caller from
+                # the resolved egress); a registration B2BUA leg leaves this None.
+                "outboundTrunkId": outbound_trunk_id,
                 "options": {"outbound": True},
                 "metadata": metadata,
             }
@@ -1601,7 +1618,8 @@ class CallSession:
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=egress.caller_id, destination=destination, consult=False
+                caller_id=egress.caller_id, destination=destination, consult=False,
+                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create bridged call record: {e}")
@@ -1745,7 +1763,8 @@ class CallSession:
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=egress.caller_id, destination=destination, consult=True
+                caller_id=egress.caller_id, destination=destination, consult=True,
+                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create consult call record: {e}")

@@ -606,6 +606,7 @@ export async function createCall(callData: {
   calledId?: string;
   callerId?: string;
   modelName?: string;
+  outboundTrunkId?: string;
   options?: any;
   metadata?: any;
 }): Promise<any> {

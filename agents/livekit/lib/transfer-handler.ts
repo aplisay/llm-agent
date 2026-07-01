@@ -6,6 +6,7 @@ import {
   bridgeParticipant,
   transferParticipant,
   dialTransferTargetToConsultation,
+  chargeableOutboundTrunkId,
 } from "./telephony.js";
 import {
   getPhoneEndpointByNumber,
@@ -320,7 +321,8 @@ async function finaliseBridgedCall(
   calledId: string,
   options: any,
   session: voice.AgentSession | null,
-  setBridgedCallRecord?: (call: Call | null) => void
+  setBridgedCallRecord?: (call: Call | null) => void,
+  outboundTrunkId?: string
 ): Promise<Call | null> {
   detachPrimaryAgentMediaAfterBridge(session);
 
@@ -337,6 +339,10 @@ async function finaliseBridgedCall(
       calledId,
       callerId,
       modelName: "telephony:bridged-call",
+      // The bridged tail leg is the carried dial to the transfer target — chargeable
+      // on our public trunk unless the original call is registration-originated (then
+      // the target is reached via the customer's own B2BUA/PBX).
+      outboundTrunkId,
       options,
       metadata: { ...call.metadata },
     });
@@ -845,6 +851,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       calledId: args.number,
       callerId: effectiveCallerId,
       modelName: agent.modelName,
+      // The consult leg is a carried dial to the transfer target — chargeable on our
+      // public trunk unless registration-originated (target via the customer B2BUA).
+      outboundTrunkId: chargeableOutboundTrunkId(context.registrationOriginated),
       options: context.options,
       metadata: {
         ...instance.metadata,
@@ -1645,7 +1654,8 @@ export async function handleTransfer(
       calledId,
       options,
       session,
-      context.setBridgedCallRecord
+      context.setBridgedCallRecord,
+      chargeableOutboundTrunkId(context.registrationOriginated)
     );
   };
 
