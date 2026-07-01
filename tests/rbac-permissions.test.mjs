@@ -43,6 +43,26 @@ describe('permissions — roles vocabulary', () => {
     expect(statementsFor('superAdmin').user).toContain('readAll');
     expect(statementsFor('superAdmin').organisation).toContain('create');
   });
+  test('rate cards (pricing) are superAdmin-only; org:setRate too', () => {
+    for (const a of ['read', 'readAll', 'create', 'update', 'delete']) {
+      expect(can({ role: 'superAdmin' }, 'rate', a)).toBe(true);
+    }
+    expect(can({ role: 'superAdmin' }, 'organisation', 'setRate')).toBe(true);
+    // Not for owner / orgAdmin / member.
+    expect(can({ role: 'owner' }, 'rate', 'read')).toBe(false);
+    expect(can({ role: 'orgAdmin' }, 'rate', 'create')).toBe(false);
+    expect(can({ role: 'orgAdmin' }, 'organisation', 'setRate')).toBe(false);
+  });
+  test('billingService can ONLY credit balance (least privilege)', () => {
+    expect(can({ role: 'billingService' }, 'organisation', 'credit')).toBe(true);
+    // Nothing else — not setRate, not read, not product.
+    expect(can({ role: 'billingService' }, 'organisation', 'setRate')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'read')).toBe(false);
+    expect(can({ role: 'billingService' }, 'agent', 'read')).toBe(false);
+    expect(can({ role: 'billingService' }, 'rate', 'read')).toBe(false);
+    // superAdmin still holds credit (superset).
+    expect(can({ role: 'superAdmin' }, 'organisation', 'credit')).toBe(true);
+  });
   test('superAdmin is a SUPERSET — keeps owner product powers incl agent:create', () => {
     // Regression guard: without this, no-auth/bootstrap/super principals 403 on agent create.
     expect(can({ role: 'superAdmin' }, 'agent', 'create')).toBe(true);

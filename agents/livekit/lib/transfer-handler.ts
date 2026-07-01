@@ -6,16 +6,21 @@ import {
   bridgeParticipant,
   transferParticipant,
   dialTransferTargetToConsultation,
+  chargeableOutboundTrunkId,
 } from "./telephony.js";
 import {
   getPhoneEndpointByNumber,
   getPhoneEndpointById,
   createCall,
   createTransactionLog,
+  saveUsage,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
 } from "./api-client.js";
+import { resolveUsageVendors } from "./usage-vendors.js";
+import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
+import { resolveVoiceMode } from "./voice-mode.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -39,6 +44,14 @@ export type TransferState =
   | "talking"
   | "rejected"
   | "failed";
+
+/**
+ * Per-consult usage meters, keyed by the consult Call record. The consult
+ * session is wired during transfer initiation but flushed in the separate
+ * completion path, so the meter is stashed here to bridge the two. WeakMap so a
+ * dropped/errored consult's meter is collected with its Call.
+ */
+const consultUsageMeters = new WeakMap<Call, UsageMeter>();
 
 export interface TransferContext {
   ctx: any; // JobContext
@@ -308,7 +321,8 @@ async function finaliseBridgedCall(
   calledId: string,
   options: any,
   session: voice.AgentSession | null,
-  setBridgedCallRecord?: (call: Call | null) => void
+  setBridgedCallRecord?: (call: Call | null) => void,
+  outboundTrunkId?: string
 ): Promise<Call | null> {
   detachPrimaryAgentMediaAfterBridge(session);
 
@@ -325,6 +339,10 @@ async function finaliseBridgedCall(
       calledId,
       callerId,
       modelName: "telephony:bridged-call",
+      // The bridged tail leg is the carried dial to the transfer target — chargeable
+      // on our public trunk unless the original call is registration-originated (then
+      // the target is reached via the customer's own B2BUA/PBX).
+      outboundTrunkId,
       options,
       metadata: { ...call.metadata },
     });
@@ -799,6 +817,17 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
     setTransferSession(transferSession);
 
+    // Meter the consult leg's llm/tts/stt onto the consult call record. The
+    // consult LLM is the primary's, so resolve vendors from the primary model.
+    // Per-session, so it never double-counts the primary call's usage.
+    const consultUsageMeter = makeUsageMeter({
+      getCall: () => context.getConsultCall(),
+      usageVendors: resolveUsageVendors(context.agent, context.agent.modelName),
+      voiceMode: resolveVoiceMode(context.agent.modelName, context.agent.options),
+      fallbackDetail: context.agent.modelName,
+    });
+    consultUsageMeter.wire(transferSession);
+
     await transferSession.start({
       room: consultRoom,
       agent: transferAgent,
@@ -822,6 +851,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       calledId: args.number,
       callerId: effectiveCallerId,
       modelName: agent.modelName,
+      // The consult leg is a carried dial to the transfer target — chargeable on our
+      // public trunk unless registration-originated (target via the customer B2BUA).
+      outboundTrunkId: chargeableOutboundTrunkId(context.registrationOriginated),
       options: context.options,
       metadata: {
         ...instance.metadata,
@@ -834,6 +866,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       },
     });
     context.setConsultCall(consultCallRecord);
+    consultUsageMeters.set(consultCallRecord, consultUsageMeter);
     logger.info(
       { consultCallId: consultCallRecord.id, consultRoomName },
       "created consultation call record"
@@ -1038,6 +1071,12 @@ async function finaliseConsultativeTransfer(
     // Step 5: End consultation call and create transaction logs for transcript
     const consultCall = getConsultCall();
     if (consultCall) {
+      // Flush the consult leg's accumulated usage before ending the call.
+      const consultMeter = consultUsageMeters.get(consultCall);
+      if (consultMeter) {
+        await consultMeter.flush(true);
+        consultUsageMeters.delete(consultCall);
+      }
       await consultCall.end("Transfer completed");
       logger.info({ consultCallId: consultCall.id }, "ended consultation call");
     }
@@ -1615,7 +1654,8 @@ export async function handleTransfer(
       calledId,
       options,
       session,
-      context.setBridgedCallRecord
+      context.setBridgedCallRecord,
+      chargeableOutboundTrunkId(context.registrationOriginated)
     );
   };
 

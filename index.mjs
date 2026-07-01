@@ -65,6 +65,11 @@ if (betterAuth) {
   logger.info('mounted better-auth at /api/auth/*');
 }
 
+// Tariff decks are whole carrier rate sheets (100k+ prefix rows → tens of MB of
+// JSON), so parse those with a much larger limit. Mounted BEFORE the global 5mb
+// parser: body-parser marks the body parsed and the global parser then skips it,
+// so every OTHER route keeps the tight 5mb cap.
+server.use('/api/tariffs', express.json({ limit: '48mb' }));
 server.use(express.json({ limit: '5mb' }));
 const pino = PinoHttp({
   logger

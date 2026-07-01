@@ -2,7 +2,7 @@ import {
   setupRealDatabase, teardownRealDatabase,
   UsageRecord, Organisation, User, Op, databaseStarted,
 } from './setup/database-test-wrapper.js';
-import { recordUsage, recordLlmTokens } from '../lib/usage.js';
+import { recordUsage, recordLlmTokens, finaliseSession } from '../lib/usage.js';
 import { randomUUID } from 'crypto';
 
 const silentLog = {
@@ -106,5 +106,35 @@ describe('Usage ledger: recordUsage / recordLlmTokens', () => {
     // input/output/cache_write present; cache_read (0) omitted.
     expect(byUnit).toEqual({ cache_write_tokens: 9, input_tokens: 120, output_tokens: 30 });
     expect(rows.every((r) => r.technology === 'llm' && r.finalised === true)).toBe(true);
+  });
+
+  it('finaliseSession marks every not-yet-finalised meter of a session final', async () => {
+    const sessionId = 's-final';
+    await recordUsage({
+      sessionId, organisationId: orgId, userId, technology: 'llm', provider: 'openai',
+      detail: 'gpt-4o', unit: 'input_tokens', quantity: 10, mode: 'increment', log: silentLog,
+    });
+    await recordUsage({
+      sessionId, organisationId: orgId, userId, technology: 'llm', provider: 'openai',
+      detail: 'gpt-4o', unit: 'output_tokens', quantity: 5, mode: 'increment', log: silentLog,
+    });
+    let rows = await UsageRecord.findAll({ where: { sessionId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.finalised === false)).toBe(true);
+
+    const count = await finaliseSession(sessionId, { log: silentLog });
+    expect(count).toBe(2);
+    rows = await UsageRecord.findAll({ where: { sessionId } });
+    expect(rows.every((r) => r.finalised === true)).toBe(true);
+  });
+
+  it('recordLlmTokens persists a metadata.startedAt billing anchor (text sessions)', async () => {
+    const startedAt = new Date('2026-06-29T10:00:00Z').toISOString();
+    await recordLlmTokens({
+      sessionId: 's-anchor', organisationId: orgId, userId, provider: 'openai', model: 'gpt-4o',
+      inputTokens: 3, outputTokens: 0, mode: 'increment', metadata: { startedAt }, log: silentLog,
+    });
+    const row = await UsageRecord.findOne({ where: { sessionId: 's-anchor', unit: 'input_tokens' } });
+    expect(row.metadata?.startedAt).toBe(startedAt);
   });
 });

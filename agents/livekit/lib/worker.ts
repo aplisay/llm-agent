@@ -14,7 +14,7 @@ import {
 // Internal modules
 import logger from "./logger.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
-import { bridgeParticipant } from "./telephony.js";
+import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
   getInstanceById,
   getInstanceByNumber,
@@ -300,6 +300,7 @@ export default defineAgent({
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
+        outbound: outboundCall,
         registrationOriginated,
         trunkInfo,
         registrationRegistrar,
@@ -1095,6 +1096,7 @@ async function setupCallAndUtilities({
   setBridgedParticipant,
   setConsultInProgress,
   getConsultInProgress,
+  outbound,
   registrationOriginated,
   trunkInfo,
   registrationRegistrar,
@@ -1194,6 +1196,9 @@ async function setupCallAndUtilities({
     calledId,
     callerId,
     modelName,
+    // Destination billing (D3): only an org-originated OUTBOUND leg carried on our
+    // public trunk is chargeable — inbound legs and registration egress are not.
+    outboundTrunkId: outbound ? chargeableOutboundTrunkId(registrationOriginated) : undefined,
     options,
     metadata: {
       ...instance.metadata,
@@ -1397,6 +1402,10 @@ async function setupCallAndUtilities({
     sessionRef,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || activeAgentCall,
+    // The agent's own call WITHOUT the bridge override — usage attribution must
+    // target this so agent-session component meters never land on the no-agent
+    // bridged tail leg (whose only billable component is its audio-path minutes).
+    getAgentCall: () => activeAgentCall,
     setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,

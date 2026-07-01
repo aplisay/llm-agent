@@ -83,6 +83,10 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
   getConsultInProgress: () => boolean;
+  // True when this is an org-originated OUTBOUND (originate API) call — the main
+  // leg is then carried on our public trunk and destination-billed (unless the CLI
+  // is a registration, handled by registrationOriginated). Absent/false for inbound.
+  outbound?: boolean;
   registrationOriginated?: boolean;
   trunkInfo?: TrunkInfo | null;
   registrationRegistrar?: string | null;
@@ -115,6 +119,14 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   checkForHangup: () => boolean;
   getConsultInProgress: () => boolean;
   getActiveCall: () => Call;
+  /**
+   * The agent session's own call, WITHOUT the blind-bridge override that
+   * getActiveCall applies. Usage attribution (token/stt/tts component meters
+   * produced by the agent session) must target this — never the no-agent
+   * bridged tail leg that getActiveCall flips to after a transfer. Falls back
+   * to getActiveCall when unset.
+   */
+  getAgentCall?: () => Call;
   /**
    * Repoints transcript logging and teardown at the continuation call created
    * by a full agent-stack handover (transfer_agent with a model change).

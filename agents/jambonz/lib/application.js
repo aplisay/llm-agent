@@ -50,6 +50,9 @@ export default class Application {
             userId,
             organisationId,
             modelName,
+            // Jambonz handler did not stamp a platform, leaving the voice usage
+            // row's provider null and unmatchable by a rate line (billing).
+            platform: 'jambonz',
             options,
             instanceId: instance.id,
             agentId: agent.id,

@@ -75,16 +75,16 @@ export interface ToneConfig {
 // `medium` 425 Hz is the UK/EU network tone (dial/busy/ringing all live at
 // 425 Hz, just different cadences), and US progress uses 350/440/480/620 — and
 // stay clear of the DTMF bands (697-941 / 1209-1633). A periodic 425 Hz burst on
-// a SIP leg is easily swallowed by carrier/SBC call-progress handling or echo
-// cancellation; 523/587/659 sit clear of both. (Pipecat confidence_tone.py and
-// lib/database.js carry the same map — sync them if this resolves it.)
+// a SIP leg could be confused with a network tone; 523/587/659 sit clear of
+// both. Pipecat confidence_tone.py mirrors this map; lib/database.js validates
+// only the coarse low/medium/high enum, so it needs no change.
 const FREQUENCY_HZ: Record<string, number> = { low: 523, medium: 587, high: 659 };
 const LENGTH_MS: Record<string, number> = { short: 150, medium: 250, long: 400 };
 // Linear amplitude, 0..1. `medium` of everything is the UK-style comfort beep.
 const VOLUME_LEVEL: Record<string, number> = { low: 0.08, medium: 0.15, high: 0.3 };
 
-// Defaults: a discreet UK-style comfort beep — a 250 ms 425 Hz burst every
-// ~3 s at low volume. Keep aligned with the pipecat worker.
+// Defaults: a discreet comfort beep — a 250 ms 587 Hz burst every ~3 s at low
+// volume. Keep aligned with the pipecat worker.
 const DEFAULTS: ToneConfig = {
   frequency: FREQUENCY_HZ.medium,
   onMs: LENGTH_MS.medium,
