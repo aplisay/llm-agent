@@ -196,6 +196,39 @@ New polite-ai `billing` branch off `next` (RR8 + Stripe 17). NOT yet run-verifie
   hot-path refusal (`billingBlocked` enforced in `Call.start()`); agentless passthrough product; per-user
   rate override (resolver checks `User.rateHistory` first).
 
+## Phase D — destination-number (telco) call charging
+
+**D1–D4 code-complete + verified; D3b (live-call worker stamping) is the ONLY thing left.** Charges a carried
+outbound leg (originate API, or a bridged transfer) that egresses on a trunk the org does NOT own, by
+**longest-prefix match** on the normalised destination against a named **tariff**, priced **per-call connect
+fee + per-minute** (either may be 0). Excludes: owned trunks, REFER transfers, registered-SIP-session egress,
+inbound/WebRTC.
+
+- **D1** (`d986c91`, schema **v48**): `Tariff` (named/dated/immutable like RateCard, per-name EXCLUDE-gist,
+  `defaultCountry`) + `TariffPrefix` (`prefix, connectMicros, perMinuteMicros`). `lib/tariffs.js`
+  (`normaliseDestination` — `+44`/`0044`/`44`/local `0`→cc, `WebRTC`/`00000`→null; `matchTariffPrefix` SQL LPM;
+  `resolveTariff@billedAt`; `isTariffReferenced`). `/api/tariffs` CRUD, new `tariff` RBAC resource. **11 tests.**
+- **D2** (`2f0fab5`): `destination` = the 5th dimension in `lib/rates.js`. `resolveDestinationCost` (async, in
+  `costUsageRow`) resolves the card's `destination` line → tariff → LPM → connect+perMinute, **additive** with
+  the exact-dimension cost. `validateRateLines` requires a `tariff` (no inline price). **6 tests.**
+- **D3a** (`0bf1b59`, schema **v49**): `Call.outboundTrunkId` + `recordUsageMinutes` gate — set AND not owned
+  (`TrunkOrganisation`) → stamps usage `metadata.destinationRaw`. Resolver normalises the raw number with the
+  **resolved tariff's** `defaultCountry`. `/api/agent-db/call` passthrough. **4 gate tests.**
+- **D4** (`86377b1`, polite-ai): `dashboard.tariffs.tsx` — bulk-text deck editor (`prefix, connect pence,
+  per-minute pence, label`); rate-card editor gains a **Destination — `<tariff>`** picker entry adding a
+  `{dim:'destination', tariff}` line. `Platform → Tariffs` nav. tsc + build clean.
+
+**D3b — REMAINING (worker, live call path, NOT DB-harness-testable):** stamp `Call.outboundTrunkId` on carried
+legs so the D3a gate fires. Discovery: the shared **"Aplisay Outbound"** trunk is *ephemeral* (deleted+recreated
+each boot, `agents/livekit/lib/initialise.ts:56`) with **no DB `Trunk` row**, and there's no per-org
+outbound-trunk selection today → the org-owns-trunk exemption is forward-looking. **Plan:** stamp a stable
+sentinel `outboundTrunkId = 'aplisay-shared-outbound'` on the bridged-call child
+(`agents/livekit/lib/transfer-handler.ts:329`) and the originate leg (each handler's `outbound()`), NOT on
+refer/registration/inbound/webrtc; livekit + pipecat parity + `tsup` rebuild. Nothing owns the sentinel →
+billed; a future BYO org gets a real `Trunk` row + `TrunkOrganisation` → auto-exempt. **Decisions locked (D):**
+per-minute + per-call connect fee; per-tariff default country (GB); separate dated `Tariff` table referenced by
+name. **Schema v48→v49 both need `DB_FORCE_SYNC` on staging/prod.**
+
 ## Key decisions (don't re-derive — full rationale in the plan)
 
 - Costing lives in **llm-agent** (hot path, **cost-at-write**/frozen). polite-ai = async Stripe consumer.
