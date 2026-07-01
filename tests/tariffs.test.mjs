@@ -173,18 +173,19 @@ describe('Tariff model (schema v51)', () => {
     expect(await resolveTariff(name, d('2025-12-01T00:00:00Z'))).toBeNull();
   });
 
-  it('rejects OVERLAPPING versions for a name, allows ADJACENT', async () => {
+  it('ALLOWS overlapping / open-ended same-name versions; resolveTariff disambiguates by latest start', async () => {
     const name = `${PREFIX}overlap`;
-    await mkTariff(name, { startDate: d('2026-01-01T00:00:00Z'), endDate: d('2026-06-01T00:00:00Z') });
+    // Two open-ended versions of the same name — no period constraint rejects this.
+    await mkTariff(name, { startDate: d('2026-01-01T00:00:00Z'), endDate: null });
+    await expect(mkTariff(name, { startDate: d('2026-03-01T00:00:00Z'), endDate: null })).resolves.toBeTruthy();
+    // The greatest start_date <= billedAt wins: 1/1 covers Feb, 3/1 supersedes from March.
+    expect((await resolveTariff(name, d('2026-02-01T00:00:00Z'))).startDate.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    expect((await resolveTariff(name, d('2026-04-01T00:00:00Z'))).startDate.toISOString()).toBe('2026-03-01T00:00:00.000Z');
+    // A duplicate start_date is still rejected (unique index).
     let err;
-    try {
-      await mkTariff(name, { startDate: d('2026-03-01T00:00:00Z'), endDate: null });
-    } catch (e) { err = e; }
+    try { await mkTariff(name, { startDate: d('2026-03-01T00:00:00Z'), endDate: null }); } catch (e) { err = e; }
     expect(err).toBeDefined();
-    const sig = `${err?.name} ${err?.message} ${err?.original?.code} ${err?.parent?.constraint}`.toLowerCase();
-    expect(sig).toMatch(/exclusion|tariffs_name_period_excl|23p01/);
-    // Adjacent [start,end) is fine (end exclusive).
-    await expect(mkTariff(name, { startDate: d('2026-06-01T00:00:00Z'), endDate: null })).resolves.toBeTruthy();
+    expect(`${err?.name}`.toLowerCase()).toMatch(/unique/);
   });
 
   it('is IMMUTABLE once a costed usage row references it (header guard + CRUD check)', async () => {
