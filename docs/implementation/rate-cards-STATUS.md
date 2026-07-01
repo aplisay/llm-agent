@@ -221,17 +221,25 @@ inbound/WebRTC.
   per-minute pence, label`); rate-card editor gains a **Destination — `<tariff>`** picker entry adding a
   `{dim:'destination', tariff}` line. `Platform → Tariffs` nav. tsc + build clean.
 
-**D3b — REMAINING (worker, live call path, NOT DB-harness-testable):** stamp `Call.outboundTrunkId` on carried
-legs so the D3a gate fires. Now trivial thanks to the `chargeable` model (user, 2026-07-01): the worker stamps
-the DB id of the **persistent, admin-created, `chargeable=true` public trunk** on non-registration carried legs —
-the bridged-call child (`agents/livekit/lib/transfer-handler.ts:329`, the `createCall({modelName:'telephony:
-bridged-call'})`) and the originate leg (each handler's `outbound()`). Registration/ephemeral B2BUA trunks are
-NOT stamped (they reach a customer PBX, never our carrier). livekit + pipecat parity + `tsup` rebuild. **No magic
-sentinel** — a real `Trunk` row an admin flags `chargeable`. Provisioning: create one `Trunk` row for the public
-trunk with `chargeable=true`; the worker needs to know its id (env/const — one/two public trunks ever).
-**Decisions locked (D):** per-minute + per-call connect fee; per-tariff default country (GB); separate dated
-`Tariff` table referenced by name; **positive `Trunk.chargeable` flag** (not ownership). **Schema v48→v50 need
-`DB_FORCE_SYNC` on staging/prod.**
+**D3b — DONE** (`99056f5`, worker stamping; **code-complete, pending the user's live-call verification**). Both
+workers stamp `Call.outboundTrunkId` = the DB id of the chargeable public trunk (`APLISAY_OUTBOUND_TRUNK_ID` env)
+on legs carried out on it; undefined when the env is unset or the leg is non-chargeable (fail-safe). **LiveKit**
+(`agents/livekit/lib/`): `chargeableOutboundTrunkId()` in `telephony.ts`; stamped at the main originate leg
+(`worker.ts`, gated `outbound && !registrationOriginated` — threads `SetupCallParams.outbound`) and the
+bridged-call child + warm-transfer consult leg (`transfer-handler.ts`, gated `!registrationOriginated`); handover
+unstamped. **Pipecat**: `_chargeable_outbound_trunk_id(egress)` in `call_session.py` (chargeable only when the
+egress is a trunk, not a registration B2BUA) on the WebRTC→telephony bridge + consult legs; the server-side
+originate Call in `lib/handlers/pipecat.js` gates on `aplisayId` (PhoneNumber caller = public trunk; registration
+= not). Verified: LiveKit `tsup` build OK, Pipecat `py_compile` + `pipecat.js` node --check OK, 12 destination
+server tests green. **Not DB-harness-testable — needs a live call.** **Known gap:** Pipecat SIP-origin *carried*
+transfers are not stamped (Pipecat emits no `telephony:bridged-call` sentinel; its SIP transfers are REFER-based) —
+revisit if carried SIP transfers land.
+
+**Provisioning to go live (user):** create ONE `Trunk` row with `chargeable=true` for the public outbound trunk,
+and set `APLISAY_OUTBOUND_TRUNK_ID=<that trunk id>` on both workers. Then a live originate/bridged call to a tariff
+prefix should stamp `metadata.destinationRaw` and cost the destination. **Decisions locked (D):** per-minute +
+per-call connect fee; per-tariff default country (GB); separate dated `Tariff` table referenced by name; **positive
+`Trunk.chargeable` flag** (not ownership). **Schema v48→v50 need `DB_FORCE_SYNC` on staging/prod.**
 
 ## Key decisions (don't re-derive — full rationale in the plan)
 
