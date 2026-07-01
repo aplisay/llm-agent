@@ -1,0 +1,84 @@
+name: Agent task
+description: A scoped improvement to be implemented by a parallel agent (one issue → one PR).
+title: "[task]: "
+labels: ["action"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scope this so a single agent can finish it in one focused PR. The clearer the
+        **acceptance criteria** and **lane**, the cleaner the parallel run + merge.
+        See `docs/CONTEXT.md`.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences — what should change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation / context
+      description: Why this matters; any background, links, or screenshots.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist the agent (and reviewer) can verify against.
+      value: |
+        - [ ]
+        - [ ] The repo's configured verify check passes (see docs/CONTEXT.md → Definition of Done)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Lane(s) — primary area/files this touches
+      description: |
+        Used to plan the merge order and flag PRs that will collide. Pick all that apply.
+        The first two are high-contention shared files — overlap there means PRs merge
+        sequentially (later ones rebased).
+      multiple: true
+      options:
+        - "API surface — api/api-doc.yaml, api/paths/*"
+        - "Server entry / wiring — index.mjs, lib/ws-handler.js, lib/handlers/*"
+        - "LLM model adapters — lib/models/* (anthropic, openai, gemini, livekit, pipecat, ultravox, …)"
+        - "Gateway agent — agents/livekit | agents/pipecat | agents/jambonz"
+        - "Database / models — lib/database.js, lib/database-models/*"
+        - "Voices — lib/voices/*, lib/model-voices.js"
+        - "Auth / scope / admin — lib/auth/*, lib/scope.js, lib/admin-gate.js"
+        - "Usage / billing — lib/usage.js"
+        - "Docs / config / CI"
+        - "Other / not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: files
+    attributes:
+      label: Files likely touched (optional, more specific than lane)
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: Depends on (issue numbers)
+      description: Issues whose code this needs. The planner will sequence/defer these.
+      placeholder: "#73, #74"
+
+  - type: dropdown
+    id: ui
+    attributes:
+      label: Does this change the public API surface?
+      description: If yes, update api/api-doc.yaml and call it out (it is a hot/shared file).
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true

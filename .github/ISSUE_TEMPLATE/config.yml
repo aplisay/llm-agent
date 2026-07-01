@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+# Optional: add contact_links here, e.g. a pointer to docs/CONTEXT.md or a workflow doc.
+# contact_links:
+#   - name: How the parallel-agent (/ship) workflow works
+#     url: https://github.com/aplisay/ship-kit
+#     about: Read this before filing a batch of agent tasks — it explains lanes, the review gate, and the merge-train.
