@@ -4,15 +4,16 @@ import {
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
-// Phase-D3: recordUsageMinutes gates destination billing on Call.outboundTrunkId.
-// A carried outbound leg on a trunk the org does NOT own freezes the dialled
-// number as metadata.destinationRaw (the resolver's tariff anchor); an org-owned
-// trunk, or no outbound trunk (inbound/webrtc/refer/registration), does not.
+// Phase-D3: recordUsageMinutes gates destination billing on Call.outboundTrunkId's
+// Trunk.chargeable flag. A carried leg on one of OUR public/carrier trunks
+// (chargeable=true) freezes the dialled number as metadata.destinationRaw (the
+// resolver's tariff anchor); a non-chargeable trunk (customer PBX / BYO / inbound),
+// or no outbound trunk (webrtc/refer), does not.
 
 const PREFIX = `dg-test-${randomUUID()}-`;
 
 describe('destination-billing gate in recordUsageMinutes (D3)', () => {
-  let orgId; let userId; let agentId; let instanceId; let sharedTrunkId; let ownedTrunkId;
+  let orgId; let userId; let agentId; let instanceId; let chargeableTrunkId; let nonChargeableTrunkId;
 
   beforeAll(async () => {
     await setupRealDatabase();
@@ -29,13 +30,12 @@ describe('destination-billing gate in recordUsageMinutes (D3)', () => {
     );
     await Instance.create({ id: instanceId, agentId, type: 'livekit', userId, organisationId: orgId });
 
-    // A shared (platform) outbound trunk the org does NOT own, and an org-owned one.
-    sharedTrunkId = `${PREFIX}shared`;
-    ownedTrunkId = `${PREFIX}owned`;
-    await Trunk.create({ id: sharedTrunkId, name: 'Aplisay Outbound', outbound: true });
-    const owned = await Trunk.create({ id: ownedTrunkId, name: 'Org BYO Trunk', outbound: true });
-    const org = await Organisation.findByPk(orgId);
-    await org.addTrunk(owned); // TrunkOrganisation(ownedTrunkId, orgId)
+    // One of OUR public/carrier trunks (chargeable), and a non-chargeable one
+    // (a customer PBX via a registration B2BUA, or a BYO carrier).
+    chargeableTrunkId = `${PREFIX}public`;
+    nonChargeableTrunkId = `${PREFIX}pbx`;
+    await Trunk.create({ id: chargeableTrunkId, name: 'Aplisay Public', outbound: true, chargeable: true });
+    await Trunk.create({ id: nonChargeableTrunkId, name: 'Customer PBX', outbound: true }); // chargeable defaults false
   }, 30000);
 
   afterEach(async () => {
@@ -64,23 +64,28 @@ describe('destination-billing gate in recordUsageMinutes (D3)', () => {
   it('persists Call.outboundTrunkId', async () => {
     const call = await Call.create({
       instanceId, agentId, organisationId: orgId, userId,
-      platform: 'livekit', modelName: 'telephony:bridged-call', outboundTrunkId: sharedTrunkId,
+      platform: 'livekit', modelName: 'telephony:bridged-call', outboundTrunkId: chargeableTrunkId,
     });
-    expect((await Call.findByPk(call.id)).outboundTrunkId).toBe(sharedTrunkId);
+    expect((await Call.findByPk(call.id)).outboundTrunkId).toBe(chargeableTrunkId);
   });
 
-  it('stamps destinationRaw when the outbound trunk is NOT owned by the org', async () => {
-    const row = await endBridgedLeg({ outboundTrunkId: sharedTrunkId });
+  it('stamps destinationRaw when the outbound trunk is chargeable (our public trunk)', async () => {
+    const row = await endBridgedLeg({ outboundTrunkId: chargeableTrunkId });
     expect(row.metadata?.destinationRaw).toBe('447970123456');
   });
 
-  it('does NOT stamp destinationRaw when the org OWNS the outbound trunk', async () => {
-    const row = await endBridgedLeg({ outboundTrunkId: ownedTrunkId });
+  it('does NOT stamp destinationRaw when the outbound trunk is not chargeable (PBX/BYO)', async () => {
+    const row = await endBridgedLeg({ outboundTrunkId: nonChargeableTrunkId });
     expect(row.metadata?.destinationRaw).toBeUndefined();
   });
 
-  it('does NOT stamp destinationRaw when there is no outbound trunk (inbound/webrtc/refer)', async () => {
+  it('does NOT stamp destinationRaw when there is no outbound trunk (webrtc/refer)', async () => {
     const row = await endBridgedLeg({ outboundTrunkId: null });
+    expect(row.metadata?.destinationRaw).toBeUndefined();
+  });
+
+  it('does NOT stamp destinationRaw when outboundTrunkId references an unknown trunk', async () => {
+    const row = await endBridgedLeg({ outboundTrunkId: `${PREFIX}ghost` });
     expect(row.metadata?.destinationRaw).toBeUndefined();
   });
 });

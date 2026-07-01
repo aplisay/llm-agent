@@ -211,23 +211,27 @@ inbound/WebRTC.
 - **D2** (`2f0fab5`): `destination` = the 5th dimension in `lib/rates.js`. `resolveDestinationCost` (async, in
   `costUsageRow`) resolves the card's `destination` line → tariff → LPM → connect+perMinute, **additive** with
   the exact-dimension cost. `validateRateLines` requires a `tariff` (no inline price). **6 tests.**
-- **D3a** (`0bf1b59`, schema **v49**): `Call.outboundTrunkId` + `recordUsageMinutes` gate — set AND not owned
-  (`TrunkOrganisation`) → stamps usage `metadata.destinationRaw`. Resolver normalises the raw number with the
-  **resolved tariff's** `defaultCountry`. `/api/agent-db/call` passthrough. **4 gate tests.**
+- **D3a** (`0bf1b59` + `chargeable` revision, schema **v49→v50**): `Call.outboundTrunkId` + `recordUsageMinutes`
+  gate. Gate = the carried leg's outbound trunk is **`Trunk.chargeable`** (a positive admin flag set true on our
+  one/two public/carrier trunks whose minutes WE pay for) → stamps usage `metadata.destinationRaw`. This
+  **superseded** the initial `TrunkOrganisation`-ownership heuristic (per the user: ephemeral registration-B2BUA
+  trunks reach a customer PBX and are never chargeable; BYO/inbound trunks are just `chargeable=false`). Resolver
+  normalises raw with the **resolved tariff's** `defaultCountry`. `/api/agent-db/call` passthrough. **5 gate tests.**
 - **D4** (`86377b1`, polite-ai): `dashboard.tariffs.tsx` — bulk-text deck editor (`prefix, connect pence,
   per-minute pence, label`); rate-card editor gains a **Destination — `<tariff>`** picker entry adding a
   `{dim:'destination', tariff}` line. `Platform → Tariffs` nav. tsc + build clean.
 
 **D3b — REMAINING (worker, live call path, NOT DB-harness-testable):** stamp `Call.outboundTrunkId` on carried
-legs so the D3a gate fires. Discovery: the shared **"Aplisay Outbound"** trunk is *ephemeral* (deleted+recreated
-each boot, `agents/livekit/lib/initialise.ts:56`) with **no DB `Trunk` row**, and there's no per-org
-outbound-trunk selection today → the org-owns-trunk exemption is forward-looking. **Plan:** stamp a stable
-sentinel `outboundTrunkId = 'aplisay-shared-outbound'` on the bridged-call child
-(`agents/livekit/lib/transfer-handler.ts:329`) and the originate leg (each handler's `outbound()`), NOT on
-refer/registration/inbound/webrtc; livekit + pipecat parity + `tsup` rebuild. Nothing owns the sentinel →
-billed; a future BYO org gets a real `Trunk` row + `TrunkOrganisation` → auto-exempt. **Decisions locked (D):**
-per-minute + per-call connect fee; per-tariff default country (GB); separate dated `Tariff` table referenced by
-name. **Schema v48→v49 both need `DB_FORCE_SYNC` on staging/prod.**
+legs so the D3a gate fires. Now trivial thanks to the `chargeable` model (user, 2026-07-01): the worker stamps
+the DB id of the **persistent, admin-created, `chargeable=true` public trunk** on non-registration carried legs —
+the bridged-call child (`agents/livekit/lib/transfer-handler.ts:329`, the `createCall({modelName:'telephony:
+bridged-call'})`) and the originate leg (each handler's `outbound()`). Registration/ephemeral B2BUA trunks are
+NOT stamped (they reach a customer PBX, never our carrier). livekit + pipecat parity + `tsup` rebuild. **No magic
+sentinel** — a real `Trunk` row an admin flags `chargeable`. Provisioning: create one `Trunk` row for the public
+trunk with `chargeable=true`; the worker needs to know its id (env/const — one/two public trunks ever).
+**Decisions locked (D):** per-minute + per-call connect fee; per-tariff default country (GB); separate dated
+`Tariff` table referenced by name; **positive `Trunk.chargeable` flag** (not ownership). **Schema v48→v50 need
+`DB_FORCE_SYNC` on staging/prod.**
 
 ## Key decisions (don't re-derive — full rationale in the plan)
 
