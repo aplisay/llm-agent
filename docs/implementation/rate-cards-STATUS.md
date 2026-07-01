@@ -241,6 +241,21 @@ prefix should stamp `metadata.destinationRaw` and cost the destination. **Decisi
 per-call connect fee; per-tariff default country (GB); separate dated `Tariff` table referenced by name; **positive
 `Trunk.chargeable` flag** (not ownership). **Schema v48→v50 need `DB_FORCE_SYNC` on staging/prod.**
 
+**D5 + D6 — carrier billing complexity (peak/off-peak, rounding, connect + minimum, importer).** Real carrier
+sheets aren't flat per-minute, so (simplified for gross cost-recovery):
+- **D5** (`858deaf` + `4a5fab1`, schema v51→v52): `Tariff` gains `timezone`, `schedule` (JSONB per-weekday PEAK
+  window; off-peak = complement), `callStartMicros` (flat per-call), `roundingSeconds`(=6). `TariffPrefix` splits
+  `perMinuteMicros` → `peak/offPeakPerMinuteMicros`, and adds `minimumMicros`. Cost (lib/tariffs.js
+  `computeDestinationCost`): `callStart + max(minimum, connect + perMinute(peak?) × ceil(durationSecs/6)/60)`.
+  Peak decided by CALL START in the tariff's timezone (DST-aware via `Intl`), whole-call. 21 tariff tests green.
+- **D6** (`4694058` + `0ba2cc6`, polite-ai): tariff editor reworked for the new model (peak/off-peak/minimum deck,
+  per-weekday peak grid, timezone, call-start). **Carrier importer**: "Import carrier sheet" → pick **Magrathea
+  Telecom**, a CSV, and a markup → applies Magrathea defaults (peak 08:00–18:00 Mon–Fri, `Europe/London`, GB),
+  maps its columns (Prefix, Destination, Peak, Off-peak, Connection, Minimum — fractional **£**), converts each
+  £ → pence × markup **rounded up to the nearest 0.1p**, and creates/overwrites the named tariff. Parser math
+  verified. **⚠️ ASSUMPTION to verify on first import:** Magrathea prefixes are treated as **international digits**
+  (strip `+`/`00`/non-digits); if the sheet uses national format the prefixes won't match — adjust `parseMagrathea`.
+
 ## Key decisions (don't re-derive — full rationale in the plan)
 
 - Costing lives in **llm-agent** (hot path, **cost-at-write**/frozen). polite-ai = async Stripe consumer.
