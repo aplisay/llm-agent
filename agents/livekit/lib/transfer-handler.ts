@@ -1281,14 +1281,47 @@ export async function rejectConsultativeTransfer(
   );
 
   try {
-    // Step 1: End consultation call and create transaction logs for transcript
-    //         we do this first because later steps will likely cause an async
-    //         hangup which will cause the consultation call to be ended through
-    //         a different path.
+    // Step 1: End consultation call and create transaction logs for transcript.
+    //         We do this first because later steps cause an async hangup of the
+    //         transfer target. On the rejection path there is no other code path
+    //         that ends the consultation call record (destroyInProgressTransfer
+    //         short-circuits once setConsultInProgress(false) is set below), so
+    //         it must happen here or the record is left started but never ended.
 
     if (!finalSummary) {
       // If no transcript available, use default message
       finalSummary = "Transfer target declined the transfer";
+    }
+
+    const consultCall = getConsultCall();
+    if (consultCall) {
+      try {
+        if (transferSession) {
+          const transcript = getTransferAgentTranscript(transferSession);
+          if (transcript) {
+            const { userId, organisationId } = agent;
+            await createTransactionLog({
+              userId,
+              organisationId,
+              callId: consultCall.id,
+              type: "agent",
+              data: transcript,
+              isFinal: true,
+            });
+            logger.info(
+              { consultCallId: consultCall.id },
+              "created transaction log for consultation transcript"
+            );
+          }
+        }
+        await consultCall.end(finalSummary);
+        logger.info(
+          { consultCallId: consultCall.id },
+          "ended consultation call"
+        );
+      } catch (e) {
+        logger.error({ e }, "error ending consultation call");
+      }
     }
 
     setConsultInProgress(false);
