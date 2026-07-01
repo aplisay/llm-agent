@@ -1,7 +1,6 @@
 import { Agent, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
-import { listBuiltinAgentSummaries } from '../../lib/builtin-agents.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { isModelAllowed, allowedModelsWhere } from '../../lib/auth/model-access.js';
 
@@ -226,21 +225,10 @@ const agentList = (async (req, res) => {
     });
 
     const next = count > startOffset + agents.length ? startOffset + size : false;
-    // Read-only built-in agents (available to every tenant) sit at the top of the first page.
-    const builtins = startOffset === 0
-      ? listBuiltinAgentSummaries().filter((b) => {
-        // R1/F7 — built-ins gated by their `builtin:<id>` access prefix.
-        if (!isModelAllowed(b.id, res.locals.user?._allowedModels)) return false;
-        if (!searchRaw) return true;
-        const p = searchRaw.toLowerCase();
-        const inName = (b.name || '').toLowerCase().includes(p);
-        const inModel = (b.modelName || '').toLowerCase().includes(p);
-        if (validField === 'name') return inName;
-        if (validField === 'model') return inModel;
-        return inName || inModel;
-      })
-      : [];
-    return res.send({ agents: [...builtins, ...agents], next });
+    // Built-in platform agents (e.g. the set-builder) are intentionally NOT
+    // listed here: they are internal tooling reachable only by their well-known
+    // id (e.g. the set-builder chat) and must not surface as selectable agents.
+    return res.send({ agents, next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');

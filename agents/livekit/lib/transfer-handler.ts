@@ -1081,8 +1081,16 @@ async function finaliseConsultativeTransfer(
       logger.info({ consultCallId: consultCall.id }, "ended consultation call");
     }
 
-    // Step 6: Finalize the call record
-    await finaliseBridgedCallFn();
+    // Step 6: Finalize the call record.
+    // Only the bridge (moveParticipant) branch leaves the caller and target
+    // bridged INSIDE the LiveKit room, so only it should emit a
+    // telephony:bridged-call child. On the REFER branch the caller has been
+    // REFER'd out of the room (handed to the far end), so there is no in-room
+    // bridge; the original call is ended by the participant-disconnect handler
+    // when the REFER'd caller drops, exactly as the blind-REFER path relies on.
+    if (!useRefer) {
+      await finaliseBridgedCallFn();
+    }
 
     return {
       status: "OK",
@@ -1400,18 +1408,9 @@ async function handleConsultativeTransfer(
   context: TransferContext,
   effectiveCallerId: string,
   effectiveAplisayId: string,
-  finaliseBridgedCallFn: () => Promise<Call | null>
+  finaliseBridgedCallFn: () => Promise<Call | null>,
+  useRefer: boolean
 ): Promise<TransferResult> {
-  const { participant, registrationOriginated, trunkInfo } = context;
-
-  // Check canRefer capability
-  const canRefer = canParticipantRefer(
-    participant,
-    registrationOriginated,
-    trunkInfo
-  );
-  const isSip = isSipParticipant(participant);
-
   // Set up promise to wait for TransferAgent decision
   let resolveDecision: (
     accepted: boolean,
@@ -1444,18 +1443,18 @@ async function handleConsultativeTransfer(
   };
 
   try {
-    // Start consultation (this will set up the consultation room and TransferAgent)
-    // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-    // When fixed, restore: if (isSip && canRefer) to use Case 4 (REFER) for registration-originated calls
+    // Start consultation (this will set up the consultation room and
+    // TransferAgent). useRefer decides how the eventual finalisation hands the
+    // caller over: SIP REFER (caller sent to the target, LiveKit drops out of
+    // the media path) or bridge (target moved into the caller's room).
     let startResult: TransferResult;
 
     startResult = await startConsultativeTransfer(
       consultativeContext,
       effectiveCallerId,
       effectiveAplisayId,
-      false // canRefer && isSip && !useBridged
+      useRefer
     );
-    // }
 
     // If starting consultation failed, clear flag and return error
     if (startResult.status !== "OK") {
@@ -1489,16 +1488,13 @@ async function handleConsultativeTransfer(
         const decision = await Promise.race([decisionPromise, timeoutPromise]);
 
         if (decision.accepted) {
-          // Finalize the transfer
-          // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-
+          // Finalize the transfer using the resolved mode (REFER or bridge).
           let finaliseResult: TransferResult;
           finaliseResult = await finaliseConsultativeTransfer(
             consultativeContext,
             finaliseBridgedCallFn,
-            false
+            useRefer
           );
-          // }
 
           if (finaliseResult.status === "OK") {
             context.setTransferState("none", "Transfer completed successfully");
@@ -1692,13 +1688,24 @@ export async function handleTransfer(
     );
   };
 
-  // Route based on operation and participant capabilities
-  // Check if forceBridged is set to override REFER capability
-  // Use effectiveForceBridged which considers both endpoint options and args
+  // Route based on operation and participant capabilities.
+  // useRefer: complete the final hop via SIP REFER when the participant is a
+  // REFER-capable SIP leg (registration endpoints default to canRefer=true) and
+  // bridging has not been forced (forceBridged / options.forceBridged). This now
+  // governs BOTH blind and consultative transfers, so a REFER-capable
+  // consultative transfer hands the caller to the target instead of bridging
+  // them inside the LiveKit room — and therefore does not emit a
+  // telephony:bridged-call child.
   const useBridged = effectiveForceBridged;
-  
+  const useRefer = isSip && canRefer && !useBridged;
+
+  logger.info(
+    { operation, isSip, canRefer, useBridged, useRefer },
+    "resolved transfer mode"
+  );
+
   if (operation === "blind") {
-    if (isSip && canRefer && !useBridged) {
+    if (useRefer) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context);
     } else {
@@ -1715,7 +1722,8 @@ export async function handleTransfer(
       context,
       effectiveCallerId,
       effectiveAplisayId,
-      finaliseBridgedCallFn
+      finaliseBridgedCallFn,
+      useRefer
     );
   } else {
     throw new Error(`Unknown transfer operation: ${operation}`);
