@@ -256,6 +256,19 @@ sheets aren't flat per-minute, so (simplified for gross cost-recovery):
   verified. **⚠️ ASSUMPTION to verify on first import:** Magrathea prefixes are treated as **international digits**
   (strip `+`/`00`/non-digits); if the sheet uses national format the prefixes won't match — adjust `parseMagrathea`.
 
+**D7 — import UX + overlap fix (from live feedback).**
+- **Overlap** (`e57f2f8`, schema v52→v53): DROPPED the tariffs period-overlap EXCLUDE constraint — resolveTariff
+  (greatest start_date ≤ billedAt wins) makes overlapping/open-ended same-name versions unambiguous, so it was
+  too strict. Unique `(name, start_date)` remains.
+- **Big decks + import** (`a57c373` llm-agent + `a49c29e` polite-ai): a carrier sheet is 100k+ prefix rows (~20-25MB
+  JSON). llm-agent: 48mb `express.json` for `/api/tariffs` only. polite-ai: import moved INTO the editor and parses
+  the CSV **in the browser** (no multi-MB upload → fixes "Payload Too Large"), populating the deck + carrier defaults
+  for review before save; deck held in state (textarea for ≤2000 rows, summary for larger); a header-only edit of a
+  large tariff preserves its deck (prefixes omitted); **save is a JSON submit** (`request.json()`); loader loads full
+  decks only for small tariffs; name is a combobox (datalist) for supersede-by-name. **Schema v53 needs DB_FORCE_SYNC.**
+  **Still to verify:** end-to-end import of the real 11MB Magrathea sheet (prefix format assumption; save/round-trip
+  of a very large deck).
+
 ## Key decisions (don't re-derive — full rationale in the plan)
 
 - Costing lives in **llm-agent** (hot path, **cost-at-write**/frozen). polite-ai = async Stripe consumer.
