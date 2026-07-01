@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { User, Organisation } from '../../../lib/database.js';
 import { auth } from '../../../lib/auth/index.js';
+import { defaultRateHistoryEntry } from '../../../lib/rates.js';
 
 /**
  * POST /api/users/signup — PUBLIC (skip-listed in middleware/auth.js).
@@ -24,7 +25,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // let a sign-up attach itself to someone else's existing (real) organisation.
 async function createProvisionalOrg(orgName, options = {}) {
   if (!orgName) return null;
-  const org = await Organisation.create({ id: randomUUID(), name: orgName, status: 'provisional' }, options);
+  // Provisional orgs start on the platform default rate too, so a self-signup org
+  // is costed from the moment it is activated (null = untracked, as before).
+  const rateHistory = await defaultRateHistoryEntry();
+  const org = await Organisation.create(
+    { id: randomUUID(), name: orgName, status: 'provisional', ...(rateHistory ? { rateHistory } : {}) },
+    options,
+  );
   return org.id;
 }
 

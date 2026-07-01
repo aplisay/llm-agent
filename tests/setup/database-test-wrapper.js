@@ -92,6 +92,7 @@ export async function setupRealDatabase() {
   };
 
   // Populate the exported variables for drop-in replacement
+  Metadata = dbModule.Metadata;
   Agent = dbModule.Agent;
   AgentSet = dbModule.AgentSet;
   Instance = dbModule.Instance;
@@ -126,6 +127,7 @@ export async function teardownRealDatabase() {
     Object.assign(process.env, realDb.originalEnv);
 
     // Clear the exported variables
+    Metadata = undefined;
     Agent = undefined;
     AgentSet = undefined;
     Instance = undefined;
@@ -161,6 +163,6 @@ export function getRealDatabase() {
 
 // Export the same objects as database.js for drop-in replacement
 // These will be populated after setupRealDatabase() is called
-export let Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
+export let Metadata, Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
 export let Op, Sequelize;
 export let databaseStarted, stopDatabase;

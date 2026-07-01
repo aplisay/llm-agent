@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Organisation } from '../../lib/database.js';
 import { requirePermission, actorCanGrant, validateRbacFields } from '../../lib/auth/permissions.js';
 import { adminScope } from '../../lib/auth/admin-scope.js';
+import { defaultRateHistoryEntry } from '../../lib/rates.js';
 
 /**
  * /api/organisations (collection) — RBAC-gated (`organisation:*`), org-scoped.
@@ -64,6 +65,9 @@ export default function (logger) {
       return res.status(403).json({ message: 'forbidden', detail: 'You may only set an org baseline within capabilities you hold.' });
     }
     try {
+      // Stamp the platform default rate on the new org so it is costed from the
+      // start (null when no default is configured -> untracked, as before).
+      const rateHistory = await defaultRateHistoryEntry();
       const org = await Organisation.create({
         id: randomUUID(),
         name,
@@ -72,6 +76,7 @@ export default function (logger) {
         role,
         permissions,
         allowedModels: req.body?.allowedModels ?? null,
+        ...(rateHistory ? { rateHistory } : {}),
       });
       return res.status(201).send(org);
     } catch (err) {

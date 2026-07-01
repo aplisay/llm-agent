@@ -1,6 +1,6 @@
 import { RateCard } from '../../lib/database.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
-import { validateRateLines } from '../../lib/rates.js';
+import { validateRateLines, getDefaultRateName } from '../../lib/rates.js';
 
 /**
  * /api/rates (collection) — the named, date-ranged pricing rate cards that value
@@ -15,8 +15,14 @@ export default function (logger) {
     if (!requirePermission(res, 'rate', 'read')) return;
     try {
       const where = req.query?.name ? { name: req.query.name } : {};
-      const rates = await RateCard.findAll({ where, order: [['name', 'ASC'], ['startDate', 'ASC']] });
-      return res.send({ rates });
+      const [rates, defaultRateName] = await Promise.all([
+        RateCard.findAll({ where, order: [['name', 'ASC'], ['startDate', 'ASC']] }),
+        getDefaultRateName(),
+      ]);
+      // `defaultRateName` is the platform default (the name a new org starts on);
+      // included here so the dashboard can badge the default in the list without a
+      // second round-trip. See GET /api/rates/default for the single-value read.
+      return res.send({ rates, defaultRateName });
     } catch (err) {
       req.log.error(err, 'listing rate cards');
       return res.status(500).send({ error: err.message });
@@ -28,7 +34,7 @@ export default function (logger) {
     tags: ['Rates'],
     parameters: [{ in: 'query', name: 'name', required: false, schema: { type: 'string' }, description: 'Filter to one rate name (its full interval history).' }],
     responses: {
-      200: { description: 'Rate cards' },
+      200: { description: 'Rate cards + the platform `defaultRateName` (the name a new org is assigned at creation; null when unset).' },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
