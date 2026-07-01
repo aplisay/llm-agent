@@ -91,7 +91,7 @@ describe('destination dimension (D2)', () => {
 
   it('charges audio-path + destination (connect + per-minute) additively', async () => {
     // 2-min leg to 447970…: audio-path 2p×2 = 400_000; destination 5p connect + 8p×2 = 2_100_000.
-    const row = await mkBridgedRow({ metadata: { destination: '447970123456' } });
+    const row = await mkBridgedRow({ metadata: { destinationRaw: '447970123456' } });
     await costUsageRow(row);
     await row.reload();
     expect(row.costStatus).toBe('matched');
@@ -105,13 +105,25 @@ describe('destination dimension (D2)', () => {
   });
 
   it('applies longest-prefix (44 vs 447970) and charges connect only once', async () => {
-    const row = await mkBridgedRow({ quantity: 60_000, metadata: { destination: '4415397761' } }); // 1 min, matches '44'
+    const row = await mkBridgedRow({ quantity: 60_000, metadata: { destinationRaw: '4415397761' } }); // 1 min, matches '44'
     await costUsageRow(row);
     await row.reload();
     const dest = row.metadata.costBreakdown.find((b) => b.dim === 'destination');
     expect(dest.prefix).toBe('44');
     expect(Number(dest.costMicros)).toBe(100_000); // 0 connect + 1p×1
     expect(Number(row.costMicros)).toBe(200_000 + 100_000);
+  });
+
+  it('normalises a LOCAL dialled number with the tariff default country before matching', async () => {
+    // Raw '07970…' (GB local) → the resolver normalises via the tariff's defaultCountry
+    // (GB → 447970…) then longest-prefix matches the 447970 deck entry.
+    const row = await mkBridgedRow({ quantity: 60_000, metadata: { destinationRaw: '07970123456' } });
+    await costUsageRow(row);
+    await row.reload();
+    const dest = row.metadata.costBreakdown.find((b) => b.dim === 'destination');
+    expect(dest.number).toBe('447970123456');
+    expect(dest.prefix).toBe('447970');
+    expect(Number(dest.costMicros)).toBe(500_000 + 800_000); // connect + 8p×1
   });
 
   it('does NOT destination-charge a row with no destination (non-billable leg)', async () => {
@@ -123,7 +135,7 @@ describe('destination dimension (D2)', () => {
   });
 
   it('does NOT destination-charge when no tariff prefix matches', async () => {
-    const row = await mkBridgedRow({ quantity: 60_000, metadata: { destination: '33123456' } });
+    const row = await mkBridgedRow({ quantity: 60_000, metadata: { destinationRaw: '33123456' } });
     await costUsageRow(row);
     await row.reload();
     expect(Number(row.costMicros)).toBe(200_000); // audio-path only

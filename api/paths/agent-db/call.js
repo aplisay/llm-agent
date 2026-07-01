@@ -15,7 +15,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const callCreate = (async (req, res) => {
-  let { id, parentId, userId, organisationId, instanceId, agentId, platform, platformCallId, calledId, callerId, modelName, options, metadata } = req.body;
+  let { id, parentId, userId, organisationId, instanceId, agentId, platform, platformCallId, calledId, callerId, modelName, outboundTrunkId, options, metadata } = req.body;
   
   if (!userId || !organisationId || !instanceId || !agentId || !platform) {
     return res.status(400).send({ error: 'Missing required fields: userId, organisationId, instanceId, agentId, platform' });
@@ -38,6 +38,7 @@ const callCreate = (async (req, res) => {
         if (calledId !== undefined) updateData.calledId = calledId;
         if (callerId !== undefined) updateData.callerId = callerId;
         if (modelName !== undefined) updateData.modelName = modelName;
+        if (outboundTrunkId !== undefined) updateData.outboundTrunkId = outboundTrunkId;
         if (options !== undefined) updateData.options = options;
         if (metadata !== undefined) updateData.metadata = metadata;
 
@@ -58,6 +59,7 @@ const callCreate = (async (req, res) => {
       calledId,
       callerId,
       modelName,
+      outboundTrunkId,
       options,
       metadata
     });
