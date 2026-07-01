@@ -89,8 +89,20 @@ describe('tariff core (pure)', () => {
     expect(off.costMicros).toBe(1_000 + 50_000 + 30_000);
   });
 
+  it('applies the minimum carrier charge as a floor on connect + duration', () => {
+    const tariff = { timezone: 'Europe/London', callStartMicros: 1_000, roundingSeconds: 6, schedule: {} };
+    const prefix = { connectMicros: 0, peakPerMinuteMicros: 120_000, offPeakPerMinuteMicros: 60_000, minimumMicros: 20_000 };
+    // 6s off-peak (no schedule) → 0.1 min → 60_000×0.1 = 6_000 < 20_000 minimum → carrier 20_000; + callStart.
+    const tiny = computeDestinationCost(tariff, prefix, { billedAt: new Date('2026-01-10T10:00:00Z'), durationMs: 6_000 });
+    expect(tiny.minimumMicros).toBe(20_000);
+    expect(tiny.costMicros).toBe(1_000 + 20_000);
+    // A long call clears the minimum → priced on connect + per-minute.
+    const long = computeDestinationCost(tariff, prefix, { billedAt: new Date('2026-01-10T10:00:00Z'), durationMs: 120_000 });
+    expect(long.costMicros).toBe(1_000 + 120_000); // 2 min × 60_000 = 120_000 > minimum
+  });
+
   it('validates prefix decks, schedule and tariff input', () => {
-    const good = { connectMicros: 0, peakPerMinuteMicros: 20000, offPeakPerMinuteMicros: 10000 };
+    const good = { connectMicros: 0, peakPerMinuteMicros: 20000, offPeakPerMinuteMicros: 10000, minimumMicros: 1000 };
     expect(validatePrefixes([{ prefix: '447', ...good }])).toBeNull();
     expect(validatePrefixes([{ prefix: '44a', ...good }])).toMatch(/1-15 digits/);
     expect(validatePrefixes([{ prefix: '44', ...good }, { prefix: '44', ...good }])).toMatch(/duplicate/);

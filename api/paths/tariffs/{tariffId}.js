@@ -83,6 +83,7 @@ export default function (logger) {
                 connectMicros: Math.round(Number(p.connectMicros) || 0),
                 peakPerMinuteMicros: Math.round(Number(p.peakPerMinuteMicros) || 0),
                 offPeakPerMinuteMicros: Math.round(Number(p.offPeakPerMinuteMicros) || 0),
+                minimumMicros: Math.round(Number(p.minimumMicros) || 0),
                 label: p.label ?? null,
               })),
               { transaction },

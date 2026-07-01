@@ -68,6 +68,7 @@ export default function (logger) {
               connectMicros: Math.round(Number(p.connectMicros) || 0),
               peakPerMinuteMicros: Math.round(Number(p.peakPerMinuteMicros) || 0),
               offPeakPerMinuteMicros: Math.round(Number(p.offPeakPerMinuteMicros) || 0),
+              minimumMicros: Math.round(Number(p.minimumMicros) || 0),
               label: p.label ?? null,
             })),
             { transaction },
@@ -111,7 +112,7 @@ export default function (logger) {
               description: { type: 'string', nullable: true },
               prefixes: {
                 type: 'array',
-                description: 'Prefix deck: each { prefix (intl digits), connectMicros, peakPerMinuteMicros, offPeakPerMinuteMicros, label? } — micro-pence.',
+                description: 'Prefix deck: each { prefix (intl digits), connectMicros, peakPerMinuteMicros, offPeakPerMinuteMicros, minimumMicros, label? } — micro-pence.',
                 items: {
                   type: 'object',
                   required: ['prefix'],
@@ -120,6 +121,7 @@ export default function (logger) {
                     connectMicros: { type: 'integer', default: 0 },
                     peakPerMinuteMicros: { type: 'integer', default: 0 },
                     offPeakPerMinuteMicros: { type: 'integer', default: 0 },
+                    minimumMicros: { type: 'integer', default: 0 },
                     label: { type: 'string', nullable: true },
                   },
                 },
