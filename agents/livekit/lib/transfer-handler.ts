@@ -877,6 +877,46 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
     setTransferSession(transferSession);
 
+    // Persist the consultation conversation onto the consult CALL RECORD.
+    // Historically the consult leg had NO transcript wiring at all (only usage
+    // metering below), so its transcript was always empty. Mirror the main
+    // session's ConversationItemAdded -> transaction-log capture, but target the
+    // consult call: buffer each turn and attach the buffer as the consult call's
+    // batched transaction logs, which consultCall.end() flushes on every terminal
+    // path (accept / reject / init-fail / destroy). See api-client call.end and
+    // finaliseConsultativeTransfer/endConsultationRecord.
+    const consultTranscriptLogs: Array<{
+      userId: string;
+      organisationId: string;
+      callId: string;
+      type: string;
+      data: string;
+      isFinal: boolean;
+      createdAt: Date;
+    }> = [];
+    transferSession.on(
+      voice.AgentSessionEventTypes.ConversationItemAdded,
+      ({
+        item: { type, role, content },
+        createdAt,
+      }: voice.ConversationItemAddedEvent) => {
+        if (type !== "message") return;
+        const text = content.join("");
+        if (!text) return;
+        consultTranscriptLogs.push({
+          userId: context.agent.userId,
+          organisationId: context.agent.organisationId,
+          // Resolved once the consult call exists; turns captured before the
+          // record is created are back-filled where it is attached below.
+          callId: context.getConsultCall()?.id ?? "",
+          type: role === "user" ? "user" : "agent",
+          data: JSON.stringify(text),
+          isFinal: true,
+          createdAt: createdAt ? new Date(createdAt) : new Date(),
+        });
+      },
+    );
+
     // Meter the consult leg's llm/tts/stt onto the consult call record. The
     // consult LLM is the primary's, so resolve vendors from the primary model.
     // Per-session, so it never double-counts the primary call's usage.
@@ -926,6 +966,12 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       },
     });
     context.setConsultCall(consultCallRecord);
+    // Attach the buffered consult transcript so consultCall.end() flushes it, and
+    // back-fill callId for any turns captured before this record existed.
+    for (const consultLog of consultTranscriptLogs) {
+      if (!consultLog.callId) consultLog.callId = consultCallRecord.id;
+    }
+    (consultCallRecord as any).batchedTransactionLogs = consultTranscriptLogs;
     consultUsageMeters.set(consultCallRecord, consultUsageMeter);
     logger.info(
       { consultCallId: consultCallRecord.id, consultRoomName },
