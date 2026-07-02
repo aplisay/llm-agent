@@ -692,6 +692,39 @@ components:
             "*7":
               agent: "9a1b0c2d-7777-8888-9999-000011112222"
               includeHistory: false
+        bridgedTransferTranscribe:
+          description: |-
+            Transcribe the human↔human segment of a bridged transfer (the conversation between the
+            caller and the transfer target after the AI has left the call). When enabled, a
+            speaker-labelled transcript of the bridged segment is stored on the bridged-segment call
+            record, and — when combined with `bridgedTransferToAgent` — is included in the incoming
+            agent's prompt when the transfer target hands the caller back by DTMF.
+
+            Set `true` to enable with defaults, or an object to tune the transcription engine where
+            the gateway runs its own STT (the voiceblender topology; the sipbridge topology taps the
+            bridged audio to the worker and uses the agent's configured STT, ignoring `provider`).
+            Media stays on the gateway fast path in all cases — transcription is a tap, not a detour.
+            See docs/call-transfers.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                provider:
+                  description: Gateway-native STT provider (voiceblender topology only).
+                  type: string
+                  enum: [elevenlabs, deepgram, azure]
+                  default: elevenlabs
+                language:
+                  description: BCP-47 language tag hint for the transcription engine.
+                  type: string
+                  example: en
+          example:
+            provider: deepgram
+            language: en
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize

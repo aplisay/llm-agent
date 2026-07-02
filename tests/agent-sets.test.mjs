@@ -470,6 +470,30 @@ describe('Agent sets', () => {
       }
     });
 
+    test('validates bridgedTransferTranscribe shapes', async () => {
+      for (const [transcribe, ok, pattern] of [
+        [true, true],
+        [{ provider: 'deepgram', language: 'en-US' }, true],
+        [{ provider: 'whisper' }, false, /provider must be one of/],
+        [{ language: 'English!' }, false, /BCP-47/],
+        [{ bogus: 1 }, false, /unknown field/],
+        ['yes', false, /boolean or an object/]
+      ]) {
+        const res = makeRes(user);
+        await createAgent(makeReq({
+          modelName: VOICE_MODEL,
+          prompt: 'front desk',
+          options: { bridgedTransferTranscribe: transcribe }
+        }), res);
+        if (ok) {
+          expect(res.statusCode).toBe(200);
+        } else {
+          expect(res.statusCode).toBe(400);
+          expect(JSON.stringify(res.body)).toMatch(pattern);
+        }
+      }
+    });
+
     test('plain POST /agents accepts a UUID target and rejects labels', async () => {
       const targetRes = makeRes(user);
       await createAgent(makeReq({ modelName: VOICE_MODEL, prompt: 'target' }), targetRes);
