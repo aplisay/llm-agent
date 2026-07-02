@@ -25,6 +25,7 @@ import {
   inactivityAwayTimeoutSecs,
 } from "./voice-session-factory.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
+import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
 export async function runAgentWorker({
   ctx,
@@ -53,6 +54,7 @@ export async function runAgentWorker({
   setActiveAgentCall,
   startHandoverTone,
   stopHandoverTone,
+  registerBridgedTakeover,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -61,6 +63,13 @@ export async function runAgentWorker({
     state: "none" | "dialling" | "talking" | "rejected" | "failed";
     description: string;
   };
+  /**
+   * Hands the worker the live human→agent takeover capability for
+   * `options.bridgedTransferToAgent` (see bridged-transfer-to-agent.ts); the
+   * transfer handler reads it when arming the post-bridge DTMF watch.
+   * Re-registered with null on teardown.
+   */
+  registerBridgedTakeover?: (rt: BridgedTakeoverRuntime | null) => void;
 }) {
   /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
   let useRecorderIO = false;
@@ -574,6 +583,9 @@ export async function runAgentWorker({
     }
     isCleaningUp = true;
 
+    // The call is coming down: no bridged human→agent takeover can start now.
+    registerBridgedTakeover?.(null);
+
     const exitStatus: {
       callEnded: boolean;
       roomDeleted: boolean;
@@ -875,11 +887,34 @@ export async function runAgentWorker({
    * transcripts from here on are attributed to the new agent + model, and the
    * original call ends with a pointer to its continuation. Prompt-only
    * (in-place) swaps deliberately do NOT do this.
+   *
+   * `opts.takeover` switches the machinery into bridged human→agent takeover
+   * mode (options.bridgedTransferToAgent): the "call being continued" is the
+   * telephony:bridged-call record rather than getActiveCall(), the child's
+   * parentId points at the original agent call, the bridge is dropped by the
+   * `onReserved` hook once the concurrency slot is held (a busy rejection
+   * still throws before anything is touched, leaving the humans talking),
+   * and the parent record is NOT ended here — the hook already ended the
+   * bridged record with its own reason, and the original agent call ended at
+   * bridge time.
    */
   const restartWithAgent = async (
     newAgentDef: Agent,
     instructions: string,
+    opts?: {
+      takeover?: {
+        /** Field source for the continuation record (the bridged call). */
+        parentCall: Call;
+        /** parentId for the continuation record (the original agent call). */
+        parentId: string;
+        /** Drops the bridge once the continuation slot is reserved. */
+        onReserved: () => Promise<void>;
+        /** Transcript marker, injected onto the NEW call record. */
+        announcement: string;
+      };
+    },
   ): Promise<void> => {
+    const takeover = opts?.takeover;
     const targetModelName = newAgentDef.modelName!;
     const targetHandler = targetModelName.split(":")[0];
     if (targetHandler !== "livekit") {
@@ -888,11 +923,11 @@ export async function runAgentWorker({
       );
     }
 
-    const oldCall = getActiveCall();
+    const oldCall = takeover?.parentCall ?? getActiveCall();
     // Reserve the continuation call (concurrency slot) BEFORE touching the
     // running session, so a busy rejection leaves the current agent intact.
     const newCall = (await createCall({
-      parentId: oldCall.id,
+      parentId: takeover?.parentId ?? oldCall.id,
       userId: oldCall.userId,
       organisationId: oldCall.organisationId,
       instanceId: oldCall.instanceId,
@@ -910,14 +945,32 @@ export async function runAgentWorker({
     })) as Call;
     await newCall.start();
 
-    // Slot reserved and the continuation call accepted: the handover will
-    // proceed. Announce it now — before the outgoing session is torn down and
-    // the incoming agent greets — so the transcript marker precedes the new
-    // agent's first turn. A busy rejection throws at newCall.start() above,
-    // before this point, so a failed transfer leaves no marker.
-    sendMessage({
-      inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
-    });
+    if (takeover) {
+      // Slot held: commit the takeover — drop the transfer target and end the
+      // bridged record. Belt-and-braces: the hook is best-effort internally,
+      // but if it does throw, release the reserved call and abort with the
+      // bridge in whatever state the hook left it (the humans keep talking).
+      try {
+        await takeover.onReserved();
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        await newCall
+          .end(`bridged agent takeover aborted: ${error.message}`)
+          .catch(() => undefined);
+        throw error;
+      }
+    } else {
+      // Slot reserved and the continuation call accepted: the handover will
+      // proceed. Announce it now — before the outgoing session is torn down and
+      // the incoming agent greets — so the transcript marker precedes the new
+      // agent's first turn. A busy rejection throws at newCall.start() above,
+      // before this point, so a failed transfer leaves no marker. (Takeover
+      // mode announces later, onto the NEW call record — the outgoing records
+      // are already ended, so a marker batched onto them would be lost.)
+      sendMessage({
+        inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
+      });
+    }
 
     // Cover the dead-air gap: from here until the incoming agent first speaks
     // (or fails) the caller would otherwise hear silence while the old session
@@ -976,12 +1029,19 @@ export async function runAgentWorker({
       resolvedVoiceMode = voiceMode;
       setActiveAgentCall?.(newCall);
 
-      // Hand the records over: the original call ends pointing at its child.
-      await oldCall
-        .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
-        .catch((e) => {
-          logger.warn({ e }, "agent handover: ending original call failed");
-        });
+      if (takeover) {
+        // The marker lands on the NEW call record (activeAgentCall just
+        // flipped above) — the outgoing agent call and the bridged record
+        // are both already ended.
+        sendMessage({ inject: takeover.announcement });
+      } else {
+        // Hand the records over: the original call ends pointing at its child.
+        await oldCall
+          .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
+          .catch((e) => {
+            logger.warn({ e }, "agent handover: ending original call failed");
+          });
+      }
 
       if (recordingOptions?.enabled) {
         logger.warn(
@@ -1122,6 +1182,32 @@ export async function runAgentWorker({
       getTransferState,
       onAgentTransfer,
     });
+
+  // ---- Bridged human→agent takeover (options.bridgedTransferToAgent) ----
+  // Expose the live handover machinery to the transfer handler: when a
+  // bridged transfer completes it arms a DTMF watch on the transfer target
+  // (see bridged-transfer-to-agent.ts), and a match re-enters here to start
+  // the mapped agent's stack on the room the caller is still connected to.
+  // The history snapshot is taken by the arming code at bridge time.
+  registerBridgedTakeover?.({
+    getConversationHistoryText: () =>
+      conversationHistory
+        .map(
+          ({ role, text }) => `${role === "user" ? "Caller" : "Agent"}: ${text}`,
+        )
+        .join("\n"),
+    takeover: ({ newAgentDef, instructions, parentCall, parentId, onReserved }) =>
+      restartWithAgent(newAgentDef, instructions, {
+        takeover: {
+          parentCall,
+          parentId,
+          onReserved,
+          announcement: `Human transfer target handed the call back; continuing with agent ${
+            newAgentDef.name || newAgentDef.id
+          }`,
+        },
+      }),
+  });
 
   try {
     // Wrap setup operations with timeout

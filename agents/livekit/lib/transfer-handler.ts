@@ -29,6 +29,11 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import {
+  parseBridgedTransferMap,
+  armBridgedTransferWatch,
+  type BridgedTakeoverRuntime,
+} from "./bridged-transfer-to-agent.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -95,6 +100,10 @@ export interface TransferContext {
   getTransferState: () => { state: TransferState; description: string };
   // Bridged call record setter
   setBridgedCallRecord: (call: Call | null) => void;
+  // Live human→agent takeover capability registered by the voice runtime
+  // (options.bridgedTransferToAgent); null/absent when no runtime is up
+  // (e.g. transfer-only fallback mode).
+  getBridgedTakeover?: () => BridgedTakeoverRuntime | null;
   // Promise resolvers for consultative transfer decision
   resolveConsultativeDecision?: (
     accepted: boolean,
@@ -370,6 +379,69 @@ async function finaliseBridgedCall(
 }
 
 /**
+ * Arm the post-bridge human→agent DTMF watch (options.bridgedTransferToAgent)
+ * once a bridged transfer has completed — the blind bridge and the bridged
+ * consultative finalise both land here. No-op unless the option is set, the
+ * bridged call record exists, and the voice runtime has registered its
+ * takeover capability (transfer-only fallback mode has none). The transcript
+ * snapshot is taken here, at bridge time, because the superseded agent
+ * session may be torn down while the humans talk.
+ */
+function armBridgedTransferToAgentWatch(
+  context: TransferContext,
+  bridgedCallRecord: Call | null,
+  targetIdentity: string,
+): void {
+  const targets = parseBridgedTransferMap(context.options);
+  if (!targets) return;
+  const runtime = context.getBridgedTakeover?.();
+  if (!runtime) {
+    logger.warn(
+      { roomName: context.room?.name },
+      "bridgedTransferToAgent configured but no takeover runtime registered; watch not armed",
+    );
+    return;
+  }
+  if (!bridgedCallRecord) {
+    logger.warn(
+      { roomName: context.room?.name },
+      "bridgedTransferToAgent: no bridged call record; watch not armed",
+    );
+    return;
+  }
+  const rtcRoom: Room | null | undefined = context.ctx?.room;
+  if (!rtcRoom || !context.room?.name) {
+    logger.warn(
+      { hasRtcRoom: Boolean(rtcRoom), roomName: context.room?.name },
+      "bridgedTransferToAgent: no connected room; watch not armed",
+    );
+    return;
+  }
+  // Same inter-digit timeout as ordinary DTMF input buffering.
+  const dtmfTimeoutOption = context.options?.dtmfTimeout;
+  const dtmfTimeoutMs =
+    typeof dtmfTimeoutOption === "number" && dtmfTimeoutOption >= 0
+      ? Math.max(250, dtmfTimeoutOption)
+      : 1500;
+  armBridgedTransferWatch({
+    room: rtcRoom,
+    roomName: context.room.name!,
+    targetIdentity,
+    callerIdentity: context.participant?.identity ?? null,
+    targets,
+    dtmfTimeoutMs,
+    bridgedCall: bridgedCallRecord,
+    agent: context.agent,
+    historyText: runtime.getConversationHistoryText(),
+    runtime,
+    setBridgedParticipant: context.setBridgedParticipant,
+    setBridgedCallRecord: context.setBridgedCallRecord,
+    removeParticipant: (name, identity) =>
+      roomService.removeParticipant(name, identity),
+  });
+}
+
+/**
  * Case 1: Blind transfer by bridging
  * Used for WebRTC or SIP participants without canRefer capability
  */
@@ -421,7 +493,15 @@ async function handleBlindBridgeTransfer(
 
     logger.info({ p }, "new participant created (blind bridge)");
     setBridgedParticipant(p);
-    await finaliseBridgedCallFn();
+    const bridgedCallRecord = await finaliseBridgedCallFn();
+
+    // Human→agent hand-back (options.bridgedTransferToAgent): watch the
+    // transfer target's DTMF for the life of the bridge. No-op when unset.
+    armBridgedTransferToAgentWatch(
+      context,
+      bridgedCallRecord,
+      p.participantIdentity,
+    );
 
     setTransferState("none", "Transfer completed successfully");
     return {
@@ -1236,7 +1316,16 @@ async function finaliseConsultativeTransfer(
       await endConsultationRecord();
       await deleteConsultationRoom();
 
-      await finaliseBridgedCallFn();
+      const bridgedCallRecord = await finaliseBridgedCallFn();
+
+      // Human→agent hand-back (options.bridgedTransferToAgent): the target is
+      // now bridged into the caller room under the consult identity — watch
+      // its DTMF for the life of the bridge. No-op when unset.
+      armBridgedTransferToAgentWatch(
+        context,
+        bridgedCallRecord,
+        transferTargetIdentity,
+      );
     }
 
     return {
@@ -1796,7 +1885,16 @@ export async function handleTransfer(
   // Check if forceBridged is set from phone registration endpoint options
   // This overrides args.forceBridged if set to true
   const forceBridgedFromEndpoint = context.forceBridged === true;
-  const effectiveForceBridged = forceBridgedFromEndpoint || args.forceBridged === true;
+  // Human-to-agent transfers (options.bridgedTransferToAgent): while the map
+  // is set, the transfer target's DTMF must remain observable AFTER the
+  // handover, so transfers are forced onto the bridged path — a SIP REFER
+  // hands the call off-platform where no DTMF can be seen. Overrides the
+  // REFER resolution for both blind transfers and the consultative finalise.
+  const bridgedTransferToAgent = parseBridgedTransferMap(options) !== null;
+  const effectiveForceBridged =
+    forceBridgedFromEndpoint ||
+    args.forceBridged === true ||
+    bridgedTransferToAgent;
 
   logger.info(
     {
@@ -1812,6 +1910,7 @@ export async function handleTransfer(
       canRefer,
       forceBridged: args.forceBridged,
       forceBridgedFromEndpoint,
+      bridgedTransferToAgent,
       effectiveForceBridged,
       aplisayId,
     },
