@@ -160,3 +160,58 @@ test("composeTakeoverPrompt: history carried by default, dropped when off", () =
   assert.match(fresh, /Treat this as a fresh conversation/);
   assert.doesNotMatch(fresh, /# Conversation/);
 });
+
+test("composeTakeoverPrompt: bridged-segment transcript carried when present", () => {
+  const agent = { id: "a1", prompt: "You are the booking agent." } as any;
+  const bridge = "> caller: can I book tuesday\n> transfer target: sure\n";
+  const prompt = composeTakeoverPrompt(
+    agent,
+    "Caller: hi\nAgent: hello",
+    true,
+    bridge,
+  );
+  assert.match(prompt, /# Conversation between the caller and the previous agent/);
+  assert.match(prompt, /Caller: hi/);
+  assert.match(
+    prompt,
+    /# Conversation between the caller and the human transfer target/,
+  );
+  assert.match(prompt, /> caller: can I book tuesday/);
+  // With a bridge transcript, the "not recorded" note is replaced by it.
+  assert.doesNotMatch(prompt, /was not recorded/);
+  // Bridge section comes after the pre-transfer history section (pipecat order).
+  assert.ok(
+    prompt.indexOf("# Conversation between the caller and the previous agent") <
+      prompt.indexOf(
+        "# Conversation between the caller and the human transfer target",
+      ),
+  );
+});
+
+test("composeTakeoverPrompt: bridge transcript without pre-transfer history", () => {
+  const agent = { id: "a1", prompt: "You are the booking agent." } as any;
+  const prompt = composeTakeoverPrompt(agent, "", true, "> caller: hello\n");
+  assert.doesNotMatch(
+    prompt,
+    /# Conversation between the caller and the previous agent/,
+  );
+  assert.match(
+    prompt,
+    /# Conversation between the caller and the human transfer target/,
+  );
+  // No history at all → no "not recorded" note either.
+  assert.doesNotMatch(prompt, /was not recorded/);
+});
+
+test("composeTakeoverPrompt: includeHistory false suppresses the bridge transcript too", () => {
+  const agent = { id: "a1", prompt: "You are the booking agent." } as any;
+  const prompt = composeTakeoverPrompt(
+    agent,
+    "Caller: hi",
+    false,
+    "> caller: secret\n",
+  );
+  assert.match(prompt, /Treat this as a fresh conversation/);
+  assert.doesNotMatch(prompt, /# Conversation/);
+  assert.doesNotMatch(prompt, /secret/);
+});

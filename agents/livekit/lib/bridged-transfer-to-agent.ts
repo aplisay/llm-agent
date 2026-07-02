@@ -217,25 +217,38 @@ export interface BridgedTakeoverRuntime {
 /**
  * Compose the incoming agent's system prompt. Mirrors the transfer_agent
  * handover composition and the pipecat reference (compose_takeover_prompt).
+ * When the bridged segment was transcribed (`bridgedTransferTranscribe`),
+ * the human↔human conversation is carried too; otherwise (with history on)
+ * the prompt notes the human segment was not recorded.
  */
 export function composeTakeoverPrompt(
   newAgentDef: Agent,
   historyText: string,
   includeHistory: boolean,
+  bridgeTranscript: string = "",
 ): string {
   let prompt = newAgentDef.prompt || "You are a helpful assistant.";
   prompt +=
     "\n\nYou have just taken over a live call. The caller was previously " +
     "speaking with another agent and was then transferred to a human, who " +
     "has now handed the call back to you.";
-  if (includeHistory && historyText) {
+  if (!includeHistory) {
+    prompt += " Treat this as a fresh conversation: disregard any prior context.";
+    return prompt;
+  }
+  if (historyText) {
     prompt +=
       "\n\n# Conversation between the caller and the previous agent\n" +
-      historyText +
+      historyText;
+  }
+  if (bridgeTranscript) {
+    prompt +=
+      "\n\n# Conversation between the caller and the human transfer target\n" +
+      bridgeTranscript;
+  } else if (historyText) {
+    prompt +=
       "\n\n(The conversation the caller had with the human after the " +
       "transfer was not recorded.)";
-  } else if (!includeHistory) {
-    prompt += " Treat this as a fresh conversation: disregard any prior context.";
   }
   return prompt;
 }
@@ -258,6 +271,16 @@ export interface ArmBridgedTransferWatchParams {
   agent: Agent;
   /** Conversation transcript snapshot captured at bridge time. */
   historyText: string;
+  /**
+   * Live bridged-segment transcription (`options.bridgedTransferTranscribe`),
+   * when armed. Its render() is snapshotted at DTMF-match time so the
+   * takeover prompt carries the human↔human conversation; the takeover
+   * commit disposes it (the bridge is coming down).
+   */
+  bridgeTranscription?: {
+    render(): string;
+    dispose(): void;
+  } | null;
   runtime: BridgedTakeoverRuntime;
   setBridgedParticipant: (p: SipParticipant | null) => void;
   setBridgedCallRecord: (call: Call | null) => void;
@@ -288,6 +311,7 @@ export function armBridgedTransferWatch(
     bridgedCall,
     agent,
     historyText,
+    bridgeTranscription,
     runtime,
     setBridgedParticipant,
     setBridgedCallRecord,
@@ -340,10 +364,14 @@ export function armBridgedTransferWatch(
         );
       }
 
+      // Snapshot the human↔human transcript NOW — the collector stops (and
+      // the bridge comes down) as the takeover commits.
+      const bridgeTranscript = bridgeTranscription?.render() ?? "";
       const instructions = composeTakeoverPrompt(
         newAgentDef,
         historyText,
         target.includeHistory,
+        bridgeTranscript,
       );
 
       await runtime.takeover({
@@ -362,6 +390,16 @@ export function armBridgedTransferWatch(
           // takeover proceeds regardless.
           setBridgedParticipant(null);
           setBridgedCallRecord(null);
+          // Stop the bridged-segment transcription before the target is
+          // removed (the transcript snapshot was taken at match time).
+          try {
+            bridgeTranscription?.dispose();
+          } catch (e) {
+            logger.warn(
+              { e },
+              "bridgedTransferToAgent: bridge transcription dispose failed",
+            );
+          }
           try {
             await removeParticipant(roomName, targetIdentity);
           } catch (e) {

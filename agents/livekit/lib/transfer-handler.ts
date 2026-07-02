@@ -34,6 +34,11 @@ import {
   armBridgedTransferWatch,
   type BridgedTakeoverRuntime,
 } from "./bridged-transfer-to-agent.js";
+import {
+  parseBridgedTranscribeOption,
+  armBridgedTranscription,
+  type BridgeTranscriptionHandle,
+} from "./bridge-transcription.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -379,13 +384,16 @@ async function finaliseBridgedCall(
 }
 
 /**
- * Arm the post-bridge human→agent DTMF watch (options.bridgedTransferToAgent)
- * once a bridged transfer has completed — the blind bridge and the bridged
- * consultative finalise both land here. No-op unless the option is set, the
- * bridged call record exists, and the voice runtime has registered its
- * takeover capability (transfer-only fallback mode has none). The transcript
- * snapshot is taken here, at bridge time, because the superseded agent
- * session may be torn down while the humans talk.
+ * Arm the post-bridge watches (options.bridgedTransferToAgent — the
+ * human→agent DTMF watch — and options.bridgedTransferTranscribe — the
+ * bridged-segment transcription) once a bridged transfer has completed:
+ * the blind bridge and the bridged consultative finalise both land here.
+ * No-op unless at least one option is set and the bridged call record
+ * exists. Transcription arms standalone (no bta map, no runtime needed);
+ * the DTMF watch additionally requires the voice runtime's takeover
+ * capability (transfer-only fallback mode has none). The pre-transfer
+ * transcript snapshot is taken here, at bridge time, because the
+ * superseded agent session may be torn down while the humans talk.
  */
 function armBridgedTransferToAgentWatch(
   context: TransferContext,
@@ -393,19 +401,12 @@ function armBridgedTransferToAgentWatch(
   targetIdentity: string,
 ): void {
   const targets = parseBridgedTransferMap(context.options);
-  if (!targets) return;
-  const runtime = context.getBridgedTakeover?.();
-  if (!runtime) {
-    logger.warn(
-      { roomName: context.room?.name },
-      "bridgedTransferToAgent configured but no takeover runtime registered; watch not armed",
-    );
-    return;
-  }
+  const transcribe = parseBridgedTranscribeOption(context.options);
+  if (!targets && !transcribe) return;
   if (!bridgedCallRecord) {
     logger.warn(
       { roomName: context.room?.name },
-      "bridgedTransferToAgent: no bridged call record; watch not armed",
+      "bridged transfer watch: no bridged call record; watch not armed",
     );
     return;
   }
@@ -413,7 +414,44 @@ function armBridgedTransferToAgentWatch(
   if (!rtcRoom || !context.room?.name) {
     logger.warn(
       { hasRtcRoom: Boolean(rtcRoom), roomName: context.room?.name },
-      "bridgedTransferToAgent: no connected room; watch not armed",
+      "bridged transfer watch: no connected room; watch not armed",
+    );
+    return;
+  }
+
+  // Bridged-segment transcription (options.bridgedTransferTranscribe): one
+  // STT stream per bridged human, entries logged against the bridged call
+  // record. Best-effort — a failure here must not disturb the bridge or
+  // the DTMF watch below. Arms standalone when no bta map is configured;
+  // the record's ending (participant disconnect handlers / takeover) flushes
+  // any batched entries.
+  let bridgeTranscription: BridgeTranscriptionHandle | null = null;
+  if (transcribe) {
+    try {
+      bridgeTranscription = armBridgedTranscription({
+        room: rtcRoom,
+        roomName: context.room.name!,
+        callerIdentity: context.participant?.identity ?? null,
+        targetIdentity,
+        bridgedCall: bridgedCallRecord,
+        agent: context.agent,
+        transcribe,
+        streamLog: context.instance?.streamLog === true,
+      });
+    } catch (e) {
+      logger.warn(
+        { e, roomName: context.room?.name },
+        "bridgedTransferTranscribe: failed to arm transcription (continuing without it)",
+      );
+    }
+  }
+
+  if (!targets) return;
+  const runtime = context.getBridgedTakeover?.();
+  if (!runtime) {
+    logger.warn(
+      { roomName: context.room?.name },
+      "bridgedTransferToAgent configured but no takeover runtime registered; watch not armed",
     );
     return;
   }
@@ -433,6 +471,7 @@ function armBridgedTransferToAgentWatch(
     bridgedCall: bridgedCallRecord,
     agent: context.agent,
     historyText: runtime.getConversationHistoryText(),
+    bridgeTranscription,
     runtime,
     setBridgedParticipant: context.setBridgedParticipant,
     setBridgedCallRecord: context.setBridgedCallRecord,
@@ -495,8 +534,10 @@ async function handleBlindBridgeTransfer(
     setBridgedParticipant(p);
     const bridgedCallRecord = await finaliseBridgedCallFn();
 
-    // Human→agent hand-back (options.bridgedTransferToAgent): watch the
-    // transfer target's DTMF for the life of the bridge. No-op when unset.
+    // Human→agent hand-back (options.bridgedTransferToAgent) and bridged-
+    // segment transcription (options.bridgedTransferTranscribe): watch the
+    // transfer target's DTMF / transcribe both humans for the life of the
+    // bridge. No-op when neither option is set.
     armBridgedTransferToAgentWatch(
       context,
       bridgedCallRecord,
@@ -1318,9 +1359,11 @@ async function finaliseConsultativeTransfer(
 
       const bridgedCallRecord = await finaliseBridgedCallFn();
 
-      // Human→agent hand-back (options.bridgedTransferToAgent): the target is
-      // now bridged into the caller room under the consult identity — watch
-      // its DTMF for the life of the bridge. No-op when unset.
+      // Human→agent hand-back (options.bridgedTransferToAgent) and bridged-
+      // segment transcription (options.bridgedTransferTranscribe): the target
+      // is now bridged into the caller room under the consult identity —
+      // watch its DTMF / transcribe both humans for the life of the bridge.
+      // No-op when neither option is set.
       armBridgedTransferToAgentWatch(
         context,
         bridgedCallRecord,
@@ -1891,10 +1934,16 @@ export async function handleTransfer(
   // hands the call off-platform where no DTMF can be seen. Overrides the
   // REFER resolution for both blind transfers and the consultative finalise.
   const bridgedTransferToAgent = parseBridgedTransferMap(options) !== null;
+  // Bridged-segment transcription (options.bridgedTransferTranscribe)
+  // likewise needs the media to stay on-platform — the humans' audio tracks
+  // must remain observable in the room — so it forces the bridged path too.
+  const bridgedTransferTranscribe =
+    parseBridgedTranscribeOption(options) !== null;
   const effectiveForceBridged =
     forceBridgedFromEndpoint ||
     args.forceBridged === true ||
-    bridgedTransferToAgent;
+    bridgedTransferToAgent ||
+    bridgedTransferTranscribe;
 
   logger.info(
     {
@@ -1911,6 +1960,7 @@ export async function handleTransfer(
       forceBridged: args.forceBridged,
       forceBridgedFromEndpoint,
       bridgedTransferToAgent,
+      bridgedTransferTranscribe,
       effectiveForceBridged,
       aplisayId,
     },

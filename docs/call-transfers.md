@@ -680,7 +680,7 @@ By default the human↔human conversation after a bridged transfer is not transc
 }
 ```
 
-Or with tuning (fields apply where the gateway runs its own STT — the voiceblender topology; sipbridge uses the agent's configured STT and ignores `provider`):
+Or with tuning (fields apply where the gateway runs its own STT — the voiceblender topology; LiveKit and sipbridge use the agent's configured STT and ignore `provider`):
 
 ```json
 "bridgedTransferTranscribe": { "provider": "deepgram", "language": "en" }
@@ -704,7 +704,7 @@ Or with tuning (fields apply where the gateway runs its own STT — the voiceble
 
 | Topology | Hand-back (`bridgedTransferToAgent`) | Transcription (`bridgedTransferTranscribe`) | Mechanism |
 |----------|-----------|-----------|-----------|
-| LiveKit | ✅ | ⏳ follow-up | The agent participant stays in the room (muted) after the bridge and consumes LiveKit's SIP DTMF room events, filtered to the transfer-target participant. On a match the target participant is removed and the mapped agent's stack starts on the same room. |
+| LiveKit | ✅ | ✅ | The agent participant stays in the room (muted) after the bridge and consumes LiveKit's SIP DTMF room events, filtered to the transfer-target participant. On a match the target participant is removed and the mapped agent's stack starts on the same room. When transcribing, the muted agent participant runs one STT stream per human track (the caller and the transfer target are distinct room participants), using the agent's configured STT vendor. |
 | Pipecat + sipbridge | ✅ | ✅ | The transfer is placed with `monitor_dtmf`/`tap_audio`; the bridge keeps the caller leg's worker WebSocket open as a control channel, ships target-leg RFC 4733 presses as `source: "transfer_target"` events, and (when transcribing) a stereo audio tap. On a match the worker POSTs `/v1/calls/{id}/unbridge` — the bridge drops the target and re-dials a fresh agent WebSocket for the caller leg. |
 | Pipecat + voiceblender | ✅ | ✅ | The bridged legs sit in a voiceblender room; `dtmf.received` VSI events for the target leg feed the worker's matcher and the container's native per-leg STT feeds the transcript. On a match the worker deletes the target leg, removes the caller from the room, and re-attaches a Pipecat agent to the caller leg. |
 | WebRTC / browser origin | ❌ | ❌ | Browser-origin transfers use the worker-side media relay; target-leg monitoring is not currently wired for that path. |
