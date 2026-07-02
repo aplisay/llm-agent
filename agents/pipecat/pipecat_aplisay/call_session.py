@@ -168,6 +168,11 @@ class CallSession:
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
     _consult_use_refer: bool = False
+    # Parsed ``options.bridgedTransferToAgent`` map (human-to-agent
+    # transfers), recorded when ``_on_transfer`` runs so the consultative
+    # accept tool can arm the post-bridge DTMF watch. ``None`` when the
+    # option is unset. See ``bridged_transfer.py``.
+    _bta_targets: Optional[dict] = None
 
     # ---- WebRTC-origin transfer support (see media_relay.py + docs) ----
     # A browser session sets ``is_webrtc_origin``. Such a session — and any
@@ -1336,6 +1341,18 @@ class CallSession:
         use_refer = self._resolve_use_refer(args) and not legacy_bridged
         force_bridged = legacy_bridged or (not use_refer)
 
+        # Human-to-agent transfers (``options.bridgedTransferToAgent``): the
+        # transfer MUST stay bridged on the platform — a REFER hands the call
+        # off-platform where no transfer-target DTMF can be observed — and the
+        # gateway is asked to keep monitoring the target leg. Overrides any
+        # forceRefer/origin-REFER resolution above.
+        from .bridged_transfer import parse_bta_map
+
+        self._bta_targets = parse_bta_map(self.agent.get("options"))
+        if self._bta_targets:
+            use_refer = False
+            force_bridged = True
+
         # Default the calling number toward the gateway to the registration
         # trunk username (e.g. 8092) when registration-originated, unless the
         # LLM/tool supplied an explicit callerId. Mirrors LiveKit's
@@ -1351,6 +1368,7 @@ class CallSession:
             can_refer=use_refer,  # gateway honours this for the final hop
             force_bridged=force_bridged,
             force_refer=use_refer,
+            monitor_dtmf=bool(self._bta_targets),
         )
 
         if op == "consultative":
@@ -1382,6 +1400,11 @@ class CallSession:
             # / none. For blind, success means we're done.
             if op != "consultative":
                 self.transfer_state = TransferState("talking", "Transfer connected")
+                # Human-to-agent transfers: the bridge is up — arm the
+                # post-bridge target-leg DTMF watch and retire this
+                # pipeline (the call now belongs to the two humans).
+                if self._bta_targets:
+                    await self._arm_bta_monitor()
             return {
                 "ok": True,
                 "status": "OK",
@@ -1401,6 +1424,52 @@ class CallSession:
         ``options.transferTone`` is unset). ``mode``: "blind" | "consult"."""
         if self._tone_injector is not None:
             self._tone_injector.arm(mode)
+
+    async def _arm_bta_monitor(self) -> None:
+        """Arm the human-to-agent transfer watch on a just-installed bridge
+        (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
+
+        Snapshot everything the takeover needs (the pipeline and this
+        session's call record end moments later), then arm the gateway-
+        specific watch:
+
+        - **sipbridge** — stash the context on the gateway session; the
+          /sipbridge/agent WS handler keeps reading the (still open) WS for
+          ``source: "transfer_target"`` DTMF events after the pipeline ends.
+          The transport's disconnect is suppressed so tearing the pipeline
+          down doesn't close the WS the watch depends on.
+        - **voiceblender** — register a VSI watcher for the target leg on
+          the gateway; events arrive out-of-band so nothing keeps the WS.
+
+        Finally the pipeline is cancelled from a detached task: the humans
+        are talking through the gateway now, and the original call record
+        ends just like any other bridged transfer.
+        """
+        from .bridged_transfer import arm_voiceblender_bta_watch, bta_context_from_session
+
+        ctx = bta_context_from_session(self, self._bta_targets)
+        gw = self.gateway_session
+        if hasattr(gw, "unbridge"):  # sipbridge
+            gw.bta_context = ctx
+            self._suppress_transport_disconnect(gw.transport)
+            # Outbound-origin calls: wake the WS handler's wait loop so it
+            # can take over reading the kept-open WS (no-op for inbound).
+            signal = getattr(self.sip_gateway, "signal_bta_armed", None)
+            if signal is not None:
+                signal(self.session_id)
+        elif hasattr(gw, "takeover_to_agent"):  # voiceblender
+            arm_voiceblender_bta_watch(self.sip_gateway, gw, ctx, platform=PLATFORM)
+        else:
+            logger.warning(
+                "bridgedTransferToAgent: gateway "
+                f"{type(gw).__name__} has no takeover support; watch not armed"
+            )
+            return
+        logger.bind(
+            session_id=self.session_id,
+            keys=sorted(ctx.targets.keys()),
+        ).info("bridgedTransferToAgent: post-bridge DTMF watch armed")
+        self._agent_swap_task = asyncio.create_task(self._cancel_for_handover())
 
     # ---- WebRTC-origin transfer (worker-side media relay) ----
 
@@ -1902,7 +1971,14 @@ def _builtin_consult_accept(consult_session: CallSession):
                         consult_session.gateway_session
                     )
             else:
-                await parent.gateway_session.bridge_with(consult_session.gateway_session)
+                # Human-to-agent transfers: keep watching the target leg's
+                # DTMF after the bridge (options.bridgedTransferToAgent).
+                monitor = bool(parent._bta_targets)
+                await parent.gateway_session.bridge_with(
+                    consult_session.gateway_session, monitor_dtmf=monitor
+                )
+                if monitor:
+                    await parent._arm_bta_monitor()
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.
             # Should have been rejected upstream by ``transfer()``; if
@@ -2254,6 +2330,35 @@ async def setup_consult_call(
         gateway_session=gw_session,
         call=call,
         parent_session=parent,
+    )
+
+
+async def setup_takeover_call(
+    sip_gateway: SipGateway,
+    inbound: InboundCallContext,
+    *,
+    payload: Any,
+) -> CallSession:
+    """Build the CallSession for a human-to-agent takeover leg
+    (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
+
+    The heavy lifting already happened at DTMF-match time
+    (``prepare_takeover``): the target agent is resolved, the composed
+    takeover prompt rides in ``payload.agent["prompt"]``, and
+    ``payload.call`` is a started child call record (parentId = the
+    original call). Here we just wire the freshly re-attached media leg
+    to a standard CallSession — the incoming agent gets its own full
+    tool surface, unlike a consult-side TransferAgent.
+    """
+    session_params = GatewaySessionParams(session_id=inbound.session_id)
+    gw_session = await sip_gateway.setup_inbound(inbound, session_params)
+    return CallSession(
+        session_id=inbound.session_id,
+        agent=payload.agent,
+        instance=payload.instance,
+        sip_gateway=sip_gateway,
+        gateway_session=gw_session,
+        call=payload.call,
     )
 
 

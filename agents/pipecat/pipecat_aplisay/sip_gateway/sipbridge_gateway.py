@@ -71,8 +71,25 @@ class _SbGatewaySession(GatewaySession):
     session_id: str
     bridge_call_id: str
     _gateway: "SipBridgeSipGateway"
+    # Set once this leg is one half of an installed media bridge (native
+    # dial_bridge or consultative finalise). From that point the bridged
+    # call belongs to the two humans, not to this worker session — the
+    # session's teardown must NOT delete the bridge call (the bridge tears
+    # both legs down itself when either side BYEs).
+    bridged: bool = False
+    # Post-bridge DTMF watcher context (``options.bridgedTransferToAgent``).
+    # Set by ``CallSession`` when a monitored bridge is installed; consumed
+    # by the /sipbridge/agent WS handler, which keeps reading the (still
+    # open) WS for ``source: "transfer_target"`` DTMF events after the
+    # pipeline ends. See ``bridged_transfer.py``.
+    bta_context: Optional[Any] = None
 
     async def hangup(self, reason: str) -> None:
+        if self.bridged:
+            logger.bind(call_id=self.bridge_call_id, reason=reason).info(
+                "sipbridge hangup skipped — leg is part of a live bridge"
+            )
+            return
         logger.bind(call_id=self.bridge_call_id, reason=reason).info(
             "sipbridge hangup"
         )
@@ -160,6 +177,7 @@ class _SbGatewaySession(GatewaySession):
                 call_id=self.bridge_call_id,
                 target=req.destination,
                 mode="dial_bridge",
+                monitor_dtmf=req.monitor_dtmf,
             ).info("sipbridge transfer (native dial+bridge)")
             await self._gateway._call_api(
                 "POST",
@@ -168,8 +186,10 @@ class _SbGatewaySession(GatewaySession):
                     "target": req.destination,
                     "mode": "dial_bridge",
                     "caller_id": req.caller_id_override or "",
+                    "monitor_dtmf": req.monitor_dtmf,
                 },
             )
+            self.bridged = True
             return
 
         logger.bind(
@@ -256,7 +276,7 @@ class _SbGatewaySession(GatewaySession):
         ).info("sipbridge consultative: consult leg requested; "
                "TransferAgent will spawn when WS arrives")
 
-    async def bridge_with(self, other: GatewaySession) -> None:
+    async def bridge_with(self, other: GatewaySession, *, monitor_dtmf: bool = False) -> None:
         """Install a sipbridge media relay between this session's leg
         and ``other``'s leg.
 
@@ -267,6 +287,9 @@ class _SbGatewaySession(GatewaySession):
         "bridged" }`` on the bridge — same primitive the bridge uses
         internally for ``BridgeRelay`` (see
         ``agents/pipecat/sipbridge/internal/call/manager.go``).
+        ``monitor_dtmf`` keeps this (caller) leg's worker WS open across
+        the bridge so transfer-target DTMF events reach the worker
+        (``options.bridgedTransferToAgent``).
         """
         if not isinstance(other, _SbGatewaySession):
             raise NotImplementedError(
@@ -276,7 +299,25 @@ class _SbGatewaySession(GatewaySession):
         await self._gateway._call_api(
             "POST",
             f"/v1/calls/{self.bridge_call_id}/transfer",
-            {"target": other.bridge_call_id, "mode": "bridged"},
+            {
+                "target": other.bridge_call_id,
+                "mode": "bridged",
+                "monitor_dtmf": monitor_dtmf,
+            },
+        )
+        self.bridged = True
+        other.bridged = True
+
+    async def unbridge(self, *, agent_ws_session_id: str) -> None:
+        """Finalise a human-to-agent takeover: drop the bridged peer
+        (transfer target) and have the bridge re-dial a fresh agent WS
+        for this leg at ``/sipbridge/agent/{agent_ws_session_id}``. The
+        worker must have stashed a TakeoverPayload for that session id
+        before calling this. See ``bridged_transfer.py``."""
+        await self._gateway._call_api(
+            "POST",
+            f"/v1/calls/{self.bridge_call_id}/unbridge",
+            {"agent_ws_session_id": agent_ws_session_id},
         )
 
     async def attended_refer_with(self, other: GatewaySession) -> None:
@@ -364,6 +405,12 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         # know which bridge resource to target.
         self._session_to_bridge_call: dict[str, str] = {}
 
+        # Map of worker session_id → live _SbGatewaySession, so the WS
+        # handler's outbound branch can find the session object (and its
+        # ``bta_context``) when a bridged transfer-to-agent watch is armed
+        # on an outbound-origin call.
+        self._sessions: dict[str, _SbGatewaySession] = {}
+
         # Per-session leg-done signals — set when the gateway session's
         # WebSocket close handler fires. The /sipbridge/agent WS handler
         # awaits this for outbound calls (where the dispatch task owns
@@ -405,12 +452,25 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
             _gateway=self,
         )
         self._session_to_bridge_call[session_id] = bridge_call_id
+        self._sessions[session_id] = session
 
         pending = self._pending_outbound.get(session_id)
         if pending and not pending.done():
             pending.set_result(session)
 
         return session
+
+    def live_session(self, session_id: str) -> Optional[_SbGatewaySession]:
+        return self._sessions.get(session_id)
+
+    def signal_bta_armed(self, session_id: str) -> None:
+        """Wake the WS handler's outbound wait loop when a bridged
+        transfer-to-agent watch is armed mid-call, so it can take over
+        reading the (kept-open) WS for transfer-target DTMF. No-op for
+        inbound calls, where nothing waits on the leg-done event."""
+        ev = self._leg_done_events.get(session_id)
+        if ev is not None:
+            ev.set()
 
     def unregister_session(self, session_id: str) -> None:
         """Called when the WS handler exits, regardless of cause.
@@ -420,6 +480,7 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         waiter on the leg-done event.
         """
         self._session_to_bridge_call.pop(session_id, None)
+        self._sessions.pop(session_id, None)
         ev = self._leg_done_events.get(session_id)
         if ev is not None:
             ev.set()
