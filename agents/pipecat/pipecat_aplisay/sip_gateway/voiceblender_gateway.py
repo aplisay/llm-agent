@@ -309,7 +309,9 @@ class _VbGatewaySession(GatewaySession):
         ).info("voiceblender consultative: consult leg requested; "
                "TransferAgent will spawn when WS arrives")
 
-    async def bridge_with(self, other: GatewaySession, *, monitor_dtmf: bool = False) -> None:
+    async def bridge_with(
+        self, other: GatewaySession, *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install a media bridge between this leg and ``other``'s leg.
 
         Voiceblender's native bridge primitive is room-based: create a
@@ -504,6 +506,9 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         # bridged leg disconnects. See ``bridged_transfer.py``.
         self._bta_digit_watchers: dict[str, Callable[[str], Awaitable[None]]] = {}
         self._bta_gone_watchers: dict[str, Callable[[], None]] = {}
+        # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+        # final stt.text events for a bridged human leg, keyed by leg id.
+        self._bta_stt_watchers: dict[str, Callable[[str], Awaitable[None]]] = {}
 
     # ---- Human-to-agent transfer watchers --------------------------------
 
@@ -521,10 +526,35 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         # Caller-leg death also ends the watch; map it to the same teardown.
         self._bta_gone_watchers[caller_leg_id] = on_gone
 
+    def register_stt_watcher(
+        self, leg_id: str, on_text: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Route final ``stt.text`` VSI events for ``leg_id`` (a bridged
+        human leg being transcribed via the container's native STT) to
+        ``on_text``. See ``bridge_transcript.py``."""
+        self._bta_stt_watchers[leg_id] = on_text
+
     def clear_bta_watcher(self, *leg_ids: str) -> None:
         for leg_id in leg_ids:
             self._bta_digit_watchers.pop(leg_id, None)
             self._bta_gone_watchers.pop(leg_id, None)
+            self._bta_stt_watchers.pop(leg_id, None)
+
+    async def start_leg_stt(
+        self, leg_id: str, *, provider: str, language: Optional[str]
+    ) -> None:
+        """Start voiceblender's native real-time STT on a leg
+        (``POST /v1/legs/{id}/stt``). Finals arrive as ``stt.text`` VSI
+        events routed via :meth:`register_stt_watcher`."""
+        body: dict[str, Any] = {"provider": provider, "partial": False}
+        if language:
+            body["language"] = language
+        await self._call_api("POST", f"/v1/legs/{leg_id}/stt", body)
+
+    async def stop_leg_stt(self, leg_id: str) -> None:
+        await self._call_api(
+            "DELETE", f"/v1/legs/{leg_id}/stt", None, raise_on_error=False
+        )
 
     # ---- Injection points used by the worker ----------------------------
 
@@ -831,6 +861,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             await self._on_leg_disconnected(event)
         elif etype == "dtmf.received":
             await self._on_leg_dtmf(event)
+        elif etype == "stt.text":
+            await self._on_stt_text(event)
         elif etype in {
             "leg.transfer_initiated",
             "leg.transfer_requested",
@@ -854,6 +886,26 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         fut = self._pending_connected.get(leg_id)
         if fut is not None and not fut.done():
             fut.set_result(None)
+
+    async def _on_stt_text(self, event: dict) -> None:
+        """Handle an ``stt.text`` VSI event from the container's native STT
+        (started per bridged leg by ``start_leg_stt``). Only FINAL
+        transcripts are forwarded — partials are noise for a transcript.
+        Envelope: ``{"type": "stt.text", "leg_id": "...", "text": "...",
+        "is_final": true}``."""
+        leg_id = event.get("leg_id") or event.get("id")
+        text = event.get("text")
+        if not leg_id or not text or not event.get("is_final", True):
+            return
+        watcher = self._bta_stt_watchers.get(leg_id)
+        if watcher is None:
+            return
+        try:
+            await watcher(str(text))
+        except Exception as e:  # noqa: BLE001
+            logger.bind(leg_id=leg_id).warning(
+                f"VSI: bridged-transfer STT watcher failed: {e}"
+            )
 
     async def _on_leg_dtmf(self, event: dict) -> None:
         """Handle a ``dtmf.received`` VSI event.

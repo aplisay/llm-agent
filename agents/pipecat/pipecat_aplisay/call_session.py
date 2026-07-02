@@ -173,6 +173,12 @@ class CallSession:
     # accept tool can arm the post-bridge DTMF watch. ``None`` when the
     # option is unset. See ``bridged_transfer.py``.
     _bta_targets: Optional[dict] = None
+    # Normalised ``options.bridgedTransferTranscribe`` config (bridged-
+    # segment transcription) and the in-flight transfer destination —
+    # captured alongside ``_bta_targets`` for the post-bridge monitor.
+    # See ``bridge_transcript.py``.
+    _bta_transcribe: Optional[dict] = None
+    _bta_destination: str = ""
 
     # ---- WebRTC-origin transfer support (see media_relay.py + docs) ----
     # A browser session sets ``is_webrtc_origin``. Such a session — and any
@@ -1341,15 +1347,19 @@ class CallSession:
         use_refer = self._resolve_use_refer(args) and not legacy_bridged
         force_bridged = legacy_bridged or (not use_refer)
 
-        # Human-to-agent transfers (``options.bridgedTransferToAgent``): the
-        # transfer MUST stay bridged on the platform — a REFER hands the call
-        # off-platform where no transfer-target DTMF can be observed — and the
-        # gateway is asked to keep monitoring the target leg. Overrides any
-        # forceRefer/origin-REFER resolution above.
+        # Human-to-agent transfers (``options.bridgedTransferToAgent``) and
+        # bridged-segment transcription (``options.bridgedTransferTranscribe``):
+        # the transfer MUST stay bridged on the platform — a REFER hands the
+        # call off-platform where neither transfer-target DTMF nor audio can
+        # be observed — and the gateway is asked to keep monitoring the
+        # bridge. Overrides any forceRefer/origin-REFER resolution above.
+        from .bridge_transcript import parse_transcribe_option
         from .bridged_transfer import parse_bta_map
 
         self._bta_targets = parse_bta_map(self.agent.get("options"))
-        if self._bta_targets:
+        self._bta_transcribe = parse_transcribe_option(self.agent.get("options"))
+        self._bta_destination = str(args.get("number") or "")
+        if self._bta_targets or self._bta_transcribe:
             use_refer = False
             force_bridged = True
 
@@ -1369,6 +1379,7 @@ class CallSession:
             force_bridged=force_bridged,
             force_refer=use_refer,
             monitor_dtmf=bool(self._bta_targets),
+            tap_audio=bool(self._bta_transcribe),
         )
 
         if op == "consultative":
@@ -1400,10 +1411,10 @@ class CallSession:
             # / none. For blind, success means we're done.
             if op != "consultative":
                 self.transfer_state = TransferState("talking", "Transfer connected")
-                # Human-to-agent transfers: the bridge is up — arm the
-                # post-bridge target-leg DTMF watch and retire this
-                # pipeline (the call now belongs to the two humans).
-                if self._bta_targets:
+                # Human-to-agent transfers / bridged-segment transcription:
+                # the bridge is up — arm the post-bridge watch and retire
+                # this pipeline (the call now belongs to the two humans).
+                if self._bta_targets or self._bta_transcribe:
                     await self._arm_bta_monitor()
             return {
                 "ok": True,
@@ -1445,9 +1456,22 @@ class CallSession:
         are talking through the gateway now, and the original call record
         ends just like any other bridged transfer.
         """
-        from .bridged_transfer import arm_voiceblender_bta_watch, bta_context_from_session
+        from .bridged_transfer import (
+            arm_voiceblender_bta_watch,
+            bta_context_from_session,
+            prepare_bridge_monitor,
+        )
 
-        ctx = bta_context_from_session(self, self._bta_targets)
+        ctx = bta_context_from_session(
+            self,
+            self._bta_targets,
+            transcribe=self._bta_transcribe,
+            destination=self._bta_destination,
+        )
+        # Bridged-segment call record (+ transcript collector when
+        # transcription is on) — LiveKit parity for the post-transfer
+        # segment. Best-effort: the bridge proceeds without it.
+        await prepare_bridge_monitor(ctx, platform=PLATFORM)
         gw = self.gateway_session
         if hasattr(gw, "unbridge"):  # sipbridge
             gw.bta_context = ctx
@@ -1458,17 +1482,18 @@ class CallSession:
             if signal is not None:
                 signal(self.session_id)
         elif hasattr(gw, "takeover_to_agent"):  # voiceblender
-            arm_voiceblender_bta_watch(self.sip_gateway, gw, ctx, platform=PLATFORM)
+            await arm_voiceblender_bta_watch(self.sip_gateway, gw, ctx, platform=PLATFORM)
         else:
             logger.warning(
-                "bridgedTransferToAgent: gateway "
+                "bridged transfer: gateway "
                 f"{type(gw).__name__} has no takeover support; watch not armed"
             )
             return
         logger.bind(
             session_id=self.session_id,
             keys=sorted(ctx.targets.keys()),
-        ).info("bridgedTransferToAgent: post-bridge DTMF watch armed")
+            transcribe=bool(ctx.transcribe),
+        ).info("bridged transfer: post-bridge watch armed")
         self._agent_swap_task = asyncio.create_task(self._cancel_for_handover())
 
     # ---- WebRTC-origin transfer (worker-side media relay) ----
@@ -1971,13 +1996,17 @@ def _builtin_consult_accept(consult_session: CallSession):
                         consult_session.gateway_session
                     )
             else:
-                # Human-to-agent transfers: keep watching the target leg's
-                # DTMF after the bridge (options.bridgedTransferToAgent).
+                # Human-to-agent transfers / bridged-segment transcription:
+                # keep watching the target leg after the bridge
+                # (options.bridgedTransferToAgent / bridgedTransferTranscribe).
                 monitor = bool(parent._bta_targets)
+                tap = bool(parent._bta_transcribe)
                 await parent.gateway_session.bridge_with(
-                    consult_session.gateway_session, monitor_dtmf=monitor
+                    consult_session.gateway_session,
+                    monitor_dtmf=monitor,
+                    tap_audio=tap,
                 )
-                if monitor:
+                if monitor or tap:
                     await parent._arm_bta_monitor()
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.

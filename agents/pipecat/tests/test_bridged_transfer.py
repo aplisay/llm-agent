@@ -198,3 +198,106 @@ class TestComposeTakeoverPrompt:
         )
         assert "> caller: hi" not in prompt
         assert "fresh conversation" in prompt
+
+
+# ---- Bridged-segment transcription (bridge_transcript.py) ----
+
+from pipecat_aplisay.bridge_transcript import (  # noqa: E402
+    CALLER,
+    TARGET,
+    BridgeTranscriptCollector,
+    parse_transcribe_option,
+    split_stereo,
+)
+
+
+class TestParseTranscribeOption:
+    def test_shapes(self):
+        assert parse_transcribe_option(None) is None
+        assert parse_transcribe_option({}) is None
+        assert parse_transcribe_option({"bridgedTransferTranscribe": False}) is None
+        assert parse_transcribe_option({"bridgedTransferTranscribe": True}) == {
+            "provider": "elevenlabs",
+            "language": None,
+        }
+        assert parse_transcribe_option(
+            {"bridgedTransferTranscribe": {"provider": "deepgram", "language": "en"}}
+        ) == {"provider": "deepgram", "language": "en"}
+        assert (
+            parse_transcribe_option({"bridgedTransferTranscribe": {"enabled": False}})
+            is None
+        )
+
+
+class TestSplitStereo:
+    def test_deinterleave(self):
+        import struct
+
+        # L samples 1,2,3; R samples -1,-2,-3
+        stereo = struct.pack("<6h", 1, -1, 2, -2, 3, -3)
+        left, right = split_stereo(stereo)
+        assert struct.unpack("<3h", left) == (1, 2, 3)
+        assert struct.unpack("<3h", right) == (-1, -2, -3)
+
+    def test_odd_lengths(self):
+        assert split_stereo(b"") == (b"", b"")
+        assert split_stereo(b"\x01\x00") == (b"", b"")
+
+
+class _FakeCall:
+    def __init__(self):
+        self.id = "bridged-call-1"
+        self.userId = "u"
+        self.organisationId = "o"
+        self.batched_transaction_logs = []
+
+
+class TestBridgeTranscriptCollector:
+    def test_batched_entries_and_render(self):
+        call = _FakeCall()
+        collector = BridgeTranscriptCollector(call=call, stream_log=False)
+
+        async def run():
+            await collector.add(CALLER, "hello, I need help")
+            await collector.add(TARGET, "sure, what's the account number?")
+            await collector.add(CALLER, "  ")  # blank — dropped
+
+        asyncio.run(run())
+        assert len(collector) == 2
+        assert [e["type"] for e in call.batched_transaction_logs] == ["user", "agent"]
+        rendered = collector.render()
+        assert rendered.index("> caller: hello") < rendered.index(
+            "> transfer target: sure"
+        )
+
+
+class TestTakeoverPromptWithBridgeTranscript:
+    def test_bridge_section_included(self):
+        ctx = _ctx()
+        call = _FakeCall()
+        collector = BridgeTranscriptCollector(call=call, stream_log=False)
+        asyncio.run(collector.add(TARGET, "press one to go back to the bot"))
+        ctx.collector = collector
+        prompt = compose_takeover_prompt(
+            {"prompt": "You are the billing agent."},
+            ctx,
+            BtaTarget(key="1", agent_id=AGENT_A, include_history=True),
+        )
+        assert "# Conversation between the caller and the previous agent" in prompt
+        assert "# Conversation between the caller and the human transfer target" in prompt
+        assert "press one to go back" in prompt
+        assert "was not recorded" not in prompt
+
+    def test_fresh_start_omits_bridge_section(self):
+        ctx = _ctx()
+        call = _FakeCall()
+        collector = BridgeTranscriptCollector(call=call, stream_log=False)
+        asyncio.run(collector.add(TARGET, "press one"))
+        ctx.collector = collector
+        prompt = compose_takeover_prompt(
+            {"prompt": "You are the billing agent."},
+            ctx,
+            BtaTarget(key="1", agent_id=AGENT_A, include_history=False),
+        )
+        assert "transfer target" not in prompt.split("fresh conversation")[1] if "fresh conversation" in prompt else True
+        assert "# Conversation" not in prompt

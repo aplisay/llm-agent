@@ -164,6 +164,14 @@ class TransferRequest:
     # ``bridged_transfer.py`` and ``docs/call-transfers.md``.
     monitor_dtmf: bool = False
 
+    # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+    # ask the gateway to keep a transcription path over the bridge. On
+    # sipbridge this streams a stereo audio tap on the kept-open monitor WS;
+    # on voiceblender the worker starts the container's native per-leg STT
+    # instead (this flag still forces the bridged path + monitoring WS/
+    # record lifecycle). See ``bridge_transcript.py``.
+    tap_audio: bool = False
+
 
 class GatewaySession(Protocol):
     """A live media session owned by the gateway.
@@ -182,7 +190,9 @@ class GatewaySession(Protocol):
 
     async def shutdown(self) -> None: ...
 
-    async def bridge_with(self, other: "GatewaySession", *, monitor_dtmf: bool = False) -> None:
+    async def bridge_with(
+        self, other: "GatewaySession", *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install media relay between this session and ``other``.
 
         Used to finalise consultative transfers — when the TransferAgent

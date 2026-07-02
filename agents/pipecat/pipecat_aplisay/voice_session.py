@@ -216,6 +216,36 @@ def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
     )
 
 
+def build_stt_service(agent: dict) -> Any:
+    """Construct a fresh STT service from ``agent.options.stt`` (defaulting
+    to Deepgram). Used by the pipeline build below and by the bridged-
+    transfer transcription tap (``bridged_transfer.py``), which runs extra
+    STT streams over the human↔human segment of a monitored bridge —
+    each call returns a NEW service instance, safe to run alongside the
+    pipeline's own."""
+    stt_opts = (agent.get("options") or {}).get("stt") or {}
+    stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
+    if stt_vendor == "deepgram":
+        from pipecat.services.deepgram.stt import DeepgramSTTService
+
+        return DeepgramSTTService(api_key=_require_env("DEEPGRAM_API_KEY"))
+    if stt_vendor == "google":
+        from pipecat.services.google.stt import GoogleSTTService
+
+        # GoogleSTTService accepts credentials JSON or credentials_path. Source
+        # of truth is GOOGLE_APPLICATION_CREDENTIALS_JSON (a JSON string) or
+        # GOOGLE_APPLICATION_CREDENTIALS (a path) — pass through whichever the
+        # operator set.
+        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        return GoogleSTTService(
+            credentials=creds_json,
+            credentials_path=creds_path,
+            location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
+        )
+    raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
+
+
 def _require_env(name: str, *aliases: str) -> str:
     """Return the first env var that's set; raise a clear error otherwise.
 
@@ -843,31 +873,10 @@ async def _build_pipeline(
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
-    stt_opts = options.get("stt") or {}
     tts_opts = options.get("tts") or {}
 
     # STT
-    stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
-    if stt_vendor == "deepgram":
-        from pipecat.services.deepgram.stt import DeepgramSTTService
-
-        stt = DeepgramSTTService(api_key=_require_env("DEEPGRAM_API_KEY"))
-    elif stt_vendor == "google":
-        from pipecat.services.google.stt import GoogleSTTService
-
-        # GoogleSTTService accepts credentials JSON or credentials_path. Source
-        # of truth is GOOGLE_APPLICATION_CREDENTIALS_JSON (a JSON string) or
-        # GOOGLE_APPLICATION_CREDENTIALS (a path) — pass through whichever the
-        # operator set.
-        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        stt = GoogleSTTService(
-            credentials=creds_json,
-            credentials_path=creds_path,
-            location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
-        )
-    else:
-        raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
+    stt = build_stt_service(agent)
 
     # LLM
     if model_id.startswith("openai/"):

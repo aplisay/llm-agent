@@ -185,7 +185,11 @@ class DtmfSequenceMatcher:
 class BtaContext:
     """Everything the post-bridge watcher needs, captured from the parent
     CallSession at the moment the monitored bridge is installed (the
-    session's pipeline — and its call record — end shortly after)."""
+    session's pipeline — and its call record — end shortly after).
+
+    ``targets`` may be empty when the watch exists only for transcription
+    (``bridgedTransferTranscribe`` without ``bridgedTransferToAgent``).
+    """
 
     targets: dict[str, BtaTarget]
     agent: dict
@@ -199,6 +203,15 @@ class BtaContext:
     transcript: str
     metadata: dict = field(default_factory=dict)
     dtmf_timeout_s: float = 1.5
+    # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+    # normalised config or None, the transfer destination (the bridged
+    # record's calledId), and — once ``prepare_bridge_monitor`` has run —
+    # the started bridged-segment call record + its transcript collector.
+    transcribe: Optional[dict] = None
+    destination: str = ""
+    stream_log: bool = False
+    bridged_call: Optional[api_client.CallRecord] = None
+    collector: Optional[Any] = None
 
 
 @dataclass
@@ -216,7 +229,13 @@ class TakeoverPayload:
     extra: dict = field(default_factory=dict)
 
 
-def bta_context_from_session(session: Any, targets: dict[str, BtaTarget]) -> BtaContext:
+def bta_context_from_session(
+    session: Any,
+    targets: Optional[dict[str, BtaTarget]],
+    *,
+    transcribe: Optional[dict] = None,
+    destination: str = "",
+) -> BtaContext:
     """Snapshot a parent CallSession into a :class:`BtaContext`."""
     aplisay_meta = dict((session.call.metadata or {}).get("aplisay") or {})
     options = session.agent.get("options") or {}
@@ -226,7 +245,7 @@ def bta_context_from_session(session: Any, targets: dict[str, BtaTarget]) -> Bta
     except (TypeError, ValueError):
         timeout_s = 1.5
     return BtaContext(
-        targets=targets,
+        targets=targets or {},
         agent=session.agent,
         instance=session.instance,
         parent_call_id=session.call.id,
@@ -238,27 +257,97 @@ def bta_context_from_session(session: Any, targets: dict[str, BtaTarget]) -> Bta
         transcript=session.get_parent_transcript(),
         metadata=dict(session.call.metadata or {}),
         dtmf_timeout_s=timeout_s,
+        transcribe=transcribe,
+        destination=destination,
+        stream_log=bool((session.instance or {}).get("streamLog")),
     )
+
+
+async def prepare_bridge_monitor(ctx: BtaContext, *, platform: str) -> BtaContext:
+    """Create + start the bridged-segment call record (child of the
+    original call, ``modelName: "telephony:bridged-call"`` — LiveKit
+    parity) and, when transcription is enabled, its transcript collector.
+    Failures are logged, not raised: the bridge itself must proceed even
+    if the record can't be created."""
+    from .bridge_transcript import BridgeTranscriptCollector
+
+    aplisay_meta = dict((ctx.metadata or {}).get("aplisay") or {})
+    try:
+        call = await api_client.create_call(
+            {
+                "parentId": ctx.parent_call_id,
+                "userId": ctx.user_id,
+                "organisationId": ctx.organisation_id,
+                "instanceId": ctx.instance_id,
+                "agentId": ctx.agent.get("id"),
+                "platform": platform,
+                "platformCallId": f"bridge-{ctx.parent_call_id}",
+                "calledId": ctx.destination or ctx.called_id,
+                "callerId": ctx.caller_id,
+                "modelName": "telephony:bridged-call",
+                "options": {},
+                "metadata": {
+                    **(ctx.metadata or {}),
+                    "aplisay": {
+                        **aplisay_meta,
+                        "model": "telephony:bridged-call",
+                        "bridgeOf": ctx.parent_call_id,
+                    },
+                },
+            }
+        )
+        await api_client.start_call(call)
+        ctx.bridged_call = call
+        if ctx.transcribe:
+            ctx.collector = BridgeTranscriptCollector(
+                call=call, stream_log=ctx.stream_log
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: bridged call record creation failed: {e}")
+    return ctx
+
+
+async def end_bridged_record(ctx: BtaContext, reason: str) -> None:
+    """End the bridged-segment record (idempotent — ``end_call`` guards
+    re-entry), flushing any batched transcript entries with it."""
+    if ctx.bridged_call is None:
+        return
+    try:
+        await api_client.end_call(ctx.bridged_call, reason=reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: ending bridged record failed: {e}")
 
 
 def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget) -> str:
     """Build the incoming agent's system prompt. Mirrors the
-    ``transfer_agent`` builtin's composition (call_session.py)."""
+    ``transfer_agent`` builtin's composition (call_session.py). When the
+    bridged segment was transcribed (``bridgedTransferTranscribe``), the
+    human↔human conversation is carried too."""
     prompt = new_agent.get("prompt") or "You are a helpful assistant."
     prompt += (
         "\n\nYou have just taken over a live call. The caller was previously "
         "speaking with another agent and was then transferred to a human, who "
         "has now handed the call back to you."
     )
-    if target.include_history and ctx.transcript:
+    if not target.include_history:
+        prompt += " Treat this as a fresh conversation: disregard any prior context."
+        return prompt
+    if ctx.transcript:
         prompt += (
             "\n\n# Conversation between the caller and the previous agent\n"
             + ctx.transcript
-            + "\n\n(The conversation the caller had with the human after the "
+        )
+    bridge_transcript = ctx.collector.render() if ctx.collector is not None else ""
+    if bridge_transcript:
+        prompt += (
+            "\n\n# Conversation between the caller and the human transfer target\n"
+            + bridge_transcript
+        )
+    elif ctx.transcript:
+        prompt += (
+            "\n\n(The conversation the caller had with the human after the "
             "transfer was not recorded.)"
         )
-    elif not target.include_history:
-        prompt += " Treat this as a fresh conversation: disregard any prior context."
     return prompt
 
 
@@ -333,12 +422,19 @@ async def _end_call_quiet(call: api_client.CallRecord, reason: str) -> None:
         logger.warning(f"bridgedTransferToAgent: end_call after failure failed: {e}")
 
 
-def arm_voiceblender_bta_watch(gateway: Any, gw_session: Any, ctx: BtaContext, *, platform: str) -> None:
+async def arm_voiceblender_bta_watch(
+    gateway: Any, gw_session: Any, ctx: BtaContext, *, platform: str
+) -> None:
     """Arm the voiceblender post-bridge watch: route the transfer-target
     leg's VSI ``dtmf.received`` events through a sequence matcher; on a
     match, reserve the continuation call, stash the TakeoverPayload, and
     run the gateway-side takeover (drop target, un-room the caller leg,
-    re-attach a Pipecat agent). The watch dies with either bridged leg."""
+    re-attach a Pipecat agent). When transcription is enabled, start the
+    container's native STT on both bridged legs and route the ``stt.text``
+    finals into the transcript collector. The watch — and the bridged-
+    segment call record — die with either bridged leg."""
+    from . import bridge_transcript as bt
+
     target_leg = getattr(gw_session, "bridge_peer_leg_id", None)
     caller_leg = gw_session.leg_id
     if not target_leg:
@@ -363,17 +459,61 @@ def arm_voiceblender_bta_watch(gateway: Any, gw_session: Any, ctx: BtaContext, *
             gateway.clear_takeover_session(session_id)
             await _end_call_quiet(payload.call, "bridged transfer-to-agent takeover failed")
             raise
+        if ctx.transcribe:
+            await gateway.stop_leg_stt(caller_leg)
         gateway.clear_bta_watcher(target_leg, caller_leg)
+        await end_bridged_record(
+            ctx, f"Transfer target handed call back to agent {target.agent_id}"
+        )
 
-    matcher = DtmfSequenceMatcher(
-        list(ctx.targets), on_match, timeout_s=ctx.dtmf_timeout_s
-    )
+    matcher: Optional[DtmfSequenceMatcher] = None
+    if ctx.targets:
+        matcher = DtmfSequenceMatcher(
+            list(ctx.targets), on_match, timeout_s=ctx.dtmf_timeout_s
+        )
 
     def on_gone() -> None:
-        matcher.cancel()
+        if matcher is not None:
+            matcher.cancel()
         gateway.clear_bta_watcher(target_leg, caller_leg)
+        # End the bridged-segment record from a detached task (this
+        # callback runs synchronously inside the VSI event loop).
+        asyncio.ensure_future(end_bridged_record(ctx, "Bridged call ended"))
 
-    gateway.register_bta_watcher(target_leg, caller_leg, matcher.feed, on_gone)
+    async def _drop_digit(_digit: str) -> None:
+        return
+
+    gateway.register_bta_watcher(
+        target_leg,
+        caller_leg,
+        matcher.feed if matcher is not None else _drop_digit,
+        on_gone,
+    )
+
+    # Native per-leg STT for the human↔human transcript. Best-effort: a
+    # failed STT start must not break the bridge (or the DTMF watch).
+    if ctx.transcribe and ctx.collector is not None:
+        collector = ctx.collector
+
+        async def _caller_text(text: str) -> None:
+            await collector.add(bt.CALLER, text)
+
+        async def _target_text(text: str) -> None:
+            await collector.add(bt.TARGET, text)
+
+        gateway.register_stt_watcher(caller_leg, _caller_text)
+        gateway.register_stt_watcher(target_leg, _target_text)
+        for leg_id in (caller_leg, target_leg):
+            try:
+                await gateway.start_leg_stt(
+                    leg_id,
+                    provider=ctx.transcribe.get("provider") or "elevenlabs",
+                    language=ctx.transcribe.get("language"),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.bind(leg_id=leg_id).warning(
+                    f"bridgedTransferTranscribe: native STT start failed: {e}"
+                )
 
 
 async def run_sipbridge_bta_watch(
@@ -382,13 +522,22 @@ async def run_sipbridge_bta_watch(
     """Post-bridge watch loop for sipbridge, run by the /sipbridge/agent WS
     handler AFTER the pipeline has ended (the bridge kept the WS open in
     control-only mode). Reads Pipecat protobuf frames straight off the
-    socket, feeds ``source: "transfer_target"`` DTMF events through the
-    matcher, and on a match POSTs the unbridge (the bridge then closes this
-    WS and dials a fresh one for the takeover session). Returns when the
-    WS closes — takeover or plain end-of-bridge alike."""
-    from pipecat.frames.frames import InputTransportMessageFrame
+    socket:
+
+    - ``source: "transfer_target"`` DTMF events feed the takeover matcher;
+      a match POSTs the unbridge (the bridge then closes this WS and dials
+      a fresh one for the takeover session).
+    - stereo AudioRawFrames (the ``tap_audio`` transcription tap; L =
+      caller, R = target) are split and fed to one STT stream per side,
+      built from the agent's configured STT vendor.
+
+    Returns when the WS closes — takeover or plain end-of-bridge alike —
+    ending the bridged-segment call record on the way out."""
+    from pipecat.frames.frames import AudioRawFrame, InputTransportMessageFrame
     from pipecat.serializers.protobuf import ProtobufFrameSerializer
     from starlette.websockets import WebSocketDisconnect
+
+    from . import bridge_transcript as bt
 
     async def on_match(key: str) -> None:
         target = ctx.targets[key]
@@ -404,16 +553,47 @@ async def run_sipbridge_bta_watch(
             gateway.clear_takeover_session(session_id)
             await _end_call_quiet(payload.call, "bridged transfer-to-agent takeover failed")
             raise
+        await end_bridged_record(
+            ctx, f"Transfer target handed call back to agent {target.agent_id}"
+        )
         # The bridge tears this monitor WS down as part of the unbridge;
         # the receive loop below unwinds on the disconnect.
 
-    matcher = DtmfSequenceMatcher(
-        list(ctx.targets), on_match, timeout_s=ctx.dtmf_timeout_s
-    )
+    matcher: Optional[DtmfSequenceMatcher] = None
+    if ctx.targets:
+        matcher = DtmfSequenceMatcher(
+            list(ctx.targets), on_match, timeout_s=ctx.dtmf_timeout_s
+        )
+
+    # Transcription tap consumers — one STT stream per bridged human,
+    # using the agent's configured STT vendor. Best-effort: a failed STT
+    # build must not break the DTMF watch.
+    caller_stt: Optional[bt.SttStream] = None
+    target_stt: Optional[bt.SttStream] = None
+    if ctx.transcribe and ctx.collector is not None:
+        collector = ctx.collector
+        try:
+            from .voice_session import build_stt_service
+
+            async def _caller_text(text: str) -> None:
+                await collector.add(bt.CALLER, text)
+
+            async def _target_text(text: str) -> None:
+                await collector.add(bt.TARGET, text)
+
+            caller_stt = bt.SttStream(build_stt_service(ctx.agent), _caller_text)
+            target_stt = bt.SttStream(build_stt_service(ctx.agent), _target_text)
+            await caller_stt.start()
+            await target_stt.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"bridgedTransferTranscribe: STT tap setup failed: {e}")
+            caller_stt = target_stt = None
+
     serializer = ProtobufFrameSerializer()
-    logger.bind(keys=sorted(ctx.targets.keys())).info(
-        "bridgedTransferToAgent: sipbridge monitor loop running"
-    )
+    logger.bind(
+        keys=sorted(ctx.targets.keys()),
+        transcribe=bool(caller_stt),
+    ).info("bridged transfer: sipbridge monitor loop running")
     try:
         while True:
             data = await websocket.receive_bytes()
@@ -421,11 +601,18 @@ async def run_sipbridge_bta_watch(
                 frame = await serializer.deserialize(data)
             except Exception:  # noqa: BLE001
                 continue
+            if isinstance(frame, AudioRawFrame):
+                if caller_stt is not None and getattr(frame, "num_channels", 1) == 2:
+                    left, right = bt.split_stereo(frame.audio)
+                    await caller_stt.feed(left)
+                    await target_stt.feed(right)
+                continue
             if not isinstance(frame, InputTransportMessageFrame):
                 continue
             message = frame.message
             if (
-                isinstance(message, dict)
+                matcher is not None
+                and isinstance(message, dict)
                 and message.get("type") == "dtmf"
                 and message.get("source") == "transfer_target"
                 and message.get("digit")
@@ -436,7 +623,13 @@ async def run_sipbridge_bta_watch(
     except asyncio.CancelledError:
         raise
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"bridgedTransferToAgent: sipbridge monitor loop ended: {e}")
+        logger.warning(f"bridged transfer: sipbridge monitor loop ended: {e}")
     finally:
-        matcher.cancel()
-        logger.info("bridgedTransferToAgent: sipbridge monitor loop finished")
+        if matcher is not None:
+            matcher.cancel()
+        for stream in (caller_stt, target_stt):
+            if stream is not None:
+                await stream.stop()
+        # Idempotent — a takeover already ended it with its own reason.
+        await end_bridged_record(ctx, "Bridged call ended")
+        logger.info("bridged transfer: sipbridge monitor loop finished")

@@ -187,6 +187,7 @@ class _SbGatewaySession(GatewaySession):
                     "mode": "dial_bridge",
                     "caller_id": req.caller_id_override or "",
                     "monitor_dtmf": req.monitor_dtmf,
+                    "tap_audio": req.tap_audio,
                 },
             )
             self.bridged = True
@@ -276,7 +277,9 @@ class _SbGatewaySession(GatewaySession):
         ).info("sipbridge consultative: consult leg requested; "
                "TransferAgent will spawn when WS arrives")
 
-    async def bridge_with(self, other: GatewaySession, *, monitor_dtmf: bool = False) -> None:
+    async def bridge_with(
+        self, other: GatewaySession, *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install a sipbridge media relay between this session's leg
         and ``other``'s leg.
 
@@ -303,6 +306,7 @@ class _SbGatewaySession(GatewaySession):
                 "target": other.bridge_call_id,
                 "mode": "bridged",
                 "monitor_dtmf": monitor_dtmf,
+                "tap_audio": tap_audio,
             },
         )
         self.bridged = True
