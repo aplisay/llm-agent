@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
  */
 describe('Chargeable number limit', () => {
   let createPhoneEndpoint;
+  let updatePhoneEndpoint;
   let getNumberQuota;
   let patchOrganisation;
 
@@ -59,9 +60,11 @@ describe('Chargeable number limit', () => {
   beforeAll(async () => {
     await setupRealDatabase();
     const phoneEndpointsModule = await import('../api/paths/phone-endpoints.js');
+    const identifierModule = await import('../api/paths/phone-endpoints/{identifier}.js');
     const quotaModule = await import('../api/paths/number-quota.js');
     const orgItemModule = await import('../api/paths/organisations/{organisationId}.js');
     createPhoneEndpoint = phoneEndpointsModule.default(mockLogger, {}, {}).POST;
+    updatePhoneEndpoint = identifierModule.default(mockLogger, {}, {}).PUT;
     getNumberQuota = quotaModule.default(mockLogger).GET;
     patchOrganisation = orgItemModule.default(mockLogger).PATCH;
   }, 30000);
@@ -220,6 +223,34 @@ describe('Chargeable number limit', () => {
     }
     const rejected = await claim(chargeableTrunkId);
     expect(rejected._status).toBe(403);
+  });
+
+  test('provisioned is settable via PUT once carrier work completes', async () => {
+    const number = nextNumber();
+    const created = await claim(chargeableTrunkId, { number });
+    expect(created._status).toBe(201);
+
+    const req = createMockRequest({
+      params: { identifier: number },
+      body: { provisioned: true }
+    });
+    const res = createMockResponse();
+    res.locals.user = { role: 'owner', organisationId: orgId };
+    await updatePhoneEndpoint(req, res);
+    expect(res._status).toBe(200);
+
+    const row = await PhoneNumber.findByPk(number.replace(/^\+/, ''));
+    expect(row.provisioned).toBe(true);
+
+    // Bad type is rejected.
+    const badReq = createMockRequest({
+      params: { identifier: number },
+      body: { provisioned: 'yes' }
+    });
+    const badRes = createMockResponse();
+    badRes.locals.user = { role: 'owner', organisationId: orgId };
+    await updatePhoneEndpoint(badReq, badRes);
+    expect(badRes._status).toBe(400);
   });
 
   test('concurrent claims cannot race past the limit', async () => {
