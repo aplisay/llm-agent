@@ -126,11 +126,11 @@ Two long-lived control connections live on the worker side:
 `CallSession.transfer()` (function-tool surface) calls
 `gateway_session.transfer(req)`. The voiceblender gateway maps:
 
-| Aplisay `operation` | Voiceblender `mode` |
+| Aplisay `operation` | Voiceblender primitive |
 |---|---|
-| `blind` | `blind` |
-| `bridged` | `blind` (with our worker driving the second leg — out of scope for v1) |
-| `consult` | `attended` |
+| `blind` (REFER) | `POST /v1/legs/{id}/transfer` (in-dialog REFER) |
+| `blind` + `force_bridged` | agent-less `POST /v1/legs` + ephemeral room bridge (`_do_dial_bridge`) |
+| `consultative` | agent-attached consult leg; finalise via room bridge (`bridge_with`) |
 
 Progress events arrive on VSI:
 `leg.transfer_initiated` → `leg.transfer_progress` (per NOTIFY sipfrag) →
@@ -280,12 +280,33 @@ of ingress.
 | `agents/pipecat/deploy/gcp/env-example-{staging,production}` | `COMPOSE_PROFILES` + `SIP_GATEWAY` + voiceblender knobs |
 
 
+## Human-to-agent transfers (`options.bridgedTransferToAgent`)
+
+See [`call-transfers.md`](call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)
+for the user-facing contract. On the voiceblender topology the pieces are:
+
+1. A bridged transfer (native dial+bridge, or a consultative finalise)
+   puts the caller and target legs in an ephemeral room; the gateway
+   session records `bridge_room_id` / `bridge_peer_leg_id` and is marked
+   `bridged` so the worker's teardown never deletes a leg that now
+   belongs to the two humans.
+2. `dtmf.received` VSI events for the **target leg** (which has no
+   CallSession) are routed to a watcher registered by
+   `bridged_transfer.arm_voiceblender_bta_watch(...)`; the watch dies
+   with either bridged leg (`leg.disconnected`).
+3. On a sequence match the worker reserves a child call record, stashes
+   a `TakeoverPayload` keyed by a fresh session id, then
+   `DELETE /v1/legs/{target}` → `DELETE /v1/rooms/{room}/legs/{caller}`
+   → `POST /v1/legs/{caller}/agent/pipecat` — voiceblender dials
+   `/voiceblender/agent/{session_id}` and the WS handler builds the
+   incoming agent's CallSession from the stash.
+
 ## Known limitations / follow-ups
 
-- **`bridged` transfers** map onto voiceblender's `blind` mode for now;
-  a true bridged transfer needs the worker to drive a second outbound
-  leg into a voiceblender room and unbridge once the bridge is
-  established. Out of scope for v1.
+- **`bridged` transfers**: the native dial+bridge path
+  (`_do_dial_bridge`) dials the target as an agent-less leg and joins
+  both legs in an ephemeral voiceblender room. Bridged legs are marked
+  on the gateway session so worker teardown leaves them alive.
 - **Voiceblender's native recording** is left disabled; the worker
   handles recording via `AudioBufferProcessor` and the AES-GCM/GCS
   pipeline that ships in `pipecat_aplisay/recording/`.

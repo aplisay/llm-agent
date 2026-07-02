@@ -207,8 +207,9 @@ as the Daily / FreeSWITCH / voiceblender ingresses.
 | GET | `/health` | — | liveness + active-call count |
 | DELETE | `/v1/calls/{id}` | — | BYE + media teardown |
 | POST | `/v1/calls` | `{destination, caller_id, agent_ws_session_id, custom_headers, metadata}` | outbound INVITE; returns `{ok, call_id}` once 200 OK arrives and the worker WS is wired |
-| POST | `/v1/calls/{id}/transfer` | `{target, mode}` where mode ∈ `"blind"`, `"bridged"` | blind = in-dialog REFER on `id`; bridged = media-relay between `id` and `target` (a previously-consulted call_id) |
+| POST | `/v1/calls/{id}/transfer` | `{target, mode, monitor_dtmf?}` where mode ∈ `"blind"`, `"bridged"`, `"attended"`, `"dial_bridge"` | blind = in-dialog REFER on `id`; bridged = media-relay between `id` and `target` (a previously-consulted call_id); attended = REFER-with-Replaces to the consult dialog; dial_bridge = dial `target` as an agent-less leg and relay. `monitor_dtmf` (bridged/dial_bridge only) keeps `id`'s worker WS open as a control channel and surfaces target-leg DTMF on it — see below |
 | POST | `/v1/calls/{id}/consult` | `{destination, caller_id, agent_ws_session_id, ...}` | dials a second leg as a consult; returns `{ok, consult_call_id}` once the bot WS is wired |
+| POST | `/v1/calls/{id}/unbridge` | `{agent_ws_session_id, custom_headers?}` | human-to-agent takeover finalise: BYE the bridged peer leg, dismantle the relay, and re-attach `id` to a fresh worker agent WS at `/sipbridge/agent/{agent_ws_session_id}` |
 
 A shared `SIPBRIDGE_API_TOKEN` Bearer guards all endpoints except
 `/health`. Empty token disables auth (dev only).
@@ -225,6 +226,28 @@ DTMF events fire once per key-press (the bridge collects RFC 4733
 event packets and emits a single MessageFrame on the end-of-event
 flag). The worker's Pipecat pipeline can consume them via a custom
 processor or by hooking the transport's `MessageFrame` callback.
+
+**Monitored bridges (human-to-agent transfers).** When a bridged
+transfer is placed with `monitor_dtmf: true`
+(`options.bridgedTransferToAgent` — see
+[`call-transfers.md`](call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)),
+the original leg's worker WS is *kept open* across the bridge as a
+control-only channel: no audio frames flow in either direction (bot
+audio is dropped while a relay is installed), but DTMF detected on the
+**peer (transfer-target) leg** is delivered on it as
+
+```json
+{"type":"dtmf","digit":"1","duration_ms":120,"call_id":"<this leg>","peer_call_id":"<target leg>","source":"transfer_target"}
+```
+
+with end-of-event retransmissions deduplicated. The worker's monitor
+loop (`pipecat_aplisay/bridged_transfer.py`) matches configured
+sequences and POSTs `/v1/calls/{id}/unbridge` to complete the takeover;
+the bridge then closes the monitor WS and dials
+`/sipbridge/agent/{agent_ws_session_id}` for the new agent session. A
+worker WS closing while a call is bridged never tears the call down —
+the bridged pair lives until either side BYEs (at which point the
+bridge BYEs the peer leg too).
 
 
 ## Operations

@@ -368,6 +368,7 @@ Agent sets let you create, version, and delete a whole team in single API calls,
 
 - Because `fromLabel` is preserved, a document read back with `GET /agent-sets/{id}` can be edited and `PUT` straight back: labelled references are always re-resolved against the membership in the incoming document. You never have to manage member UUIDs by hand.
 - References to agents *outside* the set are also allowed — use the plain agent UUID instead of a label.
+- The same substitution applies to the values of `options.bridgedTransferToAgent` ([human-to-agent transfers](./call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)): a value of `"label:booking"` (or `{ "agent": "label:booking", … }`) is rewritten to `{ "agent": "<resolved-uuid>", "fromLabel": "booking", … }` on save and re-resolved on every round-trip. Targets must be `interactive-audio` agents, in or outside the set.
 
 ### Update and delete semantics
 
