@@ -445,10 +445,8 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 //     ``docs/call-transfers.md``.
 //   - mode "consult": invalid for the transfer endpoint — clients
 //     should call the dedicated /v1/calls/{id}/consult endpoint.
-// ``monitorDTMF`` applies to mode "bridged" only: it keeps the original
-// leg's worker WS open as a control channel and surfaces transfer-target
-// DTMF on it (see BridgeRelay / options.bridgedTransferToAgent).
-func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, monitorDTMF bool) error {
+// ``opts`` applies to mode "bridged" only — see BridgeOptions.
+func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, opts BridgeOptions) error {
 	if m.sip == nil {
 		return errors.New("call: SIP layer not registered")
 	}
@@ -456,7 +454,7 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, mon
 	case "", "blind":
 		return m.sip.Refer(ctx, callID, target)
 	case "bridged":
-		return m.BridgeRelay(callID, target, monitorDTMF)
+		return m.BridgeRelay(callID, target, opts)
 	case "attended":
 		return m.sip.ReferReplaces(ctx, callID, target)
 	case "consult":
@@ -464,6 +462,22 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, mon
 	default:
 		return fmt.Errorf("call: unknown transfer mode %q", mode)
 	}
+}
+
+// BridgeOptions tune a media-relay bridge (modes "bridged" and
+// "dial_bridge"):
+//
+//   - MonitorDTMF keeps the original (A) leg's worker WS open as a
+//     control channel and surfaces transfer-target DTMF presses on it
+//     (options.bridgedTransferToAgent).
+//   - TapAudio additionally streams a decoded stereo copy of both legs
+//     (L = caller, R = target) on the same kept-open WS for
+//     transcription (options.bridgedTransferTranscribe). See tap.go.
+//
+// Either flag keeps the A leg's WS open.
+type BridgeOptions struct {
+	MonitorDTMF bool
+	TapAudio    bool
 }
 
 // BridgeRelay puts two existing calls into peer-to-peer media-relay
@@ -475,11 +489,13 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, mon
 // must be compatible (Phase C v1 supports same-family G.711 only —
 // PCMU↔PCMU or PCMA↔PCMA. Cross-family relay (mu↔A) needs a
 // transcoding step in the codec layer; tracked as follow-up).
-// ``monitorDTMF`` marks the A leg (the original caller) as the
+// ``opts.MonitorDTMF`` marks the A leg (the original caller) as the
 // monitoring side: its worker WS is kept open (control-only) and
 // receives ``source: "transfer_target"`` DTMF events detected on the
 // B leg, so the worker can drive a bridged transfer-to-agent.
-func (m *Manager) BridgeRelay(callA, callB string, monitorDTMF bool) error {
+// ``opts.TapAudio`` additionally arms the stereo transcription tap on
+// the same WS (see tap.go).
+func (m *Manager) BridgeRelay(callA, callB string, opts BridgeOptions) error {
 	m.mu.Lock()
 	a, okA := m.calls[callA]
 	b, okB := m.calls[callB]
@@ -499,15 +515,28 @@ func (m *Manager) BridgeRelay(callA, callB string, monitorDTMF bool) error {
 			a.payload, b.payload,
 		)
 	}
+	keepWS := opts.MonitorDTMF || opts.TapAudio
 	a.mu.Lock()
-	a.dtmfMonitor = monitorDTMF
+	a.dtmfMonitor = opts.MonitorDTMF
 	a.mu.Unlock()
-	a.SetPeer(b, monitorDTMF)
+	if opts.TapAudio && a.ws != nil {
+		mixer := newTapMixer(a.ws)
+		a.mu.Lock()
+		a.tap = mixer
+		a.tapSide = tapSideCaller
+		a.mu.Unlock()
+		b.mu.Lock()
+		b.tap = mixer
+		b.tapSide = tapSideTarget
+		b.mu.Unlock()
+	}
+	a.SetPeer(b, keepWS)
 	b.SetPeer(a, false)
 	log.Info().
 		Str("call_a", callA).
 		Str("call_b", callB).
-		Bool("monitor_dtmf", monitorDTMF).
+		Bool("monitor_dtmf", opts.MonitorDTMF).
+		Bool("tap_audio", opts.TapAudio).
 		Msg("call: media relay installed (bridged transfer)")
 	return nil
 }
@@ -522,10 +551,8 @@ type DialBridgeParams struct {
 	CallerID       string
 	CustomHeaders  map[string]string
 	Metadata       map[string]string
-	// MonitorDTMF keeps the original leg's worker WS open across the
-	// bridge and surfaces transfer-target DTMF on it (bridged
-	// transfer-to-agent support).
-	MonitorDTMF bool
+	// Bridge monitoring/tap flags — see BridgeOptions.
+	Options BridgeOptions
 }
 
 // DialAndBridge is the native (non-REFER) blind bridged transfer: it
@@ -577,9 +604,9 @@ func (m *Manager) DialAndBridge(ctx context.Context, p DialBridgeParams) (string
 	m.mu.Unlock()
 
 	// Install the relay. BridgeRelay closes the original leg's bot WS
-	// (SetPeer) so the agent drops out — unless MonitorDTMF keeps it
-	// open as a control channel; the new leg never had one.
-	if err := m.BridgeRelay(p.OriginalCallID, newID, p.MonitorDTMF); err != nil {
+	// (SetPeer) so the agent drops out — unless MonitorDTMF/TapAudio
+	// keep it open as a control channel; the new leg never had one.
+	if err := m.BridgeRelay(p.OriginalCallID, newID, p.Options); err != nil {
 		// Codec mismatch or the original vanished — tear the new leg
 		// down (SIP BYE + media close) so we don't leak it.
 		_ = m.Hangup(context.Background(), newID)
@@ -1459,6 +1486,14 @@ type Call struct {
 		atNanos  int64
 	}
 
+	// tap / tapSide: transcription tap for a bridged transfer
+	// (``tap_audio`` — options.bridgedTransferTranscribe). Both legs of
+	// the bridge share ONE tapMixer, owned by the monitoring leg's
+	// kept-open WS; each leg pushes its own decoded inbound audio to its
+	// side (caller = left, target = right). Guarded by mu. See tap.go.
+	tap     *tapMixer
+	tapSide int
+
 	// firstRTPLogged: once-flag that gates the "first RTP packet
 	// received" diagnostic log. Useful to confirm whether the upstream
 	// is actually sending media to the port we advertised in the SDP
@@ -1519,7 +1554,12 @@ func (c *Call) ClearPeer() {
 	c.mu.Lock()
 	c.peer = nil
 	c.dtmfMonitor = false
+	tap := c.tap
+	c.tap = nil
 	c.mu.Unlock()
+	if tap != nil {
+		tap.Stop()
+	}
 }
 
 // hasPeer reports whether the call is currently in media-relay mode.
@@ -1592,6 +1632,19 @@ func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bo
 				Str("to", peer.callID).
 				Msg("call: relay forward failed")
 			c.Close()
+			return
+		}
+		// Transcription tap (tap_audio): push a decoded COPY of this
+		// leg's audio to its side of the shared mixer. Purely additive —
+		// the relay write above has already happened.
+		c.mu.Lock()
+		tap := c.tap
+		side := c.tapSide
+		c.mu.Unlock()
+		if tap != nil {
+			if samples := c.decode16k(payload); samples != nil {
+				tap.push(side, samples)
+			}
 		}
 		return
 	}
@@ -1802,7 +1855,12 @@ func (c *Call) Close() {
 	}
 	c.done = true
 	close(c.closed)
+	tap := c.tap
+	c.tap = nil
 	c.mu.Unlock()
+	if tap != nil {
+		tap.Stop()
+	}
 	if c.releaseStop != nil {
 		c.releaseStop()
 	}

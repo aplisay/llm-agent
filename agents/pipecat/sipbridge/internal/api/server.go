@@ -174,6 +174,13 @@ type transferBody struct {
 	// of a bridged transfer-to-agent (options.bridgedTransferToAgent).
 	// Pair with POST /v1/calls/{id}/unbridge to complete the takeover.
 	MonitorDTMF bool `json:"monitor_dtmf"`
+	// TapAudio (modes "bridged" and "dial_bridge" only) additionally
+	// streams a decoded stereo copy of both bridged legs (L = caller,
+	// R = transfer target; 16 kHz s16le AudioRawFrames) on the same
+	// kept-open WS so the worker can transcribe the human↔human segment
+	// (options.bridgedTransferTranscribe). The RTP relay fast path is
+	// unaffected.
+	TapAudio bool `json:"tap_audio"`
 }
 
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +212,10 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 			CallerID:       body.CallerID,
 			CustomHeaders:  body.CustomHeaders,
 			Metadata:       body.Metadata,
-			MonitorDTMF:    body.MonitorDTMF,
+			Options: call.BridgeOptions{
+				MonitorDTMF: body.MonitorDTMF,
+				TapAudio:    body.TapAudio,
+			},
 		})
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())
@@ -220,7 +230,10 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.mgr.Transfer(ctx, id, body.Target, body.Mode, body.MonitorDTMF); err != nil {
+	if err := s.mgr.Transfer(ctx, id, body.Target, body.Mode, call.BridgeOptions{
+		MonitorDTMF: body.MonitorDTMF,
+		TapAudio:    body.TapAudio,
+	}); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
