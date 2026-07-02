@@ -300,6 +300,13 @@ for the user-facing contract. On the voiceblender topology the pieces are:
    → `POST /v1/legs/{caller}/agent/pipecat` — voiceblender dials
    `/voiceblender/agent/{session_id}` and the WS handler builds the
    incoming agent's CallSession from the stash.
+4. With `options.bridgedTransferTranscribe` set, the worker also starts
+   voiceblender's **native per-leg STT** (`POST /v1/legs/{id}/stt`,
+   provider/language from the option) on both bridged legs at bridge
+   time. Final `stt.text` VSI events are routed per leg into a
+   speaker-labelled transcript (`bridge_transcript.py`) logged against
+   the bridged-segment call record and, on a DTMF hand-back, injected
+   into the incoming agent's prompt. Media never leaves the room mixer.
 
 ## Known limitations / follow-ups
 

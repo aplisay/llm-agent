@@ -207,7 +207,7 @@ as the Daily / FreeSWITCH / voiceblender ingresses.
 | GET | `/health` | — | liveness + active-call count |
 | DELETE | `/v1/calls/{id}` | — | BYE + media teardown |
 | POST | `/v1/calls` | `{destination, caller_id, agent_ws_session_id, custom_headers, metadata}` | outbound INVITE; returns `{ok, call_id}` once 200 OK arrives and the worker WS is wired |
-| POST | `/v1/calls/{id}/transfer` | `{target, mode, monitor_dtmf?}` where mode ∈ `"blind"`, `"bridged"`, `"attended"`, `"dial_bridge"` | blind = in-dialog REFER on `id`; bridged = media-relay between `id` and `target` (a previously-consulted call_id); attended = REFER-with-Replaces to the consult dialog; dial_bridge = dial `target` as an agent-less leg and relay. `monitor_dtmf` (bridged/dial_bridge only) keeps `id`'s worker WS open as a control channel and surfaces target-leg DTMF on it — see below |
+| POST | `/v1/calls/{id}/transfer` | `{target, mode, monitor_dtmf?, tap_audio?}` where mode ∈ `"blind"`, `"bridged"`, `"attended"`, `"dial_bridge"` | blind = in-dialog REFER on `id`; bridged = media-relay between `id` and `target` (a previously-consulted call_id); attended = REFER-with-Replaces to the consult dialog; dial_bridge = dial `target` as an agent-less leg and relay. `monitor_dtmf` (bridged/dial_bridge only) keeps `id`'s worker WS open as a control channel and surfaces target-leg DTMF on it; `tap_audio` additionally streams a decoded stereo copy of the bridge for transcription — see below |
 | POST | `/v1/calls/{id}/consult` | `{destination, caller_id, agent_ws_session_id, ...}` | dials a second leg as a consult; returns `{ok, consult_call_id}` once the bot WS is wired |
 | POST | `/v1/calls/{id}/unbridge` | `{agent_ws_session_id, custom_headers?}` | human-to-agent takeover finalise: BYE the bridged peer leg, dismantle the relay, and re-attach `id` to a fresh worker agent WS at `/sipbridge/agent/{agent_ws_session_id}` |
 
@@ -248,6 +248,18 @@ the bridge then closes the monitor WS and dials
 worker WS closing while a call is bridged never tears the call down —
 the bridged pair lives until either side BYEs (at which point the
 bridge BYEs the peer leg too).
+
+**Transcription tap (`tap_audio`).** With
+`options.bridgedTransferTranscribe` set, the transfer additionally
+carries `tap_audio: true` and the bridge streams a decoded stereo copy
+of the relay on the same kept-open WS as two-channel `AudioRawFrame`s
+(16 kHz s16le; **left = caller, right = transfer target** — see
+`internal/call/tap.go`). The RTP fast path between the humans is
+untouched: the tap is a per-packet decode into a 20 ms mixer that drops
+rather than back-pressures when the WS is slow, and frames are skipped
+entirely while both sides are silent. The worker splits the channels
+into one STT stream per human (`pipecat_aplisay/bridge_transcript.py`)
+and logs the labelled finals against the bridged-segment call record.
 
 
 ## Operations

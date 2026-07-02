@@ -20,8 +20,9 @@ repo, REST + VSI) — with a focus on call transfers.
 | `transfer_status`, `transferPrompt`, `consultFeedback`, `callerId` override, outboundCallFilter | ✅ | ✅ | ✅ |
 | Confidence tone (`options.transferTone`) | ✅ | ✅ | ✅ |
 | WebRTC (browser) origin transfers | n/a (LiveKit rooms native) | ✅ worker-side media relay | ✅ worker-side media relay |
-| Bridged call record for the post-transfer segment | ✅ child call, `modelName: "telephony:bridged-call"` | ❌ not created (follow-up) | ❌ not created (follow-up) |
+| Bridged call record for the post-transfer segment | ✅ child call, `modelName: "telephony:bridged-call"` | ✅ when the bridge is monitored/transcribed; plain bridges still have no record (no event path) | ✅ same condition |
 | Human-to-agent transfers (`options.bridgedTransferToAgent`) | ✅ (this branch) | ✅ (this branch) | ✅ (this branch) |
+| Bridged-segment transcription (`options.bridgedTransferTranscribe`) | ⏳ follow-up (two-track STT on the room) | ✅ stereo tap on the monitor WS + agent's STT | ✅ container-native per-leg STT via VSI |
 
 **Conclusion:** bridged warm (consultative) and cold (blind) transfers between
 two SIP endpoints are supported on all three topologies. The remaining
