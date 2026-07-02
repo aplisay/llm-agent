@@ -619,6 +619,8 @@ The example below forces bridging; set `forceRefer` instead to force SIP REFER.
 
 After a bridged transfer the caller is talking to a human transfer target and the AI has left the conversation. The `options.bridgedTransferToAgent` agent option lets the **transfer target** hand the caller back to an AI agent by pressing a DTMF key sequence — for example a support engineer who has finished a triage conversation can press `1` to pass the caller to a booking agent and put the phone down.
 
+> **Developer walkthrough:** [human-handback-howto.md](./human-handback-howto.md) builds the complete workflow — consultative transfer to a remote worker, transcribed human↔human conversation, DTMF hand-back, and a follow-up agent that books the agreed appointment in the worker's calendar.
+
 ```json
 {
   "name": "Front desk agent",
