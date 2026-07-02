@@ -170,9 +170,11 @@ const agentUpdate = async (req, res) => {
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    // Static transfer_agent/subagent targets must reference accessible agents of the right type
-    functions && await validateAgentTargets(functions, {
-      lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } })
+    // Static transfer_agent/subagent targets and options.bridgedTransferToAgent
+    // targets must reference accessible agents of the right type
+    (functions || options?.bridgedTransferToAgent) && await validateAgentTargets(functions || [], {
+      lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } }),
+      options
     });
     await agent.update({ name, description, prompt, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');

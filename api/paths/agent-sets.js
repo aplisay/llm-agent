@@ -115,10 +115,11 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
         agent[field] = field === 'type' ? defaultType(def) : def[field];
       }
     }
-    if (agent.functions) {
-      fixupLabelReferences(agent.functions, labelMap, label);
-      agent.changed('functions', true);
-      await validateAgentTargets(agent.functions, { membersById, lookupAgent, owningLabel: label });
+    if (agent.functions || agent.options?.bridgedTransferToAgent) {
+      fixupLabelReferences(agent.functions || [], labelMap, label, agent.options);
+      agent.functions && agent.changed('functions', true);
+      agent.options?.bridgedTransferToAgent && agent.changed('options', true);
+      await validateAgentTargets(agent.functions || [], { membersById, lookupAgent, owningLabel: label, options: agent.options });
     }
   }
   for (const { agent } of members) {

@@ -652,6 +652,46 @@ components:
             volume: medium
             gapMs: 2750
             graceMs: 1200
+        bridgedTransferToAgent:
+          description: |-
+            Human-to-agent transfers: after a **bridged** transfer, let the transfer target hand the
+            caller back to an AI agent by pressing a DTMF sequence. Keys are DTMF sequences of 1-8
+            characters from `0-9`, `*` and `#`; values name the voice agent the caller is handed to
+            when the sequence is detected **on the transfer-target leg** (caller digits never trigger it).
+
+            Values are an agent UUID string, or an object `{ agent, includeHistory }` where
+            `includeHistory` (default `true`) controls whether the incoming agent's prompt carries the
+            conversation the caller had with the original agent. Inside an agent-set document a value
+            may be a `label:<label>` reference, resolved to the member's UUID on save (recorded as
+            `fromLabel` for round-tripping).
+
+            While this option is set, transfers are forced onto the bridged path (a SIP REFER would
+            take the call off-platform, out of DTMF sight). Multi-digit sequences are matched with the
+            `dtmfTimeout` inter-digit timeout. On a match the target leg is dropped and the mapped
+            agent answers the caller on a new child call record. Not available for WebRTC (browser)
+            origin calls. See docs/call-transfers.md.
+          type: object
+          minProperties: 1
+          additionalProperties:
+            oneOf:
+              - type: string
+                description: Target agent UUID (or `label:<label>` inside an agent-set document).
+              - type: object
+                properties:
+                  agent:
+                    description: Target agent UUID (or `label:<label>` inside an agent-set document).
+                    type: string
+                  includeHistory:
+                    description: Carry the original agent's conversation into the incoming agent's prompt.
+                    type: boolean
+                    default: true
+                required:
+                  - agent
+          example:
+            "1": "5f4c0a9e-1111-2222-3333-444455556666"
+            "*7":
+              agent: "9a1b0c2d-7777-8888-9999-000011112222"
+              includeHistory: false
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
