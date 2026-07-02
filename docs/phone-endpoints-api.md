@@ -108,6 +108,13 @@ Creates a new phone endpoint. Supports E.164 DDI (number on a trunk) and phone-r
 
 - **Request body**: `type`, `number` (or legacy `phoneNumber`), `trunkId`, and optionally `name`, `handler`, `outbound`.
 - Handler and outbound are constrained by the trunk: the effective handler is from the trunk, and `outbound` can only be `true` if the trunk has outbound enabled.
+- **Chargeable-number limit**: when the target trunk is **chargeable** (a platform carrier
+  trunk shared into the organisation — i.e. not owned by it), the organisation's
+  `chargeableNumberLimit` applies (default 3, `null` = unlimited; a platform billing policy
+  editable only via the organisations API under `organisation:setRate`). A claim beyond the
+  limit returns `403 { "error": "…", "code": "chargeable_number_limit", "limit": n, "used": n }`.
+  Numbers on the organisation's own (non-chargeable) trunks are never counted or limited.
+  Current allowance is readable at [`GET /api/number-quota`](#get-apinumber-quota).
 - **Response (201)**: `{ "success": true, "number": "1234567890" }` (number without `+`).
 
 **Example:**
@@ -172,7 +179,11 @@ The `options` object carries provider-specific and behavioural settings for the 
 Updates an existing phone endpoint.
 
 - **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration.
-- **Body**: Only send fields you want to change. For E.164 DDI, only `outbound` and `handler` are updatable; for phone-registration, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
+- **Body**: Only send fields you want to change. For E.164 DDI, `outbound`, `handler` and
+  `provisioned` are updatable (`provisioned` marks carrier-side provisioning complete — the
+  dashboard Buy-number flow sets it once the provider has activated the number and pointed it
+  at the platform); for phone-registration, `name`, `outbound`, `handler`, `registrar`,
+  `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
 - **Response (200)**: `{ "success": true }`.
 
 ---
@@ -182,6 +193,26 @@ Updates an existing phone endpoint.
 Deletes a phone endpoint. `identifier` is the number (E.164) or registration ID.
 
 - **Response (200)**: `{ "success": true, "message": "Phone endpoint deleted successfully" }`.
+- **Purchased numbers**: deleting only removes the platform record — it does NOT deactivate
+  the number at the carrier. The polite-ai dashboard releases purchased numbers at the
+  numbering provider before calling this; API callers deleting a provisioned number on a
+  chargeable trunk must arrange the carrier release themselves (see
+  polite-ai `docs/buy-number-design.md`).
+
+---
+
+### GET /api/number-quota
+
+The caller organisation's allowance for numbers on **chargeable** (non-owned, carrier)
+trunks — backs the dashboard Buy-number flow. Requires `phoneEndpoint:read` and an
+organisation membership.
+
+- **Response (200)**: `{ "limit": 3, "used": 1, "remaining": 2 }` — `limit`/`remaining` are
+  `null` when the organisation is unlimited. Numbers on the organisation's own
+  (non-chargeable) trunks are not counted.
+- The limit itself is `Organisation.chargeableNumberLimit` (default 3), editable via the
+  organisations API under `organisation:setRate` (super admin billing policy — deliberately
+  not orgAdmin's `setLimits`).
 
 ---
 
@@ -230,7 +261,9 @@ Deletes a phone endpoint. `identifier` is the number (E.164) or registration ID.
 - All endpoints require authentication. Results are scoped to the caller’s organisation.
 - **400**: Validation failed, invalid body, or trunk not found / not in organisation.
 - **401**: Unauthorized.
-- **403**: Forbidden.
+- **403**: Forbidden — including `code: "chargeable_number_limit"` on POST when the
+  organisation has used its allowance of numbers on chargeable trunks (body carries
+  `limit` and `used`).
 - **404**: Endpoint not found (PUT/DELETE).
 - **409**: Phone number already exists (POST).
 - **500**: Server error.
