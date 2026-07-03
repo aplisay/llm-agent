@@ -107,8 +107,24 @@ class _VbGatewaySession(GatewaySession):
     session_id: str
     leg_id: str
     _gateway: "VoiceblenderSipGateway"
+    # Set once this leg is one half of an installed room bridge (native
+    # dial_bridge or consultative finalise). From then on the bridged call
+    # belongs to the two humans — the worker session's teardown must NOT
+    # delete the leg (the room reaps itself when the legs BYE).
+    bridged: bool = False
+    # The bridge-room id and the peer (transfer-target) leg id, recorded
+    # when this session installs a bridge — needed by the human-to-agent
+    # takeover (``options.bridgedTransferToAgent``) to drop the target and
+    # pull this leg back out of the room.
+    bridge_room_id: Optional[str] = None
+    bridge_peer_leg_id: Optional[str] = None
 
     async def hangup(self, reason: str) -> None:
+        if self.bridged:
+            logger.bind(leg_id=self.leg_id, reason=reason).info(
+                "voiceblender hangup skipped — leg is part of a live bridge"
+            )
+            return
         logger.bind(leg_id=self.leg_id, reason=reason).info("voiceblender hangup")
         await self._gateway._call_api(
             "DELETE",
@@ -203,9 +219,12 @@ class _VbGatewaySession(GatewaySession):
             raise RuntimeError(
                 f"voiceblender dial_bridge: POST /v1/legs did not return a leg id: {resp!r}"
             )
-        await self._bridge_legs(self.leg_id, new_leg_id)
+        room_id = await self._bridge_legs(self.leg_id, new_leg_id)
+        self.bridged = True
+        self.bridge_room_id = room_id
+        self.bridge_peer_leg_id = new_leg_id
         logger.bind(
-            original_leg=self.leg_id, target_leg=new_leg_id
+            original_leg=self.leg_id, target_leg=new_leg_id, room=room_id
         ).info("voiceblender dial_bridge: caller bridged to target leg")
 
     async def _do_consultative(self, req: TransferRequest) -> None:
@@ -290,7 +309,9 @@ class _VbGatewaySession(GatewaySession):
         ).info("voiceblender consultative: consult leg requested; "
                "TransferAgent will spawn when WS arrives")
 
-    async def bridge_with(self, other: GatewaySession) -> None:
+    async def bridge_with(
+        self, other: GatewaySession, *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install a media bridge between this leg and ``other``'s leg.
 
         Voiceblender's native bridge primitive is room-based: create a
@@ -301,20 +322,29 @@ class _VbGatewaySession(GatewaySession):
         ``POST /v1/rooms`` to create, then ``POST /v1/rooms/{room}/legs``
         with each leg id. The room is reaped automatically when the
         last leg leaves.
+
+        ``monitor_dtmf`` records the bridge topology (room + peer leg) on
+        this session so a human-to-agent takeover watcher can be armed —
+        the DTMF events themselves arrive on the VSI stream regardless.
         """
         if not isinstance(other, _VbGatewaySession):
             raise NotImplementedError(
                 f"voiceblender bridge_with: peer must be _VbGatewaySession, "
                 f"got {type(other).__name__}"
             )
-        await self._bridge_legs(self.leg_id, other.leg_id)
+        room_id = await self._bridge_legs(self.leg_id, other.leg_id)
+        self.bridged = True
+        other.bridged = True
+        self.bridge_room_id = room_id
+        self.bridge_peer_leg_id = other.leg_id
         logger.bind(
-            parent_leg=self.leg_id, consult_leg=other.leg_id
+            parent_leg=self.leg_id, consult_leg=other.leg_id, room=room_id,
+            monitor_dtmf=monitor_dtmf,
         ).info("voiceblender bridge_with: legs joined in consult-bridge room")
 
-    async def _bridge_legs(self, leg_a: str, leg_b: str) -> None:
+    async def _bridge_legs(self, leg_a: str, leg_b: str) -> str:
         """Create a temporary voiceblender room and move both legs into
-        it so the room mixer joins their audio.
+        it so the room mixer joins their audio. Returns the room id.
 
         Shared by :meth:`bridge_with` (consultative finalisation) and
         :meth:`_do_dial_bridge` (native blind bridged transfer). The
@@ -344,6 +374,35 @@ class _VbGatewaySession(GatewaySession):
                 f"/v1/rooms/{room_id}/legs",
                 {"leg_id": leg_id},
             )
+        return room_id
+
+    async def takeover_to_agent(self, *, agent_ws_session_id: str) -> None:
+        """Finalise a human-to-agent takeover on this (caller) leg: hang
+        up the bridged transfer-target leg, pull this leg back out of the
+        bridge room, and re-attach a Pipecat agent so voiceblender dials
+        ``/voiceblender/agent/{agent_ws_session_id}``. The worker must
+        have stashed a TakeoverPayload for that session id first. See
+        ``bridged_transfer.py``."""
+        peer = self.bridge_peer_leg_id
+        room = self.bridge_room_id
+        if peer:
+            await self._gateway._call_api(
+                "DELETE",
+                f"/v1/legs/{peer}",
+                {"reason": "normal"},
+                raise_on_error=False,
+            )
+        if room:
+            await self._gateway._call_api(
+                "DELETE",
+                f"/v1/rooms/{room}/legs/{self.leg_id}",
+                None,
+                raise_on_error=False,
+            )
+        self.bridged = False
+        self.bridge_room_id = None
+        self.bridge_peer_leg_id = None
+        await self._gateway._attach_pipecat(self.leg_id, agent_ws_session_id)
 
     async def shutdown(self) -> None:
         # Best-effort hangup. The VSI ``leg.disconnected`` listener will also
@@ -438,6 +497,64 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
         # Warm-transfer state (LiveKit-parity) — shared mixin.
         self._init_consult_state()
+
+        # Human-to-agent transfer watchers (``options.bridgedTransferToAgent``):
+        # async callbacks keyed by the TRANSFER-TARGET leg id. While a
+        # monitored bridge is up, ``dtmf.received`` events for that leg are
+        # routed here (the target leg has no CallSession of its own). A second
+        # map keyed the same way carries teardown callbacks fired when either
+        # bridged leg disconnects. See ``bridged_transfer.py``.
+        self._bta_digit_watchers: dict[str, Callable[[str], Awaitable[None]]] = {}
+        self._bta_gone_watchers: dict[str, Callable[[], None]] = {}
+        # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+        # final stt.text events for a bridged human leg, keyed by leg id.
+        self._bta_stt_watchers: dict[str, Callable[[str], Awaitable[None]]] = {}
+
+    # ---- Human-to-agent transfer watchers --------------------------------
+
+    def register_bta_watcher(
+        self,
+        target_leg_id: str,
+        caller_leg_id: str,
+        on_digit: Callable[[str], Awaitable[None]],
+        on_gone: Callable[[], None],
+    ) -> None:
+        """Route ``dtmf.received`` for ``target_leg_id`` to ``on_digit`` and
+        fire ``on_gone`` (idempotently) when either bridged leg disconnects."""
+        self._bta_digit_watchers[target_leg_id] = on_digit
+        self._bta_gone_watchers[target_leg_id] = on_gone
+        # Caller-leg death also ends the watch; map it to the same teardown.
+        self._bta_gone_watchers[caller_leg_id] = on_gone
+
+    def register_stt_watcher(
+        self, leg_id: str, on_text: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Route final ``stt.text`` VSI events for ``leg_id`` (a bridged
+        human leg being transcribed via the container's native STT) to
+        ``on_text``. See ``bridge_transcript.py``."""
+        self._bta_stt_watchers[leg_id] = on_text
+
+    def clear_bta_watcher(self, *leg_ids: str) -> None:
+        for leg_id in leg_ids:
+            self._bta_digit_watchers.pop(leg_id, None)
+            self._bta_gone_watchers.pop(leg_id, None)
+            self._bta_stt_watchers.pop(leg_id, None)
+
+    async def start_leg_stt(
+        self, leg_id: str, *, provider: str, language: Optional[str]
+    ) -> None:
+        """Start voiceblender's native real-time STT on a leg
+        (``POST /v1/legs/{id}/stt``). Finals arrive as ``stt.text`` VSI
+        events routed via :meth:`register_stt_watcher`."""
+        body: dict[str, Any] = {"provider": provider, "partial": False}
+        if language:
+            body["language"] = language
+        await self._call_api("POST", f"/v1/legs/{leg_id}/stt", body)
+
+    async def stop_leg_stt(self, leg_id: str) -> None:
+        await self._call_api(
+            "DELETE", f"/v1/legs/{leg_id}/stt", None, raise_on_error=False
+        )
 
     # ---- Injection points used by the worker ----------------------------
 
@@ -744,6 +861,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             await self._on_leg_disconnected(event)
         elif etype == "dtmf.received":
             await self._on_leg_dtmf(event)
+        elif etype == "stt.text":
+            await self._on_stt_text(event)
         elif etype in {
             "leg.transfer_initiated",
             "leg.transfer_requested",
@@ -768,6 +887,26 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         if fut is not None and not fut.done():
             fut.set_result(None)
 
+    async def _on_stt_text(self, event: dict) -> None:
+        """Handle an ``stt.text`` VSI event from the container's native STT
+        (started per bridged leg by ``start_leg_stt``). Only FINAL
+        transcripts are forwarded — partials are noise for a transcript.
+        Envelope: ``{"type": "stt.text", "leg_id": "...", "text": "...",
+        "is_final": true}``."""
+        leg_id = event.get("leg_id") or event.get("id")
+        text = event.get("text")
+        if not leg_id or not text or not event.get("is_final", True):
+            return
+        watcher = self._bta_stt_watchers.get(leg_id)
+        if watcher is None:
+            return
+        try:
+            await watcher(str(text))
+        except Exception as e:  # noqa: BLE001
+            logger.bind(leg_id=leg_id).warning(
+                f"VSI: bridged-transfer STT watcher failed: {e}"
+            )
+
     async def _on_leg_dtmf(self, event: dict) -> None:
         """Handle a ``dtmf.received`` VSI event.
 
@@ -787,6 +926,18 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             logger.bind(type="dtmf.received").debug(
                 f"dtmf.received without leg_id/digit: {event!r}"
             )
+            return
+        # Human-to-agent transfer watch: post-bridge, the transfer-target
+        # leg has no CallSession — its digits go to the registered watcher
+        # (see ``bridged_transfer.py``) instead of a pipeline.
+        watcher = self._bta_digit_watchers.get(leg_id)
+        if watcher is not None:
+            try:
+                await watcher(str(digit))
+            except Exception as e:  # noqa: BLE001
+                logger.bind(leg_id=leg_id, digit=digit).warning(
+                    f"VSI: bridged-transfer DTMF watcher failed: {e}"
+                )
             return
         session_id = self._leg_to_session.get(leg_id)
         if not session_id or self._session_lookup is None:
@@ -897,6 +1048,15 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         leg_id = event.get("leg_id") or event.get("id")
         if not leg_id:
             return
+        # A bridged-transfer watch ends when either bridged leg drops.
+        gone = self._bta_gone_watchers.get(leg_id)
+        if gone is not None:
+            try:
+                gone()
+            except Exception as e:  # noqa: BLE001
+                logger.bind(leg_id=leg_id).warning(
+                    f"VSI: bridged-transfer gone-watcher failed: {e}"
+                )
         # If an originate/consult is still waiting for this leg to answer, the
         # leg dropping first means the call failed (busy / no-answer / 401).
         # Reason lives under the CDR (``cdr.reason``) on the flattened envelope.

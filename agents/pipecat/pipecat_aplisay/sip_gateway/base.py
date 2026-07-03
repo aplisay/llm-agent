@@ -156,6 +156,22 @@ class TransferRequest:
     transfer_prompt_template: Optional[str] = None
     parent_transcript: Optional[str] = None
 
+    # Human-to-agent transfers (``options.bridgedTransferToAgent``): ask the
+    # gateway to keep watching the transfer-target leg for DTMF after the
+    # bridge is installed, so the worker can drop the target and hand the
+    # caller to another agent. Only meaningful on the bridged paths — the
+    # caller session forces ``force_bridged`` when the option is set. See
+    # ``bridged_transfer.py`` and ``docs/call-transfers.md``.
+    monitor_dtmf: bool = False
+
+    # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+    # ask the gateway to keep a transcription path over the bridge. On
+    # sipbridge this streams a stereo audio tap on the kept-open monitor WS;
+    # on voiceblender the worker starts the container's native per-leg STT
+    # instead (this flag still forces the bridged path + monitoring WS/
+    # record lifecycle). See ``bridge_transcript.py``.
+    tap_audio: bool = False
+
 
 class GatewaySession(Protocol):
     """A live media session owned by the gateway.
@@ -174,13 +190,20 @@ class GatewaySession(Protocol):
 
     async def shutdown(self) -> None: ...
 
-    async def bridge_with(self, other: "GatewaySession") -> None:
+    async def bridge_with(
+        self, other: "GatewaySession", *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install media relay between this session and ``other``.
 
         Used to finalise consultative transfers — when the TransferAgent
         on the consult leg calls ``accept_transfer``, the parent leg
         and the consult leg get bridged together (bot WSes close, A and
         C talk directly through the gateway until either BYEs).
+
+        ``monitor_dtmf`` (human-to-agent transfers,
+        ``options.bridgedTransferToAgent``) asks the gateway to keep
+        surfacing transfer-target DTMF to the worker after the bridge is
+        installed — see ``bridged_transfer.py``.
 
         Default implementation raises ``NotImplementedError`` —
         gateways that support consultative transfer override this with
@@ -265,6 +288,22 @@ class ConsultStateMixin:
     def _init_consult_state(self) -> None:
         self._consult_payloads: dict[str, ConsultPayload] = {}
         self._consult_call_ids: dict[str, str] = {}
+        # Human-to-agent takeovers (``options.bridgedTransferToAgent``):
+        # pending payloads keyed by the fresh agent-WS session id chosen at
+        # DTMF-match time. The per-gateway WS handler reads these to build the
+        # incoming agent's CallSession — mirrors the consult stash above. The
+        # values are ``bridged_transfer.TakeoverPayload`` instances (kept
+        # untyped here to avoid a circular import).
+        self._takeover_payloads: dict[str, Any] = {}
+
+    def register_takeover_session(self, session_id: str, payload: Any) -> None:
+        self._takeover_payloads[session_id] = payload
+
+    def takeover_payload(self, session_id: str) -> Optional[Any]:
+        return self._takeover_payloads.get(session_id)
+
+    def clear_takeover_session(self, session_id: str) -> None:
+        self._takeover_payloads.pop(session_id, None)
 
     def register_consult_session(
         self,

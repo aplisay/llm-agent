@@ -398,4 +398,133 @@ describe('Agent sets', () => {
     }), res);
     expect(res.statusCode).toBe(400);
   });
+
+  describe('options.bridgedTransferToAgent', () => {
+    function setWithBridgedMap(map) {
+      const doc = setDocument();
+      doc.agents[0].options = { bridgedTransferToAgent: map };
+      return doc;
+    }
+
+    test('resolves label references (string and object forms) in a set document', async () => {
+      const res = makeRes(user);
+      await createAgentSet(makeReq(setWithBridgedMap({
+        '1': 'label:specialist',
+        '*7': { agent: 'label:specialist', includeHistory: false }
+      })), res);
+      expect(res.statusCode).toBe(200);
+
+      const byLabel = Object.fromEntries(res.body.agents.map((a) => [a.label, a]));
+      const map = byLabel.triage.options.bridgedTransferToAgent;
+      // String shorthand normalised to object form, label resolved, fromLabel kept
+      expect(map['1']).toEqual({ agent: byLabel.specialist.id, fromLabel: 'specialist' });
+      expect(map['*7']).toEqual({ agent: byLabel.specialist.id, includeHistory: false, fromLabel: 'specialist' });
+    });
+
+    test('round-trips: PUT re-resolves fromLabel annotations against the new membership', async () => {
+      const createRes = makeRes(user);
+      await createAgentSet(makeReq(setWithBridgedMap({ '2': 'label:specialist' })), createRes);
+      expect(createRes.statusCode).toBe(200);
+
+      // PUT the document straight back (as returned, with resolved UUID + fromLabel)
+      const updateRes = makeRes(user);
+      const doc = {
+        name: createRes.body.name,
+        agents: createRes.body.agents.map(({ label, name, modelName, prompt, options, functions, type }) =>
+          ({ label, name, modelName, prompt, options, functions, type }))
+      };
+      await updateAgentSet(makeReq(doc, { agentSetId: createRes.body.id }), updateRes);
+      expect(updateRes.statusCode).toBe(200);
+      const byLabel = Object.fromEntries(updateRes.body.agents.map((a) => [a.label, a]));
+      expect(byLabel.triage.options.bridgedTransferToAgent['2'].agent).toBe(byLabel.specialist.id);
+      expect(byLabel.triage.options.bridgedTransferToAgent['2'].fromLabel).toBe('specialist');
+    });
+
+    test('rejects an unknown label in the map, transactionally', async () => {
+      const res = makeRes(user);
+      await createAgentSet(makeReq(setWithBridgedMap({ '1': 'label:nonexistent' })), res);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.message).toMatch(/bridgedTransferToAgent\["1"\].*label "nonexistent"/);
+      expect(await Agent.count({ where: { organisationId: user.organisationId } })).toBe(0);
+    });
+
+    test('rejects a map entry targeting a text agent', async () => {
+      const res = makeRes(user);
+      await createAgentSet(makeReq(setWithBridgedMap({ '1': 'label:researcher' })), res);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.message).toMatch(/must target a interactive-audio agent/);
+    });
+
+    test('rejects malformed DTMF keys and entry shapes', async () => {
+      for (const [map, pattern] of [
+        [{ 'abc': 'label:specialist' }, /DTMF sequence/],
+        [{ '123456789': 'label:specialist' }, /DTMF sequence/],
+        [{ '1': { agent: 'label:specialist', bogus: true } }, /unknown field/],
+        [{ '1': { includeHistory: true } }, /must be an agent UUID/],
+        [{}, /at least one DTMF key/]
+      ]) {
+        const res = makeRes(user);
+        await createAgentSet(makeReq(setWithBridgedMap(map)), res);
+        expect(res.statusCode).toBe(400);
+        expect(res.body.message).toMatch(pattern);
+      }
+    });
+
+    test('validates bridgedTransferTranscribe shapes', async () => {
+      for (const [transcribe, ok, pattern] of [
+        [true, true],
+        [{ provider: 'deepgram', language: 'en-US' }, true],
+        [{ provider: 'whisper' }, false, /provider must be one of/],
+        [{ language: 'English!' }, false, /BCP-47/],
+        [{ bogus: 1 }, false, /unknown field/],
+        ['yes', false, /boolean or an object/]
+      ]) {
+        const res = makeRes(user);
+        await createAgent(makeReq({
+          modelName: VOICE_MODEL,
+          prompt: 'front desk',
+          options: { bridgedTransferTranscribe: transcribe }
+        }), res);
+        if (ok) {
+          expect(res.statusCode).toBe(200);
+        } else {
+          expect(res.statusCode).toBe(400);
+          expect(JSON.stringify(res.body)).toMatch(pattern);
+        }
+      }
+    });
+
+    test('plain POST /agents accepts a UUID target and rejects labels', async () => {
+      const targetRes = makeRes(user);
+      await createAgent(makeReq({ modelName: VOICE_MODEL, prompt: 'target' }), targetRes);
+      expect(targetRes.statusCode).toBe(200);
+
+      const okRes = makeRes(user);
+      await createAgent(makeReq({
+        modelName: VOICE_MODEL,
+        prompt: 'front desk',
+        options: { bridgedTransferToAgent: { '0': targetRes.body.id } }
+      }), okRes);
+      expect(okRes.statusCode).toBe(200);
+      // Shorthand normalised to object form on the way through
+      expect(okRes.body.options.bridgedTransferToAgent['0']).toEqual({ agent: targetRes.body.id });
+
+      const labelRes = makeRes(user);
+      await createAgent(makeReq({
+        modelName: VOICE_MODEL,
+        prompt: 'front desk',
+        options: { bridgedTransferToAgent: { '0': 'label:someone' } }
+      }), labelRes);
+      expect(labelRes.statusCode).toBe(400);
+
+      const missingRes = makeRes(user);
+      await createAgent(makeReq({
+        modelName: VOICE_MODEL,
+        prompt: 'front desk',
+        options: { bridgedTransferToAgent: { '0': randomUUID() } }
+      }), missingRes);
+      expect(missingRes.statusCode).toBe(400);
+      expect(missingRes.body.message).toMatch(/does not exist/);
+    });
+  });
 });

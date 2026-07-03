@@ -60,6 +60,7 @@ from pipecat.transports.websocket.fastapi import (
 
 from . import api_client
 from .auth import require_dispatch_token, verify_join_token
+from .bridged_transfer import run_sipbridge_bta_watch
 from .call_session import (
     CallSession,
     TransferState,
@@ -67,8 +68,9 @@ from .call_session import (
     setup_consult_call,
     setup_inbound_call,
     setup_outbound_call,
+    setup_takeover_call,
 )
-from .constants import DISCONNECT_REASONS
+from .constants import DISCONNECT_REASONS, PLATFORM
 from .invocation_log import flush_invocation_logs
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
@@ -1179,6 +1181,51 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=1011)
         return
 
+    # Human-to-agent takeover leg (``options.bridgedTransferToAgent``): a
+    # DTMF match on a bridged call dropped the transfer target and re-
+    # attached a Pipecat agent to the caller leg under a fresh session id.
+    # Everything the incoming agent needs was stashed at match time — see
+    # ``bridged_transfer.py``.
+    takeover = sip_gateway.takeover_payload(session_id)
+    if takeover is not None:
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=ProtobufFrameSerializer(),
+            ),
+        )
+        aplisay_meta = (
+            takeover.call.metadata.get("aplisay", {})
+            if isinstance(takeover.call.metadata, dict)
+            else {}
+        )
+        ctx = InboundCallContext(
+            session_id=session_id,
+            called_id=aplisay_meta.get("calledId"),
+            caller_id=aplisay_meta.get("callerId"),
+            raw={"transport": transport, "leg_id": takeover.extra.get("leg_id")},
+        )
+        try:
+            session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"voiceblender takeover setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_takeover_session(session_id)
+            return
+        websocket.app.state.live_calls[session.call.id] = session
+        try:
+            await _run_session(websocket.app, session, session.call.id)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            sip_gateway.clear_takeover_session(session_id)
+        return
+
     pending = sip_gateway.pending_attaches.get(session_id)
     if pending is None:
         logger.bind(session_id=session_id).warning(
@@ -1377,6 +1424,57 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         or ""
     )
 
+    # Human-to-agent takeover leg (``options.bridgedTransferToAgent``): a
+    # DTMF match on a monitored bridge POSTed /unbridge, and the bridge has
+    # re-dialled the surviving caller leg to us under a fresh session id.
+    # Everything the incoming agent needs was stashed at match time — see
+    # ``bridged_transfer.py``.
+    takeover = sip_gateway.takeover_payload(session_id)
+    if takeover is not None:
+        await websocket.accept()
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=DtmfProtobufFrameSerializer(),
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=16000,
+            ),
+        )
+        ctx = InboundCallContext(
+            session_id=session_id,
+            called_id=takeover.call.metadata.get("aplisay", {}).get("calledId")
+            if isinstance(takeover.call.metadata, dict) else None,
+            caller_id=takeover.call.metadata.get("aplisay", {}).get("callerId")
+            if isinstance(takeover.call.metadata, dict) else None,
+            raw={"transport": transport, "bridge_call_id": bridge_call_id},
+        )
+        try:
+            session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"sipbridge takeover setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_takeover_session(session_id)
+            return
+        sip_gateway.register_inbound_session(
+            session_id=session_id,
+            bridge_call_id=bridge_call_id,
+            transport=transport,
+        )
+        websocket.app.state.live_calls[session.call.id] = session
+        try:
+            await _run_session(websocket.app, session, session.call.id)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            sip_gateway.clear_takeover_session(session_id)
+            sip_gateway.unregister_session(session_id)
+        return
+
     if is_outbound:
         # Two sub-flows here:
         #
@@ -1547,10 +1645,19 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
                 sip_gateway.clear_consult_session(session_id)
             return
 
-        # Plain outbound — just wait for done.
+        # Plain outbound — wait for done. The leg-done event also fires when
+        # a bridged transfer-to-agent watch is armed mid-call
+        # (``signal_bta_armed``); in that case the WS is still open and we
+        # take over reading it for transfer-target DTMF.
         done_event = sip_gateway.wait_for_leg_done(session_id)
         try:
             await done_event.wait()
+            gw_session = sip_gateway.live_session(session_id)
+            bta_ctx = getattr(gw_session, "bta_context", None) if gw_session else None
+            if bta_ctx is not None:
+                await run_sipbridge_bta_watch(
+                    websocket, sip_gateway, gw_session, bta_ctx, platform=PLATFORM
+                )
         except WebSocketDisconnect:
             pass
         except asyncio.CancelledError:
@@ -1645,6 +1752,20 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
     try:
         await _run_session(websocket.app, session, session.call.id)
+        # Human-to-agent transfers: when a monitored bridge was installed,
+        # the bridge kept this WS open as a control channel and the
+        # CallSession stashed the watch context on the gateway session.
+        # Keep reading the socket for transfer-target DTMF until the
+        # bridge ends (or an unbridge takeover replaces this WS).
+        bta_ctx = getattr(session.gateway_session, "bta_context", None)
+        if bta_ctx is not None:
+            await run_sipbridge_bta_watch(
+                websocket,
+                sip_gateway,
+                session.gateway_session,
+                bta_ctx,
+                platform=PLATFORM,
+            )
     except WebSocketDisconnect:
         pass
     finally:

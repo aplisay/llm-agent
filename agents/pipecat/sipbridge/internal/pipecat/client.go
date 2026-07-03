@@ -189,6 +189,26 @@ func (c *Client) SendAudio(pcm16 []byte) error {
 	return c.conn.Write(wctx, websocket.MessageBinary, frame)
 }
 
+// SendAudioStereo frames a two-channel AudioRawFrame and sends it as one
+// binary message. PCM16 little-endian, 16 kHz, interleaved L/R. Used by
+// the bridged-transfer transcription tap (left = caller leg, right =
+// transfer-target leg) — see internal/call/tap.go.
+func (c *Client) SendAudioStereo(pcm16 []byte) error {
+	if c.conn == nil {
+		return errors.New("pipecat client: not connected")
+	}
+	frame := EncodeAudio(AudioRawFrame{
+		Audio:      pcm16,
+		SampleRate: 16000,
+		NumChans:   2,
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.conn.Write(wctx, websocket.MessageBinary, frame)
+}
+
 // SendMessage frames a MessageFrame and sends it. The body is a
 // free-form string (the platform's convention is to use small JSON
 // blobs there — see internal/call/manager.go:handleDTMF for the

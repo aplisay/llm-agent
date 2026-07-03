@@ -5,31 +5,21 @@ info:
   title: LLM Agent API
   version: 1.0.0
   description: |-
-    Simple platform agnostic API to create, update and monitor agents connecting inbound audio sessions to 
-    a large language model (LLM) based AI engine.
+    Create, run and observe LLM-powered voice agents.
 
-    Extensible architecture that currently supports the following frameworks:
-      * Jambonz: connecting LLMs to telephone calls via an STT->model->TTS pipeline (15 models, any STT,TTS supported by Jambonz)
-      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API
-      * Ultravox: connecting LLMs to WebRTC rooms and SIP calls using the Ultravox API and SDK.
-      
-    Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
-    Also allows setting and modification of text to speech (TTS) and speech to text (STT) parameters which are used for voice recognition and voicing of responses.
+    An **agent** is a definition — a model, a prompt, and options and tools — that the
+    platform runs against live audio: inbound and outbound telephone calls and WebRTC
+    rooms, across multiple gateways (LiveKit, Pipecat, Jambonz) and LLM providers. Agent
+    parameters such as the prompt, temperature and the speech (TTS/STT) options can be
+    updated at any time and apply to all future calls.
 
-    Provides a websocket based `progess` interface which communicates events which take place on calls, allowing the controlling software to capture data and modify
-    the prompt in response to client interaction.
+    Activating an agent creates a **listener** bound to a phone number or a room; each
+    conversation it handles becomes a **call** with a transcript you can retrieve or have
+    delivered by webhook, and a websocket event stream reports call events in real time.
 
-    For a demo of the API in action without writing any code, try out the [Aplisay LLM playground](https://llm.aplisay.com), a hosted React based front-end.
-
-    Typical simple transaction flow will be:
-      
-    1. **[GET models](#operations-Models-modelList)** to obtain a list of valid models.
-    2. **[POST agents](#operations-Agent-createAgent)** with a chosen model identifier and prompt to create an agent.
-    3. **[POST listen](#operations-Agent-activate)** with the agent ID and type to receive an `instanceId` and either
-       a `number` or livekit/ultravox room values from the create call result.
-    4. Open a new livekit client session and join the room to receive transcript updates and send/receive audio, or call the number.
-    5. When done with the agent, shut down the listener **[DELETE /listener/{listenerId}](#operations-Agent-deleteListenerById)**.
-    6. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
+    Operations are grouped by resource — Agents and Agent Sets, Listeners, Calls, Models
+    and Voices, and Phone Endpoints. For a getting-started guide and worked examples, see
+    the [Aplisay documentation](https://aplisay.com/docs).
 
 tags:
   - name: Calls
@@ -68,7 +58,20 @@ tags:
       `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
       on creation or update.
 
+# All operations require a bearer token unless stated otherwise on the operation.
+security:
+  - bearerAuth: []
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |-
+        Authenticate every request with `Authorization: Bearer <token>`, where the token is either
+        an Aplisay API key issued for your account, or the identity token of a signed-in platform
+        user. Keys are scoped to your organisation: agents, calls, numbers and usage are only ever
+        visible within the organisation that owns them.
   schemas:
     Model:
       type: object
@@ -294,9 +297,9 @@ components:
                example: The city name to be looked up.
              type:
                type: string
-               description: The type of the parameter
+               description: The type of the parameter. `array` is accepted for `generated` parameters whose value is a JSON array (e.g. the builder builtins' `agents` and `removeLabels` parameters).
                default: "string"
-               enum: ["string", "number", "boolean"]
+               enum: ["string", "number", "boolean", "array"]
              in:
                type: string
                description: Where in the request the parameter should be used
@@ -652,6 +655,79 @@ components:
             volume: medium
             gapMs: 2750
             graceMs: 1200
+        bridgedTransferToAgent:
+          description: |-
+            Human-to-agent transfers: after a **bridged** transfer, let the transfer target hand the
+            caller back to an AI agent by pressing a DTMF sequence. Keys are DTMF sequences of 1-8
+            characters from `0-9`, `*` and `#`; values name the voice agent the caller is handed to
+            when the sequence is detected **on the transfer-target leg** (caller digits never trigger it).
+
+            Values are an agent UUID string, or an object `{ agent, includeHistory }` where
+            `includeHistory` (default `true`) controls whether the incoming agent's prompt carries the
+            conversation the caller had with the original agent. Inside an agent-set document a value
+            may be a `label:<label>` reference, resolved to the member's UUID on save (recorded as
+            `fromLabel` for round-tripping).
+
+            While this option is set, transfers are forced onto the bridged path (a SIP REFER would
+            take the call off-platform, out of DTMF sight). Multi-digit sequences are matched with the
+            `dtmfTimeout` inter-digit timeout. On a match the target leg is dropped and the mapped
+            agent answers the caller on a new child call record. Not available for WebRTC (browser)
+            origin calls. See docs/call-transfers.md.
+          type: object
+          minProperties: 1
+          additionalProperties:
+            oneOf:
+              - type: string
+                description: Target agent UUID (or `label:<label>` inside an agent-set document).
+              - type: object
+                properties:
+                  agent:
+                    description: Target agent UUID (or `label:<label>` inside an agent-set document).
+                    type: string
+                  includeHistory:
+                    description: Carry the original agent's conversation into the incoming agent's prompt.
+                    type: boolean
+                    default: true
+                required:
+                  - agent
+          example:
+            "1": "5f4c0a9e-1111-2222-3333-444455556666"
+            "*7":
+              agent: "9a1b0c2d-7777-8888-9999-000011112222"
+              includeHistory: false
+        bridgedTransferTranscribe:
+          description: |-
+            Transcribe the human↔human segment of a bridged transfer (the conversation between the
+            caller and the transfer target after the AI has left the call). When enabled, a
+            speaker-labelled transcript of the bridged segment is stored on the bridged-segment call
+            record, and — when combined with `bridgedTransferToAgent` — is included in the incoming
+            agent's prompt when the transfer target hands the caller back by DTMF.
+
+            Set `true` to enable with defaults, or an object to tune the transcription engine where
+            the gateway runs its own STT (the voiceblender topology; the sipbridge topology taps the
+            bridged audio to the worker and uses the agent's configured STT, ignoring `provider`).
+            Media stays on the gateway fast path in all cases — transcription is a tap, not a detour.
+            See docs/call-transfers.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                provider:
+                  description: Gateway-native STT provider (voiceblender topology only).
+                  type: string
+                  enum: [elevenlabs, deepgram, azure]
+                  default: elevenlabs
+                language:
+                  description: BCP-47 language tag hint for the transcription engine.
+                  type: string
+                  example: en
+          example:
+            provider: deepgram
+            language: en
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
@@ -899,7 +975,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result"]
+            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
@@ -928,6 +1004,12 @@ components:
                   * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
                     (generated) arguments the agent passes become the result returned to the invoker. Define its
                     `input_schema` to describe the output you require from the agent.
+                  * `create_agent_set`, `update_agent_set`, `patch_agent_set`, `list_voices`, `ask_user`, `test_agent`
+                    (text agents only) are the agent-builder builtins. They are dispatched by the interactive **chat
+                    session** tool plane only: inside a chat session they perform org-scoped agent-set CRUD, voice
+                    listing, user questioning and set testing exactly as the builtin set builder does. Outside a chat
+                    session the set-CRUD builtins (`create_agent_set`/`update_agent_set`/`patch_agent_set`) fail
+                    closed with an error, and `ask_user`/`test_agent` yield empty results.
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
@@ -1464,7 +1546,7 @@ components:
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
-        For e164-ddi endpoints, only `outbound` and `handler` can be updated.
+        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
       type: object
@@ -1475,6 +1557,9 @@ components:
         outbound:
           type: boolean
           description: Supports outbound
+        provisioned:
+          type: boolean
+          description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
         handler:
           type: string
           enum:

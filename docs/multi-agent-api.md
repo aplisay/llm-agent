@@ -193,6 +193,22 @@ Key points:
 - **The `result` function** (builtin, `platform: "result"`) is the agent's *output contract*: its `input_schema` describes the structure you want back, and the arguments the agent passes when it calls it become the invocation result. An agent with no `result` function falls back to returning its first plain-text reply as `{ "text": "…" }` — fine for casual use, but defining a `result` schema gives you reliable, structured output.
 - Text agents can use `rest` and `stub` functions, the `metadata` builtin, and may even call their own `subagent` functions (nesting is limited to 3 levels).
 
+### Builder builtins on text agents
+
+Six further builtin platforms are storable on **text agents only**: `create_agent_set`,
+`update_agent_set`, `patch_agent_set`, `list_voices`, `ask_user` and `test_agent` — the
+tool surface of an agent-building agent (the builtin set builder uses the same tools).
+Their semantics are **chat-session-only**: they are dispatched by the interactive
+chat session (`POST /agents/{id}/chat` + the chat WebSocket) tool plane, where the
+set-CRUD builtins perform org-scoped [agent-set](#3-agent-sets) create/update/patch,
+`list_voices` enumerates voices for a model, and `ask_user`/`test_agent` pause the
+turn to question the user or run a test session against a set member. Outside a chat
+session (a direct `invoke`, or a `subagent` call) the set-CRUD builtins **fail closed**
+with an error result, and `ask_user`/`test_agent` yield empty results. Note that any
+user who can chat such an agent (`agent:invoke`) can thereby drive org-scoped set
+CRUD through it — the same reach the builtin set builder already grants — so store
+these builtins only on agents you intend as builders.
+
 ### Invoking a text agent directly
 
 Useful for testing, and as a lightweight "structured task" API in its own right:
@@ -368,6 +384,7 @@ Agent sets let you create, version, and delete a whole team in single API calls,
 
 - Because `fromLabel` is preserved, a document read back with `GET /agent-sets/{id}` can be edited and `PUT` straight back: labelled references are always re-resolved against the membership in the incoming document. You never have to manage member UUIDs by hand.
 - References to agents *outside* the set are also allowed — use the plain agent UUID instead of a label.
+- The same substitution applies to the values of `options.bridgedTransferToAgent` ([human-to-agent transfers](./call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)): a value of `"label:booking"` (or `{ "agent": "label:booking", … }`) is rewritten to `{ "agent": "<resolved-uuid>", "fromLabel": "booking", … }` on save and re-resolved on every round-trip. Targets must be `interactive-audio` agents, in or outside the set.
 
 ### Update and delete semantics
 

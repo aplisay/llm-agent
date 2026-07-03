@@ -48,6 +48,13 @@ export default function (logger) {
     if ('agentLimit' in req.body && !can(res.locals.user, 'organisation', 'setLimits')) {
       return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setLimits' });
     }
+    // chargeableNumberLimit caps numbers the org holds on trunks WE pay for — a
+    // platform spend policy, not org capacity. orgAdmin holds setLimits for their
+    // own org, so gating it there would let customers raise their own allowance;
+    // gate on the superAdmin-only billing-policy action instead.
+    if ('chargeableNumberLimit' in req.body && !can(res.locals.user, 'organisation', 'setRate')) {
+      return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setRate (super admin)' });
+    }
     const baselineKeys = ['role', 'permissions', 'allowedModels'];
     if (baselineKeys.some((k) => k in req.body)) {
       if (!can(res.locals.user, 'organisation', 'setPermissions')) {
@@ -61,7 +68,7 @@ export default function (logger) {
     const rbacErr = validateRbacFields(req.body);
     if (rbacErr) return res.status(400).send({ message: rbacErr });
 
-    const EDITABLE = ['name', 'agentLimit', 'status', 'role', 'permissions', 'allowedModels'];
+    const EDITABLE = ['name', 'agentLimit', 'chargeableNumberLimit', 'status', 'role', 'permissions', 'allowedModels'];
     for (const k of EDITABLE) if (k in req.body) org[k] = req.body[k];
     try {
       await org.save();
@@ -84,6 +91,7 @@ export default function (logger) {
             properties: {
               name: { type: 'string' },
               agentLimit: { type: 'integer', nullable: true },
+              chargeableNumberLimit: { type: 'integer', nullable: true, description: 'Max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited' },
               status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'] },
               role: { type: 'string', nullable: true },
               permissions: { type: 'object', nullable: true },

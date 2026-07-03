@@ -101,7 +101,7 @@ export default function (wsServer) {
               properties: {
                 number: {
                   type: "string",
-                  description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.`,
+                  description: `The telephone number to allocate to the agent, in E.164 format. Must be a number your organisation owns.`,
                   example: "+442080996945"
                 },
                 id: {

@@ -35,9 +35,11 @@ const agentCreate = (async (req, res) => {
   log.info({ modelName, prompt, options, functions, mcpServers, userId, organisationId, type }, 'create API call');
 
   try {
-    // Static transfer_agent/subagent targets must reference accessible agents of the right type
-    functions && await validateAgentTargets(functions, {
-      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } })
+    // Static transfer_agent/subagent targets and options.bridgedTransferToAgent
+    // targets must reference accessible agents of the right type
+    (functions || options?.bridgedTransferToAgent) && await validateAgentTargets(functions || [], {
+      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } }),
+      options
     });
     await agent.save();
     res.send({ ...agent.dataValues, keys: undefined });

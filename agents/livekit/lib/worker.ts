@@ -39,6 +39,7 @@ import {
   type TransferContext,
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
+import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import { withTimeout } from "./utils.js";
 import {
   ConfidenceTonePlayer,
@@ -272,6 +273,7 @@ export default defineAgent({
         getTransferState,
         startHandoverTone,
         stopHandoverTone,
+        registerBridgedTakeover,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -437,6 +439,7 @@ export default defineAgent({
             setActiveAgentCall,
             startHandoverTone,
             stopHandoverTone,
+            registerBridgedTakeover,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -1211,6 +1214,15 @@ async function setupCallAndUtilities({
       )
     : null;
 
+  // Human→agent takeover capability (options.bridgedTransferToAgent): the
+  // voice runtime registers its live handover machinery here once its stack
+  // is up (and clears it on teardown); the transfer handler reads it when a
+  // bridged transfer completes to arm the post-bridge DTMF watch.
+  let bridgedTakeoverRuntime: BridgedTakeoverRuntime | null = null;
+  const registerBridgedTakeover = (rt: BridgedTakeoverRuntime | null) => {
+    bridgedTakeoverRuntime = rt;
+  };
+
   const getTransferState = () => transferState;
   const setTransferState = (
     state: "none" | "dialling" | "talking" | "rejected" | "failed",
@@ -1379,6 +1391,7 @@ async function setupCallAndUtilities({
         setTransferState,
         getTransferState,
         setBridgedCallRecord,
+        getBridgedTakeover: () => bridgedTakeoverRuntime,
       };
 
       return await handleTransfer(transferContext);
@@ -1436,6 +1449,9 @@ async function setupCallAndUtilities({
     checkForHangup,
     modelRef,
     sessionRef,
+    // Registration point for the runtime's bridged human→agent takeover
+    // capability (options.bridgedTransferToAgent).
+    registerBridgedTakeover,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || activeAgentCall,
     // The agent's own call WITHOUT the bridge override — usage attribution must

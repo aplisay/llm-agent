@@ -61,3 +61,87 @@ EMAIL_SEND_TYPE=smtp2go
 EMAIL_SEND_KEY=<SMTP2GO API KEY>
 EMAIL_FROM_ADDRESS=hello@aplisay.com
 EMAIL_FROM_NAME="polite.ai"
+
+# ── Core service ─────────────────────────────────────────────────────────────
+# HTTP/WS listen port for this API service (also the better-auth baseURL
+# fallback port when BETTER_AUTH_URL is unset).
+WS_PORT=4000
+# pino log level: fatal | error | warn | info | debug | trace
+LOGLEVEL=info
+# Include the private /agent-db surface in the published OpenAPI doc.
+# Leave unset in production.
+# EXPOSE_PRIVATE_APIS=false
+
+# ── Database (PostgreSQL / Sequelize) ────────────────────────────────────────
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=llmvoice
+POSTGRES_USER=<DB USER>
+POSTGRES_PASSWORD=<DB PASSWORD>
+# TLS / mTLS (Cloud SQL-style): CA + client cert/key as inline PEM, and the
+# server name the certificate is verified against when dialling by IP.
+# POSTGRES_CA=
+# POSTGRES_CERT=
+# POSTGRES_KEY=
+# POSTGRES_RO_SERVER_NAME=
+# DANGER: forces a full sequelize sync on boot (already implied when
+# NODE_ENV=development). Never set in production — schema upgrades run
+# automatically via the internal schema-version gate.
+# DB_FORCE_SYNC=false
+
+# ── Secrets at rest ──────────────────────────────────────────────────────────
+# Encryption key for stored credentials (SIP registration passwords, agent key
+# material). If UNSET those secrets are stored in PLAINTEXT (a warning is
+# logged) — set it in every real deployment: `openssl rand -base64 32`
+CREDENTIALS_KEY=<RANDOM SECRET>
+
+# ── Model / voice providers (enable the ones this deployment uses) ──────────
+ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
+# GROQ_API_KEY=
+# ULTRAVOX_API_KEY=
+# ELEVENLABS_API_KEY=
+
+# ── LiveKit handler ──────────────────────────────────────────────────────────
+LIVEKIT_URL=wss://<your-livekit-host>
+LIVEKIT_API_KEY=<LIVEKIT API KEY>
+LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
+
+# ── Pipecat handler ──────────────────────────────────────────────────────────
+# PIPECAT_WORKER_URL=          # worker dispatch endpoint
+# PIPECAT_DISPATCH_TOKEN=      # bearer token for dispatch calls
+# PIPECAT_JOIN_SECRET=         # shared secret for join callbacks
+# PIPECAT_PUBLIC_URL=          # public URL handed to the worker for callbacks
+# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution):
+# APLISAY_OUTBOUND_TRUNK_ID=
+
+# ── Call recordings ──────────────────────────────────────────────────────────
+# GCS location for call recordings (gs://bucket/prefix). Defaults to
+# gs://llm-voice/<NODE_ENV>-recordings when unset.
+# RECORDING_STORAGE_PATH=
+
+# ── Agent-set builder (dashboard "builder" feature) ──────────────────────────
+# SET_BUILDER_MODEL=text:anthropic/claude-opus-4-8
+# SET_BUILDER_MCP_URL=https://mcp-next.aplisay.com/mcp
+# SET_BUILDER_MAX_TOKENS=32768
+
+# ── Concurrency limits ───────────────────────────────────────────────────────
+# Backend for per-user/org agent-concurrency counting: sql (default) | redis
+# (the redis store is a placeholder — keep sql).
+# AGENT_CONCURRENCY_STORE=sql
+
+# ── Tuning (defaults are sensible; override only with cause) ─────────────────
+# MAX_TOKENS=1024                 # OpenAI completion cap
+# ANTHROPIC_MAX_RETRIES=          # Anthropic SDK retry count
+# ANTHROPIC_REQUEST_TIMEOUT_MS=   # Anthropic request timeout
+# TEXT_CHAT_MAX_TOOL_HOPS=        # text-chat tool-call recursion cap
+# TEXT_CHAT_PENDING_TTL_MS=       # pending text-chat session TTL
+# SUBAGENT_TIMEOUT=60000          # agent-invoke/subagent timeout (ms)
+
+# ── Number administration (tools/number.js — manual admin script only) ──────
+# Magrathea carrier credentials + SIP ingress hosts for bulk/manual number
+# maintenance. NOT read by the API service itself; the self-service Buy-number
+# flow (and its copies of these values) lives in polite-ai.
+# MAGRATHEA_USERNAME=
+# MAGRATHEA_PASSWORD=
+# JAMBONZ_SIP_ENDPOINT=
+# LIVEKIT_SIP_ENDPOINT=

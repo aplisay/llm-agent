@@ -615,6 +615,100 @@ The example below forces bridging; set `forceRefer` instead to force SIP REFER.
 
 **Note:** `forceBridged` and `forceRefer` apply to both blind and consultative transfers — for a consultative transfer they select how the *final hop* is completed (media bridge vs attended SIP REFER with Replaces) once the transfer target accepts. If a gateway can't honour an attended REFER it falls back to bridging automatically.
 
+## Human to agent transfers (`bridgedTransferToAgent`)
+
+After a bridged transfer the caller is talking to a human transfer target and the AI has left the conversation. The `options.bridgedTransferToAgent` agent option lets the **transfer target** hand the caller back to an AI agent by pressing a DTMF key sequence — for example a support engineer who has finished a triage conversation can press `1` to pass the caller to a booking agent and put the phone down.
+
+> **Developer walkthrough:** [human-handback-howto.md](./human-handback-howto.md) builds the complete workflow — consultative transfer to a remote worker, transcribed human↔human conversation, DTMF hand-back, and a follow-up agent that books the agreed appointment in the worker's calendar.
+
+```json
+{
+  "name": "Front desk agent",
+  "options": {
+    "bridgedTransferToAgent": {
+      "1":  { "agent": "5f4c…-uuid-of-booking-agent" },
+      "*7": { "agent": "9a1b…-uuid-of-survey-agent", "includeHistory": false }
+    }
+  }
+}
+```
+
+Each key is a DTMF sequence of 1–8 characters from `0-9`, `*` and `#`. Each value names the **voice agent** the caller should be handed to when that sequence is detected, either as a bare agent UUID string or as an object:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `agent` | — | The target agent's UUID (or a `label:<label>` reference inside an [agent-set document](./multi-agent-api.md) — see below). Must be an `interactive-audio` agent in your organisation; validated when the agent is saved. |
+| `includeHistory` | `true` | When true, the incoming agent's prompt includes the conversation the caller had with the *original* agent (the conversation with the human after the transfer is not recorded and cannot be carried). When false the incoming agent starts fresh. |
+
+### Behaviour
+
+- **Monitoring is armed only after a bridged transfer completes** (a blind bridged transfer, or the bridged finalise of a consultative transfer), and listens to DTMF **from the transfer-target leg only** — digits pressed by the caller never trigger it.
+- **Transfers are forced onto the bridged path while the option is set.** A SIP REFER hands the call off-platform, where the target's DTMF can no longer be observed, so the option overrides `forceRefer`, `forceReferTransfer`, and the registration-origin REFER default, for both blind transfers and the consultative finalise. The usual bridged-mode consequences apply (the platform continues to carry — and bill — the call).
+- **Multi-digit matching** uses the same inter-digit timeout as ordinary DTMF input (`options.dtmfTimeout`, default 1500 ms): a sequence that exactly matches a key fires immediately unless a longer key could still match, in which case it fires after the timeout; unmatched digits age out and do not poison a following valid sequence.
+- **On a match** the transfer target's leg is dropped, the bridged call segment ends, and the mapped agent answers the caller on a **new child call record** (`parentId` linking back to the original call). The incoming agent's prompt is composed like a `transfer_agent` handover: its own prompt, a note that it has just taken over from a human hand-back, and (by default) the original agent↔caller transcript.
+- **If the takeover cannot start** (target agent at its concurrency limit, misconfigured target, wrong model family), the bridge is left intact — the humans stay connected — and the target can retry.
+- **If the transfer target simply hangs up** without pressing a key, the call ends normally.
+
+### Agent sets and label substitution
+
+Inside an `/agent-sets` document, `bridgedTransferToAgent` values participate in the same `label:` substitution as `transfer_agent` / `subagent` targets:
+
+```json
+{
+  "label": "frontdesk",
+  "options": {
+    "bridgedTransferToAgent": {
+      "1": "label:booking",
+      "2": { "agent": "label:survey", "includeHistory": false }
+    }
+  }
+}
+```
+
+On create/update the platform resolves each label to the member's real agent UUID and records the original label as `fromLabel` alongside it, so set documents round-trip exactly like function targets — see [multi-agent-api.md](./multi-agent-api.md).
+
+### Transcribing the bridged segment (`bridgedTransferTranscribe`)
+
+By default the human↔human conversation after a bridged transfer is not transcribed — the AI has left the call, and a takeover agent only receives the *pre-transfer* conversation history. Setting `options.bridgedTransferTranscribe` closes that gap:
+
+```json
+{
+  "options": {
+    "bridgedTransferToAgent": { "1": "5f4c…-uuid" },
+    "bridgedTransferTranscribe": true
+  }
+}
+```
+
+Or with tuning (fields apply where the gateway runs its own STT — the voiceblender topology; LiveKit and sipbridge use the agent's configured STT and ignore `provider`):
+
+```json
+"bridgedTransferTranscribe": { "provider": "deepgram", "language": "en" }
+```
+
+| Field | Default | Values | Description |
+|-------|---------|--------|-------------|
+| `enabled` | `true` | boolean | Set `false` to disable without removing the object |
+| `provider` | `"elevenlabs"` | `elevenlabs` \| `deepgram` \| `azure` | Gateway-native STT engine (voiceblender only) |
+| `language` | engine default | BCP-47 tag | Language hint for the transcription engine |
+
+**Behaviour:**
+
+- A speaker-labelled transcript (`> caller:` / `> transfer target:`) of the bridged segment is stored on a **bridged-segment call record** — a child call (`modelName: "telephony:bridged-call"`, `parentId` = the original call) created when the monitored bridge is installed and ended when the bridge ends or a hand-back fires.
+- When combined with `bridgedTransferToAgent`, a DTMF hand-back injects the bridged-segment transcript into the incoming agent's prompt as a `# Conversation between the caller and the human transfer target` section (suppressed together with the rest of the history when the matched entry sets `includeHistory: false`).
+- Like `bridgedTransferToAgent`, the option forces transfers onto the bridged path. It also works standalone (transcript + call record only, no DTMF hand-back).
+- **Media stays on the gateway fast path.** On voiceblender the container's native per-leg real-time STT runs and finals arrive as `stt.text` events; on sipbridge the bridge streams a decoded stereo *copy* (left = caller, right = target) of the relay to the worker, which runs one STT stream per channel — the RTP relay between the humans is untouched in both cases.
+- Transcription is best-effort: an STT failure never disturbs the bridged call or the DTMF watch.
+
+### Topology support
+
+| Topology | Hand-back (`bridgedTransferToAgent`) | Transcription (`bridgedTransferTranscribe`) | Mechanism |
+|----------|-----------|-----------|-----------|
+| LiveKit | ✅ | ✅ | The agent participant stays in the room (muted) after the bridge and consumes LiveKit's SIP DTMF room events, filtered to the transfer-target participant. On a match the target participant is removed and the mapped agent's stack starts on the same room. When transcribing, the muted agent participant runs one STT stream per human track (the caller and the transfer target are distinct room participants), using the agent's configured STT vendor. |
+| Pipecat + sipbridge | ✅ | ✅ | The transfer is placed with `monitor_dtmf`/`tap_audio`; the bridge keeps the caller leg's worker WebSocket open as a control channel, ships target-leg RFC 4733 presses as `source: "transfer_target"` events, and (when transcribing) a stereo audio tap. On a match the worker POSTs `/v1/calls/{id}/unbridge` — the bridge drops the target and re-dials a fresh agent WebSocket for the caller leg. |
+| Pipecat + voiceblender | ✅ | ✅ | The bridged legs sit in a voiceblender room; `dtmf.received` VSI events for the target leg feed the worker's matcher and the container's native per-leg STT feeds the transcript. On a match the worker deletes the target leg, removes the caller from the room, and re-attaches a Pipecat agent to the caller leg. |
+| WebRTC / browser origin | ❌ | ❌ | Browser-origin transfers use the worker-side media relay; target-leg monitoring is not currently wired for that path. |
+
 ## Outbound Call Filter
 
 The `outboundCallFilter` option provides security by restricting which phone numbers can be called via transfers or the originate endpoint. This prevents abuse, such as transferring calls to premium rate numbers.
