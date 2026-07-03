@@ -193,8 +193,10 @@ const updatePhoneEndpoint = async (req, res) => {
         return res.status(403).send({ error: 'Access denied' });
       }
 
-      // Update allowed fields for numbers
-      const allowedFields = ['outbound', 'handler'];
+      // Update allowed fields for numbers. `provisioned` marks carrier-side
+      // provisioning complete — set by the dashboard Buy-number flow once the
+      // provider has activated and pointed the number at the platform.
+      const allowedFields = ['outbound', 'handler', 'provisioned'];
       const updateFields = {};
       for (const field of allowedFields) {
         if (updateData[field] !== undefined) {
@@ -204,6 +206,9 @@ const updatePhoneEndpoint = async (req, res) => {
       // basic validation for number updates
       if (updateFields.outbound !== undefined && typeof updateFields.outbound !== 'boolean') {
         return res.status(400).send({ error: 'outbound must be a boolean value' });
+      }
+      if (updateFields.provisioned !== undefined && typeof updateFields.provisioned !== 'boolean') {
+        return res.status(400).send({ error: 'provisioned must be a boolean value' });
       }
       if (updateFields.handler !== undefined && !TELEPHONY_HANDLER_NAMES.includes(updateFields.handler)) {
         return res.status(400).send({ error: `handler must be one of: ${TELEPHONY_HANDLER_NAMES.join(', ')}` });

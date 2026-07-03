@@ -1537,7 +1537,7 @@ components:
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
-        For e164-ddi endpoints, only `outbound` and `handler` can be updated.
+        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
       type: object
@@ -1548,6 +1548,9 @@ components:
         outbound:
           type: boolean
           description: Supports outbound
+        provisioned:
+          type: boolean
+          description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
         handler:
           type: string
           enum:

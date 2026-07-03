@@ -14,6 +14,14 @@ To verify success, you should check **both**:
 - The number’s **`provisioned`** flag in Aplisay (internal readiness)
 - The number’s **`callReceived`** timestamp in Aplisay (proof at least one inbound call reached the Aplisay platform)
 
+> **Self-service purchase path:** the polite.ai dashboard's **Buy number** flow automates
+> this whole lifecycle for numbers on the shared chargeable Aplisay trunk — it reserves the
+> number here first (`POST /api/phone-endpoints`, which enforces the organisation's
+> `chargeableNumberLimit`, default 3), then allocates/activates it at the numbering provider
+> (Magrathea) and points it at the platform SIP ingress, then sets `provisioned=true` via
+> PUT. The steps below remain the manual path for BYO trunks and admin range provisioning.
+> See polite-ai `docs/buy-number-design.md`.
+
 ## Lifecycle steps
 
 ### 1) Provision the number (or range) on the external trunk provider

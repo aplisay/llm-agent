@@ -11,7 +11,7 @@ import { defaultRateHistoryEntry } from '../../lib/rates.js';
  *        admin tab org-filter and the (super-admin-only) org-edit modal.
  *   POST create an organisation — superAdmin only (`organisation:create`).
  */
-const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'role', 'allowedModels', 'permissions'];
+const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'chargeableNumberLimit', 'role', 'allowedModels', 'permissions'];
 
 export default function (logger) {
   const list = async (req, res) => {
@@ -72,6 +72,10 @@ export default function (logger) {
         id: randomUUID(),
         name,
         agentLimit: req.body?.agentLimit ?? null,
+        // undefined → model default (3); explicit null = unlimited
+        ...(req.body?.chargeableNumberLimit !== undefined
+          ? { chargeableNumberLimit: req.body.chargeableNumberLimit }
+          : {}),
         status: req.body?.status || 'active',
         role,
         permissions,
@@ -96,6 +100,7 @@ export default function (logger) {
             properties: {
               name: { type: 'string' },
               agentLimit: { type: 'integer', nullable: true },
+              chargeableNumberLimit: { type: 'integer', nullable: true, default: 3, description: 'Max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited' },
               status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'], default: 'active' },
               role: { type: 'string', nullable: true },
               permissions: { type: 'object', nullable: true },
