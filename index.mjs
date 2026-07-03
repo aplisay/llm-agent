@@ -46,7 +46,7 @@ else if (process.env.NODE_ENV === 'staging') {
 // from the cross-origin sign-in response.
 server.use(cors({
   origin: [
-    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /https:\/\/.*\.aplisay\.com$/,
+    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /^https:\/\/([a-z0-9-]+\.)*aplisay\.com$/,
     'https://feature-registration-db--playground-next.netlify.app'
   ],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
