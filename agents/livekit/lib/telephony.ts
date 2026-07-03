@@ -337,14 +337,11 @@ export async function dialTransferTargetToConsultation(
       aLegEncrypted,
     );
     
-    // Format destination number
-    const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-
     // For registration endpoints, we dial the destination number directly
     // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const transferTargetParticipant = await sipClient.createSipParticipant(
       registrationTrunkId,
-      destinationFormatted, // Use phone number, trunk routes to registrar
+      destination, // Dial exactly as specified in the transfer request; trunk routes to the registrar
       consultRoomName,
       {
         participantIdentity: transferTargetIdentity,
@@ -365,7 +362,7 @@ export async function dialTransferTargetToConsultation(
       }
     );
 
-    logger.info({ transferTargetParticipant, consultRoomName, destinationFormatted, registrationEndpointId, registrationTrunkId, registrationUsername }, "transfer target dialed through registrar trunk with registration endpoint ID");
+    logger.info({ transferTargetParticipant, consultRoomName, destination, registrationEndpointId, registrationTrunkId, registrationUsername }, "transfer target dialed through registrar trunk with registration endpoint ID");
     return transferTargetParticipant;
   }
 
@@ -379,11 +376,9 @@ export async function dialTransferTargetToConsultation(
     throw new Error("No livekit outbound SIP trunk found");
   }
 
-  const destinationFormatted = destination.replace(/^0/, "44").replace(/^(?!\+)/, "+");
-
   const transferTargetParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
-    destinationFormatted,
+    destination,
     consultRoomName,
     {
       participantIdentity: transferTargetIdentity,
