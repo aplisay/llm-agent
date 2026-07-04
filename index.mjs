@@ -10,8 +10,12 @@ import PinoHttp from 'pino-http';
 import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
+import { buildInfo, describeBuild } from './lib/build-info.js';
 
 logger.info('starting up');
+// Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
+// makes stale deploys visible in the boot log.
+logger.info(buildInfo(), `build version: ${describeBuild()}`);
 dotenv.config();
 
 
