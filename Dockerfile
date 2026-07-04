@@ -8,6 +8,4 @@ RUN yarn install
 RUN mkdir -p credentials
 RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
 COPY . .
-RUN chmod +x deploy/docker-entrypoint.sh
-# Entrypoint runs the fenced better-auth satellite-table migrate, then `yarn start`.
-CMD [ "./deploy/docker-entrypoint.sh" ]
+CMD [ "yarn", "start"]
