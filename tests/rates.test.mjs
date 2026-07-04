@@ -296,8 +296,12 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
       instanceId, agentId, organisationId: orgId, userId, callerId: '441234567890', calledId: '447700900000',
       platform: 'livekit', modelName: 'livekit:ultravox/ultravox-v0.6',
     });
-    call.startedAt = new Date(Date.now() - 60_000); // 1 minute
-    await call.end();
+    // Deterministic 60s duration: without an explicit endedAt, end() stamps
+    // `new Date()` itself, so every ms between the two clock reads leaks into
+    // the costed duration (7M µp/min ≈ 117 µp/ms) — a CI-speed-dependent flake.
+    const startedAt = new Date(Date.now() - 60_000);
+    call.startedAt = startedAt; // 1 minute
+    await call.end(undefined, { endedAt: new Date(startedAt.valueOf() + 60_000) });
 
     const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
     expect(row.costStatus).toBe('matched');
