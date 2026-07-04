@@ -47,6 +47,13 @@ BETTER_AUTH_GOOGLE_CLIENT_SECRET=<GOOGLE OAUTH CLIENT SECRET>
 # on failure it appends ?error=<code>.
 WAITLIST_CALLBACK_URL=http://localhost:5173/confirmed
 
+# ── polite-ai origin (Google sign-in hand-off) ──────────────────────────────
+# The EXACT public origin of the polite-ai app; /api/oauth-handoff will deliver
+# one-time session tokens ONLY to ${POLITE_SITE_URL}/auth/google/callback
+# (deliberately NOT the trusted-origins list — that also carries the playground
+# origin). Falls back to WAITLIST_CALLBACK_URL's origin when unset.
+POLITE_SITE_URL=http://localhost:5173
+
 # ── Admin gate for the /api/users management routes ─────────────────────────
 # Comma-separated user ids allowed to call the admin /api/users list/create/
 # modify routes. The public POST /api/users/signup is ungated. Empty => only the

@@ -72,7 +72,12 @@ if (betterAuth) {
 server.use('/api/tariffs', express.json({ limit: '48mb' }));
 server.use(express.json({ limit: '5mb' }));
 const pino = PinoHttp({
-  logger
+  logger,
+  // Never write credentials into Cloud Logging: /api/oauth-handoff (behind this
+  // logger) is cookie-authenticated with the better-auth session cookie, and
+  // every API request carries a bearer Authorization — the default req
+  // serializer would log both verbatim.
+  redact: { paths: ['req.headers.cookie', 'req.headers.authorization'], censor: '[redacted]' },
 });
 
 server.use(pino);
@@ -81,10 +86,19 @@ server.use(pino);
 // middleware and express-openapi so they shed load ahead of any DB work or the
 // route handler. (The /api/auth/* limiter is configured inside better-auth in
 // lib/auth/index.js, mounted further up.)
-const { signupLimiter, webhookLimiter, roomJoinLimiter } = await import('./middleware/rate-limit.js');
+const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter } = await import('./middleware/rate-limit.js');
 server.use('/api/users/signup', signupLimiter);              // global cap
 server.use('/api/hooks', webhookLimiter);                    // per-IP
 server.use('/api/rooms/:listenerId/join', roomJoinLimiter);  // per-IP, before auth
+
+// OAuth → polite-ai BFF session hand-off (Google sign-in). Registered BEFORE the
+// auth middleware: the browser arriving here is mid-OAuth and authenticates via
+// its better-auth session cookie, not a bearer token. No-op when better-auth is
+// disabled or no polite-ai origin is configured.
+if (betterAuth) {
+  const { default: mountOauthHandoff } = await import('./lib/auth/oauth-handoff.js');
+  mountOauthHandoff(server, logger, { limiter: oauthHandoffLimiter });
+}
 
 // Import middleware dynamically based on environment
 if (process.env.AUTHENTICATE_USERS === "NO") {
