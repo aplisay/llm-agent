@@ -4,23 +4,22 @@
  * `billingService` (which grants ONLY organisation:credit) and an AuthKey, then
  * prints the bearer token for polite-ai's LLM_AGENT_BILLING_TOKEN.
  *
- *   node scripts/provision-billing-service.mjs        # from the repo root
+ *   node scripts/provision-billing-service.mjs                       # repo-root .env
+ *   node scripts/provision-billing-service.mjs -p /path/to/staging.env  # per environment
  *
- * Self-contained: loads ./.env and talks to Postgres directly (it does NOT import
- * the app's database module, so it avoids the LISTEN subscriber / model sync boot).
- * Optional env: ENV_FILE, BILLING_EMAIL, BILLING_KEY (default a fresh random token).
+ * Self-contained: loads the selected env file and talks to Postgres directly (it
+ * does NOT import the app's database module, so it avoids the LISTEN subscriber /
+ * model sync boot). Optional env: BILLING_EMAIL, BILLING_KEY (default a fresh
+ * random token).
  *
  * SECURITY: this mints a credential. Run it against the target environment's DB,
  * capture the printed token into the secret store, and do NOT commit the token.
  */
 import { randomBytes, randomUUID } from 'crypto';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 import pg from 'pg';
+import { loadEnv } from './env.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: process.env.ENV_FILE || join(here, '..', '.env') });
+loadEnv();
 
 const EMAIL = process.env.BILLING_EMAIL || 'stripe-billing-service@aplisay.internal';
 const KEY = process.env.BILLING_KEY || `bsvc_${randomBytes(24).toString('hex')}`;
@@ -44,8 +43,9 @@ const client = new pg.Client({
 
 async function main() {
   if (!process.env.POSTGRES_HOST) {
-    throw new Error('POSTGRES_* not set — is .env present? (override with ENV_FILE=/path/to/.env)');
+    throw new Error('POSTGRES_* not set — is .env present? (select one with -p /path/to/.env)');
   }
+  console.log(`provisioning against postgres ${process.env.POSTGRES_HOST}/${process.env.POSTGRES_DB}`);
   await client.connect();
 
   // Upsert the synthetic user by email; role=billingService, status=active.

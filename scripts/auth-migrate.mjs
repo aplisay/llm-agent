@@ -57,16 +57,21 @@ export async function runAuthMigrate(logger) {
   return { applied: true, created, added };
 }
 
-// Standalone CLI for ad-hoc/local use: `node scripts/auth-migrate.mjs [--path <.env>]`
-// (or DOTENV_CONFIG_PATH=<.env>). Env-load mirrors index.mjs: secretenv's sync
-// dotenv.config() runs BEFORE runAuthMigrate dynamic-imports lib/auth. Not wired
-// into container boot — the deploy path is `agent-admin --command upgrade-db`.
+// Standalone CLI for ad-hoc/local use: `node scripts/auth-migrate.mjs [-p <.env>]`
+// (also --path <.env> or DOTENV_CONFIG_PATH=<.env>). Env-load mirrors index.mjs:
+// secretenv's sync dotenv.config() runs BEFORE runAuthMigrate dynamic-imports
+// lib/auth. Not wired into container boot — the deploy path is
+// `agent-admin --command upgrade-db`.
 import { pathToFileURL } from 'node:url';
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { default: dotenv } = await import('dotenv');
   const dir = await import('path');
-  const pathIdx = process.argv.indexOf('--path');
+  const pathIdx = process.argv.findIndex((a) => a === '--path' || a === '-p');
   const envPath = pathIdx > -1 ? process.argv[pathIdx + 1] : process.env.DOTENV_CONFIG_PATH;
+  if (pathIdx > -1 && !envPath) {
+    console.error('Missing value for -p/--path');
+    process.exit(1);
+  }
   dotenv.config(envPath ? { path: dir.resolve(process.cwd(), envPath) } : undefined);
   const { default: logger } = await import('../lib/logger.js');
   try {

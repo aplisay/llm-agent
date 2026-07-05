@@ -29,7 +29,7 @@
  *   ids, default 'claude-sonnet-5') selects which anthropic models to line up.
  *
  * PROD ROLLOUT: run once against the production DB —
- *   ENV_FILE=/path/to/prod.env node scripts/add-sonnet5-rate-lines.mjs
+ *   node scripts/add-sonnet5-rate-lines.mjs -p /path/to/prod.env
  * If production already carries anthropic sonnet-4-6 lines, FIRST read their
  * prices (SELECT detail FROM rate_cards ...) and pass matching
  * SONNET5_*_PRICE_MICROS so Sonnet-5 margins match Sonnet-4-6, per the design
@@ -40,13 +40,10 @@
  *
  * Self-contained: loads ./.env and talks to Postgres directly (no app boot).
  */
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 import pg from 'pg';
+import { loadEnv } from './env.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: process.env.ENV_FILE || join(here, '..', '.env') });
+loadEnv();
 
 const MODELS = (process.env.MODELS || 'claude-sonnet-5').split(',').map((m) => m.trim()).filter(Boolean);
 const INPUT_PRICE = Number(process.env.SONNET5_INPUT_PRICE_MICROS || 3);
@@ -96,8 +93,9 @@ function hasLine(lines, candidate) {
 
 async function main() {
   if (!process.env.POSTGRES_HOST) {
-    throw new Error('POSTGRES_* not set — is .env present? (override with ENV_FILE=/path/to/.env)');
+    throw new Error('POSTGRES_* not set — is .env present? (select one with -p /path/to/.env)');
   }
+  console.log(`applying against postgres ${process.env.POSTGRES_HOST}/${process.env.POSTGRES_DB}`);
   await client.connect();
 
   // 1. Target rate name: env > defaultRateName Metadata singleton > 'default'.
