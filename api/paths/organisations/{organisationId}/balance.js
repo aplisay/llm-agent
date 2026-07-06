@@ -22,15 +22,18 @@ export default function (logger) {
       balancePennies: microsToPennies(org.balance),
       tracked: org.balance != null,
       currency: 'gbp',
+      // The hard call-refusal flag, so the frontend can render "calls paused"
+      // next to the number that explains it.
+      blocked: !!org.billingBlocked,
     });
   };
   get.apiDoc = {
-    summary: 'Read an organisation’s spendable balance (pennies).',
+    summary: 'Read an organisation’s spendable balance (pennies) and block state.',
     operationId: 'getOrganisationBalance',
     tags: ['Organisations', 'Billing'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
     responses: {
-      200: { description: 'Balance (pennies; null = untracked)' },
+      200: { description: 'Balance (pennies; null = untracked) + billingBlocked flag' },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },

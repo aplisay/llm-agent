@@ -3,15 +3,21 @@ import { requirePermission } from '../../../../../lib/auth/permissions.js';
 import { penniesToMicros, microsToPennies } from '../../../../../lib/rates.js';
 
 /**
- * POST /api/organisations/{id}/balance/credit — idempotently top up the org's
+ * POST /api/organisations/{id}/balance/credit — idempotently adjust the org's
  * balance (the Stripe → llm-agent credit seam; polite-ai's webhook calls this).
  *
- * `idempotencyKey` (= Stripe PaymentIntent.id) is UNIQUE-constrained via the
- * BalanceCredit ledger, so a Stripe retry is safe — the same payment credits
- * `Organisation.balance` exactly once. On a duplicate key the call is an idempotent
- * success (returns the current balance). On any OTHER failure it returns **500** so
- * Stripe retries (the unique key makes that retry safe). The credit + balance bump
- * are one transaction; the first credit transitions a null (untracked) balance to a
+ * `amountPennies` is SIGNED: positive credits (top-ups, plan/comp grants);
+ * negative debits — the clawback seam for expiring unconsumed trial/comp credit.
+ * Zero is rejected. A debit may take the balance negative (that's a fact, not an
+ * error); note it does NOT fire the balance callbacks (those live on the usage
+ * settle path), so a caller zeroing an account must set billingBlocked itself.
+ *
+ * `idempotencyKey` (= Stripe PaymentIntent.id / grant ref) is UNIQUE-constrained
+ * via the BalanceCredit ledger, so a retry is safe — the same adjustment applies
+ * exactly once. On a duplicate key the call is an idempotent success (returns the
+ * current balance). On any OTHER failure it returns **500** so the caller retries
+ * (the unique key makes that retry safe). The ledger row + balance bump are one
+ * transaction; the first credit transitions a null (untracked) balance to a
  * tracked numeric one. Gated on `organisation:credit` — held by superAdmin and by
  * the least-privilege `billingService` role (the polite-ai Stripe-webhook seam
  * authenticates with a synthetic service user's AuthKey). The API edge speaks
@@ -24,8 +30,8 @@ export default function (logger) {
     const { idempotencyKey, amountPennies, currency = 'gbp' } = req.body || {};
     if (!idempotencyKey) return res.status(400).send({ message: 'idempotencyKey is required' });
     const amountMicros = penniesToMicros(amountPennies);
-    if (!Number.isInteger(amountMicros) || amountMicros <= 0) {
-      return res.status(400).send({ message: 'amountPennies must be a positive number' });
+    if (!Number.isInteger(amountMicros) || amountMicros === 0) {
+      return res.status(400).send({ message: 'amountPennies must be a non-zero number (negative = debit)' });
     }
 
     const org = await Organisation.findByPk(organisationId);
@@ -55,7 +61,7 @@ export default function (logger) {
     return res.send({ balancePennies: microsToPennies(updated.balance), credited: microsToPennies(amountMicros) });
   };
   post.apiDoc = {
-    summary: 'Idempotently credit an organisation’s balance (Stripe top-up seam).',
+    summary: 'Idempotently adjust an organisation’s balance (signed; the Stripe top-up / clawback seam).',
     operationId: 'creditOrganisationBalance',
     tags: ['Organisations', 'Billing'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
@@ -67,8 +73,8 @@ export default function (logger) {
             type: 'object',
             required: ['idempotencyKey', 'amountPennies'],
             properties: {
-              idempotencyKey: { type: 'string', description: 'Stripe PaymentIntent.id (unique; makes retries safe).' },
-              amountPennies: { type: 'number', description: 'Amount to credit, in pennies.' },
+              idempotencyKey: { type: 'string', description: 'Stripe PaymentIntent.id / grant ref (unique; makes retries safe).' },
+              amountPennies: { type: 'number', description: 'Signed amount in pennies — positive credits, negative debits. Zero rejected.' },
               currency: { type: 'string', default: 'gbp' },
             },
           },
@@ -76,7 +82,7 @@ export default function (logger) {
       },
     },
     responses: {
-      200: { description: 'Credited (or idempotent replay); returns the new balance in pennies.' },
+      200: { description: 'Applied (or idempotent replay); returns the new balance in pennies.' },
       400: { description: 'Invalid', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
       500: { description: 'Credit failed — caller should retry (idempotent).', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },

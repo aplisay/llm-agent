@@ -32,7 +32,7 @@ describe('money scale helper (micro-pence <-> pence)', () => {
 
 describe('Phase 3: rate-history + balance + balance/credit', () => {
   const PREFIX = `bal-${randomUUID()}-`;
-  let orgId, rateHistGET, rateHistPUT, balGET, creditPOST;
+  let orgId, rateHistGET, rateHistPUT, balGET, creditPOST, billingGET, billingPATCH;
 
   beforeAll(async () => {
     await setupRealDatabase();
@@ -45,11 +45,16 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     rateHistGET = rh.GET; rateHistPUT = rh.PUT;
     balGET = (await import('../api/paths/organisations/{organisationId}/balance.js')).default(mockLogger).GET;
     creditPOST = (await import('../api/paths/organisations/{organisationId}/balance/credit.js')).default(mockLogger).POST;
+    const billing = (await import('../api/paths/organisations/{organisationId}/billing.js')).default(mockLogger);
+    billingGET = billing.GET; billingPATCH = billing.PATCH;
   }, 30000);
 
   afterEach(async () => {
     await BalanceCredit.destroy({ where: { organisationId: orgId } });
-    await Organisation.update({ balance: null, rateHistory: null }, { where: { id: orgId } });
+    await Organisation.update(
+      { balance: null, rateHistory: null, billingBlocked: false, billingConfig: null },
+      { where: { id: orgId } },
+    );
   });
 
   afterAll(async () => {
@@ -132,7 +137,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(r.res.statusCode).toBe(403);
   });
 
-  it('credit 400s missing key / non-positive amount, and 403s a non-super', async () => {
+  it('credit 400s missing key / zero amount, and 403s a non-super', async () => {
     const bad1 = mockReqRes({ params: { organisationId: orgId }, body: { amountPennies: 100 } });
     await creditPOST(bad1.req, bad1.res);
     expect(bad1.res.statusCode).toBe(400);
@@ -142,5 +147,70 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     const forbidden = mockReqRes({ role: 'owner', params: { organisationId: orgId }, body: { idempotencyKey: 'k', amountPennies: 100 } });
     await creditPOST(forbidden.req, forbidden.res);
     expect(forbidden.res.statusCode).toBe(403);
+  });
+
+  // --- signed amounts (clawback seam) ---
+  it('a negative amount debits the balance, idempotently, and may go negative', async () => {
+    const adjust = (key, pennies) => {
+      const { req, res } = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { idempotencyKey: key, amountPennies: pennies } });
+      return creditPOST(req, res).then(() => res);
+    };
+    await adjust('grant-1', 500);
+    const debit = await adjust('claw-1', -200);
+    expect(debit.statusCode).toBe(200);
+    expect(debit.body.balancePennies).toBe(300);
+
+    const dup = await adjust('claw-1', -200); // replayed clawback applies once
+    expect(dup.body.idempotent).toBe(true);
+    expect(dup.body.balancePennies).toBe(300);
+
+    const over = await adjust('claw-2', -400); // usage raced the clawback — negative is a fact
+    expect(over.body.balancePennies).toBe(-100);
+  });
+
+  // --- billing controls (billingBlocked + billingConfig) ---
+  it('billingService can set + read billing controls; balance GET reports blocked', async () => {
+    const patch = (body) => {
+      const { req, res } = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+    const blocked = await patch({ billingBlocked: true });
+    expect(blocked.statusCode).toBe(200);
+    expect(blocked.body.billingBlocked).toBe(true);
+    expect((await Organisation.findByPk(orgId)).billingBlocked).toBe(true);
+
+    const cfg = { callbackUrl: 'https://app.polite.ai/api/billing-callback', hashKey: 'k'.repeat(32), balanceLowPennies: 500 };
+    const withCfg = await patch({ billingConfig: cfg });
+    expect(withCfg.statusCode).toBe(200);
+    expect(withCfg.body.billingConfig).toEqual(cfg);
+
+    const read = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
+    await billingGET(read.req, read.res);
+    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg });
+
+    // balance read (own-org member) surfaces the block flag
+    const bal = mockReqRes({ role: 'owner', organisationId: orgId, params: { organisationId: orgId } });
+    await balGET(bal.req, bal.res);
+    expect(bal.res.body.blocked).toBe(true);
+
+    const cleared = await patch({ billingBlocked: false, billingConfig: null });
+    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null });
+  });
+
+  it('billing PATCH validates: unsafe URL, short hashKey, bad types, empty body, owner 403', async () => {
+    const patch = (body, role = 'billingService') => {
+      const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+    expect((await patch({ billingConfig: { callbackUrl: 'http://127.0.0.1/x', hashKey: 'k'.repeat(32) } })).statusCode).toBe(400);
+    expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'short' } })).statusCode).toBe(400);
+    expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'k'.repeat(32), balanceLowPennies: -5 } })).statusCode).toBe(400);
+    expect((await patch({ billingBlocked: 'yes' })).statusCode).toBe(400);
+    expect((await patch({})).statusCode).toBe(400);
+    expect((await patch({ billingBlocked: true }, 'owner')).statusCode).toBe(403);
+    // nothing stuck from the failed attempts
+    const org = await Organisation.findByPk(orgId);
+    expect(org.billingBlocked).toBe(false);
+    expect(org.billingConfig).toBeNull();
   });
 });
