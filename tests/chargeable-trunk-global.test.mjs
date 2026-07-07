@@ -146,6 +146,19 @@ describe('Chargeable trunks are global (not org-owned)', () => {
     expect(s2._body.items.find((t) => t.id === chargeableTrunkId)).toBeFalsy();
   });
 
+  test('chargeable is honoured as a COERCED boolean (as express-openapi delivers it), not just the string', async () => {
+    // In the running app the `chargeable` query param is declared type:boolean,
+    // so it arrives as the boolean `true`, not the string 'true'. A non-super
+    // org owning nothing must STILL get the global chargeable trunk — otherwise
+    // it silently falls through to the empty org-scoped list (the staging bug).
+    const r = req({ query: { chargeable: true } });
+    const s = res();
+    s.locals.user = { role: 'owner', organisationId: otherOrgId }; // owns nothing chargeable
+    await listTrunks(r, s);
+    expect(s._status).toBe(200);
+    expect(s._body.items.find((t) => t.id === chargeableTrunkId)).toBeTruthy();
+  });
+
   test('superAdmin can set and clear flags.provider on a trunk', async () => {
     const set = res();
     set.locals.user = { role: 'superAdmin' };

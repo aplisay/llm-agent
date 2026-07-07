@@ -28,7 +28,12 @@ const listTrunks = async (req, res) => {
   if (!requirePermission(res, 'trunk', 'read')) return;
   const { organisationId } = res.locals.user || {};
   const { offset, pageSize, chargeable, scope } = req.query || {};
-  const chargeableOnly = chargeable === 'true' || chargeable === '1';
+  // NB: the `chargeable` query param is declared `type: boolean` in the apiDoc,
+  // so express-openapi COERCES it to a real boolean (`true`) in the running app
+  // — it only arrives as the string 'true' from raw/direct callers and tests.
+  // Accept both, or the coerced boolean silently falls through to the org-scoped
+  // branch (the same truthy convention the `originate` param relies on).
+  const chargeableOnly = chargeable === true || chargeable === 'true' || chargeable === '1';
   const allScope = scope === 'all';
   // The cross-tenant "every trunk" view is a super-admin administration surface
   // (see + edit + assign to any org), so it needs `trunk:assign`, not just read.
