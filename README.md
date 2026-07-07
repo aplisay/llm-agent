@@ -77,7 +77,7 @@ The **[full documentation index](docs/README.md)** covers the rest, from gateway
 
 ## About Aplisay
 
-The sponsor of this project, Aplisay, is a UK-based team with a long history in real-time communications. Our voice AI work started in 2020 with a UKRI-funded project providing voice automation to covid response teams; we demonstrated one of the first LLM-driven telephone agents in 2023 — then open-sourced and have continously developed the platform since then.
+The sponsor of this project, Aplisay, is a UK-based team with a long history in real-time communications. Our voice AI work started in 2020 with a UKRI-funded project providing voice automation to covid response teams; we demonstrated one of the first LLM-driven telephone agents in 2023 — then open-sourced and have continuously developed the platform since then.
 
 We build and operate the full stack — this platform, the browser widget, and the SIP edge that connects it to carrier networks. For operators and telephony service providers we take on whole implementations: conversation design, back-end integration, SIP interconnect and production operation, on our infrastructure or yours. [Talk to us](https://aplisay.com/contact).
 
