@@ -13,23 +13,37 @@ export default function (logger) {
 const listTrunks = async (req, res) => {
   if (!requirePermission(res, 'trunk', 'read')) return;
   const { organisationId } = res.locals.user || {};
-  const { offset, pageSize } = req.query || {};
+  const { offset, pageSize, chargeable } = req.query || {};
+  const chargeableOnly = chargeable === 'true' || chargeable === '1';
   try {
     const startOffset = Math.max(0, parseInt(offset || '0', 10) || 0);
     const size = Math.min(200, Math.max(1, parseInt(pageSize || '50', 10) || 50));
-    
-    // Find trunks associated with the organisation through the many-to-many relationship
-    const rows = await Trunk.findAll({
-      include: [{
-        model: Organisation,
-        where: { id: organisationId },
-        required: true
-      }],
-      attributes: ['id', 'name', 'handler', 'outbound', 'chargeable', 'flags'],
-      limit: size,
-      offset: startOffset
-    });
-    
+
+    // Chargeable trunks are shared platform carrier trunks that organisations
+    // consume but do not own, so `chargeable=true` returns them GLOBALLY (no
+    // TrunkOrganisation filter) — this is how a caller finds a buy target for a
+    // number when their org owns no trunks. The default (unfiltered) listing
+    // stays org-scoped: it answers "which trunks are MINE to route with".
+    const rows = chargeableOnly
+      ? await Trunk.findAll({
+          where: { chargeable: true },
+          attributes: ['id', 'name', 'handler', 'outbound', 'chargeable', 'flags'],
+          order: [['id', 'ASC']],
+          limit: size,
+          offset: startOffset
+        })
+      : await Trunk.findAll({
+          // Find trunks associated with the organisation through the many-to-many relationship
+          include: [{
+            model: Organisation,
+            where: { id: organisationId },
+            required: true
+          }],
+          attributes: ['id', 'name', 'handler', 'outbound', 'chargeable', 'flags'],
+          limit: size,
+          offset: startOffset
+        });
+
     const nextOffset = rows.length === size ? startOffset + size : null;
     res.send({ items: rows, nextOffset });
   }
@@ -57,6 +71,14 @@ listTrunks.apiDoc = {
       name: 'pageSize', in: 'query', required: false,
       schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
       description: 'Page size (max 200)'
+    },
+    {
+      name: 'chargeable', in: 'query', required: false,
+      schema: { type: 'boolean' },
+      description: 'When true, return the platform chargeable (carrier) trunks GLOBALLY, ignoring '
+        + 'organisation assignment. These are shared trunks any organisation may allocate numbers '
+        + 'onto (e.g. for the Buy-number flow); a chargeable trunk\'s flags.provider names the '
+        + 'numbering provider it fronts. Omit for the default org-scoped listing.'
     }
   ],
   responses: {

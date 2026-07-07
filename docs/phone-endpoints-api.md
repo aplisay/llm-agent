@@ -108,8 +108,15 @@ Creates a new phone endpoint. Supports E.164 DDI (number on a trunk) and phone-r
 
 - **Request body**: `type`, `number` (or legacy `phoneNumber`), `trunkId`, and optionally `name`, `handler`, `outbound`.
 - Handler and outbound are constrained by the trunk: the effective handler is from the trunk, and `outbound` can only be `true` if the trunk has outbound enabled.
-- **Chargeable-number limit**: when the target trunk is **chargeable** (a platform carrier
-  trunk shared into the organisation — i.e. not owned by it), the organisation's
+- **Trunk eligibility**: a **chargeable** trunk is a shared platform carrier trunk that
+  organisations consume but do not own — **any** organisation may allocate a number onto one
+  (there is no `TrunkOrganisation` association to satisfy). A **non-chargeable** trunk is a
+  customer BYO/PBX/registration trunk and MUST be associated with the caller's organisation.
+  A missing trunk id returns `400 "Trunk not found"`; a real but unowned non-chargeable trunk
+  returns `400 "Trunk not found or not associated with your organisation"`. Discover the
+  platform chargeable trunks with [`GET /api/trunks?chargeable=true`](#get-apitrunks) (global,
+  each carrying `flags.provider`).
+- **Chargeable-number limit**: on a chargeable trunk the organisation's
   `chargeableNumberLimit` applies (default 3, `null` = unlimited; a platform billing policy
   editable only via the organisations API under `organisation:setRate`). A claim beyond the
   limit returns `403 { "error": "…", "code": "chargeable_number_limit", "limit": n, "used": n }`.

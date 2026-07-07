@@ -267,19 +267,26 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      // Validate that the trunk exists and is associated with the organisation
-      const trunk = await Trunk.findByPk(data.trunkId, {
-        include: [{
-          model: Organisation,
-          where: { id: organisationId },
-          required: true
-        }]
-      });
-      
+      // Resolve the trunk. Chargeable trunks are shared platform carrier trunks
+      // (our public inbound/outbound trunks) that organisations consume but do
+      // not own — any org may allocate a number onto one (capped downstream by
+      // chargeableNumberLimit). Non-chargeable trunks are customer BYO/PBX/
+      // registration trunks and MUST be associated with the caller's org.
+      const trunk = await Trunk.findByPk(data.trunkId);
       if (!trunk) {
         return res.status(400).send({
-          error: 'Trunk not found or not associated with your organisation'
+          error: 'Trunk not found'
         });
+      }
+      if (!trunk.chargeable) {
+        const ownedByOrg = organisationId
+          ? await trunk.hasOrganisation(organisationId)
+          : false;
+        if (!ownedByOrg) {
+          return res.status(400).send({
+            error: 'Trunk not found or not associated with your organisation'
+          });
+        }
       }
 
       // Determine outbound behaviour: cannot exceed trunk's outbound capability
