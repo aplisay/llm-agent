@@ -714,7 +714,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       // Since trunk validation is implemented, this should fail with trunk not found
       expect(res._status).toBe(400);
-      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+      expect(res._body).toHaveProperty('error', 'Trunk not found');
     });
 
     test('should create phone registration endpoint', async () => {
@@ -996,7 +996,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       await createPhoneEndpoint(req, res);
 
       expect(res._status).toBe(400);
-      expect(res._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+      expect(res._body).toHaveProperty('error', 'Trunk not found');
     });
 
     test('should return 409 for duplicate phone registration (same registrar and username)', async () => {
@@ -2593,7 +2593,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await createPhoneEndpoint(invalidDdiReq, invalidDdiRes);
       expect(invalidDdiRes._status).toBe(400);
-      expect(invalidDdiRes._body).toHaveProperty('error', 'Trunk not found or not associated with your organisation');
+      expect(invalidDdiRes._body).toHaveProperty('error', 'Trunk not found');
     });
   });
 

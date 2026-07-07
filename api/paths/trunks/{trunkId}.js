@@ -51,7 +51,11 @@ export default function (logger) {
     const trunk = await Trunk.findByPk(req.params.trunkId, withOrgs);
     if (!trunk) return res.status(404).send({ message: `Trunk ${req.params.trunkId} not found` });
 
-    const { name, chargeable, organisationIds } = req.body || {};
+    const { name, chargeable, organisationIds, provider } = req.body || {};
+
+    if (provider !== undefined && provider !== null && typeof provider !== 'string') {
+      return res.status(400).send({ message: 'provider must be a string, or null to clear it' });
+    }
 
     // Validate the assignment set up-front (before any write) so a bad org id
     // fails cleanly rather than part-applying the trunk field edits.
@@ -72,6 +76,15 @@ export default function (logger) {
         // name is nullable in the model; treat an empty string as "clear it".
         if (name !== undefined) trunk.name = typeof name === 'string' && name.trim() ? name.trim() : null;
         if (chargeable !== undefined) trunk.chargeable = !!chargeable;
+        // provider is stored under flags.provider (the numbering provider this
+        // chargeable trunk fronts, e.g. "magrathea"); reassign flags so the
+        // JSONB column is marked dirty. Empty/null clears it.
+        if (provider !== undefined) {
+          const flags = { ...(trunk.flags || {}) };
+          if (provider && provider.trim()) flags.provider = provider.trim();
+          else delete flags.provider;
+          trunk.flags = Object.keys(flags).length ? flags : null;
+        }
         await trunk.save({ transaction });
         // setOrganisations reconciles the TrunkOrganisation join table to exactly
         // `orgs` (adds/removes rows); only touch it when the caller sent the field.
@@ -97,6 +110,7 @@ export default function (logger) {
             properties: {
               name: { type: 'string', nullable: true, description: 'Free-form human name; empty clears it' },
               chargeable: { type: 'boolean', description: 'Whether outbound minutes are destination-billed to the org' },
+              provider: { type: 'string', nullable: true, description: 'Numbering provider this chargeable trunk fronts (stored under flags.provider, e.g. "magrathea"); the Buy-number flow lands a bought number on the chargeable trunk whose provider matches the carrier it was bought from. Empty/null clears it.' },
               organisationIds: {
                 type: 'array',
                 items: { type: 'string' },
