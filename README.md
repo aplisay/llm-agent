@@ -10,14 +10,12 @@ Define an agent once, as a portable JSON document — prompt, model, voice, tool
 
 This is not a demo framework: it is the code Aplisay operates in production, delivering well over 1,000 concurrent calls per agent and limited in practice only by LLM provider capacity. Run it yourself — locally, on Kubernetes or Cloud Run — or let us run it for you.
 
-**Fastest first call:** build and talk to an agent free in the [Playground](https://playground.aplisay.com) — it drives exactly this API.
-
 ## What you get
 
 - **No model lock-in** — OpenAI, Google Gemini, Anthropic Claude, Ultravox speech-to-speech, and open-weight models (Llama, Mixtral, Gemma) via Groq. Swap with a `modelName` change, or [fail over between agents automatically](docs/agent-failover.md).
 - **Real telephony** — inbound DDIs, SIP trunks and registrations ([phone endpoints](docs/phone-endpoints-api.md)), [outbound calls](docs/originate-api.md), [blind, consultative and bridged transfers](docs/call-transfers.md), [human handback](docs/human-handback-howto.md), [call recording](docs/call-recording.md) with client-held encryption keys, and [webhooks on call events](docs/call-hooks.md).
 - **WebRTC built in** — the same agent that answers a phone number joins browser and app sessions; no separate stack to run.
-- **Tools where your business is** — HTTP function calling with anti-fraud parameter sourcing, [tool-call chaining and metadata priming](docs/tool-call-chaining-metadata-priming.md), and [remote MCP servers](docs/mcp-servers.md) on supporting models.
+- **Tools** — HTTP function calling with anti-fraud parameter sourcing, [tool-call chaining and metadata priming](docs/tool-call-chaining-metadata-priming.md), and [remote MCP servers](docs/mcp-servers.md) on supporting models.
 - **Multi-agent** — [agent sets, in-call subagents and agent-to-agent handover](docs/agent-sets-and-subagents.md) managed as a single document.
 - **Built to operate and resell** — multi-tenant organisations with scoped API keys, [per-agent/user/organisation concurrency limits](docs/agent-concurrency-limits.md), usage metering with rate-card billing, and encrypted credential storage.
 
@@ -79,7 +77,7 @@ The **[full documentation index](docs/README.md)** covers the rest, from gateway
 
 ## About Aplisay
 
-Aplisay is a UK-based team with a long history in real-time communications. Our voice AI work started in 2020 with a UKRI-funded project providing voice automation to covid response teams; we demonstrated one of the first LLM-driven telephone agents live on stage at CommCon in June 2023 — then open-sourced the platform, and have presented what we've learned since at FOSDEM, RTC.ON and Voice AI Space Paris.
+The sponsor of this project, Aplisay, is a UK-based team with a long history in real-time communications. Our voice AI work started in 2020 with a UKRI-funded project providing voice automation to covid response teams; we demonstrated one of the first LLM-driven telephone agents in 2023 — then open-sourced and have continously developed the platform since then.
 
 We build and operate the full stack — this platform, the browser widget, and the SIP edge that connects it to carrier networks. For operators and telephony service providers we take on whole implementations: conversation design, back-end integration, SIP interconnect and production operation, on our infrastructure or yours. [Talk to us](https://aplisay.com/contact).
 
