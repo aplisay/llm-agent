@@ -223,6 +223,24 @@ organisation membership.
 
 ---
 
+### Trunk administration (super admin)
+
+Trunks are a curated platform resource. Ordinary callers get the org-scoped listing
+(`GET /api/trunks`) and `chargeable=true` (global carrier trunks); super admins additionally get:
+
+- **`GET /api/trunks?scope=all`** (`trunk:assign`): EVERY trunk on the platform, each with its
+  `organisationIds`, for the admin trunk manager (see + edit + assign to any org). A non-super
+  caller passing `scope=all` gets `403`.
+- **`POST /api/trunks`** (`trunk:create`): create a trunk. Body: `id` (**required, admin-supplied**
+  stable identifier — 1–128 chars `[A-Za-z0-9][A-Za-z0-9._-]*`; it is what numbers reference via
+  `aplisayId` and typically mirrors the carrier/telephony trunk, so it is not generated), plus
+  optional `name`, `handler` (`jambonz`/`livekit`/`pipecat`), `outbound`, `chargeable`, `provider`
+  (→ `flags.provider`), and `organisationIds`. Duplicate `id` → `409`; returns `201` with the
+  created trunk incl. `organisationIds`.
+- Editing name / chargeable / provider / org assignments is `PATCH /api/trunks/{id}` (`trunk:assign`).
+
+---
+
 ## Using the API for managing telephone numbers
 
 ### Listing and filtering
