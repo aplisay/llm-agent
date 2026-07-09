@@ -73,6 +73,55 @@ def load() -> None:
         os.environ[name] = "" if value is None else str(value)
     logger.info("secretenv: loaded %d variables from SECRETENV_BUNDLE", len(parsed))
 
+    _materialise_google_credential()
+
+
+def _materialise_google_credential() -> None:
+    """Write the Google service-account JSON out to the file named by
+    ``GOOGLE_APPLICATION_CREDENTIALS``.
+
+    :func:`load` only ever populates ``os.environ`` — but the
+    google-cloud-storage client used for recording uploads
+    (``recording/upload.py`` calls a bare ``storage.Client()``) authenticates
+    via Application Default Credentials, i.e. it opens the *file* pointed to by
+    ``GOOGLE_APPLICATION_CREDENTIALS`` and fails with "File credentials/google.json
+    was not found" when it is absent. The Node containers write that file at
+    image-build time (``npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json``);
+    the Python worker decrypts its bundle at runtime, so this is the exact
+    runtime analogue.
+
+    Best-effort and idempotent: a no-op when the path is unset, the source
+    secret is absent, or a real file already exists at the path (e.g. one
+    supplied by a mounted Secret). Never raises — materialising a credential
+    must not crash boot.
+    """
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        return
+    # ``GOOGLE_CREDENTIAL`` is the JSON payload the Node containers write out;
+    # accept ``GOOGLE_APPLICATION_CREDENTIALS_JSON`` too, the inline form the
+    # STT/TTS path already treats as equivalent.
+    content = os.environ.get("GOOGLE_CREDENTIAL") or os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+    )
+    if not content:
+        return
+    if os.path.exists(path):
+        return
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        # 0600 — the file holds a service-account private key.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        logger.info("secretenv: materialised Google credential at %s", path)
+    except Exception as exc:  # noqa: BLE001 — never let cred materialisation crash boot
+        logger.error(
+            "secretenv: failed to write Google credential to %s: %s", path, exc
+        )
+
 
 def _maybe_load_from_google() -> None:
     path = os.environ.get("GOOGLE_SECRETENV_PATH")

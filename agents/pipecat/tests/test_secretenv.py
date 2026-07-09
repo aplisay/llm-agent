@@ -67,3 +67,64 @@ def test_load_bad_bundle_is_logged_not_raised(clean_env, monkeypatch):
     monkeypatch.setenv("SECRETENV_BUNDLE", "not-a-valid-bundle")
     secretenv.load()  # swallows the error
     assert "OPENAI_API_KEY" not in os.environ
+
+
+GOOGLE_VARS = (
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CREDENTIAL",
+    "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+)
+
+
+@pytest.fixture
+def clean_google_env(monkeypatch):
+    for var in GOOGLE_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_materialise_google_credential_writes_file(clean_google_env, monkeypatch, tmp_path):
+    dest = tmp_path / "credentials" / "google.json"
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(dest))
+    monkeypatch.setenv("GOOGLE_CREDENTIAL", '{"type":"service_account"}')
+
+    secretenv._materialise_google_credential()
+
+    assert dest.read_text(encoding="utf-8") == '{"type":"service_account"}'
+    # holds a private key → owner-only
+    assert oct(dest.stat().st_mode & 0o777) == "0o600"
+
+
+def test_materialise_google_credential_does_not_clobber_existing(clean_google_env, monkeypatch, tmp_path):
+    dest = tmp_path / "google.json"
+    dest.write_text("MOUNTED", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(dest))
+    monkeypatch.setenv("GOOGLE_CREDENTIAL", '{"type":"service_account"}')
+
+    secretenv._materialise_google_credential()
+
+    assert dest.read_text(encoding="utf-8") == "MOUNTED"
+
+
+def test_materialise_google_credential_noop_without_content(clean_google_env, monkeypatch, tmp_path):
+    dest = tmp_path / "google.json"
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(dest))
+
+    secretenv._materialise_google_credential()  # no GOOGLE_CREDENTIAL set
+
+    assert not dest.exists()
+
+
+def test_materialise_google_credential_noop_without_path(clean_google_env, monkeypatch):
+    monkeypatch.setenv("GOOGLE_CREDENTIAL", '{"type":"service_account"}')
+    # must not raise when GOOGLE_APPLICATION_CREDENTIALS is unset
+    secretenv._materialise_google_credential()
+
+
+def test_materialise_google_credential_json_fallback(clean_google_env, monkeypatch, tmp_path):
+    dest = tmp_path / "google.json"
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(dest))
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", '{"from":"json"}')
+
+    secretenv._materialise_google_credential()
+
+    assert dest.read_text(encoding="utf-8") == '{"from":"json"}'
