@@ -71,7 +71,7 @@ from .call_session import (
     setup_takeover_call,
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
-from .invocation_log import flush_invocation_logs
+from .invocation_log import flush_invocation_logs, install_capture
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
@@ -105,6 +105,10 @@ WEBRTC_ICE_SERVERS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Capture call-scoped logs into the InvocationLog buffer. Installed here (at
+    # runtime, after all imports) so nothing resets loguru's handlers on us.
+    install_capture()
+
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
     if gateway_name == "daily":

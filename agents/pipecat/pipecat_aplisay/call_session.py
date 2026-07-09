@@ -27,6 +27,7 @@ from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
 
 from . import api_client
+from . import invocation_log
 from .agent_tools import build_agent_tools
 from .mcp_tools import close_mcp_servers, connect_mcp_servers
 from .constants import DISCONNECT_REASONS, PLATFORM
@@ -630,50 +631,68 @@ class CallSession:
 
     async def _run_prepared_once(self, task, max_duration_secs: Optional[int]) -> None:
         """One pipeline execution (see :meth:`run_prepared`)."""
-        runner = PipelineRunner(handle_sigint=False)
-        self._runner = runner
-        self._task = task
+        # Bind this segment's callId into loguru's context for the whole run, so
+        # every log emitted while the pipeline runs (ours and Pipecat's own) is
+        # captured into the per-call InvocationLog buffer and flushed below.
+        # self.call is only swapped to the continuation in run_prepared, AFTER
+        # this returns, so it's stable for this segment — capture it up front.
+        seg_call = self.call
+        with logger.contextualize(callId=seg_call.id):
+            runner = PipelineRunner(handle_sigint=False)
+            self._runner = runner
+            self._task = task
 
-        timeout_task: Optional[asyncio.Task] = None
-        if max_duration_secs:
-            timeout_task = asyncio.create_task(self._timeout_watchdog(max_duration_secs))
+            timeout_task: Optional[asyncio.Task] = None
+            if max_duration_secs:
+                timeout_task = asyncio.create_task(self._timeout_watchdog(max_duration_secs))
 
-        kick_transport = self._handover_webrtc_kick
-        self._handover_webrtc_kick = None
-        kick_task: Optional[asyncio.Task] = None
-        if kick_transport is not None:
-            kick_task = asyncio.create_task(
-                self._fire_rebuilt_webrtc_connected(kick_transport)
-            )
-
-        try:
-            await runner.run(task)
-            if self._pending_agent_handover is not None:
-                # Full agent-stack handover: the old pipeline was cancelled on
-                # purpose, the old call record is already ended with a pointer
-                # to its continuation, and run() restarts on the live transport.
-                logger.bind(call_id=self.call.id).info(
-                    "pipeline ended for agent handover; not ending the call"
+            kick_transport = self._handover_webrtc_kick
+            self._handover_webrtc_kick = None
+            kick_task: Optional[asyncio.Task] = None
+            if kick_transport is not None:
+                kick_task = asyncio.create_task(
+                    self._fire_rebuilt_webrtc_connected(kick_transport)
                 )
-            else:
-                # Normal completion when transport disconnects or pipeline ends.
-                await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
-        finally:
-            if kick_task and not kick_task.done():
-                kick_task.cancel()
-            if timeout_task and not timeout_task.done():
-                timeout_task.cancel()
-            # Tear down any WebRTC-origin relay leg / consult leg this session
-            # was bridged to, so the telephony side and its Call record don't
-            # outlive the browser caller.
-            await self._teardown_relay()
-            # Finalise the recording once the runner has stopped. The
-            # AudioBufferProcessor has already drained any in-flight frames by
-            # this point, so no more ``on_audio_data`` events will fire.
-            await self._finalise_recording()
-            # Release any MCP server connections opened in prepare_run.
-            await close_mcp_servers(self._mcp_closers, log=logger)
-            self._mcp_closers = []
+
+            try:
+                await runner.run(task)
+                if self._pending_agent_handover is not None:
+                    # Full agent-stack handover: the old pipeline was cancelled on
+                    # purpose, the old call record is already ended with a pointer
+                    # to its continuation, and run() restarts on the live transport.
+                    logger.bind(call_id=self.call.id).info(
+                        "pipeline ended for agent handover; not ending the call"
+                    )
+                else:
+                    # Normal completion when transport disconnects or pipeline ends.
+                    await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
+            finally:
+                if kick_task and not kick_task.done():
+                    kick_task.cancel()
+                if timeout_task and not timeout_task.done():
+                    timeout_task.cancel()
+                # Tear down any WebRTC-origin relay leg / consult leg this session
+                # was bridged to, so the telephony side and its Call record don't
+                # outlive the browser caller.
+                await self._teardown_relay()
+                # Finalise the recording once the runner has stopped. The
+                # AudioBufferProcessor has already drained any in-flight frames by
+                # this point, so no more ``on_audio_data`` events will fire.
+                await self._finalise_recording()
+                # Persist this segment's captured logs as its InvocationLog (the
+                # UI "debug log"), keyed to this segment's own Call record — the
+                # per-call analogue of the LiveKit agent's job-shutdown persist.
+                try:
+                    await invocation_log.flush_invocation_logs(
+                        call_id=seg_call.id,
+                        user_id=seg_call.userId,
+                        org_id=seg_call.organisationId,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"invocation log flush failed: {e}")
+                # Release any MCP server connections opened in prepare_run.
+                await close_mcp_servers(self._mcp_closers, log=logger)
+                self._mcp_closers = []
 
     async def inject_dtmf(self, digit: str) -> bool:
         """Inject a DTMF keypress into the running pipeline as an
