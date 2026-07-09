@@ -8,9 +8,80 @@ let log;
 export default function (logger) {
   log = logger;
   return {
+    GET: agentKeysList,
     PUT: agentKeysUpsert,
   };
 }
+
+/**
+ * GET /agents/{agentId}/keys — list the NAMES of the credential keys armed on
+ * the agent (values are write-only and never returned).
+ *
+ * Key values can never be read back, so a trusted BFF that pushed a key has no
+ * way to confirm it actually landed: a desync (datastore restore, a full
+ * PUT /agents/{agentId} that dropped `keys`, a partial push) leaves the agent
+ * with no key while the pusher still believes it is armed — and any MCP server
+ * that references the missing key is then silently dropped from every chat.
+ * Exposing the names (not the values) lets the pusher detect and self-heal that
+ * wedge. Scoped to the caller's own agents, like GET /agents/{agentId}.
+ */
+const agentKeysList = async (req, res) => {
+  const { agentId } = req.params;
+  if (isBuiltinAgentId(agentId)) {
+    return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
+  }
+  try {
+    const agent = await Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } });
+    if (!agent) {
+      return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
+    }
+    const keyNames = (Array.isArray(agent.keys) ? agent.keys : []).map((k) => k?.name).filter(Boolean);
+    res.send({ id: agent.id, keyNames });
+  } catch (err) {
+    req.log.error(err);
+    res.status(400).send({ message: err.message });
+  }
+};
+
+agentKeysList.apiDoc = {
+  summary: 'List the names of credential keys armed on an agent',
+  description:
+    'Returns the NAMES of the credential keys currently stored on the agent; key values are write-only and '
+    + 'never returned. Lets a trusted caller confirm a key it pushed is actually present — values cannot be '
+    + 'read back, so a push/restore desync is otherwise undetectable and silently strips any MCP server that '
+    + 'references the missing key.',
+  operationId: 'listAgentKeys',
+  tags: ['Agent'],
+  parameters: [
+    {
+      description: 'ID of the agent to inspect',
+      in: 'path',
+      name: 'agentId',
+      required: true,
+      schema: { type: 'string' },
+    },
+  ],
+  responses: {
+    200: {
+      description: 'The agent id and the names of its stored keys (values are never returned).',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              keyNames: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
+    default: {
+      description: 'An error occurred',
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+    },
+  },
+};
 
 /**
  * PUT /agents/{agentId}/keys — MERGE credential keys by name.
