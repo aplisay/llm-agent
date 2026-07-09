@@ -19,6 +19,17 @@ COPY agents/pipecat /usr/src/app
 
 RUN uv sync --frozen --no-cache || uv sync --no-cache
 
+# Build identity — baked from Cloud Build's COMMIT_SHA / BRANCH_NAME / TAG_NAME
+# and logged at startup by pipecat_aplisay.build_info (mirrors the Node image's
+# BUILD_COMMIT). Declared late so a new commit doesn't invalidate the apt/uv
+# layers above.
+ARG COMMIT_SHA
+ARG BRANCH_NAME
+ARG TAG_NAME
+ENV BUILD_COMMIT=$COMMIT_SHA \
+    BUILD_BRANCH=$BRANCH_NAME \
+    BUILD_TAG=$TAG_NAME
+
 EXPOSE 8082
 ENV PORT=8082
 
