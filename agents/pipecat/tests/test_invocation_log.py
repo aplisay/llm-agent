@@ -43,6 +43,15 @@ def test_sink_buffers_only_call_scoped():
     assert [e["callId"] for e in invocation_log._BUFFER] == ["call-A", "call-A", "call-B"]
 
 
+def test_entries_are_pino_shaped():
+    invocation_log._capture_sink(_msg("call-A", "hello", level="WARNING"))
+    e = invocation_log._BUFFER[0]
+    assert isinstance(e["time"], int)  # epoch ms, for the UI timeline/playhead
+    assert e["level"] == 40  # pino numeric: WARNING -> 40 (>=40 = notable)
+    assert e["msg"] == "hello"
+    assert e["levelName"] == "WARNING"
+
+
 def test_flush_drains_only_that_call(monkeypatch):
     posted = []
 
@@ -62,7 +71,7 @@ def test_flush_drains_only_that_call(monkeypatch):
     assert p["callId"] == "call-A"
     assert p["userId"] == "U" and p["organisationId"] == "O"
     assert p["subsystem"] == "pipecat-agent"
-    assert [e["message"] for e in p["log"]] == ["a1", "a2"]
+    assert [e["msg"] for e in p["log"]] == ["a1", "a2"]
     # call-B's entry survives for its own flush
     assert [e["callId"] for e in invocation_log._BUFFER] == ["call-B"]
 
@@ -97,7 +106,7 @@ def test_shutdown_flush_groups_by_call(monkeypatch):
     by_call = {p["callId"]: p for p in posted}
     assert set(by_call) == {"call-A", "call-B"}
     assert by_call["call-A"]["userId"] == "envU"
-    assert [e["message"] for e in by_call["call-A"]["log"]] == ["a1", "a2"]
+    assert [e["msg"] for e in by_call["call-A"]["log"]] == ["a1", "a2"]
     assert invocation_log._BUFFER == []
 
 
@@ -106,4 +115,4 @@ def test_max_entries_cap(monkeypatch):
     for i in range(5):
         invocation_log._capture_sink(_msg("call-A", f"m{i}"))
     # oldest dropped, newest kept
-    assert [e["message"] for e in invocation_log._BUFFER] == ["m2", "m3", "m4"]
+    assert [e["msg"] for e in invocation_log._BUFFER] == ["m2", "m3", "m4"]

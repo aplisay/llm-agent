@@ -35,23 +35,48 @@ _installed = False
 _MAX_ENTRIES = 20_000
 
 
+# loguru level name -> pino numeric level. The Calls UI (polite-ai
+# ``dashboard.calls.tsx`` / ``api.call-diagnostics.tsx``) was built for the
+# LiveKit agent's pino logs, so it keys off pino fields: ``time`` (epoch ms —
+# projected onto the recording timeline so the playhead follows each entry),
+# numeric ``level`` (>=40 = warn/error) and ``msg``. pino ladder:
+# trace10 debug20 info30 warn40 error50 fatal60.
+_PINO_LEVELS = {
+    "TRACE": 10,
+    "DEBUG": 20,
+    "INFO": 30,
+    "SUCCESS": 30,
+    "WARNING": 40,
+    "ERROR": 50,
+    "CRITICAL": 60,
+}
+
+
 def _record_to_entry(record: dict) -> dict[str, Any]:
+    """Serialise a loguru record as a **pino-shaped** entry, so pipecat and
+    LiveKit invocation logs render identically in the UI. ``time`` is epoch
+    milliseconds via ``datetime.timestamp()`` — an absolute (UTC) instant
+    regardless of the record's tzinfo, which is what the timeline maths expects.
+    """
     extra = dict(record.get("extra") or {})
     call_id = extra.pop("callId", None)
+    level_name = record["level"].name
     entry: dict[str, Any] = {
-        "callId": call_id,
-        "ts": record["time"].isoformat(),
-        "level": record["level"].name,
+        "callId": call_id,  # internal: groups/drains per call (the UI ignores it)
+        "time": int(record["time"].timestamp() * 1000),
+        "level": _PINO_LEVELS.get(level_name.upper(), 30),
+        "levelName": level_name,
+        "msg": record["message"],
         "logger": record["name"],
         "function": record["function"],
         "line": record["line"],
-        "message": record["message"],
     }
     if extra:
         entry["extra"] = extra
     exc = record.get("exception")
     if exc is not None:
-        entry["exception"] = repr(exc)
+        value = getattr(exc, "value", None)
+        entry["err"] = {"message": str(value) if value is not None else repr(exc)}
     return entry
 
 
