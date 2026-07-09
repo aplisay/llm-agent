@@ -9,8 +9,9 @@ from __future__ import annotations
 import os
 
 import uvicorn
+from loguru import logger
 
-from pipecat_aplisay import secretenv
+from pipecat_aplisay import build_info, secretenv
 
 
 def _truthy(value: str | None) -> bool:
@@ -18,6 +19,13 @@ def _truthy(value: str | None) -> bool:
 
 
 def main() -> None:
+    # Log which code this actually is, first thing — so a running worker always
+    # says its commit (catches a rebuilt :next that never rolled, or pods that
+    # haven't re-pulled). Mirrors the Node runtime's startup "build version" log.
+    logger.info(
+        "pipecat worker starting — build version: {}", build_info.describe_build()
+    )
+
     # Decrypt SECRETENV_BUNDLE into os.environ before anything reads config, so a
     # single SECRETENV_KEY + SECRETENV_BUNDLE pair can carry every secret. No-op
     # when those aren't set. Runs in the parent process; with RELOAD the uvicorn
