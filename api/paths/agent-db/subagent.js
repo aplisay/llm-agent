@@ -53,6 +53,17 @@ const subagentInvoke = async (req, res) => {
     });
   }
   catch (err) {
+    // A failed invocation still billed the tokens of its completed turns —
+    // runSubagent rides them on the error (best-effort; never throws).
+    if (Array.isArray(err?.usage)) {
+      recordSubagentUsage({
+        sessionId: callId || crypto.randomUUID(),
+        callId: callId || null,
+        organisationId,
+        usage: err.usage,
+        log,
+      });
+    }
     if (err instanceof SubagentError) {
       log.info({ agentId, callId, message: err.message }, 'subagent invocation failed');
       return res.status(err.status || 400).send({ error: err.message });
