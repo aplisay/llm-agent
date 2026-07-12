@@ -94,6 +94,7 @@ describe('POST /agents/{agentId}/chat model override', () => {
   });
 
   test('no model key leaves the builder default untouched', async () => {
+    const { SET_BUILDER_MODEL } = await import('../lib/set-builder-agent.js');
     const res = createMockResponse(asUser());
     await agentChat(createMockRequest({
       params: { agentId: 'builtin:set-builder' },
@@ -101,7 +102,7 @@ describe('POST /agents/{agentId}/chat model override', () => {
     }), res);
     expect(res._body.id).toBeDefined();
     const session = getChatSession(res._body.id);
-    expect(session.agent.modelName).toMatch(/^text:anthropic\//);
+    expect(session.agent.modelName).toBe(SET_BUILDER_MODEL);
     session.teardown();
   });
 
