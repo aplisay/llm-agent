@@ -37,11 +37,15 @@ const agentChat = async (req, res) => {
       });
     }
     // Optional seed: an existing set to edit, a prior test result to diagnose,
-    // and/or a caller-formatted context block (e.g. website-knowledge state)
-    // appended verbatim to the opening turn.
-    const { set, testResult, knowledge } = req.body || {};
-    const session = createChatSession({ agent, set, testResult, knowledge, logger: req.log });
-    log.info({ agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, knowledge: !!knowledge }, 'agent chat session started');
+    // the diagnosed agent's own definition (a SET-LESS troubleshoot — without
+    // it the builder root-causes prompt/function bugs blind), and/or a
+    // caller-formatted context block (e.g. website-knowledge state) appended
+    // verbatim to the opening turn.
+    const { set, testResult, subjectAgent, knowledge } = req.body || {};
+    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, logger: req.log });
+    log.info(
+      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge },
+      'agent chat session started');
     res.send({ id: session.id, socket: `/chat/${session.id}` });
   }
   catch (err) {
@@ -77,6 +81,10 @@ agentChat.apiDoc = {
           properties: {
             set: { type: 'object', nullable: true, description: 'An existing agent-set document to edit (seeds the builder).' },
             testResult: { type: 'object', nullable: true, description: 'A prior test run (transcript/functions/invocation log) to diagnose.' },
+            // No `type`: a single definition object, or an array of them (one
+            // per distinct agent on a transferred call) — typed loosely so the
+            // request validator accepts both shapes.
+            subjectAgent: { nullable: true, description: 'For a set-less troubleshoot: the diagnosed agent\'s own definition (prompt/functions/options) — or an array of definitions, one per distinct agent on the call — so fixes are grounded in what the agent actually says and does.' },
             knowledge: { type: 'string', nullable: true, description: 'A caller-formatted context block appended verbatim to the opening turn (e.g. website-knowledge state).' },
           },
         },
