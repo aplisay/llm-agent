@@ -110,3 +110,52 @@ describe('text-chat test_result frame', () => {
     expect(session.pending).toBeNull();
   });
 });
+
+describe('text-chat slimResults', () => {
+  const setAgent = {
+    ...agent,
+    functions: [
+      { name: 'create_agent_set', platform: 'create_agent_set' },
+      { name: 'list_voices', platform: 'list_voices' },
+    ],
+  };
+  const fullSet = JSON.stringify({
+    id: 'set-1',
+    name: 'Team',
+    description: 'a team',
+    agents: [
+      { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000), functions: [] },
+      { id: 'a-2', label: 'sales', name: 'Sales', prompt: 'y'.repeat(4000), functions: [] },
+    ],
+  });
+
+  test('a save result is replaced with a stub carrying the post-save identities', () => {
+    const session = createChatSession({ agent: setAgent, logger });
+    const [slim] = session.slimResults([{ name: 'create_agent_set', result: fullSet }]);
+    const parsed = JSON.parse(slim.result);
+    expect(parsed).toEqual({
+      saved: true,
+      id: 'set-1',
+      name: 'Team',
+      members: [
+        { label: 'main', id: 'a-1', name: 'Main' },
+        { label: 'sales', id: 'a-2', name: 'Sales' },
+      ],
+    });
+    expect(slim.result.length).toBeLessThan(fullSet.length / 10);
+  });
+
+  test('save FAILURES and non-set tools pass through verbatim', () => {
+    const session = createChatSession({ agent: setAgent, logger });
+    const error = JSON.stringify({ error: 'validation failed: agents[0].functions[0] …' });
+    const voices = JSON.stringify({ locales: ['en-GB'] });
+    const results = session.slimResults([
+      { name: 'create_agent_set', result: error },
+      { name: 'list_voices', result: voices },
+      { name: 'create_agent_set', result: 'not json' },
+    ]);
+    expect(results[0].result).toBe(error);
+    expect(results[1].result).toBe(voices);
+    expect(results[2].result).toBe('not json');
+  });
+});
