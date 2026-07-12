@@ -36,6 +36,13 @@ export async function judge({ scenario, result }) {
     .replace(/```(json)?/g, ''); // some judgments arrive fenced despite the instruction
   try {
     const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+    // The judge sometimes omits `overall` despite the instruction — derive it
+    // from the subscores rather than losing the row's headline number.
+    if (typeof parsed.overall !== 'number') {
+      const subs = ['promptQuality', 'faithfulness', 'efficiency']
+        .map((k) => parsed[k]).filter((v) => typeof v === 'number');
+      if (subs.length) parsed.overall = Math.round((subs.reduce((a, b) => a + b, 0) / subs.length) * 10) / 10;
+    }
     return { ...parsed, judgeModel: JUDGE_MODEL };
   } catch {
     return { promptQuality: null, faithfulness: null, efficiency: null, overall: null, summary: `unparseable judge output: ${text.slice(0, 200)}`, judgeModel: JUDGE_MODEL };
