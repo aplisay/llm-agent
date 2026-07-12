@@ -120,7 +120,13 @@ export default class JambonzSession {
         };
       })
       logger.debug({ session, model }, 'initial gathering');
-      model.initial((args) => this.#handleCompletion(args));
+      // Drivers now THROW on completion failure (they used to swallow errors
+      // into an apology string), and #handleCompletion is async: BOTH promises
+      // need a rejection handler or a single failed call kills the whole
+      // worker. Deliberately NOT awaited — awaiting would gate call teardown
+      // (billed duration + concurrency release) behind a stalled LLM request.
+      model.initial((args) => this.#handleCompletion(args).catch((err) => this.#onError(err)))
+        .catch((err) => this.#onError(err));
     }
     catch (err) {
       this.#onError(err);
@@ -283,17 +289,25 @@ export default class JambonzSession {
 
     logger.debug({ transcript }, 'sending prompt to LLM');
     try {
-      await model.completion(transcript, (args) => this.#handleCompletion(args));
+      // The callback's async rejection is NOT chained into completion()'s
+      // promise (drivers invoke it fire-and-forget) — route it explicitly or
+      // a tool-dispatch failure is an unhandledRejection that kills the worker.
+      await model.completion(transcript, (args) => this.#handleCompletion(args).catch((err) => this.#onError(err)));
     } catch (err) {
       logger.info({ err }, 'LLM error');
     }
   };
 
 
-  async #handleCompletion({ text, hangup, data, calls }) {
+  async #handleCompletion({ text, hangup, data, calls, mcp_tool_use }) {
     const { logger, session, progress, model } = this;
     const { functions, keys } = model;
     let error;
+
+    // Progress-only frame (bridged/hosted MCP tool activity mid-completion) —
+    // not a completion: without this guard the fall-through below speaks the
+    // apology fallback to the caller once per MCP tool call.
+    if (mcp_tool_use) return;
 
     logger.debug({ text, hangup, data, calls, functions }, 'got completion from LLM');
     text && progress && progress.send({ agent: text });

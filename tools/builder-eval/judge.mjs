@@ -20,7 +20,7 @@ export async function judge({ scenario, result }) {
   };
   const response = await anthropic.messages.create({
     model: JUDGE_MODEL,
-    max_tokens: 2048,
+    max_tokens: 3000,
     thinking: { type: 'adaptive' },
     system:
       'You are grading an AI "agent builder" on one build session. Score STRICTLY against the '
@@ -32,7 +32,8 @@ export async function judge({ scenario, result }) {
       + 'questions/detours to a correct result. No markdown, no prose outside the JSON.',
     messages: [{ role: 'user', content: JSON.stringify(payload) }],
   });
-  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('')
+    .replace(/```(json)?/g, ''); // some judgments arrive fenced despite the instruction
   try {
     const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
     return { ...parsed, judgeModel: JUDGE_MODEL };
