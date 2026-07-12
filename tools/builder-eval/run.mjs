@@ -41,12 +41,24 @@ const { judge } = await import('./judge.mjs');
 const DEFAULT_MODELS = ['text:anthropic/claude-sonnet-5'];
 
 // $/MTok — used for the per-run cost estimate in the report. Update as prices
-// move; unknown models report tokens only.
+// move; unknown models report tokens only. Verified July 2026 list prices
+// (sonnet-5 has intro $2/$10 to 2026-08-31 — list price used for fairness).
+// NOTE: the OpenAI Responses usage API doesn't split cache WRITES out of
+// input_tokens (writes bill at 1.25x input on gpt-5.6+), so OpenAI costs are
+// slightly underestimated on cache-miss-heavy runs.
 const PRICES = {
   'anthropic/claude-sonnet-5': { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   'anthropic/claude-sonnet-4-5': { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   'anthropic/claude-haiku-4-5': { in: 1, out: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   'anthropic/claude-opus-4-8': { in: 5, out: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'openai/gpt-5.6-sol': { in: 5, out: 30, cacheRead: 0.5, cacheWrite: 0 },
+  'openai/gpt-5.6-terra': { in: 2.5, out: 15, cacheRead: 0.25, cacheWrite: 0 },
+  'openai/gpt-5.6-luna': { in: 1, out: 6, cacheRead: 0.1, cacheWrite: 0 },
+  'openai/gpt-5.5': { in: 5, out: 30, cacheRead: 0.5, cacheWrite: 0 },
+  'gemini/gemini-3.5-flash': { in: 1.5, out: 9, cacheRead: 0.15, cacheWrite: 0 },
+  'kimi/kimi-k2.6': { in: 0.95, out: 4, cacheRead: 0.16, cacheWrite: 0 },
+  // OpenRouter passes Moonshot pricing through (its fee is on credit top-ups).
+  'openrouter/moonshotai/kimi-k2.6': { in: 0.95, out: 4, cacheRead: 0.16, cacheWrite: 0 },
 };
 
 const quietLogger = {

@@ -2,6 +2,7 @@ import { createChatSession } from '../../../../lib/text-chat.js';
 import { resolveAgentForUser } from '../../../../lib/builtin-agents.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { isModelAllowed } from '../../../../lib/auth/model-access.js';
+import TextHandler from '../../../../lib/handlers/text.js';
 
 let log;
 
@@ -41,10 +42,25 @@ const agentChat = async (req, res) => {
     // it the builder root-causes prompt/function bugs blind), and/or a
     // caller-formatted context block (e.g. website-knowledge state) appended
     // verbatim to the opening turn.
-    const { set, testResult, subjectAgent, knowledge } = req.body || {};
+    const { set, testResult, subjectAgent, knowledge, model } = req.body || {};
+    // Optional per-SESSION model override (e.g. a user's builder-model
+    // preference). Two gates: the id must be a loadable `text:` catalogue
+    // model, and the caller must be allowed to use it. The override is set
+    // in-memory on the resolved agent (never saved) so the LLM build and the
+    // persisted ChatSession.modelName both reflect the model that actually ran.
+    if (model) {
+      const known = TextHandler.availableModels.some((m) => m.name === model);
+      if (!known) {
+        return res.status(400).send({ message: `Unknown text model: ${model}` });
+      }
+      if (!isModelAllowed(model, res.locals.user?._allowedModels)) {
+        return res.status(403).send({ message: `Model not permitted: ${model}` });
+      }
+      agent.modelName = model;
+    }
     const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, logger: req.log });
     log.info(
-      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge },
+      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, model: model || undefined },
       'agent chat session started');
     res.send({ id: session.id, socket: `/chat/${session.id}` });
   }
@@ -86,6 +102,7 @@ agentChat.apiDoc = {
             // request validator accepts both shapes.
             subjectAgent: { nullable: true, description: 'For a set-less troubleshoot: the diagnosed agent\'s own definition (prompt/functions/options) — or an array of definitions, one per distinct agent on the call — so fixes are grounded in what the agent actually says and does.' },
             knowledge: { type: 'string', nullable: true, description: 'A caller-formatted context block appended verbatim to the opening turn (e.g. website-knowledge state).' },
+            model: { type: 'string', nullable: true, description: 'Per-session model override (a `text:` catalogue model the caller is allowed to use, e.g. from a user preference). 400 if unknown, 403 if not permitted.' },
           },
         },
       },
