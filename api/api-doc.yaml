@@ -975,7 +975,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent"]
+            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
@@ -1004,12 +1004,15 @@ components:
                   * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
                     (generated) arguments the agent passes become the result returned to the invoker. Define its
                     `input_schema` to describe the output you require from the agent.
-                  * `create_agent_set`, `update_agent_set`, `patch_agent_set`, `list_voices`, `ask_user`, `test_agent`
-                    (text agents only) are the agent-builder builtins. They are dispatched by the interactive **chat
-                    session** tool plane only: inside a chat session they perform org-scoped agent-set CRUD, voice
-                    listing, user questioning and set testing exactly as the builtin set builder does. Outside a chat
-                    session the set-CRUD builtins (`create_agent_set`/`update_agent_set`/`patch_agent_set`) fail
-                    closed with an error, and `ask_user`/`test_agent` yield empty results.
+                  * `create_agent_set`, `update_agent_set`, `patch_agent_set`, `list_voices`, `ask_user`, `test_agent`,
+                    `request_review` (text agents only) are the agent-builder builtins. They are dispatched by the
+                    interactive **chat session** tool plane only: inside a chat session they perform org-scoped
+                    agent-set CRUD, voice listing, user questioning, set testing, and requesting an independent review
+                    exactly as the builtin set builder does. `request_review` takes no parameters: it pauses the turn
+                    and emits a `review` frame; the client runs its own review flow and answers with a `review_result`
+                    frame whose result becomes this function's tool result. Outside a chat session the set-CRUD
+                    builtins (`create_agent_set`/`update_agent_set`/`patch_agent_set`) fail closed with an error, and
+                    `ask_user`/`test_agent`/`request_review` yield empty results.
                   * `hangup` takes no parameters and will hang up the call
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
