@@ -4,6 +4,7 @@ import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { runSubagent, SubagentError } from '../../../../lib/subagent.js';
 import { recordSubagentUsage } from '../../../../lib/usage.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { isModelAllowed } from '../../../../lib/auth/model-access.js';
 
 let log;
 
@@ -28,6 +29,12 @@ const agentInvoke = async (req, res) => {
     }
     if ((agent.type || 'interactive-audio') !== 'text') {
       return res.status(400).send({ message: `Agent ${agentId} is type ${agent.type}; only text agents can be invoked` });
+    }
+    // R1 — running is gated on the agent's model, matching agentGet's read
+    // gate (this endpoint previously had NO model gate: a tightened allow-list
+    // could still invoke a now-disallowed model on the org's bill).
+    if (!isModelAllowed(agent.modelName, res.locals.user?._allowedModels)) {
+      return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for your account.` });
     }
     let timer;
     const timeout = new Promise((_, reject) => {

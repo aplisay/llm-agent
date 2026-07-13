@@ -32,6 +32,22 @@ const agentChat = async (req, res) => {
     if (builtin && !isModelAllowed(agentId, res.locals.user?._allowedModels)) {
       return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
     }
+    // R1 — RUNNING a stored agent is gated on its model, matching agentGet's
+    // read gate: an allow-list tightened after the agent was created (or a
+    // member with a narrower personal list than the agent's author) must not
+    // keep running a now-disallowed model on the org's bill. The per-session
+    // override below cannot rescue a disallowed base agent — if you may not
+    // read it, you may not run it.
+    // The org-pushed builder is a stored agent and IS gated here (it has no
+    // forgeable-free exemption — the description marker is tenant-settable via
+    // agentCreate, so trusting it would be a bypass). A restrictively-scoped
+    // org instead reaches the builder through the BUILTIN (gated by its
+    // `builtin:set-builder` access id, not its model): polite-ai retries the
+    // chat against the builtin on a 403, so an org granted `builtin:` keeps a
+    // working builder while its own pushed row is correctly policy-gated.
+    if (!builtin && !isModelAllowed(agent.modelName, res.locals.user?._allowedModels)) {
+      return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for your account.` });
+    }
     if ((agent.type || 'interactive-audio') !== 'text') {
       return res.status(400).send({
         message: `Agent ${agentId} is type ${agent.type || 'interactive-audio'}; only text agents support chat`,
