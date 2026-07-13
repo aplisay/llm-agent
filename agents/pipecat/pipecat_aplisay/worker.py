@@ -48,6 +48,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from aiortc.sdp import candidate_from_sdp
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.base_transport import TransportParams
@@ -147,6 +148,9 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
     app.state.calls_by_channel: dict[str, str] = {}
+    # Live browser WebRTC peers keyed by pc_id, so trickle-ICE PATCHes and
+    # renegotiation can find the connection a prior /webrtc/offer created.
+    app.state.webrtc_connections: dict[str, SmallWebRTCConnection] = {}
     yield
     # Best-effort flush on shutdown — section 8.4 of the architecture doc.
     try:
@@ -448,7 +452,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=False,
-    allow_methods=["POST", "OPTIONS", "GET"],
+    # PATCH is the pipecat SmallWebRTC client's trickle-ICE + renegotiation
+    # verb (see /webrtc/offer PATCH handler). Without it the browser preflight
+    # gets a 400 "Disallowed CORS method" and trickle silently fails.
+    allow_methods=["POST", "PATCH", "OPTIONS", "GET"],
     allow_headers=["*"],
 )
 
@@ -612,6 +619,34 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="missing token")
     payload = verify_join_token(token)
 
+    sdp = body.get("sdp")
+    sdp_type = body.get("type")
+    if not sdp or not sdp_type:
+        raise HTTPException(status_code=400, detail="missing sdp / type")
+
+    # Renegotiation / ICE-restart on an already-established peer. The pipecat
+    # SmallWebRTC client re-POSTs to the same endpoint carrying the pc_id we
+    # handed back in the original answer (restart_pc=true for an ICE restart).
+    # Reuse the live connection and its running pipeline rather than standing up
+    # a whole new session. Affinity caveat as on the PATCH handler: this must
+    # reach the worker that owns the pc_id.
+    pc_id = body.get("pc_id")
+    if pc_id:
+        existing = request.app.state.webrtc_connections.get(pc_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="unknown pc_id")
+        await existing.renegotiate(
+            sdp=sdp, type=sdp_type, restart_pc=bool(body.get("restart_pc"))
+        )
+        answer = existing.get_answer()
+        if not answer:
+            raise HTTPException(
+                status_code=500, detail="webrtc renegotiation produced no answer"
+            )
+        return JSONResponse(answer)
+
+    # New browser session: resolve the agent, create the Call, build + start the
+    # pipeline, then answer.
     try:
         instance = await api_client.get_instance_by_id(payload.instance_id)
     except api_client.ApiRequestError as e:
@@ -624,11 +659,6 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     agent = instance.get("Agent")
     if not agent:
         raise HTTPException(status_code=404, detail="instance has no agent")
-
-    sdp = body.get("sdp")
-    sdp_type = body.get("type")
-    if not sdp or not sdp_type:
-        raise HTTPException(status_code=400, detail="missing sdp / type")
 
     pc = SmallWebRTCConnection(ice_servers=WEBRTC_ICE_SERVERS)
     await pc.initialize(sdp, sdp_type)
@@ -765,6 +795,15 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         )
 
     request.app.state.live_calls[call.id] = session
+    # Register the peer alongside the session (both are torn down together in the
+    # runner's finally). Now that the session is fully built we know we'll return
+    # an answer, so the browser can trickle ICE candidates (PATCH) and renegotiate
+    # against this pc_id. Drop it when the peer closes.
+    request.app.state.webrtc_connections[answer["pc_id"]] = pc
+
+    @pc.event_handler("closed")
+    async def _drop_webrtc_connection(conn):
+        request.app.state.webrtc_connections.pop(conn.pc_id, None)
 
     async def _run_browser_session():
         try:
@@ -780,6 +819,10 @@ async def webrtc_offer(request: Request) -> JSONResponse:
                 pass
         finally:
             request.app.state.live_calls.pop(call.id, None)
+            # Safety net: the "closed" event handler normally drops this, but
+            # aiortc has no "disconnected" state, so a vanished browser might
+            # never fire it — pop here too so the map can't leak.
+            request.app.state.webrtc_connections.pop(pc.pc_id, None)
             try:
                 await session.gateway_session.shutdown()
             except Exception as inner:  # noqa: BLE001
@@ -874,9 +917,57 @@ async def webrtc_offer(request: Request) -> JSONResponse:
             detail=f"session startup failed: {detail}",
         )
 
-    # Pipeline is up and running. Return the SDP answer so the browser
-    # completes its end of the WebRTC handshake.
-    return JSONResponse({"sdp": answer["sdp"], "type": answer["type"]})
+    # Pipeline is up and running. Return the SDP answer — including pc_id, so
+    # the browser can address trickle-ICE PATCHes and any later renegotiation to
+    # this exact peer — and complete its end of the WebRTC handshake.
+    return JSONResponse(answer)
+
+
+@app.patch("/webrtc/offer")
+async def webrtc_ice_candidate(request: Request) -> JSONResponse:
+    """Trickle-ICE candidate delivery for an in-flight browser peer.
+
+    The pipecat SmallWebRTC client sends its SDP offer with no ICE candidates
+    (``a=ice-options:trickle``) and PATCHes them here as they're gathered,
+    keyed by the ``pc_id`` we returned in the offer answer. Each is handed to
+    the matching aiortc peer. Without this route the browser's candidates never
+    reach the worker and the call limps along on aiortc peer-reflexive discovery
+    alone — which only happens to work because the node has a public IP, and
+    leaves ICE restart / reconnect (restart_pc) dead.
+
+    SESSION AFFINITY: the offer is stateless (self-contained token, any node
+    answers — see deploy/k8s README), but a peer lives on ONE node once created.
+    In a multi-node pool with no LB affinity a PATCH can land on a different node
+    and 404 here; the client logs and ignores that, falling back to
+    peer-reflexive discovery. Reliable trickle needs signalling affinity (a
+    single WebRTC replica, or LB sticky sessions).
+    """
+    body = await request.json()
+    token = request.query_params.get("token") or body.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="missing token")
+    # Validate signature/expiry; the unguessable pc_id is the routing key.
+    verify_join_token(token)
+
+    pc_id = body.get("pc_id")
+    pc = request.app.state.webrtc_connections.get(pc_id) if pc_id else None
+    if pc is None:
+        raise HTTPException(status_code=404, detail="unknown pc_id")
+
+    for c in body.get("candidates") or []:
+        raw = c.get("candidate")
+        if not raw:
+            continue  # empty string = end-of-candidates sentinel, nothing to add
+        try:
+            candidate = candidate_from_sdp(raw)
+            candidate.sdpMid = c.get("sdp_mid")
+            candidate.sdpMLineIndex = c.get("sdp_mline_index")
+            await pc.add_ice_candidate(candidate)
+        except Exception as e:  # noqa: BLE001
+            # One malformed candidate shouldn't drop the rest of the batch.
+            logger.warning(f"skipping unparseable ICE candidate {raw!r}: {e}")
+
+    return JSONResponse({"status": "success"})
 
 
 # ---- FreeSWITCH WebSocket (mod_audio_stream) ----
