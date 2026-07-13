@@ -58,7 +58,7 @@ const agentChat = async (req, res) => {
     // it the builder root-causes prompt/function bugs blind), and/or a
     // caller-formatted context block (e.g. website-knowledge state) appended
     // verbatim to the opening turn.
-    const { set, testResult, subjectAgent, knowledge, model } = req.body || {};
+    const { set, testResult, subjectAgent, knowledge, model, headless } = req.body || {};
     // Optional per-SESSION model override (e.g. a user's builder-model
     // preference). Two gates: the id must be a loadable `text:` catalogue
     // model, and the caller must be allowed to use it. The override is set
@@ -74,9 +74,9 @@ const agentChat = async (req, res) => {
       }
       agent.modelName = model;
     }
-    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, logger: req.log });
+    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, headless, logger: req.log });
     log.info(
-      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, model: model || undefined },
+      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, headless: !!headless, model: model || undefined },
       'agent chat session started');
     res.send({ id: session.id, socket: `/chat/${session.id}` });
   }
@@ -119,6 +119,7 @@ agentChat.apiDoc = {
             subjectAgent: { nullable: true, description: 'For a set-less troubleshoot: the diagnosed agent\'s own definition (prompt/functions/options) — or an array of definitions, one per distinct agent on the call — so fixes are grounded in what the agent actually says and does.' },
             knowledge: { type: 'string', nullable: true, description: 'A caller-formatted context block appended verbatim to the opening turn (e.g. website-knowledge state).' },
             model: { type: 'string', nullable: true, description: 'Per-session model override (a `text:` catalogue model the caller is allowed to use, e.g. from a user preference). 400 if unknown, 403 if not permitted.' },
+            headless: { type: 'boolean', nullable: true, description: 'When true, SKIP the builder opening turn — the session waits for the caller\'s first user message instead of auto-running the build/edit/diagnose greeting. For headless callers (e.g. polite.ai\'s independent reviewer) that drive the agent programmatically over the socket.' },
           },
         },
       },
