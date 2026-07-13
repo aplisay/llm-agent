@@ -5,6 +5,7 @@ import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-w
 
 const { createChatSession, getChatSession } = await import('../lib/text-chat.js');
 const { trimVoicesResult } = await import('../lib/function-handler.js');
+const { normalizeSearchTerms, filterVoiceTreeBySearch } = await import('../lib/model-voices.js');
 
 // Session re-attach: after the websocket drops, the session (and its whole LLM
 // conversation) lingers for a grace window; a new socket for the same id
@@ -173,5 +174,49 @@ describe('list_voices payload bound', () => {
   test('locale-list results (no vendors) pass through untouched', () => {
     const result = { locales: ['en-GB', 'any'], voiceStack: 'realtime' };
     expect(trimVoicesResult(result)).toBe(result);
+  });
+});
+
+describe('list_voices search (union substring, no cap)', () => {
+  test('normalizeSearchTerms tokenises arrays and strings, lowercases and de-dupes', () => {
+    expect(normalizeSearchTerms(['British', 'english'])).toEqual(['british', 'english']);
+    expect(normalizeSearchTerms('British English robotic')).toEqual(['british', 'english', 'robotic']);
+    expect(normalizeSearchTerms(['british english', 'robotic'])).toEqual(['british', 'english', 'robotic']);
+    expect(normalizeSearchTerms(['robotic', 'Robotic', 'ROBOTIC'])).toEqual(['robotic']);
+    expect(normalizeSearchTerms(undefined)).toEqual([]);
+    expect(normalizeSearchTerms(['', '  '])).toEqual([]);
+  });
+
+  test('returns the UNION of matches across vendors, uncapped, tagging non-"any" locales', () => {
+    const tree = {
+      ultravox: {
+        any: [
+          { name: 'Dominus', description: 'British English male voice.', gender: 'unknown' },
+          { name: 'Vera', description: 'Spanish female voice.', gender: 'unknown' },
+          { name: 'Rob', description: 'A robotic android voice.', gender: 'unknown' },
+        ],
+      },
+      elevenlabs: {
+        'en-GB': [{ name: 'Alice', description: 'Warm narrator.', gender: 'female' }],
+      },
+    };
+    const out = filterVoiceTreeBySearch(tree, ['british', 'robotic']);
+    // british OR robotic → Dominus + Rob; Vera excluded; other vendor unmatched
+    expect(out.ultravox.map((v) => v.name).sort()).toEqual(['Dominus', 'Rob']);
+    expect(out.ultravox[0].locale).toBeUndefined(); // locale-neutral 'any' not tagged
+    expect(out.elevenlabs).toBeUndefined();
+  });
+
+  test('matches on the locale key too, and tags the voice with that locale', () => {
+    const tree = { google: { 'en-GB': [{ name: 'en-GB-Neural2-A', description: 'en-GB-Neural2-A', gender: 'female' }] } };
+    const out = filterVoiceTreeBySearch(tree, ['en-gb']);
+    expect(out.google).toHaveLength(1);
+    expect(out.google[0].locale).toBe('en-GB');
+  });
+
+  test('empty terms match nothing — never dumps the whole catalogue', () => {
+    const tree = { ultravox: { any: [{ name: 'X', description: 'y', gender: 'unknown' }] } };
+    expect(filterVoiceTreeBySearch(tree, [])).toEqual({});
+    expect(filterVoiceTreeBySearch(tree, normalizeSearchTerms('   '))).toEqual({});
   });
 });
