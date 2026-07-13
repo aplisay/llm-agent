@@ -9,7 +9,14 @@ export default function (logger, voices) {
 
   const voicesList = (async (req, res) => {
       try {
-        let voices = Object.fromEntries((await Promise.all((await handlers()).implementations.map(async ({ name, voices }) => ([name, await voices]))))
+        let voices = Object.fromEntries((await Promise.all((await handlers()).implementations
+          // A handler family whose transport credentials are unset isn't in the
+          // bundle, so don't advertise its voices — and, more importantly, don't
+          // await a `voices` static that rejects because its live catalogue API
+          // (e.g. jambonz, ultravox) has no server/key, which would 500 the whole
+          // endpoint.
+          .filter((impl) => impl.canLoad.ok)
+          .map(async ({ name, voices }) => ([name, await voices]))))
           // Headless handlers (e.g. `text` agents) have no TTS leg so don't belong in the voices list
           .filter(([, handlerVoices]) => handlerVoices && Object.keys(handlerVoices).length));
         res.send(voices);
