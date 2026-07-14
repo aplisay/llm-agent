@@ -643,16 +643,19 @@ export async function runAgentWorker({
       }
       // Flush any pending DTMF buffer before closing
       if (dtmfBuffer.length > 0 && session) {
+        const digitsToSend = dtmfBuffer;
+        dtmfBuffer = "";
         logger.debug(
-          { buffer: dtmfBuffer },
+          { buffer: digitsToSend },
           "Flushing remaining DTMF buffer during cleanup",
         );
+        // Log the keypad input as a user turn too (see flushDtmfBuffer).
+        sendMessage({ user: digitsToSend });
         try {
-          session.generateReply({ userInput: dtmfBuffer });
+          session.generateReply({ userInput: digitsToSend });
         } catch (e) {
           logger.debug({ e }, "Failed to flush DTMF buffer during cleanup");
         }
-        dtmfBuffer = "";
       }
 
 
@@ -1930,6 +1933,14 @@ export async function runAgentWorker({
           { digits: digitsToSend },
           "Flushing accumulated DTMF digits to LLM",
         );
+        // Record the received DTMF as a user turn in the transcript BEFORE the
+        // reply is generated. generateReply's `userInput` seeds the model but
+        // emits no ConversationItemAdded event, so without this the keypresses
+        // never appear in the transcript / transaction log or in the handover
+        // history (Pipecat logs them via the DTMFAggregator's transcription
+        // frame — this keeps the two runtimes at parity).
+        conversationHistory.push({ role: "user", text: digitsToSend });
+        sendMessage({ user: digitsToSend });
         try {
           session.generateReply({ userInput: digitsToSend });
         } catch (e) {
