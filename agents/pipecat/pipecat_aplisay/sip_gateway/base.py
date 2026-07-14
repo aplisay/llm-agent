@@ -233,6 +233,26 @@ class GatewaySession(Protocol):
             f"fall back to bridge_with."
         )
 
+    async def send_dtmf(self, digits: str) -> None:
+        """Play ``digits`` to the remote party as out-of-band RFC 4733
+        (telephone-event) DTMF over the SIP leg.
+
+        Drives the ``send_dtmf`` builtin platform function. The gateway is
+        responsible for putting genuine telephone-event onto the wire —
+        sipbridge encodes it in its own RTP layer; voiceblender asks the
+        external media platform to. ``digits`` is pre-validated by the caller
+        to the alphabet 0-9, * and #.
+
+        Default implementation raises ``NotImplementedError`` — gateways whose
+        media plane can't synthesise out-of-band DTMF (e.g. Daily, FreeSWITCH)
+        inherit this, and the call session surfaces it to the LLM as a clean
+        "not supported on this gateway" tool result.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support send_dtmf "
+            f"(out-of-band RFC 4733 DTMF)."
+        )
+
 
 @dataclass
 class ConsultPayload:

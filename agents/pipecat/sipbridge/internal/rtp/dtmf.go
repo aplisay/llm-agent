@@ -61,6 +61,35 @@ func ParseDTMF(payload []byte) (*DTMFEvent, bool) {
 	}, true
 }
 
+// EventCode maps a keypad symbol to its RFC 4733 event code — the inverse
+// of Symbol. Returns (code, true) for 0-9, * and #, and (0, false) for
+// anything else. A-D (events 12-15) are intentionally rejected: the
+// platform's DTMF alphabet is limited to what the worker's KeypadEntry
+// surface carries end-to-end (0-9, * and #).
+func EventCode(symbol byte) (byte, bool) {
+	switch {
+	case symbol >= '0' && symbol <= '9':
+		return symbol - '0', true
+	case symbol == '*':
+		return 10, true
+	case symbol == '#':
+		return 11, true
+	}
+	return 0, false
+}
+
+// EncodeDTMF builds the 4-byte RFC 4733 telephony-event payload for one
+// packet of an event: the event code, the End flag ORed with the 6-bit
+// volume, and the 16-bit cumulative duration (in 8 kHz timestamp units).
+// It is the inverse of ParseDTMF.
+func EncodeDTMF(event byte, end bool, volume uint8, duration uint16) []byte {
+	b1 := volume & 0x3F
+	if end {
+		b1 |= 0x80
+	}
+	return []byte{event, b1, byte(duration >> 8), byte(duration)}
+}
+
 // PayloadDTMF is the conventional dynamic payload type for RFC 4733
 // telephony-events. Carriers advertise it via SDP attribute
 // ``a=rtpmap:101 telephone-event/8000`` — we publish the same in our

@@ -255,6 +255,18 @@ export async function runAgentWorker({
   let dtmfTimeoutMs = 1500; // 1.5 seconds of silence before sending
   let dtmfTerminator = "#"; // Send immediately when this is pressed
 
+  // Outbound DTMF (the send_dtmf builtin). RFC 4733 event codes for the
+  // alphabet we accept (0-9, * and #); publishDtmf needs both the numeric
+  // code and the string form. Digits are paced so the SIP side emits distinct
+  // tones, and the burst length is capped to bound one tool call.
+  const DTMF_EVENT_CODES: Record<string, number> = {
+    "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
+    "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+    "*": 10, "#": 11,
+  };
+  const MAX_DTMF_DIGITS = 64;
+  const DTMF_INTER_DIGIT_MS = 200;
+
   // Inactivity "kick": repeating timer that re-speaks options.inactivity.message
   // every `timeout` seconds while the user is in the "away" state. The first
   // kick fires from the SDK `user_state_changed` → "away" event (driven by
@@ -1169,6 +1181,76 @@ export async function runAgentWorker({
     return { detail: "full agent-stack handover with new call record" };
   };
 
+  /**
+   * Resolve a send_dtmf builtin call: play the digits to the caller as
+   * out-of-band (RFC 4733) DTMF via localParticipant.publishDtmf — the SIP
+   * participant in the room relays telephone-event to the phone user. Only
+   * valid on a SIP call: a WebRTC/browser participant has no telephone leg,
+   * so it returns FAILED (never throws). Digits are validated to the 0-9 * #
+   * set and paced so the SIP side emits distinct events.
+   */
+  const onSendDtmf = async ({
+    digits,
+  }: {
+    digits: string;
+  }): Promise<{ status: string; detail?: string; error?: string }> => {
+    const cleaned = (digits ?? "").trim();
+    // Reject browser/WebRTC sessions — there is no telephone leg to relay tones
+    // to. The worker stamps the "WebRTC" sentinel on BOTH callerId and calledId
+    // for browser calls (worker.ts); any SIP call — inbound OR outbound — has
+    // real numbers. Do NOT gate on the inbound caller participant's SIP
+    // attributes: outbound calls have a null `participant` (the SIP leg is the
+    // "sip-outbound-call" participant), which previously mis-flagged every
+    // outbound call as WebRTC and blocked DTMF to IVRs.
+    if (callerId === "WebRTC" && calledId === "WebRTC") {
+      return {
+        status: "FAILED",
+        error:
+          "DTMF can only be sent on a telephone (SIP) call, not a browser/WebRTC session",
+      };
+    }
+    if (!cleaned) {
+      return {
+        status: "FAILED",
+        error: "send_dtmf requires a non-empty 'digits' string",
+      };
+    }
+    if (cleaned.length > MAX_DTMF_DIGITS) {
+      return {
+        status: "FAILED",
+        error: `send_dtmf 'digits' is limited to ${MAX_DTMF_DIGITS} characters`,
+      };
+    }
+    if (!/^[0-9*#]+$/.test(cleaned)) {
+      return {
+        status: "FAILED",
+        error:
+          "send_dtmf 'digits' may only contain the characters 0-9, * and #",
+      };
+    }
+    // Publish from the connected room's local participant. NB: the `room`
+    // closure var is the job's room-info object (only `room.name` is real —
+    // worker.ts casts `job.room as unknown as Room`); the live rtc-node room
+    // with a localParticipant is `ctx.room` (cf. ctx.room.on(DtmfReceived) and
+    // ctx.room.localParticipant.publishData elsewhere).
+    const local = ctx.room?.localParticipant;
+    if (!local) {
+      return {
+        status: "FAILED",
+        error: "no local participant available to publish DTMF",
+      };
+    }
+    for (const digit of cleaned) {
+      await local.publishDtmf(DTMF_EVENT_CODES[digit], digit);
+      await new Promise((resolve) => setTimeout(resolve, DTMF_INTER_DIGIT_MS));
+    }
+    logger.info(
+      { callId: call.id, digits: cleaned },
+      "send_dtmf: published DTMF to SIP participant",
+    );
+    return { status: "OK", detail: `sent ${cleaned.length} DTMF digit(s)` };
+  };
+
   const buildTools = (agentDef: Agent) =>
     createTools({
       agent: agentDef,
@@ -1181,6 +1263,7 @@ export async function runAgentWorker({
       onTransfer,
       getTransferState,
       onAgentTransfer,
+      onSendDtmf,
     });
 
   // ---- Bridged human→agent takeover (options.bridgedTransferToAgent) ----

@@ -64,6 +64,13 @@ _UUID_RE = re.compile(
     re.I,
 )
 
+# The alphabet the send_dtmf builtin accepts. Matches the LiveKit worker and
+# the sipbridge Go encoder — 0-9, * and # (KeypadEntry's supported range; RFC
+# 4733 A-D are intentionally excluded end-to-end).
+_DTMF_RE = re.compile(r"^[0-9*#]+$")
+# Bound the tone burst an LLM can request in one call (~200 ms/digit).
+_MAX_DTMF_DIGITS = 64
+
 
 @dataclass
 class _WebrtcEgress:
@@ -851,6 +858,7 @@ class CallSession:
             },
             on_agent_transfer=self._on_agent_transfer,
             on_subagent=self._on_subagent,
+            on_send_dtmf=self._on_send_dtmf,
             extra_builtins=extra_builtins,
         )
 
@@ -873,6 +881,59 @@ class CallSession:
             organisation_id=self.call.organisationId,
             call_id=self.call.id,
         )
+
+    async def _on_send_dtmf(self, args: dict) -> dict:
+        """Builtin ``send_dtmf`` platform function: play a string of DTMF
+        digits to the remote party as out-of-band RFC 4733 telephone-event
+        tones over the SIP leg.
+
+        The active gateway synthesises the tones (sipbridge encodes
+        telephone-event RTP itself; voiceblender asks the platform to). We
+        return a ``{status, ...}`` result rather than raising so the LLM gets
+        a clean tool result. It FAILS when:
+
+          - the call is a browser/WebRTC session — there is no SIP leg to
+            signal on (mirrors the LiveKit worker's isSipParticipant guard);
+          - ``digits`` is empty, over-long, or contains anything but 0-9, *
+            and #;
+          - the active SIP gateway can't send DTMF (Daily / FreeSWITCH raise
+            ``NotImplementedError`` from the base ``GatewaySession``).
+        """
+        digits = str(args.get("digits") or "").strip()
+        if self.is_webrtc_origin:
+            return {
+                "status": "FAILED",
+                "error": (
+                    "DTMF can only be sent on a telephone (SIP) call, "
+                    "not a browser/WebRTC session"
+                ),
+            }
+        if not digits:
+            return {"status": "FAILED", "error": "send_dtmf requires a non-empty 'digits' string"}
+        if len(digits) > _MAX_DTMF_DIGITS:
+            return {
+                "status": "FAILED",
+                "error": f"send_dtmf 'digits' is limited to {_MAX_DTMF_DIGITS} characters",
+            }
+        if not _DTMF_RE.match(digits):
+            return {
+                "status": "FAILED",
+                "error": "send_dtmf 'digits' may only contain the characters 0-9, * and #",
+            }
+        try:
+            await self.gateway_session.send_dtmf(digits)
+        except NotImplementedError:
+            return {
+                "status": "FAILED",
+                "error": "DTMF send is not supported on the active SIP gateway",
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=self.session_id, digits=digits).warning(
+                f"send_dtmf failed: {e}"
+            )
+            return {"status": "FAILED", "error": f"could not send DTMF: {e}"}
+        logger.bind(session_id=self.session_id, digits=digits).info("send_dtmf: played digits")
+        return {"status": "OK", "detail": f"sent {len(digits)} DTMF digit(s)"}
 
     def _needs_full_handover(self, new_agent: dict) -> bool:
         """Whether handing over to ``new_agent`` requires a full agent-stack

@@ -73,7 +73,10 @@ Two long-lived control connections live on the worker side:
 
 2. **`httpx.AsyncClient`** (in-band, per-call) — for REST control:
    `POST /v1/legs` (outbound originate), `DELETE /v1/legs/{id}` (hangup),
-   `POST /v1/legs/{id}/transfer` (REFER blind / attended).
+   `POST /v1/legs/{id}/transfer` (REFER blind / attended),
+   `POST /v1/legs/{id}/dtmf` (`{digits}` — play out-of-band RFC 4733 DTMF to
+   the far end; drives the `send_dtmf` builtin, see
+   [send-dtmf.md](send-dtmf.md)).
 
 
 ## Call flows

@@ -29,6 +29,7 @@ export function createTools({
   onTransfer,
   getTransferState,
   onAgentTransfer,
+  onSendDtmf,
 }: {
   agent: Agent;
   call: Call;
@@ -57,6 +58,15 @@ export function createTools({
   onAgentTransfer?: (
     args: AgentTransferArgs,
   ) => Promise<{ handoffAgent?: voice.Agent; detail: string }>;
+  /**
+   * Plays a string of DTMF digits to the caller as out-of-band (RFC 4733)
+   * tones via localParticipant.publishDtmf. Returns a `{status, ...}` result
+   * (FAILED on a WebRTC session or a bad digit string) rather than throwing,
+   * so the LLM gets a clean tool result — mirrors the transfer builtins.
+   */
+  onSendDtmf?: (args: {
+    digits: string;
+  }) => Promise<{ status: string; detail?: string; error?: string }>;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -190,6 +200,10 @@ export function createTools({
                       { organisationId: agent.organisationId, callId: call.id },
                     );
                   },
+                  ...(onSendDtmf && {
+                    send_dtmf: async (a: { digits: string }) =>
+                      await onSendDtmf(a),
+                  }),
                 },
                 {
                   allowToolsCallsMetadataPaths: true,

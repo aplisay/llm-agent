@@ -133,6 +133,22 @@ class _VbGatewaySession(GatewaySession):
             raise_on_error=False,
         )
 
+    async def send_dtmf(self, digits: str) -> None:
+        """Play ``digits`` as out-of-band RFC 4733 DTMF toward the caller.
+
+        voiceblender owns the SIP+RTP media plane (it already decodes inbound
+        DTMF from telephone-event and republishes it on VSI), so we ask it to
+        emit the tones on this leg via its REST surface — mirroring the
+        inbound ``dtmf.received`` path in the opposite direction. ``digits``
+        is pre-validated to 0-9, * and # by the caller.
+        """
+        logger.bind(leg_id=self.leg_id, digits=digits).info("voiceblender send_dtmf")
+        await self._gateway._call_api(
+            "POST",
+            f"/v1/legs/{self.leg_id}/dtmf",
+            {"digits": digits},
+        )
+
     async def transfer(self, req: TransferRequest) -> None:
         """Route the transfer through voiceblender's REST surface.
 

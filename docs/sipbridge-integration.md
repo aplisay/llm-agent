@@ -210,6 +210,7 @@ as the Daily / FreeSWITCH / voiceblender ingresses.
 | POST | `/v1/calls/{id}/transfer` | `{target, mode, monitor_dtmf?, tap_audio?}` where mode ∈ `"blind"`, `"bridged"`, `"attended"`, `"dial_bridge"` | blind = in-dialog REFER on `id`; bridged = media-relay between `id` and `target` (a previously-consulted call_id); attended = REFER-with-Replaces to the consult dialog; dial_bridge = dial `target` as an agent-less leg and relay. `monitor_dtmf` (bridged/dial_bridge only) keeps `id`'s worker WS open as a control channel and surfaces target-leg DTMF on it; `tap_audio` additionally streams a decoded stereo copy of the bridge for transcription — see below |
 | POST | `/v1/calls/{id}/consult` | `{destination, caller_id, agent_ws_session_id, ...}` | dials a second leg as a consult; returns `{ok, consult_call_id}` once the bot WS is wired |
 | POST | `/v1/calls/{id}/unbridge` | `{agent_ws_session_id, custom_headers?}` | human-to-agent takeover finalise: BYE the bridged peer leg, dismantle the relay, and re-attach `id` to a fresh worker agent WS at `/sipbridge/agent/{agent_ws_session_id}` |
+| POST | `/v1/calls/{id}/dtmf` | `{digits}` (over `0-9`, `*`, `#`) | play `digits` to the far end as out-of-band RFC 4733 telephone-event RTP; the bridge synthesises the tones on `id`'s own SSRC and plays them on a background goroutine. Drives the `send_dtmf` builtin — see [send-dtmf.md](send-dtmf.md) |
 
 A shared `SIPBRIDGE_API_TOKEN` Bearer guards all endpoints except
 `/health`. Empty token disables auth (dev only).

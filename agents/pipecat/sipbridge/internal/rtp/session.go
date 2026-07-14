@@ -39,6 +39,18 @@ const (
 
 	// RTP timestamp increment per packet at 8 kHz / 20 ms.
 	tsIncrement = 160
+
+	// Outbound RFC 4733 DTMF (telephone-event) shaping. One event packet
+	// is emitted per RTP ptime; each digit plays for dtmfToneMs then a
+	// dtmfGapMs silence precedes the next. dtmfVolume is the dBm0 magnitude
+	// (0-63). The closing End-bit packet is repeated dtmfEndRepeat times so
+	// a single lost packet doesn't strand the event open (RFC 4733 §2.5.1.3).
+	dtmfPacketMs      = 20
+	dtmfSamplesPerPkt = sampleRate8k * dtmfPacketMs / 1000 // 160 samples @ 8 kHz
+	dtmfToneMs        = 200
+	dtmfGapMs         = 80
+	dtmfVolume        = 10
+	dtmfEndRepeat     = 3
 )
 
 // Session is a single bidirectional RTP flow for one SIP call.
@@ -65,6 +77,16 @@ type Session struct {
 	remoteAddr atomic.Pointer[net.UDPAddr]
 
 	payloadType atomic.Uint32 // stored as uint32 because no atomic.Uint8
+
+	// dtmfPayloadType is the payload type used for outbound RFC 4733
+	// telephone-event packets. Defaults to PayloadDTMF (101) — what we
+	// advertise in our own SDP and accept on receive; a caller may override
+	// it with the peer's negotiated telephone-event rtpmap if it differs.
+	dtmfPayloadType atomic.Uint32
+	// dtmfMu serialises outbound DTMF bursts so overlapping SendTelephoneEvent
+	// calls don't interleave events on the shared SSRC. It does NOT block the
+	// audio SendPayload path (only DTMF sends contend on it).
+	dtmfMu sync.Mutex
 
 	// onPayload receives raw decoded RTP payloads (one packet worth at
 	// a time) plus the sequence number (for the jitter buffer to
@@ -124,6 +146,7 @@ func NewSession(bindIP string, portMin, portMax int) (*Session, error) {
 	// RFC 3550 §5.1: random initial seq + timestamp.
 	s.seq.Store(uint32(rand.Intn(0xFFFF)))
 	s.ts.Store(rand.Uint32())
+	s.dtmfPayloadType.Store(uint32(PayloadDTMF))
 	return s, nil
 }
 
@@ -194,13 +217,14 @@ func (s *Session) IsEncrypted() bool {
 	return s.srtpOutbound != nil
 }
 
-// SendPayload wraps an already-encoded codec payload in an RTP header
-// and sends it. Caller provides the codec bytes (e.g. 160 bytes of
-// PCMU); we add the RTP framing + sequence/ts and ship it.
+// writeRTP frames a payload with the given payload type, RTP timestamp and
+// marker bit, assigns the next sequence number, applies SRTP if installed,
+// and sends it. SendPayload (audio) and SendTelephoneEvent (DTMF) share it,
+// so both advance the one outbound sequence-number space on the single SSRC.
 //
-// If an outbound SRTP context is installed, the marshalled RTP packet
-// is encrypted via SRTP before going on the wire.
-func (s *Session) SendPayload(payload []byte) error {
+// If an outbound SRTP context is installed, the marshalled RTP packet is
+// encrypted via SRTP before going on the wire.
+func (s *Session) writeRTP(pt uint8, ts uint32, marker bool, payload []byte) error {
 	remote := s.remoteAddr.Load()
 	if remote == nil {
 		return errors.New("rtp: remote address not yet set")
@@ -208,9 +232,10 @@ func (s *Session) SendPayload(payload []byte) error {
 	pkt := pionrtp.Packet{
 		Header: pionrtp.Header{
 			Version:        2,
-			PayloadType:    uint8(s.payloadType.Load()),
+			Marker:         marker,
+			PayloadType:    pt,
 			SequenceNumber: uint16(s.seq.Add(1)),
-			Timestamp:      s.ts.Add(tsIncrement),
+			Timestamp:      ts,
 			SSRC:           s.ssrc,
 		},
 		Payload: payload,
@@ -232,6 +257,95 @@ func (s *Session) SendPayload(payload []byte) error {
 		return fmt.Errorf("rtp: write: %w", err)
 	}
 	return nil
+}
+
+// SendPayload wraps an already-encoded codec payload in an RTP header
+// and sends it. Caller provides the codec bytes (e.g. 160 bytes of
+// PCMU); we add the RTP framing + sequence/ts and ship it.
+func (s *Session) SendPayload(payload []byte) error {
+	return s.writeRTP(uint8(s.payloadType.Load()), s.ts.Add(tsIncrement), false, payload)
+}
+
+// SetDTMFPayloadType overrides the payload type used for outbound RFC 4733
+// telephone-event packets (default PayloadDTMF / 101). A caller that has
+// parsed the peer's telephone-event rtpmap may install the negotiated value
+// when it differs from ours.
+func (s *Session) SetDTMFPayloadType(pt PayloadType) {
+	s.dtmfPayloadType.Store(uint32(pt))
+}
+
+// SendTelephoneEvent plays a string of DTMF digits to the far end as
+// out-of-band RFC 4733 telephone-event RTP, interleaved on this session's
+// outbound SSRC (payload type from SetDTMFPayloadType, default 101).
+//
+// Each digit is a burst of packets that share one RTP timestamp (the event's
+// start), with the marker bit set on the first packet and the cumulative
+// sample count carried in the event's duration field; the closing End-bit
+// packet is repeated for loss resilience, then an inter-digit gap precedes
+// the next. The shared timestamp clock is advanced past each event + gap so
+// concurrent audio and subsequent digits stay monotonic. Characters outside
+// 0-9, * and # are skipped with a warning.
+//
+// Blocks for the full burst (~280 ms/digit); serialised per session so
+// overlapping requests don't interleave events. A closed socket surfaces as
+// a write error that aborts the remaining digits.
+func (s *Session) SendTelephoneEvent(ctx context.Context, digits string) error {
+	if s.remoteAddr.Load() == nil {
+		return errors.New("rtp: remote address not yet set")
+	}
+	s.dtmfMu.Lock()
+	defer s.dtmfMu.Unlock()
+
+	pt := uint8(s.dtmfPayloadType.Load())
+	tonesPerDigit := dtmfToneMs / dtmfPacketMs
+	for i := 0; i < len(digits); i++ {
+		event, ok := EventCode(digits[i])
+		if !ok {
+			log.Warn().Str("char", string(digits[i])).Msg("rtp: skipping non-DTMF character in SendTelephoneEvent")
+			continue
+		}
+		startTS := s.ts.Load()
+		var duration uint16
+		for p := 0; p < tonesPerDigit; p++ {
+			duration = uint16((p + 1) * dtmfSamplesPerPkt)
+			if err := s.writeRTP(pt, startTS, p == 0, EncodeDTMF(event, false, dtmfVolume, duration)); err != nil {
+				return err
+			}
+			if err := sleepCtx(ctx, dtmfPacketMs*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		endPayload := EncodeDTMF(event, true, dtmfVolume, duration)
+		for r := 0; r < dtmfEndRepeat; r++ {
+			if err := s.writeRTP(pt, startTS, false, endPayload); err != nil {
+				return err
+			}
+		}
+		// Move the shared timestamp clock past this event + the inter-digit
+		// gap so the next digit (and any interleaved audio) starts later.
+		s.ts.Add(uint32(int(duration) + dtmfGapMs*sampleRate8k/1000))
+		if err := sleepCtx(ctx, dtmfGapMs*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sleepCtx sleeps for d, returning early with the context error if ctx is
+// cancelled (e.g. the call is torn down mid-burst).
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if ctx == nil {
+		time.Sleep(d)
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // Close ends the read loop and releases the UDP socket. Safe to call

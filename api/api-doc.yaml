@@ -975,7 +975,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
+            enum: ["hangup", "transfer", "transfer_status", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
@@ -1014,6 +1014,21 @@ components:
                     builtins (`create_agent_set`/`update_agent_set`/`patch_agent_set`) fail closed with an error, and
                     `ask_user`/`test_agent`/`request_review` yield empty results.
                   * `hangup` takes no parameters and will hang up the call
+                  * `send_dtmf` plays a string of DTMF digits to the remote party as
+                    **out-of-band** (RFC 4733 telephone-event) tones over a SIP telephone
+                    call. Available on `livekit:` and `pipecat:` agents only (on Pipecat, the
+                    sipbridge and voiceblender SIP gateways synthesise the telephone-event
+                    RTP). Parameters:
+                    - `digits` (string, required): the digits to play, over the alphabet
+                      `0-9`, `*` and `#` (max 64 characters). Unlike `transfer`'s `number`,
+                      this MAY be `generated` — the LLM enters what it learned during the call
+                      (an IVR menu selection, an account or reference number) — as well as
+                      `static` or `metadata`. Playing tones on the existing call is not a
+                      redirect, so there is no anti-fraud restriction on the parameter source.
+                    The digits are played serially with standard telephony timing. On a
+                    **WebRTC / browser** session the function returns a `FAILED` result — there
+                    is no telephone leg to signal on — as it does for an empty or out-of-
+                    alphabet digit string; on success it returns `{ "status": "OK", "detail": "sent N DTMF digit(s)" }`.
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
                      References to `toolsCalls...` are only allowed on **LiveKit agents**.

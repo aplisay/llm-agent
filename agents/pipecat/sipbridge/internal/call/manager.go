@@ -166,6 +166,35 @@ func (m *Manager) Hangup(ctx context.Context, callID string) error {
 	return nil
 }
 
+// SendDTMF plays out-of-band RFC 4733 DTMF digits toward the far end of an
+// active call. The digit string is validated (0-9, * and #) synchronously so
+// a bad request fails fast; the burst itself (~200 ms/digit) is played on a
+// background goroutine so the HTTP control call returns promptly. The call
+// is left up — DTMF is in-dialog signalling, not a teardown.
+func (m *Manager) SendDTMF(callID, digits string) error {
+	if digits == "" {
+		return fmt.Errorf("call: empty DTMF digit string")
+	}
+	for i := 0; i < len(digits); i++ {
+		if _, ok := rtp.EventCode(digits[i]); !ok {
+			return fmt.Errorf("call: invalid DTMF character %q (allowed: 0-9, * and #)", string(digits[i]))
+		}
+	}
+	m.mu.Lock()
+	c, ok := m.calls[callID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("call: unknown call_id %q", callID)
+	}
+	log.Info().Str("call_id", callID).Str("digits", digits).Msg("call: sending DTMF")
+	go func() {
+		if err := c.SendDTMF(context.Background(), digits); err != nil {
+			log.Warn().Err(err).Str("call_id", callID).Str("digits", digits).Msg("call: DTMF send failed")
+		}
+	}()
+	return nil
+}
+
 // OriginateParams carries everything the REST `POST /v1/calls` body
 // needs to feed to ``Originate``.
 type OriginateParams struct {
@@ -1517,6 +1546,16 @@ type Call struct {
 	// the watchdog goroutine is started; nil-safe (Close handles
 	// both states).
 	mediaTimeoutStop context.CancelFunc
+}
+
+// SendDTMF plays a string of DTMF digits to the far end of this call as
+// out-of-band RFC 4733 telephone-event RTP on the call's own SSRC. Blocks
+// for the burst duration; returns a write error if the session is gone.
+func (c *Call) SendDTMF(ctx context.Context, digits string) error {
+	if c.rtp == nil {
+		return fmt.Errorf("call: %s has no RTP session", c.callID)
+	}
+	return c.rtp.SendTelephoneEvent(ctx, digits)
 }
 
 // SetPeer puts the call into media-relay mode by stapling it to its

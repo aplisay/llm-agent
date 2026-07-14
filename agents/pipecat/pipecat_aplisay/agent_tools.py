@@ -102,6 +102,7 @@ def build_agent_tools(
     get_transfer_state: Callable[[], dict],
     on_agent_transfer: Optional[Callable[[dict], Awaitable[Any]]] = None,
     on_subagent: Optional[Callable[[dict, dict], Awaitable[Any]]] = None,
+    on_send_dtmf: Optional[Callable[[dict], Awaitable[Any]]] = None,
     extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
@@ -144,6 +145,8 @@ def build_agent_tools(
         builtins["transfer_agent"] = _builtin_factory_agent_transfer(on_agent_transfer)
     if on_subagent is not None:
         builtins["subagent"] = _builtin_factory_subagent(on_subagent)
+    if on_send_dtmf is not None:
+        builtins["send_dtmf"] = _builtin_factory_send_dtmf(on_send_dtmf)
     if extra_builtins:
         builtins.update(extra_builtins)
 
@@ -238,5 +241,12 @@ def _builtin_factory_agent_transfer(on_agent_transfer: Callable[[dict], Awaitabl
 def _builtin_factory_subagent(on_subagent: Callable[[dict, dict], Awaitable[Any]]):
     async def _impl(args: dict, metadata: dict, _options: dict) -> Any:
         return await on_subagent(args, metadata)
+
+    return _impl
+
+
+def _builtin_factory_send_dtmf(on_send_dtmf: Callable[[dict], Awaitable[Any]]):
+    async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
+        return await on_send_dtmf(args)
 
     return _impl

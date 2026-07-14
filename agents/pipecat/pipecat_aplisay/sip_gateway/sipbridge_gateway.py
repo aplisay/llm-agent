@@ -115,6 +115,21 @@ class _SbGatewaySession(GatewaySession):
             raise_on_error=False,
         )
 
+    async def send_dtmf(self, digits: str) -> None:
+        """Play ``digits`` as out-of-band RFC 4733 DTMF toward the caller.
+
+        The Go bridge owns the SIP/RTP leg, so it synthesises the
+        telephone-event RTP itself; we just hand it the digit string. The
+        bridge validates the alphabet again and plays the burst on a
+        background goroutine, so this returns as soon as it's accepted.
+        """
+        logger.bind(call_id=self.bridge_call_id, digits=digits).info("sipbridge send_dtmf")
+        await self._gateway._call_api(
+            "POST",
+            f"/v1/calls/{self.bridge_call_id}/dtmf",
+            {"digits": digits},
+        )
+
     async def transfer(self, req: TransferRequest) -> None:
         """Route the transfer through the bridge's REST surface.
 

@@ -42,6 +42,7 @@ func New(mgr *call.Manager, addr, token string) *Server {
 	mux.HandleFunc("POST /v1/calls/{id}/transfer", s.handleTransfer)
 	mux.HandleFunc("POST /v1/calls/{id}/consult", s.handleConsult)
 	mux.HandleFunc("POST /v1/calls/{id}/unbridge", s.handleUnbridge)
+	mux.HandleFunc("POST /v1/calls/{id}/dtmf", s.handleDTMF)
 
 	s.hs = &http.Server{
 		Addr:              addr,
@@ -329,6 +330,37 @@ func (s *Server) handleConsult(w http.ResponseWriter, r *http.Request) {
 		"ok":             true,
 		"consult_call_id": consultID,
 	})
+}
+
+// dtmfBody for POST /v1/calls/{id}/dtmf — play out-of-band RFC 4733 DTMF
+// digits toward the far end of an active call. ``digits`` is a string over
+// the alphabet 0-9, * and #. The call stays up; this is in-dialog signalling.
+type dtmfBody struct {
+	Digits string `json:"digits"`
+}
+
+func (s *Server) handleDTMF(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "missing call id")
+		return
+	}
+	var body dtmfBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Digits == "" {
+		writeErr(w, http.StatusBadRequest, "missing digits")
+		return
+	}
+	// SendDTMF validates the alphabet and looks up the call; the burst plays
+	// on a background goroutine so this returns as soon as it's accepted.
+	if err := s.mgr.SendDTMF(id, body.Digits); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
