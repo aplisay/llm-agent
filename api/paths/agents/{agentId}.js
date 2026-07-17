@@ -1,6 +1,7 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
 import { isModelAllowed } from '../../../lib/auth/model-access.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
@@ -311,14 +312,20 @@ const agentDelete = async (req, res) => {
   if (!requirePermission(res, 'agent', 'delete')) return;
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
-    let data = await Agent.destroy({
-      where: agentWhere(req, res),
-    });
-    if (data === 0)
-      throw new Error(`Agent with ID ${agentId} not found`);
+    const agent = await Agent.findOne({ where: agentWhere(req, res) });
+    if (!agent) {
+      return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
+    }
+    // Fail closed: an agent still answering a number/registration must be
+    // undeployed before it can be deleted (cascade would silently disconnect).
+    await assertAgentsNotWired([agent]);
+    await agent.destroy();
     res.status(200).send();
   }
   catch (err) {
+    if (err instanceof WiredListenerError) {
+      return res.status(err.status).send({ message: err.message });
+    }
     res.status(404).send(err);
     req.log.error(err, 'deleting instance');
   }
@@ -342,6 +349,16 @@ agentDelete.apiDoc = {
   responses: {
     200: {
       description: 'Deleted Agent.',
+    },
+    409: {
+      description: 'The agent still has a phone number or SIP registration listening on it — undeploy first.',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
+          }
+        }
+      }
     },
     default: {
       description: 'An error occurred',

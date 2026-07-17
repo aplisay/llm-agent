@@ -7,6 +7,7 @@ import {
   validateAgentTargets,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
+import { assertAgentsNotWired, WiredListenerError } from '../../lib/deployment-guard.js';
 
 let log;
 
@@ -67,6 +68,12 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
   //    was explicitly listed in `removeLabels`.
   const toRemove = existing.filter((agent) =>
     patch ? removeSet.has(agent.label) : !byLabel.has(agent.label));
+  // Fail closed: a member still answering a number/registration must be
+  // undeployed explicitly first — destroying it would cascade the listener
+  // away and silently disconnect the endpoint. This also turns an
+  // accidentally-truncated full-document update into a loud 409 instead of
+  // a silent outage.
+  await assertAgentsNotWired(toRemove, { transaction });
   for (const agent of toRemove) {
     await agent.destroy({ transaction });
   }
@@ -132,6 +139,9 @@ export function sendAgentSetError(req, res, err) {
   if (err instanceof AgentSetValidationError) {
     return res.status(400).send({ message: err.message });
   }
+  if (err instanceof WiredListenerError) {
+    return res.status(err.status).send({ message: err.message });
+  }
   if (err.name === 'SequelizeValidationError') {
     return res.status(400).send({ message: err.errors.map((e) => e.message).join('; ') });
   }
@@ -145,7 +155,10 @@ const agentSetCreate = async (req, res) => {
   const user = res.locals.user;
 
   try {
-    const byLabel = validateSetLabels(agents);
+    // An EMPTY set may be created (a placeholder a builder session then fills
+    // in) — but only on create: PUT keeps requiring a non-empty document so a
+    // truncated update can never silently wipe a team's members.
+    const byLabel = Array.isArray(agents) && agents.length ? validateSetLabels(agents) : new Map();
     const set = await AgentSet.sequelize.transaction(async (transaction) => {
       const set = await AgentSet.create({
         name,
@@ -170,7 +183,9 @@ agentSetCreate.apiDoc = {
                 (unique within the set). Members may reference each other in \`transfer_agent\` and
                 \`subagent\` builtin functions using \`{"source": "static", "from": "label:<label>"}\`;
                 these references are fixed up to the real agent UUIDs on creation (the original label is
-                retained as \`fromLabel\` so the document can be round-tripped through PUT).`,
+                retained as \`fromLabel\` so the document can be round-tripped through PUT).
+                \`agents\` may be an empty array on create only — a placeholder set to be filled in by a
+                later update; PUT always requires a non-empty document.`,
   operationId: 'createAgentSet',
   tags: ["Agent Sets"],
   requestBody: {
