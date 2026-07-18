@@ -353,7 +353,14 @@ class CallSession:
         # flow through the existing Ultravox ``one_shot_selected_tools`` +
         # ``register_function`` path with no change to voice_session. Closers are
         # awaited in ``run_prepared``'s finally. See mcp_tools.py.
-        mcp_descriptors, mcp_closers = await connect_mcp_servers(agent, log=logger)
+        # prepare_run executes BEFORE _run_prepared_once's contextualize scope,
+        # so bind the callId here — without it the invocation-log sink drops
+        # these records and a connect failure is invisible in the call's UI
+        # debug log (a silent tool drop reads as "the model won't call tools").
+        with logger.contextualize(callId=self.call.id):
+            mcp_descriptors, mcp_closers = await connect_mcp_servers(
+                agent, log=logger
+            )
         self._mcp_closers = mcp_closers
         if mcp_descriptors:
             tools.extend(mcp_descriptors)

@@ -63,6 +63,22 @@ def _result_text(results: Any) -> str:
     return response
 
 
+def _error_summary(e: BaseException) -> str:
+    """Flatten an exception (or nested ``ExceptionGroup``) to its leaf messages.
+
+    The MCP transport clients run inside anyio task groups, so a connect
+    failure usually surfaces as ``ExceptionGroup("unhandled errors in a
+    TaskGroup", ...)`` — whose ``str()`` hides the actual cause (e.g. the
+    HTTP 404 that means the url is missing its ``/mcp`` path).
+    """
+    if isinstance(e, BaseExceptionGroup):
+        leaves = [_error_summary(sub) for sub in e.exceptions]
+        return "; ".join(dict.fromkeys(leaves))
+    text = str(e).strip()
+    kind = type(e).__name__
+    return f"{kind}: {text}" if text else kind
+
+
 def _make_descriptor(
     *,
     server_name: str,
@@ -88,10 +104,11 @@ def _make_descriptor(
         try:
             results = await _session.call_tool(_name, arguments=args or {})
         except Exception as e:  # noqa: BLE001
-            log.bind(server=server_name, tool=_name, error=str(e)).warning(
-                "MCP tool call failed"
+            detail = _error_summary(e)
+            log.bind(server=server_name, tool=_name, error=detail).warning(
+                f"MCP tool call {_name} failed: {detail}"
             )
-            raise RuntimeError(f"MCP tool {_name} failed: {e}") from e
+            raise RuntimeError(f"MCP tool {_name} failed: {detail}") from e
         is_error = getattr(results, "isError", False)
         text = _result_text(results)
         if is_error:
@@ -123,7 +140,7 @@ def _resolve_key_auth(
     key = next((k for k in (keys or []) if k.get("name") == key_name), None)
     if key is None:
         log.bind(server=server_name, key=key_name).warning(
-            "MCP server references unknown API key; sending no auth"
+            f"MCP server '{server_name}' references unknown API key '{key_name}'; sending no auth"
         )
         return {}, url
 
@@ -142,7 +159,7 @@ def _resolve_key_auth(
         header_name = key.get("header") or key.get("name")
         if not header_name:
             log.bind(server=server_name, key=key_name).warning(
-                "MCP server 'header' key has no header name; sending no auth"
+                f"MCP server '{server_name}' 'header' key '{key_name}' has no header name; sending no auth"
             )
             return {}, url
         return {header_name: value or ""}, url
@@ -153,7 +170,8 @@ def _resolve_key_auth(
         return {}, urlunsplit(parts._replace(query=urlencode(query)))
 
     log.bind(server=server_name, key=key_name, **{"in": where}).warning(
-        "MCP server API key has an 'in' type unsupported for MCP auth; sending no auth"
+        f"MCP server '{server_name}' API key '{key_name}' has 'in' type "
+        f"'{where}' unsupported for MCP auth; sending no auth"
     )
     return {}, url
 
@@ -180,7 +198,9 @@ async def _connect_one(
     name = server.get("name") or ""
     url = server.get("url")
     if not url:
-        log.bind(server=name).warning("MCP server has no url; skipping")
+        log.bind(server=name).warning(
+            f"MCP server '{name or '<unnamed>'}' has no url; skipping"
+        )
         return None
     transport = (server.get("transport") or "streamable_http").lower()
 
@@ -235,8 +255,9 @@ async def _connect_one(
             else:
                 # Failed after a successful start (e.g. the server dropped the
                 # stream mid-call). Nothing to fail back to the caller; just log.
-                log.bind(server=name, url=url, error=str(e)).debug(
-                    "MCP server connection ended with error"
+                detail = _error_summary(e)
+                log.bind(server=name, url=url, error=detail).debug(
+                    f"MCP server '{name}' ({url}) connection ended with error: {detail}"
                 )
 
     task = asyncio.create_task(_run(), name=f"mcp-{name or url}")
@@ -245,8 +266,10 @@ async def _connect_one(
     except Exception as e:  # noqa: BLE001
         close_event.set()
         await asyncio.gather(task, return_exceptions=True)
-        log.bind(server=name, url=url, error=str(e)).warning(
-            "failed to connect MCP server; skipping"
+        detail = _error_summary(e)
+        log.bind(server=name, url=url, error=detail).warning(
+            f"failed to connect MCP server '{name}' at {url}: {detail}; "
+            "skipping — its tools will be unavailable for this call"
         )
         return None
 
@@ -254,8 +277,10 @@ async def _connect_one(
         close_event.set()
         await asyncio.gather(task, return_exceptions=True)
 
-    log.bind(server=name, url=url, tools=[d["schema"]["name"] for d in descriptors]).info(
-        "connected MCP server"
+    tool_names = [d["schema"]["name"] for d in descriptors]
+    log.bind(server=name, url=url, tools=tool_names).info(
+        f"connected MCP server '{name}' at {url}: "
+        f"{len(tool_names)} tools ({', '.join(tool_names) or 'none'})"
     )
     return descriptors, closer
 
