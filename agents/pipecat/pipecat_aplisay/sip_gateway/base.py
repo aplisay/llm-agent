@@ -71,8 +71,46 @@ class InboundCallContext:
     # Pre-existing platform call UUID if the gateway can stamp one through.
     call_id: Optional[str] = None  # X-Aplisay-Call-Id
 
+    # All X- headers from the inbound SIP INVITE, lowercased, as
+    # ``{"x-header-name": value}``. Only the sipbridge and voiceblender gateways
+    # populate this — they carry the raw INVITE headers (sipbridge on the WS
+    # handshake, voiceblender in the ``leg.ringing`` custom_headers). It stays
+    # ``None`` for the Daily / FreeSWITCH ingress, which don't surface arbitrary
+    # inbound headers. Surfaced to the agent as ``metadata.aplisay.sipHeaders``
+    # (see ``call_session.setup_inbound_call``).
+    sip_headers: Optional[dict] = None
+
     # Free-form gateway-specific bag (e.g. Daily room metadata, raw SIP headers).
     raw: dict = field(default_factory=dict)
+
+
+def collect_sip_headers(
+    pairs,
+    *,
+    exclude: frozenset = frozenset(),
+    exclude_prefixes: tuple = (),
+) -> dict:
+    """Build a ``metadata.aplisay.sipHeaders`` map from ``(name, value)`` header
+    pairs (INVITE X- headers).
+
+    Keeps only ``x-*`` entries, lowercases the header names, and drops any name
+    in ``exclude`` or matching one of ``exclude_prefixes`` — used to filter out a
+    gateway's own transport / handshake headers that didn't come from the
+    INVITE. ``None`` values are skipped; later duplicates win. Shared by the
+    sipbridge (WS handshake headers) and voiceblender (``leg.ringing``
+    custom_headers) inbound paths.
+    """
+    out: dict = {}
+    for name, value in pairs:
+        if value is None:
+            continue
+        lname = str(name).lower()
+        if not lname.startswith("x-"):
+            continue
+        if lname in exclude or any(lname.startswith(p) for p in exclude_prefixes):
+            continue
+        out[lname] = value
+    return out
 
 
 @dataclass

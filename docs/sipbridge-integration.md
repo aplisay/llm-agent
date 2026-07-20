@@ -200,6 +200,15 @@ The worker's `_sipbridge_resolve_agent_from_headers` parses these and
 runs the same `phone_registration → trunk+number → number` lookup chain
 as the Daily / FreeSWITCH / voiceblender ingresses.
 
+Beyond that fixed contract, the bridge also forwards **every other `X-`
+header from the INVITE verbatim** (`extractHeaders` collects the
+non-contract ones into `IncomingHeaders.Extra`, which the WS handshake
+now stamps alongside the table above). The worker collects all `x-*`
+handshake headers — minus its own `X-Sipbridge-*` transport metadata —
+into `metadata.aplisay.sipHeaders` (lowercased), so agents can read
+per-call context the carrier/SBC attached. See
+[`sip-headers.md`](sip-headers.md).
+
 **Call control.** Worker → bridge via REST:
 
 | Verb | Endpoint | Body | Effect |

@@ -232,6 +232,7 @@ export default defineAgent({
         b2buaGatewayTransport = null,
         aLegEncrypted = true,
         forceBridged,
+        sipHeaders = {},
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -313,6 +314,7 @@ export default defineAgent({
         b2buaGatewayTransport: capturedB2buaTransport,
         aLegEncrypted,
         forceBridged,
+        sipHeaders,
         requestHangup: () => {},
         participant: participant,
       });
@@ -668,6 +670,58 @@ export default defineAgent({
 
 // ---- Helpers ----
 
+/**
+ * Collect every X- header from an inbound SIP INVITE into a
+ * `{ "x-header-name": value }` map (keys lowercased) for
+ * `metadata.aplisay.sipHeaders`.
+ *
+ * LiveKit's inbound trunk is created with `includeHeaders=SIP_X_HEADERS` (see
+ * initialise.ts), which maps every `X-*` INVITE header to a `sip.h.x-*`
+ * participant attribute — the header name lowercased — per the LiveKit SIP
+ * participant reference. That dotted form is the authoritative source and is
+ * lossless (strip the `sip.h.` prefix to recover the exact `x-header-name`).
+ *
+ * Some SDK/deploy paths have historically surfaced the same headers as
+ * camelCased attribute keys instead (e.g. `sipHXAplisayTrunk` for
+ * `sip.h.x-aplisay-trunk`; this is how the inbound routing reads its own
+ * headers just below). We fold those in as a best-effort fallback ONLY when no
+ * dotted `sip.h.x-*` keys are present, reconstructing the hyphenated name from
+ * the camelCase word boundaries. That reconstruction is lossy for header names
+ * whose original word breaks don't line up with the casing, so the dotted form
+ * is always preferred when available.
+ *
+ * This deliberately includes the Aplisay/LiveKit routing headers
+ * (`x-aplisay-trunk`, `x-lk-realip`, …) — they are genuine INVITE X- headers.
+ */
+function collectSipInviteHeaders(
+  attributes: Record<string, string> | undefined | null,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!attributes) return out;
+  const entries = Object.entries(attributes).filter(([, v]) => v != null);
+  const hasDotted = entries.some(([k]) =>
+    k.toLowerCase().startsWith("sip.h.x-"),
+  );
+  if (hasDotted) {
+    for (const [k, v] of entries) {
+      const lower = k.toLowerCase();
+      if (lower.startsWith("sip.h.x-")) out[lower.slice("sip.h.".length)] = v;
+    }
+    return out;
+  }
+  // Best-effort camelCase fallback: `sipHX<Rest>` encodes `x-<rest>`, with the
+  // `<Rest>` word boundaries carried by capitalisation (e.g. AplisayTrunk ->
+  // aplisay-trunk).
+  for (const [k, v] of entries) {
+    const m = /^sipHX([A-Za-z0-9].*)$/.exec(k);
+    if (!m) continue;
+    const name =
+      "x-" + m[1].replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+    out[name] = v;
+  }
+  return out;
+}
+
 async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   const jobMetadata: JobMetadata =
     (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
@@ -713,6 +767,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
+  // All X- headers from the inbound SIP INVITE, harvested from the caller's
+  // participant attributes (see collectSipInviteHeaders). Surfaced to the agent
+  // as metadata.aplisay.sipHeaders. Stays {} for outbound / WebRTC.
+  let sipHeaders: Record<string, string> = {};
   // Whether the inbound A-leg media is encrypted (SRTP). Drives the
   // media-encryption policy of the B-leg registration trunk used for transfers:
   // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
@@ -883,6 +941,12 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
               phoneRegistration = phoneRegistrationAttr;
+
+              // Surface all inbound INVITE X- headers as metadata.aplisay.sipHeaders.
+              // This is the inbound-SIP branch, so every such call qualifies (the
+              // upstream SBC — sipbridge/voiceblender/etc. — stamps the X- headers,
+              // which LiveKit maps to sip.h.x-* participant attributes).
+              sipHeaders = collectSipInviteHeaders(participant.attributes);
 
               // Determine A-leg media encryption from the B2BUA-stamped header
               // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
@@ -1058,6 +1122,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     b2buaGatewayTransport,
     aLegEncrypted,
     forceBridged,
+    sipHeaders,
   };
 }
 
@@ -1146,6 +1211,7 @@ async function setupCallAndUtilities({
   b2buaGatewayTransport,
   aLegEncrypted = true,
   forceBridged,
+  sipHeaders = {},
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -1256,6 +1322,9 @@ async function setupCallAndUtilities({
         calledId,
         fallbackNumbers,
         model: agent.modelName,
+        // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
+        // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
+        ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
       },
     },
   });

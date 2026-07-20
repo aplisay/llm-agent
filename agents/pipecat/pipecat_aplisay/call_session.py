@@ -2262,6 +2262,14 @@ async def setup_inbound_call(
                     "calledId": inbound.called_id,
                     "callId": inbound.call_id,
                     "model": agent["modelName"],
+                    # Inbound SIP INVITE X- headers, keyed lowercased. Only the
+                    # sipbridge / voiceblender gateways populate inbound.sip_headers
+                    # (Daily / FreeSWITCH leave it None); the key is omitted when
+                    # there are no X- headers, so it is present iff >= 1 was
+                    # received — matching the LiveKit runtime. Referenced in
+                    # prompts/tools via metadata paths like
+                    # `aplisay.sipHeaders.x-my-header`.
+                    **({"sipHeaders": inbound.sip_headers} if inbound.sip_headers else {}),
                 },
             },
         }

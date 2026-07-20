@@ -61,6 +61,10 @@ export interface CallScenario {
   b2buaGatewayTransport?: string | null;
   aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
+  // All X- headers from the inbound SIP INVITE, as { "x-header-name": value }
+  // (keys lowercased). Surfaced to the agent via metadata.aplisay.sipHeaders.
+  // Only populated for inbound SIP calls (empty {} for outbound / WebRTC).
+  sipHeaders?: Record<string, string>;
 }
 
 export interface JobMetadata {
@@ -110,6 +114,8 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   b2buaGatewayTransport?: string | null;
   aLegEncrypted?: boolean; // Whether the inbound A-leg media is encrypted (SRTP); drives B-leg transfer trunk media policy
   forceBridged?: boolean;
+  // Inbound SIP INVITE X- headers, surfaced as metadata.aplisay.sipHeaders. See CallScenario.sipHeaders.
+  sipHeaders?: Record<string, string>;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {

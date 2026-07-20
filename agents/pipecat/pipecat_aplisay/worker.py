@@ -82,6 +82,7 @@ from .sip_gateway import (
     InboundCallContext,
     SipBridgeSipGateway,
     VoiceblenderSipGateway,
+    collect_sip_headers,
 )
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
@@ -346,6 +347,18 @@ def _voiceblender_session_lookup(app: FastAPI, session_id: str):
     return None
 
 
+# X- headers on the sipbridge WS handshake that are sipbridge's own transport
+# metadata, NOT part of the inbound INVITE — excluded from aplisay.sipHeaders.
+# (``x-forwarded-*`` is a defensive guard against any future reverse proxy; today
+# sipbridge dials the worker Service directly.) Everything else starting with
+# ``x-`` on the handshake came through from the INVITE: the X-Aplisay-*/X-Lk-*
+# routing contract plus any arbitrary carrier X- headers, which the sipbridge Go
+# layer forwards verbatim (see sipbridge internal/call/manager.go).
+_SIPBRIDGE_NON_INVITE_HEADERS = frozenset(
+    {"x-sipbridge-call-id", "x-sipbridge-from", "x-sipbridge-to"}
+)
+
+
 async def _sipbridge_resolve_agent_from_headers(
     websocket: WebSocket,
 ) -> Optional[tuple[dict, dict, InboundCallContext]]:
@@ -412,6 +425,15 @@ async def _sipbridge_resolve_agent_from_headers(
     if not agent:
         return None
 
+    # Surface every INVITE X- header as metadata.aplisay.sipHeaders (see
+    # collect_sip_headers). All handshake x-* headers except sipbridge's own
+    # transport metadata came through from the INVITE.
+    sip_headers = collect_sip_headers(
+        h.items(),
+        exclude=_SIPBRIDGE_NON_INVITE_HEADERS,
+        exclude_prefixes=("x-forwarded-",),
+    )
+
     session_id = f"sb-{uuid.uuid4()}"
     ctx = InboundCallContext(
         session_id=session_id,
@@ -426,6 +448,7 @@ async def _sipbridge_resolve_agent_from_headers(
         force_bridged_transfer=origin.force_bridged_transfer,
         registration_username=origin.registration_username,
         call_id=aplisay_call_id,
+        sip_headers=sip_headers,
         raw={"bridge_call_id": bridge_call_id},
     )
     return instance, agent, ctx

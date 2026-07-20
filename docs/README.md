@@ -30,6 +30,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 |---|---|
 | [call-transfers.md](call-transfers.md) | Blind, consultative and bridged transfers; REFER/deflect; anti-fraud rules |
 | [send-dtmf.md](send-dtmf.md) | The `send_dtmf` builtin: play out-of-band (RFC 4733) DTMF digits over a SIP call |
+| [sip-headers.md](sip-headers.md) | Surfacing inbound SIP INVITE `X-` headers to the agent as `aplisay.sipHeaders` |
 | [redirecting-calls.md](redirecting-calls.md) | Redirection as distinct from transfer |
 | [human-handback-howto.md](human-handback-howto.md) | Handing a call back to a human with context |
 | [call-recording.md](call-recording.md) | Recording lifecycle, encryption, storage and retrieval |

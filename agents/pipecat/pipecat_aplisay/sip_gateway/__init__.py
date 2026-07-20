@@ -16,6 +16,7 @@ from .base import (
     OutboundCallParams,
     GatewaySession,
     GatewaySessionParams,
+    collect_sip_headers,
 )
 from .daily_gateway import DailySipGateway
 from .freeswitch_gateway import FreeswitchSipGateway
@@ -32,4 +33,5 @@ __all__ = [
     "FreeswitchSipGateway",
     "SipBridgeSipGateway",
     "VoiceblenderSipGateway",
+    "collect_sip_headers",
 ]

@@ -386,6 +386,8 @@ On an inbound INVITE from the SBC, the contract is:
 
 Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7).
 
+Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_X_HEADERS`); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
+
 ### 6.3 Inbound SIP — B2BUA path
 
 On an inbound INVITE from the B2BUA (registration-originated), the contract is:

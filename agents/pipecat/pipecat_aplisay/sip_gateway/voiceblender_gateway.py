@@ -69,6 +69,7 @@ from .base import (
     OutboundCallParams,
     SipGateway,
     TransferRequest,
+    collect_sip_headers,
 )
 
 
@@ -1022,6 +1023,16 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         session_id = f"vb-{uuid.uuid4()}"
         ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
 
+        # All INVITE X- headers, surfaced to the agent as
+        # metadata.aplisay.sipHeaders (keys lowercased). Voiceblender delivers the
+        # inbound INVITE's X- headers in the ``leg.ringing`` event's ``sip_headers``
+        # field (``LegRingingData.SIPHeaders`` in the voiceblender source —
+        # internal/leg/sip_leg.go extracts every ``X-*`` INVITE header; data.go
+        # tags it ``json:"sip_headers"``). NB ``_voiceblender_resolve_agent`` and
+        # some docstrings still call this ``custom_headers`` — a stale misnomer;
+        # the real VSI field has always been ``sip_headers``.
+        sip_headers = collect_sip_headers((event.get("sip_headers") or {}).items())
+
         # Stash the pending attach BEFORE we tell voiceblender to dial us,
         # to avoid a race where the WS arrives before we registered the
         # pending entry.
@@ -1034,6 +1045,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 session_id=session_id,
                 called_id=event.get("to"),
                 caller_id=event.get("from"),
+                sip_headers=sip_headers,
                 aplisay_id=(event.get("sip_headers") or {}).get("X-Aplisay-Trunk"),
                 phone_registration=(event.get("sip_headers") or {}).get(
                     "X-Aplisay-PhoneRegistration"

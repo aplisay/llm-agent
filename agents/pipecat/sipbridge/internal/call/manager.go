@@ -936,6 +936,17 @@ func (m *Manager) onInvite(
 	if headers.AplisayB2BUATransport != "" {
 		hdr.Set("X-Lk-Transport", headers.AplisayB2BUATransport)
 	}
+	// Forward every other X- header from the INVITE verbatim so the worker can
+	// surface the full inbound header set as metadata.aplisay.sipHeaders.
+	// extractHeaders already pulled the X-Aplisay-*/X-Lk-* contract into the
+	// typed fields above and lowercased everything else into Extra; http.Header
+	// canonicalises the key on the wire and the worker lowercases it again on
+	// receipt, so custom carrier headers round-trip case-insensitively.
+	for k, v := range headers.Extra {
+		if v != "" {
+			hdr.Set(k, v)
+		}
+	}
 
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
