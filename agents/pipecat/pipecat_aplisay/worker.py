@@ -308,19 +308,25 @@ async def _lookup_instance_for_inbound(
 
 async def _voiceblender_resolve_agent(
     event: dict,
-) -> Optional[tuple[dict, dict]]:
+) -> Optional[tuple[dict, dict, _InboundOrigin]]:
     """Agent lookup for an inbound voiceblender ``leg.ringing`` VSI event.
 
     Same lookup chain as Daily dial-in and FreeSWITCH inbound: phone
-    registration → trunk+number → number. Returns ``(instance, agent)`` or
-    ``None`` if no agent is configured for the dialled number.
+    registration → trunk+number → number. Returns ``(instance, agent, origin)``
+    or ``None`` if no agent is configured for the dialled number. ``origin``
+    carries the registration/trunk transfer-mode context, threaded onto the
+    inbound ctx by the gateway (mirrors the sipbridge resolver).
+
+    The routing headers ride in the ``leg.ringing`` event's ``sip_headers``
+    field (voiceblender ``LegRingingData.SIPHeaders``), the same field
+    ``_on_leg_ringing`` reads to build the ctx.
     """
-    headers = event.get("custom_headers") or {}
+    headers = event.get("sip_headers") or {}
     to_number = event.get("to")
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
-    instance, _origin = await _lookup_instance_for_inbound(
+    instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
         to_number=to_number,
         aplisay_id=aplisay_id,
@@ -330,7 +336,7 @@ async def _voiceblender_resolve_agent(
     agent = instance.get("Agent")
     if not agent:
         return None
-    return instance, agent
+    return instance, agent, origin
 
 
 def _voiceblender_session_lookup(app: FastAPI, session_id: str):

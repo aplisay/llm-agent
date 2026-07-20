@@ -41,9 +41,9 @@ Architecture (see `docs/voiceblender-integration.md` for the long-form note):
 
 Headers and the SIP wire contract from section 6 of the architecture doc are
 preserved where voiceblender exposes them — ``X-Aplisay-Trunk``,
-``X-Aplisay-PhoneRegistration``, ``X-Aplisay-Call-Id`` etc. ride through
-voiceblender's per-leg ``custom_headers`` field on inbound and are stamped
-on outbound INVITE.
+``X-Aplisay-PhoneRegistration``, ``X-Aplisay-Call-Id`` etc. arrive in the
+``leg.ringing`` event's ``sip_headers`` field on inbound (voiceblender
+``LegRingingData.SIPHeaders``) and are stamped on the outbound INVITE.
 """
 
 from __future__ import annotations
@@ -99,7 +99,10 @@ class PendingAttach:
 # api_client dependency itself — the worker injects a resolver that does the
 # usual phone-registration / number lookup. This keeps the gateway pure and
 # easy to test without spinning up an HTTP client to llm-agent.
-AgentResolver = Callable[[dict], Awaitable[Optional[tuple[dict, dict]]]]
+# (instance, agent, origin). ``origin`` is the worker's ``_InboundOrigin``
+# (registration/trunk transfer-mode context); typed ``Any`` here to avoid a
+# gateway→worker import cycle — the gateway only reads its attributes.
+AgentResolver = Callable[[dict], Awaitable[Optional[tuple[dict, dict, Any]]]]
 
 
 @dataclass
@@ -865,7 +868,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         """Dispatch one VSI event.
 
         Event shape: ``{"type": "leg.ringing", "leg_id": "...", "from": "+44...",
-        "to": "+44...", "custom_headers": {...}, ...}``. Voiceblender flattens
+        "to": "+44...", "sip_headers": {...}, ...}``. Voiceblender flattens
         per-type fields at the top level of the envelope (see
         ``internal/events/types.go`` MarshalJSON).
         """
@@ -1019,19 +1022,18 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             await self._reject_leg(leg_id, "not_found")
             return
 
-        instance, agent = resolved
+        instance, agent, origin = resolved
         session_id = f"vb-{uuid.uuid4()}"
         ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
 
-        # All INVITE X- headers, surfaced to the agent as
-        # metadata.aplisay.sipHeaders (keys lowercased). Voiceblender delivers the
-        # inbound INVITE's X- headers in the ``leg.ringing`` event's ``sip_headers``
-        # field (``LegRingingData.SIPHeaders`` in the voiceblender source —
-        # internal/leg/sip_leg.go extracts every ``X-*`` INVITE header; data.go
-        # tags it ``json:"sip_headers"``). NB ``_voiceblender_resolve_agent`` and
-        # some docstrings still call this ``custom_headers`` — a stale misnomer;
-        # the real VSI field has always been ``sip_headers``.
-        sip_headers = collect_sip_headers((event.get("sip_headers") or {}).items())
+        # The INVITE X- headers ride in the ``leg.ringing`` event's ``sip_headers``
+        # field (voiceblender ``LegRingingData.SIPHeaders`` — its SIP ingress
+        # extracts every ``X-*`` INVITE header; original header case preserved).
+        # ``raw_sip_headers`` keeps that case for the routing lookups below;
+        # ``sip_headers`` is the lowercased x-header-name map surfaced to the
+        # agent as metadata.aplisay.sipHeaders.
+        raw_sip_headers = event.get("sip_headers") or {}
+        sip_headers = collect_sip_headers(raw_sip_headers.items())
 
         # Stash the pending attach BEFORE we tell voiceblender to dial us,
         # to avoid a race where the WS arrives before we registered the
@@ -1046,15 +1048,18 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 called_id=event.get("to"),
                 caller_id=event.get("from"),
                 sip_headers=sip_headers,
-                aplisay_id=(event.get("sip_headers") or {}).get("X-Aplisay-Trunk"),
-                phone_registration=(event.get("sip_headers") or {}).get(
-                    "X-Aplisay-PhoneRegistration"
-                ),
-                b2bua_gateway_ip=(event.get("sip_headers") or {}).get("X-Lk-RealIp"),
-                b2bua_gateway_transport=(event.get("sip_headers") or {}).get(
-                    "X-Lk-Transport"
-                ),
-                call_id=(event.get("sip_headers") or {}).get("X-Aplisay-Call-Id"),
+                aplisay_id=raw_sip_headers.get("X-Aplisay-Trunk"),
+                phone_registration=raw_sip_headers.get("X-Aplisay-PhoneRegistration"),
+                b2bua_gateway_ip=raw_sip_headers.get("X-Lk-RealIp"),
+                b2bua_gateway_transport=raw_sip_headers.get("X-Lk-Transport"),
+                call_id=raw_sip_headers.get("X-Aplisay-Call-Id"),
+                # Transfer-mode context resolved during agent lookup (mirrors the
+                # sipbridge resolver): registration → REFER default, trunk →
+                # bridged; force_* / username carry endpoint overrides.
+                registration_originated=origin.registration_originated,
+                force_refer_transfer=origin.force_refer_transfer,
+                force_bridged_transfer=origin.force_bridged_transfer,
+                registration_username=origin.registration_username,
                 raw={"leg_id": leg_id, "vsi_event": event},
             ),
             created_at=asyncio.get_running_loop().time(),

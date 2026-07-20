@@ -85,10 +85,12 @@ Two long-lived control connections live on the worker side:
 
 1. SIP INVITE arrives at voiceblender → voiceblender emits
    `{type: "leg.ringing", leg_id, from, to, sip_headers, ...}` on VSI.
+   The `X-Aplisay-*` / `X-Lk-*` routing headers ride in `sip_headers`
+   (voiceblender `LegRingingData.SIPHeaders`).
 2. Worker's VSI subscriber resolves the agent for the dialled number
    using the same lookup chain as Daily dial-in and FreeSWITCH
    (`phone_registration` → trunk+number → number). Returns
-   `(instance, agent)` or rejects the leg with `DELETE /v1/legs/{id}`.
+   `(instance, agent, origin)` or rejects the leg with `DELETE /v1/legs/{id}`.
 3. Worker stashes a `PendingAttach` keyed by a fresh `session_id`, then
    POSTs `/v1/legs/{id}/answer` and `/v1/legs/{id}/agent` with
    `agent_id = ws://worker/voiceblender/agent/{session_id}`.
@@ -110,12 +112,10 @@ inbound call context, so agents can read per-call context the carrier/SBC
 attached. See [`sip-headers.md`](sip-headers.md).
 
 > **Field name note.** The event field is `sip_headers`
-> (`LegRingingData.SIPHeaders` in the voiceblender source). The worker's
-> `_voiceblender_resolve_agent` and a couple of gateway docstrings still call
-> it `custom_headers` — a stale misnomer that resolves to `None`, so the agent
-> lookup there falls through to the dialled-number path (it does not read the
-> trunk / registration headers). `_on_leg_ringing`, which builds the
-> `InboundCallContext`, reads the correct `sip_headers` field.
+> (`LegRingingData.SIPHeaders` in the voiceblender source), *not*
+> `custom_headers` — the latter is voiceblender's separate agent-WS request
+> header set (see `_custom_headers_for` on the outbound side). Both the agent
+> resolver and `_on_leg_ringing` read `sip_headers`.
 
 
 ### Outbound
