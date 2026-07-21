@@ -11,7 +11,7 @@ call. It is written for API users; for the runtime internals see
 ## Overview
 
 When a telephone call arrives over SIP, the INVITE can carry arbitrary custom
-headers — by SIP convention named `X-Something`. Upstream equipment (your SBC, a
+headers — by SIP convention named `X-Vendor-Something`. Upstream equipment (your SBC, a
 B2BUA, or the carrier trunk) routinely uses these to attach out-of-band context
 to a call: a customer or account identifier, a campaign or queue tag, an
 originating site, a language hint, and so on.
@@ -43,7 +43,8 @@ Key points:
 - **All** `X-` headers are included — including the Aplisay/LiveKit routing
   headers (`x-aplisay-trunk`, `x-aplisay-phoneregistration`, `x-aplisay-call-id`,
   `x-lk-realip`, `x-lk-transport`). They are genuine INVITE `X-` headers; the
-  runtime does not hide them.
+  runtime does not hide them, so you **MUST** be selective about which headers you allow
+  the LLM or other tools calls to see via metadata access mechanisms. 
 - `sipHeaders` is present **only when the INVITE carried at least one `X-`
   header**. On calls with none (and on the transports/sessions that don't carry
   it — see below) the key is simply absent, so a lookup of
