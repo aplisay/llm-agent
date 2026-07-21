@@ -188,8 +188,12 @@ def build_agent_tools(
             "execute": execute,
             # Coarse classification surfaced in the InvocationLog tool logs
             # (see voice_session._runner / tool_log.py). MCP tools set their
-            # own "mcp" kind in mcp_tools._make_descriptor.
-            "kind": "builtin"
+            # own "mcp" kind in mcp_tools._make_descriptor. The `subagent`
+            # builtin (delegation to a headless text agent) is split out from
+            # the generic `builtin` so agent-to-agent calls read distinctly.
+            "kind": "subagent"
+            if fn_def.get("platform") == "subagent"
+            else "builtin"
             if fn_def.get("implementation") == "builtin"
             else "function",
         }

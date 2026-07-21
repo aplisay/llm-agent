@@ -119,9 +119,15 @@ export function createTools({
             // Coarse tool classification for the InvocationLog. The livekit
             // voice worker executes only the agent's own `functions`/builtins
             // (MCP tools are proxied by the pipecat worker, not here), so a
-            // tool is either a platform builtin or a user function.
+            // tool is a user function or a platform builtin — and the `subagent`
+            // builtin (delegation to a headless text agent) is split out as its
+            // own kind so agent-to-agent calls read distinctly in the debug log.
             const kind: ToolKind =
-              fnc.implementation === "builtin" ? "builtin" : "function";
+              fnc.platform === "subagent"
+                ? "subagent"
+                : fnc.implementation === "builtin"
+                  ? "builtin"
+                  : "function";
             const startedAt = Date.now();
             // INFO-level, event-tagged so every tool call is visible in the
             // per-call debug log for production agents (see ./tool-log.ts).

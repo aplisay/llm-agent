@@ -78,6 +78,19 @@ test("logToolResult(error) logs at warn but keeps the tool_result marker", () =>
   assert.equal(line.msg, "tool error: do_thing");
 });
 
+test("logToolCall carries the subagent kind for agent-to-agent delegation", () => {
+  const log = fakeLogger();
+  logToolCall(log, {
+    tool: "insurance-checker",
+    kind: "subagent",
+    args: { question: "is this covered?" },
+  });
+  const [line] = log.lines;
+  assert.equal(line.obj.event, "tool_call");
+  assert.equal(line.obj.kind, "subagent"); // splits agent delegation out of `builtin`
+  assert.equal(line.msg, "tool call: insurance-checker");
+});
+
 test("truncateForLog returns small values structured and caps large ones", () => {
   const small = { a: 1 };
   assert.equal(truncateForLog(small), small); // same reference: logged structured

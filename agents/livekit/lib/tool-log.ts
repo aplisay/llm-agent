@@ -13,8 +13,8 @@
  * The field shape is kept deliberately identical to the Pipecat worker's
  * `pipecat_aplisay/tool_log.py` so tool activity reads and correlates the same
  * across the `livekit-agent` and `pipecat-agent` subsystems:
- *   tool (name), kind (function|builtin|mcp), arguments, ok, result, error,
- *   durationMs.
+ *   tool (name), kind (function|builtin|mcp|subagent), arguments, ok, result,
+ *   error, durationMs.
  *
  * Only log through the CAPTURING logger (`agents/livekit/lib/logger.js`). Logs
  * emitted inside the shared `agent-lib/function-handler.js` use a different,
@@ -22,8 +22,14 @@
  * instrumentation lives at the tool-dispatch choke point in agent-tools.ts.
  */
 
-/** Coarse classification of a tool, shared with the pipecat worker. */
-export type ToolKind = "function" | "builtin" | "mcp";
+/**
+ * Coarse classification of a tool, shared with the pipecat worker.
+ * `subagent` is a `platform: "subagent"` builtin — a call that delegates to a
+ * headless `text` agent and returns its result inline; it is split out from the
+ * generic `builtin` so consumers can surface agent-to-agent delegation as its
+ * own category (the polite.ai calls drawer renders it as an AGENT row).
+ */
+export type ToolKind = "function" | "builtin" | "mcp" | "subagent";
 
 /** Minimal structural logger type so this stays decoupled from pino's exports. */
 interface ToolLogger {

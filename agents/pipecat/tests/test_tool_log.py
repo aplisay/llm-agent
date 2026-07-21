@@ -122,6 +122,30 @@ def test_mcp_kind_passthrough(capture):
     assert _extra(entry)["event"] == "tool_call"
 
 
+def test_subagent_kind_passthrough(capture):
+    # A `subagent` builtin (delegation to a headless text agent) is logged with
+    # its own kind, split out from the generic `builtin`, so consumers can
+    # surface agent-to-agent calls as their own category.
+    with logger.contextualize(callId="call-A"):
+        tool_log.log_tool_call(
+            tool="insurance-checker",
+            kind="subagent",
+            arguments={"question": "is this covered?"},
+        )
+        tool_log.log_tool_result(
+            tool="insurance-checker",
+            kind="subagent",
+            ok=True,
+            duration_ms=1200,
+            result="Covered — no copay",
+        )
+    call, result = capture
+    assert _extra(call)["kind"] == "subagent"
+    assert _extra(call)["event"] == "tool_call"
+    assert _extra(result)["kind"] == "subagent"
+    assert _extra(result)["event"] == "tool_result"
+
+
 def test_not_captured_without_call_context(capture):
     # No logger.contextualize(callId=...) scope -> the sink drops it.
     tool_log.log_tool_call(tool="orphan", kind="function", arguments={})

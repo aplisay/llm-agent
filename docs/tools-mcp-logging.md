@@ -20,7 +20,7 @@ across subsystems.
 |--------------|----------------------|-------------------------------------------|
 | `event`      | `"tool_call"`        | `"tool_result"`                           |
 | `tool`       | tool name (MCP tools are server-namespaced) | same             |
-| `kind`       | `function` \| `builtin` \| `mcp` | same                          |
+| `kind`       | `function` \| `builtin` \| `mcp` \| `subagent` | same            |
 | `arguments`  | model-supplied args  | —                                         |
 | `ok`         | —                    | `true` on success, `false` otherwise      |
 | `result`     | —                    | result returned to the model (when `ok`)  |
@@ -88,7 +88,10 @@ callback, so one pair of log lines there covers everything.
 
 `kind` is derived at descriptor-build time: livekit from the function's
 `implementation` (`builtin` vs `function`); pipecat tags descriptors in
-`agent_tools.py` (`function`/`builtin`) and `mcp_tools.py` (`mcp`).
+`agent_tools.py` (`function`/`builtin`) and `mcp_tools.py` (`mcp`). Both workers
+special-case the `subagent` builtin (`platform == "subagent"`) as `kind ==
+"subagent"` — a delegation to a headless `text` agent, split out from the generic
+`builtin` so agent-to-agent calls read as their own category.
 
 Two constraints that are easy to get wrong:
 
@@ -105,9 +108,10 @@ Two constraints that are easy to get wrong:
 
 ## 5. Coverage
 
-- **pipecat** covers `function` + `builtin` + `mcp` — MCP servers are proxied
-  in-worker (`mcp_tools.py`), so MCP entrypoint calls appear in the debug log.
-- **livekit** covers `function` + `builtin`. The livekit **voice** worker executes
+- **pipecat** covers `function` + `builtin` + `subagent` + `mcp` — MCP servers are
+  proxied in-worker (`mcp_tools.py`), so MCP entrypoint calls appear in the debug
+  log.
+- **livekit** covers `function` + `builtin` + `subagent`. The livekit **voice** worker executes
   no in-worker MCP: the pipeline LLM is a native LiveKit provider plugin
   (`buildProviderPipelineLlm`), not the `lib/models/*` drivers, and MCP
   (`McpToolBridge`) only runs in the text/model path — a different process. There
@@ -123,7 +127,7 @@ When you add a tool kind, a builtin, or a whole new worker:
 2. Keep the field names and `event` values above; do not rename them. Consumers
    filter on `event`/`kind` across subsystems.
 3. Give every descriptor a `kind`; add a new value only if the coarse
-   `function`/`builtin`/`mcp` set genuinely does not fit.
+   `function`/`builtin`/`mcp`/`subagent` set genuinely does not fit.
 4. Keep the two-line call/result pairing and the level table in §3.
 
 Tests that lock this in: `agents/livekit/test/tool-log.test.ts`,

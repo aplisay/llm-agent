@@ -12,8 +12,8 @@ all other InvocationLog output:
 The field shape is kept deliberately identical to the livekit worker's
 ``agents/livekit/lib/tool-log.ts`` so tool activity reads and correlates the
 same across the ``pipecat-agent`` and ``livekit-agent`` subsystems:
-``tool`` (name), ``kind`` (function|builtin|mcp), ``arguments``, ``ok``,
-``result``, ``error``, ``durationMs``.
+``tool`` (name), ``kind`` (function|builtin|mcp|subagent), ``arguments``,
+``ok``, ``result``, ``error``, ``durationMs``.
 
 Records are only captured into the InvocationLog when emitted inside the
 ``logger.contextualize(callId=...)`` scope — the capture sink
