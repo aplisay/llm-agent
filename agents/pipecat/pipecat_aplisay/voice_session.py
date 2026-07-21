@@ -37,6 +37,8 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .tool_log import log_tool_call, log_tool_result
+
 
 def _inactivity_timeout_secs(agent: dict) -> Optional[float]:
     """Return the configured inactivity (idle "kick") timeout in seconds, or
@@ -436,18 +438,25 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
             params: FunctionCallParams,
             _execute=entry["execute"],
             _name=s["name"],
+            _kind=entry.get("kind", "function"),
             _suppress_result_run=bool(entry.get("suppress_result_run")),
             _protect=bool(entry.get("protect_from_interruption")),
         ) -> None:
-            # Breadcrumb so we can confirm the realtime path actually
-            # routes function calls through here (and therefore through
-            # function_handler.py's transaction-log emissions). Earlier
-            # symptoms suggested realtime calls weren't reaching the
-            # telemetry path at all.
-            from loguru import logger as _logger
-            _logger.bind(tool=_name, arguments=params.arguments).debug(
-                "tool runner invoked"
-            )
+            # Log every tool/MCP call and its result at INFO with an ``event``
+            # marker (see tool_log.py) so they are visible in the per-call debug
+            # log for production agents and distinguishable from other
+            # InvocationLog output. This ``_runner`` is the single choke point
+            # for BOTH agent functions/builtins and MCP tools — both are
+            # registered here as ``{schema, execute}`` descriptors — so one pair
+            # of log lines covers every tool the worker runs. Also confirms the
+            # realtime path routes function calls through here (and thus through
+            # function_handler.py's transaction-log emissions).
+            started = asyncio.get_running_loop().time()
+            log_tool_call(tool=_name, kind=_kind, arguments=params.arguments)
+
+            def _elapsed_ms() -> int:
+                return int((asyncio.get_running_loop().time() - started) * 1000)
+
             try:
                 if _protect:
                     # Side-effecting platform builtins must survive Pipecat's
@@ -465,21 +474,37 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                     try:
                         result = await asyncio.shield(exec_task)
                     except asyncio.CancelledError:
-                        _logger.bind(tool=_name).info(
-                            "tool call cancelled by interruption; protected builtin continues in background"
+                        log_tool_result(
+                            tool=_name,
+                            kind=_kind,
+                            ok=False,
+                            duration_ms=_elapsed_ms(),
+                            cancelled=True,
+                            error="cancelled by interruption; protected builtin continues in background",
                         )
                         raise
                 else:
                     result = await _execute(params.arguments)
             except Exception as e:  # noqa: BLE001
-                _logger.bind(tool=_name, error=str(e)).warning(
-                    "tool runner _execute raised"
+                log_tool_result(
+                    tool=_name,
+                    kind=_kind,
+                    ok=False,
+                    duration_ms=_elapsed_ms(),
+                    error=str(e),
                 )
                 # Surface the error to the LLM via the result callback so
                 # the conversation can recover, rather than dropping the
                 # whole turn.
                 await params.result_callback({"error": str(e)})
                 return
+            log_tool_result(
+                tool=_name,
+                kind=_kind,
+                ok=True,
+                duration_ms=_elapsed_ms(),
+                result=result,
+            )
             if (
                 _suppress_result_run
                 and isinstance(result, dict)
