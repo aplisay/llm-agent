@@ -115,7 +115,10 @@ def _make_descriptor(
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
         return text
 
-    return {"schema": schema, "execute": execute}
+    # ``kind: "mcp"`` is surfaced in the InvocationLog tool logs so MCP
+    # entrypoint calls are distinguishable from the agent's own functions
+    # (see voice_session._runner / tool_log.py).
+    return {"schema": schema, "execute": execute, "kind": "mcp"}
 
 
 def _resolve_key_auth(

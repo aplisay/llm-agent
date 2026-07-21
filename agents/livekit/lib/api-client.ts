@@ -337,6 +337,12 @@ export interface AgentFunction {
     // some definitions instead set `required: true` on each property).
     required?: string[];
   };
+  // How the shared function handler dispatches this function:
+  // "stub" | "rest" | "builtin". Consumed untyped by function-handler.js;
+  // modelled here so callers can classify a call (e.g. builtin vs function).
+  implementation?: string;
+  // For builtins, the platform builtin name (e.g. "transfer_agent", "hangup").
+  platform?: string;
 }
 
 export interface Call {

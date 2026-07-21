@@ -183,7 +183,16 @@ def build_agent_tools(
                 logger.bind(error=str(e)).info("error executing function")
                 raise RuntimeError(f"error executing function: {e}") from e
 
-        descriptor: dict = {"schema": schema, "execute": execute}
+        descriptor: dict = {
+            "schema": schema,
+            "execute": execute,
+            # Coarse classification surfaced in the InvocationLog tool logs
+            # (see voice_session._runner / tool_log.py). MCP tools set their
+            # own "mcp" kind in mcp_tools._make_descriptor.
+            "kind": "builtin"
+            if fn_def.get("implementation") == "builtin"
+            else "function",
+        }
         if (
             fn_def.get("implementation") == "builtin"
             and fn_def.get("platform") == "transfer_agent"

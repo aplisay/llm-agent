@@ -1,6 +1,7 @@
 import { llm } from "@livekit/agents";
 import type { voice } from "@livekit/agents";
 import logger from "./logger.js";
+import { logToolCall, logToolResult, type ToolKind } from "./tool-log.js";
 import { functionHandler } from "../agent-lib/function-handler.js";
 import { invokeSubagent } from "./api-client.js";
 import type { Agent, AgentFunction, Call, CallMetadata } from "./api-client.js";
@@ -115,11 +116,17 @@ export function createTools({
             };
           })(),
           execute: async (args: unknown) => {
+            // Coarse tool classification for the InvocationLog. The livekit
+            // voice worker executes only the agent's own `functions`/builtins
+            // (MCP tools are proxied by the pipecat worker, not here), so a
+            // tool is either a platform builtin or a user function.
+            const kind: ToolKind =
+              fnc.implementation === "builtin" ? "builtin" : "function";
+            const startedAt = Date.now();
+            // INFO-level, event-tagged so every tool call is visible in the
+            // per-call debug log for production agents (see ./tool-log.ts).
+            logToolCall(logger, { tool: fnc.name, kind, args });
             try {
-              logger.debug(
-                { name: fnc.name, args, fnc },
-                `Got function call ${fnc.name}`,
-              );
               // A builtin transfer_agent performs its handover INSIDE the
               // handler below (not after functionHandler returns) so the result
               // the shared handler records and emits — the persisted tool
@@ -212,12 +219,18 @@ export function createTools({
               )) as FunctionResult;
               let { function_results } = result;
               let [{ result: data, error }] = function_results;
-              if (error) {
-                logger.info(
-                  { data, error, agentId: agent.id, callId: call.id },
-                  "error executing function",
-                );
-              }
+              // Emit the matching tool_result BEFORE any early return so it is
+              // recorded for every outcome, including an agent handover. `data`
+              // is the result the model sees (already redacted for `redact`
+              // functions), so nothing sensitive is added to the log here.
+              logToolResult(logger, {
+                tool: fnc.name,
+                kind,
+                ok: !error,
+                result: data,
+                error: error ?? undefined,
+                durationMs: Date.now() - startedAt,
+              });
               if (pendingHandoff) {
                 const { handoffAgent } = pendingHandoff;
                 if (handoffAgent) {
@@ -228,14 +241,16 @@ export function createTools({
                 // replaced; this result has no LLM left to speak it.
                 return data;
               }
-              logger.debug(
-                { data },
-                `function execute returning ${JSON.stringify(data)}`,
-              );
               return data;
             } catch (e) {
               const message = (e as Error).message;
-              logger.info({ error: message }, "error executing function");
+              logToolResult(logger, {
+                tool: fnc.name,
+                kind,
+                ok: false,
+                error: message,
+                durationMs: Date.now() - startedAt,
+              });
               throw new Error(`error executing function: ${message}`);
             }
           },
