@@ -1440,7 +1440,7 @@ components:
         identity (it is used as the SIP realm / from-domain). It must be a routable
         FQDN or public IP unless a routable `options.register_proxy` is supplied, in
         which case the registrar may be a non-FQDN host (e.g. an internal PBX name).
-      pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
+      pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*(?::[0-9]+)?$'
       example: sip.example.com:5060
     PhoneRegistrationOptions:
       type: object
