@@ -1735,19 +1735,13 @@ export async function runAgentWorker({
     // First pass:
     // - OpenAI realtime: `generateReply({ instructions: <greeting>, allowInterruptions:false })` and wait for playout.
     // - Pipeline: fixed greeting uses `say(<text>, { allowInterruptions:false })`; LLM greeting uses `generateReply(...)`.
-    // - Ultravox realtime: prefer vendorSpecific.ultravox.firstSpeakerSettings (handled provider-side), so we skip here
-    //   unless a portable greeting is explicitly configured and no Ultravox firstSpeakerSettings are present.
+    // - Ultravox realtime: always handled provider-side — caller-supplied
+    //   vendorSpecific.ultravox.firstSpeakerSettings pass through, and a portable
+    //   options.greeting is mapped to firstSpeakerSettings by the session factory.
+    //   The say()/generateReply fallback below is inert for Ultravox (no TTS, and the
+    //   plugin never sends response.create), so skip it entirely.
     try {
       const greeting = agent?.options?.greeting;
-      const hasUltravoxFirstSpeaker =
-        Boolean(
-          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
-            ?.text,
-        ) ||
-        Boolean(
-          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
-            ?.prompt,
-        );
 
       const voiceMode = resolvedVoiceMode || resolveVoiceMode(modelName, agent.options);
       const text = (greeting?.text || "").trim();
@@ -1758,8 +1752,7 @@ export async function runAgentWorker({
       const wantGreeting =
         hasGreeting &&
         !invalidGreeting &&
-        // For Ultravox realtime, let provider-native firstSpeakerSettings handle it.
-        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/") && hasUltravoxFirstSpeaker);
+        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/"));
 
       if (wantGreeting && session) {
         const waitForPlayout = true;

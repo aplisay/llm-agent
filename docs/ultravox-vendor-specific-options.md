@@ -1,6 +1,6 @@
 # Ultravox vendor-specific agent options
 
-This document describes how to configure **Ultravox-only** settings for agents that use the LiveKit Ultravox integration, via `options.vendorSpecific.ultravox`. Values are passed through to Ultravox when creating a call (see the [Ultravox Create Call API](https://docs.ultravox.ai/api-reference/calls/calls-post)).
+This document describes how to configure **Ultravox-only** settings for Ultravox-backed agents — both the LiveKit Ultravox integration (`livekit:ultravox/...` models) and native Ultravox agents (`ultravox:` prefixed models) — via `options.vendorSpecific.ultravox`. Values are passed through to Ultravox when creating a call (see the [Ultravox Create Call API](https://docs.ultravox.ai/api-reference/calls/calls-post)).
 
 ---
 
@@ -12,7 +12,7 @@ This document describes how to configure **Ultravox-only** settings for agents t
 
 - **Portability.** Relying on vendor blocks makes an agent **non-portable** in practice: you are encoding assumptions about one provider’s API and lifecycle, not about Aplisay’s stable agent contract.
 
-- **Cross-platform behaviour.** On stacks that are not Ultravox-backed LiveKit, `vendorSpecific` is generally **ignored**—so the same agent JSON may still “run” elsewhere. That is **not** the same as behaving the same. If **important** behaviour (for example a fixed welcome line encoded only in `firstSpeakerSettings`, turn-taking tuned only via `vadSettings`, or silence handling only via `inactivityMessages`) lives exclusively in these options, **other models or handlers will not reproduce it**, because those options are not applied there. Prefer putting durable behaviour in the **prompt**, **standard agent options**, and **tools** that every platform you care about supports.
+- **Cross-platform behaviour.** On stacks that are not Ultravox-backed, `vendorSpecific` is generally **ignored**—so the same agent JSON may still “run” elsewhere. That is **not** the same as behaving the same. If **important** behaviour (for example a fixed welcome line encoded only in `firstSpeakerSettings`, turn-taking tuned only via `vadSettings`, or silence handling only via `inactivityMessages`) lives exclusively in these options, **other models or handlers will not reproduce it**, because those options are not applied there. Prefer putting durable behaviour in the **prompt**, **standard agent options**, and **tools** that every platform you care about supports.
 
 Use vendor-specific knobs when you understand the trade-offs and accept that they may need revisiting whenever Ultravox or our integration changes.
 
@@ -20,7 +20,7 @@ Use vendor-specific knobs when you understand the trade-offs and accept that the
 
 ## Overview
 
-The `vendorSpecific` object on agent `options` is an opaque pass-through for provider-specific configuration. For LiveKit Ultravox agents, the worker forwards `vendorSpecific.ultravox` into the Ultravox realtime plugin, which merges supported keys into the Ultravox `POST /api/calls` body.
+The `vendorSpecific` object on agent `options` is an opaque pass-through for provider-specific configuration. For LiveKit Ultravox agents, the worker forwards `vendorSpecific.ultravox` into the Ultravox realtime plugin, which merges supported keys into the Ultravox `POST /api/calls` body. Native Ultravox agents (`ultravox:` prefixed models) forward the same whitelist of keys directly from the model driver, on every medium (WebRTC, WebSocket, and jambonz-routed telephony).
 
 Supported keys today include (non-exhaustive; see implementation and Ultravox docs):
 
