@@ -130,12 +130,17 @@ describe('usage attached to errors from partially-completed hop loops', () => {
     const kimi = new Kimi(baseArgs('text:kimi/kimi-k2.6'));
     kimi.mcp = { ensure: async () => [], isMcpTool: (n) => n === 'srv_tool', call: async () => 'ok' };
     let n = 0;
+    // The driver streams (streamOnce): the mock returns an async-iterable
+    // "stream" of delta chunks with usage in a final empty-choices chunk.
     kimi.client = { chat: { completions: { create: async () => {
       n += 1;
       if (n === 2) throw new Error('boom');
       return {
-        choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 'x', function: { name: 'srv_tool', arguments: '{}' } }] } }],
-        usage: { prompt_tokens: 100, completion_tokens: 10 },
+        controller: new AbortController(),
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { tool_calls: [{ index: 0, id: 'x', function: { name: 'srv_tool', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] };
+          yield { choices: [], usage: { prompt_tokens: 100, completion_tokens: 10 } };
+        },
       };
     } } } };
     await expect(kimi.rawCompletion('hi')).rejects.toMatchObject({
