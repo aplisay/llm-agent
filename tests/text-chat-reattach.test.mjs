@@ -4,7 +4,7 @@
 import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 
 const { createChatSession, getChatSession } = await import('../lib/text-chat.js');
-const { trimVoicesResult } = await import('../lib/function-handler.js');
+const { trimVoicesResult, trimSearchVoicesResult } = await import('../lib/function-handler.js');
 const { normalizeSearchTerms, filterVoiceTreeBySearch } = await import('../lib/model-voices.js');
 
 // Session re-attach: after the websocket drops, the session (and its whole LLM
@@ -177,7 +177,7 @@ describe('list_voices payload bound', () => {
   });
 });
 
-describe('list_voices search (union substring, no cap)', () => {
+describe('list_voices search (ranked word-start union)', () => {
   test('normalizeSearchTerms tokenises arrays and strings, lowercases and de-dupes', () => {
     expect(normalizeSearchTerms(['British', 'english'])).toEqual(['british', 'english']);
     expect(normalizeSearchTerms('British English robotic')).toEqual(['british', 'english', 'robotic']);
@@ -187,7 +187,7 @@ describe('list_voices search (union substring, no cap)', () => {
     expect(normalizeSearchTerms(['', '  '])).toEqual([]);
   });
 
-  test('returns the UNION of matches across vendors, uncapped, tagging non-"any" locales', () => {
+  test('returns the UNION of matches across vendors, tagging non-"any" locales and matched terms', () => {
     const tree = {
       ultravox: {
         any: [
@@ -200,23 +200,96 @@ describe('list_voices search (union substring, no cap)', () => {
         'en-GB': [{ name: 'Alice', description: 'Warm narrator.', gender: 'female' }],
       },
     };
-    const out = filterVoiceTreeBySearch(tree, ['british', 'robotic']);
+    const { vendors, termMatches } = filterVoiceTreeBySearch(tree, ['british', 'robotic']);
     // british OR robotic → Dominus + Rob; Vera excluded; other vendor unmatched
-    expect(out.ultravox.map((v) => v.name).sort()).toEqual(['Dominus', 'Rob']);
-    expect(out.ultravox[0].locale).toBeUndefined(); // locale-neutral 'any' not tagged
-    expect(out.elevenlabs).toBeUndefined();
+    expect(vendors.ultravox.map((v) => v.name).sort()).toEqual(['Dominus', 'Rob']);
+    expect(vendors.ultravox[0].locale).toBeUndefined(); // locale-neutral 'any' not tagged
+    expect(vendors.ultravox[0].matchedTerms).toEqual(['british']);
+    expect(vendors.elevenlabs).toBeUndefined();
+    expect(termMatches).toEqual({ british: 1, robotic: 1 });
+  });
+
+  test('terms match at word starts only — "male" never matches "female", prefixes still work', () => {
+    const tree = {
+      ultravox: {
+        any: [
+          { name: 'Gabrielle', description: 'American accent. Female.', gender: 'unknown' },
+          { name: 'David', description: 'American accent. Male.', gender: 'unknown' },
+          { name: 'Dominus', description: 'British English male voice.', gender: 'unknown' },
+        ],
+      },
+    };
+    const { vendors, termMatches } = filterVoiceTreeBySearch(tree, ['male']);
+    expect(vendors.ultravox.map((v) => v.name).sort()).toEqual(['David', 'Dominus']);
+    expect(termMatches.male).toBe(2);
+    // prefix continuation: 'brit' finds 'British'
+    const brit = filterVoiceTreeBySearch(tree, ['brit']);
+    expect(brit.vendors.ultravox.map((v) => v.name)).toEqual(['Dominus']);
+    // unicode boundary: accented names still match at a word start
+    const accent = filterVoiceTreeBySearch(
+      { ultravox: { any: [{ name: 'Étienne', description: 'Étienne - French male', gender: 'unknown' }] } },
+      ['étienne'],
+    );
+    expect(accent.vendors.ultravox).toHaveLength(1);
+  });
+
+  test('ranks multi-term matches first — the Irish female surfaces at the top, misses are explicit', () => {
+    // The 2026-07-23 staging failure: Louisamay sat at ~position 53 of 152
+    // anywhere-substring matches and the builder model never saw it.
+    const tree = {
+      ultravox: {
+        any: [
+          { name: 'Vera', description: 'Vera - Spanish female voice. Puerto Rican accent.', gender: 'unknown' },
+          { name: 'Gabrielle', description: 'Gabrielle - American accent. Female.', gender: 'unknown' },
+          { name: 'David', description: 'David - American accent. Male.', gender: 'unknown' },
+          { name: 'Eanna', description: 'Eanna - Irish male', gender: 'unknown' },
+          { name: 'Louisamay', description: 'Louisamay - Irish female', gender: 'unknown' },
+          { name: 'Ciara', description: 'Ciara - female UK voice', gender: 'unknown' },
+        ],
+      },
+    };
+    const { vendors, termMatches } = filterVoiceTreeBySearch(tree, ['irish', 'female', 'dynamic', 'male']);
+    // Two-term matches lead (catalogue order within the rank), one-term matches follow.
+    expect(vendors.ultravox.slice(0, 2).map((v) => v.name)).toEqual(['Eanna', 'Louisamay']);
+    expect(vendors.ultravox[1].matchedTerms).toEqual(['irish', 'female']);
+    expect(termMatches).toEqual({ irish: 2, female: 4, dynamic: 0, male: 2 });
   });
 
   test('matches on the locale key too, and tags the voice with that locale', () => {
     const tree = { google: { 'en-GB': [{ name: 'en-GB-Neural2-A', description: 'en-GB-Neural2-A', gender: 'female' }] } };
-    const out = filterVoiceTreeBySearch(tree, ['en-gb']);
-    expect(out.google).toHaveLength(1);
-    expect(out.google[0].locale).toBe('en-GB');
+    const { vendors } = filterVoiceTreeBySearch(tree, ['en-gb']);
+    expect(vendors.google).toHaveLength(1);
+    expect(vendors.google[0].locale).toBe('en-GB');
   });
 
   test('empty terms match nothing — never dumps the whole catalogue', () => {
     const tree = { ultravox: { any: [{ name: 'X', description: 'y', gender: 'unknown' }] } };
-    expect(filterVoiceTreeBySearch(tree, [])).toEqual({});
-    expect(filterVoiceTreeBySearch(tree, normalizeSearchTerms('   '))).toEqual({});
+    expect(filterVoiceTreeBySearch(tree, []).vendors).toEqual({});
+    expect(filterVoiceTreeBySearch(tree, normalizeSearchTerms('   ')).vendors).toEqual({});
+  });
+
+  test('trimSearchVoicesResult caps ranked matches per vendor and spells out unmatched terms', () => {
+    const voices = Array.from({ length: 70 }, (_, i) => ({
+      name: `voice-${i}`,
+      description: 'd'.repeat(300),
+      gender: 'unknown',
+      matchedTerms: ['female'],
+    }));
+    const out = trimSearchVoicesResult({
+      vendors: { ultravox: voices },
+      voiceStack: 'realtime',
+      search: ['female', 'geordie'],
+      termMatches: { female: 70, geordie: 0 },
+      unmatchedTerms: ['geordie'],
+    });
+    expect(out.vendors.ultravox).toHaveLength(61); // 60 + trailing note
+    expect(out.vendors.ultravox[60].note).toMatch(/10 weaker ultravox matches/);
+    expect(out.vendors.ultravox[0].description.length).toBeLessThanOrEqual(101);
+    expect(out.note).toMatch(/No voice matched: geordie/);
+    expect(out.note).toMatch(/not a tool failure/);
+    // no unmatched terms → no note
+    const clean = trimSearchVoicesResult({ vendors: { ultravox: voices.slice(0, 2) }, unmatchedTerms: [] });
+    expect(clean.note).toBeUndefined();
+    expect(clean.vendors.ultravox).toHaveLength(2);
   });
 });
