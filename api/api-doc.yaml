@@ -556,10 +556,15 @@ components:
 
             Honoured by both the Pipecat worker (via Pipecat's built-in user-idle detection) and the
             LiveKit worker (via the session `userAwayTimeout` / `user_state_changed` → "away" event),
-            including the Ultravox realtime path on both stacks.
+            including the Ultravox realtime path on both stacks. Also honoured by native Ultravox
+            agents (`ultravox:` model names) on every medium — WebRTC, WebSocket, and jambonz-routed
+            telephony — where it is applied provider-side via Ultravox `inactivityMessages` (the same
+            nudge re-fires after each further `timeout` of continued silence, up to 3 times, and the
+            call is never hung up by this mechanism).
 
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
-            which is handled entirely server-side by Ultravox and is not portable across workers.
+            which is handled entirely server-side by Ultravox and is not portable across workers; when
+            both are set on an Ultravox-backed path, the vendor-specific block wins.
           type: object
           properties:
             timeout:
@@ -819,8 +824,12 @@ components:
           - If you need an interruptible greeting, do not use this option; prompt the model to greet naturally as part of the normal dialogue.
 
         Availability:
-          - Supported for LiveKit agents and Ultravox WebRTC agents (model names prefixed `livekit:` and `ultravox:`).
-          - No-op on Jambonz telephony agents.
+          - Supported for LiveKit agents (`livekit:` model names) on all stacks.
+          - Supported for native Ultravox agents (`ultravox:` model names) on every medium —
+            WebRTC, WebSocket, and jambonz-routed telephony — applied provider-side via Ultravox
+            `firstSpeakerSettings`. A caller-supplied `vendorSpecific.ultravox.firstSpeakerSettings`
+            takes precedence over this option, as does `options.firstSpeaker: 'user'`.
+          - No-op on Jambonz pipeline telephony agents (non-Ultravox models routed via Jambonz).
 
         Note for LiveKit OpenAI realtime (`livekit:openai/...`):
           - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.

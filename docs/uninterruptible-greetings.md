@@ -49,7 +49,7 @@ Recommendations:
 
 ## Behaviour quirks by model stack
 
-This feature is only available the through the Livekit, an ultravox pipeline agents (all `livekit:` handler prefixed models, and Ultravox `ultravox:` prefixed WebRTC models only). It is a no-op on Jambonz telephony agents.
+This feature is available on all `livekit:` handler prefixed models, and on native Ultravox agents (`ultravox:` prefixed models) on every medium — WebRTC, WebSocket, and jambonz-routed telephony — where it is applied provider-side by mapping the greeting to Ultravox `firstSpeakerSettings` (a caller-supplied `vendorSpecific.ultravox.firstSpeakerSettings` takes precedence, as does `options.firstSpeaker: 'user'`). It is a no-op on Jambonz pipeline telephony agents (non-Ultravox models routed via Jambonz).
 
 Within that group of implementations, most models (Ultravox, plus all pipeline agents) should reasonably reliably output an `options.greeting.text` verbatim. The only exception is...
 
