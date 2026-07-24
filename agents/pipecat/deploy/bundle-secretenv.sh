@@ -102,8 +102,8 @@ if [ -z "$ENVIRONMENT" ]; then
 fi
 
 case "$ENVIRONMENT" in
-    dev|staging|production) ;;
-    *) echo -e "${RED}Invalid environment '$ENVIRONMENT' (use dev|staging|production)${NC}" >&2; exit 2 ;;
+    dev|staging|beta|production) ;;
+    *) echo -e "${RED}Invalid environment '$ENVIRONMENT' (use dev|staging|beta|production)${NC}" >&2; exit 2 ;;
 esac
 ENV_UPPER=$(printf '%s' "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
 

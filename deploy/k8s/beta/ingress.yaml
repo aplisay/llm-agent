@@ -1,0 +1,33 @@
+# Public ingress for the llm-agent API + websockets at api.aplisay.com.
+# Long-lived connections: the builder chat websocket rides llm-agent's 15-min
+# reconnect grace, and agent SSE streams stay open for whole calls — lift
+# nginx's 60 s proxy timeouts or every quiet connection is cut mid-session.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-agent
+  namespace: llm-agent
+  labels:
+    app.kubernetes.io/name: llm-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.aplisay.com
+      secretName: llm-agent-tls
+  rules:
+    - host: api.aplisay.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-agent
+                port:
+                  name: http
