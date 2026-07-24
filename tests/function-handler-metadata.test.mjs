@@ -127,6 +127,67 @@ describe('function-handler metadata deep paths', () => {
     expect(payload['deep.nested.v']).toBe('123');
   });
 
+  test('built-in `metadata` helper returns a live aplisay.dateTime alongside seeded keys', async () => {
+    // The exact "get_metadata for dateTime alongside callerId" flow: callerId is
+    // seeded in the call metadata; dateTime is NOT seeded but is computed live so
+    // an agent doing date reasoning gets ground truth (2026-07-24 incident: a
+    // voice model called calendar_list_events with a 2025 range).
+    const metadata = { aplisay: { callerId: '+441632960001' } };
+
+    const functions = [
+      {
+        name: 'get_metadata',
+        implementation: 'builtin',
+        platform: 'metadata',
+        input_schema: { properties: { keys: { source: 'generated', type: 'string' } } },
+      },
+    ];
+
+    const { function_results } = await functionHandler(
+      [{ name: 'get_metadata', input: { keys: 'aplisay.callerId,aplisay.dateTime' } }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      {},
+    );
+
+    const payload = JSON.parse(function_results[0].result);
+    expect(payload['aplisay.callerId']).toBe('+441632960001');
+    // e.g. "Friday 2026-07-24 14:05 Europe/London" — weekday, ISO date, 24h time, zone.
+    expect(payload['aplisay.dateTime']).toMatch(/^[A-Za-z]+ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+$/);
+    expect(payload['aplisay.dateTime']).not.toBe('unknown');
+  });
+
+  test('the bare `dateTime` key also resolves, and a seeded value wins over the computed one', async () => {
+    const metadata = { aplisay: { dateTime: 'Monday 2020-01-06 09:00 Europe/London' } };
+    const functions = [
+      {
+        name: 'get_metadata',
+        implementation: 'builtin',
+        platform: 'metadata',
+        input_schema: { properties: { keys: { source: 'generated', type: 'string' } } },
+      },
+    ];
+
+    const { function_results } = await functionHandler(
+      [{ name: 'get_metadata', input: { keys: 'dateTime,aplisay.dateTime' } }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      {},
+    );
+
+    const payload = JSON.parse(function_results[0].result);
+    // `dateTime` (unseeded) is computed live…
+    expect(payload['dateTime']).toMatch(/^[A-Za-z]+ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+$/);
+    // …while a genuinely seeded `aplisay.dateTime` is passed through untouched.
+    expect(payload['aplisay.dateTime']).toBe('Monday 2020-01-06 09:00 Europe/London');
+  });
+
   test('rejects toolsCalls.* metadata reads unless explicitly allowed', async () => {
     const metadata = { toolsCalls: {} };
 
