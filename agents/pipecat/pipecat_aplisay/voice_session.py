@@ -418,6 +418,20 @@ def _build_tools_schema(tools: list[dict]) -> ToolsSchema:
 _protected_tool_tasks: set = set()
 
 
+def _is_ultravox_realtime(llm: Any) -> bool:
+    """True when ``llm`` is Pipecat's Ultravox realtime service (or our shim).
+
+    Lazy import so the check never pulls the Ultravox service into the pipeline
+    (text-LLM) code path, and never hard-fails a worker whose extras don't
+    include it.
+    """
+    try:
+        from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(llm, UltravoxRealtimeLLMService)
+
+
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     """Register the platform's tool descriptors against a Pipecat LLM service.
 
@@ -425,7 +439,41 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     :func:`agent_tools.build_agent_tools`: each entry has ``schema`` and
     ``execute``. The schema is converted to ``FunctionSchema`` and registered
     with the service so it appears on the LLM-visible tool surface.
+
+    Registration mode (``cancel_on_interruption``) is chosen per tool. On the
+    **Ultravox realtime** path, data-returning tools (REST functions, MCP tools,
+    stubs — anything that is not a shielded side-effecting builtin) are
+    registered ASYNCHRONOUSLY (``cancel_on_interruption=False``). This is the
+    fix for a staging incident (2026-07-24) where a booking agent's
+    ``calendar_*`` calls stalled 18-36s or were skipped:
+
+    * Ultravox FREEZES the conversation between ``client_tool_invocation`` and
+      the matching ``client_tool_result``. With synchronous registration the
+      constant speech-to-speech interruptions cancel the in-flight call
+      (``LLMService._handle_interruptions`` cancels every
+      ``cancel_on_interruption=True`` call ~30ms in), and — worse — the result,
+      when it does arrive, is only shipped to Ultravox on the NEXT context push,
+      which the assistant aggregator skips while the caller is still speaking
+      (``_handle_function_call_result`` guards the push on
+      ``not self._user_speaking``). Net effect: the call sits frozen until the
+      *next* tool call flushes the stale result.
+    * Async registration makes Pipecat (a) not cancel the call on interruption
+      and (b) ship an immediate placeholder ``client_tool_result`` that unfreezes
+      the conversation the moment the tool is invoked; the real result is then
+      injected as a user-side message when ready. This is Pipecat's sanctioned
+      mechanism for realtime tools — and because we don't enable
+      ``enable_async_tool_cancellation`` on the service, it does NOT inject a
+      cancel tool or alter the system prompt.
+
+    Side-effecting builtins (``hangup``, ``transfer``, ``transfer_agent``,
+    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS: their
+    handover machinery (``suppress_result_run`` + ``CallSession._apply_agent_transfer``)
+    depends on the normal result path, and the ``_runner`` already shields their
+    execution from interruption. Off the Ultravox path (the pipeline STT→LLM→TTS
+    mode) every tool stays synchronous — the freeze is Ultravox-specific and the
+    text-LLM aggregator's deferred push is correct there.
     """
+    ultravox_realtime = _is_ultravox_realtime(llm)
     schemas: list[FunctionSchema] = []
     for entry in tools:
         s = entry["schema"]
@@ -525,7 +573,14 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                 return
             await params.result_callback(result)
 
-        llm.register_function(s["name"], _runner)
+        # Async (cancel_on_interruption=False) for Ultravox-realtime data tools;
+        # synchronous for shielded builtins and for every tool off the Ultravox
+        # path. See this function's docstring for the why.
+        is_builtin_side_effect = bool(entry.get("protect_from_interruption"))
+        cancel_on_interruption = not (ultravox_realtime and not is_builtin_side_effect)
+        llm.register_function(
+            s["name"], _runner, cancel_on_interruption=cancel_on_interruption
+        )
 
     return ToolsSchema(standard_tools=schemas)
 
