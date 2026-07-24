@@ -1,0 +1,198 @@
+# Cloud Build — Pipecat agent stack (beta channel).
+#
+# Trigger: push of a beta version tag (beta-n.n.n) on aplisay/llm-agent — a
+# beta tag is a whole-stack snapshot, so this fires alongside llm-agent-beta
+# and livekit-agent-beta (no jambonz: it is being dropped, so it has no beta
+# channel):
+#
+#   gcloud builds triggers create github --project=llm-voice \
+#       --name=pipecat-beta \
+#       --repo-owner=aplisay --repo-name=llm-agent \
+#       --tag-pattern='^beta-[0-9]+\.[0-9]+\.[0-9]+$' \
+#       --build-config=agents/pipecat/deploy/gcp/cloudbuild-beta.yaml
+#
+# Builds the five images (freeswitch, esl-poller, sipbridge, secretenv-exec,
+# pipecat-worker) from the tagged commit, each tagged :$COMMIT_SHA + :beta
+# (floating channel head) + :$TAG_NAME (the immutable beta-n.n.n version).
+# Build + push only — no deploy: a beta K8s overlay pulls :beta (or pins
+# :beta-n.n.n) and is rolled with kubectl, exactly like the :next / :latest
+# channels.
+steps:
+  # ----- FreeSWITCH -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - BUILD_ENV=production
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:beta
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$TAG_NAME
+      - '-f'
+      - './agents/pipecat/freeswitch/Dockerfile'
+      - './agents/pipecat/freeswitch'
+    id: Build-freeswitch
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+    id: Push-freeswitch
+
+  # ----- esl-poller -----
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:beta
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$TAG_NAME
+      - '-f'
+      - './agents/pipecat/esl-poller/Dockerfile'
+      - './agents/pipecat/esl-poller'
+    id: Build-esl-poller
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+    id: Push-esl-poller
+
+  # ----- sipbridge -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat/sipbridge into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:beta
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$TAG_NAME
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile'
+      - '.'
+    id: Build-sipbridge
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+    id: Push-sipbridge
+
+  # ----- secretenv-exec -----
+  # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
+  # Used by the Kubernetes freeswitch / voiceblender overlays so those
+  # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:beta
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$TAG_NAME
+      - '-f'
+      - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
+      - '.'
+    id: Build-secretenv-exec
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+    id: Push-secretenv-exec
+
+  # ----- pipecat-worker -----
+  # Build context is the repo root (.) because the Dockerfile COPYs
+  # agents/pipecat into the image.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '--no-cache'
+      - '--build-arg'
+      - COMMIT_SHA=$COMMIT_SHA
+      - '--build-arg'
+      - BRANCH_NAME=$BRANCH_NAME
+      - '--build-arg'
+      - TAG_NAME=$TAG_NAME
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:beta
+      - '-t'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$TAG_NAME
+      - '-f'
+      - './agents/pipecat/Dockerfile'
+      - '.'
+    id: Build-pipecat-worker
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+    id: Push-pipecat-worker
+
+images:
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
+  - >-
+    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+substitutions:
+  _AR_HOSTNAME: europe-west1-docker.pkg.dev
+
+tags:
+  - pipecat-agent-beta
+  - freeswitch
+  - esl-poller
+  - sipbridge
+  - secretenv-exec
+  - pipecat-worker
