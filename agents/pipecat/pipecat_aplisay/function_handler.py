@@ -24,6 +24,8 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 from loguru import logger
 
+from .current_datetime import current_datetime_string, is_datetime_metadata_key
+
 
 def _get_by_path(obj: Any, path: str) -> Any:
     if not path:
@@ -78,9 +80,15 @@ def _builtin_metadata(args: dict, metadata: dict, options: dict) -> dict:
     out: dict[str, Any] = {}
     allow_tools_calls = bool(options.get("allowToolsCallsMetadataPaths"))
     for key in keys:
-        if not allow_tools_calls and (key == "toolsCalls" or key.startswith("toolsCalls.")):
+        if not allow_tools_calls and (isinstance(key, str) and (key == "toolsCalls" or key.startswith("toolsCalls."))):
             raise PermissionError("Access to metadata.toolsCalls is not allowed for this handler")
         value = _get_by_path(metadata, key)
+        # `aplisay.dateTime` is the live current date/time, computed here rather
+        # than seeded — models have no clock, so this is their ground truth for
+        # date reasoning (see current_datetime.py). A real seeded value wins.
+        if value is None and is_datetime_metadata_key(key):
+            out[key] = current_datetime_string()
+            continue
         out[key] = "unknown" if value is None else value
     logger.bind(keys=keys, result=out).debug("metadata builtin result")
     return out
