@@ -418,6 +418,20 @@ def _build_tools_schema(tools: list[dict]) -> ToolsSchema:
 _protected_tool_tasks: set = set()
 
 
+async def _deliver_native_result(params: "FunctionCallParams", value: Any) -> None:
+    """Ship a data tool's result to Ultravox as a native ``client_tool_result``.
+
+    A no-op unless the LLM service exposes ``deliver_native_tool_result``
+    (AplisayUltravoxRealtimeLLMService) — so the pipeline (text-LLM) path and any
+    other service are unaffected. This is what makes Ultravox recognise the
+    result as a real function result instead of the ignored user-side text the
+    async-tool path would otherwise inject.
+    """
+    deliver = getattr(params.llm, "deliver_native_tool_result", None)
+    if deliver is not None:
+        await deliver(params.tool_call_id, value)
+
+
 def _is_ultravox_realtime(llm: Any) -> bool:
     """True when ``llm`` is Pipecat's Ultravox realtime service (or our shim).
 
@@ -440,38 +454,41 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     ``execute``. The schema is converted to ``FunctionSchema`` and registered
     with the service so it appears on the LLM-visible tool surface.
 
-    Registration mode (``cancel_on_interruption``) is chosen per tool. On the
-    **Ultravox realtime** path, data-returning tools (REST functions, MCP tools,
-    stubs — anything that is not a shielded side-effecting builtin) are
-    registered ASYNCHRONOUSLY (``cancel_on_interruption=False``). This is the
-    fix for a staging incident (2026-07-24) where a booking agent's
-    ``calendar_*`` calls stalled 18-36s or were skipped:
+    On the **Ultravox realtime** path, data-returning tools (REST functions, MCP
+    tools, stubs — anything that is not a shielded side-effecting builtin) are
+    handled specially, evolved over two staging incidents (2026-07-24):
 
     * Ultravox FREEZES the conversation between ``client_tool_invocation`` and
-      the matching ``client_tool_result``. With synchronous registration the
-      constant speech-to-speech interruptions cancel the in-flight call
+      the matching ``client_tool_result``. With plain synchronous registration
+      the constant speech-to-speech interruptions cancel the in-flight call
       (``LLMService._handle_interruptions`` cancels every
-      ``cancel_on_interruption=True`` call ~30ms in), and — worse — the result,
-      when it does arrive, is only shipped to Ultravox on the NEXT context push,
-      which the assistant aggregator skips while the caller is still speaking
-      (``_handle_function_call_result`` guards the push on
-      ``not self._user_speaking``). Net effect: the call sits frozen until the
-      *next* tool call flushes the stale result.
-    * Async registration makes Pipecat (a) not cancel the call on interruption
-      and (b) ship an immediate placeholder ``client_tool_result`` that unfreezes
-      the conversation the moment the tool is invoked; the real result is then
-      injected as a user-side message when ready. This is Pipecat's sanctioned
-      mechanism for realtime tools — and because we don't enable
-      ``enable_async_tool_cancellation`` on the service, it does NOT inject a
-      cancel tool or alter the system prompt.
+      ``cancel_on_interruption=True`` call ~30ms in), and the result, when it
+      arrives, is only shipped on the NEXT context push — which the assistant
+      aggregator skips while the caller is still speaking. The call froze until
+      the *next* tool call flushed the stale result.
+    * Registering ``cancel_on_interruption=False`` fixes the CANCEL (the call
+      survives the interruption — the tool turn is protected). But it also puts
+      the service on Pipecat's async-tool path, which unfreezes with a
+      *placeholder* result and delivers the real result as user-side TEXT.
+      Ultravox does NOT recognise that text as a function result, so the model
+      loops re-calling the tool (2nd incident: booking_get_slots 4× on
+      placeholder results).
+
+    So we keep ``cancel_on_interruption=False`` for its no-cancel property ONLY,
+    and replace the delivery: our Ultravox subclass suppresses the placeholder
+    and ``_runner`` ships the true result as a NATIVE ``client_tool_result`` via
+    :func:`_deliver_native_result` (both success and error). The tool turn stays
+    frozen — uninterruptible — until that real result lands. ``_native`` below is
+    this tool set; ``enable_async_tool_cancellation`` stays off, so no cancel
+    tool or system-prompt change is injected.
 
     Side-effecting builtins (``hangup``, ``transfer``, ``transfer_agent``,
-    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS: their
-    handover machinery (``suppress_result_run`` + ``CallSession._apply_agent_transfer``)
-    depends on the normal result path, and the ``_runner`` already shields their
-    execution from interruption. Off the Ultravox path (the pipeline STT→LLM→TTS
-    mode) every tool stays synchronous — the freeze is Ultravox-specific and the
-    text-LLM aggregator's deferred push is correct there.
+    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS and are
+    NOT native-delivered: their handover machinery (``suppress_result_run`` +
+    ``CallSession._apply_agent_transfer``) depends on the normal result path, the
+    ``_runner`` already shields their execution, and the outgoing model does not
+    need their result. Off the Ultravox path (pipeline STT→LLM→TTS) every tool
+    stays synchronous — the freeze is Ultravox-specific.
     """
     ultravox_realtime = _is_ultravox_realtime(llm)
     schemas: list[FunctionSchema] = []
@@ -489,6 +506,11 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
             _kind=entry.get("kind", "function"),
             _suppress_result_run=bool(entry.get("suppress_result_run")),
             _protect=bool(entry.get("protect_from_interruption")),
+            # Data tools on Ultravox realtime deliver their result as a NATIVE
+            # client_tool_result (deliver_native_tool_result), NOT via Pipecat's
+            # async-tool user-text path which Ultravox ignores. Same set as the
+            # cancel_on_interruption=False tools below.
+            _native=bool(ultravox_realtime and not entry.get("protect_from_interruption")),
         ) -> None:
             # Log every tool/MCP call and its result at INFO with an ``event``
             # marker (see tool_log.py) so they are visible in the per-call debug
@@ -541,10 +563,14 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                     duration_ms=_elapsed_ms(),
                     error=str(e),
                 )
-                # Surface the error to the LLM via the result callback so
-                # the conversation can recover, rather than dropping the
-                # whole turn.
-                await params.result_callback({"error": str(e)})
+                # Surface the error to the LLM so the conversation can recover
+                # rather than dropping the whole turn. On Ultravox realtime the
+                # error must ALSO go back as a native client_tool_result, or the
+                # frozen tool turn never unblocks.
+                error_result = {"error": str(e)}
+                if _native:
+                    await _deliver_native_result(params, error_result)
+                await params.result_callback(error_result)
                 return
             log_tool_result(
                 tool=_name,
@@ -563,7 +589,8 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                 # the incoming agent's first turn instead. A FAILED handover
                 # falls through to the normal path so the current agent can
                 # tell the caller and recover. See
-                # CallSession._apply_agent_transfer.
+                # CallSession._apply_agent_transfer. (Builtins are never
+                # _native, so this path is untouched by native delivery.)
                 from pipecat.frames.frames import FunctionCallResultProperties
 
                 await params.result_callback(
@@ -571,11 +598,18 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                     properties=FunctionCallResultProperties(run_llm=False),
                 )
                 return
+            # Ultravox data tool: ship the true result natively (unfreezes the
+            # tool turn) BEFORE the result_callback, which only updates our
+            # transcript/context (the Ultravox async-final message it queues is
+            # deduped by deliver_native_tool_result marking the call complete).
+            if _native:
+                await _deliver_native_result(params, result)
             await params.result_callback(result)
 
-        # Async (cancel_on_interruption=False) for Ultravox-realtime data tools;
-        # synchronous for shielded builtins and for every tool off the Ultravox
-        # path. See this function's docstring for the why.
+        # cancel_on_interruption=False for Ultravox-realtime data tools (protects
+        # the tool turn from interruption-cancel; delivery is native via
+        # _deliver_native_result, NOT the async user-text path). Synchronous for
+        # shielded builtins and for every tool off the Ultravox path.
         is_builtin_side_effect = bool(entry.get("protect_from_interruption"))
         cancel_on_interruption = not (ultravox_realtime and not is_builtin_side_effect)
         llm.register_function(
