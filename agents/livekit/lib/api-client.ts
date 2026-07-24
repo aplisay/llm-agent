@@ -92,6 +92,12 @@ export interface Agent {
      */
     maxDuration?: string;
     /**
+     * Message the agent delivers when `maxDuration` is reached. Only consumed
+     * by providers with a native wind-down message (Ultravox); other realtime
+     * providers use the worker hard-stop with a generic prompt instead.
+     */
+    timeExceededMessage?: string;
+    /**
      * Inter-digit DTMF timeout in milliseconds. Buffered DTMF digits are flushed
      * to the LLM after this period of keypad silence. Defaults to 1500ms.
      * Set to 0 to flush each digit individually (no buffering delay).
