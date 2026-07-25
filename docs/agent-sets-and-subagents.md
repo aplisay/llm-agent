@@ -209,6 +209,16 @@ Semantics:
 * `PUT /agent-sets/{id}` reconciles by label: existing labels are updated in
   place (keeping their agent ids — live listeners stay attached), new labels
   are created, absent labels are deleted.
+* A member's stored functions that reference a **write-only key entry** (their
+  `key` property — platform-wired tools such as calendar booking, injected onto
+  the rows by an attach panel rather than authored in the document) are
+  **preserved on update even when the incoming member's `functions` omits
+  them**. Key values never round-trip through `GET`, so no document-driven
+  editor can faithfully re-author a keyed function; a stale working copy must
+  therefore never strip one by omission. An incoming function of the same name
+  still replaces the stored one, and listing a name in the member's
+  `removeFunctions` array deletes it explicitly (`removeFunctions` also works
+  without resending `functions` at all — a remove-only patch).
 * `DELETE /agent-sets/{id}` removes the set and all member agents.
 
 Endpoints: `POST /agent-sets`, `GET /agent-sets`, `GET /agent-sets/{id}`,

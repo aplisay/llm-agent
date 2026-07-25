@@ -106,7 +106,12 @@ agentSetUpdate.apiDoc = {
                 existing labels are updated in place (keeping their agent IDs), new labels are created,
                 and members whose label is absent from the document are deleted. All \`label:\` references
                 (and previously fixed-up \`fromLabel\` annotations) are re-resolved against the new membership.
-                The whole operation is transactional: it either fully applies or fails leaving the set unchanged.`,
+                The whole operation is transactional: it either fully applies or fails leaving the set unchanged.
+                A member's stored functions that reference a write-only key entry (their \`key\` property —
+                platform-wired tools such as calendar booking) are PRESERVED even when the incoming member's
+                \`functions\` omits them: an incoming function of the same name replaces the stored one, and a
+                name listed in the member's \`removeFunctions\` deletes it, but omission alone never strips a
+                keyed function. Documents written before such wiring therefore round-trip safely.`,
   operationId: 'updateAgentSet',
   tags: ["Agent Sets"],
   parameters: [agentSetIdParameter],

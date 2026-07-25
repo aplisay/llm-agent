@@ -113,10 +113,35 @@ function setDocument() {
   };
 }
 
+/**
+ * A platform-wired rest function shaped as polite-ai's calendar-booking attach
+ * panel injects it directly onto saved member rows (out-of-band of any builder
+ * document): implementation rest, referencing the write-only POLITE_BOOKING
+ * key, with a static policy parameter.
+ */
+function bookingFunction(name, extra = {}) {
+  return {
+    name,
+    description: `Platform-injected ${name}`,
+    implementation: 'rest',
+    method: 'post',
+    url: `https://integrations.example.com/v1/tools/${name}`,
+    key: 'POLITE_BOOKING',
+    input_schema: {
+      properties: {
+        policy: { type: 'string', source: 'static', from: 'bpol_test1', in: 'body' },
+        callerNumber: { type: 'string', source: 'metadata', from: 'aplisay.callerId', in: 'body' }
+      }
+    },
+    ...extra
+  };
+}
+
 describe('Agent sets', () => {
   let user;
   let createAgentSet, listAgentSets, getAgentSet, updateAgentSet, deleteAgentSet;
   let createAgent;
+  let updateAgentSetForAgent, patchAgentSetForAgent;
 
   beforeAll(async () => {
     await setupRealDatabase();
@@ -130,6 +155,7 @@ describe('Agent sets', () => {
     updateAgentSet = item.PUT;
     deleteAgentSet = item.DELETE;
     createAgent = agents.POST;
+    ({ updateAgentSetForAgent, patchAgentSetForAgent } = await import('../lib/agent-set-service.js'));
   }, 60000);
 
   afterAll(async () => {
@@ -525,6 +551,148 @@ describe('Agent sets', () => {
       }), missingRes);
       expect(missingRes.statusCode).toBe(400);
       expect(missingRes.body.message).toMatch(/does not exist/);
+    });
+  });
+
+  describe('platform-wired (keyed) function preservation on set saves', () => {
+    // The 2026-07-25 beta incident class: an attach panel injects keyed booking
+    // functions straight onto saved member rows and arms their write-only key;
+    // the builder's working document predates the injection, so its next save
+    // must NOT strip them.
+
+    /** Create the standard set and inject booking wiring onto one member row. */
+    async function createSetWithInjectedBooking(label = 'specialist') {
+      const createRes = makeRes(user);
+      await createAgentSet(makeReq(setDocument()), createRes);
+      expect(createRes.statusCode).toBe(200);
+      const member = createRes.body.agents.find((a) => a.label === label);
+      const row = await Agent.findByPk(member.id);
+      await row.update({
+        functions: [
+          ...(row.functions || []),
+          bookingFunction('booking_get_slots'),
+          bookingFunction('booking_book')
+        ],
+        keys: [{ name: 'POLITE_BOOKING', in: 'bearer', value: 'pik_test_secret' }]
+      });
+      return { setId: createRes.body.id, memberId: member.id };
+    }
+
+    const owner = () => ({ userId: user.id, organisationId: user.organisationId });
+    const namesOf = (fns) => (fns || []).map((f) => f.name).sort();
+
+    test('builder update_agent_set with a pre-injection document keeps the booking functions', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      // The builder's working copy: the original document, no booking functions.
+      const rendered = await updateAgentSetForAgent(setId, setDocument(), owner());
+
+      const specialist = rendered.agents.find((a) => a.label === 'specialist');
+      expect(namesOf(specialist.functions)).toEqual(
+        ['booking_book', 'booking_get_slots', 'transfer_to_specialist']);
+      // Document-authored content still replaced as usual, on the same row.
+      expect(specialist.id).toBe(memberId);
+      // Untouched member unaffected.
+      const triage = rendered.agents.find((a) => a.label === 'triage');
+      expect(namesOf(triage.functions)).toEqual(['ask_researcher', 'transfer_to_specialist']);
+
+      // The armed key survives too (documents never carry keys), and is still
+      // referenced by the preserved functions.
+      const row = await Agent.findByPk(memberId);
+      expect(namesOf(row.functions)).toEqual(
+        ['booking_book', 'booking_get_slots', 'transfer_to_specialist']);
+      expect(row.functions.find((f) => f.name === 'booking_book').key).toBe('POLITE_BOOKING');
+      expect(row.keys).toEqual([{ name: 'POLITE_BOOKING', in: 'bearer', value: 'pik_test_secret' }]);
+    });
+
+    test('REST PUT preserves them too, idempotently across repeated saves', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      for (let pass = 0; pass < 2; pass++) {
+        const res = makeRes(user);
+        await updateAgentSet(makeReq(setDocument(), { agentSetId: setId }), res);
+        expect(res.statusCode).toBe(200);
+      }
+      const row = await Agent.findByPk(memberId);
+      // Merged once, not duplicated on the second pass.
+      expect(namesOf(row.functions)).toEqual(
+        ['booking_book', 'booking_get_slots', 'transfer_to_specialist']);
+    });
+
+    test('patch_agent_set resending the member without them keeps them and replaces the rest', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      const rendered = await patchAgentSetForAgent(setId, {
+        agents: [{
+          label: 'specialist',
+          prompt: 'You handle specialist enquiries v3.',
+          functions: [transferAgentFunction('label:triage')]
+        }]
+      }, owner());
+
+      const specialist = rendered.agents.find((a) => a.label === 'specialist');
+      expect(specialist.id).toBe(memberId);
+      expect(specialist.prompt).toBe('You handle specialist enquiries v3.');
+      expect(namesOf(specialist.functions)).toEqual(
+        ['booking_book', 'booking_get_slots', 'transfer_to_specialist']);
+    });
+
+    test('a document that includes a keyed function by name updates it in place', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      const doc = setDocument();
+      doc.agents.find((a) => a.label === 'specialist').functions.push(
+        bookingFunction('booking_get_slots', { description: 'round-tripped and edited' }));
+      await updateAgentSetForAgent(setId, doc, owner());
+
+      const row = await Agent.findByPk(memberId);
+      const slots = row.functions.filter((f) => f.name === 'booking_get_slots');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].description).toBe('round-tripped and edited');
+      // The other keyed function is still preserved by omission.
+      expect(row.functions.some((f) => f.name === 'booking_book')).toBe(true);
+    });
+
+    test('removeFunctions deletes keyed functions explicitly', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      const doc = setDocument();
+      doc.agents.find((a) => a.label === 'specialist').removeFunctions = ['booking_book'];
+      await updateAgentSetForAgent(setId, doc, owner());
+
+      const row = await Agent.findByPk(memberId);
+      // Removed name gone; the one merely omitted still preserved.
+      expect(namesOf(row.functions)).toEqual(['booking_get_slots', 'transfer_to_specialist']);
+    });
+
+    test('a remove-only patch (no functions resent) deletes without touching the rest', async () => {
+      const { setId, memberId } = await createSetWithInjectedBooking();
+
+      await patchAgentSetForAgent(setId, {
+        agents: [{ label: 'specialist', removeFunctions: ['booking_get_slots', 'booking_book'] }]
+      }, owner());
+
+      const row = await Agent.findByPk(memberId);
+      expect(namesOf(row.functions)).toEqual(['transfer_to_specialist']);
+      // The document-authored function was left exactly as stored (still resolved).
+      expect(row.functions[0].input_schema.properties.agent.fromLabel).toBe('triage');
+    });
+
+    test('unkeyed out-of-band functions are NOT preserved — the document still replaces content', async () => {
+      const createRes = makeRes(user);
+      await createAgentSet(makeReq(setDocument()), createRes);
+      const member = createRes.body.agents.find((a) => a.label === 'specialist');
+      const row = await Agent.findByPk(member.id);
+      await row.update({
+        functions: [
+          ...(row.functions || []),
+          { name: 'ad_hoc_tool', implementation: 'rest', method: 'get', url: 'https://api.example.com/x' }
+        ]
+      });
+
+      await updateAgentSetForAgent(createRes.body.id, setDocument(), owner());
+      const after = await Agent.findByPk(member.id);
+      expect(namesOf(after.functions)).toEqual(['transfer_to_specialist']);
     });
   });
 });
