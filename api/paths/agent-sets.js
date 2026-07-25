@@ -7,6 +7,7 @@ import {
   validateAgentTargets,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
+import { mergeMemberFunctions } from '../../lib/agent-set-functions.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../lib/deployment-guard.js';
 
 let log;
@@ -56,6 +57,11 @@ export async function renderSet(setId, user) {
  * Create (or, for updateAgentSet, reconcile) the members of a set inside a
  * transaction: build/refresh rows, resolve label references against the new
  * membership, validate cross-references, then save.
+ *
+ * Member `functions` are merged, not blindly replaced: stored functions that
+ * reference a write-only key entry (platform-wired tools) survive a document
+ * that omits them, and are deleted only via the member's `removeFunctions`
+ * list (see lib/agent-set-functions.js).
  */
 export async function reconcileMembers({ set, byLabel, existing = [], user, transaction, patch = false, removeLabels = [] }) {
   const existingByLabel = new Map(existing.map((agent) => [agent.label, agent]));
@@ -117,10 +123,19 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
   });
 
   for (const { label, def, agent } of members) {
+    // `functions` is merged, never blindly replaced: keyed (platform-wired)
+    // functions on the stored row survive a document that omits them, and a
+    // member's `removeFunctions` deletes stored functions by name — see
+    // lib/agent-set-functions.js. Capture the stored value before the copy.
+    const priorFunctions = agent.isNewRecord ? undefined : agent.functions;
+    const mergedFunctions = mergeMemberFunctions(priorFunctions, def.functions, def.removeFunctions);
     for (const field of MEMBER_FIELDS) {
       if (def[field] !== undefined) {
         agent[field] = field === 'type' ? defaultType(def) : def[field];
       }
+    }
+    if (mergedFunctions !== undefined) {
+      agent.functions = mergedFunctions;
     }
     if (agent.functions || agent.options?.bridgedTransferToAgent) {
       fixupLabelReferences(agent.functions || [], labelMap, label, agent.options);

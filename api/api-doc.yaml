@@ -165,6 +165,17 @@ components:
               type: string
             description:
               type: string
+            removeFunctions:
+              type: array
+              items:
+                type: string
+              description: |-
+                Names of stored functions to delete from this member explicitly. A stored function that
+                references a write-only key entry (its `key` property) is treated as platform-wired: an
+                update whose `functions` merely omits it keeps it in place, so a document written before
+                the wiring can never strip it. Listing the function's name here is how it is actually
+                removed. Names listed here also delete ordinary stored functions when `functions` is not
+                supplied at all (a remove-only patch).
         - $ref: "#/components/schemas/Agent"
     AgentSetInput:
       type: object
