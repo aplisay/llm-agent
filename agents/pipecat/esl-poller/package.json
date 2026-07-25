@@ -38,5 +38,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
+  },
+  "resolutions": {
+    "brace-expansion": "^5.0.8"
   }
 }
