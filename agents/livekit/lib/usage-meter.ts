@@ -1,6 +1,7 @@
 import { voice } from "@livekit/agents";
 import defaultLogger from "./logger.js";
 import { saveUsage as defaultSaveUsage } from "./api-client.js";
+import type { UsageRecordPayload } from "./api-client.js";
 import type { UsageVendors } from "./usage-vendors.js";
 import type { VoiceMode } from "./voice-mode.js";
 
@@ -77,9 +78,7 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
     if (voiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
     // Prefer the configured vendor/model; fall back to the SDK label then the
     // supplied fallbackDetail (kept identical to voice-agent-runtime's addMeter).
-    const resolved = (usageVendors as Record<string, { vendor?: string; detail?: string }>)[
-      technology
-    ];
+    const resolved = usageVendors[technology as keyof UsageVendors];
     const detail = resolved?.detail || label || fallbackDetail;
     const provider =
       resolved?.vendor || (label ? label.split(/[./]/)[0] || undefined : undefined);
@@ -134,7 +133,7 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
     try {
       const c = getCall();
       if (!c?.id) return;
-      const records: unknown[] = [];
+      const records: UsageRecordPayload[] = [];
       for (const meter of meters.values()) {
         for (const [unit, quantity] of Object.entries(meter.units)) {
           if (!quantity) continue;

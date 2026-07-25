@@ -3,7 +3,6 @@ import { ServerOptions, cli } from '@livekit/agents';
 import * as loggerModule from './agent-lib/logger.js';
 import { runSetup } from './lib/initialise.js';
 import worker from './lib/worker.js';
-import { LogLevel } from 'node_modules/@livekit/rtc-node/dist/proto/ffi_pb.js';
 
 const logger = loggerModule.default;
 
@@ -32,4 +31,4 @@ if (process.argv[2] === 'setup') {
   }));
 }
 
-export default worker; 
+export default worker;

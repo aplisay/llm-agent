@@ -30,18 +30,38 @@
     "api:update": "api-extractor run --local --typescript-compiler-folder ../../node_modules/typescript --verbose"
   },
   "devDependencies": {
-    "@livekit/agents": "^1.0.3",
-    "@livekit/rtc-node": "^0.13.11",
+    "@livekit/agents": "1.0.46",
+    "@livekit/rtc-node": "^0.13.24",
     "@types/ws": "^8.5.10",
     "tsup": "^8.3.5",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "sharp": "^0.33.5",
-    "ws": "^8.16.0"
+    "sharp": "^0.35.3",
+    "ws": "^8.21.1"
   },
   "peerDependencies": {
     "@livekit/agents": "^1.0.3",
     "@livekit/rtc-node": "^0.13.11"
+  },
+  "resolutions": {
+    "brace-expansion": "^5.0.8",
+    "glob": "^10.5.0",
+    "minimatch": "^9.0.7",
+    "picomatch": "^4.0.4",
+    "rollup": "^4.59.0",
+    "sharp": "^0.35.3",
+    "ws": "^8.21.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "brace-expansion": "^5.0.8",
+      "glob": "^10.5.0",
+      "minimatch": "^9.0.7",
+      "picomatch": "^4.0.4",
+      "rollup": "^4.59.0",
+      "sharp": "^0.35.3",
+      "ws": "^8.21.1"
+    }
   }
 }

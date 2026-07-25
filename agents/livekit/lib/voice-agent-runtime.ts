@@ -25,6 +25,7 @@ import {
   inactivityAwayTimeoutSecs,
 } from "./voice-session-factory.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
+import type { UsageVendors } from "./usage-vendors.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
 export async function runAgentWorker({
@@ -496,9 +497,7 @@ export async function runAgentWorker({
     if (resolvedVoiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
     // Prefer the configured vendor/model; fall back to the SDK label
     // ("vendor.Component" / "vendor/model") then the bare modelName.
-    const resolved = (usageVendors as Record<string, { vendor?: string; detail?: string }>)[
-      technology
-    ];
+    const resolved = usageVendors[technology as keyof UsageVendors];
     const detail = resolved?.detail || label || modelName;
     const provider =
       resolved?.vendor || (label ? label.split(/[./]/)[0] || undefined : undefined);
