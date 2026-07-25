@@ -2,8 +2,6 @@ module github.com/aplisay/llm-agent/agents/pipecat/sipbridge
 
 go 1.25.0
 
-toolchain go1.25.0
-
 require (
 	github.com/coder/websocket v1.8.13
 	github.com/emiago/sipgo v1.3.1

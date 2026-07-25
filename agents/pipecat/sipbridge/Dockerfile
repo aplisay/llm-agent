@@ -14,7 +14,7 @@
 # BuildKit cache mounts don't persist across Cloud Build runs). Docker's normal
 # layer cache still skips `go mod download` when go.mod/go.sum are unchanged.
 
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 WORKDIR /src
 
