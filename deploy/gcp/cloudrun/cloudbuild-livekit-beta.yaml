@@ -10,50 +10,69 @@
 #       --tag-pattern='^beta-[0-9]+\.[0-9]+\.[0-9]+$' \
 #       --build-config=deploy/gcp/cloudrun/cloudbuild-livekit-beta.yaml
 #
-# Builds from the tagged commit and pushes to the PRODUCTION image repo
-# (livekit-agent) tagged :$COMMIT_SHA + :beta + :$TAG_NAME. Build + push only —
-# no deploy: the GCE docker-compose host pulls its channel tag and is
-# restarted out of band. Submodules are initialised first (as in the staging
-# build — tag checkouts don't bring them in). Build-time secrets: the
-# production SECRETENV bundle, matching the per-commit main build (see
-# cloudbuild-beta.yaml for the rationale + how to swap to staging secrets).
+# Publishes to the PRODUCTION image repo (livekit-agent) tagged :$COMMIT_SHA +
+# :beta + :$TAG_NAME. Build + push only — no deploy: the GCE docker-compose
+# host pulls its channel tag and is restarted out of band.
+#
+# SKIP-OR-BUILD: when livekit-agent:$COMMIT_SHA already exists (a previous
+# beta release of the same commit, or a per-commit main build), Check PROMOTES
+# server-side (digest-pinned `tags add`, no rebuild) and the
+# Submodules/Build/Push steps no-op via a /workspace skip marker — the
+# submodule fetch is skipped too. See cloudbuild-beta.yaml for the full
+# rationale (incl. why there is no `images:` list). Build-time secrets: the
+# production SECRETENV bundle, matching the per-commit main build.
 steps:
-  - name: gcr.io/cloud-builders/git
-    args: ['submodule', 'update', '--init', '--recursive']
-  - name: gcr.io/cloud-builders/docker
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: Check
+    entrypoint: bash
     args:
-      - build
-      - '--no-cache'
-      - '--build-arg'
-      - SECRETENV_BUNDLE
-      - '--build-arg'
-      - SECRETENV_KEY
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME
-      - '-f'
-      - agents/livekit/Dockerfile
-      - .
+      - -c
+      - |
+        set -euo pipefail
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        digest=$$(gcloud artifacts docker images describe "$$REG/$_SERVICE_NAME:$COMMIT_SHA" \
+                    --format='value(image_summary.digest)' 2>/dev/null || true)
+        if [ -n "$$digest" ]; then
+          echo "[promote] $_SERVICE_NAME:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
+          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:$TAG_NAME" --quiet
+          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:beta" --quiet
+          touch /workspace/skip-livekit-agent
+        else
+          echo "[build] no $_SERVICE_NAME:$COMMIT_SHA in the registry — full build"
+        fi
+  - name: gcr.io/cloud-builders/git
+    id: Submodules
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec git submodule update --init --recursive
+  - name: gcr.io/cloud-builders/docker
     id: Build
+    entrypoint: bash
     secretEnv:
       - SECRETENV_BUNDLE
       - SECRETENV_KEY
-  - name: gcr.io/cloud-builders/docker
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          --build-arg SECRETENV_BUNDLE \
+          --build-arg SECRETENV_KEY \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME \
+          -f agents/livekit/Dockerfile .
+  - name: gcr.io/cloud-builders/docker
     id: Push
-images:
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
 options:
   substitutionOption: ALLOW_LOOSE
   automapSubstitutions: true
