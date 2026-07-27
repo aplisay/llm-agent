@@ -17,12 +17,19 @@
 #
 # SKIP-OR-BUILD: when llm-agent:$COMMIT_SHA already exists (a previous beta
 # release of the same commit, or a per-commit main build), Check PROMOTES
-# server-side — digest-pinned `tags add` of :$TAG_NAME + :beta, the same idiom
-# as cloudbuild-release.yaml — and Build/Push no-op via a /workspace skip
-# marker. NB the staging lane publishes to a DIFFERENT image path
-# (llm-agent-staging), so a first beta tag on a next-branch commit still
-# builds from source here. No `images:` provenance list: Cloud Build fails
-# the build when a listed image wasn't produced locally (the skip path).
+# server-side — a digest-pinned manifest copy (`docker buildx imagetools
+# create`) that adds :$TAG_NAME + :beta with no rebuild — and Build/Push
+# no-op via a /workspace skip marker. Deliberately NOT `gcloud artifacts
+# docker tags add` (cloudbuild-release.yaml's idiom): on Artifact Registry
+# that command needs artifactregistry.tags.delete to MOVE a tag that already
+# exists, which the Cloud Build service account lacks — the polite-ai
+# beta-0.9.56 promote died exactly there re-pointing :beta. A manifest PUT
+# (the same registry call `docker push` makes) moves floating tags with the
+# SA's ordinary push permissions. NB the staging lane publishes to a
+# DIFFERENT image path (llm-agent-staging), so a first beta tag on a
+# next-branch commit still builds from source here. No `images:` provenance
+# list: Cloud Build fails the build when a listed image wasn't produced
+# locally (the skip path).
 #
 # Unlike the v-tag release flow (cloudbuild-release.yaml, which only promotes
 # and never builds), beta tags may land on commits with no llm-agent-repo
@@ -37,7 +44,7 @@
 # SECRETENV_STAGING_* if the beta channel should carry the staging credential
 # instead.
 steps:
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  - name: gcr.io/cloud-builders/docker
     id: Check
     entrypoint: bash
     args:
@@ -45,12 +52,19 @@ steps:
       - |
         set -euo pipefail
         REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
-        digest=$$(gcloud artifacts docker images describe "$$REG/$_SERVICE_NAME:$COMMIT_SHA" \
-                    --format='value(image_summary.digest)' 2>/dev/null || true)
+        # NB parse the Digest: line — the GCB builder's buildx ignores
+        # `imagetools inspect --format` and prints the human output anyway.
+        digest=$$(docker buildx imagetools inspect "$$REG/$_SERVICE_NAME:$COMMIT_SHA" 2>/dev/null \
+                    | awk '/^Digest:/{print $$2; exit}' || true)
         if [ -n "$$digest" ]; then
           echo "[promote] $_SERVICE_NAME:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
-          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:$TAG_NAME" --quiet
-          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:beta" --quiet
+          # --prefer-index=false: push the manifest byte-identical (same digest
+          # as :$COMMIT_SHA) instead of wrapping it in a new OCI index —
+          # reload-beta digest-tracks some tiers, so digests must be preserved.
+          docker buildx imagetools create --prefer-index=false \
+            -t "$$REG/$_SERVICE_NAME:$TAG_NAME" \
+            -t "$$REG/$_SERVICE_NAME:beta" \
+            "$$REG/$_SERVICE_NAME@$$digest"
           touch /workspace/skip-llm-agent
         else
           echo "[build] no $_SERVICE_NAME:$COMMIT_SHA in the registry — full build"

@@ -20,13 +20,18 @@
 # SKIP-OR-BUILD (per image): the pipecat staging lane pushes :$COMMIT_SHA to
 # these SAME image paths on every next push, so a beta tag on an
 # already-built commit skips the whole stack rebuild (freeswitch is the big
-# win) — Check PROMOTES server-side (digest-pinned `tags add`, no rebuild)
-# and each image's Build/Push steps no-op via a /workspace skip marker.
-# Partial skips are fine: every image is gated independently. No `images:`
-# provenance list: Cloud Build fails the build when a listed image wasn't
-# produced locally, which is exactly the skip path.
+# win) — Check PROMOTES server-side (digest-pinned manifest copy via `docker
+# buildx imagetools create`, no rebuild) and each image's Build/Push steps
+# no-op via a /workspace skip marker. Deliberately NOT `gcloud artifacts
+# docker tags add`: moving an existing floating tag (:beta on a re-version)
+# needs artifactregistry.tags.delete, which the Cloud Build SA lacks — a
+# manifest PUT moves tags with ordinary push permissions (the polite-ai
+# beta-0.9.56 promote incident). Partial skips are fine: every image is
+# gated independently. No `images:` provenance list: Cloud Build fails the
+# build when a listed image wasn't produced locally, which is exactly the
+# skip path.
 steps:
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  - name: gcr.io/cloud-builders/docker
     id: Check
     entrypoint: bash
     args:
@@ -35,12 +40,19 @@ steps:
         set -euo pipefail
         REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
         for img in freeswitch esl-poller sipbridge secretenv-exec pipecat-worker; do
-          digest=$$(gcloud artifacts docker images describe "$$REG/$$img:$COMMIT_SHA" \
-                      --format='value(image_summary.digest)' 2>/dev/null || true)
+          # NB parse the Digest: line — the GCB builder's buildx ignores
+          # `imagetools inspect --format` and prints the human output anyway.
+          digest=$$(docker buildx imagetools inspect "$$REG/$$img:$COMMIT_SHA" 2>/dev/null \
+                      | awk '/^Digest:/{print $$2; exit}' || true)
           if [ -n "$$digest" ]; then
             echo "[promote] $$img:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
-            gcloud artifacts docker tags add "$$REG/$$img@$$digest" "$$REG/$$img:$TAG_NAME" --quiet
-            gcloud artifacts docker tags add "$$REG/$$img@$$digest" "$$REG/$$img:beta" --quiet
+            # --prefer-index=false: keep the promoted manifest byte-identical
+            # (same digest as :$COMMIT_SHA) — reload-beta digest-tracks the
+            # pipecat tier, so digests must be preserved.
+            docker buildx imagetools create --prefer-index=false \
+              -t "$$REG/$$img:$TAG_NAME" \
+              -t "$$REG/$$img:beta" \
+              "$$REG/$$img@$$digest"
             touch "/workspace/skip-$$img"
           else
             echo "[build] no $$img:$COMMIT_SHA in the registry — full build"

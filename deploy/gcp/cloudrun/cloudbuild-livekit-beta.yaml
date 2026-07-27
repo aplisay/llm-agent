@@ -16,13 +16,15 @@
 #
 # SKIP-OR-BUILD: when livekit-agent:$COMMIT_SHA already exists (a previous
 # beta release of the same commit, or a per-commit main build), Check PROMOTES
-# server-side (digest-pinned `tags add`, no rebuild) and the
-# Submodules/Build/Push steps no-op via a /workspace skip marker — the
-# submodule fetch is skipped too. See cloudbuild-beta.yaml for the full
-# rationale (incl. why there is no `images:` list). Build-time secrets: the
-# production SECRETENV bundle, matching the per-commit main build.
+# server-side (digest-pinned manifest copy via `docker buildx imagetools
+# create` — NOT `tags add`, which cannot MOVE an existing :beta under the
+# Cloud Build SA) and the Submodules/Build/Push steps no-op via a /workspace
+# skip marker — the submodule fetch is skipped too. See cloudbuild-beta.yaml
+# for the full rationale (incl. why there is no `images:` list). Build-time
+# secrets: the production SECRETENV bundle, matching the per-commit main
+# build.
 steps:
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  - name: gcr.io/cloud-builders/docker
     id: Check
     entrypoint: bash
     args:
@@ -30,12 +32,18 @@ steps:
       - |
         set -euo pipefail
         REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
-        digest=$$(gcloud artifacts docker images describe "$$REG/$_SERVICE_NAME:$COMMIT_SHA" \
-                    --format='value(image_summary.digest)' 2>/dev/null || true)
+        # NB parse the Digest: line — the GCB builder's buildx ignores
+        # `imagetools inspect --format` and prints the human output anyway.
+        digest=$$(docker buildx imagetools inspect "$$REG/$_SERVICE_NAME:$COMMIT_SHA" 2>/dev/null \
+                    | awk '/^Digest:/{print $$2; exit}' || true)
         if [ -n "$$digest" ]; then
           echo "[promote] $_SERVICE_NAME:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
-          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:$TAG_NAME" --quiet
-          gcloud artifacts docker tags add "$$REG/$_SERVICE_NAME@$$digest" "$$REG/$_SERVICE_NAME:beta" --quiet
+          # --prefer-index=false: keep the promoted manifest byte-identical
+          # (same digest as :$COMMIT_SHA) — no new OCI index wrapper.
+          docker buildx imagetools create --prefer-index=false \
+            -t "$$REG/$_SERVICE_NAME:$TAG_NAME" \
+            -t "$$REG/$_SERVICE_NAME:beta" \
+            "$$REG/$_SERVICE_NAME@$$digest"
           touch /workspace/skip-livekit-agent
         else
           echo "[build] no $_SERVICE_NAME:$COMMIT_SHA in the registry — full build"
