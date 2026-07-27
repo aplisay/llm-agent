@@ -1,6 +1,6 @@
 """Compatibility shims for Pipecat's upstream ``UltravoxRealtimeLLMService``.
 
-Two fixes live here today:
+Three fixes live here today:
 
 1. ``_receive_messages`` teardown race (original): upstream wraps its
    ``try/except`` around the loop *body* rather than the iteration itself, so
@@ -22,6 +22,17 @@ Two fixes live here today:
    placeholder and deliver the true result as a native ``client_tool_result``
    for the same invocation id instead.
 
+3. Tool ``timeout`` (see ``_to_selected_tools``): Ultravox limits client tools
+   to a DEFAULT execution window of 2.5 seconds — a tool whose result arrives
+   later is treated as failed, the late ``client_tool_result`` is discarded as
+   stale, and the model retries the call. Upstream's ``_to_selected_tools``
+   emits ``temporaryTool`` definitions with no ``timeout`` field, so every tool
+   gets that default (beta 2026-07-27: booking_book's ~4s round-trip — freebusy
+   re-validation + Google event insert — was retried with identical args after
+   each SUCCESSFUL booking, and the duplicate 409'd as slot_unavailable, so the
+   agent told the caller a slot they had just secured was taken). We stamp an
+   explicit per-tool timeout on every definition.
+
 This file is intended to shrink as upstream fixes land.
 """
 
@@ -31,12 +42,33 @@ import json
 from typing import Any
 
 from loguru import logger
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
 
+# Ultravox's client-tool execution window (protobuf Duration string, 40s max).
+# 10s clears our slowest data tools (booking_book ≈ 4s, MCP knowledge search)
+# with margin, while still bounding how long a wedged tool can freeze the
+# conversation. Ultravox delivers results the moment they arrive — a generous
+# ceiling adds no latency to the common fast path.
+ULTRAVOX_TOOL_TIMEOUT = "10s"
+
 
 class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
-    """Drop-in replacement: teardown-race fix + native tool-result delivery."""
+    """Drop-in replacement: teardown-race fix + native tool-result delivery +
+    explicit tool timeouts."""
+
+    def _to_selected_tools(self, tool: ToolsSchema) -> list[dict[str, Any]]:
+        """Upstream's mapping, plus an explicit ``timeout`` on every
+        ``temporaryTool`` so slow-but-healthy data tools aren't cut off at
+        Ultravox's 2.5s default (which discards the late result and makes the
+        model retry — duplicate side effects for non-idempotent tools)."""
+        selected = super()._to_selected_tools(tool)
+        for entry in selected:
+            temporary = entry.get("temporaryTool")
+            if isinstance(temporary, dict):
+                temporary.setdefault("timeout", ULTRAVOX_TOOL_TIMEOUT)
+        return selected
 
     async def deliver_native_tool_result(self, tool_call_id: str, result: Any) -> None:
         """Send a REAL native ``client_tool_result`` for a data tool the instant
