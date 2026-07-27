@@ -182,3 +182,37 @@ class TestTelemetry:
         callout = next(m for m in messages if "rest_callout" in m)["rest_callout"]
         assert callout["url"].endswith("booking.get_slots")
         assert callout["key"] == "POLITE_BOOKING"
+
+
+class TestUnsuppliedParamsOmitted:
+    """Params the model didn't supply are OMITTED, never fabricated as null.
+
+    Beta 2026-07-27: {"from": null, "days": null} reached booking.get_slots
+    for every no-preference call; Number(null) === 0 server-side coerced the
+    scan to one day and afternoon callers were told nothing was available.
+    """
+
+    def test_unsupplied_generated_param_is_absent_from_the_body(self) -> None:
+        _run(_rest_fn(), [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {})
+        assert _FakeClient.last["json"] == {"policy": "bpol_x"}
+        assert "days" not in _FakeClient.last["json"]
+
+    def test_model_sent_explicit_null_is_treated_as_unsupplied(self) -> None:
+        _run(_rest_fn(), [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {"days": None})
+        assert "days" not in _FakeClient.last["json"]
+
+    def test_declared_default_still_fills_an_absent_param(self) -> None:
+        fn = _rest_fn()
+        fn["input_schema"]["properties"]["days"] = {"type": "number", "default": 7}
+        _run(fn, [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {})
+        assert _FakeClient.last["json"]["days"] == 7
+
+    def test_missing_metadata_without_default_is_omitted_not_null(self) -> None:
+        fn = _rest_fn()
+        fn["input_schema"]["properties"]["callerNumber"] = {
+            "type": "string",
+            "source": "metadata",
+            "from": "aplisay.callerId",
+        }
+        _run(fn, [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {"days": 3})
+        assert _FakeClient.last["json"] == {"days": 3, "policy": "bpol_x"}
