@@ -70,6 +70,58 @@ def _replace_parameters(template: str, inputs: dict) -> tuple[str, dict]:
 HARDWIRED_BUILTINS: dict[str, Callable[..., Any]] = {}
 
 
+class RestCallError(RuntimeError):
+    """A ``rest`` function's HTTP response was >= 400.
+
+    Carries the response body so the dispatcher can hand it to the model as the
+    tool result (JS-handler parity: ``lib/function-handler.js`` returns
+    ``e.response.data`` as ``result`` alongside ``error``) — a bare error string
+    with a ``None`` result leaves the model unable to read the server's message.
+    """
+
+    def __init__(self, message: str, body: Any):
+        super().__init__(message)
+        self.body = body
+
+
+def _resolve_rest_auth(
+    fn_def: dict, keys: list[dict]
+) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Resolve a rest function's ``key`` reference into auth material.
+
+    Returns ``(headers, query_pairs)``. Mirrors the canonical JS handler
+    (``lib/function-handler.js``: ``basic`` / ``bearer`` / ``header``) plus the
+    ``query`` type ``mcp_tools._resolve_key_auth`` already supports. An unknown
+    key name or ``in`` type logs a warning and yields no auth — the request goes
+    out keyless and the server's 401 comes back as the tool result, matching the
+    JS handler's behaviour.
+    """
+    name = fn_def.get("key")
+    if not name:
+        return {}, []
+    key = next((k for k in (keys or []) if k.get("name") == name), None)
+    if key is None:
+        logger.bind(function=fn_def.get("name"), key=name).warning(
+            f"rest function '{fn_def.get('name')}' references unknown API key '{name}'; sending no auth"
+        )
+        return {}, []
+    where = (key.get("in") or "").lower()
+    value = key.get("value")
+    if where == "basic":
+        return {"Authorization": f"Basic {value}"}, []
+    if where == "bearer":
+        return {"Authorization": f"Bearer {value}"}, []
+    if where == "header":
+        header_name = key.get("header") or key.get("name")
+        return {str(header_name): str(value)}, []
+    if where == "query":
+        return {}, [(key.get("name") or name, str(value or ""))]
+    logger.bind(function=fn_def.get("name"), key=name, **{"in": where}).warning(
+        f"rest function '{fn_def.get('name')}' API key '{name}' has unsupported 'in' type; sending no auth"
+    )
+    return {}, []
+
+
 def _builtin_metadata(args: dict, metadata: dict, options: dict) -> dict:
     keys = args.get("keys")
     if isinstance(keys, str):
@@ -157,7 +209,7 @@ def _write_result_to_metadata(
 async def function_handler(
     function_calls: list[dict],
     functions: list[dict],
-    keys: list[str],
+    keys: list[dict],
     message_handler: Callable[[dict], Awaitable[None]],
     metadata: dict,
     specific_builtins: dict[str, Callable[..., Any]],
@@ -221,9 +273,30 @@ async def function_handler(
                     raise RuntimeError(f"no builtin implementation for {platform}")
                 result = await _maybe_await(fn(inputs, metadata, options))
             elif impl == "rest":
+                # Callout telemetry before the request (JS-handler parity) so
+                # the call's Data feed shows WHERE the tool went and with what
+                # auth shape — the 2026-07-25 beta 401s were invisible without it.
+                try:
+                    await message_handler(
+                        {
+                            "rest_callout": {
+                                "url": fn_def.get("url"),
+                                "method": (fn_def.get("method") or "POST").upper(),
+                                "key": fn_def.get("key") or None,
+                            }
+                        }
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"rest_callout telemetry emit failed: {e}")
                 result = await _execute_rest(fn_def, inputs, keys)
             else:
                 raise RuntimeError(f"unknown implementation {impl}")
+        except RestCallError as e:
+            # Surface the server's response body to the model as the tool
+            # result — a 401/422 body usually says exactly what to fix.
+            error = str(e)
+            result = e.body
+            logger.bind(name=name, error=error).warning("function execution failed")
         except Exception as e:  # noqa: BLE001
             error = str(e)
             logger.bind(name=name, error=error).warning("function execution failed")
@@ -270,11 +343,21 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-async def _execute_rest(fn_def: dict, inputs: dict, keys: list[str]) -> Any:
-    """REST implementation. Supports template substitution into URL/headers/body."""
+async def _execute_rest(fn_def: dict, inputs: dict, keys: list[dict]) -> Any:
+    """REST implementation. Supports template substitution into URL/headers/body.
+
+    Auth: a ``key`` name on the function is resolved against the agent's
+    ``keys`` into an Authorization (or custom) header — the same contract the
+    canonical JS handler implements. This was MISSING from the port until
+    2026-07-25: every keyed rest function (booking_get_slots / booking_book /
+    notify_email_team) went out with no credentials and 401'd at the tool
+    plane regardless of the key being armed on the agent.
+    """
     method = (fn_def.get("method") or "POST").upper()
     raw_url = fn_def.get("url") or ""
     url, leftover = _replace_parameters(raw_url, inputs)
+
+    auth_headers, auth_params = _resolve_rest_auth(fn_def, keys)
 
     headers_template = fn_def.get("headers") or {}
     headers: dict[str, str] = {}
@@ -290,15 +373,32 @@ async def _execute_rest(fn_def: dict, inputs: dict, keys: list[str]) -> Any:
         else:
             substituted, _ = _replace_parameters(str(value), inputs)
             headers[key] = substituted
+    # Key-derived auth wins for its own header name; explicit template headers
+    # for OTHER names survive (the JS handler sends only the auth header, so
+    # there is no conflicting precedent to preserve).
+    headers.update(auth_headers)
 
     body: Any = None
+    params: Optional[list[tuple[str, str]]] = None
     if method in ("POST", "PUT", "PATCH"):
         body = leftover or None
+        if auth_params:
+            params = list(auth_params)
+    else:
+        # Unconsumed inputs become the query string on read-style methods —
+        # the JS handler's URLSearchParams(left) branch.
+        params = [(k, str(v)) for k, v in (leftover or {}).items() if v is not None]
+        params.extend(auth_params)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.request(method, url, headers=headers, json=body)
+        resp = await client.request(method, url, headers=headers, params=params or None, json=body)
+    is_json = resp.headers.get("content-type", "").startswith("application/json")
     if resp.status_code >= 400:
-        raise RuntimeError(f"REST function {fn_def.get('name')} failed: {resp.status_code} {resp.text}")
-    if resp.headers.get("content-type", "").startswith("application/json"):
+        parsed = _try_parse_json(resp.text) if is_json else None
+        raise RestCallError(
+            f"REST function {fn_def.get('name')} failed: {resp.status_code}",
+            parsed if parsed is not None else resp.text,
+        )
+    if is_json:
         return resp.json()
     return resp.text

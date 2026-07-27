@@ -11,174 +11,174 @@
 #       --tag-pattern='^beta-[0-9]+\.[0-9]+\.[0-9]+$' \
 #       --build-config=agents/pipecat/deploy/gcp/cloudbuild-beta.yaml
 #
-# Builds the five images (freeswitch, esl-poller, sipbridge, secretenv-exec,
-# pipecat-worker) from the tagged commit, each tagged :$COMMIT_SHA + :beta
-# (floating channel head) + :$TAG_NAME (the immutable beta-n.n.n version).
-# Build + push only — no deploy: a beta K8s overlay pulls :beta (or pins
-# :beta-n.n.n) and is rolled with kubectl, exactly like the :next / :latest
-# channels.
+# Publishes the five images (freeswitch, esl-poller, sipbridge,
+# secretenv-exec, pipecat-worker), each tagged :$COMMIT_SHA + :beta (floating
+# channel head) + :$TAG_NAME (the immutable beta-n.n.n version). Build + push
+# only — no deploy: a beta K8s overlay pulls :beta (or pins :beta-n.n.n) and
+# is rolled with kubectl, exactly like the :next / :latest channels.
+#
+# SKIP-OR-BUILD (per image): the pipecat staging lane pushes :$COMMIT_SHA to
+# these SAME image paths on every next push, so a beta tag on an
+# already-built commit skips the whole stack rebuild (freeswitch is the big
+# win) — Check PROMOTES server-side (digest-pinned manifest copy via `docker
+# buildx imagetools create`, no rebuild) and each image's Build/Push steps
+# no-op via a /workspace skip marker. Deliberately NOT `gcloud artifacts
+# docker tags add`: moving an existing floating tag (:beta on a re-version)
+# needs artifactregistry.tags.delete, which the Cloud Build SA lacks — a
+# manifest PUT moves tags with ordinary push permissions (the polite-ai
+# beta-0.9.56 promote incident). Partial skips are fine: every image is
+# gated independently. No `images:` provenance list: Cloud Build fails the
+# build when a listed image wasn't produced locally, which is exactly the
+# skip path.
 steps:
+  - name: gcr.io/cloud-builders/docker
+    id: Check
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        for img in freeswitch esl-poller sipbridge secretenv-exec pipecat-worker; do
+          # NB parse the Digest: line — the GCB builder's buildx ignores
+          # `imagetools inspect --format` and prints the human output anyway.
+          digest=$$(docker buildx imagetools inspect "$$REG/$$img:$COMMIT_SHA" 2>/dev/null \
+                      | awk '/^Digest:/{print $$2; exit}' || true)
+          if [ -n "$$digest" ]; then
+            echo "[promote] $$img:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
+            # --prefer-index=false: keep the promoted manifest byte-identical
+            # (same digest as :$COMMIT_SHA) — reload-beta digest-tracks the
+            # pipecat tier, so digests must be preserved.
+            docker buildx imagetools create --prefer-index=false \
+              -t "$$REG/$$img:$TAG_NAME" \
+              -t "$$REG/$$img:beta" \
+              "$$REG/$$img@$$digest"
+            touch "/workspace/skip-$$img"
+          else
+            echo "[build] no $$img:$COMMIT_SHA in the registry — full build"
+          fi
+        done
+
   # ----- FreeSWITCH -----
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '--build-arg'
-      - BUILD_ENV=production
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$TAG_NAME
-      - '-f'
-      - './agents/pipecat/freeswitch/Dockerfile'
-      - './agents/pipecat/freeswitch'
     id: Build-freeswitch
-
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+      - -c
+      - |
+        [ -f /workspace/skip-freeswitch ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          --build-arg BUILD_ENV=production \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$TAG_NAME \
+          -f ./agents/pipecat/freeswitch/Dockerfile ./agents/pipecat/freeswitch
+  - name: gcr.io/cloud-builders/docker
     id: Push-freeswitch
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-freeswitch ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
 
   # ----- esl-poller -----
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$TAG_NAME
-      - '-f'
-      - './agents/pipecat/esl-poller/Dockerfile'
-      - './agents/pipecat/esl-poller'
     id: Build-esl-poller
-
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
+      - -c
+      - |
+        [ -f /workspace/skip-esl-poller ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$TAG_NAME \
+          -f ./agents/pipecat/esl-poller/Dockerfile ./agents/pipecat/esl-poller
+  - name: gcr.io/cloud-builders/docker
     id: Push-esl-poller
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-esl-poller ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
 
   # ----- sipbridge -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat/sipbridge into the image.
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$TAG_NAME
-      - '-f'
-      - './agents/pipecat/sipbridge/Dockerfile'
-      - '.'
     id: Build-sipbridge
-
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
+      - -c
+      - |
+        [ -f /workspace/skip-sipbridge ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$TAG_NAME \
+          -f ./agents/pipecat/sipbridge/Dockerfile .
+  - name: gcr.io/cloud-builders/docker
     id: Push-sipbridge
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-sipbridge ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
 
   # ----- secretenv-exec -----
   # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
   # Used by the Kubernetes freeswitch / voiceblender overlays so those
   # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$TAG_NAME
-      - '-f'
-      - './agents/pipecat/sipbridge/Dockerfile.secretenv-exec'
-      - '.'
     id: Build-secretenv-exec
-
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
+      - -c
+      - |
+        [ -f /workspace/skip-secretenv-exec ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$TAG_NAME \
+          -f ./agents/pipecat/sipbridge/Dockerfile.secretenv-exec .
+  - name: gcr.io/cloud-builders/docker
     id: Push-secretenv-exec
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-secretenv-exec ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
 
   # ----- pipecat-worker -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat into the image.
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '--build-arg'
-      - COMMIT_SHA=$COMMIT_SHA
-      - '--build-arg'
-      - BRANCH_NAME=$BRANCH_NAME
-      - '--build-arg'
-      - TAG_NAME=$TAG_NAME
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:beta
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$TAG_NAME
-      - '-f'
-      - './agents/pipecat/Dockerfile'
-      - '.'
     id: Build-pipecat-worker
-
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
+      - -c
+      - |
+        [ -f /workspace/skip-pipecat-worker ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          --build-arg COMMIT_SHA=$COMMIT_SHA \
+          --build-arg BRANCH_NAME=$BRANCH_NAME \
+          --build-arg TAG_NAME=$TAG_NAME \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$TAG_NAME \
+          -f ./agents/pipecat/Dockerfile .
+  - name: gcr.io/cloud-builders/docker
     id: Push-pipecat-worker
-
-images:
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-pipecat-worker ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
 
 options:
   substitutionOption: ALLOW_LOOSE
