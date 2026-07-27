@@ -152,7 +152,19 @@ HARDWIRED_BUILTINS["metadata"] = _builtin_metadata
 def _resolve_inputs(
     fn: dict, llm_args: dict, metadata: dict, options: dict
 ) -> dict:
-    """Resolve a function's parameters by source. Mirrors the JS dispatcher."""
+    """Resolve a function's parameters by source. Mirrors the JS dispatcher.
+
+    A parameter that resolves to ``None`` is OMITTED, never sent as ``null``:
+    in the JS handler an absent argument resolves to ``undefined``, which
+    ``JSON.stringify`` drops from the request body — but Python's ``None``
+    survives serialisation as a REAL ``null`` the server must interpret. Beta
+    2026-07-27: every no-preference booking_get_slots went out as
+    ``{"from": null, "days": null}``; the server's ``Number(null) === 0``
+    coerced that to a one-day scan, so afternoon callers were told no slots
+    existed anywhere. (For metadata sources the JS handler throws when the
+    path is missing; omitting is deliberately softer — absent optional
+    metadata degrades to \"parameter not sent\" instead of failing the call.)
+    """
     properties = (fn.get("input_schema") or {}).get("properties") or {}
     resolved: dict[str, Any] = {}
     allow_tools_calls = bool(options.get("allowToolsCallsMetadataPaths"))
@@ -170,9 +182,12 @@ def _resolve_inputs(
             value = _get_by_path(metadata, from_path)
             if value is None and "default" in entry:
                 value = entry["default"]
-            resolved[key] = value
+            if value is not None:
+                resolved[key] = value
         else:  # generated (default)
-            resolved[key] = llm_args.get(key, entry.get("default"))
+            value = llm_args.get(key, entry.get("default"))
+            if value is not None:
+                resolved[key] = value
 
     # transfer.number security boundary — section 5.2.
     if fn.get("name") == "transfer" or fn.get("platform") == "transfer":
