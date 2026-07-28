@@ -8,6 +8,7 @@ import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
   inferTtsVendor,
@@ -279,7 +280,19 @@ export interface CreateVoiceModelAndSessionParams {
 export function createVoiceModelAndSession(
   params: CreateVoiceModelAndSessionParams,
 ): { session: voice.AgentSession; model: voice.Agent } {
-  const { voiceMode, modelName, agent, call, tools, vad } = params;
+  const { voiceMode, modelName, agent: agentDef, call, tools, vad } = params;
+
+  // Resolve the agent's `promptMetadata` declaration ONCE, here: every session
+  // passes through this factory — the initial run and each transfer_agent
+  // handover — and both prompt sites (this one and buildRealtimeLlmOptions
+  // below) read `agent.prompt`, so rewriting it here states the declared facts
+  // (today's date, the caller's number, …) to whichever agent is now speaking,
+  // freshly for each. A declaration that resolves to nothing returns the agent
+  // untouched. See agent-lib/prompt-metadata.js.
+  const basePrompt = agentDef?.prompt ?? "";
+  const composedPrompt = promptWithMetadata(basePrompt, agentDef?.promptMetadata, call?.metadata);
+  const agent =
+    composedPrompt === basePrompt ? agentDef : ({ ...agentDef, prompt: composedPrompt } as Agent);
 
   const agentOptions = {
     instructions: agent?.prompt || "You are a helpful assistant.",

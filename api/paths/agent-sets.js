@@ -20,7 +20,7 @@ export default function (logger) {
   };
 };
 
-const MEMBER_FIELDS = ['name', 'description', 'modelName', 'prompt', 'options', 'functions', 'mcpServers', 'keys', 'type'];
+const MEMBER_FIELDS = ['name', 'description', 'modelName', 'prompt', 'promptMetadata', 'options', 'functions', 'mcpServers', 'keys', 'type'];
 
 /** Default the agent type from the model name's handler prefix when not given explicitly. */
 export function defaultType(def) {

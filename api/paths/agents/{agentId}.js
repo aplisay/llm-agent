@@ -106,6 +106,9 @@ agentGet.apiDoc = {
               prompt: {
                 $ref: '#/components/schemas/Prompt'
               },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
+              },
               options: {
                 $ref: '#/components/schemas/AgentOptions'
               },
@@ -153,7 +156,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { name, description, prompt, options, functions, mcpServers, keys, modelName, type } = req.body;
+  let { name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type } = req.body;
   let { agentId } = req.params;
 
   if (isBuiltinAgentId(agentId)) {
@@ -177,7 +180,7 @@ const agentUpdate = async (req, res) => {
       lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } }),
       options
     });
-    await agent.update({ name, description, prompt, options, functions, mcpServers, keys, modelName, type });
+    await agent.update({ name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -277,6 +280,9 @@ agentUpdate.apiDoc = {
               },
               prompt: {
                 $ref: '#/components/schemas/Prompt'
+              },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
               },
               functions: {
                 $ref: '#/components/schemas/Functions'

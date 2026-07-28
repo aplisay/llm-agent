@@ -61,6 +61,8 @@ export interface Agent {
   label?: string;
   name?: string;
   prompt?: string;
+  /** Call metadata stated in the system prompt — see agent-lib/prompt-metadata.js. */
+  promptMetadata?: { description?: string; from: string }[];
   options?: {
     /**
      * Optional opening greeting played right after the session starts.

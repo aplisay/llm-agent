@@ -127,6 +127,8 @@ components:
           $ref: "#/components/schemas/AgentType"
         prompt:
           $ref: "#/components/schemas/Prompt"
+        promptMetadata:
+          $ref: "#/components/schemas/PromptMetadata"
         options:
           $ref: "#/components/schemas/AgentOptions"
         functions:
@@ -370,6 +372,55 @@ components:
       example: |-
         You work for Robs Flags, a company that manufactures flags.
         You can only chat with callers about submitting or organising the return of an order that the user has previously made...
+    PromptMetadata:
+      type: array
+      description: |-
+        Call metadata to STATE TO THE MODEL IN ITS SYSTEM PROMPT, rather than leaving it to fetch the
+        value with a `get_metadata` tool call. Each entry renders as one `<description> <value>` line
+        appended to the agent's prompt under a "Call context" heading, resolved fresh for every call
+        (and again after a `transfer_agent` handover, for the incoming agent's own declaration).
+
+        Use it for facts the agent must reason with from its FIRST utterance — today's date above all.
+        A tool round-trip only happens if the model remembers to make it, and on realtime providers it
+        freezes the conversation while it runs; a prompt statement is always present and costs nothing
+        at turn time. The `metadata` builtin remains the right tool for values needed occasionally, or
+        that may change during a long call.
+
+        Rules:
+          * `from` is a dot-path into the same call metadata that `source: "metadata"` function
+            parameters read — e.g. `aplisay.callerId`, `aplisay.calledId`, `aplisay.dateTime`, or any
+            key the deployment seeds into instance metadata.
+          * `aplisay.dateTime` is computed live at prompt-composition time (a seeded value wins), so an
+            agent that reasons about dates never has to guess what day it is.
+          * An entry whose value is missing, null or empty is OMITTED — an absent optional fact never
+            becomes a statement the model would then treat as true.
+          * `metadata.toolsCalls.*` paths are only permitted on handlers with dynamic metadata support
+            (LiveKit), matching the rule for `source: "metadata"` parameters and the `metadata` builtin.
+          * Object and array values render as compact JSON; long values are truncated.
+      maxItems: 20
+      items:
+        type: object
+        required:
+          - from
+        properties:
+          description:
+            type: string
+            maxLength: 200
+            description: |-
+              Sentence fragment placed before the value, e.g. "The current date/time is". Written so
+              `<description> <value>` reads as a complete statement of fact. Optional: with no
+              description the bare value is stated on its own line.
+            example: The current date/time is
+          from:
+            type: string
+            maxLength: 200
+            description: Dot-path into the call metadata, e.g. `aplisay.dateTime`.
+            example: aplisay.dateTime
+      example:
+        - description: The current date/time is
+          from: aplisay.dateTime
+        - description: The number this caller is calling from is
+          from: aplisay.callerId
     AgentOptions:
       type: object
       properties:

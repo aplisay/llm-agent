@@ -20,7 +20,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { name, description, modelName, prompt, options, functions, mcpServers, keys, type } = req.body;
+  let { name, description, modelName, prompt, promptMetadata, options, functions, mcpServers, keys, type } = req.body;
   let { id: userId, organisationId } = res.locals.user;
   // RBAC: a single `agent` resource — text-vs-audio is NOT a separate permission.
   if (!requirePermission(res, 'agent', 'create')) return;
@@ -30,7 +30,7 @@ const agentCreate = (async (req, res) => {
   }
   // Default the agent type from the model's handler prefix when not given explicitly
   type = type ?? (typeof modelName === 'string' && modelName.startsWith('text:') ? 'text' : 'interactive-audio');
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, mcpServers, keys, type, userId, organisationId });
+  let agent = Agent.build({ name, description, modelName, prompt, promptMetadata, options, functions, mcpServers, keys, type, userId, organisationId });
 
   log.info({ modelName, prompt, options, functions, mcpServers, userId, organisationId, type }, 'create API call');
 
@@ -83,6 +83,9 @@ agentCreate.apiDoc = {
             },
             prompt: {
               $ref: '#/components/schemas/Prompt'
+            },
+            promptMetadata: {
+              $ref: '#/components/schemas/PromptMetadata'
             },
             options: {
               $ref: '#/components/schemas/AgentOptions'
@@ -140,6 +143,9 @@ agentCreate.apiDoc = {
               },
               prompt: {
                 $ref: '#/components/schemas/Prompt'
+              },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
               },
               options: {
                 $ref: '#/components/schemas/AgentOptions'

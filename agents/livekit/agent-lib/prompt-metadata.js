@@ -1,0 +1,1 @@
+../../../lib/prompt-metadata.js
