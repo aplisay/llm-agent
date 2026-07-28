@@ -1,7 +1,10 @@
 import type { Options } from 'tsup';
 
 const defaultOptions: Options = {
-  entry: ["./realtime.ts", "lib/*.ts", "plugins/**/*.ts"],
+  // Match plugin sources only: a broader `plugins/**/*.ts` also picks up a
+  // plugin's own node_modules/ and dist/, and esbuild fails on the .d.ts files
+  // it finds there.
+  entry: ["./realtime.ts", "lib/*.ts", "plugins/*/src/**/*.ts"],
   format: ["esm"],
   splitting: false,
   sourcemap: true,
