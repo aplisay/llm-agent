@@ -6,13 +6,11 @@ process.env.OPENAI_API_KEY ||= 'test-key';
 process.env.ANTHROPIC_API_KEY ||= 'test-key';
 process.env.KIMI_KEY ||= 'test-key';
 process.env.OPENROUTER_KEY ||= 'test-key';
-process.env.GROQ_API_KEY ||= 'test-key';
 process.env.GOOGLE_API_KEY ||= 'test-key';
 
 const { default: OpenAi } = await import('../lib/models/openai.js');
 const { default: Kimi } = await import('../lib/models/kimi.js');
 const { default: OpenRouter } = await import('../lib/models/openrouter.js');
-const { default: Groq } = await import('../lib/models/groq.js');
 const { default: McpToolBridge } = await import('../lib/models/mcp-tools.js');
 
 const logger = {
@@ -33,8 +31,6 @@ const baseArgs = (model) => ({
 
 describe('driver model-name handling (ids containing "/")', () => {
   test('openai-compatible strips only the leading provider segment', () => {
-    const groq = new Groq(baseArgs('text:groq/openai/gpt-oss-120b'));
-    expect(groq.model).toBe('openai/gpt-oss-120b');
     const or = new OpenRouter(baseArgs('text:openrouter/moonshotai/kimi-k2.6'));
     expect(or.model).toBe('moonshotai/kimi-k2.6');
     const kimi = new Kimi(baseArgs('text:kimi/kimi-k2.6'));
@@ -100,8 +96,8 @@ describe('model fallback for handler-constructed (voice) sessions', () => {
     // modelName but no model — the driver must not run the catalogue default.
     const { default: Anthropic } = await import('../lib/models/anthropic.js');
     const { default: Gemini } = await import('../lib/models/gemini.js');
-    const groq = new Groq({ ...baseArgs(undefined), model: undefined, modelName: 'jambonz:groq/openai/gpt-oss-20b' });
-    expect(groq.model).toBe('openai/gpt-oss-20b');
+    const or = new OpenRouter({ ...baseArgs(undefined), model: undefined, modelName: 'text:openrouter/moonshotai/kimi-k2.6' });
+    expect(or.model).toBe('moonshotai/kimi-k2.6');
     const oa = new OpenAi({ ...baseArgs(undefined), model: undefined, modelName: 'jambonz:openai/gpt-4o' });
     expect(oa.model).toBe('gpt-4o');
     const gem = new Gemini({ ...baseArgs(undefined), model: undefined, modelName: 'jambonz:gemini/gemini-2.5-flash' });

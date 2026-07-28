@@ -188,7 +188,7 @@ POST /api/agents
 
 Key points:
 
-- **Model names**: `text:openai/…`, `text:anthropic/…`, `text:gemini/…`, `text:groq/…`. `GET /models` lists the text models available on your deployment.
+- **Model names**: `text:openai/…`, `text:anthropic/…`, `text:gemini/…`, `text:kimi/…`. `GET /models` lists the text models available on your deployment.
 - **No audio options**: `tts`, `stt`, voices and greetings are meaningless for text agents and should be omitted. Text agents cannot be activated with `listen`.
 - **The `result` function** (builtin, `platform: "result"`) is the agent's *output contract*: its `input_schema` describes the structure you want back, and the arguments the agent passes when it calls it become the invocation result. An agent with no `result` function falls back to returning its first plain-text reply as `{ "text": "…" }` — fine for casual use, but defining a `result` schema gives you reliable, structured output.
 - Text agents can use `rest` and `stub` functions, the `metadata` builtin, and may even call their own `subagent` functions (nesting is limited to 3 levels).

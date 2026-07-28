@@ -120,7 +120,7 @@ export default class Application {
           });
           await sessionHandler.handler();
           logger.debug({ callId }, 'session ended');
-          // Bridged drivers (gemini/groq with mcpServers) hold standing MCP
+          // Bridged drivers (gemini with mcpServers) hold standing MCP
           // connections — release them or every call leaks a socket per
           // server for the worker's lifetime.
           Promise.resolve(model?.close?.()).catch((e) => {

@@ -54,7 +54,6 @@ This document explains the rationalized testing setup for the llm-agent project.
 
 ### Non-Database Tests
 - `tests/gpt.test.mjs`
-- `tests/groq.test.mjs`
 - `tests/anthropic-simple.test.mjs`
 - `tests/voices.test.mjs`
 - `tests/handler.test.mjs`

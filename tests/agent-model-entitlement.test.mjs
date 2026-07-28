@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 
 process.env.ANTHROPIC_API_KEY ||= 'test-key';
 process.env.OPENAI_API_KEY ||= 'test-key';
-process.env.GROQ_API_KEY ||= 'test-key';
 process.env.GOOGLE_API_KEY ||= 'test-key';
 process.env.KIMI_KEY ||= 'test-key';
 process.env.OPENROUTER_KEY ||= 'test-key';
