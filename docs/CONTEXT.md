@@ -56,7 +56,7 @@ build available. Keep it deterministic.
   WebSocket server (`lib/ws-handler.js`), handler cleanup (`lib/handlers/index.js`).
 - `api/` — `api-doc.yaml` (the OpenAPI surface) + `paths/` (operation handlers).
 - `lib/` — the core services:
-  - `models/*` — LLM/gateway adapters: `anthropic, openai, gemini, google-vertexai, groq,
+  - `models/*` — LLM/gateway adapters: `anthropic, openai, gemini, google-vertexai,
     ultravox, livekit, pipecat` + `index.js`, `llm.js`.
   - `database.js`, `database-models/*` — persistence.
   - `handlers/`, `ws-handler.js` — request/WebSocket lifecycle.

@@ -12,7 +12,7 @@ How to get from a clone to an agent you can talk to: install, environment, datab
     -e POSTGRES_DB=llmvoice -e POSTGRES_USER=llm -e POSTGRES_PASSWORD=secret postgres:15
   ```
 
-- Credentials for **at least one LLM provider** (Anthropic, OpenAI, Google, Groq or Ultravox), and for **one runtime** you intend to use (see [minimum viable setups](#minimum-viable-setups)).
+- Credentials for **at least one LLM provider** (Anthropic, OpenAI, Google or Ultravox), and for **one runtime** you intend to use (see [minimum viable setups](#minimum-viable-setups)).
 - **Python 3.11+ with [`uv`](https://docs.astral.sh/uv/)** — only if you will run the Pipecat worker.
 
 ## Install
@@ -41,7 +41,7 @@ The essentials, by group:
 | Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
 | Auth | `AUTHENTICATE_USERS=NO` for a local instance | Real deployments use Firebase (legacy) or better-auth (`BETTER_AUTH_*`), plus org-scoped API keys |
-| LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `GROQ_API_KEY`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
+| LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
 | Speech | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, Google credentials as above | Needed for pipeline (non speech-to-speech) models |
 | LiveKit runtime | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | LiveKit Cloud or self-hosted |
 | Pipecat runtime | `PIPECAT_WORKER_URL`, `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, `PIPECAT_PUBLIC_URL` | See worker section below |

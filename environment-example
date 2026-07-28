@@ -104,7 +104,6 @@ CREDENTIALS_KEY=<RANDOM SECRET>
 
 # ── Model / voice providers (enable the ones this deployment uses) ──────────
 ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
-# GROQ_API_KEY=
 # ULTRAVOX_API_KEY=
 # ELEVENLABS_API_KEY=
 

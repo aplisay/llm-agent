@@ -238,7 +238,7 @@ A new agent type for headless work:
   a text agent.
 * Text agents use `text:<provider>/<model>` model names
   (e.g. `text:openai/gpt-4o`, `text:anthropic/claude-3-5-sonnet-20240620`,
-  `text:gemini/gemini-1.5-pro`, `text:groq/...`) — the same provider
+  `text:gemini/gemini-1.5-pro`, `text:kimi/...`) — the same provider
   implementations as the Jambonz pipeline, with no audio leg.
 * They cannot `listen`; they are invoked:
   * by a voice agent through a builtin `subagent` platform function — the
