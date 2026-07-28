@@ -30,6 +30,7 @@ from . import api_client
 from . import invocation_log
 from .agent_tools import build_agent_tools
 from .mcp_tools import close_mcp_servers, connect_mcp_servers
+from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .recording import RecordingSession
 from .sip_gateway.base import (
@@ -335,6 +336,14 @@ class CallSession:
         failure.
         """
         metadata = self.call.metadata
+        # Every session's prompt passes through here — the initial run, each
+        # transfer_agent handover and the consult-side bot — so resolving the
+        # agent's own promptMetadata declaration at this one point states its
+        # facts (today's date, caller number, …) to whichever agent is now
+        # speaking, freshly for each. See prompt_metadata.py.
+        system_prompt = prompt_with_metadata(
+            system_prompt, agent.get("promptMetadata"), metadata
+        )
         # When this session is a TransferAgent (consult-side bot), it
         # has a ``parent_session`` and a different tool surface — only
         # accept_transfer / reject_transfer, no hangup or nested

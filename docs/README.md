@@ -18,6 +18,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [multi-agent-api.md](multi-agent-api.md) | The multi-agent REST surface and agent-to-agent transfer |
 | [mcp-servers.md](mcp-servers.md) | Attaching remote MCP tool servers to agents |
 | [tool-call-chaining-metadata-priming.md](tool-call-chaining-metadata-priming.md) | Static/metadata parameter sourcing and chained tool calls |
+| [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |
 | [uninterruptible-greetings.md](uninterruptible-greetings.md) | Barge-in control for opening prompts |
 | [ultravox-vendor-specific-options.md](ultravox-vendor-specific-options.md) | Ultravox model variants and tuning options |
 | [agent-concurrency-limits.md](agent-concurrency-limits.md) | Per-agent/user/organisation concurrency caps |
