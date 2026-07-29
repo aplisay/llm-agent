@@ -47,12 +47,6 @@ Use `promptMetadata` for facts the agent must **reason with from the start** —
 today's date above all. Use `get_metadata` for values needed only occasionally,
 or that may change during a long call.
 
-The date case is not hypothetical. Voice models have no clock: on beta
-(2026-07-27) a booking agent repeatedly computed "next Monday" as a **2025**
-date and sent it as a slot-search start, because nothing in its context said
-what day it was. It had a `get_metadata` tool available and did not think to
-call it.
-
 ## Entry shape
 
 ```jsonc
@@ -85,7 +79,7 @@ here:
 | `aplisay.callId` | Platform call id |
 | `aplisay.modelName` | Model handling the call |
 | *anything you seed* | Keys placed in instance metadata at call creation — CRM lookups, account tier, agent-specific context |
-| `toolsCalls.*` | Results of earlier tool calls. **LiveKit only** — same capability gate as `source: "metadata"` parameters and the `metadata` builtin; rejected at create/update time on other handlers |
+
 
 ## Rules
 
@@ -105,7 +99,7 @@ here:
 
 ## Worked examples
 
-**Booking agent** — the case this feature exists for. With the date stated, the
+**Booking agent** — with the date stated, the
 agent computes a real `from` date for an availability search instead of guessing:
 
 ```jsonc
@@ -149,21 +143,21 @@ everywhere an agent is defined:
 Malformed declarations are rejected at create/update time with a message naming
 the offending entry, so a broken declaration can never reach a live call.
 
-## Implementation notes
+## IMPORTANT SECURITY/PRIVACY NOTE
 
-The rendering is defined **once** in `lib/prompt-metadata.js` and shared:
+Everything you promote from the metatdata to the prompt using this feature unconditionally becomes part of the context visible to the LLM.
 
-- the node handlers (`ultravox:`, and any future server-side handler) import it
-  directly;
-- the **LiveKit** worker consumes the same file through an `agent-lib` symlink,
-  resolving it in `createVoiceModelAndSession` — the single point both the
-  initial session and every handover pass through;
-- the **pipecat** worker has a Python twin,
-  `pipecat_aplisay/prompt_metadata.py`, applied in `CallSession.prepare_run`,
-  which likewise covers the initial run, handovers and the consult-side bot.
+For privacy, confidentiality and security reasons, use this pattern very carefully. 
+Anything that an LLM can see in the context, it may reveal or act on externally. It may reveal it in conversation with the user or place in arguments to external tools calls. 
+The data will also be processed and reside on the LLM providers' systems and depending on your contractual arrangements may be used by them to train future iterations of the model or even be disclosed to other users.
 
-Keep the twin in step with the JS module: identical rendering is what lets one
-agent definition behave the same whichever worker takes the call. Both are
-covered by tests asserting the same cases (`tests/prompt-metadata.test.mjs`,
-`agents/pipecat/tests/test_prompt_metadata.py`,
-`agents/livekit/test/prompt-metadata.test.ts`).
+You may be able to discourage the LLM from leaking this information by prompting, but the safest way to guarantee that confidential data will not be used inappropriately by an LLM is to ensure it never sees it.
+
+Using this feature to expose confidential data in the prompt and then having the LLM later use this in generated tools calls is therefore an anti-pattern that should be avoided.
+
+
+| Usage | Reccomended | How/Alternatives |
+| ----- | ------------- | ----------------- |
+| Add date and time to give model a context for date based requests | **Yes** - this is an intended and safe use case | Use `aplisay.dateTime` |
+| Add caller number so agent LLM can use it to do a CRM lookup later in the conversation | **No** - this is not safe as it may leak the callers number to places we don't intend to share it with | Make the CRM lookup tools call with the caller number parameter directly from `metadata.aplisay.callerId` so that it goes to the CRM lookup tool directy out of band from the LLM context. |
+| Give the LLM an auth key to pass as a generated parameter to an external tools call | **No** - this is not safe as it may leak the auth key | Make the tools call with the auth key parameter directly on the `keys` array |
