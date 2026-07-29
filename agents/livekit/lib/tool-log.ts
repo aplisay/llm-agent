@@ -9,6 +9,10 @@
  *                              error — both are captured at the prod `info`
  *                              level, so failures stay visible while keeping
  *                              their severity)
+ *   - `event: "tool_loop"`   — the same tool breached the runaway-loop rate
+ *                              limit (ERROR; this is the alertable signal that
+ *                              a model is spinning a tool on a live, billed
+ *                              call — see the breaker in agent-tools.ts)
  *
  * The field shape is kept deliberately identical to the Pipecat worker's
  * `pipecat_aplisay/tool_log.py` so tool activity reads and correlates the same
@@ -35,6 +39,7 @@ export type ToolKind = "function" | "builtin" | "mcp" | "subagent";
 interface ToolLogger {
   info(obj: object, msg?: string): void;
   warn(obj: object, msg?: string): void;
+  error(obj: object, msg?: string): void;
 }
 
 // Cap any single logged value so one large tool result (e.g. a big REST
@@ -107,4 +112,36 @@ export function logToolResult(
   if (error !== undefined && error !== null) fields.error = error;
   if (ok) log.info(fields, `tool result: ${tool}`);
   else log.warn(fields, `tool error: ${tool}`);
+}
+
+/**
+ * Log a runaway tool-call loop at ERROR with `event: "tool_loop"`.
+ *
+ * This is the alertable signal for the class of failure where a realtime model
+ * re-issues the same tool as fast as it can generate (observed at ~2.5 calls/s
+ * against Ultravox): the call stays up and billed, no error is raised anywhere
+ * else, and nothing in the transcript looks wrong. `action` says what the
+ * breaker did — `"refused"` (tool not executed, hard error returned to the
+ * model) or `"terminated"` (call torn down).
+ */
+export function logToolLoop(
+  log: ToolLogger,
+  {
+    tool,
+    kind,
+    calls,
+    windowMs,
+    action,
+  }: {
+    tool: string;
+    kind: ToolKind;
+    calls: number;
+    windowMs: number;
+    action: "refused" | "terminated";
+  },
+): void {
+  log.error(
+    { event: "tool_loop", tool, kind, calls, windowMs, action },
+    `runaway tool loop: ${tool} called ${calls} times in ${windowMs}ms (${action})`,
+  );
 }

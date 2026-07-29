@@ -61,6 +61,8 @@ import type {
   SetupCallParams,
   TransferArgs,
   MessageData,
+  HangupResult,
+  HangupExecutor,
 } from "./types.js";
 
 dotenv.config();
@@ -276,6 +278,7 @@ export default defineAgent({
         startHandoverTone,
         stopHandoverTone,
         registerBridgedTakeover,
+        registerHangupExecutor,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -443,6 +446,7 @@ export default defineAgent({
             startHandoverTone,
             stopHandoverTone,
             registerBridgedTakeover,
+            registerHangupExecutor,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -1237,6 +1241,13 @@ async function setupCallAndUtilities({
   );
 
   let wantHangup = false;
+  // Set by the voice runtime once its stack is up (see registerHangupExecutor);
+  // null before that and after teardown. onHangup calls it to close the call
+  // itself instead of waiting for a state-change edge that may never come.
+  let hangupExecutor: HangupExecutor | null = null;
+  const registerHangupExecutor = (execute: HangupExecutor | null) => {
+    hangupExecutor = execute;
+  };
   let currentBridged: SipParticipant | null = null;
   let bridgedCallRecord: Call | null = null;
   const setBridgedCallRecord = (call: Call | null) => {
@@ -1503,8 +1514,32 @@ async function setupCallAndUtilities({
     return wantHangup;
   };
 
-  async function onHangup() {
+  async function onHangup(): Promise<HangupResult> {
+    // Idempotent: a model that calls hangup twice must not re-arm teardown,
+    // and must be told plainly that the first call was accepted. Returning the
+    // same cheerful "call is ending" for a repeat invites another repeat.
+    if (wantHangup) {
+      return {
+        status: "OK",
+        detail:
+          "hangup is already in progress and the call is ending — do not call hangup again",
+      };
+    }
     wantHangup = true;
+
+    // Drive teardown directly rather than relying solely on the runtime's
+    // AgentStateChanged → "listening" edge. That edge only fires on a state
+    // TRANSITION, so a hangup issued while the session is already listening —
+    // e.g. a tool-call-only turn with no closing utterance — never fires it,
+    // the latch is never read, and the call stays up and billed until the far
+    // end drops. Not awaited: teardown must not block this tool's result, and
+    // the executor applies its own grace period so the result still flushes.
+    hangupExecutor?.();
+
+    return {
+      status: "OK",
+      detail: "the call is ending now — say nothing further",
+    };
   }
 
   // Helper function to destroy any in-progress transfer when original caller disconnects
@@ -1536,6 +1571,9 @@ async function setupCallAndUtilities({
     // Registration point for the runtime's bridged human→agent takeover
     // capability (options.bridgedTransferToAgent).
     registerBridgedTakeover,
+    // Registration point for the runtime's direct teardown path, used by
+    // onHangup so an agent-initiated hangup cannot strand the call.
+    registerHangupExecutor,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || activeAgentCall,
     // The agent's own call WITHOUT the bridge override — usage attribution must
