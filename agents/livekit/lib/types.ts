@@ -13,6 +13,28 @@ import { type ParticipantInfo } from "livekit-server-sdk";
 // Re-export ParticipantInfo for convenience
 export { ParticipantInfo };
 
+/**
+ * Result of the `hangup` builtin, as handed back to the model.
+ *
+ * The model MUST get a non-empty result. `onHangup` previously returned void,
+ * which serialises to an empty tool result; a realtime model reads that as "my
+ * request went nowhere" and retries immediately — the mechanism behind the
+ * observed 337-call hangup loop. `detail` also tells the model not to keep
+ * talking, since the call is on its way down.
+ */
+export interface HangupResult {
+  status: "OK";
+  detail: string;
+}
+
+/**
+ * Tears the call down when the deferred-hangup path cannot. Registered by the
+ * voice runtime (which owns `cleanupAndClose`) into the worker scope that owns
+ * the hangup latch, mirroring `registerBridgedTakeover`. Cleared with null on
+ * teardown.
+ */
+export type HangupExecutor = () => void;
+
 // The return type from SipClient.createSipParticipant - this is what bridgeParticipant returns
 export interface SipParticipant {
   participantId: string;
@@ -129,8 +151,15 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   metadata: any;
   sendMessage: (message: any, createdAt?: Date) => Promise<void>;
   call: Call;
-  onHangup: () => Promise<void>;
+  onHangup: () => Promise<HangupResult>;
   onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
+  /**
+   * Hands the worker's hangup latch a way to drive teardown directly, so an
+   * agent-initiated hangup no longer depends solely on an AgentStateChanged
+   * edge that may never arrive. Optional: transfer-only runs have no LLM and
+   * therefore no hangup tool.
+   */
+  registerHangupExecutor?: (execute: HangupExecutor | null) => void;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
   getBridgedParticipant: () => SipParticipant | null;

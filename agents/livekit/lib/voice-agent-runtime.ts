@@ -56,6 +56,7 @@ export async function runAgentWorker({
   startHandoverTone,
   stopHandoverTone,
   registerBridgedTakeover,
+  registerHangupExecutor,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -246,6 +247,35 @@ export async function runAgentWorker({
   // closeOnDisconnect or the manual ParticipantDisconnected handler.
   let watchdogInterval: NodeJS.Timeout | null = null;
   const WATCHDOG_INTERVAL_MS = 120 * 1000;
+
+  // ---- Agent-initiated hangup ------------------------------------------
+  // The healthy path closes the call on the AgentStateChanged → "listening"
+  // edge, which lets a closing utterance finish before the line drops. That
+  // edge is not guaranteed: it only fires on a state TRANSITION, so a hangup
+  // issued while the session is already listening (a tool-call-only turn with
+  // no goodbye) never triggers it. These two guards make the latch safe:
+  //   - lastAgentState lets executeHangup see there is no speech to wait for
+  //     and close on a short grace instead of waiting for a transition;
+  //   - hangupTimer bounds every other case, so no missing or late transition
+  //     can strand a live, billed call.
+  let lastAgentState: string | null = null;
+  let hangupTimer: NodeJS.Timeout | null = null;
+  let hangupArmed = false;
+  /**
+   * Long-stop measured from the LAST state change, not from the hangup request:
+   * while the session keeps transitioning (thinking ↔ speaking) it is alive and
+   * working through a closing utterance, so the timer is pushed out each time.
+   * It only expires when the session has gone quiet with a hangup outstanding —
+   * which is exactly the stuck case, and never a long-but-healthy goodbye.
+   */
+  const HANGUP_WATCHDOG_MS = 15 * 1000;
+  /**
+   * Grace applied when no speech is pending at all. Long enough for the hangup
+   * tool result to reach the model and for a generation that started in the
+   * same turn to announce itself (which re-arms to the full watchdog above),
+   * short enough that the stuck case ends in seconds rather than minutes.
+   */
+  const HANGUP_IDLE_GRACE_MS = 2 * 1000;
 
   // DTMF buffering: accumulate digits and send as a single input after timeout.
   // Both values default here and may be overridden per-agent from
@@ -596,6 +626,10 @@ export async function runAgentWorker({
 
     // The call is coming down: no bridged human→agent takeover can start now.
     registerBridgedTakeover?.(null);
+    // Likewise the hangup path — drop the executor and any pending timer so a
+    // late hangup tool call cannot re-enter teardown on a dead session.
+    registerHangupExecutor?.(null);
+    clearHangupTimer();
 
     const exitStatus: {
       callEnded: boolean;
@@ -712,6 +746,116 @@ export async function runAgentWorker({
       exitStatus.error =
         error.message || "unknown error caught during cleanup and close";
     }
+  };
+
+  /** Cancels a pending hangup timer (teardown, or a superseded arming). */
+  const clearHangupTimer = () => {
+    if (hangupTimer) {
+      clearTimeout(hangupTimer);
+      hangupTimer = null;
+    }
+  };
+
+  /**
+   * (Re)arms the hangup long-stop, replacing any timer already pending.
+   *
+   * `reason` distinguishes the two ways this timer legitimately fires: a plain
+   * silent hangup (nothing was pending, so there was never going to be a
+   * "listening" edge) is an ordinary agent-initiated end and must record as
+   * one; firing while speech was outstanding means the state machine went
+   * quiet without ever reaching "listening", which is the stuck case and is
+   * recorded distinctly so it stays visible in call records.
+   */
+  const armHangupTimer = (delayMs: number, reason: string) => {
+    clearHangupTimer();
+    hangupTimer = setTimeout(() => {
+      hangupTimer = null;
+      // cleanupAndClose is idempotent (isCleaningUp), so losing the race to the
+      // state-change handler is a no-op rather than a double teardown.
+      void cleanupAndClose(reason).catch((e) =>
+        logger.error({ e }, "error closing call after hangup"),
+      );
+    }, delayMs);
+    // Never hold the process open on this timer alone.
+    hangupTimer.unref?.();
+  };
+
+  /**
+   * Drives an agent-initiated hangup to completion. Called by the worker's
+   * `onHangup` the moment the latch is set, rather than waiting on a state
+   * transition that may never arrive.
+   *
+   * The AgentStateChanged → "listening" handler still runs and will usually
+   * win the race — that is the path that lets a goodbye finish. This exists so
+   * that when it does not fire, the call still ends.
+   */
+  const executeHangup = () => {
+    if (hangupArmed) return;
+    hangupArmed = true;
+
+    // If the session is mid-generation there IS a closing utterance to wait
+    // for, and the "listening" edge will arrive when it finishes. If it is idle
+    // there is nothing to wait for and that edge will never come — the stuck
+    // case — so fall back to the short grace. Either way the timer is a
+    // long-stop: noteAgentState below pushes it out on every transition, and
+    // the normal listening-edge handler still does the actual close first.
+    const speechPending =
+      lastAgentState === "speaking" || lastAgentState === "thinking";
+    const delay = speechPending ? HANGUP_WATCHDOG_MS : HANGUP_IDLE_GRACE_MS;
+
+    logger.info(
+      { callId: call.id, lastAgentState, speechPending, delayMs: delay },
+      speechPending
+        ? "agent hangup requested; waiting for speech to finish (watchdog armed)"
+        : "agent hangup requested with nothing pending; closing on grace timer",
+    );
+    armHangupTimer(
+      delay,
+      speechPending
+        ? DISCONNECT_REASONS.HANGUP_WATCHDOG
+        : DISCONNECT_REASONS.AGENT_INITIATED_HANGUP,
+    );
+  };
+
+  /**
+   * Records the session's agent state and, while a hangup is outstanding,
+   * re-arms the long-stop. A session that is still transitioning is still
+   * working — pushing the timer out is what keeps a long goodbye from being
+   * cut off mid-sentence, and what lets a generation that starts just after
+   * the hangup call (state still "listening" at request time) complete.
+   */
+  const noteAgentState = (state: string) => {
+    lastAgentState = state;
+    if (!hangupArmed) return;
+    // "listening" is handled by the AgentStateChanged handlers, which close the
+    // call outright; re-arming there would only delay the long-stop behind it.
+    if (state === "listening") return;
+    // Reaching here means speech is outstanding: if it never lands us back in
+    // "listening" the call is stuck, so this arming records as the watchdog.
+    armHangupTimer(HANGUP_WATCHDOG_MS, DISCONNECT_REASONS.HANGUP_WATCHDOG);
+  };
+
+  /**
+   * Forced teardown after the tool breaker sees a tool spinning past its kill
+   * threshold. At that point the model has demonstrated it will not stop, so
+   * the only way to stop the spend is to end the call.
+   */
+  const onToolLoopDetected = ({
+    tool,
+    calls,
+    windowMs,
+  }: {
+    tool: string;
+    calls: number;
+    windowMs: number;
+  }) => {
+    logger.error(
+      { callId: call.id, tool, calls, windowMs },
+      "terminating call: runaway tool-call loop",
+    );
+    void cleanupAndClose(DISCONNECT_REASONS.TOOL_LOOP_DETECTED).catch((e) =>
+      logger.error({ e }, "error closing call after tool loop"),
+    );
   };
 
   // ---- Agent-to-agent transfer (builtin transfer_agent) ----
@@ -835,6 +979,7 @@ export async function runAgentWorker({
       voice.AgentSessionEventTypes.AgentStateChanged,
       async (ev: voice.AgentStateChangedEvent) => {
         if (isStaleSession(s)) return;
+        noteAgentState(ev.newState);
         // The incoming agent has produced audio — the handover gap is over, so
         // stop any comfort tone covering it (idempotent / no-op otherwise).
         if (ev.newState === "speaking") {
@@ -1266,7 +1411,13 @@ export async function runAgentWorker({
       getTransferState,
       onAgentTransfer,
       onSendDtmf,
+      onToolLoopDetected,
     });
+
+  // Give the worker's hangup latch a way to close the call itself. Registered
+  // before the session starts so a hangup on the very first turn is covered,
+  // and cleared in cleanupAndClose alongside registerBridgedTakeover.
+  registerHangupExecutor?.(executeHangup);
 
   // ---- Bridged human→agent takeover (options.bridgedTransferToAgent) ----
   // Expose the live handover machinery to the transfer handler: when a
@@ -1393,6 +1544,7 @@ export async function runAgentWorker({
           voice.AgentSessionEventTypes.AgentStateChanged,
           async (ev: voice.AgentStateChangedEvent) => {
             if (isStaleSession(setupSession)) return;
+            noteAgentState(ev.newState);
             logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
