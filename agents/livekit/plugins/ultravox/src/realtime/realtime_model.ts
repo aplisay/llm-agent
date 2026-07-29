@@ -243,6 +243,57 @@ class Response {
   }
 }
 
+/**
+ * Return `base` with `firstSpeakerSettings` REPLACED by `override`, or `base`
+ * shallow-copied when there is no override.
+ *
+ * Replace, never merge: an agent carrying `options.greeting` arrives here with
+ * `firstSpeakerSettings.agent.text` already set (see voice-session-factory), and the
+ * Ultravox API expects exactly one of `user` / `agent` — a merge would leave both
+ * populated. The `vendorSpecific` containers are rebuilt rather than mutated so the
+ * model's defaults, shared with every other session it creates and with the caller's
+ * own options object, are left untouched.
+ */
+export function withFirstSpeakerOverride(
+  base: ModelOptions,
+  override?: api_proto.UltravoxFirstSpeakerSettings
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (!override) {
+    return opts;
+  }
+  opts.vendorSpecific = {
+    ...opts.vendorSpecific,
+    ultravox: {
+      ...opts.vendorSpecific?.ultravox,
+      firstSpeakerSettings: override,
+    },
+  };
+  return opts;
+}
+
+/**
+ * Fold one transcript frame into the turn accumulated so far.
+ *
+ * `text` is an authoritative snapshot of the whole turn when present; otherwise the
+ * frame carries an incremental `delta`. Ultravox does not guarantee `text` on the
+ * final frame of a turn — see `#handleAgentTranscript`, which has buffered deltas for
+ * that reason since inception — so a consumer that reads only `text` silently drops
+ * any turn delivered purely as deltas.
+ */
+export function foldTranscriptFrame(
+  buffer: string,
+  frame: { text?: string; delta?: string }
+): string {
+  if (frame.text) {
+    return frame.text;
+  }
+  if (frame.delta) {
+    return buffer + frame.delta;
+  }
+  return buffer;
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -254,6 +305,11 @@ export class RealtimeModel extends llm.RealtimeModel {
 
   #defaultOpts: ModelOptions;
   #sessions: RealtimeSession[] = [];
+  /**
+   * One-shot `firstSpeakerSettings` override for the NEXT session created from
+   * this model. See `setNextSessionFirstSpeaker`.
+   */
+  #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
@@ -355,8 +411,52 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#sessions.length > 0 ? this.#sessions[0] : undefined;
   }
 
+  /**
+   * Shape the opening turn of the NEXT session created from this model, and only
+   * that one.
+   *
+   * Used by the consultative-transfer consult leg: it shares the primary call's
+   * model instance but has the opposite conversational posture — it DIALS its peer,
+   * so the peer answers and greets first. Without this the model's default
+   * `FIRST_SPEAKER_AGENT` makes the TransferAgent open its own turn immediately and
+   * talk over the target's greeting, which Ultravox then discards as barge-in.
+   *
+   * Consumed and cleared by the next `session()` call. Call
+   * `clearNextSessionFirstSpeaker()` if the session is never started, so the
+   * override cannot leak onto an unrelated session (e.g. an agent handover).
+   */
+  setNextSessionFirstSpeaker(
+    firstSpeakerSettings: api_proto.UltravoxFirstSpeakerSettings
+  ): void {
+    this.#nextSessionFirstSpeaker = firstSpeakerSettings;
+  }
+
+  /** Discard a pending {@link setNextSessionFirstSpeaker} override. */
+  clearNextSessionFirstSpeaker(): void {
+    this.#nextSessionFirstSpeaker = undefined;
+  }
+
+  /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
+  get pendingFirstSpeakerOverride():
+    | api_proto.UltravoxFirstSpeakerSettings
+    | undefined {
+    return this.#nextSessionFirstSpeaker;
+  }
+
   session(): RealtimeSession {
-    const opts: ModelOptions = { ...this.#defaultOpts };
+    const firstSpeakerOverride = this.#nextSessionFirstSpeaker;
+    this.#nextSessionFirstSpeaker = undefined;
+    const opts: ModelOptions = withFirstSpeakerOverride(
+      this.#defaultOpts,
+      firstSpeakerOverride
+    );
+    if (firstSpeakerOverride) {
+      // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
+      log().info(
+        { firstSpeakerSettings: firstSpeakerOverride },
+        "applying one-shot firstSpeakerSettings override to new session"
+      );
+    }
 
     const newSession = new RealtimeSession(this, opts, this.#client, {
       chatCtx: new llm.ChatContext(),
@@ -423,6 +523,15 @@ export class RealtimeSession extends llm.RealtimeSession {
   public instructions?: string;
   // Agent transcript buffer for accumulating deltas
   #agentTranscriptBuffer: string = "";
+  // User transcript buffer for accumulating deltas. Ultravox does not guarantee a
+  // `text` property on the final frame of a turn (see #handleAgentTranscript, which
+  // has buffered deltas for that reason since inception); without the same buffer on
+  // the user side a delta-only turn is dropped outright and never reaches the chat
+  // context, so the turn is absent from the transcript AND from the agent's history.
+  #userTranscriptBuffer: string = "";
+  // Ordinal of the user turn #userTranscriptBuffer belongs to, so a turn abandoned
+  // without a final frame (barge-in, interruption) cannot prefix the next one.
+  #userTranscriptOrdinal: number | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
   // Track message IDs that have been sent to Ultravox (to avoid duplicates)
@@ -1431,35 +1540,83 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
     event.final && this.#logger.debug(
-      { event },
+      { event, ordinal: event.ordinal },
       "handleTranscript - received final transcript event"
     );
 
     if (event.role === "user") {
+      // A new ordinal is a new turn: drop anything left over from a turn that was
+      // abandoned without a final frame rather than prefixing it onto this one.
+      if (
+        event.ordinal !== undefined &&
+        event.ordinal !== this.#userTranscriptOrdinal
+      ) {
+        this.#userTranscriptBuffer = "";
+        this.#userTranscriptOrdinal = event.ordinal;
+      }
+
+      // Accumulate the turn the same way the agent side does: `text` is an
+      // authoritative snapshot when present, otherwise fold in the delta. A final
+      // frame carrying only `delta` used to fall through to "Skipping empty
+      // transcript event" and the whole user turn was lost silently.
+      this.#userTranscriptBuffer = foldTranscriptFrame(
+        this.#userTranscriptBuffer,
+        event
+      );
+      const transcript = this.#userTranscriptBuffer;
+
       // Emit input_speech_started when we first detect user speech (non-final transcript)
       // This interrupts any ongoing agent generation
-      if (!this.userSpeechStartedEmitted && !event.final && event.text && event.text.trim().length > 0) {
+      if (!this.userSpeechStartedEmitted && !event.final && transcript.trim().length > 0) {
         this.#logger.debug("Emitting input_speech_started on first user transcript");
         this.emit("input_speech_started", {
           itemId: "ultravox-user-input",
         } as InputSpeechStarted);
         this.userSpeechStartedEmitted = true;
       }
-      
+
       // Only emit transcription events when there's actual text content
-      if (event.text && event.text.trim().length > 0) {
+      if (transcript.trim().length > 0) {
         const transcriptionEvent = {
           itemId: shortuuid("user-transcript-"),
-          transcript: event.text,
+          transcript,
           isFinal: event.final,
         };
-        this.#logger.debug(
-          { transcriptionEvent, event },
-          "Emitting input_audio_transcription_completed event"
-        );
+        // Finals log at info: at production log level this is the only positive
+        // evidence that a user turn reached us, and its absence is the signature of
+        // a transcript the provider never sent. Interim frames stay at debug so the
+        // volume tracks turns rather than frames.
+        const emitted = {
+          transcriptionEvent,
+          ordinal: event.ordinal,
+          fromDeltaBuffer: !event.text,
+        };
+        if (event.final) {
+          this.#logger.info(
+            emitted,
+            "Emitting input_audio_transcription_completed event"
+          );
+        } else {
+          this.#logger.debug(
+            { ...emitted, event },
+            "Emitting input_audio_transcription_completed event"
+          );
+        }
         this.emit("input_audio_transcription_completed", transcriptionEvent);
       } else {
-        this.#logger.debug({ event }, "Skipping empty transcript event");
+        // Info, not debug: this is a DROPPED user turn. It should be unreachable now
+        // that deltas are buffered, so if it appears the provider sent us a frame
+        // with neither `text` nor `delta` and the turn is gone.
+        this.#logger.info(
+          { event, ordinal: event.ordinal },
+          "Skipping empty transcript event"
+        );
+      }
+
+      if (event.final) {
+        // Keep the ordinal: it stays the boundary marker for any further frame on
+        // this same turn, and the next turn's ordinal resets the buffer anyway.
+        this.#userTranscriptBuffer = "";
       }
     } else if (event.role === "agent") {
       // Handle agent transcript through the generation stream

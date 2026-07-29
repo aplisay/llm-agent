@@ -30,6 +30,7 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
   parseBridgedTransferMap,
   armBridgedTransferWatch,
@@ -63,6 +64,38 @@ export type TransferState =
  * dropped/errored consult's meter is collected with its Call.
  */
 const consultUsageMeters = new WeakMap<Call, UsageMeter>();
+
+/**
+ * How long the TransferAgent waits for the dialled target to speak before opening
+ * the conversation itself. Comfortably inside the eval target's 6s inactivity
+ * timeout, and long enough to cover answer-to-greeting latency on a carrier trunk
+ * (~1.5s observed) without leaving a live person listening to silence.
+ */
+const CONSULT_FIRST_SPEAKER_FALLBACK_DELAY = "3s";
+
+/**
+ * `firstSpeakerSettings` is an Ultravox-realtime concept. The consult session
+ * inherits whatever LLM the primary call uses, which may be another realtime
+ * provider or a plain text LLM, so both helpers are no-ops unless the model
+ * actually implements the one-shot override.
+ */
+type ConsultFirstSpeakerCapable = {
+  setNextSessionFirstSpeaker?: (s: UltravoxFirstSpeakerSettings) => void;
+  clearNextSessionFirstSpeaker?: () => void;
+};
+
+function setNextSessionFirstSpeaker(
+  consultLlm: unknown,
+  firstSpeakerSettings: UltravoxFirstSpeakerSettings
+): void {
+  (consultLlm as ConsultFirstSpeakerCapable)?.setNextSessionFirstSpeaker?.(
+    firstSpeakerSettings
+  );
+}
+
+function clearNextSessionFirstSpeaker(consultLlm: unknown): void {
+  (consultLlm as ConsultFirstSpeakerCapable)?.clearNextSessionFirstSpeaker?.();
+}
 
 export interface TransferContext {
   ctx: any; // JobContext
@@ -905,6 +938,9 @@ async function startConsultativeTransfer(
 
 You are now speaking with the person that it has been decided to transfer the call to based on the previous Conversation, and you should act as if you were 
 the agent involved in this conversation with full knowledge of the conversation history.
+
+You have just dialled this person and they have only this second answered. Let them speak first - wait until you have heard them greet you before you say anything. If they stay silent for a few seconds, open with a brief greeting yourself.
+
 Your role is to:
 1. Summarize the call history for the transfer target
 2. Ask if they want to accept the transfer and speak with the caller
@@ -997,9 +1033,8 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
 
     // Step 6: Create TransferAgent session and connect to consultation room
-    const transferSession = new voice.AgentSession({
-      llm: getLlmForTransferSession(session),
-    });
+    const consultLlm = getLlmForTransferSession(session);
+    const transferSession = new voice.AgentSession({ llm: consultLlm });
     setTransferSession(transferSession);
 
     // Persist the consultation conversation onto the consult CALL RECORD.
@@ -1053,12 +1088,40 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
     consultUsageMeter.wire(transferSession);
 
-    await transferSession.start({
-      room: consultRoom,
-      agent: transferAgent,
-      // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
-      record: false,
+    // The consult leg DIALS the target, so the target answers and greets first —
+    // the opposite posture to the inbound primary call whose model instance this
+    // session shares. Left on the model default (FIRST_SPEAKER_AGENT) the
+    // TransferAgent opens its own turn ~0.5s after connect, straight over the
+    // target's greeting, which Ultravox then discards as barge-in: the consult
+    // transcript loses that turn and the agent never hears who it is talking to.
+    // Ultravox owns the opening turn, so express it there, for THIS session only.
+    // `fallback` keeps a silent target (voicemail, IVR, someone waiting for us to
+    // speak) from producing dead air; `prompt` rather than `text` so the greeting is
+    // generated in the TransferAgent's own voice and is not echoed back to us as a
+    // synthetic user turn.
+    setNextSessionFirstSpeaker(consultLlm, {
+      user: {
+        fallback: {
+          delay: CONSULT_FIRST_SPEAKER_FALLBACK_DELAY,
+          prompt:
+            "The person you dialled has not said anything yet. Greet them briefly and explain that you are calling about transferring a caller to them.",
+        },
+      },
     });
+
+    try {
+      await transferSession.start({
+        room: consultRoom,
+        agent: transferAgent,
+        // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
+        record: false,
+      });
+    } finally {
+      // start() consumes the one-shot when it builds the realtime session; if it
+      // threw before that, drop the override so it cannot land on an unrelated
+      // session later (e.g. a primary-agent handover on the same model).
+      clearNextSessionFirstSpeaker(consultLlm);
+    }
 
     logger.info({}, "transfer agent started in consultation room");
 
