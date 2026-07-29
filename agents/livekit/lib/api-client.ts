@@ -123,6 +123,26 @@ export interface Agent {
       timeout: number | string;
       /** Literal phrase spoken verbatim on each idle kick (deterministic, not an LLM prompt). */
       message: string;
+      /**
+       * End the call after the prompt has gone unanswered `INACTIVITY_PROMPT_COUNT`
+       * times (3), instead of prompting indefinitely. Opt-in; absent/false keeps the
+       * current behaviour exactly.
+       *
+       * Without this a leg that nobody hangs up is only reclaimed by the session
+       * long-stop (the model's `maxDuration` + 5s), which can leave a caller — or an
+       * abandoned transfer target — listening to silence for minutes.
+       *
+       * Applies on every platform, but is enforced in two different places, which
+       * matters if you use consultative transfer:
+       *  - Ultravox realtime: mapped to a provider-native `inactivityMessages`
+       *    `endBehavior`, so Ultravox hangs up server-side. It has NO knowledge of a
+       *    transfer in flight, so a caller held silently through a long consultation
+       *    can be hung up on. Prefer leaving this off for agents that perform
+       *    consultative transfers with long holds.
+       *  - Everything else (pipeline TTS / OpenAI / Gemini realtime): enforced by us,
+       *    and suppressed while a consult or transfer is in flight.
+       */
+      hangup?: boolean;
     };
     /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
     temperature?: number;

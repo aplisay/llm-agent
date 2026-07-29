@@ -23,6 +23,28 @@ import {
 } from "./pipeline-provider-keys.js";
 
 /**
+ * How many times the inactivity prompt is spoken before the call is considered
+ * abandoned. Shared so the two enforcement paths agree: the Ultravox native
+ * `inactivityMessages` list length, and our own repeat-kick counter in
+ * voice-agent-runtime. Only acted on when `options.inactivity.hangup` is set —
+ * otherwise Ultravox stops prompting after this many and we keep prompting.
+ */
+export const INACTIVITY_PROMPT_COUNT = 3;
+
+/**
+ * Whether `options.inactivity.hangup` opts this agent into ending the call once the
+ * inactivity prompt has gone unanswered {@link INACTIVITY_PROMPT_COUNT} times.
+ *
+ * Only meaningful alongside a usable inactivity config, so it returns false whenever
+ * {@link inactivityAwayTimeoutSecs} would return undefined — there is no prompt to
+ * count, so there is nothing to hang up after.
+ */
+export function inactivityHangupEnabled(agent: Agent): boolean {
+  if (inactivityAwayTimeoutSecs(agent) === undefined) return false;
+  return agent?.options?.inactivity?.hangup === true;
+}
+
+/**
  * Parse the inactivity-kick idle timeout (`options.inactivity.timeout`) into
  * seconds for LiveKit's `voiceOptions.userAwayTimeout`. Accepts a number of
  * seconds or a string like `"8s"` (the same convention as `maxDuration`).
@@ -251,14 +273,36 @@ export function buildRealtimeLlmOptions(
     if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
       // Ultravox fires each entry once, in sequence, after `duration` of further
       // user inactivity — so a short run of identical entries gives the
-      // "re-fire every `timeout` of continued silence" behaviour (here up to 3
-      // nudges). endBehavior left default: do NOT hang up after the last one.
-      const entry = { duration: `${inactivitySecs}s`, message: inactivityMsg };
+      // "re-fire every `timeout` of continued silence" behaviour (here up to
+      // INACTIVITY_PROMPT_COUNT nudges).
+      type InactivityEntry = {
+        duration: string;
+        message: string;
+        endBehavior?: string;
+      };
+      const entry: InactivityEntry = {
+        duration: `${inactivitySecs}s`,
+        message: inactivityMsg,
+      };
+      const messages: InactivityEntry[] = Array.from(
+        { length: INACTIVITY_PROMPT_COUNT },
+        () => ({ ...entry }),
+      );
+      // endBehavior stays default (keep prompting, never hang up) unless the agent
+      // opted in. HANG_UP_SOFT rather than STRICT so the model still delivers the
+      // last prompt before ending, which is what the other end hears as
+      // "hello? ... ok, goodbye" rather than a mid-word cut.
+      if (inactivityHangupEnabled(agent)) {
+        messages[messages.length - 1] = {
+          ...entry,
+          endBehavior: "END_BEHAVIOR_HANG_UP_SOFT",
+        };
+      }
       llmOptions.vendorSpecific = {
         ...(base || {}),
         ultravox: {
           ...((base && base.ultravox) || {}),
-          inactivityMessages: [entry, entry, entry],
+          inactivityMessages: messages,
         },
       };
     }

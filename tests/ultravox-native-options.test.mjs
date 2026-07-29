@@ -106,6 +106,30 @@ describe('Ultravox native driver option mapping', () => {
       expect(data.inactivityMessages.every((m) => m.endBehavior === undefined)).toBe(true);
     });
 
+    test('hangup:true sets END_BEHAVIOR_HANG_UP_SOFT on the last nudge only', () => {
+      const data = makeModel({
+        inactivity: { timeout: '30s', message: 'Are you still there?', hangup: true },
+      }).modelData;
+      expect(data.inactivityMessages).toHaveLength(3);
+      // Earlier nudges must not end the call; SOFT (not STRICT) on the last so the
+      // final prompt is still delivered rather than cut mid-word.
+      expect(data.inactivityMessages.slice(0, -1).every((m) => m.endBehavior === undefined)).toBe(true);
+      expect(data.inactivityMessages.at(-1)).toEqual({
+        duration: '30s',
+        message: 'Are you still there?',
+        endBehavior: 'END_BEHAVIOR_HANG_UP_SOFT',
+      });
+    });
+
+    test('hangup must be strictly true to arm', () => {
+      for (const hangup of [false, 'yes', 1, undefined]) {
+        const data = makeModel({
+          inactivity: { timeout: '30s', message: 'Are you still there?', hangup },
+        }).modelData;
+        expect(data.inactivityMessages.every((m) => m.endBehavior === undefined)).toBe(true);
+      }
+    });
+
     test('numeric timeout is converted to a duration string', () => {
       const data = makeModel({
         inactivity: { timeout: 20, message: 'Hello?' },

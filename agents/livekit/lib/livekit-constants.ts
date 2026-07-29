@@ -20,6 +20,11 @@ export const DISCONNECT_REASONS = {
   // A tool was invoked in a runaway loop past the kill threshold; the call is
   // being torn down because the model cannot recover on its own.
   TOOL_LOOP_DETECTED: "Runaway tool-call loop detected",
+  // options.inactivity.hangup is set and the inactivity prompt went unanswered
+  // INACTIVITY_PROMPT_COUNT times. Distinct from SESSION_TIMEOUT so an abandoned
+  // call reclaimed deliberately is not confused with one that simply ran out the
+  // model's maxDuration.
+  INACTIVITY_TIMEOUT: "Inactivity timeout",
 } as const;
 
 export const roomService = new RoomServiceClient(
