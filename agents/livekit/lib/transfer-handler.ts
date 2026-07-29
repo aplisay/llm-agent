@@ -67,6 +67,34 @@ export type TransferState =
 const consultUsageMeters = new WeakMap<Call, UsageMeter>();
 
 /**
+ * Flush the consult leg's llm/tts/stt usage to the ledger and retire its meter.
+ *
+ * Must be called on EVERY terminal path, not just accept: the consult leg consumes
+ * real metered resources from the moment the TransferAgent session starts, whether
+ * the target ultimately accepts, declines, or never gets that far. Flushing only on
+ * accept meant a rejected or abandoned consultation was recorded as zero usage.
+ *
+ * Safe to call more than once for the same call — the meter is retired from the map
+ * on first use, and the ledger writes are `mode: "set"` with a finalisation that
+ * settles a row exactly once, so a repeat is a no-op rather than a double charge.
+ * `UsageMeter.flush` swallows its own errors, so this never throws and can sit ahead
+ * of `call.end()` on a teardown path without risking the record being left live.
+ */
+async function flushConsultUsageMeter(
+  consultCall: Call | null | undefined
+): Promise<void> {
+  if (!consultCall) {
+    return;
+  }
+  const consultMeter = consultUsageMeters.get(consultCall);
+  if (!consultMeter) {
+    return;
+  }
+  consultUsageMeters.delete(consultCall);
+  await consultMeter.flush(true);
+}
+
+/**
  * How long the TransferAgent waits for the dialled target to speak before opening
  * the conversation itself. Comfortably inside the eval target's 6s inactivity
  * timeout, and long enough to cover answer-to-greeting latency on a carrier trunk
@@ -1285,6 +1313,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const consultCall = context.getConsultCall();
     if (consultCall) {
       try {
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end("Transfer initiation failed");
         logger.info(
           { consultCallId: consultCall.id },
@@ -1358,15 +1387,15 @@ async function finaliseConsultativeTransfer(
    * released and the transcript `end()` flushes never written.
    *
    * `call.end()` is idempotent (its `_endCalled` latch returns the original promise),
-   * so calling this on a record another path already ended is a no-op. It deliberately
-   * does NOT flush the consult usage meter: metering on the non-accept terminal paths
-   * is a billing behaviour change, not teardown hygiene, and is out of scope here.
+   * so calling this on a record another path already ended is a no-op, as is the
+   * meter flush.
    */
   const endConsultRecord = async (reason: string): Promise<void> => {
     const consultCall = getConsultCall();
     if (!consultCall) {
       return;
     }
+    await flushConsultUsageMeter(consultCall);
     await consultCall.end(reason);
     logger.info({ consultCallId: consultCall.id }, "ended consultation call");
   };
@@ -1399,15 +1428,8 @@ async function finaliseConsultativeTransfer(
       if (transferSession) {
         void closeTransferSessionBounded(transferSession, "finalise");
       }
-      const consultCall = getConsultCall();
-      if (consultCall) {
-        const consultMeter = consultUsageMeters.get(consultCall);
-        if (consultMeter) {
-          await consultMeter.flush(true);
-          consultUsageMeters.delete(consultCall);
-        }
-        await endConsultRecord("Transfer completed");
-      }
+      // endConsultRecord flushes the consult usage meter before ending the record.
+      await endConsultRecord("Transfer completed");
     };
 
     // Delete the consult room (drops any remaining consult SIP leg). Best-effort.
@@ -1684,6 +1706,7 @@ export async function destroyInProgressTransfer(
             "created transaction log for consultation transcript"
           );
         }
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end(reason);
         logger.info(
           { consultCallId: consultCall.id },
@@ -1792,6 +1815,7 @@ export async function rejectConsultativeTransfer(
             );
           }
         }
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end(finalSummary);
         logger.info(
           { consultCallId: consultCall.id },
