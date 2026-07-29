@@ -34,6 +34,10 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+from pipecat.processors.frameworks.rtvi import (
+    RTVIFunctionCallReportLevel,
+    RTVIObserverParams,
+)
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.transcriptions.language import Language
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
@@ -78,6 +82,18 @@ RECORDING_SAMPLE_RATE = 16000
 # enough that the write path runs a few times a minute rather than per
 # frame.
 RECORDING_FLUSH_BYTES = RECORDING_SAMPLE_RATE * 2 * 5
+
+
+def _rtvi_observer_params() -> RTVIObserverParams:
+    """Send tool name, arguments and result in RTVI tool-call events.
+
+    Pipecat's default level is NONE, which sends only ``tool_call_id``. FULL
+    for every tool is safe: the result here is the model-visible one, which
+    ``function_handler`` has already redacted for tools marked ``redact``.
+    """
+    return RTVIObserverParams(
+        function_call_report_level={"*": RTVIFunctionCallReportLevel.FULL},
+    )
 
 
 def _inactivity_timeout_secs(agent: dict) -> Optional[float]:
@@ -1836,6 +1852,7 @@ async def _build_realtime(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        rtvi_observer_params=_rtvi_observer_params(),
     )
     # Inactivity "kick": speak options.inactivity.message after a silent
     # window. Inert unless options.inactivity is configured (the user
@@ -1985,6 +2002,7 @@ async def _build_pipeline(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        rtvi_observer_params=_rtvi_observer_params(),
     )
     # Inactivity "kick" — pipeline mode pushes the literal phrase straight to
     # TTS. Inert unless options.inactivity is configured.
