@@ -30,6 +30,7 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import { closeSessionBounded } from "./utils.js";
 import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
   parseBridgedTransferMap,
@@ -66,12 +67,77 @@ export type TransferState =
 const consultUsageMeters = new WeakMap<Call, UsageMeter>();
 
 /**
+ * Flush the consult leg's llm/tts/stt usage to the ledger and retire its meter.
+ *
+ * Must be called on EVERY terminal path, not just accept: the consult leg consumes
+ * real metered resources from the moment the TransferAgent session starts, whether
+ * the target ultimately accepts, declines, or never gets that far. Flushing only on
+ * accept meant a rejected or abandoned consultation was recorded as zero usage.
+ *
+ * Safe to call more than once for the same call — the meter is retired from the map
+ * on first use, and the ledger writes are `mode: "set"` with a finalisation that
+ * settles a row exactly once, so a repeat is a no-op rather than a double charge.
+ * `UsageMeter.flush` swallows its own errors, so this never throws and can sit ahead
+ * of `call.end()` on a teardown path without risking the record being left live.
+ */
+async function flushConsultUsageMeter(
+  consultCall: Call | null | undefined
+): Promise<void> {
+  if (!consultCall) {
+    return;
+  }
+  const consultMeter = consultUsageMeters.get(consultCall);
+  if (!consultMeter) {
+    return;
+  }
+  consultUsageMeters.delete(consultCall);
+  await consultMeter.flush(true);
+}
+
+/**
  * How long the TransferAgent waits for the dialled target to speak before opening
  * the conversation itself. Comfortably inside the eval target's 6s inactivity
  * timeout, and long enough to cover answer-to-greeting latency on a carrier trunk
  * (~1.5s observed) without leaving a live person listening to silence.
  */
 const CONSULT_FIRST_SPEAKER_FALLBACK_DELAY = "3s";
+
+/**
+ * Upper bound on `transferSession.close()`. An Ultravox session can hang in close()
+ * indefinitely: `AgentSession.close()` awaits `activity.drain()`, which only exits
+ * once every speech task has settled, and the tool-reply speech task awaits
+ * `RealtimeSession.generateReply()` — a bare Future that Ultravox settles only when
+ * it begins the NEXT generation. On a consult leg whose peer has already gone away
+ * that next generation never comes.
+ *
+ * This matters well beyond the consult leg: `destroyInProgressTransfer` is awaited
+ * from the PRIMARY call's disconnect handling, immediately before `call.end()` and
+ * `process.exit(0)`. An unbounded close there strands the primary call record too —
+ * never ended, its agent-concurrency slot never released. Same hazard, same bound,
+ * as the agent-handover close in voice-agent-runtime.
+ */
+const TRANSFER_SESSION_CLOSE_TIMEOUT_MS = 8_000;
+
+/**
+ * Close the TransferAgent session without ever blocking the caller. Bounded (see
+ * {@link TRANSFER_SESSION_CLOSE_TIMEOUT_MS}) and non-throwing: every call site is a
+ * teardown path where the room, the call record and the process shutdown behind it
+ * must proceed regardless.
+ */
+function closeTransferSessionBounded(
+  transferSession: Pick<voice.AgentSession, "close"> | null | undefined,
+  context: string
+): Promise<void> {
+  return closeSessionBounded(
+    transferSession,
+    TRANSFER_SESSION_CLOSE_TIMEOUT_MS,
+    (e) =>
+      logger.warn(
+        { e: e.message, context },
+        "transfer session close failed/timed out; continuing teardown"
+      )
+  );
+}
 
 /**
  * `firstSpeakerSettings` is an Ultravox-realtime concept. The consult session
@@ -1225,6 +1291,15 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
     logger.error({ e, useRefer }, "failed to initiate warm transfer");
+    // Close the TransferAgent session if it got as far as starting. Initiation can
+    // fail after transferSession.start() (e.g. creating the consult call record), and
+    // nothing downstream closes it: this path leaves consultInProgress false, so both
+    // destroyInProgressTransfer and the background reject handler short-circuit. The
+    // session and its Ultravox call would otherwise stay live and billed.
+    await closeTransferSessionBounded(
+      context.getTransferSession(),
+      "initiation-failure"
+    );
     // Clean up consultation room if it was created
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
@@ -1238,6 +1313,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const consultCall = context.getConsultCall();
     if (consultCall) {
       try {
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end("Transfer initiation failed");
         logger.info(
           { consultCallId: consultCall.id },
@@ -1304,6 +1380,26 @@ async function finaliseConsultativeTransfer(
     "finalising warm transfer"
   );
 
+  /**
+   * End the consult CALL RECORD. Hoisted out of the try below so the error path can
+   * reach it too: every other terminal path ends the record, and if this one does not
+   * the row is stranded `live=true` forever — its agent-concurrency slot never
+   * released and the transcript `end()` flushes never written.
+   *
+   * `call.end()` is idempotent (its `_endCalled` latch returns the original promise),
+   * so calling this on a record another path already ended is a no-op, as is the
+   * meter flush.
+   */
+  const endConsultRecord = async (reason: string): Promise<void> => {
+    const consultCall = getConsultCall();
+    if (!consultCall) {
+      return;
+    }
+    await flushConsultUsageMeter(consultCall);
+    await consultCall.end(reason);
+    logger.info({ consultCallId: consultCall.id }, "ended consultation call");
+  };
+
   try {
     const transferTargetIdentity = "transfer-target";
 
@@ -1323,26 +1419,17 @@ async function finaliseConsultativeTransfer(
     // dialog must stay alive until the caller's REFER (whose ?Replaces names that
     // dialog) has been honoured by the carrier.
     const endConsultationRecord = async () => {
+      // Deliberately NOT awaited, and deliberately still ahead of the flush below.
+      // close() drains the session, and that drain is what emits the TransferAgent's
+      // closing turn into the batched transcript — starting it here and flushing
+      // concurrently is what gives that turn a chance to land in `end()`'s snapshot.
+      // The far more common hazard is close() hanging (see
+      // TRANSFER_SESSION_CLOSE_TIMEOUT_MS), so it must never gate this path.
       if (transferSession) {
-        try {
-          transferSession.close();
-        } catch (e) {
-          logger.error({ e }, "failed to close transfer session");
-        }
+        void closeTransferSessionBounded(transferSession, "finalise");
       }
-      const consultCall = getConsultCall();
-      if (consultCall) {
-        const consultMeter = consultUsageMeters.get(consultCall);
-        if (consultMeter) {
-          await consultMeter.flush(true);
-          consultUsageMeters.delete(consultCall);
-        }
-        await consultCall.end("Transfer completed");
-        logger.info(
-          { consultCallId: consultCall.id },
-          "ended consultation call"
-        );
-      }
+      // endConsultRecord flushes the consult usage meter before ending the record.
+      await endConsultRecord("Transfer completed");
     };
 
     // Delete the consult room (drops any remaining consult SIP leg). Best-effort.
@@ -1498,11 +1585,22 @@ async function finaliseConsultativeTransfer(
       "failed",
       `Transfer finalization failed: ${error.message}`
     );
-    // Cleanup on error
+    // Cleanup on error. This path is NOT recoverable by anything downstream:
+    // setConsultInProgress(false) above disarms destroyInProgressTransfer, and the
+    // background reject handler is gated on the same flag — so if the consult record
+    // is not ended here it is never ended at all. Reachable in practice on the
+    // bridged branch, where roomService.moveParticipant runs before the record is
+    // ended and can throw when the target has already gone.
     try {
-      if (transferSession) {
-        await transferSession.close();
-      }
+      await endConsultRecord(`Transfer finalisation failed: ${error.message}`);
+    } catch (endError) {
+      logger.error(
+        { endError, consultCallId: getConsultCall()?.id },
+        "failed to end consultation call during finalise error cleanup"
+      );
+    }
+    try {
+      await closeTransferSessionBounded(transferSession, "finalise-error");
       if (consultRoom) {
         await consultRoom.disconnect();
       }
@@ -1558,14 +1656,11 @@ export async function destroyInProgressTransfer(
   const consultCall = getConsultCall();
 
   try {
-    // Step 1: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      try {
-        await transferSession.close();
-      } catch (e) {
-        logger.error({ e }, "failed to close transfer session");
-      }
-    }
+    // Step 1: Close TransferAgent session and disconnect from consultation room.
+    // Bounded: this function is awaited from the PRIMARY call's disconnect handling,
+    // immediately before that call's own end() and process.exit(0), so a close() that
+    // hangs strands the primary call record as well as this one.
+    await closeTransferSessionBounded(transferSession, "destroy");
     if (consultRoom) {
       try {
         await consultRoom.disconnect();
@@ -1587,10 +1682,15 @@ export async function destroyInProgressTransfer(
       }
     }
 
-    // Step 3: End consultation call and create transaction logs for transcript
-    if (consultCall && transferSession) {
+    // Step 3: End consultation call and create transaction logs for transcript.
+    // Gated on the CALL only: the record must be ended even when there is no transfer
+    // session to read a transcript from, or it is stranded live=true with its
+    // concurrency slot held.
+    if (consultCall) {
       try {
-        const transcript = getTransferAgentTranscript(transferSession);
+        const transcript = transferSession
+          ? getTransferAgentTranscript(transferSession)
+          : "";
         if (transcript) {
           const { userId, organisationId } = agent;
           await createTransactionLog({
@@ -1606,6 +1706,7 @@ export async function destroyInProgressTransfer(
             "created transaction log for consultation transcript"
           );
         }
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end(reason);
         logger.info(
           { consultCallId: consultCall.id },
@@ -1714,6 +1815,7 @@ export async function rejectConsultativeTransfer(
             );
           }
         }
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end(finalSummary);
         logger.info(
           { consultCallId: consultCall.id },
@@ -1752,14 +1854,10 @@ export async function rejectConsultativeTransfer(
       }
     }
 
-    // Step 2: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      try {
-        await transferSession.close();
-      } catch (e) {
-        logger.error({ e }, "failed to close transfer session");
-      }
-    }
+    // Step 2: Close TransferAgent session and disconnect from consultation room.
+    // Bounded — a rejected consult's peer is typically already gone, and the room
+    // teardown and caller hand-back behind this must not wait on a hung close().
+    await closeTransferSessionBounded(transferSession, "reject");
     if (consultRoom) {
       try {
         await consultRoom.disconnect();
