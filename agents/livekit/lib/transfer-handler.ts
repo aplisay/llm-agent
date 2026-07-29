@@ -19,6 +19,7 @@ import {
   type TrunkInfo,
 } from "./api-client.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
+import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
@@ -129,10 +130,13 @@ export interface TransferResult {
  * Determines if a participant is a SIP participant
  */
 function isSipParticipant(participant: ParticipantInfo): boolean {
+  // Accept dotted (what LiveKit actually sends) as well as the camelCase
+  // aliases — see lib/sip-attributes.ts.
+  const attrs = participant.attributes;
   return !!(
-    participant.attributes?.sipTrunkPhoneNumber ||
-    participant.attributes?.sipPhoneNumber ||
-    participant.attributes?.sipHXAplisayTrunk
+    sipAttribute(attrs, "calledNumber") ||
+    sipAttribute(attrs, "callerNumber") ||
+    sipAttribute(attrs, "aplisayTrunk")
   );
 }
 

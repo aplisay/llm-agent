@@ -41,6 +41,7 @@ import {
 } from "./transfer-handler.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import { withTimeout } from "./utils.js";
+import { sipAttribute } from "./sip-attributes.js";
 import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
@@ -926,21 +927,35 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               "participants",
             );
             if (participant) {
-              const {
-                sipTrunkPhoneNumber: calledIdAttr,
-                sipPhoneNumber: callerIdAttr,
-                sipHXAplisayTrunk: aplisayIdAttr,
-                sipHXAplisayPhoneregistration: phoneRegistrationAttr,
-                sipHostname: sipHostnameAttr,
-                sipHXLkRealIp: b2buaGatewayIpAttr,
-                sipHXLkTransport: b2buaGatewayTransportAttr,
-                sipHXLkMediaEncryption: aLegMediaEncryptionAttr,
-              } = participant.attributes || {};
+              // Read via sipAttribute(): LiveKit delivers these dotted
+              // (`sip.trunkPhoneNumber`, `sip.h.x-aplisay-trunk`, …), while
+              // some paths have used camelCase aliases. Reading only the
+              // camelCase form left every value undefined against a real
+              // dotted-key participant, so inbound calls failed to resolve to
+              // an instance. See lib/sip-attributes.ts.
+              const attrs = participant.attributes || {};
+              const calledIdAttr = sipAttribute(attrs, "calledNumber");
+              const callerIdAttr = sipAttribute(attrs, "callerNumber");
+              const aplisayIdAttr = sipAttribute(attrs, "aplisayTrunk");
+              const phoneRegistrationAttr = sipAttribute(
+                attrs,
+                "phoneRegistration",
+              );
+              const sipHostnameAttr = sipAttribute(attrs, "sipHostname");
+              const b2buaGatewayIpAttr = sipAttribute(attrs, "lkRealIp");
+              const b2buaGatewayTransportAttr = sipAttribute(
+                attrs,
+                "lkTransport",
+              );
+              const aLegMediaEncryptionAttr = sipAttribute(
+                attrs,
+                "lkMediaEncryption",
+              );
 
               calledId = calledIdAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
-              phoneRegistration = phoneRegistrationAttr;
+              phoneRegistration = phoneRegistrationAttr ?? null;
 
               // Surface all inbound INVITE X- headers as metadata.aplisay.sipHeaders.
               // This is the inbound-SIP branch, so every such call qualifies (the
