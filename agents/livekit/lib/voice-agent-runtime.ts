@@ -1585,25 +1585,45 @@ export async function runAgentWorker({
         // session or a post-handover session ending cannot reach here. The guards below
         // cover the cases where the primary model is deliberately dead but the call is
         // healthy or already coming down.
-        (
-          model as unknown as {
-            setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
-          } | null
-        )?.setProviderEndedCallback?.((info: unknown) => {
-          if (isCleaningUp) return;
-          if (agentHandoverInProgress) return;
-          // Bridged/transferred out: the caller no longer hears this agent, so its
-          // model dying is expected and must not end the bridged call.
-          if (getBridgedParticipant()) return;
-          if (getConsultInProgress()) return;
-          logger.warn(
-            { info, callId: call.id },
-            "realtime provider ended the session; ending call",
+        // NB the realtime model is `session.llm`, NOT the `model` this factory returns
+        // — that one is the voice.Agent (behaviour/instructions). The RealtimeModel is
+        // constructed inline inside createVoiceModelAndSession and is reachable only
+        // through the session, the same way getLlmForTransferSession does it.
+        const realtimeModel = session.llm as unknown as {
+          setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
+        } | null;
+        if (typeof realtimeModel?.setProviderEndedCallback === "function") {
+          realtimeModel.setProviderEndedCallback((info: unknown) => {
+            if (isCleaningUp) return;
+            if (agentHandoverInProgress) return;
+            // Bridged/transferred out: the caller no longer hears this agent, so its
+            // model dying is expected and must not end the bridged call.
+            if (getBridgedParticipant()) return;
+            if (getConsultInProgress()) return;
+            logger.warn(
+              { info, callId: call.id },
+              "realtime provider ended the session; ending call",
+            );
+            void cleanupAndClose(
+              DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED,
+            ).catch((e) =>
+              logger.error({ e }, "error ending call after provider end"),
+            );
+          });
+          // Logged at INFO deliberately: app-level debug is invisible inside job
+          // processes, so a silently-unregistered hook is exactly how this shipped
+          // broken once already (it was wired to the wrong object and the optional
+          // call no-opped). If this line is absent, the hook is NOT armed.
+          logger.info(
+            { callId: call.id, modelName },
+            "provider-ended teardown hook armed",
           );
-          void cleanupAndClose(DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED).catch(
-            (e) => logger.error({ e }, "error ending call after provider end"),
+        } else {
+          logger.info(
+            { callId: call.id, modelName },
+            "realtime model does not report provider-ended; teardown hook not armed",
           );
-        });
+        }
 
         // Watch for any non-recoverable model/STT/TTS errors that occur while
         // the session is still starting. If we see one before callStarted is

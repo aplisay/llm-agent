@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeLogger } from "@livekit/agents";
 import { RealtimeModel } from "../plugins/ultravox/src/realtime/realtime_model.js";
+import { createVoiceModelAndSession } from "../lib/voice-session-factory.js";
 
 // When Ultravox ends a session we did not ask it to end — its own maxDuration, an
 // options.inactivity.hangup endBehavior hangup, or an outage — the agent is dead but
@@ -95,6 +96,47 @@ test("callback is replaceable and only the latest fires", () => {
 
   assert.equal(first.length, 0);
   assert.equal(second.length, 1);
+});
+
+// --- the wiring contract ---------------------------------------------------
+// This is the test that was missing. The hook shipped once bound to the wrong
+// object: createVoiceModelAndSession returns `model` as the voice.Agent (behaviour),
+// while the RealtimeModel is constructed inline and reachable ONLY via session.llm.
+// The runtime called setProviderEndedCallback on the Agent through an optional call,
+// so it silently no-opped and the defect looked unfixed in production. Assert the
+// exact object the runtime reaches for.
+
+const evalAgent = () =>
+  ({
+    id: "agent-1",
+    userId: "u",
+    organisationId: "o",
+    modelName: "livekit:ultravox/ultravox-v0.6",
+    prompt: "You are a test agent.",
+    options: { tts: { vendor: "ultravox", voice: "Eanna" } },
+  }) as any;
+
+test("session.llm — not the returned model — carries setProviderEndedCallback", () => {
+  // The plugin's constructor requires a key; nothing here reaches the network.
+  process.env.ULTRAVOX_API_KEY ||= "test-key";
+  const { session, model } = createVoiceModelAndSession({
+    voiceMode: "realtime",
+    modelName: "livekit:ultravox/ultravox-v0.6",
+    agent: evalAgent(),
+    call: { id: "call-1" } as any,
+    tools: {} as any,
+  });
+
+  assert.equal(
+    typeof (session.llm as any)?.setProviderEndedCallback,
+    "function",
+    "the runtime hooks session.llm; it must expose the callback",
+  );
+  assert.equal(
+    typeof (model as any)?.setProviderEndedCallback,
+    "undefined",
+    "`model` is the voice.Agent — hooking it is the bug this test exists to catch",
+  );
 });
 
 test("notifying before any session exists is a no-op", () => {
