@@ -310,6 +310,8 @@ export class RealtimeModel extends llm.RealtimeModel {
    * this model. See `setNextSessionFirstSpeaker`.
    */
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
+  /** See {@link setProviderEndedCallback}. */
+  #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
@@ -434,6 +436,39 @@ export class RealtimeModel extends llm.RealtimeModel {
   /** Discard a pending {@link setNextSessionFirstSpeaker} override. */
   clearNextSessionFirstSpeaker(): void {
     this.#nextSessionFirstSpeaker = undefined;
+  }
+
+  /**
+   * Called when Ultravox ends a session we did not ask it to end — its own
+   * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
+   *
+   * Exists because the SDK's `AgentSession.Error` event is lossy: `agent_activity`'s
+   * `onError` forwards `createErrorEvent(ev.error, …)`, i.e. the INNER `Error`, so the
+   * `RealtimeModelError` wrapper's `type` and `recoverable` never reach a listener.
+   * A subscriber therefore cannot distinguish a terminal provider hangup from a
+   * routine recoverable reconnect, and guessing in either direction is harmful —
+   * treating reconnects as fatal hangs up live calls, treating hangups as transient
+   * leaves the caller on a dead line until an unrelated long-stop fires.
+   *
+   * Fires for the PRIMARY session only (the first this model creates). A consult
+   * TransferAgent session and post-handover sessions share the model instance but
+   * their ending must never tear down the primary call.
+   */
+  setProviderEndedCallback(
+    cb: (info: { code?: number; reason?: string }) => void
+  ): void {
+    this.#providerEndedCallback = cb;
+  }
+
+  /** @internal Invoked by a RealtimeSession whose socket closed provider-side. */
+  _notifyProviderEnded(
+    session: RealtimeSession,
+    info: { code?: number; reason?: string }
+  ): void {
+    if (this.#sessions[0] !== session) {
+      return;
+    }
+    this.#providerEndedCallback?.(info);
   }
 
   /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
@@ -1137,8 +1172,22 @@ export class RealtimeSession extends llm.RealtimeSession {
 
         this.#ws.onerror = (error) => {
           const errorMsg = "Ultravox WebSocket error: " + error.message;
+          // Mirror onclose's #closing guard. Without it a socket that errors during a
+          // teardown WE initiated — agent handover closing the outgoing session, the
+          // consult session closing after accept/reject, ordinary call cleanup — is
+          // reported as an unrecoverable failure of a live session. That is a false
+          // positive today (it only mislabels a log line) but becomes a call-killer
+          // once the runtime acts on provider-ended, so guard it at the source.
+          if (this.#closing) {
+            this.#logger.info(
+              { error, callId: this.#callId },
+              "Ultravox WebSocket error during local close; ignoring"
+            );
+            return;
+          }
           this.#logger.error({ error }, "Ultravox WebSocket error occurred");
           this.#sessionFailed = true;
+          this.#notifyProviderEnded({ reason: error.message });
           this.emitError({ error: new Error(errorMsg), recoverable: false });
           reject(new Error(errorMsg));
         };
@@ -1308,20 +1357,39 @@ export class RealtimeSession extends llm.RealtimeSession {
           this.emitError({ error, recoverable: true });
         });
 
-        this.#ws.onclose = () => {
-          if (this.#expiresAt && Date.now() >= this.#expiresAt) {
-            this.#closing = true;
-          }
+        this.#ws.onclose = (event?: { code?: number; reason?: string }) => {
+          // NB no #expiresAt short-circuit here. It used to set #closing = true once
+          // Date.now() passed a HARDCODED start+5min (see #expiresAt assignment), which
+          // silently swallowed every provider-side close after that point — no error,
+          // no signal, and the SIP leg left up with a dead agent. Deriving it from
+          // maxDuration would be worse still: it would suppress exactly the provider
+          // hangups we now need to act on (Ultravox maxDuration, and the
+          // inactivityMessages endBehavior hangup). #expiresAt remains for the session
+          // -update payloads that report it; it is not a close classifier.
+          const code = event?.code;
+          const reason = event?.reason || undefined;
           if (!this.#closing) {
             const errorMsg = "Ultravox connection closed unexpectedly";
             this.#logger.error(
-              { callId: this.#callId },
+              { callId: this.#callId, code, reason },
               "Ultravox WebSocket closed unexpectedly"
             );
             this.#sessionFailed = true;
+            // The provider ended this session and we did not ask it to. The SDK's
+            // AgentSession.Error event cannot carry this: it forwards the INNER Error
+            // (agent_activity onError -> createErrorEvent(ev.error, …)), so `type` and
+            // `recoverable` are stripped and a listener cannot tell a terminal death
+            // from a routine reconnect. Report it out-of-band instead, so the runtime
+            // can end the call rather than leaving the caller on a dead line.
+            this.#notifyProviderEnded({ code, reason });
             const error = new Error(errorMsg);
             this.emitError({ error, recoverable: false });
             reject(error);
+          } else {
+            this.#logger.info(
+              { callId: this.#callId, code, reason },
+              "Ultravox WebSocket closed (initiated locally)"
+            );
           }
           this.#closing = true;
           this.#ws = null;
@@ -1536,6 +1604,19 @@ export class RealtimeSession extends llm.RealtimeSession {
 
     }
 
+  }
+
+  /**
+   * Tell the model this session was ended by the provider, so it can notify the
+   * runtime (primary session only — see `RealtimeModel.setProviderEndedCallback`).
+   * Best-effort: a failure here must never mask the error we are already reporting.
+   */
+  #notifyProviderEnded(info: { code?: number; reason?: string }): void {
+    try {
+      (this.realtimeModel as RealtimeModel)._notifyProviderEnded?.(this, info);
+    } catch (e) {
+      this.#logger.warn({ e }, "provider-ended notification failed");
+    }
   }
 
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {

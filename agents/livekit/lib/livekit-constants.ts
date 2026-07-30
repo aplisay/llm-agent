@@ -25,6 +25,13 @@ export const DISCONNECT_REASONS = {
   // call reclaimed deliberately is not confused with one that simply ran out the
   // model's maxDuration.
   INACTIVITY_TIMEOUT: "Inactivity timeout",
+  // The realtime provider ended the session without being asked to — Ultravox's own
+  // maxDuration, an inactivityMessages endBehavior hangup, or an outage. Distinct from
+  // SESSION_TIMEOUT: that one means OUR long-stop reclaimed a leg nobody ended, which
+  // is precisely the symptom this reason exists to stop being mistaken for a cause.
+  // NB Call.end discards `reason` for `status` (always "ended normally") — this string
+  // is durable in the hangup transaction-log row and the invocation log, not in status.
+  REALTIME_PROVIDER_ENDED: "Realtime provider ended session",
 } as const;
 
 export const roomService = new RoomServiceClient(
