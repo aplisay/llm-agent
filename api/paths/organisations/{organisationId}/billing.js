@@ -15,7 +15,8 @@ import { isSafeCallbackUrl } from '../../../../lib/balance-callback.js';
  *          own stricter `organisation:setRate` gate for this field.
  *
  * Gated on `organisation:billing` — held by superAdmin and the least-privilege
- * `billingService` role (polite-ai's server-side seam, like `credit`). The
+ * `billingService` role (the client billing system's server-side seam, like
+ * `credit`). The
  * permission implies cross-tenant service use, so like the credit endpoint this
  * does no tenancy scoping.
  */
