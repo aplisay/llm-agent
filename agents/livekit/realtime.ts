@@ -1,3 +1,7 @@
+// FIRST import: applies process-wide outbound connect defaults as a side effect, so
+// they are in force before anything can open a socket. See net-defaults.ts — without it
+// a >250ms SYN fails the request outright.
+import { outboundNetworkDefaults } from './lib/net-defaults.js';
 import { fileURLToPath } from 'node:url';
 import { ServerOptions, cli } from '@livekit/agents';
 import * as loggerModule from './agent-lib/logger.js';
@@ -6,7 +10,13 @@ import worker from './lib/worker.js';
 
 const logger = loggerModule.default;
 
-logger.info({ argv: process.argv }, 'worker started');
+// Logged so the settings are verifiable in production rather than assumed. This entry
+// runs in the parent worker AND in every spawned job process, which is where the
+// outbound API calls actually happen.
+logger.info(
+  { argv: process.argv, net: outboundNetworkDefaults() },
+  'worker started',
+);
 Error.stackTraceLimit = 40;
 
 if (process.argv[2] === 'setup') {
