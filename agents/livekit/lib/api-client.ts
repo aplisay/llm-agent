@@ -544,8 +544,20 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
+    // `err`, NOT `error` — do not "tidy" this to match the `error: errorText` above.
+    // pino only applies its error serialiser to the key `err`; an Error logged under
+    // any other key serialises to `{}`, because `message` and `stack` are
+    // non-enumerable. That is not theoretical: a consult-leg createCall failed here on
+    // staging and logged `{"error":{}}`, so establishing whether it was a 5xx, a DNS
+    // failure or a reset needed the Cloud Run logs to rule out a server round trip
+    // entirely. Under `err`, pino reports type, message and stack — and folds in
+    // `cause`, which is where fetch puts ECONNRESET / EAI_AGAIN.
+    //
+    // This branch is reached ONLY for non-ApiRequestError failures, i.e. never for an
+    // HTTP response: `fetch` itself rejecting, or a 2xx body that would not parse. So
+    // whatever it logs is by definition the interesting case.
     if (!(error instanceof ApiRequestError)) {
-      logger.error({ url, error }, 'API request error');
+      logger.error({ url, err: error }, 'API request error');
     }
     throw error;
   }
@@ -575,7 +587,7 @@ export async function getPhoneEndpointById(id: string): Promise<PhoneRegistratio
     );
     return result?.items?.[0] || null;
   } catch (error) {
-    logger.error({ id, error }, 'Failed to get phone endpoint by id');
+    logger.error({ id, err: error }, 'Failed to get phone endpoint by id');
     return null;
   }
 }
@@ -598,7 +610,7 @@ export async function getPhoneEndpointByNumber(
     if (error?.message?.includes('Trunk mismatch')) {
       throw error;
     }
-    logger.error({ number, trunkId, error }, 'Failed to get phone endpoint by number');
+    logger.error({ number, trunkId, err: error }, 'Failed to get phone endpoint by number');
     return null;
   }
 }
@@ -622,7 +634,7 @@ export async function setPhoneNumberProvisioned(
       }
     );
   } catch (error) {
-    logger.error({ number, provisioned, error }, 'Failed to update phone number provisioning state');
+    logger.error({ number, provisioned, err: error }, 'Failed to update phone number provisioning state');
   }
 }
 
@@ -722,7 +734,7 @@ export async function createCall(callData: {
     
     // Handle errors to ensure the promise is still stored even on failure
     return endPromise.catch((error) => {
-      logger.error({ callId: call.id, error }, "error in call.end(), but keeping promise for idempotency");
+      logger.error({ callId: call.id, err: error }, "error in call.end(), but keeping promise for idempotency");
       throw error;
     });
   };
