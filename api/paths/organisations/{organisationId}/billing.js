@@ -4,11 +4,15 @@ import { isSafeCallbackUrl } from '../../../../lib/balance-callback.js';
 
 /**
  * /api/organisations/{id}/billing — the org's billing CONTROLS (not money):
- *   GET    read `billingBlocked` + `billingConfig`.
- *   PATCH  set either/both. `billingConfig` is validated whole (callbackUrl must
+ *   GET    read `billingBlocked` + `billingConfig` + `chargeableNumberLimit`.
+ *   PATCH  set any of them. `billingConfig` is validated whole (callbackUrl must
  *          pass the SSRF guard, hashKey ≥ 16 chars, balanceLowPennies ≥ 0) or
  *          cleared with null; `billingBlocked` is the hard call-refusal lever
- *          that Call.start() enforces.
+ *          that Call.start() enforces; `chargeableNumberLimit` is the generic
+ *          spend-policy cap on numbers held on chargeable (non-owned) trunks
+ *          (null = unlimited) that a client billing service sets alongside the
+ *          rest of the billing config — the direct org-PATCH route keeps its
+ *          own stricter `organisation:setRate` gate for this field.
  *
  * Gated on `organisation:billing` — held by superAdmin and the least-privilege
  * `billingService` role (polite-ai's server-side seam, like `credit`). The
@@ -19,6 +23,7 @@ export default function (logger) {
   const shape = (org) => ({
     billingBlocked: !!org.billingBlocked,
     billingConfig: org.billingConfig ?? null,
+    chargeableNumberLimit: org.chargeableNumberLimit ?? null,
   });
 
   const get = async (req, res) => {
@@ -45,8 +50,16 @@ export default function (logger) {
     if (!org) return res.status(404).send({ message: `Organisation ${req.params.organisationId} not found` });
 
     const body = req.body || {};
-    if (!('billingBlocked' in body) && !('billingConfig' in body)) {
-      return res.status(400).send({ message: 'Provide billingBlocked and/or billingConfig' });
+    if (!('billingBlocked' in body) && !('billingConfig' in body) && !('chargeableNumberLimit' in body)) {
+      return res.status(400).send({ message: 'Provide billingBlocked, billingConfig and/or chargeableNumberLimit' });
+    }
+
+    if ('chargeableNumberLimit' in body) {
+      const limit = body.chargeableNumberLimit;
+      if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
+        return res.status(400).send({ message: 'chargeableNumberLimit must be a non-negative integer or null (unlimited)' });
+      }
+      org.chargeableNumberLimit = limit;
     }
 
     if ('billingBlocked' in body) {
@@ -88,7 +101,7 @@ export default function (logger) {
     return res.send(shape(org));
   };
   update.apiDoc = {
-    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig).',
+    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig / chargeableNumberLimit).',
     operationId: 'updateOrganisationBilling',
     tags: ['Organisations', 'Billing'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
@@ -109,6 +122,12 @@ export default function (logger) {
                   hashKey: { type: 'string', description: 'Shared HMAC secret (≥ 16 chars).' },
                   balanceLowPennies: { type: 'number', nullable: true, description: 'Low-balance threshold in pennies (null = no balanceLow events).' },
                 },
+              },
+              chargeableNumberLimit: {
+                type: 'integer',
+                nullable: true,
+                minimum: 0,
+                description: 'Spend-policy cap: max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited. A client billing service sets this alongside the other billing controls.',
               },
             },
           },

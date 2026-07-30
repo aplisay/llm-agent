@@ -52,7 +52,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
   afterEach(async () => {
     await BalanceCredit.destroy({ where: { organisationId: orgId } });
     await Organisation.update(
-      { balance: null, rateHistory: null, billingBlocked: false, billingConfig: null },
+      { balance: null, rateHistory: null, billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3 },
       { where: { id: orgId } },
     );
   });
@@ -186,7 +186,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
 
     const read = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
     await billingGET(read.req, read.res);
-    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg });
+    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3 });
 
     // balance read (own-org member) surfaces the block flag
     const bal = mockReqRes({ role: 'owner', organisationId: orgId, params: { organisationId: orgId } });
@@ -194,7 +194,42 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(bal.res.body.blocked).toBe(true);
 
     const cleared = await patch({ billingBlocked: false, billingConfig: null });
-    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null });
+    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3 });
+  });
+
+  it('billing PATCH sets chargeableNumberLimit (integer >= 0, null = unlimited) and validates it', async () => {
+    const patch = (body, role = 'billingService') => {
+      const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+
+    const raised = await patch({ chargeableNumberLimit: 10 });
+    expect(raised.statusCode).toBe(200);
+    expect(raised.body.chargeableNumberLimit).toBe(10);
+    expect((await Organisation.findByPk(orgId)).chargeableNumberLimit).toBe(10);
+
+    const zero = await patch({ chargeableNumberLimit: 0 });
+    expect(zero.statusCode).toBe(200);
+    expect((await Organisation.findByPk(orgId)).chargeableNumberLimit).toBe(0);
+
+    const unlimited = await patch({ chargeableNumberLimit: null });
+    expect(unlimited.statusCode).toBe(200);
+    expect(unlimited.body.chargeableNumberLimit).toBeNull();
+    expect((await Organisation.findByPk(orgId)).chargeableNumberLimit).toBeNull();
+
+    // Settable alongside the other billing controls in one PATCH.
+    const combined = await patch({ billingBlocked: true, chargeableNumberLimit: 1 });
+    expect(combined.statusCode).toBe(200);
+    expect(combined.body).toMatchObject({ billingBlocked: true, chargeableNumberLimit: 1 });
+
+    // Invalid values reject without persisting anything.
+    expect((await patch({ chargeableNumberLimit: -1 })).statusCode).toBe(400);
+    expect((await patch({ chargeableNumberLimit: 1.5 })).statusCode).toBe(400);
+    expect((await patch({ chargeableNumberLimit: '3' })).statusCode).toBe(400);
+    expect((await Organisation.findByPk(orgId)).chargeableNumberLimit).toBe(1);
+
+    // Same gate as the rest of the billing controls.
+    expect((await patch({ chargeableNumberLimit: 99 }, 'owner')).statusCode).toBe(403);
   });
 
   it('billing PATCH validates: unsafe URL, short hashKey, bad types, empty body, owner 403', async () => {
