@@ -210,3 +210,46 @@ async function deleteCallRecording(req, res) {
     return res.status(500).send({ error: 'Internal server error' });
   }
 }
+
+deleteCallRecording.apiDoc = {
+  summary: 'Delete a call recording',
+  description:
+    'Deletes the stored recording object (best-effort, tolerating an already-missing object) and clears the call’s '
+    + 'recording metadata (recordingId + encryptionKey). The call row itself is retained.',
+  tags: ['Calls'],
+  operationId: 'deleteCallRecording',
+  parameters: [
+    {
+      name: 'callId',
+      in: 'path',
+      description: 'The call ID',
+      required: true,
+      schema: {
+        type: 'string',
+      },
+    },
+  ],
+  responses: {
+    204: {
+      description: 'Recording deleted and metadata cleared.',
+    },
+    404: {
+      description: 'Call or recording not found',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: {
+                type: 'string',
+              },
+            },
+          },
+        },
+      },
+    },
+    500: {
+      description: 'Internal server error',
+    },
+  },
+};
