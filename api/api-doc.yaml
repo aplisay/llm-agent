@@ -621,8 +621,11 @@ components:
             including the Ultravox realtime path on both stacks. Also honoured by native Ultravox
             agents (`ultravox:` model names) on every medium — WebRTC, WebSocket, and jambonz-routed
             telephony — where it is applied provider-side via Ultravox `inactivityMessages` (the same
-            nudge re-fires after each further `timeout` of continued silence, up to 3 times, and the
-            call is never hung up by this mechanism).
+            nudge re-fires after each further `timeout` of continued silence, up to 3 times).
+
+            By default the call is never hung up by this mechanism — it prompts and then waits
+            indefinitely. Set `hangup` to end the call once the prompt has gone unanswered three
+            times.
 
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
             which is handled entirely server-side by Ultravox and is not portable across workers; when
@@ -642,6 +645,34 @@ components:
               description: The literal phrase the agent speaks verbatim on each idle kick.
               type: string
               example: "Are you still there?"
+            hangup:
+              description: |-
+                End the call once the prompt has gone unanswered three times, instead of prompting
+                indefinitely. Opt-in; omitted or `false` leaves behaviour unchanged.
+
+                Without this, a leg that nobody hangs up is only reclaimed by the session long-stop
+                (the model's `maxDuration` plus a few seconds), so whoever is still on the line can
+                sit through minutes of silence first. That includes an abandoned consultative-transfer
+                target, which has no other party left to hang up on it.
+
+                Honoured on every stack, but enforced in two different places, which matters if the
+                agent performs consultative transfers:
+
+                  * Ultravox-backed paths (native `ultravox:` agents, and the Ultravox realtime path
+                    on the LiveKit and Pipecat workers) apply it provider-side as an
+                    `endBehavior` on the last `inactivityMessages` entry. Ultravox has no knowledge
+                    of a transfer in flight, so a caller held silently through a long consultation
+                    can be hung up on.
+                  * All other models (pipeline STT/LLM/TTS, OpenAI and Gemini realtime) are enforced
+                    by the worker, which suppresses the hangup while a consultation or transfer is in
+                    flight.
+
+                Prefer leaving this off for agents that perform consultative transfers with long
+                holds on an Ultravox-backed path. The resulting call record carries the disconnect
+                reason `Inactivity timeout`, distinct from `Session timeout`.
+              type: boolean
+              default: false
+              example: true
           required:
             - timeout
             - message

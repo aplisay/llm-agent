@@ -410,6 +410,7 @@ class CallSession:
             enable_recording=recording_opts.enabled,
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
+            on_inactivity_hangup=self._on_inactivity_hangup,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -853,6 +854,30 @@ class CallSession:
     async def _on_hangup(self) -> None:
         self._wants_hangup = True
         await self._end(DISCONNECT_REASONS["AGENT_INITIATED_HANGUP"])
+        await self.gateway_session.shutdown()
+
+    async def _on_inactivity_hangup(self) -> None:
+        """End the call after ``options.inactivity.hangup`` prompts went unanswered.
+
+        Same teardown as an agent-initiated hangup, under its own disconnect reason
+        so a deliberately reclaimed leg is distinguishable in call records from one
+        that ran out the model's ``maxDuration``.
+
+        Suppressed while a consultation or transfer is in flight: a caller held
+        silently through a consultation looks identical to an abandoned call from the
+        idle detector's point of view, and hanging up on them would be worse than the
+        strand this exists to prevent. (The native Ultravox path enforces its own
+        ``endBehavior`` server-side and cannot make this distinction — see the
+        ``hangup`` option docs.)
+        """
+        state = getattr(self.transfer_state, "state", None)
+        if state in ("dialling", "talking"):
+            logger.bind(transfer_state=state).info(
+                "inactivity hangup suppressed — transfer in flight"
+            )
+            return
+        self._wants_hangup = True
+        await self._end(DISCONNECT_REASONS["INACTIVITY_TIMEOUT"])
         await self.gateway_session.shutdown()
 
     def _build_tools_for(

@@ -23,6 +23,8 @@ import { resolveVoiceMode } from "./voice-mode.js";
 import {
   createVoiceModelAndSession,
   inactivityAwayTimeoutSecs,
+  inactivityHangupEnabled,
+  INACTIVITY_PROMPT_COUNT,
 } from "./voice-session-factory.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors } from "./usage-vendors.js";
@@ -1779,6 +1781,28 @@ export async function runAgentWorker({
           session &&
           !isUltravoxRealtime
         ) {
+          // Consecutive unanswered prompts in the current away streak. Reset the
+          // moment the user comes back (see the UserStateChanged handler), so the
+          // hangup only ever fires on a genuinely abandoned call.
+          let inactivityPrompts = 0;
+          const hangupAfterPrompts = inactivityHangupEnabled(agent);
+
+          /**
+           * True while the caller is legitimately unattended by us: held through a
+           * consultation, or already bridged/transferring. Their silence is expected
+           * and must not be counted towards abandonment.
+           *
+           * NB the Ultravox native path cannot make this distinction — Ultravox
+           * enforces its own endBehavior server-side with no view of a transfer.
+           * See the `hangup` option docs in api-client.
+           */
+          const transferInFlight = () => {
+            if (getConsultInProgress()) return true;
+            if (getBridgedParticipant()) return true;
+            const st = getTransferState?.();
+            return st?.state === "dialling" || st?.state === "talking";
+          };
+
           const speakInactivity = async () => {
             // Suppress during/after a transfer bridge — the local agent's audio
             // is no longer what the caller hears.
@@ -1801,6 +1825,26 @@ export async function runAgentWorker({
             } catch (e) {
               logger.info({ e }, "inactivity kick failed");
             }
+
+            // Count only prompts the caller actually heard, and only when we are the
+            // ones they are waiting on. Without the opt-in this stays a pure counter
+            // and the kick repeats indefinitely, exactly as before.
+            if (!hangupAfterPrompts) return;
+            if (transferInFlight()) return;
+            inactivityPrompts += 1;
+            if (inactivityPrompts < INACTIVITY_PROMPT_COUNT) return;
+
+            if (inactivityInterval) {
+              clearInterval(inactivityInterval);
+              inactivityInterval = null;
+            }
+            logger.info(
+              { prompts: inactivityPrompts, inactivityTimeoutSecs },
+              "inactivity prompt unanswered, ending call",
+            );
+            await cleanupAndClose(DISCONNECT_REASONS.INACTIVITY_TIMEOUT).catch(
+              (e) => logger.error({ e }, "error ending call on inactivity"),
+            );
           };
 
           session.on(
@@ -1818,7 +1862,10 @@ export async function runAgentWorker({
                   void speakInactivity();
                 }, inactivityTimeoutSecs * 1000);
               } else {
-                // User became active again (speaking / listening) — stop kicking.
+                // User became active again (speaking / listening) — stop kicking and
+                // forget the streak, so three prompts spread across a long call never
+                // add up to a hangup.
+                inactivityPrompts = 0;
                 if (inactivityInterval) {
                   clearInterval(inactivityInterval);
                   inactivityInterval = null;

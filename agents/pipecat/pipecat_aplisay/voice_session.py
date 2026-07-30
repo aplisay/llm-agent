@@ -79,6 +79,32 @@ def _inactivity_message(agent: dict) -> Optional[str]:
     return message.strip()
 
 
+#: How many times the inactivity prompt is spoken before the call is considered
+#: abandoned. Shared by the two enforcement paths so they agree: the native
+#: Ultravox ``inactivityMessages`` list length, and the generic kick's own
+#: counter. Only acted on when ``options.inactivity.hangup`` is set — otherwise
+#: Ultravox simply stops prompting after this many and the generic kick keeps
+#: prompting. Must stay in step with the LiveKit worker's INACTIVITY_PROMPT_COUNT.
+INACTIVITY_PROMPT_COUNT = 3
+
+
+def _inactivity_hangup_enabled(agent: dict) -> bool:
+    """Whether ``options.inactivity.hangup`` opts this agent into ending the call
+    once the prompt has gone unanswered :data:`INACTIVITY_PROMPT_COUNT` times.
+
+    Only meaningful alongside a usable inactivity config, so this is ``False``
+    whenever :func:`_inactivity_timeout_secs` is ``None`` — there is no prompt to
+    count, so there is nothing to hang up after. Strictly ``True``, so a truthy
+    string from a hand-edited agent definition does not silently arm it.
+    """
+    if _inactivity_timeout_secs(agent) is None:
+        return False
+    inactivity = (agent.get("options") or {}).get("inactivity")
+    if not isinstance(inactivity, dict):
+        return False
+    return inactivity.get("hangup") is True
+
+
 def _ultravox_inactivity_extra(agent: dict) -> dict:
     """Native Ultravox ``inactivityMessages`` derived from ``options.inactivity``.
 
@@ -91,15 +117,21 @@ def _ultravox_inactivity_extra(agent: dict) -> dict:
 
     Ultravox fires each entry once, in sequence, after ``duration`` of further
     user inactivity; a short run of identical entries gives "re-fire every
-    ``timeout`` of continued silence" (here up to 3 nudges). ``endBehavior`` is
-    left default — do NOT hang up after the last one. Returns ``{}`` when unset.
+    ``timeout`` of continued silence" (up to :data:`INACTIVITY_PROMPT_COUNT`
+    nudges). ``endBehavior`` is left default — do NOT hang up after the last one —
+    unless ``options.inactivity.hangup`` opts in, in which case the LAST entry
+    carries ``END_BEHAVIOR_HANG_UP_SOFT`` so the model still delivers that prompt
+    before ending. Returns ``{}`` when unset.
     """
     secs = _inactivity_timeout_secs(agent)
     message = _inactivity_message(agent)
     if secs is None or message is None:
         return {}
     entry = {"duration": f"{secs:g}s", "message": message}
-    return {"inactivityMessages": [entry, entry, entry]}
+    messages = [dict(entry) for _ in range(INACTIVITY_PROMPT_COUNT)]
+    if _inactivity_hangup_enabled(agent):
+        messages[-1] = {**entry, "endBehavior": "END_BEHAVIOR_HANG_UP_SOFT"}
+    return {"inactivityMessages": messages}
 
 
 def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams]:
@@ -281,6 +313,7 @@ def _wire_inactivity_kick(
     mode: VoiceMode,
     is_ultravox: bool,
     relay_endpoint: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> None:
     """Register the inactivity "kick" handler on the user aggregator.
 
@@ -351,8 +384,20 @@ def _wire_inactivity_kick(
         ]
     )
 
+    # Consecutive unanswered prompts in the current silent run. Reset the moment a
+    # real user turn starts, so prompts spread across a long call never add up to a
+    # hangup. Only consulted when ``options.inactivity.hangup`` is set.
+    hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
+    idle_prompts = 0
+
+    @user_aggregator.event_handler("on_user_turn_started")
+    async def _on_user_turn_started(_aggregator) -> None:  # noqa: ANN001
+        nonlocal idle_prompts
+        idle_prompts = 0
+
     @user_aggregator.event_handler("on_user_turn_idle")
     async def _on_user_turn_idle(_aggregator) -> None:  # noqa: ANN001
+        nonlocal idle_prompts
         # Suppress while this leg is bridged into a media relay — the local
         # bot is muted, so a kick would be inaudible (and pointless).
         if relay_endpoint is not None and getattr(relay_endpoint, "engaged", False):
@@ -375,6 +420,21 @@ def _wire_inactivity_kick(
                 )
         except Exception as e:  # noqa: BLE001
             _logger.warning(f"inactivity kick failed: {e}")
+
+        # Count only prompts the caller could actually hear. Without the opt-in this
+        # is inert and the kick keeps re-firing indefinitely, exactly as before.
+        if not hangup_after_prompts:
+            return
+        idle_prompts += 1
+        if idle_prompts < INACTIVITY_PROMPT_COUNT:
+            return
+        _logger.bind(prompts=idle_prompts).info(
+            "inactivity prompt unanswered, ending call"
+        )
+        try:
+            await on_inactivity_hangup()  # type: ignore[misc]
+        except Exception as e:  # noqa: BLE001
+            _logger.warning(f"inactivity hangup failed: {e}")
 
 
 def _properties_to_function_schema(name: str, description: str, properties: dict, required: list[str]) -> FunctionSchema:
@@ -630,6 +690,7 @@ async def build_voice_session(
     enable_recording: bool = False,
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
@@ -661,11 +722,13 @@ async def build_voice_session(
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
+            on_inactivity_hangup,
         )
     else:
         task, context, llm = await _build_pipeline(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
+            on_inactivity_hangup,
         )
     return task, audio_buffer, context, llm
 
@@ -680,6 +743,7 @@ async def _build_realtime(
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -970,6 +1034,7 @@ async def _build_realtime(
         mode="realtime",
         is_ultravox=model_id.startswith("ultravox/"),
         relay_endpoint=relay_endpoint,
+        on_inactivity_hangup=on_inactivity_hangup,
     )
     return task, context, llm
 
@@ -984,6 +1049,7 @@ async def _build_pipeline(
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1107,5 +1173,6 @@ async def _build_pipeline(
         mode="pipeline",
         is_ultravox=False,
         relay_endpoint=relay_endpoint,
+        on_inactivity_hangup=on_inactivity_hangup,
     )
     return task, context, llm

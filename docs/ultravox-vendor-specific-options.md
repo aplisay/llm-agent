@@ -190,6 +190,33 @@ Authoritative behaviour, ordering, and best practices are described in the Ultra
 
 If silence handling or hang-up timing is **business-critical**, assume it **does not** apply on non-Ultravox stacks unless you implement an equivalent there.
 
+### Portable alternative: `options.inactivity`
+
+Silence handling is one of the few areas with a **portable** equivalent, so reach for it first:
+
+```json
+{
+  "options": {
+    "inactivity": {
+      "timeout": "8s",
+      "message": "Are you still there?",
+      "hangup": true
+    }
+  }
+}
+```
+
+`timeout` + `message` speak that line after each `timeout` of continued silence, up to three times. Adding `hangup: true` ends the call once the third prompt goes unanswered, instead of prompting forever and leaving the leg to be reclaimed only by the model's `maxDuration` long-stop — which can mean minutes of silence for whoever is still on the line.
+
+This works on **every** platform, but is enforced in two different places:
+
+| Stack | Enforced by | Transfer-aware? |
+|---|---|---|
+| Ultravox realtime | Mapped to native `inactivityMessages` with `endBehavior: END_BEHAVIOR_HANG_UP_SOFT` on the last entry | **No** — Ultravox has no view of a transfer in flight |
+| Pipeline TTS / OpenAI / Gemini realtime | Our own prompt counter | Yes — suppressed while a consult or transfer is in flight |
+
+That difference matters for **consultative transfer**: a caller held silently through a long consultation looks identical to an abandoned call from Ultravox's point of view, so prefer leaving `hangup` off on agents that perform consultative transfers with long holds. A native `vendorSpecific.ultravox.inactivityMessages` supplied directly always wins over the portable mapping, so you can hand-tune the ladder (as in the example above) when you need per-prompt durations or a different `endBehavior`.
+
 ---
 
 ## Summary
