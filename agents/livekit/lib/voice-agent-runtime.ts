@@ -1572,6 +1572,39 @@ export async function runAgentWorker({
           },
         );
 
+        // When the realtime provider ends the session itself — Ultravox's own
+        // maxDuration, an options.inactivity.hangup endBehavior hangup, or a genuine
+        // outage — the agent is dead but the SIP leg is still up. Nothing else notices:
+        // the SDK turns it into an unrecoverable error whose `recoverable` flag is
+        // stripped before any listener sees it (see setProviderEndedCallback), and the
+        // Close event never arrives because closeImpl blocks in drain(). Observed on
+        // staging: 2m10s of dead air on a live leg, then teardown under the unrelated
+        // "Session timeout" long-stop, then a 120s forced process exit.
+        //
+        // The callback fires for the PRIMARY session only, so a consult TransferAgent
+        // session or a post-handover session ending cannot reach here. The guards below
+        // cover the cases where the primary model is deliberately dead but the call is
+        // healthy or already coming down.
+        (
+          model as unknown as {
+            setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
+          } | null
+        )?.setProviderEndedCallback?.((info: unknown) => {
+          if (isCleaningUp) return;
+          if (agentHandoverInProgress) return;
+          // Bridged/transferred out: the caller no longer hears this agent, so its
+          // model dying is expected and must not end the bridged call.
+          if (getBridgedParticipant()) return;
+          if (getConsultInProgress()) return;
+          logger.warn(
+            { info, callId: call.id },
+            "realtime provider ended the session; ending call",
+          );
+          void cleanupAndClose(DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED).catch(
+            (e) => logger.error({ e }, "error ending call after provider end"),
+          );
+        });
+
         // Watch for any non-recoverable model/STT/TTS errors that occur while
         // the session is still starting. If we see one before callStarted is
         // set, we treat it as a setup failure so the outer fallback loop can
