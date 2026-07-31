@@ -2166,17 +2166,23 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         await activateRegistration(req, res);
         expect(res._status).toBe(200);
 
-        // Wait for the first state transition (initial)
-        await new Promise(resolve => setTimeout(resolve, 100));
-
+        // The 'initial' write is awaited inside startSimulation, so it is already
+        // durable here — no sleep needed (and sleeping races the first transition).
         let reg = await PhoneRegistration.findByPk(testRegId);
         expect(reg.status).toBe('active');
         expect(reg.state).toBe('initial');
 
-        // Wait for the simulation to complete the lifecycle (15x faster)
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        // Poll for a final state rather than sampling once after a fixed sleep.
+        // The simulator schedules its 'registering' and final transitions from the
+        // same instant (3-60s and 3-10s), so 'registering' frequently lands AFTER
+        // the final state: a single late sample can legitimately observe
+        // 'registering' and fail. Real (unscaled) sleeps keep the budget honest.
+        const deadline = Date.now() + 15000;
+        while (!['registered', 'failed'].includes(reg.state) && Date.now() < deadline) {
+          await new Promise(resolve => originalSetTimeout(resolve, 50));
+          reg = await PhoneRegistration.findByPk(testRegId);
+        }
 
-        reg = await PhoneRegistration.findByPk(testRegId);
         expect(reg.status).toBe('active');
         // The simulation should have reached a final state
         expect(['registered', 'failed']).toContain(reg.state);
