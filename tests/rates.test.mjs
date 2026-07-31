@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import {
   resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName,
   resolveRateCard, settle, costUsageRow, sweepUncostedRows,
+  BILLING_INCREMENT_SECONDS,
 } from '../lib/rates.js';
 import { recordUsage, finaliseSession } from '../lib/usage.js';
 
@@ -42,6 +43,25 @@ describe('rates: pure additive resolver', () => {
     expect(toLineUnits(120, 'seconds', 'minute')).toBe(2);
     expect(toLineUnits(42, 'output_tokens', 'token')).toBe(42);
     expect(toLineUnits(900, 'characters', 'character')).toBe(900);
+  });
+
+  // Pins the published customer claim: calls are "billed in 6-second increments"
+  // (docs/documentation-site-design.md in polite-ai). If this test breaks, the
+  // docs are lying — change the docs claim before changing the behaviour.
+  it('bills per-minute time in 6-second increments, rounding UP', () => {
+    expect(BILLING_INCREMENT_SECONDS).toBe(6);
+    // 61s → 66 billed seconds → 1.1 minutes, from either meter unit.
+    expect(toLineUnits(61_000, 'milliseconds', 'minute')).toBeCloseTo(1.1);
+    expect(toLineUnits(61, 'seconds', 'minute')).toBeCloseTo(1.1);
+    // Exact multiples don't over-round; zero stays zero.
+    expect(toLineUnits(66_000, 'milliseconds', 'minute')).toBeCloseTo(1.1);
+    expect(toLineUnits(0, 'milliseconds', 'minute')).toBe(0);
+    // Any non-zero duration bills at least one increment (0.1 min).
+    expect(toLineUnits(1, 'milliseconds', 'minute')).toBeCloseTo(0.1);
+    // End-to-end through the resolver: a 61s realtime call is rated as 1.1 min on
+    // BOTH per-minute dimensions: 1.1 × (500_000 + 6_000_000) = 7_150_000.
+    const { costMicros } = resolveRowCost(voiceRow({ quantity: 61_000 }), ULTRAVOX_CARD);
+    expect(costMicros).toBe(7_150_000);
   });
 
   it('lineMatchesRow: key omission is wildcard; specified keys must equal', () => {
@@ -107,7 +127,7 @@ describe('rates: pure additive resolver', () => {
     const card = { detail: { lines: [
       { dim: 'audio-path', match: { technology: 'voice' }, unit: 'minute', priceMicros: 7 },
     ] } };
-    // 10_000ms = 1/6 min; 7 * 1/6 = 1.166… -> 1
+    // 10_000ms rounds up to 12 billed seconds = 0.2 min; 7 * 0.2 = 1.4 -> 1
     expect(resolveRowCost(voiceRow({ quantity: 10_000 }), card).costMicros).toBe(1);
   });
 });
