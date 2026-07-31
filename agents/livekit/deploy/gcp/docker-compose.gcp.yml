@@ -1,0 +1,72 @@
+# Production / staging compose for the LiveKit agent on a GCP VM.
+#
+# Pulls the pre-built image from Artifact Registry (built by
+# deploy/gcp/cloudrun/cloudbuild-livekit*.yaml). Shape follows
+# aplisay-sbc/deploy/gcp/docker-compose.gcp.yml and
+# agents/pipecat/deploy/gcp/docker-compose.gcp.yml.
+#
+# Expected to live on the VM at ~/livekit-agent/docker-compose.yaml alongside a
+# .env from env-example-{staging,production}, both written by deploy-node.sh.
+# Neither holds a secret: the image's own entrypoint reads the SECRETENV pair
+# from Secret Manager when the container starts, and it lives only in the agent
+# process's environment.
+#
+# The agent registers OUTBOUND to LiveKit Cloud — it takes no inbound traffic,
+# so it runs on the default bridge network with no published ports (unlike the
+# SBC / pipecat stacks, which need network_mode: host for SIP).
+services:
+  livekit-agent:
+    image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/${IMAGE_NAME:-livekit-agent}:${IMAGE_TAG:-latest}
+    container_name: livekit-agent
+    restart: always
+
+    # No entrypoint/command override: the image's own entrypoint.sh loads the
+    # SECRETENV pair and execs `node dist/realtime.js start`. That means this
+    # compose file needs an image built from agents/livekit/Dockerfile at or
+    # after that change — older tags still carry the broken
+    # `node dist/realtime.mjs` ENTRYPOINT and will fail immediately.
+
+    env_file:
+      # Non-secret deploy config (image coordinates, log level, tuning). There
+      # is deliberately no second, secret-bearing env_file: the agent's `dotenv`
+      # dependency is aliased to github:rjp44/secretenv, and dotenv.config()
+      # decrypts the bundle the entrypoint put in the environment — that is
+      # where LIVEKIT_*, POSTGRES_*, provider API keys etc. come from.
+      - .env
+
+    environment:
+      # Base resource path of the SECRETENV pair; the image's entrypoint
+      # appends _KEY / _BUNDLE and reads both with the VM's own service
+      # account. This is the only thing tying the container to its secrets.
+      GOOGLE_SECRETENV_PATH: ${GOOGLE_SECRETENV_PATH}
+      # NODE_ENV is deliberately NOT set: the image already bakes
+      # `ENV NODE_ENV production`, and @livekit/agents runs with
+      # `production: true` regardless (see realtime.ts). Both staging and
+      # production containers therefore run in production mode.
+      LOGLEVEL: ${LOGLEVEL:-info}
+      LOG_LEVEL: ${LOG_LEVEL:-${LOGLEVEL:-info}}
+      # Pool of pre-spawned idle job processes. realtime.ts defaults to 10 when
+      # NODE_ENV=production (which it always is, above) — too many for a small
+      # staging VM, so the staging template pins it down to 3.
+      NUM_IDLE_PROCESSES: ${NUM_IDLE_PROCESSES:-10}
+      # Trunk this runner attributes outbound legs to (destination billing).
+      APLISAY_OUTBOUND_TRUNK_ID: ${APLISAY_OUTBOUND_TRUNK_ID:-}
+
+    # SIGTERM makes @livekit/agents drain (finish in-flight calls) before
+    # closing, because ServerOptions sets production: true. Give it room —
+    # docker's 10s default would kill live calls on every upgrade.
+    stop_grace_period: 300s
+
+    # The current konlet-deployed runners have unbounded json logs (500MB x 3
+    # rotations, ~1.4GB), which makes `docker logs` unusable for forensics.
+    # Cap it here so the on-host log stays greppable.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+    # The worker's HTTP/health server listens on 8081 inside the container.
+    # Nothing external needs it; uncomment to expose it to the host only.
+    # ports:
+    #   - "127.0.0.1:8081:8081"

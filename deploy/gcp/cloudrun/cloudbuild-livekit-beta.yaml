@@ -20,9 +20,9 @@
 # create` — NOT `tags add`, which cannot MOVE an existing :beta under the
 # Cloud Build SA) and the Submodules/Build/Push steps no-op via a /workspace
 # skip marker — the submodule fetch is skipped too. See cloudbuild-beta.yaml
-# for the full rationale (incl. why there is no `images:` list). Build-time
-# secrets: the production SECRETENV bundle, matching the per-commit main
-# build.
+# for the full rationale (incl. why there is no `images:` list). No build-time
+# secrets: this image no longer bakes any, so the same artefact is valid in
+# every environment.
 steps:
   - name: gcr.io/cloud-builders/docker
     id: Check
@@ -59,16 +59,11 @@ steps:
   - name: gcr.io/cloud-builders/docker
     id: Build
     entrypoint: bash
-    secretEnv:
-      - SECRETENV_BUNDLE
-      - SECRETENV_KEY
     args:
       - -c
       - |
         [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker build --no-cache \
-          --build-arg SECRETENV_BUNDLE \
-          --build-arg SECRETENV_KEY \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:beta \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME \
@@ -90,9 +85,6 @@ substitutions:
   _AR_HOSTNAME: europe-west1-docker.pkg.dev
 tags:
   - livekit-agent-beta
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_BUNDLE/versions/latest
-      env: SECRETENV_BUNDLE
-    - versionName: projects/$PROJECT_ID/secrets/SECRETENV_KEY/versions/latest
-      env: SECRETENV_KEY
+# No availableSecrets: agents/livekit/Dockerfile takes no SECRETENV_* build
+# args any more. The image is secret-free — the container reads the pair from
+# Secret Manager itself at start-up.

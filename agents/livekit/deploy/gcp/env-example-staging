@@ -1,0 +1,32 @@
+# LiveKit agent — staging env template.
+#
+# Same shape as env-example-production, pointing at the staging image tag and
+# the staging secretenv pair. Copied to .env.staging by deploy-node.sh and
+# shipped to the VM as ~/livekit-agent/.env. Contains NO secrets.
+
+# ---- Artifact Registry ----------------------------------------------------
+# Staging pulls the :staging tag of the SAME livekit-agent image (there is no
+# separate livekit-agent-staging image in the registry).
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=llm-agent
+IMAGE_NAME=livekit-agent
+IMAGE_TAG=staging
+PROJECT_NUMERIC_ID=160114196407
+
+# ---- secretenv ------------------------------------------------------------
+# Passed into the container, whose entrypoint appends _KEY / _BUNDLE and reads
+# both from Secret Manager at start-up (VM service account, via the metadata
+# server). Neither value is ever written to disk.
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV_STAGING
+
+# ---- Runtime tuning -------------------------------------------------------
+# The staging runner has historically run at debug level (matching the konlet
+# container declaration it replaces).
+LOGLEVEL=debug
+LOG_LEVEL=debug
+# The image bakes NODE_ENV=production, so realtime.ts would otherwise default
+# to 10 idle job processes — far too many for the e2-standard-2 staging VM.
+NUM_IDLE_PROCESSES=3
+
+APLISAY_OUTBOUND_TRUNK_ID=
