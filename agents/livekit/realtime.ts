@@ -6,9 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { ServerOptions, cli } from '@livekit/agents';
 import * as loggerModule from './agent-lib/logger.js';
 import { runSetup } from './lib/initialise.js';
+import { startRuntimeTelemetry } from './lib/runtime-telemetry.js';
 import worker from './lib/worker.js';
 
 const logger = loggerModule.default;
+
+// Periodic event-loop-delay + CPU sample, off unless RUNTIME_STATS_MS is set.
+// This runs in the supervisor and in every job process, because this module is
+// evaluated in both. For a profile that also covers the module loading above,
+// see lib/profile-hook.ts — it has to be attached with --import, since ESM
+// hoisting means those imports are already resolved before this line runs.
+startRuntimeTelemetry();
 
 // Logged so the settings are verifiable in production rather than assumed. This entry
 // runs in the parent worker AND in every spawned job process, which is where the

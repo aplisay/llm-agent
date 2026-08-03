@@ -52,6 +52,31 @@ services:
       # Trunk this runner attributes outbound legs to (destination billing).
       APLISAY_OUTBOUND_TRUNK_ID: ${APLISAY_OUTBOUND_TRUNK_ID:-}
 
+      # ---- Diagnostics ----------------------------------------------------
+      # All default to off, so a canary node is switched into profiling mode by
+      # editing .env and re-running the deploy script — no image rebuild and no
+      # code change. See deploy/gcp/README.md, "Profiling a runner".
+      #
+      # Periodic per-process event-loop delay + CPU/memory sample. Cheap enough
+      # to leave on (one line per process per interval); says whether a pegged
+      # thread is the JS main thread or something else entirely.
+      RUNTIME_STATS_MS: ${RUNTIME_STATS_MS:-0}
+      # V8 CPU profile. These only do anything when NODE_OPTIONS below loads
+      # the hook, which is what lets the profile start before the agent's
+      # module graph is evaluated (--cpu-prof is rejected inside NODE_OPTIONS).
+      PROFILE_MS: ${PROFILE_MS:-0}
+      PROFILE_SIGNAL: ${PROFILE_SIGNAL:-0}
+      PROFILE_DIR: ${PROFILE_DIR:-/prof}
+      PROFILE_INTERVAL_US: ${PROFILE_INTERVAL_US:-1000}
+      # Left empty in normal operation. To profile:
+      #   NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js
+      NODE_OPTIONS: ${NODE_OPTIONS:-}
+
+    volumes:
+      # Where the profile hook writes .cpuprofile files. Stays empty unless
+      # profiling is switched on; on the VM this is ~/livekit-agent/profiles.
+      - ./profiles:/prof
+
     # SIGTERM makes @livekit/agents drain (finish in-flight calls) before
     # closing, because ServerOptions sets production: true. Give it room —
     # docker's 10s default would kill live calls on every upgrade.

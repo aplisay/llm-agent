@@ -40,14 +40,69 @@ The agent runners are currently deployed as GCE *container VMs* — a
   installs Docker on a bare host, authenticates Artifact Registry, copies the
   env + compose files, checks the VM can read the secretenv pair, pulls and
   starts.
+- [`deploy-cos.sh`](deploy-cos.sh) — the same deploy against a
+  Container-Optimized OS VM. See [Comparing COS against
+  Debian/Ubuntu](#comparing-cos-against-debianubuntu).
 - [`bundle-secretenv.sh`](bundle-secretenv.sh) — encrypts a repo-root
   `.env.<env>` into a `SECRETENV_KEY` + `SECRETENV_BUNDLE` pair and publishes
   it to Secret Manager.
 - [`status.sh`](status.sh) / [`log.sh`](log.sh) / [`upgrade.sh`](upgrade.sh) —
   operational one-liners over the node list from the last deployment.
+- [`drain.sh`](drain.sh) — retire a runner without leaving a stale worker
+  registration behind. See [Retiring a runner](#retiring-a-runner).
 
 Generated locally and git-ignored: `.env.staging`, `.env.production`,
-`docker-compose.yaml`, `.last-deployment`.
+`docker-compose.yaml`, `.last-deployment`, `.last-deployment-cos`.
+
+## Comparing COS against Debian/Ubuntu
+
+The konlet runners this stack replaces ran on Container-Optimized OS, and
+appear to use noticeably less CPU than the compose runners on Debian/Ubuntu.
+[`deploy-cos.sh`](deploy-cos.sh) exists to isolate the host OS as the variable:
+it ships the *same* generated `.env` and `docker-compose.yaml` to a COS node,
+so the container's image, env, network mode, log driver and stop grace are
+identical and only the OS underneath differs.
+
+```bash
+./deploy-cos.sh --components=create --nodes=livekit-cos-staging --zone=europe-west2-b --mirror=agent-runner-staging:europe-west2-b
+```
+
+Then deploy onto it, and print the facts worth diffing against the Debian node:
+
+```bash
+./deploy-cos.sh --env=staging --nodes=livekit-cos-staging --zone=europe-west2-b
+```
+
+```bash
+./deploy-cos.sh --components=parity --yes
+```
+
+COS forces four departures from `deploy-node.sh`, all of them mechanical:
+
+| | Debian/Ubuntu | COS |
+|---|---|---|
+| Docker | installed via `apt` | preinstalled; script only verifies |
+| Registry auth | `gcloud auth print-access-token` on the VM | same token, read straight from the metadata server (COS has no `gcloud`) |
+| Secret check | `gcloud secrets versions access` | Secret Manager REST call, HTTP status only — the payload is never fetched |
+| `docker compose` | `docker-compose-plugin` package | v2 binary in `/var/lib/aplisay-compose/bin`, made runnable with the COS bind-mount + `remount,exec` workaround, symlinked into `~/.docker/cli-plugins` |
+
+Two things to know before reading the numbers:
+
+- Compare like with like. The GCE console's CPU metric is host-wide and
+  normalised across vCPUs; `docker stats` is a percentage of *one* core and
+  charges only the container's cgroup, so network softirq work never appears in
+  it. `--components=parity` prints both sides plus the container's effective
+  `LOGLEVEL` and `NUM_IDLE_PROCESSES`, which are the two settings most likely
+  to differ between a konlet declaration and this compose file.
+- `--components=create` provisions with `google-logging-enabled=false` and
+  `google-monitoring-enabled=false`. The in-guest logging agent is itself a
+  measurable CPU consumer, and the hypervisor-level CPU metric the comparison
+  relies on is collected outside the guest regardless.
+
+`upgrade.sh` does not work against a COS node — it shells out to `gcloud` on
+the VM. Re-run `deploy-cos.sh`, which is idempotent. `status.sh` and `log.sh`
+do work, but read `.last-deployment` (the Debian fleet), so name the node:
+`NODES=livekit-cos-staging:europe-west2-b ./log.sh`.
 
 ## Image layout
 
@@ -235,6 +290,31 @@ The `konlet` component stops and disables `konlet-startup`, removes the
 it does not come back on reboot. Do one node at a time and confirm calls are
 landing before moving to the next.
 
+### Retiring a runner
+
+Once the new node is serving, the old one has to be drained — not just
+stopped. Stopping a VM does not drain anything: dockerd kills containers after
+its own `--shutdown-timeout` (15s), not the container's 300s
+`stop_grace_period`, and a hard power-off never closes the registration
+WebSocket at all. LiveKit Cloud can then keep offering jobs to a worker that no
+longer exists until its own keepalive expires. Those jobs are never accepted,
+so an inbound SIP leg waiting on that agent just rings until the A-leg's 30s
+cap cancels it.
+
+```bash
+NODES=agent-runner-staging:europe-west2-b STOP_VM=1 ./drain.sh
+```
+
+`drain.sh` reports `active_jobs` from the worker's own health server, sends
+SIGTERM (which makes `@livekit/agents` flip to `WS_FULL`, finish in-flight
+calls, and close the socket), waits for the process to exit, and only then
+stops the VM. `STOP_VM=1` implies `DOWN=1`, because `restart: always` would
+otherwise re-register the worker the next time anyone starts that VM.
+
+An exit code of 137 means the drain was SIGKILLed before it finished — the
+stale-registration case — so the VM is left running for you to look at unless
+you pass `FORCE=1`.
+
 ## Day to day
 
 ```bash
@@ -247,6 +327,73 @@ For deep call forensics the on-host JSON log is still the fastest path, but it
 now rotates at 100 MB — see the notes in
 [`docs/`](../../../../docs) about grepping `docker inspect --format
 '{{.LogPath}}'` rather than using `docker logs --since`.
+
+## Profiling a runner
+
+Both of these are off by default and are switched on by editing `.env` and
+re-running the deploy script — no image rebuild, no code change.
+
+### Always-on: is the JS main thread the busy one?
+
+`RUNTIME_STATS_MS=30000` (set in the env templates) makes every process — the
+supervisor and each job process — log one line per interval:
+
+```
+runtime stats  role=job pid=41 ppid=1 loopP99Ms=0.9 loopMaxMs=1.2 cpuPct=12.4 rssMb=180
+```
+
+`loopP99Ms` is *excess* event-loop delay, so a healthy loop reads ~0-2 ms. The
+combination is what matters:
+
+| `cpuPct` | `loopP99Ms` | meaning |
+| --- | --- | --- |
+| high | high | the JS main thread is saturated — agent code, or something it calls synchronously |
+| high | ~0 | the busy thread is **not** the JS main thread: a libuv threadpool thread (sync fs/crypto/zlib/dns), a V8 GC/JIT helper, or one of rtc-node's Rust/tokio threads |
+| low | high | the loop is blocked waiting, not computing |
+
+Line those up with `docker exec livekit-agent ps -ef --forest` using `pid`/`ppid`
+to see whether it is the supervisor or a job process.
+
+### On demand: V8 CPU profile
+
+Uncomment both lines in `.env` and redeploy:
+
+```
+PROFILE_MS=90000
+NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js
+```
+
+`--cpu-prof` is rejected inside `NODE_OPTIONS`, and a profiler started from
+`realtime.ts` is already too late: ESM imports are hoisted, so `lib/worker.js`
+and its dependency graph are evaluated and JIT-compiled before the first
+statement of `realtime.ts` runs. `--import` runs
+[`lib/profile-hook.ts`](../../lib/profile-hook.ts) *before* the main module, so
+the window covers module load and JIT warm-up as well as the first calls. That
+matters here because the pool forks a replacement job process every time one is
+consumed, so module load is paid per call, not just at boot.
+
+`PROFILE_MS` is a window from process start. Each process writes
+`cpu-<role>-<pid>-<epoch>.cpuprofile` into `~/livekit-agent/profiles` on the
+VM; collect them with:
+
+```bash
+gcloud compute scp --recurse agent-runner-staging:~/livekit-agent/profiles ./profiles --zone=europe-west2-b
+```
+
+Open a `.cpuprofile` in Chrome DevTools (Performance → Load profile) or
+[speedscope](https://www.speedscope.app/).
+
+Two caveats. A process that exits before its window closes writes nothing — the
+timer is deliberately `unref`'d so a spare job process is never held open. And
+`PROFILE_SIGNAL=1` arms a SIGUSR2 toggle for ad-hoc capture
+(`docker exec livekit-agent kill -USR2 <pid>`), which is off by default because
+nodemon uses SIGUSR2 to restart and would make `yarn develop` unusable.
+
+### Attaching a live inspector
+
+`--inspect` *is* allowed in `NODE_OPTIONS`, and forked children get
+auto-incremented ports. **Bind it to loopback and reach it over an SSH tunnel —
+an exposed inspector port is remote code execution.**
 
 ## Known rough edges
 

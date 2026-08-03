@@ -36,3 +36,17 @@ NUM_IDLE_PROCESSES=10
 # Trunk id this runner stamps on outbound legs for destination billing. Leave
 # empty until a chargeable Trunk row exists for this environment.
 APLISAY_OUTBOUND_TRUNK_ID=
+
+# ---- Diagnostics ----------------------------------------------------------
+# Periodic per-process event-loop delay + CPU/memory sample, one log line per
+# process per interval (role/pid/ppid/loopP99Ms/cpuPct/rssMb). 0 disables.
+# If cpuPct is high while loopP99Ms stays flat, the busy thread is NOT the JS
+# main thread — look at libuv/V8/rtc-node, not at agent code.
+RUNTIME_STATS_MS=30000
+
+# V8 CPU profiling. Off. To profile a canary node, uncomment BOTH lines, run
+# ./deploy-node.sh (or ./deploy-cos.sh), then collect from ~/livekit-agent/profiles.
+# PROFILE_MS is a window measured from process start, so it covers module load
+# and JIT warm-up as well as the first calls the process handles.
+# PROFILE_MS=90000
+# NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js
