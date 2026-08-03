@@ -64,6 +64,17 @@ services:
       # V8 CPU profile. These only do anything when NODE_OPTIONS below loads
       # the hook, which is what lets the profile start before the agent's
       # module graph is evaluated (--cpu-prof is rejected inside NODE_OPTIONS).
+      # Every variable the hook reads must be listed here. Compose forwards
+      # only the names it interpolates, so a shell prefix for a key that is
+      # missing from this block is silently dropped and the hook goes inert.
+      #
+      # PROFILE_ON_EXIT=1 profiles a process's whole life and writes when it
+      # exits — the mode for "every call until the next restart", since job
+      # processes are one-shot and a PROFILE_MS window would leave them
+      # writing nothing. PROFILE_ROLE=job skips the supervisor, which handles
+      # no calls and whose profile would otherwise grow until container stop.
+      PROFILE_ON_EXIT: ${PROFILE_ON_EXIT:-0}
+      PROFILE_ROLE: ${PROFILE_ROLE:-all}
       PROFILE_MS: ${PROFILE_MS:-0}
       PROFILE_SIGNAL: ${PROFILE_SIGNAL:-0}
       PROFILE_DIR: ${PROFILE_DIR:-/prof}
