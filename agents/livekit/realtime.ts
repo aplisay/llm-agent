@@ -5,6 +5,7 @@ import { outboundNetworkDefaults } from './lib/net-defaults.js';
 import { fileURLToPath } from 'node:url';
 import { ServerOptions, cli } from '@livekit/agents';
 import * as loggerModule from './agent-lib/logger.js';
+import { installExitForensics } from './lib/exit-forensics.js';
 import { runSetup } from './lib/initialise.js';
 import { startRuntimeTelemetry } from './lib/runtime-telemetry.js';
 import worker from './lib/worker.js';
@@ -27,8 +28,18 @@ logger.info(
 );
 Error.stackTraceLimit = 40;
 
+const isJobProcess = typeof process.send === 'function';
+
+// Records who decided to stop this process, so a clean-but-unexplained exit
+// (staging saw RestartCount=2 / ExitCode=0 / not OOM-killed) leaves evidence in
+// `docker logs` instead of needing another deploy round trip to reproduce.
+installExitForensics(isJobProcess ? 'job' : 'supervisor');
+
 if (process.argv[2] === 'setup') {
   runSetup();
+} else if (isJobProcess) {
+  process.on('SIGTERM', () => process.exit(143));
+  process.on('SIGINT', () => process.exit(130));
 } else {
   cli.runApp(new ServerOptions({
     agent: fileURLToPath(import.meta.url),
