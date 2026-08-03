@@ -16,6 +16,7 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 // import type { GenerationCreatedEvent } from '@livekit/agents';
 import * as api_proto from "./api_proto.js";
+import { FrameAccumulator } from "./frame_accumulator.js";
 import { UltravoxClient } from "./ultravox_client.js";
 import { Realtime_InputTextContent } from "./api_proto.js";
 
@@ -542,8 +543,13 @@ export class RealtimeSession extends llm.RealtimeSession {
   #toolChoice: llm.ToolChoice | null = "auto";
   #messageStreamController?: ReadableStreamDefaultController<any>;
   #functionStreamController?: ReadableStreamDefaultController<any>;
-  // Audio buffering and processing
-  #bstream = new AudioByteStream(
+  // Audio buffering and processing.
+  //
+  // FrameAccumulator, not the SDK's AudioByteStream: same semantics, but
+  // AudioByteStream.write spread-concatenates its residual buffer on every
+  // call, which profiling measured at 25.7% of all post-startup CPU in a job
+  // process — 90% of it from pushAudio below. See frame_accumulator.ts.
+  #bstream = new FrameAccumulator(
     api_proto.SAMPLE_RATE,
     api_proto.NUM_CHANNELS,
     api_proto.SAMPLE_RATE / 10
