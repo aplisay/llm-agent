@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {
   AsyncIterableQueue,
-  AudioByteStream,
   Future,
   Queue,
   llm,
@@ -538,7 +537,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #currentResponseId: string | null = null;
   #currentOutputIndex = 0;
   #currentContentIndex = 0;
-  #audioStream?: AudioByteStream;
+  #audioStream?: FrameAccumulator;
   #audioBuffer: Buffer[] = [];
   #toolChoice: llm.ToolChoice | null = "auto";
   #messageStreamController?: ReadableStreamDefaultController<any>;
@@ -1488,7 +1487,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       );
       this.#markCurrentGenerationDone();
     }
-    this.#audioStream = new AudioByteStream(
+    this.#audioStream = new FrameAccumulator(
       api_proto.SAMPLE_RATE,
       api_proto.NUM_CHANNELS,
       api_proto.OUT_FRAME_SIZE
