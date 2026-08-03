@@ -389,6 +389,50 @@ timer is deliberately `unref`'d so a spare job process is never held open. And
 (`docker exec livekit-agent kill -USR2 <pid>`), which is off by default because
 nodemon uses SIGUSR2 to restart and would make `yarn develop` unusable.
 
+### Without editing `.env`: overriding on the compose command line
+
+Every diagnostic key in `docker-compose.yaml` is an interpolation with a
+default — `PROFILE_MS: ${PROFILE_MS:-0}` — so compose fills it from the shell
+environment first and falls back to `.env`. Prefixing the `up` gets you a
+profiling run with no file edit:
+
+```bash
+cd ~/livekit-agent && PROFILE_MS=90000 NODE_OPTIONS="--import /usr/src/app/dist/lib/profile-hook.js" docker compose up -d --force-recreate
+```
+
+Or in one step from your own machine:
+
+```bash
+gcloud compute ssh agent-runner-staging --zone=europe-west2-b --command='cd ~/livekit-agent && PROFILE_MS=90000 NODE_OPTIONS="--import /usr/src/app/dist/lib/profile-hook.js" docker compose up -d --force-recreate'
+```
+
+This works for turning things *down* as well as up — a shell value beats one
+already set in `.env`, so `RUNTIME_STATS_MS=0 docker compose up -d
+--force-recreate` silences the sampler on a node whose `.env` enables it.
+
+Back to normal is another recreate with no prefix:
+
+```bash
+cd ~/livekit-agent && docker compose up -d --force-recreate
+```
+
+Which route to use:
+
+| | `.env` + redeploy | compose command line |
+| --- | --- | --- |
+| survives `./upgrade.sh` and the next deploy | yes | **no** — both rewrite `.env` and recreate |
+| leaves a record of what the node is running | yes | no |
+| needs a deploy-script run | yes | no |
+
+So: the command line for a one-off capture on a node you are watching, `.env`
+for anything you want to still be true tomorrow. The fact that an ad-hoc
+override is dropped by the next deploy is deliberate — it fails safe, and a
+runner cannot be left profiling indefinitely because someone forgot.
+
+Note that `--force-recreate` restarts the container, so in-flight calls drain
+first (`stop_grace_period` is 300s). This is not a zero-impact operation on a
+node taking live traffic.
+
 ### Attaching a live inspector
 
 `--inspect` *is* allowed in `NODE_OPTIONS`, and forked children get
