@@ -37,6 +37,19 @@ function processRole(): "supervisor" | "job" {
   return typeof process.send === "function" ? "job" : "supervisor";
 }
 
+/**
+ * `{ Timeout: 3, TCPSocketWrap: 2 }` — the handles currently keeping the event
+ * loop alive, tallied by type. Node returns a flat list of type names, which is
+ * unbounded and mostly repetition; the counts are what identify a leak.
+ */
+function activeResourceCounts(): Record<string, number> | undefined {
+  const info = process.getActiveResourcesInfo?.();
+  if (!info) return undefined;
+  const counts: Record<string, number> = {};
+  for (const kind of info) counts[kind] = (counts[kind] ?? 0) + 1;
+  return counts;
+}
+
 let started = false;
 
 export function startRuntimeTelemetry(): void {
@@ -90,6 +103,19 @@ export function startRuntimeTelemetry(): void {
             cpuSysMs: Math.round(cpu.system / 1000),
             rssMb: Math.round(mem.rss / 1e6),
             heapUsedMb: Math.round(mem.heapUsed / 1e6),
+            // What is keeping this process's event loop alive, by handle type.
+            //
+            // Roughly a third of job processes finish their call and then never
+            // exit (120 `new call` vs 83 `job exiting` over one container's
+            // life, 15 alive under a pool configured for 3, oldest 16 hours).
+            // The pool still counts them as busy, so drain() waits on join()
+            // for them and never sends a SIGTERM — which is why every stop runs
+            // out the 300s grace period and gets force-killed.
+            //
+            // A leaked process reports this every interval, so whatever handle
+            // is holding it open shows up without having to catch one live.
+            // Counted by type rather than listed, to keep the line bounded.
+            activeResources: activeResourceCounts(),
           },
           "runtime stats",
         );

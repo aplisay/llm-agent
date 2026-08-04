@@ -41,6 +41,43 @@ if (process.argv[2] === 'setup') {
   process.on('SIGTERM', () => process.exit(143));
   process.on('SIGINT', () => process.exit(130));
 } else {
+  // Drain backstop.
+  //
+  // The SDK's drain() only closes processes it believes are idle:
+  //
+  //     if (!proc.runningJob) { proc.close(); }   // -> SIGTERM after 5s
+  //     return proc.join();                       // busy: wait, forever
+  //
+  // Job processes that finish a call without exiting are still counted as
+  // busy, so drain() awaits join() on them and never signals them at all.
+  // With those accumulating (15 alive under a pool of 3, oldest 16 hours),
+  // every stop runs out stop_grace_period and docker force-kills — measured
+  // at five stops today, five SIGKILLs, no clean shutdown.
+  //
+  // Registered BEFORE cli.runApp so this listener runs first, and armed only
+  // on SIGTERM: if the SDK's own handler manages to drain and exit, the timer
+  // never fires. unref'd so it can never hold the process open by itself.
+  //
+  // This bounds the damage, it does not fix it — a force-exit still cuts any
+  // genuinely live call. The real fix is whatever stops job processes exiting;
+  // `activeResources` in the runtime-stats line is there to identify it.
+  const drainTimeoutMs = parseInt(process.env.DRAIN_TIMEOUT_MS ?? '30000', 10);
+  if (Number.isFinite(drainTimeoutMs) && drainTimeoutMs > 0) {
+    process.on('SIGTERM', () => {
+      logger.warn(
+        { drainTimeoutMs },
+        'SIGTERM: arming drain backstop — will force-exit if drain has not completed',
+      );
+      setTimeout(() => {
+        logger.error(
+          { drainTimeoutMs },
+          'drain did not complete within the backstop; forcing exit',
+        );
+        process.exit(143);
+      }, drainTimeoutMs).unref();
+    });
+  }
+
   cli.runApp(new ServerOptions({
     agent: fileURLToPath(import.meta.url),
     agentName: 'realtime',
