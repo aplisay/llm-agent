@@ -60,6 +60,7 @@ const (
 	frameTagAudio         = 2
 	frameTagTranscription = 3
 	frameTagMessage       = 4
+	frameTagInterruption  = 5
 )
 
 // AudioRawFrame is the Go equivalent of pipecat.AudioRawFrame.
@@ -100,12 +101,17 @@ type MessageFrame struct {
 }
 
 // IncomingFrame is what DecodeFrame produces — exactly one of its
-// pointer fields is non-nil, matching the proto3 oneof semantics.
+// pointer fields is non-nil (or Interruption is true), matching the
+// proto3 oneof semantics.
 type IncomingFrame struct {
 	Audio         *AudioRawFrame
 	Text          *TextFrame
 	Transcription *TranscriptionFrame
 	Message       *MessageFrame
+	// Interruption mirrors pipecat.InterruptionFrame (oneof branch 5):
+	// caller barge-in. The frame's id/name fields carry nothing the
+	// bridge needs, so it is surfaced as a plain flag.
+	Interruption bool
 }
 
 // EncodeAudio returns the bytes of a wire `Frame{audio: AudioRawFrame{...}}`.
@@ -193,6 +199,10 @@ func DecodeFrame(b []byte) (*IncomingFrame, error) {
 				return nil, fmt.Errorf("message: %w", err)
 			}
 			out.Message = m
+		case frameTagInterruption:
+			// InterruptionFrame carries only id/name — presence is the
+			// whole signal, so the inner payload is not decoded.
+			out.Interruption = true
 		default:
 			// Forward-compatible: ignore unknown oneof branches.
 		}

@@ -173,6 +173,15 @@ class CallSession:
     # X-Aplisay-Origin-Caller-Id on transfer legs so the B2BUA can assert it as
     # P-Asserted-Identity toward the gateway. Mirrors LiveKit's originCallerId.
     origin_caller_id: Optional[str] = None
+    # Egress routing tuple for gateway-originated transfer legs (dial_bridge /
+    # consult): the trunk the call arrived on, or the registration's B2BUA —
+    # threaded from InboundCallContext / OutboundCallParams so a transfer
+    # dials out the same way the call came in. See TransferRequest in
+    # ``sip_gateway/base.py``.
+    aplisay_id: Optional[str] = None
+    registration_endpoint_id: Optional[str] = None
+    b2bua_gateway_ip: Optional[str] = None
+    b2bua_gateway_transport: Optional[str] = None
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
@@ -1501,6 +1510,10 @@ class CallSession:
             force_refer=use_refer,
             monitor_dtmf=bool(self._bta_targets),
             tap_audio=bool(self._bta_transcribe),
+            aplisay_id=self.aplisay_id,
+            registration_endpoint_id=self.registration_endpoint_id,
+            b2bua_gateway_ip=self.b2bua_gateway_ip,
+            b2bua_gateway_transport=self.b2bua_gateway_transport,
         )
 
         if op == "consultative":
@@ -2321,6 +2334,10 @@ async def setup_inbound_call(
         force_bridged_transfer=inbound.force_bridged_transfer,
         registration_username=inbound.registration_username,
         origin_caller_id=inbound.caller_id,
+        aplisay_id=inbound.aplisay_id,
+        registration_endpoint_id=inbound.phone_registration,
+        b2bua_gateway_ip=inbound.b2bua_gateway_ip,
+        b2bua_gateway_transport=inbound.b2bua_gateway_transport,
     )
 
 
@@ -2622,4 +2639,6 @@ async def setup_outbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        origin_caller_id=caller_id,
+        aplisay_id=aplisay_id,
     )
