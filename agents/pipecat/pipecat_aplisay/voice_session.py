@@ -33,6 +33,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.transcriptions.language import Language
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
@@ -86,6 +87,106 @@ def _inactivity_message(agent: dict) -> Optional[str]:
 #: Ultravox simply stops prompting after this many and the generic kick keeps
 #: prompting. Must stay in step with the LiveKit worker's INACTIVITY_PROMPT_COUNT.
 INACTIVITY_PROMPT_COUNT = 3
+
+#: UI / legacy values for ``options.*.language`` that mean "no fixed language"
+#: rather than a real tag. Must stay in step with NON_SPECIFIC_STT_LANGUAGES in
+#: agents/livekit/lib/pipeline-inference-options.ts and NON_SPECIFIC_LANGUAGES in
+#: lib/models/ultravox.js.
+NON_SPECIFIC_LANGUAGES = frozenset({"any", "multi", "*", "auto", "all", "global"})
+
+
+def _agent_language_tag(agent: dict, prefer: str = "tts") -> Optional[str]:
+    """The agent's declared language as a full BCP-47 tag (e.g. ``en-GB``), or
+    ``None`` when unset or set to a "no fixed language" sentinel.
+
+    ``prefer`` names the block to read first (``"tts"`` or ``"stt"``); the other
+    is the fallback, so declaring the language once configures the whole session.
+    The default (``"tts"`` first) matches the LiveKit worker's ``agentLanguageTag``
+    and the native driver's ``Ultravox.languageTag``.
+
+    The region subtag is deliberately preserved — it is what distinguishes en-GB
+    from en-US — and there is no fallback to ``en``, because an absent hint means
+    "let the provider decide", which is meaningfully different from "English".
+    """
+    options = agent.get("options") or {}
+    order = ("tts", "stt") if prefer == "tts" else ("stt", "tts")
+    for block in order:
+        raw = (options.get(block) or {}).get("language")
+        if not isinstance(raw, str):
+            continue
+        raw = raw.strip()
+        if raw and raw.lower() not in NON_SPECIFIC_LANGUAGES:
+            return raw
+    return None
+
+
+def _canonical_bcp47(tag: str) -> str:
+    """Canonicalise BCP-47 case so :class:`Language` lookups succeed.
+
+    ``Language`` is a value-keyed enum (``Language("en-GB")``) and its lookup is
+    case-SENSITIVE, so ``"en-gb"`` from a hand-written agent definition would
+    otherwise miss. Applies the standard convention: language lowercase, 2-letter
+    region uppercase, 4-letter script titlecase (``zh-hans-cn`` → ``zh-Hans-CN``).
+    """
+    parts = tag.split("-")
+    out = [parts[0].lower()]
+    for part in parts[1:]:
+        if len(part) == 2 and part.isalpha():
+            out.append(part.upper())
+        elif len(part) == 4 and part.isalpha():
+            out.append(part.title())
+        else:
+            out.append(part)
+    return "-".join(out)
+
+
+def _language_enum(tag: str) -> Optional[Language]:
+    """Resolve a BCP-47 tag to Pipecat's :class:`Language`, or ``None``.
+
+    Tries the canonicalised tag first, then the bare primary subtag, so an
+    unrecognised region (``en-ZZ``) still yields ``Language.EN`` rather than
+    nothing. Returning the enum (rather than a raw string) matters because each
+    Pipecat service maps it through its own ``language_to_service_language()`` —
+    that is what turns ``en-GB`` into Cartesia's base code, Google's ``en-GB``
+    recognition code, and so on.
+    """
+    canonical = _canonical_bcp47(tag)
+    for candidate in (canonical, canonical.split("-")[0]):
+        try:
+            return Language(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _language_setting(agent: dict, prefer: str) -> Language | str | None:
+    """Language to hand a pipeline STT/TTS service: a :class:`Language` when the
+    tag resolves, else the raw tag, else ``None`` when the agent declared none.
+
+    An unresolvable tag is passed through as a string rather than dropped —
+    Pipecat's base ``STTService``/``TTSService`` log it and forward it to the
+    provider verbatim, which is the better failure mode for a valid tag that
+    Pipecat's enum simply doesn't carry yet.
+    """
+    tag = _agent_language_tag(agent, prefer=prefer)
+    if tag is None:
+        return None
+    return _language_enum(tag) or tag
+
+
+def _ultravox_language_extra(agent: dict) -> dict:
+    """Native Ultravox ``languageHint`` derived from ``options.tts.language``.
+
+    Ultravox is speech-to-speech with no separate STT/TTS stage, so a single
+    BCP-47 hint guides both its recognition and its synthesis. Merged into
+    ``OneShotInputParams.extra`` (which becomes the ``/calls`` request body).
+    Returns ``{}`` when unset, leaving the field off the body entirely so
+    Ultravox auto-detects as before.
+
+    @see https://docs.ultravox.ai/api-reference/calls/calls-post
+    """
+    language = _agent_language_tag(agent)
+    return {"languageHint": language} if language else {}
 
 
 def _inactivity_hangup_enabled(agent: dict) -> bool:
@@ -259,10 +360,24 @@ def build_stt_service(agent: dict) -> Any:
     pipeline's own."""
     stt_opts = (agent.get("options") or {}).get("stt") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
+    # ``options.stt.language`` (falling back to ``options.tts.language``). Each
+    # branch OMITS the setting entirely when this is None rather than passing
+    # None: the vendor defaults are non-null (Deepgram ships Language.EN,
+    # Google ships [Language.EN_US]) and an explicit None would clear them.
+    language = _language_setting(agent, "stt")
     if stt_vendor == "deepgram":
-        from pipecat.services.deepgram.stt import DeepgramSTTService
+        from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
 
-        return DeepgramSTTService(api_key=_require_env("DEEPGRAM_API_KEY"))
+        # Deepgram takes the full regional tag — nova-3 accepts en-GB/en-AU/…
+        # alongside the bare primary tags, so there is nothing to truncate.
+        return DeepgramSTTService(
+            api_key=_require_env("DEEPGRAM_API_KEY"),
+            **(
+                {"settings": DeepgramSTTSettings(language=language)}
+                if language is not None
+                else {}
+            ),
+        )
     if stt_vendor == "google":
         from pipecat.services.google.stt import GoogleSTTService
 
@@ -272,12 +387,97 @@ def build_stt_service(agent: dict) -> Any:
         # operator set.
         creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
         creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        # Google is the one service that needs a real Language enum: it resolves
+        # recognition codes from ``settings.languages`` (a LIST of enums) and
+        # ignores the base class's ``settings.language``, so a raw string cannot
+        # be threaded through. An unresolvable tag therefore keeps the default.
+        google_settings = None
+        if isinstance(language, Language):
+            google_settings = GoogleSTTService.Settings(languages=[language])
+        elif language is not None:
+            logger.warning(
+                f"STT language {language!r} does not map to a Pipecat Language; "
+                "using the Google STT default"
+            )
         return GoogleSTTService(
             credentials=creds_json,
             credentials_path=creds_path,
             location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
+            **({"settings": google_settings} if google_settings is not None else {}),
         )
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
+
+
+def build_tts_service(agent: dict) -> Any:
+    """Construct the pipeline's TTS service from ``agent.options.tts``
+    (defaulting to Cartesia).
+
+    Peer of :func:`build_stt_service`, split out of ``_build_pipeline`` for the
+    same reason: each call returns a NEW instance, and having it addressable
+    makes the vendor/voice/language mapping testable without standing up a whole
+    pipeline.
+
+    Keep the vendor list aligned with PIPECAT_PIPELINE_TTS_VENDORS in
+    lib/model-voices.js. The API layer uses that allow-list to filter the
+    platform's TTS voice catalogue so the UI only offers vendors the worker can
+    actually instantiate.
+    """
+    tts_opts = (agent.get("options") or {}).get("tts") or {}
+    tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
+    voice = tts_opts.get("voice")
+    # ``options.tts.language`` (falling back to ``options.stt.language``). As on
+    # the STT side, each branch OMITS the field entirely when None so the
+    # vendor's own default survives. Pipecat maps the enum through each service's
+    # ``language_to_service_language()``, so the vendor-specific shape (Cartesia
+    # and ElevenLabs both want base codes, not regional tags) is handled for us —
+    # we only choose WHICH tag to hand over.
+    language = _language_setting(agent, "tts")
+    if tts_vendor == "cartesia":
+        from pipecat.services.cartesia.tts import CartesiaTTSService
+
+        return CartesiaTTSService(
+            api_key=_require_env("CARTESIA_API_KEY"),
+            settings=CartesiaTTSService.Settings(
+                voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121",
+                **({"language": language} if language is not None else {}),
+            ),
+        )
+    if tts_vendor == "elevenlabs":
+        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+
+        # ElevenLabs only honours a language code on its multilingual models;
+        # Pipecat's default here (eleven_flash_v2_5) is one of them, so the
+        # setting takes effect. If the model is ever pinned to a non-multilingual
+        # one, Pipecat logs that the code was dropped rather than failing.
+        #
+        # Voice goes through ``settings`` rather than the ``voice_id=`` init arg:
+        # that arg is deprecated in Pipecat 1.x, and since we now pass settings
+        # for the language anyway, using both would mean relying on the
+        # settings-wins precedence rule between them.
+        return ElevenLabsTTSService(
+            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+            settings=ElevenLabsTTSSettings(
+                voice=voice or "Rachel",
+                **({"language": language} if language is not None else {}),
+            ),
+        )
+    if tts_vendor == "deepgram":
+        # WebSocket-based streaming TTS. Voice names follow Deepgram's Aura
+        # model IDs (e.g. `aura-asteria-en`, `aura-helios-en`) — same values
+        # the platform's voices catalogue (lib/voices/deepgram.js) lists.
+        #
+        # No language wiring here on purpose: the Aura voice id IS the model and
+        # already encodes the language (the trailing `-en`), and Pipecat's
+        # DeepgramTTSService never puts ``settings.language`` on the wire — it
+        # sends ``model=<voice>``. Setting it would be a silent no-op, so the
+        # language for Deepgram TTS is chosen by picking the right voice.
+        from pipecat.services.deepgram.tts import DeepgramTTSService
+
+        return DeepgramTTSService(
+            api_key=_require_env("DEEPGRAM_API_KEY"),
+            voice=voice or "aura-asteria-en",
+        )
+    raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
 
 
 def _require_env(name: str, *aliases: str) -> str:
@@ -915,6 +1115,10 @@ async def _build_realtime(
                 # Native Ultravox idle handling (speech-to-speech has no
                 # separate TTS, so the generic kick is unreliable here).
                 **_ultravox_inactivity_extra(agent),
+                # Portable ``options.tts.language`` → native ``languageHint``.
+                # Same reason: no separate TTS stage to carry the language, so
+                # this single hint drives both recognition and synthesis.
+                **_ultravox_language_extra(agent),
             },
         )
         if voice:
@@ -1053,7 +1257,6 @@ async def _build_pipeline(
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
-    tts_opts = options.get("tts") or {}
 
     # STT
     stt = build_stt_service(agent)
@@ -1089,38 +1292,7 @@ async def _build_pipeline(
     else:
         raise RuntimeError(f"Unsupported LLM in pipeline mode: {model_id}")
 
-    # TTS — keep this list aligned with PIPECAT_PIPELINE_TTS_VENDORS in
-    # lib/model-voices.js. The API layer uses that allow-list to filter the
-    # platform's TTS voice catalogue so the UI only offers vendors the worker
-    # can actually instantiate.
-    tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
-    voice = tts_opts.get("voice")
-    if tts_vendor == "cartesia":
-        from pipecat.services.cartesia.tts import CartesiaTTSService
-
-        tts = CartesiaTTSService(
-            api_key=_require_env("CARTESIA_API_KEY"),
-            settings=CartesiaTTSService.Settings(voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121"),
-        )
-    elif tts_vendor == "elevenlabs":
-        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-
-        tts = ElevenLabsTTSService(
-            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
-            voice_id=voice or "Rachel",
-        )
-    elif tts_vendor == "deepgram":
-        # WebSocket-based streaming TTS. Voice names follow Deepgram's Aura
-        # model IDs (e.g. `aura-asteria-en`, `aura-helios-en`) — same values
-        # the platform's voices catalogue (lib/voices/deepgram.js) lists.
-        from pipecat.services.deepgram.tts import DeepgramTTSService
-
-        tts = DeepgramTTSService(
-            api_key=_require_env("DEEPGRAM_API_KEY"),
-            voice=voice or "aura-asteria-en",
-        )
-    else:
-        raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
+    tts = build_tts_service(agent)
 
     schemas = _register_tools_on_llm(llm, tools)
 

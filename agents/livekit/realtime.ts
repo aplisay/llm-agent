@@ -61,7 +61,15 @@ if (process.argv[2] === 'setup') {
   // This bounds the damage, it does not fix it — a force-exit still cuts any
   // genuinely live call. The real fix is whatever stops job processes exiting;
   // `activeResources` in the runtime-stats line is there to identify it.
-  const drainTimeoutMs = parseInt(process.env.DRAIN_TIMEOUT_MS ?? '30000', 10);
+  // Default sits just UNDER the compose stop_grace_period (300s), not equal to
+  // it. Two reasons. A legitimate drain can be long — agents run with
+  // maxDuration up to 120s, and drain waits for in-flight calls to finish — so
+  // 30s would cut live calls; that was acceptable only while every stop was
+  // going to be force-killed anyway. And firing at 270s means WE exit, cleanly
+  // and with a log line saying drain never completed, instead of docker
+  // SIGKILLing at 300s with no explanation. Lower it (DRAIN_TIMEOUT_MS=30000)
+  // when deliberately testing shutdown.
+  const drainTimeoutMs = parseInt(process.env.DRAIN_TIMEOUT_MS ?? '270000', 10);
   if (Number.isFinite(drainTimeoutMs) && drainTimeoutMs > 0) {
     process.on('SIGTERM', () => {
       logger.warn(

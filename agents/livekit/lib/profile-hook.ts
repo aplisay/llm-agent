@@ -135,6 +135,27 @@ if (!inert) {
       } catch (e) {
         note(`could not write profile: ${String(e)}`);
       }
+      try {
+        session.disconnect();
+      } catch {
+        /* already gone */
+      }
+    });
+  };
+
+  const stopAtEndOfJob = (): void => {
+    const realSend = process.send?.bind(process);
+    if (realSend) {
+      process.send = ((msg: unknown, ...rest: unknown[]) => {
+        const kind = (msg as { case?: string } | null)?.case;
+        if (kind === "done" || kind === "exiting") stop(`job ${kind}`);
+        return (realSend as (...a: unknown[]) => boolean)(msg, ...rest);
+      }) as typeof process.send;
+    }
+    process.on("message", (msg: unknown) => {
+      if ((msg as { case?: string } | null)?.case === "shutdownRequest") {
+        stop("shutdownRequest");
+      }
     });
   };
 
@@ -150,12 +171,15 @@ if (!inert) {
     }
 
     if (onExit) {
+      // Primary: end the profile when the job ends. In a job process this is
+      // what actually fires; the two handlers below are fallbacks.
+      stopAtEndOfJob();
+
       // `Profiler.stop` on a local inspector session invokes its callback
       // before post() returns, so the whole stop-and-write is synchronous and
-      // therefore legal inside an 'exit' handler. That is what makes
-      // whole-life profiling possible: a job process shuts down by draining
-      // its event loop after a shutdownRequest, and 'exit' is the last point
-      // at which anything can run.
+      // therefore legal inside an 'exit' handler. This is the path the
+      // supervisor takes — it has no job IPC — and the backstop for a job
+      // process that exits without either signal above.
       process.on("exit", () => stop("process exit"));
 
       // 'exit' does not fire when a signal terminates the process. The
@@ -163,7 +187,8 @@ if (!inert) {
       // overruns the SDK's 5s closeTimeout is killed too, so catch that as
       // well. Adding a listener suppresses Node's default termination, so if
       // nothing else is listening we must terminate ourselves — in the worker
-      // the SDK has registered its own handler by the time this fires.
+      // both the SDK and realtime.ts have registered handlers by the time this
+      // fires, and realtime.ts's calls process.exit.
       process.on("SIGTERM", () => {
         stop("SIGTERM");
         if (process.listenerCount("SIGTERM") === 1) process.exit(143);

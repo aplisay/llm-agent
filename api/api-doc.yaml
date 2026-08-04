@@ -1291,10 +1291,17 @@ components:
         followed by a dash and and ISO3166 country code.
         For now, list of supported recognition voices is identical to the voicing languages returned from the `voices` api.
         This should change in future.
-        Ultravox models (native `ultravox:` and `livekit:ultravox/`) are speech-to-speech with no separate
-        STT/TTS stage, so they take a single hint: `tts.language`, falling back to `stt.language`, is sent as
-        the provider-native `languageHint` guiding both recognition and synthesis. Omitted when unset or set
-        to a non-specific value (`any`, `multi`, `auto`, ...), in which case Ultravox auto-detects.
+        Ultravox models (`ultravox:`, `livekit:ultravox/` and `pipecat:ultravox/`) are speech-to-speech with
+        no separate STT/TTS stage, so they take a single hint: `tts.language`, falling back to
+        `stt.language`, is sent as the provider-native `languageHint` guiding both recognition and synthesis.
+        Omitted when unset or set to a non-specific value (`any`, `multi`, `auto`, ...), in which case
+        Ultravox auto-detects.
+        On `pipecat:` pipeline (STT-LLM-TTS) models each side prefers its own block and falls back to the
+        other, so declaring the language once configures both: recognition uses `stt.language` then
+        `tts.language`, synthesis the reverse. Regional tags are preserved where the provider accepts them
+        (Deepgram, Google) and reduced to the base code where it does not (Cartesia, ElevenLabs). Deepgram
+        TTS is the exception - its Aura voice id already encodes the language, so pick the voice instead.
+        When unset the provider's own default applies.
       type: string
     Voice:
       type: object
