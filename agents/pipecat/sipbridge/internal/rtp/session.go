@@ -266,6 +266,16 @@ func (s *Session) SendPayload(payload []byte) error {
 	return s.writeRTP(uint8(s.payloadType.Load()), s.ts.Add(tsIncrement), false, payload)
 }
 
+// SendPayloadPaced is SendPayload for a silence-suppressed paced stream:
+// the packet's sampling instant is gapFrames whole frames after the
+// previous packet (0 = contiguous speech), so the RTP timestamp tracks the
+// wall clock across bot pauses without silence packets; marker flags the
+// first packet of a talkspurt (RFC 3550 §5.1). Shares the sequence/ts
+// space with SendPayload and SendTelephoneEvent.
+func (s *Session) SendPayloadPaced(payload []byte, gapFrames uint32, marker bool) error {
+	return s.writeRTP(uint8(s.payloadType.Load()), s.ts.Add(tsIncrement*(1+gapFrames)), marker, payload)
+}
+
 // SetDTMFPayloadType overrides the payload type used for outbound RFC 4733
 // telephone-event packets (default PayloadDTMF / 101). A caller that has
 // parsed the peer's telephone-event rtpmap may install the negotiated value

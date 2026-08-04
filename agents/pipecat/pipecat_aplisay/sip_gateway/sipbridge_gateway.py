@@ -183,14 +183,33 @@ class _SbGatewaySession(GatewaySession):
             self._gateway.clear_consult_call_id(self.session_id)
 
         # force_bridged (typically a registration endpoint that can't
-        # honour REFER) takes the native dial+relay path: the bridge
-        # dials the target as a fresh agent-less leg and relays media
-        # between it and the caller, keeping media inside the bridge.
-        # Otherwise we REFER and let the upstream B2BUA reroute.
+        # honour REFER, or a trunk-origin call — the trunk default) takes
+        # the native dial+relay path: the bridge dials the target as a
+        # fresh agent-less leg and relays media between it and the caller,
+        # keeping media inside the bridge. Otherwise we REFER and let the
+        # upstream B2BUA reroute.
         if req.force_bridged:
+            # The bridge has no outbound proxy: a bare-number target must be
+            # resolved to a routable URI here (the Go side hard-rejects it
+            # with "invalid uri scheme" otherwise), exactly as the outbound
+            # originate path does via _outbound_target_uri.
+            target = _routable_leg_uri(
+                req.destination,
+                registration_endpoint_id=req.registration_endpoint_id,
+                b2bua_gateway_ip=req.b2bua_gateway_ip,
+                b2bua_gateway_transport=req.b2bua_gateway_transport,
+                outbound_sbc=self._gateway.outbound_sbc,
+                purpose="bridged transfer",
+            )
+            # From toward the gateway: explicit override, else the genuine
+            # origin caller (LiveKit: fromNumber = registrationUsername ||
+            # origin). Without a From user the bridge falls back to sipgo's
+            # synthetic From (user@localhost) and the SBC's handler-domain
+            # gate drops the leg.
+            caller_id = req.caller_id_override or req.origin_caller_id or ""
             logger.bind(
                 call_id=self.bridge_call_id,
-                target=req.destination,
+                target=target,
                 mode="dial_bridge",
                 monitor_dtmf=req.monitor_dtmf,
             ).info("sipbridge transfer (native dial+bridge)")
@@ -198,9 +217,10 @@ class _SbGatewaySession(GatewaySession):
                 "POST",
                 f"/v1/calls/{self.bridge_call_id}/transfer",
                 {
-                    "target": req.destination,
+                    "target": target,
                     "mode": "dial_bridge",
-                    "caller_id": req.caller_id_override or "",
+                    "caller_id": caller_id,
+                    "custom_headers": _transfer_egress_headers(req),
                     "monitor_dtmf": req.monitor_dtmf,
                     "tap_audio": req.tap_audio,
                 },
@@ -236,6 +256,19 @@ class _SbGatewaySession(GatewaySession):
         stashed in step 2. Accept/reject tools on the consult bot
         drive the parent's ``transfer_state`` from then on.
         """
+        # Resolve the routable URI BEFORE registering the consult session so a
+        # no-route failure propagates cleanly without leaking a registration.
+        # Same normalisation as dial_bridge / outbound originate: the consult
+        # leg also lands in ``Manager.Originate``.
+        destination_uri = _routable_leg_uri(
+            req.destination,
+            registration_endpoint_id=req.registration_endpoint_id,
+            b2bua_gateway_ip=req.b2bua_gateway_ip,
+            b2bua_gateway_transport=req.b2bua_gateway_transport,
+            outbound_sbc=self._gateway.outbound_sbc,
+            purpose="consult transfer",
+        )
+
         consult_session_id = f"sb-consult-{uuid.uuid4()}"
         # Stash the TransferAgent payload for the WS handler.
         self._gateway.register_consult_session(
@@ -245,17 +278,14 @@ class _SbGatewaySession(GatewaySession):
             parent_transcript=req.parent_transcript or "",
         )
 
-        # Assert the genuine origin to the gateway: the From toward the gateway
-        # is the trunk username (for call admission), so we surface the real
-        # caller as X-Aplisay-Origin-Caller-Id; the B2BUA maps it into a
-        # P-Asserted-Identity. Mirrors LiveKit's X-Aplisay-Origin-Caller-Id.
-        custom_headers: dict[str, str] = {}
-        if req.origin_caller_id:
-            custom_headers["X-Aplisay-Origin-Caller-Id"] = req.origin_caller_id
+        # Trunk / registration egress routing plus the genuine-origin
+        # assertion (X-Aplisay-Origin-Caller-Id → P-Asserted-Identity at the
+        # B2BUA). Mirrors the outbound originate header contract.
+        custom_headers = _transfer_egress_headers(req)
 
         body: dict[str, Any] = {
-            "destination": req.destination,
-            "caller_id": req.caller_id_override or "",
+            "destination": destination_uri,
+            "caller_id": req.caller_id_override or req.origin_caller_id or "",
             "agent_ws_session_id": consult_session_id,
             "custom_headers": custom_headers,
             "metadata": {},
@@ -648,19 +678,45 @@ def _outbound_target_uri(params: OutboundCallParams, outbound_sbc: Optional[str]
     A ``destination`` that is already a ``sip:``/``sips:`` URI is passed through
     unchanged.
     """
-    dest = (params.called_id or "").strip()
+    return _routable_leg_uri(
+        params.called_id,
+        registration_endpoint_id=params.registration_endpoint_id,
+        b2bua_gateway_ip=params.b2bua_gateway_ip,
+        b2bua_gateway_transport=params.b2bua_gateway_transport,
+        outbound_sbc=outbound_sbc,
+        purpose="outbound originate",
+    )
+
+
+def _routable_leg_uri(
+    destination: str,
+    *,
+    registration_endpoint_id: Optional[str] = None,
+    b2bua_gateway_ip: Optional[str] = None,
+    b2bua_gateway_transport: Optional[str] = None,
+    outbound_sbc: Optional[str] = None,
+    purpose: str = "originate",
+) -> str:
+    """Resolve a dial target to a URI the Go bridge can route.
+
+    Shared by outbound originates AND gateway-originated transfer legs
+    (dial_bridge / consult) — all three end in ``Manager.Originate``, whose
+    ``sip.ParseUri`` rejects a bare number with ``invalid uri scheme``.
+    ``purpose`` only flavours the no-route error message.
+    """
+    dest = (destination or "").strip()
     if dest.lower().startswith(("sip:", "sips:")):
         return dest
-    if params.registration_endpoint_id and params.b2bua_gateway_ip:
+    if registration_endpoint_id and b2bua_gateway_ip:
         # ``host[:port]`` — append the B2BUA SIP port (5070) only when the
         # configured value doesn't already carry one.
-        host = _strip_sip_scheme(params.b2bua_gateway_ip)
+        host = _strip_sip_scheme(b2bua_gateway_ip)
         authority = host if ":" in host else f"{host}:5070"
-        transport = params.b2bua_gateway_transport or "tcp"
+        transport = b2bua_gateway_transport or "tcp"
         return f"sip:{dest}@{authority};transport={transport}"
     if not outbound_sbc:
         raise RuntimeError(
-            "sipbridge outbound originate has no route for a trunk-origin call: "
+            f"sipbridge {purpose} has no route for a trunk-origin call: "
             "set PIPECAT_SIP_OUTBOUND (host[:port][;transport=...]) to the "
             "Aplisay outbound SBC, or originate with a registration endpoint as "
             "the caller-ID"
@@ -668,6 +724,28 @@ def _outbound_target_uri(params: OutboundCallParams, outbound_sbc: Optional[str]
     # The SBC value is an authority (``host[:port][;transport=...]``). Tolerate
     # an operator who included a ``sip:`` scheme — we add our own.
     return f"sip:{dest}@{_strip_sip_scheme(outbound_sbc)}"
+
+
+def _transfer_egress_headers(req: TransferRequest) -> dict[str, str]:
+    """The X-Aplisay-*/X-Lk-* routing contract for a gateway-originated
+    transfer leg — the same section-6 header set ``_custom_headers_for``
+    stamps on outbound originates (minus the call id: bridged transfer legs
+    live only inside the bridge), sourced from the TransferRequest's egress
+    tuple, plus the origin-caller assertion the consult path has always
+    sent. Without X-Aplisay-Trunk the upstream SBC 403s a trunk-egress
+    INVITE."""
+    h: dict[str, str] = {}
+    if req.aplisay_id:
+        h["X-Aplisay-Trunk"] = req.aplisay_id
+    if req.registration_endpoint_id:
+        h["X-Aplisay-PhoneRegistration"] = req.registration_endpoint_id
+    if req.b2bua_gateway_ip:
+        h["X-Lk-RealIp"] = req.b2bua_gateway_ip
+    if req.b2bua_gateway_transport:
+        h["X-Lk-Transport"] = req.b2bua_gateway_transport
+    if req.origin_caller_id:
+        h["X-Aplisay-Origin-Caller-Id"] = req.origin_caller_id
+    return h
 
 
 def _strip_sip_scheme(authority: str) -> str:

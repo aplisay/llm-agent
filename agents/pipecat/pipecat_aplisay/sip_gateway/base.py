@@ -173,6 +173,20 @@ class TransferRequest:
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
 
+    # Egress routing for the legs the gateway *originates* (dial_bridge and
+    # the consultative consult leg). Same tuple as OutboundCallParams, for the
+    # same reason: the bridge has no outbound proxy, so a bare-number
+    # destination must be resolved to a routable URI — registration origin →
+    # the registration's B2BUA gateway, trunk origin → the global outbound
+    # SBC — and the upstream SBC picks the carrier route off
+    # X-Aplisay-Trunk / X-Aplisay-PhoneRegistration. Populated by the call
+    # session from the origin call's context; all-None falls through to the
+    # outbound-SBC default with no trunk header (IP-gated SBCs).
+    aplisay_id: Optional[str] = None
+    registration_endpoint_id: Optional[str] = None
+    b2bua_gateway_ip: Optional[str] = None
+    b2bua_gateway_transport: Optional[str] = None
+
     # Force the final hop to be completed via SIP REFER (with ?Replaces for
     # the consultative finalize) regardless of the origin default. Takes
     # precedence over ``force_bridged`` when both are set. Mirrors the

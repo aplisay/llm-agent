@@ -402,6 +402,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
 	outCallID := c.callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), outCallID)
@@ -409,6 +410,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 
 	c.rtp.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
 	pc.SetCloseHandler(func(err error) {
 		// In relay mode the worker WS is expected to go away (SetPeer
 		// stops it, or a monitoring worker restarts) — the bridged
@@ -715,6 +717,7 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 	pc := pcclient.NewClient(wsURL)
 	unbridgedID := c.callID
 	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
 	pc.SetCloseHandler(func(err error) {
 		if c.hasPeer() {
 			log.Info().Str("call_id", unbridgedID).Err(err).Msg("call: ws closed while bridged — call stays up")
@@ -736,7 +739,8 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 	}
 
 	// 4. Swap the WS in and restart the decode path (jitter buffer +
-	// release loop) that SetPeer stopped when the relay engaged.
+	// release loop) that SetPeer stopped when the relay engaged, plus a
+	// fresh egress pacer (the old one died with the relay's ctx).
 	c.mu.Lock()
 	c.ws = pc
 	c.sessionID = p.AgentSessionID
@@ -749,6 +753,7 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
 
 	log.Info().
 		Str("call_id", c.callID).
@@ -885,6 +890,7 @@ func (m *Manager) onInvite(
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
 	inCallID := callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), inCallID)
@@ -893,6 +899,7 @@ func (m *Manager) onInvite(
 	// 4. Wire callbacks. Both directions go through the codec layer.
 	rtpSess.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
 	pc.SetCloseHandler(func(err error) {
 		// See the outbound handler: a bridged call must survive its
 		// worker WS going away (SetPeer stop or monitor-worker loss).
@@ -1496,6 +1503,15 @@ type Call struct {
 	jb           *rtp.JitterBuffer
 	releaseStop  context.CancelFunc
 
+	// outPacer is the egress mirror of jb: worker WS audio arrives at up
+	// to 2× real-time (Pipecat's transport design), so onWSAudio enqueues
+	// encoded 20 ms payloads here and the pacer's loop puts exactly one on
+	// the wire per 20 ms with wall-clock timestamps and talkspurt markers.
+	// Runs on the same context as the jitter release loop (releaseStop
+	// cancels both; SetPeer therefore stops it when a relay engages).
+	// Guarded by mu; recreated on unbridge re-attach.
+	outPacer *pacer
+
 	mu     sync.Mutex
 	closed chan struct{}
 	done   bool
@@ -1851,14 +1867,49 @@ func (c *Call) startJitterRelease(ctx context.Context) {
 	}()
 }
 
+// startPacer starts the paced egress loop that drains onWSAudio's queue at
+// one 20 ms packet per 20 ms (see pacer.go for why the WS arrival cadence
+// cannot be trusted). Shares ctx with the jitter release loop so SetPeer /
+// Close cancel both together.
+func (c *Call) startPacer(ctx context.Context) {
+	p := &pacer{
+		sendFn:    c.rtp.SendPayloadPaced,
+		suspended: c.hasPeer,
+		onSendError: func(err error) {
+			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
+			c.Close()
+		},
+	}
+	c.mu.Lock()
+	c.outPacer = p
+	c.mu.Unlock()
+	go p.run(ctx)
+}
+
+// clearPacedAudio drops any queued-but-unsent bot audio (worker
+// interruption: the caller barged in, and the tail of the utterance the
+// worker already shipped at 2× must not keep playing over them).
+func (c *Call) clearPacedAudio() {
+	c.mu.Lock()
+	p := c.outPacer
+	c.mu.Unlock()
+	if p == nil {
+		return
+	}
+	if n := p.clear(); n > 0 {
+		log.Debug().Int("packets", n).Str("call_id", c.callID).
+			Msg("call: interruption — dropped queued bot audio")
+	}
+}
+
 // onWSAudio is called when the worker pushes a bot-side AudioRawFrame
 // down the WS. PCM16LE @ 16 kHz mono in, RTP-encoded at 8 kHz on the
 // wire.
 //
-// Pipecat batches its audio output in roughly-20-ms chunks (320
-// samples), which happens to be exactly one downsampled RTP frame at
-// 8 kHz. Larger chunks are split into 160-sample (20 ms) RTP packets
-// to match the negotiated ptime — most carriers and SBCs enforce this.
+// Chunks are split into 160-sample (20 ms) G.711 payloads and ENQUEUED on
+// the egress pacer, never sent inline: Pipecat's websocket transport
+// deliberately sends at up to 2× real-time when it has a backlog, and the
+// PSTN side needs an isochronous 20 ms cadence (see pacer.go).
 func (c *Call) onWSAudio(pcm16LEbytes []byte) {
 	if c.isClosed() {
 		return
@@ -1869,10 +1920,19 @@ func (c *Call) onWSAudio(pcm16LEbytes []byte) {
 	if c.hasPeer() {
 		return
 	}
+	c.mu.Lock()
+	p := c.outPacer
+	c.mu.Unlock()
+	if p == nil {
+		// No pacer running (should not happen outside teardown races —
+		// the pacer starts before the worker WS connects).
+		return
+	}
 	samples16k := codec.BytesToPCMS16LE(pcm16LEbytes)
 	samples8k := codec.Downsample16To8(samples16k)
 
 	const samplesPerPacket = 160 // 20 ms at 8 kHz
+	payloads := make([][]byte, 0, (len(samples8k)+samplesPerPacket-1)/samplesPerPacket)
 	for i := 0; i < len(samples8k); i += samplesPerPacket {
 		end := i + samplesPerPacket
 		if end > len(samples8k) {
@@ -1888,12 +1948,9 @@ func (c *Call) onWSAudio(pcm16LEbytes []byte) {
 		default:
 			return
 		}
-		if err := c.rtp.SendPayload(payload); err != nil {
-			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
-			c.Close()
-			return
-		}
+		payloads = append(payloads, payload)
 	}
+	p.enqueue(payloads)
 }
 
 // Close tears down RTP + WS + jitter buffer release loop. Idempotent.
