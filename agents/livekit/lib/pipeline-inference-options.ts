@@ -28,6 +28,16 @@ const NON_SPECIFIC_STT_LANGUAGES = new Set([
   "global",
 ]);
 
+export function agentLanguageTag(agent: Agent): string | undefined {
+  const raw =
+    agent?.options?.tts?.language?.trim() ||
+    agent?.options?.stt?.language?.trim() ||
+    "";
+  if (!raw) return undefined;
+  if (NON_SPECIFIC_STT_LANGUAGES.has(raw.toLowerCase())) return undefined;
+  return raw;
+}
+
 /** Primary language tag for Deepgram-style STT (e.g. `en` from `en-GB`). */
 export function langToSttSuffix(language?: string): string {
   const fallback = process.env.LIVEKIT_PIPELINE_STT_LANG || "en";

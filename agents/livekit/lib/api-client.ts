@@ -160,6 +160,7 @@ export interface Agent {
       vendor?: string;
     };
     tts?: {
+    
       language?: string;
       /**
        * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).

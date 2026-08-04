@@ -138,3 +138,47 @@ test("non-ultravox: greeting/inactivity are not mapped, vendorSpecific passes th
   assert.equal(opts.vendorSpecific, vendorSpecific);
   assert.equal(opts.vendorSpecific.ultravox, undefined);
 });
+
+test("tts.language maps to the Ultravox languageHint, keeping the region subtag", () => {
+  const opts = buildRealtimeLlmOptions(
+    ULTRAVOX,
+    makeAgent({ tts: { voice: "Mark", language: "en-GB" } }),
+    "call-1",
+  );
+  assert.equal(opts.languageHint, "en-GB");
+});
+
+test("languageHint falls back to stt.language when tts.language is unset", () => {
+  const opts = buildRealtimeLlmOptions(
+    ULTRAVOX,
+    makeAgent({ stt: { language: "fr-FR" } }),
+    "call-1",
+  );
+  assert.equal(opts.languageHint, "fr-FR");
+});
+
+test("tts.language wins over stt.language for the languageHint", () => {
+  const opts = buildRealtimeLlmOptions(
+    ULTRAVOX,
+    makeAgent({ tts: { language: "de-DE" }, stt: { language: "fr-FR" } }),
+    "call-1",
+  );
+  assert.equal(opts.languageHint, "de-DE");
+});
+
+test("no language options leaves languageHint unset (Ultravox auto-detects)", () => {
+  const opts = buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ tts: { voice: "Mark" } }), "call-1");
+  assert.equal(opts.languageHint, undefined);
+});
+
+test("non-specific language sentinels do not produce a languageHint", () => {
+  for (const language of ["any", "multi", "auto", "*", "ALL", "  "]) {
+    const opts = buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ tts: { language } }), "call-1");
+    assert.equal(opts.languageHint, undefined, `expected no hint for ${JSON.stringify(language)}`);
+  }
+});
+
+test("non-ultravox realtime gets no languageHint", () => {
+  const opts = buildRealtimeLlmOptions(OPENAI, makeAgent({ tts: { language: "en-GB" } }), "call-1");
+  assert.equal(opts.languageHint, undefined);
+});

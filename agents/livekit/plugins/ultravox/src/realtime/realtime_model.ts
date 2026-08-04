@@ -26,6 +26,7 @@ interface ModelOptions {
   instructions: string;
   callId?: string;
   voice?: api_proto.Voice;
+  languageHint?: string;
   inputAudioFormat: api_proto.AudioFormat;
   outputAudioFormat: api_proto.AudioFormat;
   temperature: number;
@@ -46,6 +47,7 @@ interface ModelOptions {
       vadSettings?: api_proto.UltravoxVadSettings;
       firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
       inactivityMessages?: api_proto.UltravoxInactivityMessage[];
+      languageHint?: string;
       [key: string]: any;
     };
     [key: string]: any;
@@ -318,6 +320,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     instructions = "",
     callId,
     voice,
+    languageHint,
     inputAudioFormat = "pcm16",
     outputAudioFormat = "pcm16",
     temperature = 0.8,
@@ -335,6 +338,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     instructions?: string;
     callId?: string;
     voice?: api_proto.Voice;
+    languageHint?: string;
     inputAudioFormat?: api_proto.AudioFormat;
     outputAudioFormat?: api_proto.AudioFormat;
     temperature?: number;
@@ -355,6 +359,7 @@ export class RealtimeModel extends llm.RealtimeModel {
         vadSettings?: api_proto.UltravoxVadSettings;
         firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
         inactivityMessages?: api_proto.UltravoxInactivityMessage[];
+        languageHint?: string;
         [key: string]: any;
       };
       [key: string]: any;
@@ -383,6 +388,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       instructions,
       callId,
       voice,
+      languageHint,
       inputAudioFormat,
       outputAudioFormat,
       temperature,
@@ -1123,6 +1129,16 @@ export class RealtimeSession extends llm.RealtimeSession {
             { experimentalSettings: modelData.experimentalSettings },
             "Added experimental settings from vendor-specific options"
           );
+        }
+        // Language hint: portable `options.tts.language` (mapped in
+        // voice-session-factory) unless a native vendorSpecific value overrides it.
+        // Left unset when neither is present, so Ultravox auto-detects as before.
+        const languageHint =
+          (typeof uv?.languageHint === "string" && uv.languageHint.trim()) ||
+          this.#opts.languageHint?.trim();
+        if (languageHint) {
+          modelData.languageHint = languageHint;
+          this.#logger.debug({ languageHint }, "Added Ultravox languageHint");
         }
         if (uv?.vadSettings != null) {
           modelData.vadSettings = uv.vadSettings;

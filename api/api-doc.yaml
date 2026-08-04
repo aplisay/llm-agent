@@ -1290,7 +1290,11 @@ components:
         Language and country dialect specified as an ISO639-1 language code
         followed by a dash and and ISO3166 country code.
         For now, list of supported recognition voices is identical to the voicing languages returned from the `voices` api.
-        This should change in future
+        This should change in future.
+        Ultravox models (native `ultravox:` and `livekit:ultravox/`) are speech-to-speech with no separate
+        STT/TTS stage, so they take a single hint: `tts.language`, falling back to `stt.language`, is sent as
+        the provider-native `languageHint` guiding both recognition and synthesis. Omitted when unset or set
+        to a non-specific value (`any`, `multi`, `auto`, ...), in which case Ultravox auto-detects.
       type: string
     Voice:
       type: object

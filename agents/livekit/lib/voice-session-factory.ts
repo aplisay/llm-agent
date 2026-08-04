@@ -11,6 +11,7 @@ import type { Agent, Call } from "./api-client.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
+  agentLanguageTag,
   inferTtsVendor,
   resolvePipelineStt,
   resolvePipelineTts,
@@ -305,6 +306,20 @@ export function buildRealtimeLlmOptions(
           inactivityMessages: messages,
         },
       };
+    }
+  }
+
+  // Ultravox realtime: map portable `options.tts.language` (falling back to
+  // `options.stt.language`) → provider-native `languageHint`, a BCP-47 tag that
+  // guides Ultravox's own ASR and TTS. Ultravox is speech-to-speech, so there is
+  // no separate TTS to carry the language the way the pipeline path does — this
+  // is the only route the hint has. Omitted when unset or a "no fixed language"
+  // sentinel, leaving Ultravox to auto-detect. A native
+  // `vendorSpecific.ultravox.languageHint` wins (enforced in the plugin).
+  if (modelName.includes("livekit:ultravox/")) {
+    const language = agentLanguageTag(agent);
+    if (language) {
+      llmOptions.languageHint = language;
     }
   }
 

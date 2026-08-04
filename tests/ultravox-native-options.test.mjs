@@ -173,4 +173,43 @@ describe('Ultravox native driver option mapping', () => {
       expect(data.model).toBe('ultravox-v0.6');
     });
   });
+
+  describe('options.tts.language → languageHint', () => {
+    test('tts.language is sent as languageHint, keeping the region subtag', () => {
+      const data = makeModel({ tts: { voice: 'Mark', language: 'en-GB' } }).modelData;
+      expect(data.languageHint).toBe('en-GB');
+    });
+
+    test('falls back to stt.language when tts.language is unset', () => {
+      const data = makeModel({ stt: { language: 'fr-FR' } }).modelData;
+      expect(data.languageHint).toBe('fr-FR');
+    });
+
+    test('tts.language wins over stt.language', () => {
+      const data = makeModel({
+        tts: { language: 'de-DE' },
+        stt: { language: 'fr-FR' },
+      }).modelData;
+      expect(data.languageHint).toBe('de-DE');
+    });
+
+    test('no language options leaves languageHint unset (Ultravox auto-detects)', () => {
+      expect(makeModel().modelData.languageHint).toBeUndefined();
+      expect(makeModel({ tts: { voice: 'Mark' } }).modelData.languageHint).toBeUndefined();
+    });
+
+    test('non-specific language sentinels do not produce a languageHint', () => {
+      for (const language of ['any', 'multi', 'auto', '*', 'ALL', '  ']) {
+        expect(makeModel({ tts: { language } }).modelData.languageHint).toBeUndefined();
+      }
+    });
+
+    test('caller-supplied vendorSpecific languageHint wins over the portable option', () => {
+      const data = makeModel({
+        tts: { language: 'en-GB' },
+        vendorSpecific: { ultravox: { languageHint: 'cy-GB' } },
+      }).modelData;
+      expect(data.languageHint).toBe('cy-GB');
+    });
+  });
 });
