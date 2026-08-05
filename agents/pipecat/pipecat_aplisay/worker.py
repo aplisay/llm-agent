@@ -353,6 +353,20 @@ def _voiceblender_session_lookup(app: FastAPI, session_id: str):
     return None
 
 
+def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
+    """Origin caller id as seeded at ``metadata.aplisay.callerId``.
+
+    ``CallRecord`` deliberately has no top-level ``callerId`` field — the
+    number lives only in the aplisay metadata blob (see the create_call
+    payloads), and attribute access on the pydantic model raises
+    AttributeError. Beta 2026-08-05: the sipbridge consult arm did exactly
+    that, killing the TransferAgent WS the moment the transfer target
+    answered — they heard silence while the bridge held the leg open.
+    """
+    meta = call.metadata if isinstance(call.metadata, dict) else {}
+    return (meta.get("aplisay") or {}).get("callerId")
+
+
 # X- headers on the sipbridge WS handshake that are sipbridge's own transport
 # metadata, NOT part of the inbound INVITE — excluded from aplisay.sipHeaders.
 # (``x-forwarded-*`` is a defensive guard against any future reverse proxy; today
@@ -1112,7 +1126,7 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         ctx = InboundCallContext(
             session_id=start.channel_uuid,
             called_id=start.called_id,
-            caller_id=parent.call.callerId,
+            caller_id=_aplisay_caller_id(parent.call),
             aplisay_id=None,
             phone_registration=None,
             b2bua_gateway_ip=None,
@@ -1716,7 +1730,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             ctx = InboundCallContext(
                 session_id=session_id,
                 called_id=None,
-                caller_id=consult_parent.call.callerId,
+                caller_id=_aplisay_caller_id(consult_parent.call),
                 aplisay_id=None,
                 phone_registration=None,
                 b2bua_gateway_ip=None,
