@@ -221,6 +221,12 @@ class BtaContext:
     # conversation, snapshotted when the consult accept installs the bridge.
     # Seeded into the takeover call's ``aplisay.transfer.consultTranscript``.
     consult_transcript: str = ""
+    # Bridged-segment recording (sipbridge only): when the original call's
+    # effective recording is enabled, the monitor loop also writes the tap's
+    # stereo audio (L=caller, R=target) to a RecordingSession keyed to the
+    # bridged call record, encrypted with the same client key.
+    recording_enabled: bool = False
+    recording_key: Optional[str] = None
 
 
 @dataclass
@@ -249,8 +255,13 @@ def bta_context_from_session(
     transcribe: Optional[dict] = None,
     destination: str = "",
     consult_transcript: str = "",
+    recording: Optional[Any] = None,
 ) -> BtaContext:
-    """Snapshot a parent CallSession into a :class:`BtaContext`."""
+    """Snapshot a parent CallSession into a :class:`BtaContext`.
+
+    ``recording`` is the parent call's resolved ``_RecordingOptions`` (or
+    None) — when enabled, the sipbridge monitor loop records the bridged
+    segment with the same client encryption key."""
     aplisay_meta = dict((session.call.metadata or {}).get("aplisay") or {})
     options = session.agent.get("options") or {}
     timeout_ms = options.get("dtmfTimeout")
@@ -275,6 +286,8 @@ def bta_context_from_session(
         destination=destination,
         stream_log=bool((session.instance or {}).get("streamLog")),
         consult_transcript=consult_transcript,
+        recording_enabled=bool(getattr(recording, "enabled", False)),
+        recording_key=getattr(recording, "key", None),
     )
 
 
@@ -320,6 +333,52 @@ async def prepare_bridge_monitor(ctx: BtaContext, *, platform: str) -> BtaContex
     except Exception as e:  # noqa: BLE001
         logger.warning(f"bridged transfer: bridged call record creation failed: {e}")
     return ctx
+
+
+async def maybe_start_bridge_recorder(ctx: BtaContext) -> Optional[Any]:
+    """Open a RecordingSession for the bridged segment when the original
+    call's effective recording is enabled and a bridged record exists
+    (sipbridge topology only — voiceblender exposes no audio tap). The
+    tap's interleaved stereo (L=caller, R=target) is written as-is, so the
+    recording carries the same per-speaker channel separation as the
+    transcript. Best-effort: a failure never disturbs the watch."""
+    if not ctx.recording_enabled or ctx.bridged_call is None:
+        return None
+    try:
+        from .recording import RecordingSession
+
+        recorder = RecordingSession(
+            call_id=ctx.bridged_call.id,
+            client_encryption_key=ctx.recording_key,
+        )
+        await recorder.start()
+        logger.bind(call_id=ctx.bridged_call.id).info(
+            "bridged transfer: recording the bridged segment"
+        )
+        return recorder
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording setup failed: {e}")
+        return None
+
+
+async def finalise_bridge_recorder(recorder: Optional[Any], ctx: BtaContext) -> None:
+    """Encode/encrypt/upload the bridged-segment recording and stamp its
+    recordingId on the bridged call record. Best-effort, idempotent-safe."""
+    if recorder is None or ctx.bridged_call is None:
+        return
+    try:
+        result = await recorder.stop_and_upload()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording upload failed: {e}")
+        return
+    if result is None:
+        return
+    try:
+        await api_client.set_call_recording_data(
+            ctx.bridged_call.id, result.gcs_object, result.server_generated_key
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording metadata PUT failed: {e}")
 
 
 async def end_bridged_record(ctx: BtaContext, reason: str) -> None:
@@ -708,10 +767,14 @@ async def run_sipbridge_bta_watch(
             logger.warning(f"bridgedTransferTranscribe: STT tap setup failed: {e}")
             caller_stt = target_stt = None
 
+    # Bridged-segment recording rides the same stereo tap (WP1.5).
+    recorder = await maybe_start_bridge_recorder(ctx)
+
     serializer = ProtobufFrameSerializer()
     logger.bind(
         keys=sorted(ctx.targets.keys()),
         transcribe=bool(caller_stt),
+        recording=recorder is not None,
     ).info("bridged transfer: sipbridge monitor loop running")
     try:
         while True:
@@ -721,10 +784,15 @@ async def run_sipbridge_bta_watch(
             except Exception:  # noqa: BLE001
                 continue
             if isinstance(frame, AudioRawFrame):
-                if caller_stt is not None and getattr(frame, "num_channels", 1) == 2:
-                    left, right = bt.split_stereo(frame.audio)
-                    await caller_stt.feed(left)
-                    await target_stt.feed(right)
+                if getattr(frame, "num_channels", 1) == 2:
+                    if recorder is not None:
+                        await recorder.append_pcm(
+                            frame.audio, frame.sample_rate, 2
+                        )
+                    if caller_stt is not None:
+                        left, right = bt.split_stereo(frame.audio)
+                        await caller_stt.feed(left)
+                        await target_stt.feed(right)
                 continue
             if not isinstance(frame, InputTransportMessageFrame):
                 continue
@@ -751,4 +819,5 @@ async def run_sipbridge_bta_watch(
                 await stream.stop()
         # Idempotent — a takeover already ended it with its own reason.
         await end_bridged_record(ctx, "Bridged call ended")
+        await finalise_bridge_recorder(recorder, ctx)
         logger.info("bridged transfer: sipbridge monitor loop finished")

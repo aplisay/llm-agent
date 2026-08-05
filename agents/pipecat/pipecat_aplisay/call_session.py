@@ -197,6 +197,10 @@ class CallSession:
     # See ``bridge_transcript.py``.
     _bta_transcribe: Optional[dict] = None
     _bta_destination: str = ""
+    # Whether the bridged segment should also be RECORDED via the tap
+    # (sipbridge only; gated on the original call's effective recording and
+    # on an armed watch existing at all). See bridged_transfer.py WP1.5.
+    _bta_record: bool = False
 
     # ---- WebRTC-origin transfer support (see media_relay.py + docs) ----
     # A browser session sets ``is_webrtc_origin``. Such a session — and any
@@ -1549,6 +1553,16 @@ class CallSession:
         if self._bta_targets or self._bta_transcribe:
             use_refer = False
             force_bridged = True
+        # Bridged-segment recording (docs/transfer-back-plan.md WP1.5): when
+        # the original call records and a monitored bridge exists anyway
+        # (hand-back and/or transcription armed), keep recording across it
+        # via the same tap. sipbridge only — voiceblender has no audio tap —
+        # and never a reason on its own to force the bridged path.
+        self._bta_record = bool(
+            (self._bta_targets or self._bta_transcribe)
+            and hasattr(self.gateway_session, "unbridge")
+            and _resolve_recording_options(self.agent, self.instance).enabled
+        )
 
         # Default the calling number toward the gateway to the registration
         # trunk username (e.g. 8092) when registration-originated, unless the
@@ -1566,7 +1580,7 @@ class CallSession:
             force_bridged=force_bridged,
             force_refer=use_refer,
             monitor_dtmf=bool(self._bta_targets),
-            tap_audio=bool(self._bta_transcribe),
+            tap_audio=bool(self._bta_transcribe) or self._bta_record,
             aplisay_id=self.aplisay_id,
             registration_endpoint_id=self.registration_endpoint_id,
             b2bua_gateway_ip=self.b2bua_gateway_ip,
@@ -1659,6 +1673,11 @@ class CallSession:
             transcribe=self._bta_transcribe,
             destination=self._bta_destination,
             consult_transcript=consult_transcript,
+            recording=(
+                _resolve_recording_options(self.agent, self.instance)
+                if self._bta_record
+                else None
+            ),
         )
         # Bridged-segment call record (+ transcript collector when
         # transcription is on) — LiveKit parity for the post-transfer
@@ -2195,7 +2214,7 @@ def _builtin_consult_accept(consult_session: CallSession):
                 # keep watching the target leg after the bridge
                 # (options.bridgedTransferToAgent / bridgedTransferTranscribe).
                 monitor = bool(parent._bta_targets)
-                tap = bool(parent._bta_transcribe)
+                tap = bool(parent._bta_transcribe) or parent._bta_record
                 await parent.gateway_session.bridge_with(
                     consult_session.gateway_session,
                     monitor_dtmf=monitor,

@@ -79,6 +79,14 @@ class RecordingSession:
         async def _on_audio_data(buffer, audio, sample_rate, num_channels):  # noqa: ARG001
             await self._append(audio, sample_rate, num_channels)
 
+    async def append_pcm(
+        self, audio: bytes, sample_rate: int, num_channels: int
+    ) -> None:
+        """Append raw PCM directly — for taps that are not an
+        AudioBufferProcessor (e.g. the sipbridge bridged-segment stereo tap,
+        docs/transfer-back-plan.md WP1.5). Same path as the event handler."""
+        await self._append(audio, sample_rate, num_channels)
+
     async def start(self) -> None:
         """Open the local PCM file. Idempotent."""
         async with self._lock:
