@@ -270,12 +270,16 @@ class _SbGatewaySession(GatewaySession):
         )
 
         consult_session_id = f"sb-consult-{uuid.uuid4()}"
-        # Stash the TransferAgent payload for the WS handler.
+        # Stash the TransferAgent payload for the WS handler. ``destination``
+        # rides along because the bridge's callback WS carries only the
+        # session id in the URL — the WS arm needs it for the consult call
+        # record's calledId (a null calledId is a 400 at the agent-db API).
         self._gateway.register_consult_session(
             consult_session_id=consult_session_id,
             parent_session_id=self.session_id,
             transfer_prompt_template=req.transfer_prompt_template or "",
             parent_transcript=req.parent_transcript or "",
+            destination=req.destination or "",
         )
 
         # Trunk / registration egress routing plus the genuine-origin

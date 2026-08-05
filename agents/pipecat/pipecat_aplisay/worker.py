@@ -1729,8 +1729,15 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
             ctx = InboundCallContext(
                 session_id=session_id,
-                called_id=None,
-                caller_id=_aplisay_caller_id(consult_parent.call),
+                # The consult record's calledId/callerId must be real strings
+                # — the agent-db API 400s a null (beta 2026-08-05: calledId=
+                # None failed every consult-record POST, so the TransferAgent
+                # never spawned and the answered target heard silence).
+                # calledId = the transfer destination, stashed on the
+                # ConsultPayload at _do_consultative time; callerId = the
+                # origin caller from the parent's aplisay metadata.
+                called_id=payload.destination or "unknown",
+                caller_id=_aplisay_caller_id(consult_parent.call) or "unknown",
                 aplisay_id=None,
                 phone_registration=None,
                 b2bua_gateway_ip=None,

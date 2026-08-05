@@ -332,11 +332,20 @@ class ConsultPayload:
     voiceblender gateways. Each gateway's ``_do_consultative`` calls
     ``register_consult_session`` to stash it and the worker's per-
     gateway WS handler reads it via ``consult_payload``.
+
+    ``destination`` is the transfer target as requested (pre URI
+    normalisation) — the consult call record's ``calledId``. Gateways
+    whose WS arrival carries the dialled number natively (FreeSWITCH
+    ``start.called_id``, voiceblender's pending inbound ctx) may leave
+    it empty; sipbridge has nothing else to read it from (the bridge
+    dials us back with only the session id in the URL), and the
+    agent-db API rejects a null calledId outright.
     """
 
     parent_session_id: str
     transfer_prompt_template: str
     parent_transcript: str
+    destination: str = ""
 
 
 class ConsultStateMixin:
@@ -384,11 +393,13 @@ class ConsultStateMixin:
         parent_session_id: str,
         transfer_prompt_template: str,
         parent_transcript: str,
+        destination: str = "",
     ) -> None:
         self._consult_payloads[consult_session_id] = ConsultPayload(
             parent_session_id=parent_session_id,
             transfer_prompt_template=transfer_prompt_template,
             parent_transcript=parent_transcript,
+            destination=destination,
         )
 
     def consult_payload(self, session_id: str) -> Optional[ConsultPayload]:
