@@ -134,6 +134,7 @@ def test_consult_ws_reaches_run_session_with_metadata_caller_id(monkeypatch):
         parent_session_id="parent-session",
         transfer_prompt_template="Consult prompt. ${parentTranscript}",
         parent_transcript="caller: hello",
+        destination="443300889471",
     )
 
     parent_call = api_client.CallRecord(
@@ -178,6 +179,9 @@ def test_consult_ws_reaches_run_session_with_metadata_caller_id(monkeypatch):
     assert not any(m["type"] == "websocket.http.response.start" for m in sent)
     # The crash line: caller id must be read from the aplisay metadata.
     assert captured["ctx"].caller_id == "07970939456"
+    # calledId = the transfer destination stashed on the ConsultPayload
+    # (None here 400s the consult call-record POST — see the payload test).
+    assert captured["ctx"].called_id == "443300889471"
     assert captured["ctx"].raw["consult_of"] == "parent-session"
     # The TransferAgent inherits the parent's model with the consult prompt.
     assert captured["transfer_agent"]["modelName"] == "pipecat:ultravox"
@@ -188,3 +192,82 @@ def test_consult_ws_reaches_run_session_with_metadata_caller_id(monkeypatch):
     assert parent.transfer_state.state == "rejected"
     # Consult registration cleaned up on exit.
     assert gateway.consult_payload(session_id) is None
+
+
+def test_consult_call_record_posts_string_called_and_caller_ids(monkeypatch):
+    """Drive flow (b) through the REAL ``setup_consult_call`` to the
+    agent-db POST.
+
+    Regression (beta 2026-08-05, third incarnation): the sipbridge arm
+    built its consult ctx with ``called_id=None``, and the agent-db API's
+    OpenAPI validation 400s a null calledId ("must be string") — so the
+    consult call record was never created, setup failed, and the answered
+    transfer target heard silence. The record's calledId must be the
+    transfer destination and callerId the origin caller, both strings.
+    """
+    gateway = SipBridgeSipGateway()
+    session_id = "sb-consult-99999999-8888-7777-6666-555555555555"
+    gateway.register_consult_session(
+        consult_session_id=session_id,
+        parent_session_id="parent-session",
+        transfer_prompt_template="Consult prompt. ${parentTranscript}",
+        parent_transcript="caller: hello",
+        destination="443300889471",
+    )
+
+    parent_call = api_client.CallRecord(
+        id="parent-call",
+        userId="user-1",
+        organisationId="org-1",
+        instanceId="instance-1",
+        agentId="agent-1",
+        metadata={"aplisay": {"callerId": "07970939456", "calledId": "+441539454616"}},
+    )
+    parent = SimpleNamespace(
+        session_id="parent-session",
+        call=parent_call,
+        agent={
+            "id": "agent-1",
+            "userId": "user-1",
+            "organisationId": "org-1",
+            "modelName": "pipecat:ultravox",
+            "options": {},
+        },
+        instance={"id": "instance-1"},
+        transfer_state=TransferState("dialling", "Dialling transfer target..."),
+    )
+
+    posted: dict = {}
+
+    async def fake_create_call(call_data: dict):
+        posted.update(call_data)
+        return api_client.CallRecord(
+            id="consult-call-rec",
+            userId=call_data["userId"],
+            organisationId=call_data["organisationId"],
+            instanceId=call_data["instanceId"],
+            agentId=call_data["agentId"],
+            metadata=call_data.get("metadata") or {},
+            options=call_data.get("options") or {},
+        )
+
+    async def fake_start_call(call):
+        return call
+
+    async def fake_run_session(app, session, call_id):
+        posted["ran_call_id"] = call_id
+
+    monkeypatch.setattr(api_client, "create_call", fake_create_call)
+    monkeypatch.setattr(api_client, "start_call", fake_start_call)
+    monkeypatch.setattr(worker, "_run_session", fake_run_session)
+
+    sent = _drive_handler(gateway, session_id, live_calls={"parent-call": parent})
+
+    assert sent[0]["type"] == "websocket.accept"
+    # The 400 killer: both ids must be non-empty strings on the wire.
+    assert posted["calledId"] == "443300889471"
+    assert posted["callerId"] == "07970939456"
+    assert posted["metadata"]["aplisay"]["transferConsultation"] is True
+    assert posted["parentId"] == "parent-call"
+    # The real setup_consult_call completed and the pipeline ran.
+    assert posted["ran_call_id"] == "consult-call-rec"
