@@ -1738,7 +1738,10 @@ class CallSession:
     def _reject_daily(self) -> Optional[dict]:
         """WebRTC relay needs a bare ``originate``; the Daily gateway requires
         room pre-provisioning we don't do here. Reject explicitly."""
-        from .sip_gateway.daily_gateway import DailySipGateway
+        # Package-level import: resolves to the placeholder class when the
+        # daily transport is not installed (ONLY_TRANSPORTS build); importing
+        # the submodule directly would raise ImportError there.
+        from .sip_gateway import DailySipGateway
 
         if isinstance(self.sip_gateway, DailySipGateway):
             return self._transfer_failed(

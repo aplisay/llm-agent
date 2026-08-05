@@ -12,85 +12,107 @@
 #                       the repo root because the worker Dockerfile COPYs
 #                       agents/pipecat into the image)
 #
+# _ONLY_TRANSPORTS (set on the trigger; empty / unset = build everything):
+# comma-separated allow-list — no spaces — of the SIP transports to build.
+# Transport-specific artifacts outside the list are skipped:
+#   freeswitch → the freeswitch + esl-poller images
+#   sipbridge  → the sipbridge image
+#   daily      → the daily-python wheel inside pipecat-worker (that image
+#                itself always builds)
+# secretenv-exec and pipecat-worker are always built. The `images:` provenance
+# list below holds only the unconditional images: Cloud Build fails any build
+# whose listed image was not produced, which is exactly the skip path.
+#
 # Adapted from aplisay-b2bua/deploy/gcp/cloudbuild-staging.yaml.
 steps:
-  # ----- FreeSWITCH -----
+  # ----- FreeSWITCH (gated: built only when _ONLY_TRANSPORTS is empty or lists freeswitch) -----
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '--build-arg'
-      - BUILD_ENV=production
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:next
-      - '-f'
-      - './agents/pipecat/freeswitch/Dockerfile'
-      - './agents/pipecat/freeswitch'
     id: Build-freeswitch
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch"; exit 0;;
+        esac
+        exec docker build --no-cache \
+          --build-arg BUILD_ENV=production \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:next \
+          -f ./agents/pipecat/freeswitch/Dockerfile ./agents/pipecat/freeswitch
 
   - name: gcr.io/cloud-builders/docker
-    args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
     id: Push-freeswitch
-
-  # ----- esl-poller -----
-  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - build
-      - '--no-cache'
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:next
-      - '-f'
-      - './agents/pipecat/esl-poller/Dockerfile'
-      - './agents/pipecat/esl-poller'
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch"; exit 0;;
+        esac
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
+
+  # ----- esl-poller (part of the freeswitch transport, same gate) -----
+  - name: gcr.io/cloud-builders/docker
     id: Build-esl-poller
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
+        esac
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:next \
+          -f ./agents/pipecat/esl-poller/Dockerfile ./agents/pipecat/esl-poller
 
   - name: gcr.io/cloud-builders/docker
-    args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
     id: Push-esl-poller
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
+        esac
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
 
-  # ----- sipbridge -----
+  # ----- sipbridge (gated on its own name) -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat/sipbridge into the image.
   - name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - '--no-cache'
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
-      - '-t'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:next
-      - '-f'
-      - './agents/pipecat/sipbridge/Dockerfile'
-      - '.'
     id: Build-sipbridge
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",sipbridge,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
+        esac
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:next \
+          -f ./agents/pipecat/sipbridge/Dockerfile .
 
   - name: gcr.io/cloud-builders/docker
-    args:
-      - push
-      - '--all-tags'
-      - >-
-        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
     id: Push-sipbridge
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",sipbridge,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
+        esac
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
 
-  # ----- secretenv-exec -----
+  # ----- secretenv-exec (always built) -----
   # Tiny static decrypt-and-exec wrapper (reuses the sipbridge Go module).
   # Used by the Kubernetes freeswitch / voiceblender overlays so those
   # containers can share the single SECRETENV_KEY + SECRETENV_BUNDLE secret.
@@ -117,7 +139,7 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec
     id: Push-secretenv-exec
 
-  # ----- pipecat-worker -----
+  # ----- pipecat-worker (always built; ONLY_TRANSPORTS gates its daily extra) -----
   # Build context is the repo root (.) because the Dockerfile COPYs
   # agents/pipecat into the image.
   - name: gcr.io/cloud-builders/docker
@@ -130,6 +152,8 @@ steps:
       - BRANCH_NAME=$BRANCH_NAME
       - '--build-arg'
       - TAG_NAME=$TAG_NAME
+      - '--build-arg'
+      - ONLY_TRANSPORTS=$_ONLY_TRANSPORTS
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA
@@ -149,13 +173,11 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker
     id: Push-pipecat-worker
 
+# Unconditional images only — the transport images (freeswitch, esl-poller,
+# sipbridge) are pushed by their own steps and may be skipped entirely by
+# _ONLY_TRANSPORTS, and Cloud Build fails a build whose listed image was not
+# produced.
 images:
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA
-  - >-
-    $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA
   - >-
     $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/secretenv-exec:$COMMIT_SHA
   - >-
@@ -169,6 +191,7 @@ options:
 
 substitutions:
   _AR_HOSTNAME: $LOCATION-docker.pkg.dev
+  _ONLY_TRANSPORTS: ''
 
 tags:
   - pipecat-agent-staging

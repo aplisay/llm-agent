@@ -120,10 +120,15 @@ substitutions:
   _JAMBONZ_SERVICE: jambonz-agent
   # Every image promoted + (where applicable) deployed as one release group.
   # Cloud Run / GCE: llm-agent jambonz-agent livekit-agent
-  # Pipecat / K8s:   freeswitch esl-poller sipbridge secretenv-exec pipecat-worker
+  # Pipecat / K8s:   sipbridge secretenv-exec pipecat-worker
+  # NOT listed: freeswitch + esl-poller — the pipecat builds gate them behind
+  # _ONLY_TRANSPORTS (agents/pipecat/deploy/gcp/cloudbuild*.yaml) and the
+  # triggers exclude them, so per-commit builds no longer produce them and
+  # Verify above would abort every release. Re-add them here in the same
+  # change that re-enables the freeswitch transport on those triggers.
   _RELEASE_IMAGES: >-
-    llm-agent jambonz-agent livekit-agent freeswitch esl-poller sipbridge
-    secretenv-exec pipecat-worker
+    llm-agent jambonz-agent livekit-agent sipbridge secretenv-exec
+    pipecat-worker
 
 tags:
   - release
