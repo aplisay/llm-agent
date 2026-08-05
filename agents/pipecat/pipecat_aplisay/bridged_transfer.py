@@ -63,6 +63,9 @@ class BtaTarget:
     key: str
     agent_id: str
     include_history: bool = True
+    # Optional text agent pre-fired at hand-back to summarise the carried
+    # transcripts; the takeover agent collects it with ``transfer_summary``.
+    summary_agent_id: Optional[str] = None
 
 
 def parse_bta_map(options: Optional[dict]) -> Optional[dict[str, BtaTarget]]:
@@ -88,10 +91,12 @@ def parse_bta_map(options: Optional[dict]) -> Optional[dict[str, BtaTarget]]:
             logger.warning(f"bridgedTransferToAgent[{key!r}]: ignoring entry without agent")
             continue
         include_history = entry.get("includeHistory")
+        summary_agent = entry.get("summaryAgent")
         targets[key] = BtaTarget(
             key=key,
             agent_id=str(agent_id),
             include_history=True if include_history is None else bool(include_history),
+            summary_agent_id=str(summary_agent) if summary_agent else None,
         )
     return targets or None
 
@@ -212,6 +217,16 @@ class BtaContext:
     stream_log: bool = False
     bridged_call: Optional[api_client.CallRecord] = None
     collector: Optional[Any] = None
+    # Consultative transfers only: the TransferAgent↔target briefing
+    # conversation, snapshotted when the consult accept installs the bridge.
+    # Seeded into the takeover call's ``aplisay.transfer.consultTranscript``.
+    consult_transcript: str = ""
+    # Bridged-segment recording (sipbridge only): when the original call's
+    # effective recording is enabled, the monitor loop also writes the tap's
+    # stereo audio (L=caller, R=target) to a RecordingSession keyed to the
+    # bridged call record, encrypted with the same client key.
+    recording_enabled: bool = False
+    recording_key: Optional[str] = None
 
 
 @dataclass
@@ -227,6 +242,10 @@ class TakeoverPayload:
     instance: dict
     call: api_client.CallRecord
     extra: dict = field(default_factory=dict)
+    # Resolves to the pre-fired summaryAgent result (``{"status": ...}``) —
+    # threaded onto the takeover CallSession so its ``transfer_summary``
+    # builtin can await it. None when the map entry has no summaryAgent.
+    summary_future: Optional[Any] = None
 
 
 def bta_context_from_session(
@@ -235,8 +254,14 @@ def bta_context_from_session(
     *,
     transcribe: Optional[dict] = None,
     destination: str = "",
+    consult_transcript: str = "",
+    recording: Optional[Any] = None,
 ) -> BtaContext:
-    """Snapshot a parent CallSession into a :class:`BtaContext`."""
+    """Snapshot a parent CallSession into a :class:`BtaContext`.
+
+    ``recording`` is the parent call's resolved ``_RecordingOptions`` (or
+    None) — when enabled, the sipbridge monitor loop records the bridged
+    segment with the same client encryption key."""
     aplisay_meta = dict((session.call.metadata or {}).get("aplisay") or {})
     options = session.agent.get("options") or {}
     timeout_ms = options.get("dtmfTimeout")
@@ -260,6 +285,9 @@ def bta_context_from_session(
         transcribe=transcribe,
         destination=destination,
         stream_log=bool((session.instance or {}).get("streamLog")),
+        consult_transcript=consult_transcript,
+        recording_enabled=bool(getattr(recording, "enabled", False)),
+        recording_key=getattr(recording, "key", None),
     )
 
 
@@ -307,6 +335,52 @@ async def prepare_bridge_monitor(ctx: BtaContext, *, platform: str) -> BtaContex
     return ctx
 
 
+async def maybe_start_bridge_recorder(ctx: BtaContext) -> Optional[Any]:
+    """Open a RecordingSession for the bridged segment when the original
+    call's effective recording is enabled and a bridged record exists
+    (sipbridge topology only — voiceblender exposes no audio tap). The
+    tap's interleaved stereo (L=caller, R=target) is written as-is, so the
+    recording carries the same per-speaker channel separation as the
+    transcript. Best-effort: a failure never disturbs the watch."""
+    if not ctx.recording_enabled or ctx.bridged_call is None:
+        return None
+    try:
+        from .recording import RecordingSession
+
+        recorder = RecordingSession(
+            call_id=ctx.bridged_call.id,
+            client_encryption_key=ctx.recording_key,
+        )
+        await recorder.start()
+        logger.bind(call_id=ctx.bridged_call.id).info(
+            "bridged transfer: recording the bridged segment"
+        )
+        return recorder
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording setup failed: {e}")
+        return None
+
+
+async def finalise_bridge_recorder(recorder: Optional[Any], ctx: BtaContext) -> None:
+    """Encode/encrypt/upload the bridged-segment recording and stamp its
+    recordingId on the bridged call record. Best-effort, idempotent-safe."""
+    if recorder is None or ctx.bridged_call is None:
+        return
+    try:
+        result = await recorder.stop_and_upload()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording upload failed: {e}")
+        return
+    if result is None:
+        return
+    try:
+        await api_client.set_call_recording_data(
+            ctx.bridged_call.id, result.gcs_object, result.server_generated_key
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"bridged transfer: recording metadata PUT failed: {e}")
+
+
 async def end_bridged_record(ctx: BtaContext, reason: str) -> None:
     """End the bridged-segment record (idempotent — ``end_call`` guards
     re-entry), flushing any batched transcript entries with it."""
@@ -316,6 +390,40 @@ async def end_bridged_record(ctx: BtaContext, reason: str) -> None:
         await api_client.end_call(ctx.bridged_call, reason=reason)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"bridged transfer: ending bridged record failed: {e}")
+
+
+# Per-transcript cap for the ``aplisay.transfer.*`` metadata keys: protects
+# the call row (JSONB) from unbounded transcripts while keeping far more than
+# any realistic conversation. The TAIL is kept — the most recent turns are the
+# ones the takeover flow acts on.
+TRANSFER_METADATA_TRANSCRIPT_MAX = 32_000
+
+
+def clip_transcript_for_metadata(text: str, limit: int = TRANSFER_METADATA_TRANSCRIPT_MAX) -> str:
+    """Tail-truncate a rendered transcript for metadata seeding."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return "(… earlier conversation truncated)\n" + text[-limit:]
+
+
+def transfer_metadata_block(ctx: BtaContext, target: BtaTarget) -> dict:
+    """The ``aplisay.transfer`` metadata block seeded onto the takeover call
+    (docs/transfer-back-plan.md). Always seeded, independent of the
+    ``includeHistory`` prompt gate: the transcripts are then addressable by
+    ``promptMetadata`` ``from`` paths, the ``get_metadata`` builtin, and —
+    the main event — ``source: "metadata"`` function parameters, which carry
+    them out-of-band of the model's context (e.g. to a summariser subagent).
+    Empty values are omitted so absent facts never render as statements."""
+    bridge_transcript = ctx.collector.render() if ctx.collector is not None else ""
+    block = {
+        "key": target.key,
+        "targetNumber": ctx.destination or "",
+        "parentTranscript": clip_transcript_for_metadata(ctx.transcript),
+        "bridgeTranscript": clip_transcript_for_metadata(bridge_transcript),
+        "consultTranscript": clip_transcript_for_metadata(ctx.consult_transcript),
+    }
+    return {k: v for k, v in block.items() if v}
 
 
 def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget) -> str:
@@ -351,6 +459,57 @@ def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget)
     return prompt
 
 
+# Strong references to in-flight summariser tasks (asyncio only keeps weak
+# ones); discarded on completion.
+_summary_tasks: set = set()
+
+
+def prefire_summary(
+    target: BtaTarget, transfer_block: dict, call_metadata: dict, call: api_client.CallRecord
+) -> "asyncio.Future[dict]":
+    """Fire the map entry's ``summaryAgent`` (a headless text agent) with the
+    carried transcripts, without waiting for it. Returns a future resolving to
+    the ``transfer_summary`` builtin's result shape — always a value, never an
+    exception, so a summariser failure can't leak into the takeover path.
+
+    The invocation is byte-compatible with the playbook pattern (a
+    ``summarise_call`` subagent function whose params are ``source: metadata``
+    reads of ``aplisay.transfer.*``): the same summariser definition works
+    pre-fired or agent-invoked. Usage is billed against the takeover call.
+    """
+    future: "asyncio.Future[dict]" = asyncio.get_running_loop().create_future()
+    input_args = {
+        k: v
+        for k, v in transfer_block.items()
+        if k in ("parentTranscript", "bridgeTranscript", "consultTranscript")
+    }
+
+    async def run() -> None:
+        try:
+            result = await api_client.invoke_subagent(
+                str(target.summary_agent_id),
+                input_args,
+                call_metadata,
+                organisation_id=call.organisationId,
+                call_id=call.id,
+            )
+            summary = result
+            if isinstance(result, dict):
+                summary = result.get("summary") or result.get("result") or result
+            future.set_result({"status": "ready", "summary": summary})
+            logger.bind(call_id=call.id).info("hand-back summary ready")
+        except Exception as e:  # noqa: BLE001
+            logger.bind(call_id=call.id, error=str(e)).warning(
+                "hand-back summaryAgent failed"
+            )
+            future.set_result({"status": "failed", "error": str(e)})
+
+    task = asyncio.create_task(run())
+    _summary_tasks.add(task)
+    task.add_done_callback(_summary_tasks.discard)
+    return future
+
+
 async def prepare_takeover(
     ctx: BtaContext, target: BtaTarget, *, platform: str, session_id: str
 ) -> TakeoverPayload:
@@ -377,6 +536,19 @@ async def prepare_takeover(
 
     prompt = compose_takeover_prompt(new_agent, ctx, target)
     aplisay_meta = dict((ctx.metadata or {}).get("aplisay") or {})
+    transfer_block = transfer_metadata_block(ctx, target)
+    call_metadata = {
+        **(ctx.metadata or {}),
+        "aplisay": {
+            **aplisay_meta,
+            "model": model_name,
+            "bridgedTransferToAgent": {"key": target.key},
+            # Carried context for the takeover agent and its tools —
+            # aplisay.transfer.{parentTranscript,bridgeTranscript,
+            # consultTranscript,key,targetNumber}.
+            "transfer": transfer_block,
+        },
+    }
     call = await api_client.create_call(
         {
             "parentId": ctx.parent_call_id,
@@ -390,25 +562,31 @@ async def prepare_takeover(
             "callerId": ctx.caller_id,
             "modelName": model_name,
             "options": new_agent.get("options") or {},
-            "metadata": {
-                **(ctx.metadata or {}),
-                "aplisay": {
-                    **aplisay_meta,
-                    "model": model_name,
-                    "bridgedTransferToAgent": {"key": target.key},
-                },
-            },
+            "metadata": call_metadata,
         }
     )
     # Reserve the concurrency slot; a busy rejection aborts the takeover
     # with the human bridge still up.
     await api_client.start_call(call)
 
+    # Pre-fire the entry's summariser (when configured) so the summary is
+    # cooking while the unbridge + re-attach happens; the takeover agent
+    # collects it with the ``transfer_summary`` builtin. Never blocks or
+    # fails the takeover.
+    summary_future = None
+    if target.summary_agent_id:
+        summary_future = prefire_summary(target, transfer_block, call_metadata, call)
+
     # The composed prompt rides in the agent dict so the standard
     # ``_run_session`` entry point (which reads ``agent["prompt"]``) uses it.
     agent_for_run = dict(new_agent)
     agent_for_run["prompt"] = prompt
-    return TakeoverPayload(agent=agent_for_run, instance=ctx.instance, call=call)
+    return TakeoverPayload(
+        agent=agent_for_run,
+        instance=ctx.instance,
+        call=call,
+        summary_future=summary_future,
+    )
 
 
 def new_takeover_session_id(prefix: str) -> str:
@@ -589,10 +767,14 @@ async def run_sipbridge_bta_watch(
             logger.warning(f"bridgedTransferTranscribe: STT tap setup failed: {e}")
             caller_stt = target_stt = None
 
+    # Bridged-segment recording rides the same stereo tap (WP1.5).
+    recorder = await maybe_start_bridge_recorder(ctx)
+
     serializer = ProtobufFrameSerializer()
     logger.bind(
         keys=sorted(ctx.targets.keys()),
         transcribe=bool(caller_stt),
+        recording=recorder is not None,
     ).info("bridged transfer: sipbridge monitor loop running")
     try:
         while True:
@@ -602,10 +784,15 @@ async def run_sipbridge_bta_watch(
             except Exception:  # noqa: BLE001
                 continue
             if isinstance(frame, AudioRawFrame):
-                if caller_stt is not None and getattr(frame, "num_channels", 1) == 2:
-                    left, right = bt.split_stereo(frame.audio)
-                    await caller_stt.feed(left)
-                    await target_stt.feed(right)
+                if getattr(frame, "num_channels", 1) == 2:
+                    if recorder is not None:
+                        await recorder.append_pcm(
+                            frame.audio, frame.sample_rate, 2
+                        )
+                    if caller_stt is not None:
+                        left, right = bt.split_stereo(frame.audio)
+                        await caller_stt.feed(left)
+                        await target_stt.feed(right)
                 continue
             if not isinstance(frame, InputTransportMessageFrame):
                 continue
@@ -632,4 +819,5 @@ async def run_sipbridge_bta_watch(
                 await stream.stop()
         # Idempotent — a takeover already ended it with its own reason.
         await end_bridged_record(ctx, "Bridged call ended")
+        await finalise_bridge_recorder(recorder, ctx)
         logger.info("bridged transfer: sipbridge monitor loop finished")

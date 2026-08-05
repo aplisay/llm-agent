@@ -197,6 +197,10 @@ class CallSession:
     # See ``bridge_transcript.py``.
     _bta_transcribe: Optional[dict] = None
     _bta_destination: str = ""
+    # Whether the bridged segment should also be RECORDED via the tap
+    # (sipbridge only; gated on the original call's effective recording and
+    # on an armed watch existing at all). See bridged_transfer.py WP1.5.
+    _bta_record: bool = False
 
     # ---- WebRTC-origin transfer support (see media_relay.py + docs) ----
     # A browser session sets ``is_webrtc_origin``. Such a session — and any
@@ -255,6 +259,17 @@ class CallSession:
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
+    # Hand-back take-over sessions only: future resolving to the pre-fired
+    # summaryAgent result, collected by the ``transfer_summary`` builtin
+    # (bridged_transfer.prefire_summary). None everywhere else.
+    _pending_summary: Optional[Any] = None
+
+    def __post_init__(self):
+        # Listener-level transfer overrides (instance columns) wholesale-replace
+        # the same-named agent options for every session under this listener —
+        # including takeover and consult sessions. Idempotent; also applied to
+        # the incoming agent dict on in-place handovers and in prepare_run.
+        self.agent = apply_instance_transfer_overrides(self.agent, self.instance)
 
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling.
@@ -344,6 +359,10 @@ class CallSession:
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
         """
+        # Handover paths pass their own agent dict; make sure listener-level
+        # transfer overrides apply to it exactly as they did to the original
+        # (idempotent when __post_init__ already merged this dict).
+        agent = apply_instance_transfer_overrides(agent, self.instance)
         metadata = self.call.metadata
         # Every session's prompt passes through here — the initial run, each
         # transfer_agent handover and the consult-side bot — so resolving the
@@ -646,7 +665,9 @@ class CallSession:
             # pipeline has started.
             self._handover_webrtc_kick = pending["transport"]
             self.call = pending["call"]
-            self.agent = pending["agent"]
+            self.agent = apply_instance_transfer_overrides(
+                pending["agent"], self.instance
+            )
             logger.bind(
                 call_id=self.call.id,
                 agent_id=self.agent.get("id"),
@@ -909,8 +930,48 @@ class CallSession:
             on_agent_transfer=self._on_agent_transfer,
             on_subagent=self._on_subagent,
             on_send_dtmf=self._on_send_dtmf,
+            on_transfer_summary=self._on_transfer_summary,
             extra_builtins=extra_builtins,
         )
+
+    async def _on_transfer_summary(self, args: dict) -> dict:
+        """Builtin ``transfer_summary``: collect the result of the
+        summaryAgent pre-fired when this take-over call was prepared
+        (``bridged_transfer.prefire_summary``). Waits up to ``timeoutMs``
+        (default 5000, capped 15000) for the pending result; the underlying
+        summariser keeps running across a timeout, so the agent can simply
+        call again. Statuses:
+
+        - ``ready``  — the summary, as ``{"status": "ready", "summary": …}``
+        - ``pending`` — not finished yet; try again shortly
+        - ``failed`` — the summariser errored; fall back to the carried
+          transcripts / includeHistory context
+        - ``none``  — no summaryAgent was configured for this hand-back (or
+          this session is not a hand-back take-over at all)
+        """
+        future = self._pending_summary
+        if future is None:
+            return {
+                "status": "none",
+                "detail": (
+                    "No summary was requested for this call — there is no "
+                    "summaryAgent on the hand-back entry."
+                ),
+            }
+        try:
+            timeout_ms = float(args.get("timeoutMs") or 5000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000.0
+        timeout_s = max(0.0, min(timeout_ms, 15000.0)) / 1000.0
+        try:
+            # shield: a timeout here must not cancel the shared future —
+            # the summariser keeps cooking for the next attempt.
+            return dict(await asyncio.wait_for(asyncio.shield(future), timeout_s))
+        except asyncio.TimeoutError:
+            return {
+                "status": "pending",
+                "detail": "The summary is still being generated — call transfer_summary again.",
+            }
 
     async def _on_subagent(self, args: dict, metadata: dict) -> Any:
         """Builtin ``subagent`` platform function: invoke a headless ``text``
@@ -1347,7 +1408,7 @@ class CallSession:
                     LLMRunFrame(),
                 ]
             )
-            self.agent = new_agent
+            self.agent = apply_instance_transfer_overrides(new_agent, self.instance)
             logger.bind(agent_id=new_agent.get("id")).info(
                 "agent transfer: prompt and tools swapped"
             )
@@ -1492,6 +1553,16 @@ class CallSession:
         if self._bta_targets or self._bta_transcribe:
             use_refer = False
             force_bridged = True
+        # Bridged-segment recording (docs/transfer-back-plan.md WP1.5): when
+        # the original call records and a monitored bridge exists anyway
+        # (hand-back and/or transcription armed), keep recording across it
+        # via the same tap. sipbridge only — voiceblender has no audio tap —
+        # and never a reason on its own to force the bridged path.
+        self._bta_record = bool(
+            (self._bta_targets or self._bta_transcribe)
+            and hasattr(self.gateway_session, "unbridge")
+            and _resolve_recording_options(self.agent, self.instance).enabled
+        )
 
         # Default the calling number toward the gateway to the registration
         # trunk username (e.g. 8092) when registration-originated, unless the
@@ -1509,7 +1580,7 @@ class CallSession:
             force_bridged=force_bridged,
             force_refer=use_refer,
             monitor_dtmf=bool(self._bta_targets),
-            tap_audio=bool(self._bta_transcribe),
+            tap_audio=bool(self._bta_transcribe) or self._bta_record,
             aplisay_id=self.aplisay_id,
             registration_endpoint_id=self.registration_endpoint_id,
             b2bua_gateway_ip=self.b2bua_gateway_ip,
@@ -1570,7 +1641,7 @@ class CallSession:
         if self._tone_injector is not None:
             self._tone_injector.arm(mode)
 
-    async def _arm_bta_monitor(self) -> None:
+    async def _arm_bta_monitor(self, consult_transcript: str = "") -> None:
         """Arm the human-to-agent transfer watch on a just-installed bridge
         (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
 
@@ -1601,6 +1672,12 @@ class CallSession:
             self._bta_targets,
             transcribe=self._bta_transcribe,
             destination=self._bta_destination,
+            consult_transcript=consult_transcript,
+            recording=(
+                _resolve_recording_options(self.agent, self.instance)
+                if self._bta_record
+                else None
+            ),
         )
         # Bridged-segment call record (+ transcript collector when
         # transcription is on) — LiveKit parity for the post-transfer
@@ -2137,14 +2214,19 @@ def _builtin_consult_accept(consult_session: CallSession):
                 # keep watching the target leg after the bridge
                 # (options.bridgedTransferToAgent / bridgedTransferTranscribe).
                 monitor = bool(parent._bta_targets)
-                tap = bool(parent._bta_transcribe)
+                tap = bool(parent._bta_transcribe) or parent._bta_record
                 await parent.gateway_session.bridge_with(
                     consult_session.gateway_session,
                     monitor_dtmf=monitor,
                     tap_audio=tap,
                 )
                 if monitor or tap:
-                    await parent._arm_bta_monitor()
+                    # The consult session's own context IS the TransferAgent↔
+                    # target briefing conversation — snapshot it for the
+                    # takeover call's aplisay.transfer.consultTranscript.
+                    await parent._arm_bta_monitor(
+                        consult_transcript=consult_session.get_parent_transcript()
+                    )
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.
             # Should have been rejected upstream by ``transfer()``; if
@@ -2225,6 +2307,42 @@ def _builtin_consult_reject(consult_session: CallSession):
 class _RecordingOptions:
     enabled: bool
     key: Optional[str]
+
+
+_INSTANCE_TRANSFER_OVERRIDE_KEYS = (
+    "bridgedTransferToAgent",
+    "bridgedTransferTranscribe",
+    "dtmfTimeout",
+)
+
+
+def apply_instance_transfer_overrides(agent: dict, instance: dict) -> dict:
+    """Overlay listener-level transfer overrides onto an agent dict.
+
+    The listener (instance) row may carry ``bridgedTransferToAgent``,
+    ``bridgedTransferTranscribe`` and ``dtmfTimeout`` — each one, when set,
+    wholesale-replaces the same-named ``agent.options`` value (mirrors the
+    ``recording`` instance override; see docs/transfer-back-plan.md). Returns
+    the agent unchanged when there is nothing to overlay; otherwise a shallow
+    copy with a merged ``options`` dict, so the caller's original is never
+    mutated. Idempotent — re-applying the same overrides is a no-op.
+    """
+    if not isinstance(agent, dict) or not isinstance(instance, dict):
+        return agent
+    overrides = {
+        key: instance.get(key)
+        for key in _INSTANCE_TRANSFER_OVERRIDE_KEYS
+        if instance.get(key) is not None
+    }
+    if not overrides:
+        return agent
+    options = dict(agent.get("options") or {})
+    if all(options.get(k) == v for k, v in overrides.items()):
+        return agent
+    options.update(overrides)
+    merged = dict(agent)
+    merged["options"] = options
+    return merged
 
 
 def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions:
@@ -2537,6 +2655,7 @@ async def setup_takeover_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=payload.call,
+        _pending_summary=payload.summary_future,
     )
 
 

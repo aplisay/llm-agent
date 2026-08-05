@@ -78,7 +78,21 @@ here:
 | `aplisay.calledId` | Number the caller dialled |
 | `aplisay.callId` | Platform call id |
 | `aplisay.modelName` | Model handling the call |
+| `aplisay.transfer.key` | Hand-back take-over calls only ([call-transfers.md](./call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)): the DTMF sequence the transfer target pressed |
+| `aplisay.transfer.targetNumber` | The number the caller had been transferred to |
+| `aplisay.transfer.parentTranscript` | Rendered caller↔original-agent transcript (tail-truncated at 32k chars) |
+| `aplisay.transfer.bridgeTranscript` | Rendered caller↔human bridged-segment transcript (requires `bridgedTransferTranscribe`) |
+| `aplisay.transfer.consultTranscript` | Consultative transfers only: the TransferAgent↔target briefing conversation |
 | *anything you seed* | Keys placed in instance metadata at call creation — CRM lookups, account tier, agent-specific context |
+
+> **Transcripts and the 500-character cap.** The `aplisay.transfer.*` transcript
+> values are far larger than the per-value render cap, so a `promptMetadata`
+> entry pointing at one states only a truncated taste. To carry full transcripts
+> into the prompt use the hand-back `includeHistory` mechanism (the default);
+> the metadata paths exist for **tools** — `source: "metadata"` function
+> parameters carry them out-of-band (e.g. to a summariser subagent) without the
+> model ever seeing them. Avoid `get_metadata` on transcript keys: it would pull
+> the whole text into a live voice conversation's context.
 
 
 ## Rules

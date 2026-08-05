@@ -34,6 +34,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [sip-headers.md](sip-headers.md) | Surfacing inbound SIP INVITE `X-` headers to the agent as `aplisay.sipHeaders` |
 | [redirecting-calls.md](redirecting-calls.md) | Redirection as distinct from transfer |
 | [human-handback-howto.md](human-handback-howto.md) | Handing a call back to a human with context |
+| [transfer-back-plan.md](transfer-back-plan.md) | Delivery plan for transfer-back: listener override, transfer metadata, summariser pattern, bridged recording |
 | [call-recording.md](call-recording.md) | Recording lifecycle, encryption, storage and retrieval |
 | [call-hooks.md](call-hooks.md) | Webhooks on call milestones |
 | [originate-api.md](originate-api.md) | Placing outbound calls from an agent/listener |

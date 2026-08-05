@@ -760,17 +760,26 @@ components:
             characters from `0-9`, `*` and `#`; values name the voice agent the caller is handed to
             when the sequence is detected **on the transfer-target leg** (caller digits never trigger it).
 
-            Values are an agent UUID string, or an object `{ agent, includeHistory }` where
-            `includeHistory` (default `true`) controls whether the incoming agent's prompt carries the
-            conversation the caller had with the original agent. Inside an agent-set document a value
-            may be a `label:<label>` reference, resolved to the member's UUID on save (recorded as
-            `fromLabel` for round-tripping).
+            Values are an agent UUID string, or an object `{ agent, includeHistory, summaryAgent }`
+            where `includeHistory` (default `true`) controls whether the incoming agent's prompt
+            carries the conversation the caller had with the original agent, and `summaryAgent`
+            (optional) names a `text:` agent that is pre-fired at hand-back time to summarise the
+            carried transcripts — the incoming agent collects the result with the builtin
+            `transfer_summary` function. Inside an agent-set document (or a listener activation)
+            values may be `label:<label>` references, resolved to member UUIDs on save (recorded as
+            `fromLabel` / `summaryFromLabel` for round-tripping).
+
+            On a hand-back the takeover call's metadata always carries the transcripts under
+            `aplisay.transfer` (`parentTranscript`, `bridgeTranscript`, `consultTranscript`, `key`,
+            `targetNumber`) — addressable by `promptMetadata`, `get_metadata` and
+            `source: "metadata"` function parameters, independent of `includeHistory`.
 
             While this option is set, transfers are forced onto the bridged path (a SIP REFER would
             take the call off-platform, out of DTMF sight). Multi-digit sequences are matched with the
             `dtmfTimeout` inter-digit timeout. On a match the target leg is dropped and the mapped
-            agent answers the caller on a new child call record. Not available for WebRTC (browser)
-            origin calls. See docs/call-transfers.md.
+            agent answers the caller on a new child call record. May also be set per listener in the
+            `POST /agents/{agentId}/listen` options, wholesale-replacing this map. Not available for
+            WebRTC (browser) origin calls. See docs/call-transfers.md.
           type: object
           minProperties: 1
           additionalProperties:
@@ -786,6 +795,13 @@ components:
                     description: Carry the original agent's conversation into the incoming agent's prompt.
                     type: boolean
                     default: true
+                  summaryAgent:
+                    description: |-
+                      Optional `text:` agent (UUID, or `label:<label>` inside an agent-set document)
+                      pre-fired at hand-back to summarise the carried transcripts. The takeover agent
+                      collects the result with the builtin `transfer_summary` function. Billed as an
+                      ordinary text-agent invocation.
+                    type: string
                 required:
                   - agent
           example:
@@ -793,6 +809,7 @@ components:
             "*7":
               agent: "9a1b0c2d-7777-8888-9999-000011112222"
               includeHistory: false
+              summaryAgent: "3c2d1e0f-aaaa-bbbb-cccc-ddddeeeeffff"
         bridgedTransferTranscribe:
           description: |-
             Transcribe the human↔human segment of a bridged transfer (the conversation between the
@@ -1077,7 +1094,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
+            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:

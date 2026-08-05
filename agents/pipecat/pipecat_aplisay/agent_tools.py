@@ -103,6 +103,7 @@ def build_agent_tools(
     on_agent_transfer: Optional[Callable[[dict], Awaitable[Any]]] = None,
     on_subagent: Optional[Callable[[dict, dict], Awaitable[Any]]] = None,
     on_send_dtmf: Optional[Callable[[dict], Awaitable[Any]]] = None,
+    on_transfer_summary: Optional[Callable[[dict], Awaitable[Any]]] = None,
     extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
@@ -147,6 +148,8 @@ def build_agent_tools(
         builtins["subagent"] = _builtin_factory_subagent(on_subagent)
     if on_send_dtmf is not None:
         builtins["send_dtmf"] = _builtin_factory_send_dtmf(on_send_dtmf)
+    if on_transfer_summary is not None:
+        builtins["transfer_summary"] = _builtin_factory_transfer_summary(on_transfer_summary)
     if extra_builtins:
         builtins.update(extra_builtins)
 
@@ -247,6 +250,17 @@ def _builtin_factory_transfer_status(get_state: Callable[[], dict]):
 def _builtin_factory_agent_transfer(on_agent_transfer: Callable[[dict], Awaitable[Any]]):
     async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
         return await on_agent_transfer(args)
+
+    return _impl
+
+
+def _builtin_factory_transfer_summary(on_transfer_summary: Callable[[dict], Awaitable[Any]]):
+    """Builtin ``transfer_summary``: collect the result of the summaryAgent
+    pre-fired at a bridgedTransferToAgent hand-back (docs/transfer-back-plan.md).
+    Returns ``{status: ready|pending|failed|none, ...}``."""
+
+    async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
+        return await on_transfer_summary(args)
 
     return _impl
 

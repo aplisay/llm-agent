@@ -278,6 +278,22 @@ Validation enforces this: saving an agent with a `transfer_agent`/`subagent`
 function on a handler that doesn't support it is rejected with a clear error,
 as is a `result` function on a non-text agent.
 
+## Related: human hand-back (`bridgedTransferToAgent`)
+
+Two more multi-agent patterns live on the **options** side rather than the
+functions side, and participate in the same `label:` substitution inside a
+set document:
+
+* `options.bridgedTransferToAgent` — after a bridged transfer, the *human*
+  transfer target keys the caller back to a mapped member agent
+  (`"1": "label:followup"`). See
+  [call-transfers.md](./call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent).
+* `summaryAgent` on a hand-back entry — a `text:` member pre-fired at
+  hand-back to summarise the carried transcripts, collected by the takeover
+  agent's `transfer_summary` builtin; the same summariser member is equally
+  usable as an ordinary `subagent` target with metadata-sourced transcript
+  parameters. Worked example: [human-handback-howto.md](./human-handback-howto.md).
+
 ## Internal APIs (shared-token, workers only)
 
 * `GET /agent-db/agent?agentId=...&expectedOrganisationId=...` — full agent
