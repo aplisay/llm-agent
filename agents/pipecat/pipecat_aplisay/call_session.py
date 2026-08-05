@@ -256,6 +256,13 @@ class CallSession:
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
 
+    def __post_init__(self):
+        # Listener-level transfer overrides (instance columns) wholesale-replace
+        # the same-named agent options for every session under this listener —
+        # including takeover and consult sessions. Idempotent; also applied to
+        # the incoming agent dict on in-place handovers and in prepare_run.
+        self.agent = apply_instance_transfer_overrides(self.agent, self.instance)
+
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling.
 
@@ -344,6 +351,10 @@ class CallSession:
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
         """
+        # Handover paths pass their own agent dict; make sure listener-level
+        # transfer overrides apply to it exactly as they did to the original
+        # (idempotent when __post_init__ already merged this dict).
+        agent = apply_instance_transfer_overrides(agent, self.instance)
         metadata = self.call.metadata
         # Every session's prompt passes through here — the initial run, each
         # transfer_agent handover and the consult-side bot — so resolving the
@@ -646,7 +657,9 @@ class CallSession:
             # pipeline has started.
             self._handover_webrtc_kick = pending["transport"]
             self.call = pending["call"]
-            self.agent = pending["agent"]
+            self.agent = apply_instance_transfer_overrides(
+                pending["agent"], self.instance
+            )
             logger.bind(
                 call_id=self.call.id,
                 agent_id=self.agent.get("id"),
@@ -1347,7 +1360,7 @@ class CallSession:
                     LLMRunFrame(),
                 ]
             )
-            self.agent = new_agent
+            self.agent = apply_instance_transfer_overrides(new_agent, self.instance)
             logger.bind(agent_id=new_agent.get("id")).info(
                 "agent transfer: prompt and tools swapped"
             )
@@ -2225,6 +2238,42 @@ def _builtin_consult_reject(consult_session: CallSession):
 class _RecordingOptions:
     enabled: bool
     key: Optional[str]
+
+
+_INSTANCE_TRANSFER_OVERRIDE_KEYS = (
+    "bridgedTransferToAgent",
+    "bridgedTransferTranscribe",
+    "dtmfTimeout",
+)
+
+
+def apply_instance_transfer_overrides(agent: dict, instance: dict) -> dict:
+    """Overlay listener-level transfer overrides onto an agent dict.
+
+    The listener (instance) row may carry ``bridgedTransferToAgent``,
+    ``bridgedTransferTranscribe`` and ``dtmfTimeout`` — each one, when set,
+    wholesale-replaces the same-named ``agent.options`` value (mirrors the
+    ``recording`` instance override; see docs/transfer-back-plan.md). Returns
+    the agent unchanged when there is nothing to overlay; otherwise a shallow
+    copy with a merged ``options`` dict, so the caller's original is never
+    mutated. Idempotent — re-applying the same overrides is a no-op.
+    """
+    if not isinstance(agent, dict) or not isinstance(instance, dict):
+        return agent
+    overrides = {
+        key: instance.get(key)
+        for key in _INSTANCE_TRANSFER_OVERRIDE_KEYS
+        if instance.get(key) is not None
+    }
+    if not overrides:
+        return agent
+    options = dict(agent.get("options") or {})
+    if all(options.get(k) == v for k, v in overrides.items()):
+        return agent
+    options.update(overrides)
+    merged = dict(agent)
+    merged["options"] = options
+    return merged
 
 
 def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions:
