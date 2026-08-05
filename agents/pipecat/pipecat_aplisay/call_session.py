@@ -255,6 +255,10 @@ class CallSession:
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
+    # Hand-back take-over sessions only: future resolving to the pre-fired
+    # summaryAgent result, collected by the ``transfer_summary`` builtin
+    # (bridged_transfer.prefire_summary). None everywhere else.
+    _pending_summary: Optional[Any] = None
 
     def __post_init__(self):
         # Listener-level transfer overrides (instance columns) wholesale-replace
@@ -922,8 +926,48 @@ class CallSession:
             on_agent_transfer=self._on_agent_transfer,
             on_subagent=self._on_subagent,
             on_send_dtmf=self._on_send_dtmf,
+            on_transfer_summary=self._on_transfer_summary,
             extra_builtins=extra_builtins,
         )
+
+    async def _on_transfer_summary(self, args: dict) -> dict:
+        """Builtin ``transfer_summary``: collect the result of the
+        summaryAgent pre-fired when this take-over call was prepared
+        (``bridged_transfer.prefire_summary``). Waits up to ``timeoutMs``
+        (default 5000, capped 15000) for the pending result; the underlying
+        summariser keeps running across a timeout, so the agent can simply
+        call again. Statuses:
+
+        - ``ready``  — the summary, as ``{"status": "ready", "summary": …}``
+        - ``pending`` — not finished yet; try again shortly
+        - ``failed`` — the summariser errored; fall back to the carried
+          transcripts / includeHistory context
+        - ``none``  — no summaryAgent was configured for this hand-back (or
+          this session is not a hand-back take-over at all)
+        """
+        future = self._pending_summary
+        if future is None:
+            return {
+                "status": "none",
+                "detail": (
+                    "No summary was requested for this call — there is no "
+                    "summaryAgent on the hand-back entry."
+                ),
+            }
+        try:
+            timeout_ms = float(args.get("timeoutMs") or 5000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000.0
+        timeout_s = max(0.0, min(timeout_ms, 15000.0)) / 1000.0
+        try:
+            # shield: a timeout here must not cancel the shared future —
+            # the summariser keeps cooking for the next attempt.
+            return dict(await asyncio.wait_for(asyncio.shield(future), timeout_s))
+        except asyncio.TimeoutError:
+            return {
+                "status": "pending",
+                "detail": "The summary is still being generated — call transfer_summary again.",
+            }
 
     async def _on_subagent(self, args: dict, metadata: dict) -> Any:
         """Builtin ``subagent`` platform function: invoke a headless ``text``
@@ -2592,6 +2636,7 @@ async def setup_takeover_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=payload.call,
+        _pending_summary=payload.summary_future,
     )
 
 

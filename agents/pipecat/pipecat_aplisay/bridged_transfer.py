@@ -63,6 +63,9 @@ class BtaTarget:
     key: str
     agent_id: str
     include_history: bool = True
+    # Optional text agent pre-fired at hand-back to summarise the carried
+    # transcripts; the takeover agent collects it with ``transfer_summary``.
+    summary_agent_id: Optional[str] = None
 
 
 def parse_bta_map(options: Optional[dict]) -> Optional[dict[str, BtaTarget]]:
@@ -88,10 +91,12 @@ def parse_bta_map(options: Optional[dict]) -> Optional[dict[str, BtaTarget]]:
             logger.warning(f"bridgedTransferToAgent[{key!r}]: ignoring entry without agent")
             continue
         include_history = entry.get("includeHistory")
+        summary_agent = entry.get("summaryAgent")
         targets[key] = BtaTarget(
             key=key,
             agent_id=str(agent_id),
             include_history=True if include_history is None else bool(include_history),
+            summary_agent_id=str(summary_agent) if summary_agent else None,
         )
     return targets or None
 
@@ -231,6 +236,10 @@ class TakeoverPayload:
     instance: dict
     call: api_client.CallRecord
     extra: dict = field(default_factory=dict)
+    # Resolves to the pre-fired summaryAgent result (``{"status": ...}``) —
+    # threaded onto the takeover CallSession so its ``transfer_summary``
+    # builtin can await it. None when the map entry has no summaryAgent.
+    summary_future: Optional[Any] = None
 
 
 def bta_context_from_session(
@@ -391,6 +400,57 @@ def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget)
     return prompt
 
 
+# Strong references to in-flight summariser tasks (asyncio only keeps weak
+# ones); discarded on completion.
+_summary_tasks: set = set()
+
+
+def prefire_summary(
+    target: BtaTarget, transfer_block: dict, call_metadata: dict, call: api_client.CallRecord
+) -> "asyncio.Future[dict]":
+    """Fire the map entry's ``summaryAgent`` (a headless text agent) with the
+    carried transcripts, without waiting for it. Returns a future resolving to
+    the ``transfer_summary`` builtin's result shape — always a value, never an
+    exception, so a summariser failure can't leak into the takeover path.
+
+    The invocation is byte-compatible with the playbook pattern (a
+    ``summarise_call`` subagent function whose params are ``source: metadata``
+    reads of ``aplisay.transfer.*``): the same summariser definition works
+    pre-fired or agent-invoked. Usage is billed against the takeover call.
+    """
+    future: "asyncio.Future[dict]" = asyncio.get_running_loop().create_future()
+    input_args = {
+        k: v
+        for k, v in transfer_block.items()
+        if k in ("parentTranscript", "bridgeTranscript", "consultTranscript")
+    }
+
+    async def run() -> None:
+        try:
+            result = await api_client.invoke_subagent(
+                str(target.summary_agent_id),
+                input_args,
+                call_metadata,
+                organisation_id=call.organisationId,
+                call_id=call.id,
+            )
+            summary = result
+            if isinstance(result, dict):
+                summary = result.get("summary") or result.get("result") or result
+            future.set_result({"status": "ready", "summary": summary})
+            logger.bind(call_id=call.id).info("hand-back summary ready")
+        except Exception as e:  # noqa: BLE001
+            logger.bind(call_id=call.id, error=str(e)).warning(
+                "hand-back summaryAgent failed"
+            )
+            future.set_result({"status": "failed", "error": str(e)})
+
+    task = asyncio.create_task(run())
+    _summary_tasks.add(task)
+    task.add_done_callback(_summary_tasks.discard)
+    return future
+
+
 async def prepare_takeover(
     ctx: BtaContext, target: BtaTarget, *, platform: str, session_id: str
 ) -> TakeoverPayload:
@@ -417,6 +477,19 @@ async def prepare_takeover(
 
     prompt = compose_takeover_prompt(new_agent, ctx, target)
     aplisay_meta = dict((ctx.metadata or {}).get("aplisay") or {})
+    transfer_block = transfer_metadata_block(ctx, target)
+    call_metadata = {
+        **(ctx.metadata or {}),
+        "aplisay": {
+            **aplisay_meta,
+            "model": model_name,
+            "bridgedTransferToAgent": {"key": target.key},
+            # Carried context for the takeover agent and its tools —
+            # aplisay.transfer.{parentTranscript,bridgeTranscript,
+            # consultTranscript,key,targetNumber}.
+            "transfer": transfer_block,
+        },
+    }
     call = await api_client.create_call(
         {
             "parentId": ctx.parent_call_id,
@@ -430,29 +503,31 @@ async def prepare_takeover(
             "callerId": ctx.caller_id,
             "modelName": model_name,
             "options": new_agent.get("options") or {},
-            "metadata": {
-                **(ctx.metadata or {}),
-                "aplisay": {
-                    **aplisay_meta,
-                    "model": model_name,
-                    "bridgedTransferToAgent": {"key": target.key},
-                    # Carried context for the takeover agent and its tools —
-                    # aplisay.transfer.{parentTranscript,bridgeTranscript,
-                    # consultTranscript,key,targetNumber}.
-                    "transfer": transfer_metadata_block(ctx, target),
-                },
-            },
+            "metadata": call_metadata,
         }
     )
     # Reserve the concurrency slot; a busy rejection aborts the takeover
     # with the human bridge still up.
     await api_client.start_call(call)
 
+    # Pre-fire the entry's summariser (when configured) so the summary is
+    # cooking while the unbridge + re-attach happens; the takeover agent
+    # collects it with the ``transfer_summary`` builtin. Never blocks or
+    # fails the takeover.
+    summary_future = None
+    if target.summary_agent_id:
+        summary_future = prefire_summary(target, transfer_block, call_metadata, call)
+
     # The composed prompt rides in the agent dict so the standard
     # ``_run_session`` entry point (which reads ``agent["prompt"]``) uses it.
     agent_for_run = dict(new_agent)
     agent_for_run["prompt"] = prompt
-    return TakeoverPayload(agent=agent_for_run, instance=ctx.instance, call=call)
+    return TakeoverPayload(
+        agent=agent_for_run,
+        instance=ctx.instance,
+        call=call,
+        summary_future=summary_future,
+    )
 
 
 def new_takeover_session_id(prefix: str) -> str:

@@ -176,6 +176,31 @@ describe('Listener transfer overrides', () => {
     })).rejects.toThrow(/must target a interactive-audio agent/);
   });
 
+  test('resolves summaryAgent labels and enforces text type', async () => {
+    const { byLabel, frontdesk } = await makeSet();
+    const resolved = await resolveListenerTransferOverrides({
+      agent: frontdesk,
+      Handler: transferHandler,
+      bridgedTransferToAgent: {
+        '1': { agent: 'label:followup', summaryAgent: 'label:researcher' }
+      }
+    });
+    expect(resolved.bridgedTransferToAgent['1']).toEqual({
+      agent: byLabel.followup.id,
+      fromLabel: 'followup',
+      summaryAgent: byLabel.researcher.id,
+      summaryFromLabel: 'researcher'
+    });
+    // A voice agent is not a valid summariser
+    await expect(resolveListenerTransferOverrides({
+      agent: frontdesk,
+      Handler: transferHandler,
+      bridgedTransferToAgent: {
+        '1': { agent: 'label:followup', summaryAgent: 'label:frontdesk' }
+      }
+    })).rejects.toThrow(/summaryAgent.*must target a text agent/);
+  });
+
   test('rejects a target outside the organisation', async () => {
     const { frontdesk } = await makeSet();
     const otherOrg = await Organisation.create({ id: randomUUID(), name: 'Other Org' });
