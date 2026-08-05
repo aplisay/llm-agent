@@ -90,6 +90,17 @@ type Manager struct {
 
 	mu    sync.Mutex
 	calls map[string]*Call // keyed by SIP Call-ID
+
+	// srtpAvoid remembers egress routes (trunk / registration / destination)
+	// whose gateway rejected an SRTP offer with a media-type error (415 /
+	// 488 / 606), so subsequent originates skip the doomed SRTP first
+	// attempt and offer plaintext immediately — the dynamic downgrade still
+	// works without it, but each first attempt costs a full INVITE round
+	// trip (Magrathea's gateway takes ~1 s to 415). Entries expire after
+	// srtpAvoidTTL so a trunk that gains SRTP support gets re-probed.
+	// Guarded by srtpAvoidMu.
+	srtpAvoidMu sync.Mutex
+	srtpAvoid   map[string]time.Time
 }
 
 // New returns a Manager. Caller is responsible for calling
@@ -108,8 +119,9 @@ func New(cfg Config) *Manager {
 		cfg.RTPTimeoutSeconds = 10
 	}
 	return &Manager{
-		cfg:   cfg,
-		calls: make(map[string]*Call),
+		cfg:       cfg,
+		calls:     make(map[string]*Call),
+		srtpAvoid: make(map[string]time.Time),
 	}
 }
 
@@ -237,6 +249,57 @@ func (m *Manager) buildOutboundOffer(
 	return sipx.BuildOffer(rtpSess, m.cfg.MediaIP, encOffer), ourOfferedSDES, nil
 }
 
+// srtpAvoidTTL is how long a route stays in the plaintext-first cache after
+// its gateway rejected an SRTP offer. Long enough that back-to-back transfers
+// don't re-pay the rejection round trip; short enough that a trunk which
+// gains SRTP support is re-probed within the hour.
+const srtpAvoidTTL = time.Hour
+
+// isSRTPMediaReject reports whether a final INVITE response code plausibly
+// means "your RTP/SAVP offer is unacceptable": 488 Not Acceptable Here
+// (Twilio Elastic SIP Trunks), 415 Unsupported Media Type (Magrathea's
+// gateway), 606 Not Acceptable.
+func isSRTPMediaReject(code int) bool {
+	return code == 415 || code == 488 || code == 606
+}
+
+// srtpRouteKey identifies the egress route for the SRTP avoid-cache. Every
+// trunk call is dialled through the same upstream SBC, so the destination
+// host alone cannot distinguish carriers — prefer the routing headers that
+// do, falling back to the destination URI for direct dials.
+func srtpRouteKey(custom map[string]string, destination string) string {
+	if v := custom["X-Aplisay-Trunk"]; v != "" {
+		return "trunk:" + v
+	}
+	if v := custom["X-Aplisay-PhoneRegistration"]; v != "" {
+		return "reg:" + v
+	}
+	return "dest:" + destination
+}
+
+// srtpRecentlyRejected reports whether the route rejected an SRTP offer
+// within srtpAvoidTTL (expired entries are pruned on read).
+func (m *Manager) srtpRecentlyRejected(key string) bool {
+	m.srtpAvoidMu.Lock()
+	defer m.srtpAvoidMu.Unlock()
+	at, ok := m.srtpAvoid[key]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > srtpAvoidTTL {
+		delete(m.srtpAvoid, key)
+		return false
+	}
+	return true
+}
+
+// noteSRTPRejected records that the route just rejected an SRTP offer.
+func (m *Manager) noteSRTPRejected(key string) {
+	m.srtpAvoidMu.Lock()
+	defer m.srtpAvoidMu.Unlock()
+	m.srtpAvoid[key] = time.Now()
+}
+
 // dialAndWireRTP performs the SIP-dial + RTP-socket + codec/SRTP
 // negotiation shared by every outbound leg (agent originate, consult
 // leg, and the agent-less relay leg of a native bridged transfer). It
@@ -262,18 +325,9 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		return nil, nil, fmt.Errorf("call: rtp: %w", err)
 	}
 
-	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled we offer SDES
-	// SRTP (RTP/SAVP). ``ourOfferedSDES`` maps tag → master material so we can
-	// install the outbound SRTP context once the peer picks a tag in its 200 OK.
-	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
-	offer, ourOfferedSDES, err := m.buildOutboundOffer(rtpSess, offeringSDES)
-	if err != nil {
-		rtpSess.Close()
-		return nil, nil, err
-	}
-
 	// Inject X-Aplisay-Call-Id from metadata if present — the upstream
-	// B2BUA uses this as the platform-wide call correlator.
+	// B2BUA uses this as the platform-wide call correlator. Built before the
+	// offer because the routing headers also key the SRTP avoid-cache.
 	custom := map[string]string{}
 	for k, v := range p.CustomHeaders {
 		custom[k] = v
@@ -282,21 +336,45 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		custom["X-Aplisay-Call-Id"] = v
 	}
 
+	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled we offer SDES
+	// SRTP (RTP/SAVP). ``ourOfferedSDES`` maps tag → master material so we can
+	// install the outbound SRTP context once the peer picks a tag in its 200 OK.
+	// A route that rejected SRTP within srtpAvoidTTL goes straight to
+	// plaintext — the downgrade below still works without this, but each
+	// first attempt costs a full INVITE round trip.
+	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
+	routeKey := srtpRouteKey(custom, p.Destination)
+	if offeringSDES && !m.cfg.SRTPRequired && m.srtpRecentlyRejected(routeKey) {
+		log.Debug().
+			Str("route", routeKey).
+			Msg("call: route rejected SRTP recently — offering plaintext RTP/AVP directly")
+		offeringSDES = false
+	}
+	offer, ourOfferedSDES, err := m.buildOutboundOffer(rtpSess, offeringSDES)
+	if err != nil {
+		rtpSess.Close()
+		return nil, nil, err
+	}
+
 	// 2. Send INVITE and wait for the 200 OK + SDP answer.
 	out, _, err := m.sip.Originate(ctx, p.Destination, p.CallerID, offer, custom)
 	if err != nil {
-		// Some carriers (notably Twilio Elastic SIP Trunks unless explicitly
-		// configured for secure media) reject an SRTP offer with 488 Not
-		// Acceptable Here. When we offered SRTP and SRTP isn't strictly
-		// required, retry once with a plaintext RTP/AVP offer so the call still
-		// completes. Trunks that accept SRTP never hit this path, so secure
-		// media is preserved everywhere it's supported.
+		// Some carriers reject an SRTP offer outright: Twilio Elastic SIP
+		// Trunks (unless explicitly configured for secure media) answer 488
+		// Not Acceptable Here; Magrathea's gateway answers 415 Unsupported
+		// Media Type. When we offered SRTP and SRTP isn't strictly required,
+		// retry once with a plaintext RTP/AVP offer so the call still
+		// completes, and remember the route so the next originate skips the
+		// doomed attempt. Trunks that accept SRTP never hit this path, so
+		// secure media is preserved everywhere it's supported.
 		var se *sipx.SIPResponseError
-		if offeringSDES && !m.cfg.SRTPRequired && errors.As(err, &se) && se.Code == 488 {
+		if offeringSDES && !m.cfg.SRTPRequired && errors.As(err, &se) && isSRTPMediaReject(se.Code) {
 			log.Warn().
 				Str("destination", p.Destination).
+				Str("route", routeKey).
 				Int("code", se.Code).
-				Msg("call: peer rejected SRTP offer (488); retrying with plaintext RTP/AVP")
+				Msg("call: peer rejected SRTP offer; retrying with plaintext RTP/AVP")
+			m.noteSRTPRejected(routeKey)
 			offeringSDES = false
 			offer, ourOfferedSDES, err = m.buildOutboundOffer(rtpSess, false)
 			if err != nil {
