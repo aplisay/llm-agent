@@ -638,7 +638,8 @@ Each key is a DTMF sequence of 1–8 characters from `0-9`, `*` and `#`. Each va
 | Field | Default | Description |
 |-------|---------|-------------|
 | `agent` | — | The target agent's UUID (or a `label:<label>` reference inside an [agent-set document](./multi-agent-api.md) — see below). Must be an `interactive-audio` agent in your organisation; validated when the agent is saved. |
-| `includeHistory` | `true` | When true, the incoming agent's prompt includes the conversation the caller had with the *original* agent (the conversation with the human after the transfer is not recorded and cannot be carried). When false the incoming agent starts fresh. |
+| `includeHistory` | `true` | When true, the incoming agent's prompt includes the conversation the caller had with the *original* agent, and — when [`bridgedTransferTranscribe`](#transcribing-the-bridged-segment-bridgedtransfertranscribe) is on — the transcribed human↔human segment too. When false the incoming agent's prompt starts fresh (the transcripts are still seeded into call metadata — see below). |
+| `summaryAgent` | — | Optional `text:` agent (UUID, or `label:<label>` in a set document / listener activation) **pre-fired at hand-back time** to summarise the carried transcripts. The incoming agent collects the result with the builtin [`transfer_summary`](#summarising-the-hand-back-summaryagent--transfer_summary) function. Billed as an ordinary text-agent invocation. |
 
 ### Behaviour
 
@@ -648,6 +649,33 @@ Each key is a DTMF sequence of 1–8 characters from `0-9`, `*` and `#`. Each va
 - **On a match** the transfer target's leg is dropped, the bridged call segment ends, and the mapped agent answers the caller on a **new child call record** (`parentId` linking back to the original call). The incoming agent's prompt is composed like a `transfer_agent` handover: its own prompt, a note that it has just taken over from a human hand-back, and (by default) the original agent↔caller transcript.
 - **If the takeover cannot start** (target agent at its concurrency limit, misconfigured target, wrong model family), the bridge is left intact — the humans stay connected — and the target can retry.
 - **If the transfer target simply hangs up** without pressing a key, the call ends normally.
+- **Carried context is always seeded into metadata.** The takeover call's metadata carries `aplisay.transfer.{parentTranscript, bridgeTranscript, consultTranscript, key, targetNumber}` (transcripts tail-truncated at 32k chars; absent values omitted) regardless of `includeHistory` — addressable by [`promptMetadata`](./prompt-metadata.md), the `get_metadata` builtin, and `source: "metadata"` function parameters. The last of these is the important one: it carries transcripts **out-of-band** of the model's context, e.g. straight into a summariser subagent or a CRM write. `includeHistory` governs the *prompt* only; if the human segment must not exist anywhere, leave `bridgedTransferTranscribe` unset.
+
+### Per-listener overrides
+
+`bridgedTransferToAgent`, `bridgedTransferTranscribe` and `dtmfTimeout` may also be set in the `options` of `POST /agents/{agentId}/listen`. Each one, when present, **wholesale-replaces** the same-named agent option for every call on that listener — so one agent definition can hand back to different agents (or use different codes) per number. `label:` references are allowed when the agent is a member of an agent set and are resolved at activation time; targets are validated before the listener is created.
+
+### Summarising the hand-back (`summaryAgent` + `transfer_summary`)
+
+The recommended pattern for giving the takeover agent a *digest* (rather than raw transcripts) is a **summariser agent in the set**: a `text:` member invoked by the takeover agent through the ordinary `subagent` builtin, with its transcript parameters sourced from the `aplisay.transfer.*` metadata. The summariser's prompt controls focus and output format, and its tokens are billed to your organisation like any text-agent call. See the [hand-back how-to](./human-handback-howto.md) for the full worked example.
+
+`summaryAgent` on a hand-back map entry streamlines the latency: the platform pre-fires the same summariser **at DTMF-match time** — while the humans are saying goodbye and the legs are re-arranged — and the takeover agent collects the pending result with the builtin `transfer_summary` function (declare it like any platform builtin; it takes an optional `timeoutMs`, default 5000, capped at 15000):
+
+```json
+"options": {
+  "bridgedTransferToAgent": {
+    "1": { "agent": "label:followup", "summaryAgent": "label:summariser" }
+  }
+}
+```
+
+`transfer_summary` returns `{"status": "ready", "summary": …}` once available; `pending` (call again — a timeout never cancels the running summariser), `failed` (fall back to the carried transcripts), or `none` (no `summaryAgent` configured, or not a hand-back call). The pre-fired invocation sends the summariser the same `parentTranscript`/`bridgeTranscript`/`consultTranscript` arguments the playbook function sends, so **one summariser definition serves both modes**. A summariser failure or slow model never delays or aborts the takeover itself.
+
+### Known limitations
+
+- **RFC 4733 only.** Hand-back DTMF is detected as out-of-band telephone-events on the target leg. A carrier that strips RFC 4733 (rare) leaves hand-back silently unavailable — there is no in-band tone decoder.
+- **No cross-family G.711 bridging (sipbridge).** The bridge relay forwards RTP without transcoding and rejects a PCMU↔PCMA codec mismatch between the two legs outright — and since these options force the bridged path, such a transfer fails where a REFER would have succeeded. Both legs normally egress the same trunk, so mismatches are unusual.
+- **WebRTC-origin calls are unsupported** (see the topology table).
 
 ### Agent sets and label substitution
 
@@ -699,15 +727,18 @@ Or with tuning (fields apply where the gateway runs its own STT — the voiceble
 - Like `bridgedTransferToAgent`, the option forces transfers onto the bridged path. It also works standalone (transcript + call record only, no DTMF hand-back).
 - **Media stays on the gateway fast path.** On voiceblender the container's native per-leg real-time STT runs and finals arrive as `stt.text` events; on sipbridge the bridge streams a decoded stereo *copy* (left = caller, right = target) of the relay to the worker, which runs one STT stream per channel — the RTP relay between the humans is untouched in both cases.
 - Transcription is best-effort: an STT failure never disturbs the bridged call or the DTMF watch.
+- **Recording continues across the bridge on sipbridge.** When the original call's effective [recording](./call-recording.md) is enabled and a monitored bridge is installed (hand-back and/or transcription armed), the same stereo tap is also written to a recording on the bridged-segment call record — stereo, left = caller / right = target, encrypted with the same key semantics as the parent call, surfaced as the bridged record's `recordingId`. Recording alone never forces the bridged path; and the **voiceblender topology cannot record the bridged segment** (its native STT returns text, not audio), so bridged records there always have `recordingId: null`.
 
 ### Topology support
 
-| Topology | Hand-back (`bridgedTransferToAgent`) | Transcription (`bridgedTransferTranscribe`) | Mechanism |
-|----------|-----------|-----------|-----------|
-| LiveKit | ✅ | ✅ | The agent participant stays in the room (muted) after the bridge and consumes LiveKit's SIP DTMF room events, filtered to the transfer-target participant. On a match the target participant is removed and the mapped agent's stack starts on the same room. When transcribing, the muted agent participant runs one STT stream per human track (the caller and the transfer target are distinct room participants), using the agent's configured STT vendor. |
-| Pipecat + sipbridge | ✅ | ✅ | The transfer is placed with `monitor_dtmf`/`tap_audio`; the bridge keeps the caller leg's worker WebSocket open as a control channel, ships target-leg RFC 4733 presses as `source: "transfer_target"` events, and (when transcribing) a stereo audio tap. On a match the worker POSTs `/v1/calls/{id}/unbridge` — the bridge drops the target and re-dials a fresh agent WebSocket for the caller leg. |
-| Pipecat + voiceblender | ✅ | ✅ | The bridged legs sit in a voiceblender room; `dtmf.received` VSI events for the target leg feed the worker's matcher and the container's native per-leg STT feeds the transcript. On a match the worker deletes the target leg, removes the caller from the room, and re-attaches a Pipecat agent to the caller leg. |
-| WebRTC / browser origin | ❌ | ❌ | Browser-origin transfers use the worker-side media relay; target-leg monitoring is not currently wired for that path. |
+| Topology | Hand-back (`bridgedTransferToAgent`) | Transcription (`bridgedTransferTranscribe`) | Bridged-segment recording | Mechanism |
+|----------|-----------|-----------|-----------|-----------|
+| LiveKit | ✅ | ✅ | ❌ | The agent participant stays in the room (muted) after the bridge and consumes LiveKit's SIP DTMF room events, filtered to the transfer-target participant. On a match the target participant is removed and the mapped agent's stack starts on the same room. When transcribing, the muted agent participant runs one STT stream per human track (the caller and the transfer target are distinct room participants), using the agent's configured STT vendor. |
+| Pipecat + sipbridge | ✅ | ✅ | ✅ | The transfer is placed with `monitor_dtmf`/`tap_audio`; the bridge keeps the caller leg's worker WebSocket open as a control channel, ships target-leg RFC 4733 presses as `source: "transfer_target"` events, and (when transcribing or recording) a stereo audio tap. On a match the worker POSTs `/v1/calls/{id}/unbridge` — the bridge drops the target and re-dials a fresh agent WebSocket for the caller leg. |
+| Pipecat + voiceblender | ✅ | ✅ | ❌ | The bridged legs sit in a voiceblender room; `dtmf.received` VSI events for the target leg feed the worker's matcher and the container's native per-leg STT feeds the transcript (text only — no audio tap, so no bridged-segment recording). On a match the worker deletes the target leg, removes the caller from the room, and re-attaches a Pipecat agent to the caller leg. |
+| WebRTC / browser origin | ❌ | ❌ | ❌ | Browser-origin transfers use the worker-side media relay; target-leg monitoring is not currently wired for that path. |
+
+The `summaryAgent` / `transfer_summary` pre-fired summariser and the `aplisay.transfer.*` metadata seeding are implemented on the **Pipecat** topologies (both gateways — they ride the takeover machinery, not the tap).
 
 ## Outbound Call Filter
 
