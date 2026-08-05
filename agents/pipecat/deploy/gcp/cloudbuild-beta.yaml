@@ -30,6 +30,14 @@
 # gated independently. No `images:` provenance list: Cloud Build fails the
 # build when a listed image wasn't produced locally, which is exactly the
 # skip path.
+#
+# _ONLY_TRANSPORTS (set on the trigger; empty / unset = everything):
+# comma-separated allow-list — no spaces — of the SIP transports in this
+# channel. Same semantics as the staging / per-commit builds: freeswitch →
+# freeswitch + esl-poller images, sipbridge → sipbridge image, daily → the
+# daily-python wheel inside pipecat-worker (that image itself always builds).
+# Gated-out images are neither checked, promoted, built nor pushed — their
+# :beta / :$TAG_NAME tags are simply not moved.
 steps:
   - name: gcr.io/cloud-builders/docker
     id: Check
@@ -39,7 +47,19 @@ steps:
       - |
         set -euo pipefail
         REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
-        for img in freeswitch esl-poller sipbridge secretenv-exec pipecat-worker; do
+        # _ONLY_TRANSPORTS gate: images of transports outside the allow-list
+        # are neither checked nor promoted (their Build/Push steps carry the
+        # same gate).
+        imgs="secretenv-exec pipecat-worker"
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) imgs="freeswitch esl-poller $$imgs";;
+          *) echo "[gate] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (+esl-poller)";;
+        esac
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",sipbridge,"*) imgs="sipbridge $$imgs";;
+          *) echo "[gate] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge";;
+        esac
+        for img in $$imgs; do
           # NB parse the Digest: line — the GCB builder's buildx ignores
           # `imagetools inspect --format` and prints the human output anyway.
           digest=$$(docker buildx imagetools inspect "$$REG/$$img:$COMMIT_SHA" 2>/dev/null \
@@ -66,6 +86,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch"; exit 0;;
+        esac
         [ -f /workspace/skip-freeswitch ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker build --no-cache \
           --build-arg BUILD_ENV=production \
@@ -79,6 +103,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch"; exit 0;;
+        esac
         [ -f /workspace/skip-freeswitch ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/freeswitch
 
@@ -89,6 +117,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
+        esac
         [ -f /workspace/skip-esl-poller ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker build --no-cache \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller:$COMMIT_SHA \
@@ -101,6 +133,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",freeswitch,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes freeswitch (esl-poller)"; exit 0;;
+        esac
         [ -f /workspace/skip-esl-poller ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/esl-poller
 
@@ -113,6 +149,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",sipbridge,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
+        esac
         [ -f /workspace/skip-sipbridge ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker build --no-cache \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge:$COMMIT_SHA \
@@ -125,6 +165,10 @@ steps:
     args:
       - -c
       - |
+        case ",$_ONLY_TRANSPORTS," in
+          ",,"|*",sipbridge,"*) ;;
+          *) echo "[skip] _ONLY_TRANSPORTS='$_ONLY_TRANSPORTS' excludes sipbridge"; exit 0;;
+        esac
         [ -f /workspace/skip-sipbridge ] && { echo "[skip] promoted existing image"; exit 0; }
         exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/sipbridge
 
@@ -167,6 +211,7 @@ steps:
           --build-arg COMMIT_SHA=$COMMIT_SHA \
           --build-arg BRANCH_NAME=$BRANCH_NAME \
           --build-arg TAG_NAME=$TAG_NAME \
+          --build-arg ONLY_TRANSPORTS=$_ONLY_TRANSPORTS \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$COMMIT_SHA \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:beta \
           -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/pipecat-worker:$TAG_NAME \
@@ -188,6 +233,7 @@ options:
 
 substitutions:
   _AR_HOSTNAME: europe-west1-docker.pkg.dev
+  _ONLY_TRANSPORTS: ''
 
 tags:
   - pipecat-agent-beta
