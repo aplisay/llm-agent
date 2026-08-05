@@ -1542,6 +1542,15 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         return
 
     is_outbound = sip_gateway.is_outbound(session_id)
+    # Warm-transfer consult leg (``transfer(operation="consultative")``):
+    # ``_do_consultative`` registered this session id in the gateway's
+    # consult map — NOT ``_pending_outbound`` — before POSTing /consult,
+    # and the bridge dials us back on it once the third party answers. It
+    # must route into the outbound-family flow below: falling through to
+    # the inbound resolver would 404-deny the WS (worker-initiated legs
+    # carry no ``x-sipbridge-to`` header), tearing down the consult leg
+    # the moment the transfer target picks up.
+    parent_session_id = sip_gateway.consult_parent(session_id)
     bridge_call_id = (
         websocket.headers.get("x-sipbridge-call-id")
         or websocket.headers.get("X-Sipbridge-Call-ID")
@@ -1599,7 +1608,7 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             sip_gateway.unregister_session(session_id)
         return
 
-    if is_outbound:
+    if is_outbound or parent_session_id:
         # Two sub-flows here:
         #
         #   (a) Plain outbound originate (POST /dispatch → setup_outbound_call):
@@ -1610,12 +1619,11 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         #
         #   (b) Warm-transfer consult (Phase C): bot_A initiated a
         #       consult via transfer(operation="consult"). The gateway
-        #       has recorded a parent_session_id for this consult; we
-        #       build a fresh CallSession using the parent's agent +
-        #       instance and run a second pipeline here in the
-        #       handler (same shape as inbound).
-        parent_session_id = sip_gateway.consult_parent(session_id)
-
+        #       recorded a parent_session_id for this consult session id
+        #       (that's what routed us here); we build a fresh
+        #       CallSession using the parent's agent + instance and run
+        #       a second pipeline here in the handler (same shape as
+        #       inbound).
         await websocket.accept()
         serializer = DtmfProtobufFrameSerializer()
         transport = FastAPIWebsocketTransport(
