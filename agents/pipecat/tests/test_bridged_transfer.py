@@ -200,6 +200,66 @@ class TestComposeTakeoverPrompt:
         assert "fresh conversation" in prompt
 
 
+# ---- aplisay.transfer metadata seeding (docs/transfer-back-plan.md) ----
+
+from pipecat_aplisay.bridged_transfer import (  # noqa: E402
+    clip_transcript_for_metadata,
+    transfer_metadata_block,
+)
+
+
+class _RenderStub:
+    def __init__(self, text: str):
+        self._text = text
+
+    def render(self) -> str:
+        return self._text
+
+
+class TestTransferMetadataBlock:
+    def test_full_block(self):
+        ctx = _ctx()
+        ctx.destination = "+447700900123"
+        ctx.collector = _RenderStub("> caller: yes\n> transfer target: tuesday\n")
+        ctx.consult_transcript = "> agent: can you take a call?\n> user: sure\n"
+        block = transfer_metadata_block(
+            ctx, BtaTarget(key="1", agent_id=AGENT_A, include_history=True)
+        )
+        assert block["key"] == "1"
+        assert block["targetNumber"] == "+447700900123"
+        assert block["parentTranscript"].startswith("> caller: hi")
+        assert block["bridgeTranscript"].startswith("> caller: yes")
+        assert block["consultTranscript"].startswith("> agent: can you take a call?")
+
+    def test_empty_values_omitted(self):
+        ctx = _ctx(transcript="")
+        block = transfer_metadata_block(
+            ctx, BtaTarget(key="*7", agent_id=AGENT_A, include_history=False)
+        )
+        # includeHistory does NOT gate metadata seeding — but absent values
+        # must be absent keys, never empty strings.
+        assert block == {"key": "*7"}
+
+    def test_seeded_even_when_history_suppressed(self):
+        ctx = _ctx()
+        ctx.collector = _RenderStub("> caller: yes\n")
+        block = transfer_metadata_block(
+            ctx, BtaTarget(key="1", agent_id=AGENT_A, include_history=False)
+        )
+        assert "parentTranscript" in block
+        assert "bridgeTranscript" in block
+
+    def test_tail_truncation(self):
+        long = "".join(f"> caller: line {i}\n" for i in range(5000))
+        clipped = clip_transcript_for_metadata(long, limit=1000)
+        assert clipped.startswith("(… earlier conversation truncated)")
+        assert clipped.endswith("line 4999\n")
+        assert len(clipped) <= 1000 + len("(… earlier conversation truncated)\n")
+
+    def test_short_transcript_unclipped(self):
+        assert clip_transcript_for_metadata("> caller: hi\n") == "> caller: hi\n"
+
+
 # ---- Bridged-segment transcription (bridge_transcript.py) ----
 
 from pipecat_aplisay.bridge_transcript import (  # noqa: E402

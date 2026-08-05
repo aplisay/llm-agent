@@ -212,6 +212,10 @@ class BtaContext:
     stream_log: bool = False
     bridged_call: Optional[api_client.CallRecord] = None
     collector: Optional[Any] = None
+    # Consultative transfers only: the TransferAgent↔target briefing
+    # conversation, snapshotted when the consult accept installs the bridge.
+    # Seeded into the takeover call's ``aplisay.transfer.consultTranscript``.
+    consult_transcript: str = ""
 
 
 @dataclass
@@ -235,6 +239,7 @@ def bta_context_from_session(
     *,
     transcribe: Optional[dict] = None,
     destination: str = "",
+    consult_transcript: str = "",
 ) -> BtaContext:
     """Snapshot a parent CallSession into a :class:`BtaContext`."""
     aplisay_meta = dict((session.call.metadata or {}).get("aplisay") or {})
@@ -260,6 +265,7 @@ def bta_context_from_session(
         transcribe=transcribe,
         destination=destination,
         stream_log=bool((session.instance or {}).get("streamLog")),
+        consult_transcript=consult_transcript,
     )
 
 
@@ -316,6 +322,40 @@ async def end_bridged_record(ctx: BtaContext, reason: str) -> None:
         await api_client.end_call(ctx.bridged_call, reason=reason)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"bridged transfer: ending bridged record failed: {e}")
+
+
+# Per-transcript cap for the ``aplisay.transfer.*`` metadata keys: protects
+# the call row (JSONB) from unbounded transcripts while keeping far more than
+# any realistic conversation. The TAIL is kept — the most recent turns are the
+# ones the takeover flow acts on.
+TRANSFER_METADATA_TRANSCRIPT_MAX = 32_000
+
+
+def clip_transcript_for_metadata(text: str, limit: int = TRANSFER_METADATA_TRANSCRIPT_MAX) -> str:
+    """Tail-truncate a rendered transcript for metadata seeding."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return "(… earlier conversation truncated)\n" + text[-limit:]
+
+
+def transfer_metadata_block(ctx: BtaContext, target: BtaTarget) -> dict:
+    """The ``aplisay.transfer`` metadata block seeded onto the takeover call
+    (docs/transfer-back-plan.md). Always seeded, independent of the
+    ``includeHistory`` prompt gate: the transcripts are then addressable by
+    ``promptMetadata`` ``from`` paths, the ``get_metadata`` builtin, and —
+    the main event — ``source: "metadata"`` function parameters, which carry
+    them out-of-band of the model's context (e.g. to a summariser subagent).
+    Empty values are omitted so absent facts never render as statements."""
+    bridge_transcript = ctx.collector.render() if ctx.collector is not None else ""
+    block = {
+        "key": target.key,
+        "targetNumber": ctx.destination or "",
+        "parentTranscript": clip_transcript_for_metadata(ctx.transcript),
+        "bridgeTranscript": clip_transcript_for_metadata(bridge_transcript),
+        "consultTranscript": clip_transcript_for_metadata(ctx.consult_transcript),
+    }
+    return {k: v for k, v in block.items() if v}
 
 
 def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget) -> str:
@@ -396,6 +436,10 @@ async def prepare_takeover(
                     **aplisay_meta,
                     "model": model_name,
                     "bridgedTransferToAgent": {"key": target.key},
+                    # Carried context for the takeover agent and its tools —
+                    # aplisay.transfer.{parentTranscript,bridgeTranscript,
+                    # consultTranscript,key,targetNumber}.
+                    "transfer": transfer_metadata_block(ctx, target),
                 },
             },
         }

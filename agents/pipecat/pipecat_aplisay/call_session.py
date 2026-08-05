@@ -1583,7 +1583,7 @@ class CallSession:
         if self._tone_injector is not None:
             self._tone_injector.arm(mode)
 
-    async def _arm_bta_monitor(self) -> None:
+    async def _arm_bta_monitor(self, consult_transcript: str = "") -> None:
         """Arm the human-to-agent transfer watch on a just-installed bridge
         (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
 
@@ -1614,6 +1614,7 @@ class CallSession:
             self._bta_targets,
             transcribe=self._bta_transcribe,
             destination=self._bta_destination,
+            consult_transcript=consult_transcript,
         )
         # Bridged-segment call record (+ transcript collector when
         # transcription is on) — LiveKit parity for the post-transfer
@@ -2157,7 +2158,12 @@ def _builtin_consult_accept(consult_session: CallSession):
                     tap_audio=tap,
                 )
                 if monitor or tap:
-                    await parent._arm_bta_monitor()
+                    # The consult session's own context IS the TransferAgent↔
+                    # target briefing conversation — snapshot it for the
+                    # takeover call's aplisay.transfer.consultTranscript.
+                    await parent._arm_bta_monitor(
+                        consult_transcript=consult_session.get_parent_transcript()
+                    )
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.
             # Should have been rejected upstream by ``transfer()``; if
