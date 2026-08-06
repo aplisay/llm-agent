@@ -62,10 +62,20 @@ server.use(cors({
 
 // Better-Auth (parallel to Firebase) must mount BEFORE express.json — its node
 // handler reads the raw request body. Inert unless BETTER_AUTH_ENABLED=true.
+// The client-ip gate runs first: it strips `x-client-ip` unless the request
+// carries the AUTH_PROXY_SECRET the polite-ai BFF uses to forward the real
+// end-user IP — that header is what better-auth keys its per-client rate
+// limits on (advanced.ipAddress in lib/auth/index.js), so it must never be
+// spoofable by a direct caller.
 const { auth: betterAuth } = await import('./lib/auth/index.js');
 if (betterAuth) {
   const { toNodeHandler } = await import('better-auth/node');
-  server.all('/api/auth/*', toNodeHandler(betterAuth));
+  const { createClientIpGate } = await import('./lib/auth/client-ip-gate.js');
+  server.all(
+    '/api/auth/*',
+    createClientIpGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
+    toNodeHandler(betterAuth),
+  );
   logger.info('mounted better-auth at /api/auth/*');
 }
 
