@@ -635,39 +635,79 @@ export default defineAgent({
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`,
       );
-      // Mark the call failed so it isn't left orphaned (no endedAt/reason): this
-      // records the failure reason on the call and lets the diagnosis loop find
-      // it. The InvocationLog is persisted by ctx.shutdown() below. Best-effort.
-      try {
-        if (recordedCall && !recordedCall._endCalled) {
-          await recordedCall.end(`Agent setup failed: ${(e as Error).message}`);
-        }
-      } catch (endErr) {
-        logger.error({ endErr }, "error marking call failed during cleanup");
-      }
-      // End transfer activity if in progress
-      // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
-      if (endTransferActivityIfNeeded) {
+      const cleanup = async (): Promise<void> => {
+        // Mark the call failed so it isn't left orphaned (no endedAt/reason):
+        // this records the failure reason on the call and lets the diagnosis
+        // loop find it. The InvocationLog is persisted by ctx.shutdown() below.
         try {
-          await endTransferActivityIfNeeded("Error occurred");
-        } catch (transferError) {
-          logger.error(
-            { transferError },
-            "error ending transfer activity during error cleanup",
-          );
+          if (recordedCall && !recordedCall._endCalled) {
+            await recordedCall.end(
+              `Agent setup failed: ${(e as Error).message}`,
+            );
+          }
+        } catch (endErr) {
+          logger.error({ endErr }, "error marking call failed during cleanup");
         }
-      }
-      try {
-        room && room.name && (await deleteRoomWithRetry(room.name));
-      } catch (e) {
-        logger.error({ e }, "error deleting room");
-      }
-      // Best-effort shutdown; invocation logs are only persisted when the agent
-      // session has started and the shutdown callback has been registered.
-      try {
-        await ctx.shutdown((e as Error).message);
-      } catch (e) {
-        logger.error({ e }, "error shutting down");
+        // End transfer activity if in progress
+        // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
+        if (endTransferActivityIfNeeded) {
+          try {
+            await endTransferActivityIfNeeded("Error occurred");
+          } catch (transferError) {
+            logger.error(
+              { transferError },
+              "error ending transfer activity during error cleanup",
+            );
+          }
+        }
+        try {
+          room && room.name && (await deleteRoomWithRetry(room.name));
+        } catch (err) {
+          logger.error({ err }, "error deleting room");
+        }
+        // Best-effort shutdown; invocation logs are only persisted when the agent
+        // session has started and the shutdown callback has been registered.
+        try {
+          await ctx.shutdown((e as Error).message);
+        } catch (err) {
+          logger.error({ err }, "error shutting down");
+        }
+      };
+
+      const cleanupTimeoutMs = parseInt(
+        process.env.SETUP_FAILURE_CLEANUP_MS ?? "15000",
+        10,
+      );
+      let cleanupTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        cleanup(),
+        new Promise<void>((resolve) => {
+          cleanupTimer = setTimeout(() => {
+            logger.error(
+              { cleanupTimeoutMs },
+              "setup-failure cleanup timed out; abandoning it and ending the job",
+            );
+            resolve();
+          }, cleanupTimeoutMs);
+        }),
+      ]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+
+      // Returning from here is not enough — see above, the SDK will not
+      // complete the job on its own. A job process is one-shot and the SDK's
+      // own success path ends in process.exit(0) (job_proc_lazy_main.js), so
+      // exiting reaches exactly the same end state while making an orphan
+      // structurally impossible whichever step stalled. `done` first so the
+      // pool's bookkeeping matches, then exit on the next tick so the IPC
+      // write has a chance to flush.
+      if (typeof process.send === "function") {
+        try {
+          process.send({ case: "done" });
+        } catch {
+          /* channel already closed */
+        }
+        logger.warn("setup failed; ending job process");
+        setImmediate(() => process.exit(0));
       }
     }
   },
