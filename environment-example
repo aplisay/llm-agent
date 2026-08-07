@@ -40,6 +40,21 @@ BETTER_AUTH_GOOGLE_CLIENT_SECRET=<GOOGLE OAUTH CLIENT SECRET>
 # /confirmed page is the waitlist verification callbackURL (e.g.
 # http://localhost:5173 in dev, https://polite.ai in prod) or the post-verify
 # redirect is origin-rejected.
+#
+# Per-user rate limiting for BFF-proxied auth traffic: the polite-ai BFF
+# forwards the END-USER's IP as `x-client-ip`, authenticated by this shared
+# secret in `x-auth-proxy-secret` (same value in polite-ai's AUTH_PROXY_SECRET).
+# Unset => the header is always stripped and BFF traffic shares one rate bucket.
+# AUTH_PROXY_SECRET=<RANDOM SECRET, `openssl rand -base64 32`>
+#
+# Budgets for the endpoints that send email (/request-password-reset,
+# /send-verification-email): per submitted ADDRESS (hourly/daily, the
+# inbox-bombing guard) and a GLOBAL hourly circuit-breaker for the smtp2go
+# quota. Enforced pre-lookup, uniform 429 — never an enumeration oracle.
+# Counter table is auto-created on the auth DB; no migration step. Defaults:
+# AUTH_EMAIL_PER_ADDRESS_HOURLY=3
+# AUTH_EMAIL_PER_ADDRESS_DAILY=10
+# AUTH_EMAIL_GLOBAL_HOURLY=250
 
 # ── Waitlist (polite.ai coming-soon) ────────────────────────────────────────
 # Where better-auth redirects after the waitlist confirmation link is clicked
