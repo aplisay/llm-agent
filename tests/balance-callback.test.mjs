@@ -40,10 +40,31 @@ describe('balance-callback', () => {
     expect(calls[0].body.balancePennies).toBe(50);
     expect(calls[0].body.thresholdPennies).toBe(100);
     expect(typeof calls[0].body.hash).toBe('string');
+    // The receiver verifies against the RAW micros, so they must be on the wire.
+    expect(calls[0].body.balanceMicros).toBe(500_000);
 
     const calls2 = [];
     await fire(org(), 2_000_000, 1_500_000, calls2); // 200p -> 150p stays above the low
     expect(calls2).toHaveLength(0);
+  });
+
+  it('sends the signed balance verbatim, so a sub-penny balance stays verifiable', async () => {
+    // 50.0001p: `balancePennies` rounds to 50 and cannot rebuild the canonical
+    // string. A receiver must be able to recompute the hash from the payload
+    // alone, without scanning the rounding window.
+    const calls = [];
+    await fire(org(), 2_000_000, 500_001, calls);
+    const { body } = calls[0];
+    expect(body.balancePennies).toBe(50);
+    expect(body.balanceMicros).toBe(500_001);
+    expect(
+      signBalanceCallback({
+        hashKey: cfg.hashKey,
+        organisationId: body.organisationId,
+        event: body.event,
+        balanceMicros: body.balanceMicros,
+      }),
+    ).toBe(body.hash);
   });
 
   it('fires balanceNegative when crossing zero', async () => {
