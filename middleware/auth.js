@@ -4,7 +4,7 @@ import { scopeWhereForUser } from '../lib/scope.js';
 import * as firebase from 'firebase-admin/auth';
 import { auth as betterAuth } from '../lib/auth/index.js';
 import { fromNodeHeaders } from 'better-auth/node';
-import { effectivePermissions, statementsFor, intersectStatements, keyRestrictionStatements, can } from '../lib/auth/permissions.js';
+import { effectivePermissions, statementsFor, intersectStatements, keyRestrictionStatements, can, ORGANISATION_RBAC_ATTRIBUTES } from '../lib/auth/permissions.js';
 import { effectiveAllowedModels } from '../lib/auth/model-access.js';
 import { isBootstrapSuperAdmin } from '../lib/admin-gate.js';
 
@@ -80,7 +80,7 @@ async function attachRbac(user) {
   if (user.organisationId && !user.Organisation) {
     try {
       user.Organisation = await Organisation.findByPk(user.organisationId, {
-        attributes: ['id', 'status', 'role', 'permissions', 'allowedModels'],
+        attributes: ORGANISATION_RBAC_ATTRIBUTES,
       });
     } catch (e) {
       // FAIL CLOSED: never proceed with user-only perms (which would silently drop
