@@ -1,0 +1,23 @@
+{
+  "kitRepo": "aplisay/ship-kit",
+  "kitRef": "main",
+  "repo": "aplisay/llm-agent",
+  "base": "next",
+  "releaseBranches": ["main", "master"],
+  "actionLabel": "action",
+  "lockLabel": "in-progress",
+  "contextDoc": "docs/CONTEXT.md",
+  "stackSentinels": ["index.mjs", "api/api-doc.yaml", "package.json", "docs/CONTEXT.md"],
+  "hotFiles": [
+    "index.mjs",
+    "api/api-doc.yaml",
+    "lib/ws-handler.js",
+    "lib/handlers/index.js",
+    "lib/database.js",
+    "lib/models/index.js",
+    "package.json"
+  ],
+  "install": "yarn install --frozen-lockfile",
+  "verify": ["cd agents/livekit && yarn build"],
+  "reviewFocus": "Node/Express API backend (index.mjs + express-openapi against api/api-doc.yaml; lib/* services; gateway agents under agents/{livekit,pipecat,jambonz}). PROVISIONAL CONFIG — see docs/CONTEXT.md: the verify command, install, hotFiles and conventions still need a domain pass before the first real /ship run (e.g. the agents/livekit build uses tsup and its own lockfile; the full test suite needs docker/DB and is not yet in the gate). Watch the lib → agents/livekit/dist layering coupling (issue #123): a declared type at that boundary is not runtime-safe."
+}

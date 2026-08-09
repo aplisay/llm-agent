@@ -1,6 +1,7 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
 import { isModelAllowed } from '../../../lib/auth/model-access.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
@@ -105,6 +106,9 @@ agentGet.apiDoc = {
               prompt: {
                 $ref: '#/components/schemas/Prompt'
               },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
+              },
               options: {
                 $ref: '#/components/schemas/AgentOptions'
               },
@@ -152,7 +156,7 @@ agentGet.apiDoc = {
 };
 
 const agentUpdate = async (req, res) => {
-  let { name, description, prompt, options, functions, mcpServers, keys, modelName, type } = req.body;
+  let { name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type } = req.body;
   let { agentId } = req.params;
 
   if (isBuiltinAgentId(agentId)) {
@@ -170,11 +174,13 @@ const agentUpdate = async (req, res) => {
     if (!agent) {
       throw new Error(`Agent with ID ${agentId} not found`);
     }
-    // Static transfer_agent/subagent targets must reference accessible agents of the right type
-    functions && await validateAgentTargets(functions, {
-      lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } })
+    // Static transfer_agent/subagent targets and options.bridgedTransferToAgent
+    // targets must reference accessible agents of the right type
+    (functions || options?.bridgedTransferToAgent) && await validateAgentTargets(functions || [], {
+      lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } }),
+      options
     });
-    await agent.update({ name, description, prompt, options, functions, mcpServers, keys, modelName, type });
+    await agent.update({ name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });
   }
@@ -275,6 +281,9 @@ agentUpdate.apiDoc = {
               prompt: {
                 $ref: '#/components/schemas/Prompt'
               },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
+              },
               functions: {
                 $ref: '#/components/schemas/Functions'
               },
@@ -309,14 +318,20 @@ const agentDelete = async (req, res) => {
   if (!requirePermission(res, 'agent', 'delete')) return;
   req.log.info({ id: agentId }, 'Agent delete called');
   try {
-    let data = await Agent.destroy({
-      where: agentWhere(req, res),
-    });
-    if (data === 0)
-      throw new Error(`Agent with ID ${agentId} not found`);
+    const agent = await Agent.findOne({ where: agentWhere(req, res) });
+    if (!agent) {
+      return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
+    }
+    // Fail closed: an agent still answering a number/registration must be
+    // undeployed before it can be deleted (cascade would silently disconnect).
+    await assertAgentsNotWired([agent]);
+    await agent.destroy();
     res.status(200).send();
   }
   catch (err) {
+    if (err instanceof WiredListenerError) {
+      return res.status(err.status).send({ message: err.message });
+    }
     res.status(404).send(err);
     req.log.error(err, 'deleting instance');
   }
@@ -340,6 +355,16 @@ agentDelete.apiDoc = {
   responses: {
     200: {
       description: 'Deleted Agent.',
+    },
+    409: {
+      description: 'The agent still has a phone number or SIP registration listening on it — undeploy first.',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
+          }
+        }
+      }
     },
     default: {
       description: 'An error occurred',

@@ -12,7 +12,7 @@ This is not a demo framework: it is the code Aplisay operates in production, del
 
 ## What you get
 
-- **No model lock-in** — OpenAI, Google Gemini, Anthropic Claude, Ultravox speech-to-speech, and open-weight models (Llama, Mixtral, Gemma) via Groq. Swap with a `modelName` change, or [fail over between agents automatically](docs/agent-failover.md).
+- **No model lock-in** — OpenAI, Google Gemini, Anthropic Claude, Moonshot Kimi, DeepSeek, OpenRouter and Ultravox speech-to-speech. Swap with a `modelName` change, or [fail over between agents automatically](docs/agent-failover.md).
 - **Real telephony** — inbound DDIs, SIP trunks and registrations ([phone endpoints](docs/phone-endpoints-api.md)), [outbound calls](docs/originate-api.md), [blind, consultative and bridged transfers](docs/call-transfers.md), [human handback](docs/human-handback-howto.md), [call recording](docs/call-recording.md) with client-held encryption keys, and [webhooks on call events](docs/call-hooks.md).
 - **WebRTC built in** — the same agent that answers a phone number joins browser and app sessions; no separate stack to run.
 - **Tools** — HTTP function calling with anti-fraud parameter sourcing, [tool-call chaining and metadata priming](docs/tool-call-chaining-metadata-priming.md), and [remote MCP servers](docs/mcp-servers.md) on supporting models.
@@ -25,7 +25,7 @@ This is not a demo framework: it is the code Aplisay operates in production, del
 |---|---|
 | Voice runtimes | LiveKit (WebRTC + SIP) · Pipecat (SIP + WebRTC) · Jambonz (SIP) · Ultravox cloud (managed realtime) · headless text channel |
 | Speech-to-speech models | OpenAI Realtime · Google Gemini Live · Ultravox v0.6/v0.7 (Llama, Gemma and GLM backends) |
-| Pipeline LLMs | OpenAI GPT-4o / GPT-5 mini · Google Gemini 2.x · Anthropic Claude · Llama, Mixtral, Gemma via Groq |
+| Pipeline LLMs | OpenAI GPT-4o / GPT-5 mini · Google Gemini 2.x · Anthropic Claude · Moonshot Kimi · DeepSeek · OpenRouter |
 | Speech recognition & synthesis | Deepgram · ElevenLabs · Google · Cartesia (+ Silero VAD) |
 | SIP connectivity | Jambonz · LiveKit SIP · bundled Go [`sipbridge`](docs/sipbridge-integration.md) · FreeSWITCH · [Voiceblender](docs/voiceblender-integration.md) · Daily |
 

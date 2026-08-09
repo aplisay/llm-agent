@@ -54,7 +54,8 @@ member definitions. The same shape applies to voice (`pipecat:`) and text
 | `name` | Yes | Identifier for the server (`^[a-zA-Z0-9_-]{1,64}$`). Used to namespace its tool names. |
 | `url` | Yes | Base URL of the remote MCP endpoint. |
 | `transport` | No | `streamable_http` (default) or `sse`. |
-| `headers` | No | HTTP headers sent on every request — typically an `Authorization` bearer token. Honoured by the Pipecat worker; for the Anthropic connector, authenticated servers use the connector's own token (a public server such as the Aplisay knowledgebase needs none). |
+| `key` | No | The `name` of an entry in the agent's `keys` array used to authenticate to this server — the recommended way to supply a credential, because `keys` values are write-only (never returned by the API). The Pipecat worker resolves any key type (`bearer`/`basic`/`header`/`query`); the Anthropic connector resolves **`bearer` keys only**, into the connector's authorization token (other key types are skipped with a warning). |
+| `headers` | No | HTTP headers sent on every request — typically an `Authorization` bearer token. Honoured by the Pipecat worker only; the Anthropic connector ignores `headers` (use `key` instead — a public server such as the Aplisay knowledgebase needs neither). Prefer `key` for secrets: values set in `headers` are stored on the agent and returned to clients verbatim. |
 
 ## Runtime behaviour
 
@@ -66,7 +67,11 @@ There are two MCP client runtimes; which one applies is determined by the model:
   the model calls server-side, and returns the results in the same completion.
   Because there is no call session, this works for **headless** text agents
   invoked via `POST /agents/{id}/invoke`, run as a `subagent`, or driven turn by
-  turn over `POST /agents/{id}/chat`.
+  turn over `POST /agents/{id}/chat`. To authenticate to a server, set
+  `mcpServers[].key` to the name of a `bearer` entry in the agent's `keys`: the
+  platform resolves it into the connector's authorization token at completion
+  time, so the secret never appears in an org-readable agent field. Non-`bearer`
+  key types are not supported on this path and are skipped with a warning.
 - **Voice (`pipecat:`) — Pipecat worker.** The platform worker is the MCP
   client: connections are opened when the call session starts and closed at
   teardown, so tools added or removed on the remote server are picked up by the

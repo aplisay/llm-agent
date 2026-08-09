@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {
   AsyncIterableQueue,
-  AudioByteStream,
   Future,
   Queue,
   llm,
@@ -16,6 +15,7 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 // import type { GenerationCreatedEvent } from '@livekit/agents';
 import * as api_proto from "./api_proto.js";
+import { FrameAccumulator } from "./frame_accumulator.js";
 import { UltravoxClient } from "./ultravox_client.js";
 import { Realtime_InputTextContent } from "./api_proto.js";
 
@@ -26,6 +26,7 @@ interface ModelOptions {
   instructions: string;
   callId?: string;
   voice?: api_proto.Voice;
+  languageHint?: string;
   inputAudioFormat: api_proto.AudioFormat;
   outputAudioFormat: api_proto.AudioFormat;
   temperature: number;
@@ -46,6 +47,7 @@ interface ModelOptions {
       vadSettings?: api_proto.UltravoxVadSettings;
       firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
       inactivityMessages?: api_proto.UltravoxInactivityMessage[];
+      languageHint?: string;
       [key: string]: any;
     };
     [key: string]: any;
@@ -243,6 +245,57 @@ class Response {
   }
 }
 
+/**
+ * Return `base` with `firstSpeakerSettings` REPLACED by `override`, or `base`
+ * shallow-copied when there is no override.
+ *
+ * Replace, never merge: an agent carrying `options.greeting` arrives here with
+ * `firstSpeakerSettings.agent.text` already set (see voice-session-factory), and the
+ * Ultravox API expects exactly one of `user` / `agent` — a merge would leave both
+ * populated. The `vendorSpecific` containers are rebuilt rather than mutated so the
+ * model's defaults, shared with every other session it creates and with the caller's
+ * own options object, are left untouched.
+ */
+export function withFirstSpeakerOverride(
+  base: ModelOptions,
+  override?: api_proto.UltravoxFirstSpeakerSettings
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (!override) {
+    return opts;
+  }
+  opts.vendorSpecific = {
+    ...opts.vendorSpecific,
+    ultravox: {
+      ...opts.vendorSpecific?.ultravox,
+      firstSpeakerSettings: override,
+    },
+  };
+  return opts;
+}
+
+/**
+ * Fold one transcript frame into the turn accumulated so far.
+ *
+ * `text` is an authoritative snapshot of the whole turn when present; otherwise the
+ * frame carries an incremental `delta`. Ultravox does not guarantee `text` on the
+ * final frame of a turn — see `#handleAgentTranscript`, which has buffered deltas for
+ * that reason since inception — so a consumer that reads only `text` silently drops
+ * any turn delivered purely as deltas.
+ */
+export function foldTranscriptFrame(
+  buffer: string,
+  frame: { text?: string; delta?: string }
+): string {
+  if (frame.text) {
+    return frame.text;
+  }
+  if (frame.delta) {
+    return buffer + frame.delta;
+  }
+  return buffer;
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -254,12 +307,20 @@ export class RealtimeModel extends llm.RealtimeModel {
 
   #defaultOpts: ModelOptions;
   #sessions: RealtimeSession[] = [];
+  /**
+   * One-shot `firstSpeakerSettings` override for the NEXT session created from
+   * this model. See `setNextSessionFirstSpeaker`.
+   */
+  #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
+  /** See {@link setProviderEndedCallback}. */
+  #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
     instructions = "",
     callId,
     voice,
+    languageHint,
     inputAudioFormat = "pcm16",
     outputAudioFormat = "pcm16",
     temperature = 0.8,
@@ -277,6 +338,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     instructions?: string;
     callId?: string;
     voice?: api_proto.Voice;
+    languageHint?: string;
     inputAudioFormat?: api_proto.AudioFormat;
     outputAudioFormat?: api_proto.AudioFormat;
     temperature?: number;
@@ -297,6 +359,7 @@ export class RealtimeModel extends llm.RealtimeModel {
         vadSettings?: api_proto.UltravoxVadSettings;
         firstSpeakerSettings?: api_proto.UltravoxFirstSpeakerSettings;
         inactivityMessages?: api_proto.UltravoxInactivityMessage[];
+        languageHint?: string;
         [key: string]: any;
       };
       [key: string]: any;
@@ -325,6 +388,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       instructions,
       callId,
       voice,
+      languageHint,
       inputAudioFormat,
       outputAudioFormat,
       temperature,
@@ -355,8 +419,85 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#sessions.length > 0 ? this.#sessions[0] : undefined;
   }
 
+  /**
+   * Shape the opening turn of the NEXT session created from this model, and only
+   * that one.
+   *
+   * Used by the consultative-transfer consult leg: it shares the primary call's
+   * model instance but has the opposite conversational posture — it DIALS its peer,
+   * so the peer answers and greets first. Without this the model's default
+   * `FIRST_SPEAKER_AGENT` makes the TransferAgent open its own turn immediately and
+   * talk over the target's greeting, which Ultravox then discards as barge-in.
+   *
+   * Consumed and cleared by the next `session()` call. Call
+   * `clearNextSessionFirstSpeaker()` if the session is never started, so the
+   * override cannot leak onto an unrelated session (e.g. an agent handover).
+   */
+  setNextSessionFirstSpeaker(
+    firstSpeakerSettings: api_proto.UltravoxFirstSpeakerSettings
+  ): void {
+    this.#nextSessionFirstSpeaker = firstSpeakerSettings;
+  }
+
+  /** Discard a pending {@link setNextSessionFirstSpeaker} override. */
+  clearNextSessionFirstSpeaker(): void {
+    this.#nextSessionFirstSpeaker = undefined;
+  }
+
+  /**
+   * Called when Ultravox ends a session we did not ask it to end — its own
+   * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
+   *
+   * Exists because the SDK's `AgentSession.Error` event is lossy: `agent_activity`'s
+   * `onError` forwards `createErrorEvent(ev.error, …)`, i.e. the INNER `Error`, so the
+   * `RealtimeModelError` wrapper's `type` and `recoverable` never reach a listener.
+   * A subscriber therefore cannot distinguish a terminal provider hangup from a
+   * routine recoverable reconnect, and guessing in either direction is harmful —
+   * treating reconnects as fatal hangs up live calls, treating hangups as transient
+   * leaves the caller on a dead line until an unrelated long-stop fires.
+   *
+   * Fires for the PRIMARY session only (the first this model creates). A consult
+   * TransferAgent session and post-handover sessions share the model instance but
+   * their ending must never tear down the primary call.
+   */
+  setProviderEndedCallback(
+    cb: (info: { code?: number; reason?: string }) => void
+  ): void {
+    this.#providerEndedCallback = cb;
+  }
+
+  /** @internal Invoked by a RealtimeSession whose socket closed provider-side. */
+  _notifyProviderEnded(
+    session: RealtimeSession,
+    info: { code?: number; reason?: string }
+  ): void {
+    if (this.#sessions[0] !== session) {
+      return;
+    }
+    this.#providerEndedCallback?.(info);
+  }
+
+  /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
+  get pendingFirstSpeakerOverride():
+    | api_proto.UltravoxFirstSpeakerSettings
+    | undefined {
+    return this.#nextSessionFirstSpeaker;
+  }
+
   session(): RealtimeSession {
-    const opts: ModelOptions = { ...this.#defaultOpts };
+    const firstSpeakerOverride = this.#nextSessionFirstSpeaker;
+    this.#nextSessionFirstSpeaker = undefined;
+    const opts: ModelOptions = withFirstSpeakerOverride(
+      this.#defaultOpts,
+      firstSpeakerOverride
+    );
+    if (firstSpeakerOverride) {
+      // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
+      log().info(
+        { firstSpeakerSettings: firstSpeakerOverride },
+        "applying one-shot firstSpeakerSettings override to new session"
+      );
+    }
 
     const newSession = new RealtimeSession(this, opts, this.#client, {
       chatCtx: new llm.ChatContext(),
@@ -402,13 +543,18 @@ export class RealtimeSession extends llm.RealtimeSession {
   #currentResponseId: string | null = null;
   #currentOutputIndex = 0;
   #currentContentIndex = 0;
-  #audioStream?: AudioByteStream;
+  #audioStream?: FrameAccumulator;
   #audioBuffer: Buffer[] = [];
   #toolChoice: llm.ToolChoice | null = "auto";
   #messageStreamController?: ReadableStreamDefaultController<any>;
   #functionStreamController?: ReadableStreamDefaultController<any>;
-  // Audio buffering and processing
-  #bstream = new AudioByteStream(
+  // Audio buffering and processing.
+  //
+  // FrameAccumulator, not the SDK's AudioByteStream: same semantics, but
+  // AudioByteStream.write spread-concatenates its residual buffer on every
+  // call, which profiling measured at 25.7% of all post-startup CPU in a job
+  // process — 90% of it from pushAudio below. See frame_accumulator.ts.
+  #bstream = new FrameAccumulator(
     api_proto.SAMPLE_RATE,
     api_proto.NUM_CHANNELS,
     api_proto.SAMPLE_RATE / 10
@@ -423,6 +569,15 @@ export class RealtimeSession extends llm.RealtimeSession {
   public instructions?: string;
   // Agent transcript buffer for accumulating deltas
   #agentTranscriptBuffer: string = "";
+  // User transcript buffer for accumulating deltas. Ultravox does not guarantee a
+  // `text` property on the final frame of a turn (see #handleAgentTranscript, which
+  // has buffered deltas for that reason since inception); without the same buffer on
+  // the user side a delta-only turn is dropped outright and never reaches the chat
+  // context, so the turn is absent from the transcript AND from the agent's history.
+  #userTranscriptBuffer: string = "";
+  // Ordinal of the user turn #userTranscriptBuffer belongs to, so a turn abandoned
+  // without a final frame (barge-in, interruption) cannot prefix the next one.
+  #userTranscriptOrdinal: number | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
   // Track message IDs that have been sent to Ultravox (to avoid duplicates)
@@ -975,6 +1130,16 @@ export class RealtimeSession extends llm.RealtimeSession {
             "Added experimental settings from vendor-specific options"
           );
         }
+        // Language hint: portable `options.tts.language` (mapped in
+        // voice-session-factory) unless a native vendorSpecific value overrides it.
+        // Left unset when neither is present, so Ultravox auto-detects as before.
+        const languageHint =
+          (typeof uv?.languageHint === "string" && uv.languageHint.trim()) ||
+          this.#opts.languageHint?.trim();
+        if (languageHint) {
+          modelData.languageHint = languageHint;
+          this.#logger.debug({ languageHint }, "Added Ultravox languageHint");
+        }
         if (uv?.vadSettings != null) {
           modelData.vadSettings = uv.vadSettings;
           this.#logger.debug(
@@ -1028,8 +1193,22 @@ export class RealtimeSession extends llm.RealtimeSession {
 
         this.#ws.onerror = (error) => {
           const errorMsg = "Ultravox WebSocket error: " + error.message;
+          // Mirror onclose's #closing guard. Without it a socket that errors during a
+          // teardown WE initiated — agent handover closing the outgoing session, the
+          // consult session closing after accept/reject, ordinary call cleanup — is
+          // reported as an unrecoverable failure of a live session. That is a false
+          // positive today (it only mislabels a log line) but becomes a call-killer
+          // once the runtime acts on provider-ended, so guard it at the source.
+          if (this.#closing) {
+            this.#logger.info(
+              { error, callId: this.#callId },
+              "Ultravox WebSocket error during local close; ignoring"
+            );
+            return;
+          }
           this.#logger.error({ error }, "Ultravox WebSocket error occurred");
           this.#sessionFailed = true;
+          this.#notifyProviderEnded({ reason: error.message });
           this.emitError({ error: new Error(errorMsg), recoverable: false });
           reject(new Error(errorMsg));
         };
@@ -1199,20 +1378,39 @@ export class RealtimeSession extends llm.RealtimeSession {
           this.emitError({ error, recoverable: true });
         });
 
-        this.#ws.onclose = () => {
-          if (this.#expiresAt && Date.now() >= this.#expiresAt) {
-            this.#closing = true;
-          }
+        this.#ws.onclose = (event?: { code?: number; reason?: string }) => {
+          // NB no #expiresAt short-circuit here. It used to set #closing = true once
+          // Date.now() passed a HARDCODED start+5min (see #expiresAt assignment), which
+          // silently swallowed every provider-side close after that point — no error,
+          // no signal, and the SIP leg left up with a dead agent. Deriving it from
+          // maxDuration would be worse still: it would suppress exactly the provider
+          // hangups we now need to act on (Ultravox maxDuration, and the
+          // inactivityMessages endBehavior hangup). #expiresAt remains for the session
+          // -update payloads that report it; it is not a close classifier.
+          const code = event?.code;
+          const reason = event?.reason || undefined;
           if (!this.#closing) {
             const errorMsg = "Ultravox connection closed unexpectedly";
             this.#logger.error(
-              { callId: this.#callId },
+              { callId: this.#callId, code, reason },
               "Ultravox WebSocket closed unexpectedly"
             );
             this.#sessionFailed = true;
+            // The provider ended this session and we did not ask it to. The SDK's
+            // AgentSession.Error event cannot carry this: it forwards the INNER Error
+            // (agent_activity onError -> createErrorEvent(ev.error, …)), so `type` and
+            // `recoverable` are stripped and a listener cannot tell a terminal death
+            // from a routine reconnect. Report it out-of-band instead, so the runtime
+            // can end the call rather than leaving the caller on a dead line.
+            this.#notifyProviderEnded({ code, reason });
             const error = new Error(errorMsg);
             this.emitError({ error, recoverable: false });
             reject(error);
+          } else {
+            this.#logger.info(
+              { callId: this.#callId, code, reason },
+              "Ultravox WebSocket closed (initiated locally)"
+            );
           }
           this.#closing = true;
           this.#ws = null;
@@ -1305,7 +1503,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       );
       this.#markCurrentGenerationDone();
     }
-    this.#audioStream = new AudioByteStream(
+    this.#audioStream = new FrameAccumulator(
       api_proto.SAMPLE_RATE,
       api_proto.NUM_CHANNELS,
       api_proto.OUT_FRAME_SIZE
@@ -1429,37 +1627,98 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   }
 
+  /**
+   * Tell the model this session was ended by the provider, so it can notify the
+   * runtime (primary session only — see `RealtimeModel.setProviderEndedCallback`).
+   * Best-effort: a failure here must never mask the error we are already reporting.
+   */
+  #notifyProviderEnded(info: { code?: number; reason?: string }): void {
+    try {
+      (this.realtimeModel as RealtimeModel)._notifyProviderEnded?.(this, info);
+    } catch (e) {
+      this.#logger.warn({ e }, "provider-ended notification failed");
+    }
+  }
+
   #handleTranscript(event: api_proto.UltravoxTranscriptMessage): void {
     event.final && this.#logger.debug(
-      { event },
+      { event, ordinal: event.ordinal },
       "handleTranscript - received final transcript event"
     );
 
     if (event.role === "user") {
+      // A new ordinal is a new turn: drop anything left over from a turn that was
+      // abandoned without a final frame rather than prefixing it onto this one.
+      if (
+        event.ordinal !== undefined &&
+        event.ordinal !== this.#userTranscriptOrdinal
+      ) {
+        this.#userTranscriptBuffer = "";
+        this.#userTranscriptOrdinal = event.ordinal;
+      }
+
+      // Accumulate the turn the same way the agent side does: `text` is an
+      // authoritative snapshot when present, otherwise fold in the delta. A final
+      // frame carrying only `delta` used to fall through to "Skipping empty
+      // transcript event" and the whole user turn was lost silently.
+      this.#userTranscriptBuffer = foldTranscriptFrame(
+        this.#userTranscriptBuffer,
+        event
+      );
+      const transcript = this.#userTranscriptBuffer;
+
       // Emit input_speech_started when we first detect user speech (non-final transcript)
       // This interrupts any ongoing agent generation
-      if (!this.userSpeechStartedEmitted && !event.final && event.text && event.text.trim().length > 0) {
+      if (!this.userSpeechStartedEmitted && !event.final && transcript.trim().length > 0) {
         this.#logger.debug("Emitting input_speech_started on first user transcript");
         this.emit("input_speech_started", {
           itemId: "ultravox-user-input",
         } as InputSpeechStarted);
         this.userSpeechStartedEmitted = true;
       }
-      
+
       // Only emit transcription events when there's actual text content
-      if (event.text && event.text.trim().length > 0) {
+      if (transcript.trim().length > 0) {
         const transcriptionEvent = {
           itemId: shortuuid("user-transcript-"),
-          transcript: event.text,
+          transcript,
           isFinal: event.final,
         };
-        this.#logger.debug(
-          { transcriptionEvent, event },
-          "Emitting input_audio_transcription_completed event"
-        );
+        // Finals log at info: at production log level this is the only positive
+        // evidence that a user turn reached us, and its absence is the signature of
+        // a transcript the provider never sent. Interim frames stay at debug so the
+        // volume tracks turns rather than frames.
+        const emitted = {
+          transcriptionEvent,
+          ordinal: event.ordinal,
+          fromDeltaBuffer: !event.text,
+        };
+        if (event.final) {
+          this.#logger.info(
+            emitted,
+            "Emitting input_audio_transcription_completed event"
+          );
+        } else {
+          this.#logger.debug(
+            { ...emitted, event },
+            "Emitting input_audio_transcription_completed event"
+          );
+        }
         this.emit("input_audio_transcription_completed", transcriptionEvent);
       } else {
-        this.#logger.debug({ event }, "Skipping empty transcript event");
+        // Info, not debug: this is a DROPPED user turn. It should be unreachable now
+        // that deltas are buffered, so if it appears the provider sent us a frame
+        // with neither `text` nor `delta` and the turn is gone.
+        this.#logger.info(
+          { event, ordinal: event.ordinal },
+          "Skipping empty transcript event"
+        );
+      }
+
+      if (event.final) {
+        // Keep the ordinal: it stays the boundary marker for any further frame on
+        // this same turn, and the next turn's ordinal resets the buffer anyway.
+        this.#userTranscriptBuffer = "";
       }
     } else if (event.role === "agent") {
       // Handle agent transcript through the generation stream

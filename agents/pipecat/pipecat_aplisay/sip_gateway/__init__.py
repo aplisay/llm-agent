@@ -16,8 +16,33 @@ from .base import (
     OutboundCallParams,
     GatewaySession,
     GatewaySessionParams,
+    collect_sip_headers,
 )
-from .daily_gateway import DailySipGateway
+try:
+    from .daily_gateway import DailySipGateway
+except ImportError as exc:
+    # Images built with ONLY_TRANSPORTS excluding "daily" omit the
+    # daily-python wheel, so the Daily gateway module cannot import. Keep a
+    # placeholder class: isinstance() checks against DailySipGateway elsewhere
+    # in the worker still work (nothing is ever an instance of it), and
+    # selecting SIP_GATEWAY=daily fails with a clear error at gateway
+    # construction instead of an import crash at boot.
+    from loguru import logger
+
+    _daily_import_error = exc
+    logger.info(f"daily gateway unavailable in this build: {exc}")
+
+    class DailySipGateway:  # type: ignore[no-redef]
+        """Placeholder for images built without the daily transport."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError(
+                "SIP_GATEWAY=daily requested but the daily transport is not "
+                "installed in this image (built with ONLY_TRANSPORTS "
+                f"excluding 'daily'): {_daily_import_error}"
+            )
+
+
 from .freeswitch_gateway import FreeswitchSipGateway
 from .sipbridge_gateway import SipBridgeSipGateway
 from .voiceblender_gateway import VoiceblenderSipGateway
@@ -32,4 +57,5 @@ __all__ = [
     "FreeswitchSipGateway",
     "SipBridgeSipGateway",
     "VoiceblenderSipGateway",
+    "collect_sip_headers",
 ]

@@ -61,6 +61,8 @@ export interface Agent {
   label?: string;
   name?: string;
   prompt?: string;
+  /** Call metadata stated in the system prompt — see agent-lib/prompt-metadata.js. */
+  promptMetadata?: { description?: string; from: string }[];
   options?: {
     /**
      * Optional opening greeting played right after the session starts.
@@ -92,6 +94,12 @@ export interface Agent {
      */
     maxDuration?: string;
     /**
+     * Message the agent delivers when `maxDuration` is reached. Only consumed
+     * by providers with a native wind-down message (Ultravox); other realtime
+     * providers use the worker hard-stop with a generic prompt instead.
+     */
+    timeExceededMessage?: string;
+    /**
      * Inter-digit DTMF timeout in milliseconds. Buffered DTMF digits are flushed
      * to the LLM after this period of keypad silence. Defaults to 1500ms.
      * Set to 0 to flush each digit individually (no buffering delay).
@@ -115,6 +123,26 @@ export interface Agent {
       timeout: number | string;
       /** Literal phrase spoken verbatim on each idle kick (deterministic, not an LLM prompt). */
       message: string;
+      /**
+       * End the call after the prompt has gone unanswered `INACTIVITY_PROMPT_COUNT`
+       * times (3), instead of prompting indefinitely. Opt-in; absent/false keeps the
+       * current behaviour exactly.
+       *
+       * Without this a leg that nobody hangs up is only reclaimed by the session
+       * long-stop (the model's `maxDuration` + 5s), which can leave a caller — or an
+       * abandoned transfer target — listening to silence for minutes.
+       *
+       * Applies on every platform, but is enforced in two different places, which
+       * matters if you use consultative transfer:
+       *  - Ultravox realtime: mapped to a provider-native `inactivityMessages`
+       *    `endBehavior`, so Ultravox hangs up server-side. It has NO knowledge of a
+       *    transfer in flight, so a caller held silently through a long consultation
+       *    can be hung up on. Prefer leaving this off for agents that perform
+       *    consultative transfers with long holds.
+       *  - Everything else (pipeline TTS / OpenAI / Gemini realtime): enforced by us,
+       *    and suppressed while a consult or transfer is in flight.
+       */
+      hangup?: boolean;
     };
     /** Sampling temperature for pipeline LLM (OpenAI / Google plugins). */
     temperature?: number;
@@ -132,6 +160,7 @@ export interface Agent {
       vendor?: string;
     };
     tts?: {
+    
       language?: string;
       /**
        * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
@@ -337,6 +366,12 @@ export interface AgentFunction {
     // some definitions instead set `required: true` on each property).
     required?: string[];
   };
+  // How the shared function handler dispatches this function:
+  // "stub" | "rest" | "builtin". Consumed untyped by function-handler.js;
+  // modelled here so callers can classify a call (e.g. builtin vs function).
+  implementation?: string;
+  // For builtins, the platform builtin name (e.g. "transfer_agent", "hangup").
+  platform?: string;
 }
 
 export interface Call {
@@ -510,8 +545,20 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
+    // `err`, NOT `error` — do not "tidy" this to match the `error: errorText` above.
+    // pino only applies its error serialiser to the key `err`; an Error logged under
+    // any other key serialises to `{}`, because `message` and `stack` are
+    // non-enumerable. That is not theoretical: a consult-leg createCall failed here on
+    // staging and logged `{"error":{}}`, so establishing whether it was a 5xx, a DNS
+    // failure or a reset needed the Cloud Run logs to rule out a server round trip
+    // entirely. Under `err`, pino reports type, message and stack — and folds in
+    // `cause`, which is where fetch puts ECONNRESET / EAI_AGAIN.
+    //
+    // This branch is reached ONLY for non-ApiRequestError failures, i.e. never for an
+    // HTTP response: `fetch` itself rejecting, or a 2xx body that would not parse. So
+    // whatever it logs is by definition the interesting case.
     if (!(error instanceof ApiRequestError)) {
-      logger.error({ url, error }, 'API request error');
+      logger.error({ url, err: error }, 'API request error');
     }
     throw error;
   }
@@ -541,7 +588,7 @@ export async function getPhoneEndpointById(id: string): Promise<PhoneRegistratio
     );
     return result?.items?.[0] || null;
   } catch (error) {
-    logger.error({ id, error }, 'Failed to get phone endpoint by id');
+    logger.error({ id, err: error }, 'Failed to get phone endpoint by id');
     return null;
   }
 }
@@ -564,7 +611,7 @@ export async function getPhoneEndpointByNumber(
     if (error?.message?.includes('Trunk mismatch')) {
       throw error;
     }
-    logger.error({ number, trunkId, error }, 'Failed to get phone endpoint by number');
+    logger.error({ number, trunkId, err: error }, 'Failed to get phone endpoint by number');
     return null;
   }
 }
@@ -588,7 +635,7 @@ export async function setPhoneNumberProvisioned(
       }
     );
   } catch (error) {
-    logger.error({ number, provisioned, error }, 'Failed to update phone number provisioning state');
+    logger.error({ number, provisioned, err: error }, 'Failed to update phone number provisioning state');
   }
 }
 
@@ -606,6 +653,7 @@ export async function createCall(callData: {
   calledId?: string;
   callerId?: string;
   modelName?: string;
+  outboundTrunkId?: string;
   options?: any;
   metadata?: any;
 }): Promise<any> {
@@ -687,7 +735,7 @@ export async function createCall(callData: {
     
     // Handle errors to ensure the promise is still stored even on failure
     return endPromise.catch((error) => {
-      logger.error({ callId: call.id, error }, "error in call.end(), but keeping promise for idempotency");
+      logger.error({ callId: call.id, err: error }, "error in call.end(), but keeping promise for idempotency");
       throw error;
     });
   };

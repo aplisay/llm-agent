@@ -19,6 +19,10 @@ export default function (logger) {
       email: u.email ?? null,
       name: u.name ?? null,
       organisationId: u.organisationId ?? null,
+      // The caller's own org name — every principal may see it, so dashboards
+      // don't need the admin-gated GET /organisations just to label the shell
+      // (member sessions were 403ing that on every layout load).
+      organisationName: u.Organisation?.name ?? null,
       role: u.role ?? null,
       status: u.status ?? null,
       // Prefer the memoised map; fall back to a live computation so principals

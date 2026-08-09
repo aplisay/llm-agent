@@ -104,6 +104,7 @@ export interface UltravoxModelData {
   selectedTools: UltravoxTool[];
   temperature?: number;
   voice?: string;
+  languageHint?: string;
   transcriptOptional: boolean;
   medium?: {
     serverWebSocket: {

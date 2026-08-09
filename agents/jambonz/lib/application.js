@@ -50,6 +50,9 @@ export default class Application {
             userId,
             organisationId,
             modelName,
+            // Jambonz handler did not stamp a platform, leaving the voice usage
+            // row's provider null and unmatchable by a rate line (billing).
+            platform: 'jambonz',
             options,
             instanceId: instance.id,
             agentId: agent.id,
@@ -117,6 +120,12 @@ export default class Application {
           });
           await sessionHandler.handler();
           logger.debug({ callId }, 'session ended');
+          // Bridged drivers (gemini with mcpServers) hold standing MCP
+          // connections — release them or every call leaks a socket per
+          // server for the worker's lifetime.
+          Promise.resolve(model?.close?.()).catch((e) => {
+            logger?.warn?.(e, 'model.close() failed (async)');
+          });
           void call.end().catch((e) => {
             logger?.warn?.(e, 'call.end() failed (async)');
           });
@@ -137,6 +146,9 @@ export default class Application {
       }
       catch (err) {
         logger.info(err, 'error in call progress');
+        Promise.resolve(this.sessionHandler?.model?.close?.()).catch((e) => {
+          logger?.warn?.(e, 'model.close() failed (async, error path)');
+        });
         this.sessionHandler && await this.sessionHandler.forceClose();
         if (this.call) {
           void this.call.end().catch((e) => {

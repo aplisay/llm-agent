@@ -73,7 +73,10 @@ Two long-lived control connections live on the worker side:
 
 2. **`httpx.AsyncClient`** (in-band, per-call) — for REST control:
    `POST /v1/legs` (outbound originate), `DELETE /v1/legs/{id}` (hangup),
-   `POST /v1/legs/{id}/transfer` (REFER blind / attended).
+   `POST /v1/legs/{id}/transfer` (REFER blind / attended),
+   `POST /v1/legs/{id}/dtmf` (`{digits}` — play out-of-band RFC 4733 DTMF to
+   the far end; drives the `send_dtmf` builtin, see
+   [send-dtmf.md](send-dtmf.md)).
 
 
 ## Call flows
@@ -81,11 +84,13 @@ Two long-lived control connections live on the worker side:
 ### Inbound
 
 1. SIP INVITE arrives at voiceblender → voiceblender emits
-   `{type: "leg.ringing", leg_id, from, to, custom_headers, ...}` on VSI.
+   `{type: "leg.ringing", leg_id, from, to, sip_headers, ...}` on VSI.
+   The `X-Aplisay-*` / `X-Lk-*` routing headers ride in `sip_headers`
+   (voiceblender `LegRingingData.SIPHeaders`).
 2. Worker's VSI subscriber resolves the agent for the dialled number
    using the same lookup chain as Daily dial-in and FreeSWITCH
    (`phone_registration` → trunk+number → number). Returns
-   `(instance, agent)` or rejects the leg with `DELETE /v1/legs/{id}`.
+   `(instance, agent, origin)` or rejects the leg with `DELETE /v1/legs/{id}`.
 3. Worker stashes a `PendingAttach` keyed by a fresh `session_id`, then
    POSTs `/v1/legs/{id}/answer` and `/v1/legs/{id}/agent` with
    `agent_id = ws://worker/voiceblender/agent/{session_id}`.
@@ -98,6 +103,19 @@ Two long-lived control connections live on the worker side:
 5. On `leg.disconnected` (or pipeline end → `shutdown()` →
    `DELETE /v1/legs/{id}`) the session ends, the call record is
    `end_call`'d, and any flush hooks fire.
+
+The `sip_headers` on the `leg.ringing` event carry the INVITE's `X-` headers
+(voiceblender's SIP ingress extracts every `X-*` header from the INVITE).
+Beyond the `X-Aplisay-*` routing contract, the gateway collects **all** of
+them into `metadata.aplisay.sipHeaders` (lowercased) when it builds the
+inbound call context, so agents can read per-call context the carrier/SBC
+attached. See [`sip-headers.md`](sip-headers.md).
+
+> **Field name note.** The event field is `sip_headers`
+> (`LegRingingData.SIPHeaders` in the voiceblender source), *not*
+> `custom_headers` — the latter is voiceblender's separate agent-WS request
+> header set (see `_custom_headers_for` on the outbound side). Both the agent
+> resolver and `_on_leg_ringing` read `sip_headers`.
 
 
 ### Outbound
@@ -126,11 +144,11 @@ Two long-lived control connections live on the worker side:
 `CallSession.transfer()` (function-tool surface) calls
 `gateway_session.transfer(req)`. The voiceblender gateway maps:
 
-| Aplisay `operation` | Voiceblender `mode` |
+| Aplisay `operation` | Voiceblender primitive |
 |---|---|
-| `blind` | `blind` |
-| `bridged` | `blind` (with our worker driving the second leg — out of scope for v1) |
-| `consult` | `attended` |
+| `blind` (REFER) | `POST /v1/legs/{id}/transfer` (in-dialog REFER) |
+| `blind` + `force_bridged` | agent-less `POST /v1/legs` + ephemeral room bridge (`_do_dial_bridge`) |
+| `consultative` | agent-attached consult leg; finalise via room bridge (`bridge_with`) |
 
 Progress events arrive on VSI:
 `leg.transfer_initiated` → `leg.transfer_progress` (per NOTIFY sipfrag) →
@@ -280,12 +298,40 @@ of ingress.
 | `agents/pipecat/deploy/gcp/env-example-{staging,production}` | `COMPOSE_PROFILES` + `SIP_GATEWAY` + voiceblender knobs |
 
 
+## Human-to-agent transfers (`options.bridgedTransferToAgent`)
+
+See [`call-transfers.md`](call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent)
+for the user-facing contract. On the voiceblender topology the pieces are:
+
+1. A bridged transfer (native dial+bridge, or a consultative finalise)
+   puts the caller and target legs in an ephemeral room; the gateway
+   session records `bridge_room_id` / `bridge_peer_leg_id` and is marked
+   `bridged` so the worker's teardown never deletes a leg that now
+   belongs to the two humans.
+2. `dtmf.received` VSI events for the **target leg** (which has no
+   CallSession) are routed to a watcher registered by
+   `bridged_transfer.arm_voiceblender_bta_watch(...)`; the watch dies
+   with either bridged leg (`leg.disconnected`).
+3. On a sequence match the worker reserves a child call record, stashes
+   a `TakeoverPayload` keyed by a fresh session id, then
+   `DELETE /v1/legs/{target}` → `DELETE /v1/rooms/{room}/legs/{caller}`
+   → `POST /v1/legs/{caller}/agent/pipecat` — voiceblender dials
+   `/voiceblender/agent/{session_id}` and the WS handler builds the
+   incoming agent's CallSession from the stash.
+4. With `options.bridgedTransferTranscribe` set, the worker also starts
+   voiceblender's **native per-leg STT** (`POST /v1/legs/{id}/stt`,
+   provider/language from the option) on both bridged legs at bridge
+   time. Final `stt.text` VSI events are routed per leg into a
+   speaker-labelled transcript (`bridge_transcript.py`) logged against
+   the bridged-segment call record and, on a DTMF hand-back, injected
+   into the incoming agent's prompt. Media never leaves the room mixer.
+
 ## Known limitations / follow-ups
 
-- **`bridged` transfers** map onto voiceblender's `blind` mode for now;
-  a true bridged transfer needs the worker to drive a second outbound
-  leg into a voiceblender room and unbridge once the bridge is
-  established. Out of scope for v1.
+- **`bridged` transfers**: the native dial+bridge path
+  (`_do_dial_bridge`) dials the target as an agent-less leg and joins
+  both legs in an ephemeral voiceblender room. Bridged legs are marked
+  on the gateway session so worker teardown leaves them alive.
 - **Voiceblender's native recording** is left disabled; the worker
   handles recording via `AudioBufferProcessor` and the AES-GCM/GCS
   pipeline that ships in `pipecat_aplisay/recording/`.

@@ -48,6 +48,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from aiortc.sdp import candidate_from_sdp
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.base_transport import TransportParams
@@ -60,6 +61,7 @@ from pipecat.transports.websocket.fastapi import (
 
 from . import api_client
 from .auth import require_dispatch_token, verify_join_token
+from .bridged_transfer import run_sipbridge_bta_watch
 from .call_session import (
     CallSession,
     TransferState,
@@ -67,9 +69,10 @@ from .call_session import (
     setup_consult_call,
     setup_inbound_call,
     setup_outbound_call,
+    setup_takeover_call,
 )
-from .constants import DISCONNECT_REASONS
-from .invocation_log import flush_invocation_logs
+from .constants import DISCONNECT_REASONS, PLATFORM
+from .invocation_log import flush_invocation_logs, install_capture
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
@@ -79,6 +82,7 @@ from .sip_gateway import (
     InboundCallContext,
     SipBridgeSipGateway,
     VoiceblenderSipGateway,
+    collect_sip_headers,
 )
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
@@ -103,6 +107,10 @@ WEBRTC_ICE_SERVERS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Capture call-scoped logs into the InvocationLog buffer. Installed here (at
+    # runtime, after all imports) so nothing resets loguru's handlers on us.
+    install_capture()
+
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
     if gateway_name == "daily":
@@ -141,6 +149,9 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
     app.state.calls_by_channel: dict[str, str] = {}
+    # Live browser WebRTC peers keyed by pc_id, so trickle-ICE PATCHes and
+    # renegotiation can find the connection a prior /webrtc/offer created.
+    app.state.webrtc_connections: dict[str, SmallWebRTCConnection] = {}
     yield
     # Best-effort flush on shutdown — section 8.4 of the architecture doc.
     try:
@@ -297,19 +308,25 @@ async def _lookup_instance_for_inbound(
 
 async def _voiceblender_resolve_agent(
     event: dict,
-) -> Optional[tuple[dict, dict]]:
+) -> Optional[tuple[dict, dict, _InboundOrigin]]:
     """Agent lookup for an inbound voiceblender ``leg.ringing`` VSI event.
 
     Same lookup chain as Daily dial-in and FreeSWITCH inbound: phone
-    registration → trunk+number → number. Returns ``(instance, agent)`` or
-    ``None`` if no agent is configured for the dialled number.
+    registration → trunk+number → number. Returns ``(instance, agent, origin)``
+    or ``None`` if no agent is configured for the dialled number. ``origin``
+    carries the registration/trunk transfer-mode context, threaded onto the
+    inbound ctx by the gateway (mirrors the sipbridge resolver).
+
+    The routing headers ride in the ``leg.ringing`` event's ``sip_headers``
+    field (voiceblender ``LegRingingData.SIPHeaders``), the same field
+    ``_on_leg_ringing`` reads to build the ctx.
     """
-    headers = event.get("custom_headers") or {}
+    headers = event.get("sip_headers") or {}
     to_number = event.get("to")
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
-    instance, _origin = await _lookup_instance_for_inbound(
+    instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
         to_number=to_number,
         aplisay_id=aplisay_id,
@@ -319,7 +336,7 @@ async def _voiceblender_resolve_agent(
     agent = instance.get("Agent")
     if not agent:
         return None
-    return instance, agent
+    return instance, agent, origin
 
 
 def _voiceblender_session_lookup(app: FastAPI, session_id: str):
@@ -334,6 +351,32 @@ def _voiceblender_session_lookup(app: FastAPI, session_id: str):
         if getattr(s, "session_id", None) == session_id:
             return s
     return None
+
+
+def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
+    """Origin caller id as seeded at ``metadata.aplisay.callerId``.
+
+    ``CallRecord`` deliberately has no top-level ``callerId`` field — the
+    number lives only in the aplisay metadata blob (see the create_call
+    payloads), and attribute access on the pydantic model raises
+    AttributeError. Beta 2026-08-05: the sipbridge consult arm did exactly
+    that, killing the TransferAgent WS the moment the transfer target
+    answered — they heard silence while the bridge held the leg open.
+    """
+    meta = call.metadata if isinstance(call.metadata, dict) else {}
+    return (meta.get("aplisay") or {}).get("callerId")
+
+
+# X- headers on the sipbridge WS handshake that are sipbridge's own transport
+# metadata, NOT part of the inbound INVITE — excluded from aplisay.sipHeaders.
+# (``x-forwarded-*`` is a defensive guard against any future reverse proxy; today
+# sipbridge dials the worker Service directly.) Everything else starting with
+# ``x-`` on the handshake came through from the INVITE: the X-Aplisay-*/X-Lk-*
+# routing contract plus any arbitrary carrier X- headers, which the sipbridge Go
+# layer forwards verbatim (see sipbridge internal/call/manager.go).
+_SIPBRIDGE_NON_INVITE_HEADERS = frozenset(
+    {"x-sipbridge-call-id", "x-sipbridge-from", "x-sipbridge-to"}
+)
 
 
 async def _sipbridge_resolve_agent_from_headers(
@@ -402,6 +445,15 @@ async def _sipbridge_resolve_agent_from_headers(
     if not agent:
         return None
 
+    # Surface every INVITE X- header as metadata.aplisay.sipHeaders (see
+    # collect_sip_headers). All handshake x-* headers except sipbridge's own
+    # transport metadata came through from the INVITE.
+    sip_headers = collect_sip_headers(
+        h.items(),
+        exclude=_SIPBRIDGE_NON_INVITE_HEADERS,
+        exclude_prefixes=("x-forwarded-",),
+    )
+
     session_id = f"sb-{uuid.uuid4()}"
     ctx = InboundCallContext(
         session_id=session_id,
@@ -416,6 +468,7 @@ async def _sipbridge_resolve_agent_from_headers(
         force_bridged_transfer=origin.force_bridged_transfer,
         registration_username=origin.registration_username,
         call_id=aplisay_call_id,
+        sip_headers=sip_headers,
         raw={"bridge_call_id": bridge_call_id},
     )
     return instance, agent, ctx
@@ -442,7 +495,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=False,
-    allow_methods=["POST", "OPTIONS", "GET"],
+    # PATCH is the pipecat SmallWebRTC client's trickle-ICE + renegotiation
+    # verb (see /webrtc/offer PATCH handler). Without it the browser preflight
+    # gets a 400 "Disallowed CORS method" and trickle silently fails.
+    allow_methods=["POST", "PATCH", "OPTIONS", "GET"],
     allow_headers=["*"],
 )
 
@@ -606,6 +662,34 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="missing token")
     payload = verify_join_token(token)
 
+    sdp = body.get("sdp")
+    sdp_type = body.get("type")
+    if not sdp or not sdp_type:
+        raise HTTPException(status_code=400, detail="missing sdp / type")
+
+    # Renegotiation / ICE-restart on an already-established peer. The pipecat
+    # SmallWebRTC client re-POSTs to the same endpoint carrying the pc_id we
+    # handed back in the original answer (restart_pc=true for an ICE restart).
+    # Reuse the live connection and its running pipeline rather than standing up
+    # a whole new session. Affinity caveat as on the PATCH handler: this must
+    # reach the worker that owns the pc_id.
+    pc_id = body.get("pc_id")
+    if pc_id:
+        existing = request.app.state.webrtc_connections.get(pc_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="unknown pc_id")
+        await existing.renegotiate(
+            sdp=sdp, type=sdp_type, restart_pc=bool(body.get("restart_pc"))
+        )
+        answer = existing.get_answer()
+        if not answer:
+            raise HTTPException(
+                status_code=500, detail="webrtc renegotiation produced no answer"
+            )
+        return JSONResponse(answer)
+
+    # New browser session: resolve the agent, create the Call, build + start the
+    # pipeline, then answer.
     try:
         instance = await api_client.get_instance_by_id(payload.instance_id)
     except api_client.ApiRequestError as e:
@@ -618,11 +702,6 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     agent = instance.get("Agent")
     if not agent:
         raise HTTPException(status_code=404, detail="instance has no agent")
-
-    sdp = body.get("sdp")
-    sdp_type = body.get("type")
-    if not sdp or not sdp_type:
-        raise HTTPException(status_code=400, detail="missing sdp / type")
 
     pc = SmallWebRTCConnection(ice_servers=WEBRTC_ICE_SERVERS)
     await pc.initialize(sdp, sdp_type)
@@ -759,6 +838,15 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         )
 
     request.app.state.live_calls[call.id] = session
+    # Register the peer alongside the session (both are torn down together in the
+    # runner's finally). Now that the session is fully built we know we'll return
+    # an answer, so the browser can trickle ICE candidates (PATCH) and renegotiate
+    # against this pc_id. Drop it when the peer closes.
+    request.app.state.webrtc_connections[answer["pc_id"]] = pc
+
+    @pc.event_handler("closed")
+    async def _drop_webrtc_connection(conn):
+        request.app.state.webrtc_connections.pop(conn.pc_id, None)
 
     async def _run_browser_session():
         try:
@@ -774,6 +862,10 @@ async def webrtc_offer(request: Request) -> JSONResponse:
                 pass
         finally:
             request.app.state.live_calls.pop(call.id, None)
+            # Safety net: the "closed" event handler normally drops this, but
+            # aiortc has no "disconnected" state, so a vanished browser might
+            # never fire it — pop here too so the map can't leak.
+            request.app.state.webrtc_connections.pop(pc.pc_id, None)
             try:
                 await session.gateway_session.shutdown()
             except Exception as inner:  # noqa: BLE001
@@ -868,9 +960,57 @@ async def webrtc_offer(request: Request) -> JSONResponse:
             detail=f"session startup failed: {detail}",
         )
 
-    # Pipeline is up and running. Return the SDP answer so the browser
-    # completes its end of the WebRTC handshake.
-    return JSONResponse({"sdp": answer["sdp"], "type": answer["type"]})
+    # Pipeline is up and running. Return the SDP answer — including pc_id, so
+    # the browser can address trickle-ICE PATCHes and any later renegotiation to
+    # this exact peer — and complete its end of the WebRTC handshake.
+    return JSONResponse(answer)
+
+
+@app.patch("/webrtc/offer")
+async def webrtc_ice_candidate(request: Request) -> JSONResponse:
+    """Trickle-ICE candidate delivery for an in-flight browser peer.
+
+    The pipecat SmallWebRTC client sends its SDP offer with no ICE candidates
+    (``a=ice-options:trickle``) and PATCHes them here as they're gathered,
+    keyed by the ``pc_id`` we returned in the offer answer. Each is handed to
+    the matching aiortc peer. Without this route the browser's candidates never
+    reach the worker and the call limps along on aiortc peer-reflexive discovery
+    alone — which only happens to work because the node has a public IP, and
+    leaves ICE restart / reconnect (restart_pc) dead.
+
+    SESSION AFFINITY: the offer is stateless (self-contained token, any node
+    answers — see deploy/k8s README), but a peer lives on ONE node once created.
+    In a multi-node pool with no LB affinity a PATCH can land on a different node
+    and 404 here; the client logs and ignores that, falling back to
+    peer-reflexive discovery. Reliable trickle needs signalling affinity (a
+    single WebRTC replica, or LB sticky sessions).
+    """
+    body = await request.json()
+    token = request.query_params.get("token") or body.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="missing token")
+    # Validate signature/expiry; the unguessable pc_id is the routing key.
+    verify_join_token(token)
+
+    pc_id = body.get("pc_id")
+    pc = request.app.state.webrtc_connections.get(pc_id) if pc_id else None
+    if pc is None:
+        raise HTTPException(status_code=404, detail="unknown pc_id")
+
+    for c in body.get("candidates") or []:
+        raw = c.get("candidate")
+        if not raw:
+            continue  # empty string = end-of-candidates sentinel, nothing to add
+        try:
+            candidate = candidate_from_sdp(raw)
+            candidate.sdpMid = c.get("sdp_mid")
+            candidate.sdpMLineIndex = c.get("sdp_mline_index")
+            await pc.add_ice_candidate(candidate)
+        except Exception as e:  # noqa: BLE001
+            # One malformed candidate shouldn't drop the rest of the batch.
+            logger.warning(f"skipping unparseable ICE candidate {raw!r}: {e}")
+
+    return JSONResponse({"status": "success"})
 
 
 # ---- FreeSWITCH WebSocket (mod_audio_stream) ----
@@ -986,7 +1126,7 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         ctx = InboundCallContext(
             session_id=start.channel_uuid,
             called_id=start.called_id,
-            caller_id=parent.call.callerId,
+            caller_id=_aplisay_caller_id(parent.call),
             aplisay_id=None,
             phone_registration=None,
             b2bua_gateway_ip=None,
@@ -1177,6 +1317,51 @@ async def voiceblender_agent(websocket: WebSocket, session_id: str) -> None:
     if not isinstance(sip_gateway, VoiceblenderSipGateway):
         logger.warning("/voiceblender/agent invoked but SIP_GATEWAY != voiceblender")
         await websocket.close(code=1011)
+        return
+
+    # Human-to-agent takeover leg (``options.bridgedTransferToAgent``): a
+    # DTMF match on a bridged call dropped the transfer target and re-
+    # attached a Pipecat agent to the caller leg under a fresh session id.
+    # Everything the incoming agent needs was stashed at match time — see
+    # ``bridged_transfer.py``.
+    takeover = sip_gateway.takeover_payload(session_id)
+    if takeover is not None:
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=ProtobufFrameSerializer(),
+            ),
+        )
+        aplisay_meta = (
+            takeover.call.metadata.get("aplisay", {})
+            if isinstance(takeover.call.metadata, dict)
+            else {}
+        )
+        ctx = InboundCallContext(
+            session_id=session_id,
+            called_id=aplisay_meta.get("calledId"),
+            caller_id=aplisay_meta.get("callerId"),
+            raw={"transport": transport, "leg_id": takeover.extra.get("leg_id")},
+        )
+        try:
+            session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"voiceblender takeover setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_takeover_session(session_id)
+            return
+        websocket.app.state.live_calls[session.call.id] = session
+        try:
+            await _run_session(websocket.app, session, session.call.id)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            sip_gateway.clear_takeover_session(session_id)
         return
 
     pending = sip_gateway.pending_attaches.get(session_id)
@@ -1371,13 +1556,73 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         return
 
     is_outbound = sip_gateway.is_outbound(session_id)
+    # Warm-transfer consult leg (``transfer(operation="consultative")``):
+    # ``_do_consultative`` registered this session id in the gateway's
+    # consult map — NOT ``_pending_outbound`` — before POSTing /consult,
+    # and the bridge dials us back on it once the third party answers. It
+    # must route into the outbound-family flow below: falling through to
+    # the inbound resolver would 404-deny the WS (worker-initiated legs
+    # carry no ``x-sipbridge-to`` header), tearing down the consult leg
+    # the moment the transfer target picks up.
+    parent_session_id = sip_gateway.consult_parent(session_id)
     bridge_call_id = (
         websocket.headers.get("x-sipbridge-call-id")
         or websocket.headers.get("X-Sipbridge-Call-ID")
         or ""
     )
 
-    if is_outbound:
+    # Human-to-agent takeover leg (``options.bridgedTransferToAgent``): a
+    # DTMF match on a monitored bridge POSTed /unbridge, and the bridge has
+    # re-dialled the surviving caller leg to us under a fresh session id.
+    # Everything the incoming agent needs was stashed at match time — see
+    # ``bridged_transfer.py``.
+    takeover = sip_gateway.takeover_payload(session_id)
+    if takeover is not None:
+        await websocket.accept()
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=DtmfProtobufFrameSerializer(),
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=16000,
+            ),
+        )
+        ctx = InboundCallContext(
+            session_id=session_id,
+            called_id=takeover.call.metadata.get("aplisay", {}).get("calledId")
+            if isinstance(takeover.call.metadata, dict) else None,
+            caller_id=takeover.call.metadata.get("aplisay", {}).get("callerId")
+            if isinstance(takeover.call.metadata, dict) else None,
+            raw={"transport": transport, "bridge_call_id": bridge_call_id},
+        )
+        try:
+            session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=session_id).error(
+                f"sipbridge takeover setup failed: {e}"
+            )
+            await websocket.close(code=1011)
+            sip_gateway.clear_takeover_session(session_id)
+            return
+        sip_gateway.register_inbound_session(
+            session_id=session_id,
+            bridge_call_id=bridge_call_id,
+            transport=transport,
+        )
+        websocket.app.state.live_calls[session.call.id] = session
+        try:
+            await _run_session(websocket.app, session, session.call.id)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            sip_gateway.clear_takeover_session(session_id)
+            sip_gateway.unregister_session(session_id)
+        return
+
+    if is_outbound or parent_session_id:
         # Two sub-flows here:
         #
         #   (a) Plain outbound originate (POST /dispatch → setup_outbound_call):
@@ -1388,12 +1633,11 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         #
         #   (b) Warm-transfer consult (Phase C): bot_A initiated a
         #       consult via transfer(operation="consult"). The gateway
-        #       has recorded a parent_session_id for this consult; we
-        #       build a fresh CallSession using the parent's agent +
-        #       instance and run a second pipeline here in the
-        #       handler (same shape as inbound).
-        parent_session_id = sip_gateway.consult_parent(session_id)
-
+        #       recorded a parent_session_id for this consult session id
+        #       (that's what routed us here); we build a fresh
+        #       CallSession using the parent's agent + instance and run
+        #       a second pipeline here in the handler (same shape as
+        #       inbound).
         await websocket.accept()
         serializer = DtmfProtobufFrameSerializer()
         transport = FastAPIWebsocketTransport(
@@ -1485,8 +1729,15 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
             ctx = InboundCallContext(
                 session_id=session_id,
-                called_id=None,
-                caller_id=consult_parent.call.callerId,
+                # The consult record's calledId/callerId must be real strings
+                # — the agent-db API 400s a null (beta 2026-08-05: calledId=
+                # None failed every consult-record POST, so the TransferAgent
+                # never spawned and the answered target heard silence).
+                # calledId = the transfer destination, stashed on the
+                # ConsultPayload at _do_consultative time; callerId = the
+                # origin caller from the parent's aplisay metadata.
+                called_id=payload.destination or "unknown",
+                caller_id=_aplisay_caller_id(consult_parent.call) or "unknown",
                 aplisay_id=None,
                 phone_registration=None,
                 b2bua_gateway_ip=None,
@@ -1547,10 +1798,19 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
                 sip_gateway.clear_consult_session(session_id)
             return
 
-        # Plain outbound — just wait for done.
+        # Plain outbound — wait for done. The leg-done event also fires when
+        # a bridged transfer-to-agent watch is armed mid-call
+        # (``signal_bta_armed``); in that case the WS is still open and we
+        # take over reading it for transfer-target DTMF.
         done_event = sip_gateway.wait_for_leg_done(session_id)
         try:
             await done_event.wait()
+            gw_session = sip_gateway.live_session(session_id)
+            bta_ctx = getattr(gw_session, "bta_context", None) if gw_session else None
+            if bta_ctx is not None:
+                await run_sipbridge_bta_watch(
+                    websocket, sip_gateway, gw_session, bta_ctx, platform=PLATFORM
+                )
         except WebSocketDisconnect:
             pass
         except asyncio.CancelledError:
@@ -1645,6 +1905,20 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
     try:
         await _run_session(websocket.app, session, session.call.id)
+        # Human-to-agent transfers: when a monitored bridge was installed,
+        # the bridge kept this WS open as a control channel and the
+        # CallSession stashed the watch context on the gateway session.
+        # Keep reading the socket for transfer-target DTMF until the
+        # bridge ends (or an unbridge takeover replaces this WS).
+        bta_ctx = getattr(session.gateway_session, "bta_context", None)
+        if bta_ctx is not None:
+            await run_sipbridge_bta_watch(
+                websocket,
+                sip_gateway,
+                session.gateway_session,
+                bta_ctx,
+                platform=PLATFORM,
+            )
     except WebSocketDisconnect:
         pass
     finally:

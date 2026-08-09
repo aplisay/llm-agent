@@ -1,8 +1,8 @@
 # GCP deployment — Aplisay Pipecat agent
 
-Cloud Build + GCP Compute Engine deployment tooling for the three-container
-Pipecat agent stack (`freeswitch`, `esl-poller`, `pipecat-worker`). Adapted
-from `aplisay-b2bua/deploy/gcp/`.
+Cloud Build + GCP Compute Engine deployment tooling for the five-image
+Pipecat agent stack (`freeswitch`, `esl-poller`, `sipbridge`,
+`secretenv-exec`, `pipecat-worker`). Adapted from `aplisay-b2bua/deploy/gcp/`.
 
 ## Files
 
@@ -58,13 +58,45 @@ gcloud builds submit \
 
 Production `:latest` is **not** produced here. A versioned release tag on main
 runs the top-level [`cloudbuild-release.yaml`](../../../../cloudbuild-release.yaml),
-which verifies that every image (the five Pipecat images plus the Cloud Run
-services) exists at the release `:$COMMIT_SHA`, **aborts if any is missing**, and
-then promotes them all to `:latest` / `:$TAG_NAME` as a group before deploying.
+which verifies that every image in its `_RELEASE_IMAGES` group (the
+non-gated Pipecat images plus the Cloud Run services) exists at the release
+`:$COMMIT_SHA`, **aborts if any is missing**, and then promotes them all to
+`:latest` / `:$TAG_NAME` as a group before deploying.
 
 The build runs from the repo root so the `pipecat-worker` Dockerfile can pull
 in `agents/pipecat/` files. Both other services have self-contained build
 contexts under `agents/pipecat/freeswitch/` and `agents/pipecat/esl-poller/`.
+
+### `_ONLY_TRANSPORTS` — build only the transports you deploy
+
+All three pipelines (`cloudbuild.yaml`, `cloudbuild-staging.yaml`,
+`cloudbuild-beta.yaml`) accept an `_ONLY_TRANSPORTS` substitution: a
+comma-separated allow-list — no spaces — of the SIP transports to build.
+Empty or unset means **build everything** (the pre-flag behaviour, and what a
+plain `gcloud builds submit` of these configs does). When set,
+transport-specific artifacts outside the list are skipped:
+
+| name         | gates                                                              |
+| ------------ | ------------------------------------------------------------------ |
+| `freeswitch` | the `freeswitch` + `esl-poller` images                             |
+| `sipbridge`  | the `sipbridge` image                                              |
+| `daily`      | the `daily-python` wheel inside `pipecat-worker` (the image itself always builds; `SIP_GATEWAY=daily` then fails with a clear error at boot) |
+
+`secretenv-exec` and `pipecat-worker` are always built. The
+`pipecat-prod` / `pipecat-staging` / `pipecat-beta` Cloud Build triggers set
+`_ONLY_TRANSPORTS=sipbridge`, since neither the FreeSWITCH nor the Daily
+transport is in any deployed scenario — the FreeSWITCH image build (base
+image pull + `mod_audio_stream` compile) is the big per-CI win. To re-enable
+a transport, extend the substitution on the triggers **and** re-add
+`freeswitch esl-poller` to `_RELEASE_IMAGES` in the top-level
+[`cloudbuild-release.yaml`](../../../../cloudbuild-release.yaml) (its Verify
+step aborts a release when a listed image was never built; the gated ones
+are therefore delisted there).
+
+Note the gate skips beta promotion too: a gated-out image's `:beta` /
+`:beta-n.n.n` tags simply stop moving. Skipping the `esl-poller` build also
+skips its in-Dockerfile jest suite — the freeswitch transport is only
+compiled and tested again when the flag re-enables it.
 
 ## Deploying to a VM
 

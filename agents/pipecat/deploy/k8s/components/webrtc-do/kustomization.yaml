@@ -48,3 +48,20 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-tls-ports
         value: "443"
+
+  # Disable STUN on DigitalOcean. DO puts the droplet's public IP directly on the
+  # NIC, so the worker's *host* ICE candidate is already browser-reachable — a
+  # server-reflexive (STUN) candidate is redundant here (it resolves to the same
+  # public IP). Worse: the worker runs on hostNetwork on a multi-homed node (DO
+  # private + k8s overlay NICs), and aiortc probes STUN out of *every* interface;
+  # the unroutable ones stall ICE gathering to aioice's ~5s cap, delaying the SDP
+  # answer — and thus browser connect — by ~5s on every call. Empty = host-only
+  # gather, which completes instantly. KEEP STUN on 1:1-NAT clouds (GCP/AWS),
+  # where the public IP is off the NIC and only STUN can discover it.
+  - target:
+      kind: ConfigMap
+      name: pipecat-config
+    patch: |-
+      - op: replace
+        path: /data/WEBRTC_ICE_SERVERS
+        value: ""

@@ -90,6 +90,15 @@ Registration-based **outbound originate** (caller ID = registration UUID) has no
 yarn dev
 ```
 
+## Deployment
+
+The agent runs as a single container on GCE VMs. Deployment tooling —
+docker-compose template, per-environment env templates, a bare-host deploy
+script and the secretenv bundler — lives in [`deploy/gcp/`](deploy/gcp), and
+follows the same structure as `aplisay-sbc` and `agents/pipecat`. Images are
+built by the Cloud Build configs in
+[`deploy/gcp/cloudrun/`](../../deploy/gcp/cloudrun).
+
 ## License
 
 MIT 

@@ -7,6 +7,8 @@ import {
   validateAgentTargets,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
+import { mergeMemberFunctions } from '../../lib/agent-set-functions.js';
+import { assertAgentsNotWired, WiredListenerError } from '../../lib/deployment-guard.js';
 
 let log;
 
@@ -18,7 +20,7 @@ export default function (logger) {
   };
 };
 
-const MEMBER_FIELDS = ['name', 'description', 'modelName', 'prompt', 'options', 'functions', 'mcpServers', 'keys', 'type'];
+const MEMBER_FIELDS = ['name', 'description', 'modelName', 'prompt', 'promptMetadata', 'options', 'functions', 'mcpServers', 'keys', 'type'];
 
 /** Default the agent type from the model name's handler prefix when not given explicitly. */
 export function defaultType(def) {
@@ -55,6 +57,11 @@ export async function renderSet(setId, user) {
  * Create (or, for updateAgentSet, reconcile) the members of a set inside a
  * transaction: build/refresh rows, resolve label references against the new
  * membership, validate cross-references, then save.
+ *
+ * Member `functions` are merged, not blindly replaced: stored functions that
+ * reference a write-only key entry (platform-wired tools) survive a document
+ * that omits them, and are deleted only via the member's `removeFunctions`
+ * list (see lib/agent-set-functions.js).
  */
 export async function reconcileMembers({ set, byLabel, existing = [], user, transaction, patch = false, removeLabels = [] }) {
   const existingByLabel = new Map(existing.map((agent) => [agent.label, agent]));
@@ -67,6 +74,12 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
   //    was explicitly listed in `removeLabels`.
   const toRemove = existing.filter((agent) =>
     patch ? removeSet.has(agent.label) : !byLabel.has(agent.label));
+  // Fail closed: a member still answering a number/registration must be
+  // undeployed explicitly first — destroying it would cascade the listener
+  // away and silently disconnect the endpoint. This also turns an
+  // accidentally-truncated full-document update into a loud 409 instead of
+  // a silent outage.
+  await assertAgentsNotWired(toRemove, { transaction });
   for (const agent of toRemove) {
     await agent.destroy({ transaction });
   }
@@ -110,15 +123,25 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
   });
 
   for (const { label, def, agent } of members) {
+    // `functions` is merged, never blindly replaced: keyed (platform-wired)
+    // functions on the stored row survive a document that omits them, and a
+    // member's `removeFunctions` deletes stored functions by name — see
+    // lib/agent-set-functions.js. Capture the stored value before the copy.
+    const priorFunctions = agent.isNewRecord ? undefined : agent.functions;
+    const mergedFunctions = mergeMemberFunctions(priorFunctions, def.functions, def.removeFunctions);
     for (const field of MEMBER_FIELDS) {
       if (def[field] !== undefined) {
         agent[field] = field === 'type' ? defaultType(def) : def[field];
       }
     }
-    if (agent.functions) {
-      fixupLabelReferences(agent.functions, labelMap, label);
-      agent.changed('functions', true);
-      await validateAgentTargets(agent.functions, { membersById, lookupAgent, owningLabel: label });
+    if (mergedFunctions !== undefined) {
+      agent.functions = mergedFunctions;
+    }
+    if (agent.functions || agent.options?.bridgedTransferToAgent) {
+      fixupLabelReferences(agent.functions || [], labelMap, label, agent.options);
+      agent.functions && agent.changed('functions', true);
+      agent.options?.bridgedTransferToAgent && agent.changed('options', true);
+      await validateAgentTargets(agent.functions || [], { membersById, lookupAgent, owningLabel: label, options: agent.options });
     }
   }
   for (const { agent } of members) {
@@ -130,6 +153,9 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
 export function sendAgentSetError(req, res, err) {
   if (err instanceof AgentSetValidationError) {
     return res.status(400).send({ message: err.message });
+  }
+  if (err instanceof WiredListenerError) {
+    return res.status(err.status).send({ message: err.message });
   }
   if (err.name === 'SequelizeValidationError') {
     return res.status(400).send({ message: err.errors.map((e) => e.message).join('; ') });
@@ -144,7 +170,10 @@ const agentSetCreate = async (req, res) => {
   const user = res.locals.user;
 
   try {
-    const byLabel = validateSetLabels(agents);
+    // An EMPTY set may be created (a placeholder a builder session then fills
+    // in) — but only on create: PUT keeps requiring a non-empty document so a
+    // truncated update can never silently wipe a team's members.
+    const byLabel = Array.isArray(agents) && agents.length ? validateSetLabels(agents) : new Map();
     const set = await AgentSet.sequelize.transaction(async (transaction) => {
       const set = await AgentSet.create({
         name,
@@ -169,7 +198,9 @@ agentSetCreate.apiDoc = {
                 (unique within the set). Members may reference each other in \`transfer_agent\` and
                 \`subagent\` builtin functions using \`{"source": "static", "from": "label:<label>"}\`;
                 these references are fixed up to the real agent UUIDs on creation (the original label is
-                retained as \`fromLabel\` so the document can be round-tripped through PUT).`,
+                retained as \`fromLabel\` so the document can be round-tripped through PUT).
+                \`agents\` may be an empty array on create only — a placeholder set to be filled in by a
+                later update; PUT always requires a non-empty document.`,
   operationId: 'createAgentSet',
   tags: ["Agent Sets"],
   requestBody: {

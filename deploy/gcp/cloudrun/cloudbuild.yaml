@@ -13,6 +13,12 @@ steps:
       - SECRETENV_BUNDLE
       - '--build-arg'
       - SECRETENV_KEY
+      - '--build-arg'
+      - COMMIT_SHA=$COMMIT_SHA
+      - '--build-arg'
+      - BRANCH_NAME=$BRANCH_NAME
+      - '--build-arg'
+      - TAG_NAME=$TAG_NAME
       - '-t'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA

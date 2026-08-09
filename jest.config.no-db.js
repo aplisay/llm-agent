@@ -7,7 +7,9 @@ export default {
     '!**/tests/agent-concurrency-limit.test.mjs',
   ],
   testPathIgnorePatterns: [
-    "/agents/"
+    "/node_modules/",
+    "/agents/",
+    ".claude",
   ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',

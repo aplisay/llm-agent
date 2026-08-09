@@ -33,9 +33,12 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.transcriptions.language import Language
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
+
+from .tool_log import log_tool_call, log_tool_result
 
 
 def _inactivity_timeout_secs(agent: dict) -> Optional[float]:
@@ -77,6 +80,132 @@ def _inactivity_message(agent: dict) -> Optional[str]:
     return message.strip()
 
 
+#: How many times the inactivity prompt is spoken before the call is considered
+#: abandoned. Shared by the two enforcement paths so they agree: the native
+#: Ultravox ``inactivityMessages`` list length, and the generic kick's own
+#: counter. Only acted on when ``options.inactivity.hangup`` is set — otherwise
+#: Ultravox simply stops prompting after this many and the generic kick keeps
+#: prompting. Must stay in step with the LiveKit worker's INACTIVITY_PROMPT_COUNT.
+INACTIVITY_PROMPT_COUNT = 3
+
+#: UI / legacy values for ``options.*.language`` that mean "no fixed language"
+#: rather than a real tag. Must stay in step with NON_SPECIFIC_STT_LANGUAGES in
+#: agents/livekit/lib/pipeline-inference-options.ts and NON_SPECIFIC_LANGUAGES in
+#: lib/models/ultravox.js.
+NON_SPECIFIC_LANGUAGES = frozenset({"any", "multi", "*", "auto", "all", "global"})
+
+
+def _agent_language_tag(agent: dict, prefer: str = "tts") -> Optional[str]:
+    """The agent's declared language as a full BCP-47 tag (e.g. ``en-GB``), or
+    ``None`` when unset or set to a "no fixed language" sentinel.
+
+    ``prefer`` names the block to read first (``"tts"`` or ``"stt"``); the other
+    is the fallback, so declaring the language once configures the whole session.
+    The default (``"tts"`` first) matches the LiveKit worker's ``agentLanguageTag``
+    and the native driver's ``Ultravox.languageTag``.
+
+    The region subtag is deliberately preserved — it is what distinguishes en-GB
+    from en-US — and there is no fallback to ``en``, because an absent hint means
+    "let the provider decide", which is meaningfully different from "English".
+    """
+    options = agent.get("options") or {}
+    order = ("tts", "stt") if prefer == "tts" else ("stt", "tts")
+    for block in order:
+        raw = (options.get(block) or {}).get("language")
+        if not isinstance(raw, str):
+            continue
+        raw = raw.strip()
+        if raw and raw.lower() not in NON_SPECIFIC_LANGUAGES:
+            return raw
+    return None
+
+
+def _canonical_bcp47(tag: str) -> str:
+    """Canonicalise BCP-47 case so :class:`Language` lookups succeed.
+
+    ``Language`` is a value-keyed enum (``Language("en-GB")``) and its lookup is
+    case-SENSITIVE, so ``"en-gb"`` from a hand-written agent definition would
+    otherwise miss. Applies the standard convention: language lowercase, 2-letter
+    region uppercase, 4-letter script titlecase (``zh-hans-cn`` → ``zh-Hans-CN``).
+    """
+    parts = tag.split("-")
+    out = [parts[0].lower()]
+    for part in parts[1:]:
+        if len(part) == 2 and part.isalpha():
+            out.append(part.upper())
+        elif len(part) == 4 and part.isalpha():
+            out.append(part.title())
+        else:
+            out.append(part)
+    return "-".join(out)
+
+
+def _language_enum(tag: str) -> Optional[Language]:
+    """Resolve a BCP-47 tag to Pipecat's :class:`Language`, or ``None``.
+
+    Tries the canonicalised tag first, then the bare primary subtag, so an
+    unrecognised region (``en-ZZ``) still yields ``Language.EN`` rather than
+    nothing. Returning the enum (rather than a raw string) matters because each
+    Pipecat service maps it through its own ``language_to_service_language()`` —
+    that is what turns ``en-GB`` into Cartesia's base code, Google's ``en-GB``
+    recognition code, and so on.
+    """
+    canonical = _canonical_bcp47(tag)
+    for candidate in (canonical, canonical.split("-")[0]):
+        try:
+            return Language(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _language_setting(agent: dict, prefer: str) -> Language | str | None:
+    """Language to hand a pipeline STT/TTS service: a :class:`Language` when the
+    tag resolves, else the raw tag, else ``None`` when the agent declared none.
+
+    An unresolvable tag is passed through as a string rather than dropped —
+    Pipecat's base ``STTService``/``TTSService`` log it and forward it to the
+    provider verbatim, which is the better failure mode for a valid tag that
+    Pipecat's enum simply doesn't carry yet.
+    """
+    tag = _agent_language_tag(agent, prefer=prefer)
+    if tag is None:
+        return None
+    return _language_enum(tag) or tag
+
+
+def _ultravox_language_extra(agent: dict) -> dict:
+    """Native Ultravox ``languageHint`` derived from ``options.tts.language``.
+
+    Ultravox is speech-to-speech with no separate STT/TTS stage, so a single
+    BCP-47 hint guides both its recognition and its synthesis. Merged into
+    ``OneShotInputParams.extra`` (which becomes the ``/calls`` request body).
+    Returns ``{}`` when unset, leaving the field off the body entirely so
+    Ultravox auto-detects as before.
+
+    @see https://docs.ultravox.ai/api-reference/calls/calls-post
+    """
+    language = _agent_language_tag(agent)
+    return {"languageHint": language} if language else {}
+
+
+def _inactivity_hangup_enabled(agent: dict) -> bool:
+    """Whether ``options.inactivity.hangup`` opts this agent into ending the call
+    once the prompt has gone unanswered :data:`INACTIVITY_PROMPT_COUNT` times.
+
+    Only meaningful alongside a usable inactivity config, so this is ``False``
+    whenever :func:`_inactivity_timeout_secs` is ``None`` — there is no prompt to
+    count, so there is nothing to hang up after. Strictly ``True``, so a truthy
+    string from a hand-edited agent definition does not silently arm it.
+    """
+    if _inactivity_timeout_secs(agent) is None:
+        return False
+    inactivity = (agent.get("options") or {}).get("inactivity")
+    if not isinstance(inactivity, dict):
+        return False
+    return inactivity.get("hangup") is True
+
+
 def _ultravox_inactivity_extra(agent: dict) -> dict:
     """Native Ultravox ``inactivityMessages`` derived from ``options.inactivity``.
 
@@ -89,15 +218,21 @@ def _ultravox_inactivity_extra(agent: dict) -> dict:
 
     Ultravox fires each entry once, in sequence, after ``duration`` of further
     user inactivity; a short run of identical entries gives "re-fire every
-    ``timeout`` of continued silence" (here up to 3 nudges). ``endBehavior`` is
-    left default — do NOT hang up after the last one. Returns ``{}`` when unset.
+    ``timeout`` of continued silence" (up to :data:`INACTIVITY_PROMPT_COUNT`
+    nudges). ``endBehavior`` is left default — do NOT hang up after the last one —
+    unless ``options.inactivity.hangup`` opts in, in which case the LAST entry
+    carries ``END_BEHAVIOR_HANG_UP_SOFT`` so the model still delivers that prompt
+    before ending. Returns ``{}`` when unset.
     """
     secs = _inactivity_timeout_secs(agent)
     message = _inactivity_message(agent)
     if secs is None or message is None:
         return {}
     entry = {"duration": f"{secs:g}s", "message": message}
-    return {"inactivityMessages": [entry, entry, entry]}
+    messages = [dict(entry) for _ in range(INACTIVITY_PROMPT_COUNT)]
+    if _inactivity_hangup_enabled(agent):
+        messages[-1] = {**entry, "endBehavior": "END_BEHAVIOR_HANG_UP_SOFT"}
+    return {"inactivityMessages": messages}
 
 
 def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams]:
@@ -216,6 +351,135 @@ def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
     )
 
 
+def build_stt_service(agent: dict) -> Any:
+    """Construct a fresh STT service from ``agent.options.stt`` (defaulting
+    to Deepgram). Used by the pipeline build below and by the bridged-
+    transfer transcription tap (``bridged_transfer.py``), which runs extra
+    STT streams over the human↔human segment of a monitored bridge —
+    each call returns a NEW service instance, safe to run alongside the
+    pipeline's own."""
+    stt_opts = (agent.get("options") or {}).get("stt") or {}
+    stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
+    # ``options.stt.language`` (falling back to ``options.tts.language``). Each
+    # branch OMITS the setting entirely when this is None rather than passing
+    # None: the vendor defaults are non-null (Deepgram ships Language.EN,
+    # Google ships [Language.EN_US]) and an explicit None would clear them.
+    language = _language_setting(agent, "stt")
+    if stt_vendor == "deepgram":
+        from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
+
+        # Deepgram takes the full regional tag — nova-3 accepts en-GB/en-AU/…
+        # alongside the bare primary tags, so there is nothing to truncate.
+        return DeepgramSTTService(
+            api_key=_require_env("DEEPGRAM_API_KEY"),
+            **(
+                {"settings": DeepgramSTTSettings(language=language)}
+                if language is not None
+                else {}
+            ),
+        )
+    if stt_vendor == "google":
+        from pipecat.services.google.stt import GoogleSTTService
+
+        # GoogleSTTService accepts credentials JSON or credentials_path. Source
+        # of truth is GOOGLE_APPLICATION_CREDENTIALS_JSON (a JSON string) or
+        # GOOGLE_APPLICATION_CREDENTIALS (a path) — pass through whichever the
+        # operator set.
+        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        # Google is the one service that needs a real Language enum: it resolves
+        # recognition codes from ``settings.languages`` (a LIST of enums) and
+        # ignores the base class's ``settings.language``, so a raw string cannot
+        # be threaded through. An unresolvable tag therefore keeps the default.
+        google_settings = None
+        if isinstance(language, Language):
+            google_settings = GoogleSTTService.Settings(languages=[language])
+        elif language is not None:
+            logger.warning(
+                f"STT language {language!r} does not map to a Pipecat Language; "
+                "using the Google STT default"
+            )
+        return GoogleSTTService(
+            credentials=creds_json,
+            credentials_path=creds_path,
+            location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
+            **({"settings": google_settings} if google_settings is not None else {}),
+        )
+    raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
+
+
+def build_tts_service(agent: dict) -> Any:
+    """Construct the pipeline's TTS service from ``agent.options.tts``
+    (defaulting to Cartesia).
+
+    Peer of :func:`build_stt_service`, split out of ``_build_pipeline`` for the
+    same reason: each call returns a NEW instance, and having it addressable
+    makes the vendor/voice/language mapping testable without standing up a whole
+    pipeline.
+
+    Keep the vendor list aligned with PIPECAT_PIPELINE_TTS_VENDORS in
+    lib/model-voices.js. The API layer uses that allow-list to filter the
+    platform's TTS voice catalogue so the UI only offers vendors the worker can
+    actually instantiate.
+    """
+    tts_opts = (agent.get("options") or {}).get("tts") or {}
+    tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
+    voice = tts_opts.get("voice")
+    # ``options.tts.language`` (falling back to ``options.stt.language``). As on
+    # the STT side, each branch OMITS the field entirely when None so the
+    # vendor's own default survives. Pipecat maps the enum through each service's
+    # ``language_to_service_language()``, so the vendor-specific shape (Cartesia
+    # and ElevenLabs both want base codes, not regional tags) is handled for us —
+    # we only choose WHICH tag to hand over.
+    language = _language_setting(agent, "tts")
+    if tts_vendor == "cartesia":
+        from pipecat.services.cartesia.tts import CartesiaTTSService
+
+        return CartesiaTTSService(
+            api_key=_require_env("CARTESIA_API_KEY"),
+            settings=CartesiaTTSService.Settings(
+                voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121",
+                **({"language": language} if language is not None else {}),
+            ),
+        )
+    if tts_vendor == "elevenlabs":
+        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+
+        # ElevenLabs only honours a language code on its multilingual models;
+        # Pipecat's default here (eleven_flash_v2_5) is one of them, so the
+        # setting takes effect. If the model is ever pinned to a non-multilingual
+        # one, Pipecat logs that the code was dropped rather than failing.
+        #
+        # Voice goes through ``settings`` rather than the ``voice_id=`` init arg:
+        # that arg is deprecated in Pipecat 1.x, and since we now pass settings
+        # for the language anyway, using both would mean relying on the
+        # settings-wins precedence rule between them.
+        return ElevenLabsTTSService(
+            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+            settings=ElevenLabsTTSSettings(
+                voice=voice or "Rachel",
+                **({"language": language} if language is not None else {}),
+            ),
+        )
+    if tts_vendor == "deepgram":
+        # WebSocket-based streaming TTS. Voice names follow Deepgram's Aura
+        # model IDs (e.g. `aura-asteria-en`, `aura-helios-en`) — same values
+        # the platform's voices catalogue (lib/voices/deepgram.js) lists.
+        #
+        # No language wiring here on purpose: the Aura voice id IS the model and
+        # already encodes the language (the trailing `-en`), and Pipecat's
+        # DeepgramTTSService never puts ``settings.language`` on the wire — it
+        # sends ``model=<voice>``. Setting it would be a silent no-op, so the
+        # language for Deepgram TTS is chosen by picking the right voice.
+        from pipecat.services.deepgram.tts import DeepgramTTSService
+
+        return DeepgramTTSService(
+            api_key=_require_env("DEEPGRAM_API_KEY"),
+            voice=voice or "aura-asteria-en",
+        )
+    raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
+
+
 def _require_env(name: str, *aliases: str) -> str:
     """Return the first env var that's set; raise a clear error otherwise.
 
@@ -249,6 +513,7 @@ def _wire_inactivity_kick(
     mode: VoiceMode,
     is_ultravox: bool,
     relay_endpoint: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> None:
     """Register the inactivity "kick" handler on the user aggregator.
 
@@ -319,8 +584,20 @@ def _wire_inactivity_kick(
         ]
     )
 
+    # Consecutive unanswered prompts in the current silent run. Reset the moment a
+    # real user turn starts, so prompts spread across a long call never add up to a
+    # hangup. Only consulted when ``options.inactivity.hangup`` is set.
+    hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
+    idle_prompts = 0
+
+    @user_aggregator.event_handler("on_user_turn_started")
+    async def _on_user_turn_started(_aggregator) -> None:  # noqa: ANN001
+        nonlocal idle_prompts
+        idle_prompts = 0
+
     @user_aggregator.event_handler("on_user_turn_idle")
     async def _on_user_turn_idle(_aggregator) -> None:  # noqa: ANN001
+        nonlocal idle_prompts
         # Suppress while this leg is bridged into a media relay — the local
         # bot is muted, so a kick would be inaudible (and pointless).
         if relay_endpoint is not None and getattr(relay_endpoint, "engaged", False):
@@ -343,6 +620,21 @@ def _wire_inactivity_kick(
                 )
         except Exception as e:  # noqa: BLE001
             _logger.warning(f"inactivity kick failed: {e}")
+
+        # Count only prompts the caller could actually hear. Without the opt-in this
+        # is inert and the kick keeps re-firing indefinitely, exactly as before.
+        if not hangup_after_prompts:
+            return
+        idle_prompts += 1
+        if idle_prompts < INACTIVITY_PROMPT_COUNT:
+            return
+        _logger.bind(prompts=idle_prompts).info(
+            "inactivity prompt unanswered, ending call"
+        )
+        try:
+            await on_inactivity_hangup()  # type: ignore[misc]
+        except Exception as e:  # noqa: BLE001
+            _logger.warning(f"inactivity hangup failed: {e}")
 
 
 def _properties_to_function_schema(name: str, description: str, properties: dict, required: list[str]) -> FunctionSchema:
@@ -386,6 +678,34 @@ def _build_tools_schema(tools: list[dict]) -> ToolsSchema:
 _protected_tool_tasks: set = set()
 
 
+async def _deliver_native_result(params: "FunctionCallParams", value: Any) -> None:
+    """Ship a data tool's result to Ultravox as a native ``client_tool_result``.
+
+    A no-op unless the LLM service exposes ``deliver_native_tool_result``
+    (AplisayUltravoxRealtimeLLMService) — so the pipeline (text-LLM) path and any
+    other service are unaffected. This is what makes Ultravox recognise the
+    result as a real function result instead of the ignored user-side text the
+    async-tool path would otherwise inject.
+    """
+    deliver = getattr(params.llm, "deliver_native_tool_result", None)
+    if deliver is not None:
+        await deliver(params.tool_call_id, value)
+
+
+def _is_ultravox_realtime(llm: Any) -> bool:
+    """True when ``llm`` is Pipecat's Ultravox realtime service (or our shim).
+
+    Lazy import so the check never pulls the Ultravox service into the pipeline
+    (text-LLM) code path, and never hard-fails a worker whose extras don't
+    include it.
+    """
+    try:
+        from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(llm, UltravoxRealtimeLLMService)
+
+
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     """Register the platform's tool descriptors against a Pipecat LLM service.
 
@@ -393,7 +713,44 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     :func:`agent_tools.build_agent_tools`: each entry has ``schema`` and
     ``execute``. The schema is converted to ``FunctionSchema`` and registered
     with the service so it appears on the LLM-visible tool surface.
+
+    On the **Ultravox realtime** path, data-returning tools (REST functions, MCP
+    tools, stubs — anything that is not a shielded side-effecting builtin) are
+    handled specially, evolved over two staging incidents (2026-07-24):
+
+    * Ultravox FREEZES the conversation between ``client_tool_invocation`` and
+      the matching ``client_tool_result``. With plain synchronous registration
+      the constant speech-to-speech interruptions cancel the in-flight call
+      (``LLMService._handle_interruptions`` cancels every
+      ``cancel_on_interruption=True`` call ~30ms in), and the result, when it
+      arrives, is only shipped on the NEXT context push — which the assistant
+      aggregator skips while the caller is still speaking. The call froze until
+      the *next* tool call flushed the stale result.
+    * Registering ``cancel_on_interruption=False`` fixes the CANCEL (the call
+      survives the interruption — the tool turn is protected). But it also puts
+      the service on Pipecat's async-tool path, which unfreezes with a
+      *placeholder* result and delivers the real result as user-side TEXT.
+      Ultravox does NOT recognise that text as a function result, so the model
+      loops re-calling the tool (2nd incident: booking_get_slots 4× on
+      placeholder results).
+
+    So we keep ``cancel_on_interruption=False`` for its no-cancel property ONLY,
+    and replace the delivery: our Ultravox subclass suppresses the placeholder
+    and ``_runner`` ships the true result as a NATIVE ``client_tool_result`` via
+    :func:`_deliver_native_result` (both success and error). The tool turn stays
+    frozen — uninterruptible — until that real result lands. ``_native`` below is
+    this tool set; ``enable_async_tool_cancellation`` stays off, so no cancel
+    tool or system-prompt change is injected.
+
+    Side-effecting builtins (``hangup``, ``transfer``, ``transfer_agent``,
+    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS and are
+    NOT native-delivered: their handover machinery (``suppress_result_run`` +
+    ``CallSession._apply_agent_transfer``) depends on the normal result path, the
+    ``_runner`` already shields their execution, and the outgoing model does not
+    need their result. Off the Ultravox path (pipeline STT→LLM→TTS) every tool
+    stays synchronous — the freeze is Ultravox-specific.
     """
+    ultravox_realtime = _is_ultravox_realtime(llm)
     schemas: list[FunctionSchema] = []
     for entry in tools:
         s = entry["schema"]
@@ -406,18 +763,30 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
             params: FunctionCallParams,
             _execute=entry["execute"],
             _name=s["name"],
+            _kind=entry.get("kind", "function"),
             _suppress_result_run=bool(entry.get("suppress_result_run")),
             _protect=bool(entry.get("protect_from_interruption")),
+            # Data tools on Ultravox realtime deliver their result as a NATIVE
+            # client_tool_result (deliver_native_tool_result), NOT via Pipecat's
+            # async-tool user-text path which Ultravox ignores. Same set as the
+            # cancel_on_interruption=False tools below.
+            _native=bool(ultravox_realtime and not entry.get("protect_from_interruption")),
         ) -> None:
-            # Breadcrumb so we can confirm the realtime path actually
-            # routes function calls through here (and therefore through
-            # function_handler.py's transaction-log emissions). Earlier
-            # symptoms suggested realtime calls weren't reaching the
-            # telemetry path at all.
-            from loguru import logger as _logger
-            _logger.bind(tool=_name, arguments=params.arguments).debug(
-                "tool runner invoked"
-            )
+            # Log every tool/MCP call and its result at INFO with an ``event``
+            # marker (see tool_log.py) so they are visible in the per-call debug
+            # log for production agents and distinguishable from other
+            # InvocationLog output. This ``_runner`` is the single choke point
+            # for BOTH agent functions/builtins and MCP tools — both are
+            # registered here as ``{schema, execute}`` descriptors — so one pair
+            # of log lines covers every tool the worker runs. Also confirms the
+            # realtime path routes function calls through here (and thus through
+            # function_handler.py's transaction-log emissions).
+            started = asyncio.get_running_loop().time()
+            log_tool_call(tool=_name, kind=_kind, arguments=params.arguments)
+
+            def _elapsed_ms() -> int:
+                return int((asyncio.get_running_loop().time() - started) * 1000)
+
             try:
                 if _protect:
                     # Side-effecting platform builtins must survive Pipecat's
@@ -435,21 +804,41 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                     try:
                         result = await asyncio.shield(exec_task)
                     except asyncio.CancelledError:
-                        _logger.bind(tool=_name).info(
-                            "tool call cancelled by interruption; protected builtin continues in background"
+                        log_tool_result(
+                            tool=_name,
+                            kind=_kind,
+                            ok=False,
+                            duration_ms=_elapsed_ms(),
+                            cancelled=True,
+                            error="cancelled by interruption; protected builtin continues in background",
                         )
                         raise
                 else:
                     result = await _execute(params.arguments)
             except Exception as e:  # noqa: BLE001
-                _logger.bind(tool=_name, error=str(e)).warning(
-                    "tool runner _execute raised"
+                log_tool_result(
+                    tool=_name,
+                    kind=_kind,
+                    ok=False,
+                    duration_ms=_elapsed_ms(),
+                    error=str(e),
                 )
-                # Surface the error to the LLM via the result callback so
-                # the conversation can recover, rather than dropping the
-                # whole turn.
-                await params.result_callback({"error": str(e)})
+                # Surface the error to the LLM so the conversation can recover
+                # rather than dropping the whole turn. On Ultravox realtime the
+                # error must ALSO go back as a native client_tool_result, or the
+                # frozen tool turn never unblocks.
+                error_result = {"error": str(e)}
+                if _native:
+                    await _deliver_native_result(params, error_result)
+                await params.result_callback(error_result)
                 return
+            log_tool_result(
+                tool=_name,
+                kind=_kind,
+                ok=True,
+                duration_ms=_elapsed_ms(),
+                result=result,
+            )
             if (
                 _suppress_result_run
                 and isinstance(result, dict)
@@ -460,7 +849,8 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                 # the incoming agent's first turn instead. A FAILED handover
                 # falls through to the normal path so the current agent can
                 # tell the caller and recover. See
-                # CallSession._apply_agent_transfer.
+                # CallSession._apply_agent_transfer. (Builtins are never
+                # _native, so this path is untouched by native delivery.)
                 from pipecat.frames.frames import FunctionCallResultProperties
 
                 await params.result_callback(
@@ -468,9 +858,23 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
                     properties=FunctionCallResultProperties(run_llm=False),
                 )
                 return
+            # Ultravox data tool: ship the true result natively (unfreezes the
+            # tool turn) BEFORE the result_callback, which only updates our
+            # transcript/context (the Ultravox async-final message it queues is
+            # deduped by deliver_native_tool_result marking the call complete).
+            if _native:
+                await _deliver_native_result(params, result)
             await params.result_callback(result)
 
-        llm.register_function(s["name"], _runner)
+        # cancel_on_interruption=False for Ultravox-realtime data tools (protects
+        # the tool turn from interruption-cancel; delivery is native via
+        # _deliver_native_result, NOT the async user-text path). Synchronous for
+        # shielded builtins and for every tool off the Ultravox path.
+        is_builtin_side_effect = bool(entry.get("protect_from_interruption"))
+        cancel_on_interruption = not (ultravox_realtime and not is_builtin_side_effect)
+        llm.register_function(
+            s["name"], _runner, cancel_on_interruption=cancel_on_interruption
+        )
 
     return ToolsSchema(standard_tools=schemas)
 
@@ -486,6 +890,7 @@ async def build_voice_session(
     enable_recording: bool = False,
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
@@ -517,11 +922,13 @@ async def build_voice_session(
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
+            on_inactivity_hangup,
         )
     else:
         task, context, llm = await _build_pipeline(
-            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector
+            transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
+            on_inactivity_hangup,
         )
     return task, audio_buffer, context, llm
 
@@ -536,6 +943,7 @@ async def _build_realtime(
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -707,6 +1115,10 @@ async def _build_realtime(
                 # Native Ultravox idle handling (speech-to-speech has no
                 # separate TTS, so the generic kick is unreliable here).
                 **_ultravox_inactivity_extra(agent),
+                # Portable ``options.tts.language`` → native ``languageHint``.
+                # Same reason: no separate TTS stage to carry the language, so
+                # this single hint drives both recognition and synthesis.
+                **_ultravox_language_extra(agent),
             },
         )
         if voice:
@@ -826,6 +1238,7 @@ async def _build_realtime(
         mode="realtime",
         is_ultravox=model_id.startswith("ultravox/"),
         relay_endpoint=relay_endpoint,
+        on_inactivity_hangup=on_inactivity_hangup,
     )
     return task, context, llm
 
@@ -840,34 +1253,13 @@ async def _build_pipeline(
     audio_buffer: Optional[AudioBufferProcessor],
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
-    stt_opts = options.get("stt") or {}
-    tts_opts = options.get("tts") or {}
 
     # STT
-    stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
-    if stt_vendor == "deepgram":
-        from pipecat.services.deepgram.stt import DeepgramSTTService
-
-        stt = DeepgramSTTService(api_key=_require_env("DEEPGRAM_API_KEY"))
-    elif stt_vendor == "google":
-        from pipecat.services.google.stt import GoogleSTTService
-
-        # GoogleSTTService accepts credentials JSON or credentials_path. Source
-        # of truth is GOOGLE_APPLICATION_CREDENTIALS_JSON (a JSON string) or
-        # GOOGLE_APPLICATION_CREDENTIALS (a path) — pass through whichever the
-        # operator set.
-        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        stt = GoogleSTTService(
-            credentials=creds_json,
-            credentials_path=creds_path,
-            location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
-        )
-    else:
-        raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
+    stt = build_stt_service(agent)
 
     # LLM
     if model_id.startswith("openai/"):
@@ -900,38 +1292,7 @@ async def _build_pipeline(
     else:
         raise RuntimeError(f"Unsupported LLM in pipeline mode: {model_id}")
 
-    # TTS — keep this list aligned with PIPECAT_PIPELINE_TTS_VENDORS in
-    # lib/model-voices.js. The API layer uses that allow-list to filter the
-    # platform's TTS voice catalogue so the UI only offers vendors the worker
-    # can actually instantiate.
-    tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
-    voice = tts_opts.get("voice")
-    if tts_vendor == "cartesia":
-        from pipecat.services.cartesia.tts import CartesiaTTSService
-
-        tts = CartesiaTTSService(
-            api_key=_require_env("CARTESIA_API_KEY"),
-            settings=CartesiaTTSService.Settings(voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121"),
-        )
-    elif tts_vendor == "elevenlabs":
-        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-
-        tts = ElevenLabsTTSService(
-            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
-            voice_id=voice or "Rachel",
-        )
-    elif tts_vendor == "deepgram":
-        # WebSocket-based streaming TTS. Voice names follow Deepgram's Aura
-        # model IDs (e.g. `aura-asteria-en`, `aura-helios-en`) — same values
-        # the platform's voices catalogue (lib/voices/deepgram.js) lists.
-        from pipecat.services.deepgram.tts import DeepgramTTSService
-
-        tts = DeepgramTTSService(
-            api_key=_require_env("DEEPGRAM_API_KEY"),
-            voice=voice or "aura-asteria-en",
-        )
-    else:
-        raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
+    tts = build_tts_service(agent)
 
     schemas = _register_tools_on_llm(llm, tools)
 
@@ -984,5 +1345,6 @@ async def _build_pipeline(
         mode="pipeline",
         is_ultravox=False,
         relay_endpoint=relay_endpoint,
+        on_inactivity_hangup=on_inactivity_hangup,
     )
     return task, context, llm

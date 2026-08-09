@@ -8,8 +8,10 @@ import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
+  agentLanguageTag,
   inferTtsVendor,
   resolvePipelineStt,
   resolvePipelineTts,
@@ -20,6 +22,28 @@ import {
   buildProviderPipelineTts,
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
+
+/**
+ * How many times the inactivity prompt is spoken before the call is considered
+ * abandoned. Shared so the two enforcement paths agree: the Ultravox native
+ * `inactivityMessages` list length, and our own repeat-kick counter in
+ * voice-agent-runtime. Only acted on when `options.inactivity.hangup` is set —
+ * otherwise Ultravox stops prompting after this many and we keep prompting.
+ */
+export const INACTIVITY_PROMPT_COUNT = 3;
+
+/**
+ * Whether `options.inactivity.hangup` opts this agent into ending the call once the
+ * inactivity prompt has gone unanswered {@link INACTIVITY_PROMPT_COUNT} times.
+ *
+ * Only meaningful alongside a usable inactivity config, so it returns false whenever
+ * {@link inactivityAwayTimeoutSecs} would return undefined — there is no prompt to
+ * count, so there is nothing to hang up after.
+ */
+export function inactivityHangupEnabled(agent: Agent): boolean {
+  if (inactivityAwayTimeoutSecs(agent) === undefined) return false;
+  return agent?.options?.inactivity?.hangup === true;
+}
 
 /**
  * Parse the inactivity-kick idle timeout (`options.inactivity.timeout`) into
@@ -165,6 +189,143 @@ class PipelineVoiceAgent extends voice.Agent {
   }
 }
 
+/**
+ * Build the RealtimeModel constructor options for a `livekit:<plugin>/...` model.
+ *
+ * Exported for unit tests: this is where portable agent options are translated
+ * into provider-native ones (Ultravox firstSpeakerSettings / inactivityMessages,
+ * maxDuration / timeExceededMessage), so the mapping and its precedence rules
+ * are testable without constructing plugin models or an AgentSession.
+ */
+export function buildRealtimeLlmOptions(
+  modelName: string,
+  agent: Agent,
+  callId: string,
+): Record<string, unknown> {
+  const providerModelName = parseProviderModelName(modelName);
+  const maxDurationString: string = agent?.options?.maxDuration || "305s";
+  const llmOptions: Record<string, unknown> = {
+    voice: agent?.options?.tts?.voice,
+    maxDuration: maxDurationString,
+    // Only the Ultravox plugin consumes timeExceededMessage — its native
+    // wind-down line at maxDuration (empty ⇒ plugin default, matching the
+    // native ultravox: driver). Other realtime providers ignore it and are
+    // wound down by the worker hard-stop with a generic prompt instead
+    // (voice-agent-runtime.ts; see api-doc.yaml `timeExceededMessage`).
+    timeExceededMessage: agent?.options?.timeExceededMessage || undefined,
+    instructions: agent?.prompt || "You are a helpful assistant.",
+    callId,
+  };
+  if (providerModelName) {
+    llmOptions.model = providerModelName;
+  }
+  const vendorSpecific = (agent?.options?.vendorSpecific ||
+    undefined) as Record<string, any> | undefined;
+
+  // Ultravox realtime: map portable `options.greeting` → provider-native firstSpeakerSettings
+  // so the greeting actually happens at call start (Ultravox doesn't support response.create).
+  if (modelName.includes("livekit:ultravox/")) {
+    const greetingText = agent?.options?.greeting?.text?.trim() || "";
+    const greetingInstructions = agent?.options?.greeting?.instructions?.trim() || "";
+    const hasGreeting = Boolean(greetingText) || Boolean(greetingInstructions);
+
+    const existingFirstSpeaker =
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.text ||
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.prompt ||
+      vendorSpecific?.ultravox?.firstSpeakerSettings?.user;
+
+    if (hasGreeting && !existingFirstSpeaker) {
+      llmOptions.vendorSpecific = {
+        ...(vendorSpecific || {}),
+        ultravox: {
+          ...(vendorSpecific?.ultravox || {}),
+          firstSpeakerSettings: {
+            agent: greetingText
+              ? { uninterruptible: true, text: greetingText }
+              : { uninterruptible: true, prompt: greetingInstructions },
+          },
+        },
+      };
+    } else if (vendorSpecific) {
+      llmOptions.vendorSpecific = vendorSpecific;
+    }
+  } else if (vendorSpecific) {
+    llmOptions.vendorSpecific = vendorSpecific;
+  }
+
+  // Ultravox realtime: map portable `options.inactivity` → provider-native
+  // `inactivityMessages` so Ultravox itself does the idle detection and speaks
+  // the phrase in-model. Ultravox is speech-to-speech with no separate TTS, so
+  // the JS-side say()/generateReply kick is unreliable for it; the generic SDK
+  // user-away kick (voice-agent-runtime.ts) is gated to NON-ultravox models, and
+  // the Ultravox session omits `userAwayTimeout`. A native
+  // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
+  if (modelName.includes("livekit:ultravox/")) {
+    const inactivitySecs = inactivityAwayTimeoutSecs(agent);
+    const inactivityMsg =
+      typeof agent?.options?.inactivity?.message === "string"
+        ? agent.options.inactivity.message.trim()
+        : "";
+    const base =
+      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+      vendorSpecific ||
+      undefined;
+    const alreadyNative = (base as any)?.ultravox?.inactivityMessages;
+    if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
+      // Ultravox fires each entry once, in sequence, after `duration` of further
+      // user inactivity — so a short run of identical entries gives the
+      // "re-fire every `timeout` of continued silence" behaviour (here up to
+      // INACTIVITY_PROMPT_COUNT nudges).
+      type InactivityEntry = {
+        duration: string;
+        message: string;
+        endBehavior?: string;
+      };
+      const entry: InactivityEntry = {
+        duration: `${inactivitySecs}s`,
+        message: inactivityMsg,
+      };
+      const messages: InactivityEntry[] = Array.from(
+        { length: INACTIVITY_PROMPT_COUNT },
+        () => ({ ...entry }),
+      );
+      // endBehavior stays default (keep prompting, never hang up) unless the agent
+      // opted in. HANG_UP_SOFT rather than STRICT so the model still delivers the
+      // last prompt before ending, which is what the other end hears as
+      // "hello? ... ok, goodbye" rather than a mid-word cut.
+      if (inactivityHangupEnabled(agent)) {
+        messages[messages.length - 1] = {
+          ...entry,
+          endBehavior: "END_BEHAVIOR_HANG_UP_SOFT",
+        };
+      }
+      llmOptions.vendorSpecific = {
+        ...(base || {}),
+        ultravox: {
+          ...((base && base.ultravox) || {}),
+          inactivityMessages: messages,
+        },
+      };
+    }
+  }
+
+  // Ultravox realtime: map portable `options.tts.language` (falling back to
+  // `options.stt.language`) → provider-native `languageHint`, a BCP-47 tag that
+  // guides Ultravox's own ASR and TTS. Ultravox is speech-to-speech, so there is
+  // no separate TTS to carry the language the way the pipeline path does — this
+  // is the only route the hint has. Omitted when unset or a "no fixed language"
+  // sentinel, leaving Ultravox to auto-detect. A native
+  // `vendorSpecific.ultravox.languageHint` wins (enforced in the plugin).
+  if (modelName.includes("livekit:ultravox/")) {
+    const language = agentLanguageTag(agent);
+    if (language) {
+      llmOptions.languageHint = language;
+    }
+  }
+
+  return llmOptions;
+}
+
 export interface CreateVoiceModelAndSessionParams {
   voiceMode: VoiceMode;
   modelName: string;
@@ -178,7 +339,19 @@ export interface CreateVoiceModelAndSessionParams {
 export function createVoiceModelAndSession(
   params: CreateVoiceModelAndSessionParams,
 ): { session: voice.AgentSession; model: voice.Agent } {
-  const { voiceMode, modelName, agent, call, tools, vad } = params;
+  const { voiceMode, modelName, agent: agentDef, call, tools, vad } = params;
+
+  // Resolve the agent's `promptMetadata` declaration ONCE, here: every session
+  // passes through this factory — the initial run and each transfer_agent
+  // handover — and both prompt sites (this one and buildRealtimeLlmOptions
+  // below) read `agent.prompt`, so rewriting it here states the declared facts
+  // (today's date, the caller's number, …) to whichever agent is now speaking,
+  // freshly for each. A declaration that resolves to nothing returns the agent
+  // untouched. See agent-lib/prompt-metadata.js.
+  const basePrompt = agentDef?.prompt ?? "";
+  const composedPrompt = promptWithMetadata(basePrompt, agentDef?.promptMetadata, call?.metadata);
+  const agent =
+    composedPrompt === basePrompt ? agentDef : ({ ...agentDef, prompt: composedPrompt } as Agent);
 
   const agentOptions = {
     instructions: agent?.prompt || "You are a helpful assistant.",
@@ -240,88 +413,14 @@ export function createVoiceModelAndSession(
     );
   }
 
-  const providerModelName = parseProviderModelName(modelName);
-  const maxDurationString: string = agent?.options?.maxDuration || "305s";
-  const llmOptions: Record<string, unknown> = {
-    voice: agent?.options?.tts?.voice,
-    maxDuration: maxDurationString,
-    instructions: agent?.prompt || "You are a helpful assistant.",
-    callId: call.id,
-  };
-  if (providerModelName) {
-    llmOptions.model = providerModelName;
-  }
-  const vendorSpecific = (agent?.options?.vendorSpecific ||
-    undefined) as Record<string, any> | undefined;
+  const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id);
 
-  // Ultravox realtime: map portable `options.greeting` → provider-native firstSpeakerSettings
-  // so the greeting actually happens at call start (Ultravox doesn't support response.create).
-  if (modelName.includes("livekit:ultravox/")) {
-    const greetingText = agent?.options?.greeting?.text?.trim() || "";
-    const greetingInstructions = agent?.options?.greeting?.instructions?.trim() || "";
-    const hasGreeting = Boolean(greetingText) || Boolean(greetingInstructions);
-
-    const existingFirstSpeaker =
-      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.text ||
-      vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.prompt ||
-      vendorSpecific?.ultravox?.firstSpeakerSettings?.user;
-
-    if (hasGreeting && !existingFirstSpeaker) {
-      llmOptions.vendorSpecific = {
-        ...(vendorSpecific || {}),
-        ultravox: {
-          ...(vendorSpecific?.ultravox || {}),
-          firstSpeakerSettings: {
-            agent: greetingText
-              ? { uninterruptible: true, text: greetingText }
-              : { uninterruptible: true, prompt: greetingInstructions },
-          },
-        },
-      };
-    } else if (vendorSpecific) {
-      llmOptions.vendorSpecific = vendorSpecific;
-    }
-  } else if (vendorSpecific) {
-    llmOptions.vendorSpecific = vendorSpecific;
-  }
-
-  // Ultravox realtime: map portable `options.inactivity` → provider-native
-  // `inactivityMessages` so Ultravox itself does the idle detection and speaks
-  // the phrase in-model. Ultravox is speech-to-speech with no separate TTS, so
-  // the JS-side say()/generateReply kick is unreliable for it; the generic SDK
-  // user-away kick (voice-agent-runtime.ts) is gated to NON-ultravox models, and
-  // we omit `userAwayTimeout` on the Ultravox session below. A native
-  // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
-  const isUltravox = modelName.includes("livekit:ultravox/");
-  if (isUltravox) {
-    const inactivitySecs = inactivityAwayTimeoutSecs(agent);
-    const inactivityMsg =
-      typeof agent?.options?.inactivity?.message === "string"
-        ? agent.options.inactivity.message.trim()
-        : "";
-    const base =
-      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
-      vendorSpecific ||
-      undefined;
-    const alreadyNative = (base as any)?.ultravox?.inactivityMessages;
-    if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
-      // Ultravox fires each entry once, in sequence, after `duration` of further
-      // user inactivity — so a short run of identical entries gives the
-      // "re-fire every `timeout` of continued silence" behaviour (here up to 3
-      // nudges). endBehavior left default: do NOT hang up after the last one.
-      const entry = { duration: `${inactivitySecs}s`, message: inactivityMsg };
-      llmOptions.vendorSpecific = {
-        ...(base || {}),
-        ultravox: {
-          ...((base && base.ultravox) || {}),
-          inactivityMessages: [entry, entry, entry],
-        },
-      };
-    }
-  }
-  // Ultravox does idle natively (above); only NON-ultravox realtime uses the
-  // SDK user-away timer + say()/generateReply kick.
-  const realtimeInactivityVoiceOptions = isUltravox ? {} : inactivityVoiceOptions;
+  // Ultravox does idle natively (mapped to provider inactivityMessages in
+  // buildRealtimeLlmOptions); only NON-ultravox realtime uses the SDK
+  // user-away timer + say()/generateReply kick.
+  const realtimeInactivityVoiceOptions = modelName.includes("livekit:ultravox/")
+    ? {}
+    : inactivityVoiceOptions;
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),

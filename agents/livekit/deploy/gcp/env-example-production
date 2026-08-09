@@ -1,0 +1,52 @@
+# LiveKit agent — production env template.
+#
+# Copied to .env.production by deploy-node.sh and shipped to the VM as
+# ~/livekit-agent/.env. Contains NO secrets: everything sensitive arrives via
+# the secretenv bundle (see GOOGLE_SECRETENV_PATH below), which the container's
+# entrypoint fetches from Secret Manager into its own environment at start-up.
+
+# ---- Artifact Registry ----------------------------------------------------
+# Production pulls :latest, which the top-level cloudbuild-release.yaml applies
+# to a verified :$COMMIT_SHA at release time.
+IMAGE_REGISTRY=europe-west1-docker.pkg.dev
+PROJECT_ID=llm-voice
+REPO_NAME=llm-agent
+IMAGE_NAME=livekit-agent
+IMAGE_TAG=latest
+PROJECT_NUMERIC_ID=160114196407
+
+# ---- secretenv ------------------------------------------------------------
+# Passed into the container, whose entrypoint appends _KEY / _BUNDLE to this
+# path and reads both versions from Secret Manager at start-up, using the VM's
+# own service account. Neither value is ever written to disk — a restart is all
+# it takes to pick up a rotation.
+#
+# NOTE: production uses the UNSUFFIXED pair (SECRETENV_KEY / SECRETENV_BUNDLE)
+# — the same pair Cloud Run llm-agent and the livekit-agent image build consume.
+# Staging is SECRETENV_STAGING, beta is SECRETENV_BETA.
+GOOGLE_SECRETENV_PATH=projects/${PROJECT_NUMERIC_ID}/secrets/SECRETENV
+
+# ---- Runtime tuning -------------------------------------------------------
+LOGLEVEL=info
+LOG_LEVEL=info
+# Pre-spawned idle job processes. 10 is realtime.ts's production default and
+# what the e2-standard-4 production runners have been sized for.
+NUM_IDLE_PROCESSES=10
+
+# Trunk id this runner stamps on outbound legs for destination billing. Leave
+# empty until a chargeable Trunk row exists for this environment.
+APLISAY_OUTBOUND_TRUNK_ID=
+
+# ---- Diagnostics ----------------------------------------------------------
+# Periodic per-process event-loop delay + CPU/memory sample, one log line per
+# process per interval (role/pid/ppid/loopP99Ms/cpuPct/rssMb). 0 disables.
+# If cpuPct is high while loopP99Ms stays flat, the busy thread is NOT the JS
+# main thread — look at libuv/V8/rtc-node, not at agent code.
+RUNTIME_STATS_MS=30000
+
+# V8 CPU profiling. Off. To profile a canary node, uncomment BOTH lines, run
+# ./deploy-node.sh (or ./deploy-cos.sh), then collect from ~/livekit-agent/profiles.
+# PROFILE_MS is a window measured from process start, so it covers module load
+# and JIT warm-up as well as the first calls the process handles.
+# PROFILE_MS=90000
+# NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js

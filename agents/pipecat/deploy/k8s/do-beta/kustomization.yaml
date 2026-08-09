@@ -1,0 +1,32 @@
+# DigitalOcean BETA deploy target for the SIP gateway (LON1 cluster).
+#
+# = do-production VERBATIM (same Service identity: LB name
+# `pipecat-sip-production` + DO cert — safe to apply over the existing LON1
+# install; renaming the LB would recreate it and orphan the pipecat.aplisay.net
+# DNS) with every image re-pinned from :latest to the beta release lane's
+# floating :beta head (built when a beta-X.Y.Z tag is pushed on llm-agent —
+# trigger `pipecat-beta`).
+#
+#     kubectl apply -k do-beta
+#
+# NOTE: :beta tags exist only after the FIRST beta-X.Y.Z tag build — applying
+# before then rolls the DaemonSet onto unpullable images (ErrImagePull, one
+# node at a time). Push the tag, wait for the pipecat-beta build, then apply.
+# Reconcile subsequent releases with polite-ai/reload-beta.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../do-production
+
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker
+    newTag: beta
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/sipbridge
+    newTag: beta
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/freeswitch
+    newTag: beta
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/esl-poller
+    newTag: beta
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/secretenv-exec
+    newTag: beta

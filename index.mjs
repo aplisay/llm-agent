@@ -10,8 +10,12 @@ import PinoHttp from 'pino-http';
 import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
+import { buildInfo, describeBuild } from './lib/build-info.js';
 
 logger.info('starting up');
+// Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
+// makes stale deploys visible in the boot log.
+logger.info(buildInfo(), `build version: ${describeBuild()}`);
 dotenv.config();
 
 
@@ -46,7 +50,7 @@ else if (process.env.NODE_ENV === 'staging') {
 // from the cross-origin sign-in response.
 server.use(cors({
   origin: [
-    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /https:\/\/.*\.aplisay\.com$/,
+    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /^https:\/\/([a-z0-9-]+\.)*aplisay\.com$/,
     'https://feature-registration-db--playground-next.netlify.app'
   ],
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
@@ -58,16 +62,36 @@ server.use(cors({
 
 // Better-Auth (parallel to Firebase) must mount BEFORE express.json — its node
 // handler reads the raw request body. Inert unless BETTER_AUTH_ENABLED=true.
+// The client-ip gate runs first: it strips `x-client-ip` unless the request
+// carries the AUTH_PROXY_SECRET the polite-ai BFF uses to forward the real
+// end-user IP — that header is what better-auth keys its per-client rate
+// limits on (advanced.ipAddress in lib/auth/index.js), so it must never be
+// spoofable by a direct caller.
 const { auth: betterAuth } = await import('./lib/auth/index.js');
 if (betterAuth) {
   const { toNodeHandler } = await import('better-auth/node');
-  server.all('/api/auth/*', toNodeHandler(betterAuth));
+  const { createClientIpGate } = await import('./lib/auth/client-ip-gate.js');
+  server.all(
+    '/api/auth/*',
+    createClientIpGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
+    toNodeHandler(betterAuth),
+  );
   logger.info('mounted better-auth at /api/auth/*');
 }
 
+// Tariff decks are whole carrier rate sheets (100k+ prefix rows → tens of MB of
+// JSON), so parse those with a much larger limit. Mounted BEFORE the global 5mb
+// parser: body-parser marks the body parsed and the global parser then skips it,
+// so every OTHER route keeps the tight 5mb cap.
+server.use('/api/tariffs', express.json({ limit: '48mb' }));
 server.use(express.json({ limit: '5mb' }));
 const pino = PinoHttp({
-  logger
+  logger,
+  // Never write credentials into Cloud Logging: /api/oauth-handoff (behind this
+  // logger) is cookie-authenticated with the better-auth session cookie, and
+  // every API request carries a bearer Authorization — the default req
+  // serializer would log both verbatim.
+  redact: { paths: ['req.headers.cookie', 'req.headers.authorization'], censor: '[redacted]' },
 });
 
 server.use(pino);
@@ -76,10 +100,19 @@ server.use(pino);
 // middleware and express-openapi so they shed load ahead of any DB work or the
 // route handler. (The /api/auth/* limiter is configured inside better-auth in
 // lib/auth/index.js, mounted further up.)
-const { signupLimiter, webhookLimiter, roomJoinLimiter } = await import('./middleware/rate-limit.js');
+const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter } = await import('./middleware/rate-limit.js');
 server.use('/api/users/signup', signupLimiter);              // global cap
 server.use('/api/hooks', webhookLimiter);                    // per-IP
 server.use('/api/rooms/:listenerId/join', roomJoinLimiter);  // per-IP, before auth
+
+// OAuth → polite-ai BFF session hand-off (Google sign-in). Registered BEFORE the
+// auth middleware: the browser arriving here is mid-OAuth and authenticates via
+// its better-auth session cookie, not a bearer token. No-op when better-auth is
+// disabled or no polite-ai origin is configured.
+if (betterAuth) {
+  const { default: mountOauthHandoff } = await import('./lib/auth/oauth-handoff.js');
+  mountOauthHandoff(server, logger, { limiter: oauthHandoffLimiter });
+}
 
 // Import middleware dynamically based on environment
 if (process.env.AUTHENTICATE_USERS === "NO") {

@@ -210,7 +210,90 @@ An agent can't reliably be told to ignore injected context it has already
 seen, so treat `includeHistory` as the privacy switch: if the human
 conversation might contain things the follow-up agent must not know, turn
 history off (or leave `bridgedTransferTranscribe` unset, which keeps the
-pre-transfer history but omits the human segment).
+pre-transfer history but omits the human segment). Note that `includeHistory`
+governs the *prompt* only — the same transcripts are always seeded into the
+takeover call's metadata as `aplisay.transfer.{parentTranscript,
+bridgeTranscript, consultTranscript, key, targetNumber}`, where **tools** can
+reach them out-of-band (next section).
+
+## Step 3½ — add a summariser to the set
+
+Raw transcripts make the follow-up agent read a lot before its first useful
+sentence. The platform pattern for a digest is a **summariser member**: a
+`text:` agent in the same set, whose prompt controls what the summary focuses
+on and what shape it takes — and whose tokens are billed to you like any
+other text-agent call, at whatever model quality you choose.
+
+Add the member:
+
+```json
+{
+  "label": "summariser",
+  "name": "Hand-back summariser",
+  "modelName": "text:openai/gpt-4o-mini",
+  "type": "text",
+  "prompt": "You summarise phone conversations for a follow-up booking agent. From the transcripts you are given, extract: (1) what work was agreed, (2) the agreed date/time if any, (3) anything the caller was promised. Three bullet points, no preamble.",
+  "functions": [
+    { "name": "result", "implementation": "builtin", "platform": "result",
+      "description": "Return the summary",
+      "input_schema": { "type": "object", "properties": {
+        "answer": { "type": "string", "required": true } } } }
+  ]
+}
+```
+
+Then either — or both — of:
+
+**Pre-fired (recommended):** add `summaryAgent` to the hand-back entry:
+
+```json
+"bridgedTransferToAgent": {
+  "1": { "agent": "label:followup", "summaryAgent": "label:summariser" }
+}
+```
+
+The platform fires the summariser **at the moment the engineer presses `1`**
+— it cooks while the goodbye and the leg re-arrangement happen — and the
+follow-up agent collects it with the builtin `transfer_summary` function
+(declare it alongside its other functions; optional `timeoutMs`, default
+5000 ms):
+
+```json
+{ "name": "transfer_summary", "implementation": "builtin",
+  "platform": "transfer_summary",
+  "description": "Get the prepared summary of the earlier conversations",
+  "input_schema": { "type": "object", "properties": {} } }
+```
+
+It returns `{"status": "ready", "summary": …}`, or `pending` (just call it
+again — a timeout never cancels the cooking summary), `failed` (fall back to
+the injected transcripts), or `none` (no summariser configured).
+
+**Agent-invoked:** give the follow-up agent a `summarise_call` function that
+feeds the summariser itself, with the transcripts sourced from metadata so
+they travel out-of-band — the model never sees them, only the returned
+summary:
+
+```json
+{ "name": "summarise_call", "implementation": "builtin", "platform": "subagent",
+  "description": "Summarise the conversations that led to this call",
+  "input_schema": { "type": "object", "properties": {
+    "agent":            { "type": "string", "source": "static",   "from": "label:summariser" },
+    "parentTranscript": { "type": "string", "source": "metadata", "from": "aplisay.transfer.parentTranscript" },
+    "bridgeTranscript": { "type": "string", "source": "metadata", "from": "aplisay.transfer.bridgeTranscript" },
+    "focus":            { "type": "string", "description": "What the summary should concentrate on" } } } }
+```
+
+Both modes send the summariser the same arguments, so this one definition
+serves either. With a digest in hand you can set `includeHistory: false` and
+run the follow-up agent on the summary alone — smaller prompt, faster first
+token, and the raw human conversation never enters its context.
+
+**Masking the latency conversationally:** whichever mode you use, prompt the
+follow-up agent to greet first and fetch second — "Give me one moment while I
+catch up on what you agreed with Sam" — so the tool round-trip hides behind
+natural speech. With `summaryAgent` pre-firing, the result is usually already
+`ready` by the time the greeting finishes.
 
 ## Step 4 — the booking call
 
@@ -244,6 +327,13 @@ written to the calendar.
 5. Check the follow-up agent's booking call hits your API with the agreed
    slot, and that the final call-record chain is
    `original → bridged segment → follow-up`.
+6. With a `summaryAgent` configured, check the follow-up call's invocation
+   log shows `transfer_summary` returning `status: "ready"` with a sensible
+   summary (and that a slow summariser yields `pending` then `ready` on the
+   retry, never a stalled takeover).
+7. With recording enabled on the original agent (sipbridge topology), check
+   the bridged-segment record gains a `recordingId` and plays back as stereo
+   with the caller on the left and the engineer on the right.
 
 ## Caveats
 

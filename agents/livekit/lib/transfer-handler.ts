@@ -6,16 +6,22 @@ import {
   bridgeParticipant,
   transferParticipant,
   dialTransferTargetToConsultation,
+  chargeableOutboundTrunkId,
 } from "./telephony.js";
 import {
   getPhoneEndpointByNumber,
   getPhoneEndpointById,
   createCall,
   createTransactionLog,
+  saveUsage,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
 } from "./api-client.js";
+import { resolveUsageVendors } from "./usage-vendors.js";
+import { sipAttribute } from "./sip-attributes.js";
+import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
+import { resolveVoiceMode } from "./voice-mode.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -24,6 +30,18 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import { closeSessionBounded } from "./utils.js";
+import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
+import {
+  parseBridgedTransferMap,
+  armBridgedTransferWatch,
+  type BridgedTakeoverRuntime,
+} from "./bridged-transfer-to-agent.js";
+import {
+  parseBridgedTranscribeOption,
+  armBridgedTranscription,
+  type BridgeTranscriptionHandle,
+} from "./bridge-transcription.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
 
@@ -39,6 +57,111 @@ export type TransferState =
   | "talking"
   | "rejected"
   | "failed";
+
+/**
+ * Per-consult usage meters, keyed by the consult Call record. The consult
+ * session is wired during transfer initiation but flushed in the separate
+ * completion path, so the meter is stashed here to bridge the two. WeakMap so a
+ * dropped/errored consult's meter is collected with its Call.
+ */
+const consultUsageMeters = new WeakMap<Call, UsageMeter>();
+
+/**
+ * Flush the consult leg's llm/tts/stt usage to the ledger and retire its meter.
+ *
+ * Must be called on EVERY terminal path, not just accept: the consult leg consumes
+ * real metered resources from the moment the TransferAgent session starts, whether
+ * the target ultimately accepts, declines, or never gets that far. Flushing only on
+ * accept meant a rejected or abandoned consultation was recorded as zero usage.
+ *
+ * Safe to call more than once for the same call — the meter is retired from the map
+ * on first use, and the ledger writes are `mode: "set"` with a finalisation that
+ * settles a row exactly once, so a repeat is a no-op rather than a double charge.
+ * `UsageMeter.flush` swallows its own errors, so this never throws and can sit ahead
+ * of `call.end()` on a teardown path without risking the record being left live.
+ */
+async function flushConsultUsageMeter(
+  consultCall: Call | null | undefined
+): Promise<void> {
+  if (!consultCall) {
+    return;
+  }
+  const consultMeter = consultUsageMeters.get(consultCall);
+  if (!consultMeter) {
+    return;
+  }
+  consultUsageMeters.delete(consultCall);
+  await consultMeter.flush(true);
+}
+
+/**
+ * How long the TransferAgent waits for the dialled target to speak before opening
+ * the conversation itself. Comfortably inside the eval target's 6s inactivity
+ * timeout, and long enough to cover answer-to-greeting latency on a carrier trunk
+ * (~1.5s observed) without leaving a live person listening to silence.
+ */
+const CONSULT_FIRST_SPEAKER_FALLBACK_DELAY = "3s";
+
+/**
+ * Upper bound on `transferSession.close()`. An Ultravox session can hang in close()
+ * indefinitely: `AgentSession.close()` awaits `activity.drain()`, which only exits
+ * once every speech task has settled, and the tool-reply speech task awaits
+ * `RealtimeSession.generateReply()` — a bare Future that Ultravox settles only when
+ * it begins the NEXT generation. On a consult leg whose peer has already gone away
+ * that next generation never comes.
+ *
+ * This matters well beyond the consult leg: `destroyInProgressTransfer` is awaited
+ * from the PRIMARY call's disconnect handling, immediately before `call.end()` and
+ * `process.exit(0)`. An unbounded close there strands the primary call record too —
+ * never ended, its agent-concurrency slot never released. Same hazard, same bound,
+ * as the agent-handover close in voice-agent-runtime.
+ */
+const TRANSFER_SESSION_CLOSE_TIMEOUT_MS = 8_000;
+
+/**
+ * Close the TransferAgent session without ever blocking the caller. Bounded (see
+ * {@link TRANSFER_SESSION_CLOSE_TIMEOUT_MS}) and non-throwing: every call site is a
+ * teardown path where the room, the call record and the process shutdown behind it
+ * must proceed regardless.
+ */
+function closeTransferSessionBounded(
+  transferSession: Pick<voice.AgentSession, "close"> | null | undefined,
+  context: string
+): Promise<void> {
+  return closeSessionBounded(
+    transferSession,
+    TRANSFER_SESSION_CLOSE_TIMEOUT_MS,
+    (e) =>
+      logger.warn(
+        { e: e.message, context },
+        "transfer session close failed/timed out; continuing teardown"
+      )
+  );
+}
+
+/**
+ * `firstSpeakerSettings` is an Ultravox-realtime concept. The consult session
+ * inherits whatever LLM the primary call uses, which may be another realtime
+ * provider or a plain text LLM, so both helpers are no-ops unless the model
+ * actually implements the one-shot override.
+ */
+type ConsultFirstSpeakerCapable = {
+  setNextSessionFirstSpeaker?: (s: UltravoxFirstSpeakerSettings) => void;
+  clearNextSessionFirstSpeaker?: () => void;
+};
+
+function setNextSessionFirstSpeaker(
+  consultLlm: unknown,
+  firstSpeakerSettings: UltravoxFirstSpeakerSettings
+): void {
+  (consultLlm as ConsultFirstSpeakerCapable)?.setNextSessionFirstSpeaker?.(
+    firstSpeakerSettings
+  );
+}
+
+function clearNextSessionFirstSpeaker(consultLlm: unknown): void {
+  (consultLlm as ConsultFirstSpeakerCapable)?.clearNextSessionFirstSpeaker?.();
+}
 
 export interface TransferContext {
   ctx: any; // JobContext
@@ -82,6 +205,10 @@ export interface TransferContext {
   getTransferState: () => { state: TransferState; description: string };
   // Bridged call record setter
   setBridgedCallRecord: (call: Call | null) => void;
+  // Live human→agent takeover capability registered by the voice runtime
+  // (options.bridgedTransferToAgent); null/absent when no runtime is up
+  // (e.g. transfer-only fallback mode).
+  getBridgedTakeover?: () => BridgedTakeoverRuntime | null;
   // Promise resolvers for consultative transfer decision
   resolveConsultativeDecision?: (
     accepted: boolean,
@@ -102,10 +229,13 @@ export interface TransferResult {
  * Determines if a participant is a SIP participant
  */
 function isSipParticipant(participant: ParticipantInfo): boolean {
+  // Accept dotted (what LiveKit actually sends) as well as the camelCase
+  // aliases — see lib/sip-attributes.ts.
+  const attrs = participant.attributes;
   return !!(
-    participant.attributes?.sipTrunkPhoneNumber ||
-    participant.attributes?.sipPhoneNumber ||
-    participant.attributes?.sipHXAplisayTrunk
+    sipAttribute(attrs, "calledNumber") ||
+    sipAttribute(attrs, "callerNumber") ||
+    sipAttribute(attrs, "aplisayTrunk")
   );
 }
 
@@ -308,7 +438,8 @@ async function finaliseBridgedCall(
   calledId: string,
   options: any,
   session: voice.AgentSession | null,
-  setBridgedCallRecord?: (call: Call | null) => void
+  setBridgedCallRecord?: (call: Call | null) => void,
+  outboundTrunkId?: string
 ): Promise<Call | null> {
   detachPrimaryAgentMediaAfterBridge(session);
 
@@ -325,6 +456,10 @@ async function finaliseBridgedCall(
       calledId,
       callerId,
       modelName: "telephony:bridged-call",
+      // The bridged tail leg is the carried dial to the transfer target — chargeable
+      // on our public trunk unless the original call is registration-originated (then
+      // the target is reached via the customer's own B2BUA/PBX).
+      outboundTrunkId,
       options,
       metadata: { ...call.metadata },
     });
@@ -349,6 +484,103 @@ async function finaliseBridgedCall(
     logger.error({ e }, "failed to create bridged call record");
     return null;
   }
+}
+
+/**
+ * Arm the post-bridge watches (options.bridgedTransferToAgent — the
+ * human→agent DTMF watch — and options.bridgedTransferTranscribe — the
+ * bridged-segment transcription) once a bridged transfer has completed:
+ * the blind bridge and the bridged consultative finalise both land here.
+ * No-op unless at least one option is set and the bridged call record
+ * exists. Transcription arms standalone (no bta map, no runtime needed);
+ * the DTMF watch additionally requires the voice runtime's takeover
+ * capability (transfer-only fallback mode has none). The pre-transfer
+ * transcript snapshot is taken here, at bridge time, because the
+ * superseded agent session may be torn down while the humans talk.
+ */
+function armBridgedTransferToAgentWatch(
+  context: TransferContext,
+  bridgedCallRecord: Call | null,
+  targetIdentity: string,
+): void {
+  const targets = parseBridgedTransferMap(context.options);
+  const transcribe = parseBridgedTranscribeOption(context.options);
+  if (!targets && !transcribe) return;
+  if (!bridgedCallRecord) {
+    logger.warn(
+      { roomName: context.room?.name },
+      "bridged transfer watch: no bridged call record; watch not armed",
+    );
+    return;
+  }
+  const rtcRoom: Room | null | undefined = context.ctx?.room;
+  if (!rtcRoom || !context.room?.name) {
+    logger.warn(
+      { hasRtcRoom: Boolean(rtcRoom), roomName: context.room?.name },
+      "bridged transfer watch: no connected room; watch not armed",
+    );
+    return;
+  }
+
+  // Bridged-segment transcription (options.bridgedTransferTranscribe): one
+  // STT stream per bridged human, entries logged against the bridged call
+  // record. Best-effort — a failure here must not disturb the bridge or
+  // the DTMF watch below. Arms standalone when no bta map is configured;
+  // the record's ending (participant disconnect handlers / takeover) flushes
+  // any batched entries.
+  let bridgeTranscription: BridgeTranscriptionHandle | null = null;
+  if (transcribe) {
+    try {
+      bridgeTranscription = armBridgedTranscription({
+        room: rtcRoom,
+        roomName: context.room.name!,
+        callerIdentity: context.participant?.identity ?? null,
+        targetIdentity,
+        bridgedCall: bridgedCallRecord,
+        agent: context.agent,
+        transcribe,
+        streamLog: context.instance?.streamLog === true,
+      });
+    } catch (e) {
+      logger.warn(
+        { e, roomName: context.room?.name },
+        "bridgedTransferTranscribe: failed to arm transcription (continuing without it)",
+      );
+    }
+  }
+
+  if (!targets) return;
+  const runtime = context.getBridgedTakeover?.();
+  if (!runtime) {
+    logger.warn(
+      { roomName: context.room?.name },
+      "bridgedTransferToAgent configured but no takeover runtime registered; watch not armed",
+    );
+    return;
+  }
+  // Same inter-digit timeout as ordinary DTMF input buffering.
+  const dtmfTimeoutOption = context.options?.dtmfTimeout;
+  const dtmfTimeoutMs =
+    typeof dtmfTimeoutOption === "number" && dtmfTimeoutOption >= 0
+      ? Math.max(250, dtmfTimeoutOption)
+      : 1500;
+  armBridgedTransferWatch({
+    room: rtcRoom,
+    roomName: context.room.name!,
+    targetIdentity,
+    callerIdentity: context.participant?.identity ?? null,
+    targets,
+    dtmfTimeoutMs,
+    bridgedCall: bridgedCallRecord,
+    agent: context.agent,
+    historyText: runtime.getConversationHistoryText(),
+    bridgeTranscription,
+    runtime,
+    setBridgedParticipant: context.setBridgedParticipant,
+    setBridgedCallRecord: context.setBridgedCallRecord,
+    removeParticipant: (name, identity) =>
+      roomService.removeParticipant(name, identity),
+  });
 }
 
 /**
@@ -403,7 +635,17 @@ async function handleBlindBridgeTransfer(
 
     logger.info({ p }, "new participant created (blind bridge)");
     setBridgedParticipant(p);
-    await finaliseBridgedCallFn();
+    const bridgedCallRecord = await finaliseBridgedCallFn();
+
+    // Human→agent hand-back (options.bridgedTransferToAgent) and bridged-
+    // segment transcription (options.bridgedTransferTranscribe): watch the
+    // transfer target's DTMF / transcribe both humans for the life of the
+    // bridge. No-op when neither option is set.
+    armBridgedTransferToAgentWatch(
+      context,
+      bridgedCallRecord,
+      p.participantIdentity,
+    );
 
     setTransferState("none", "Transfer completed successfully");
     return {
@@ -643,8 +885,41 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 4: Dial transfer target into consultation room
-    const transferTargetParticipant = await dialTransferTargetToConsultation(
+    // Step 4: Move to "dialling" BEFORE placing the SIP call. This is the
+    // dead-air gap the confidence tone must cover, and transfer_status should
+    // report an in-progress dial rather than "none" while the target rings.
+    // (Previously this was only set after the target answered, so the tone
+    // never covered the dial — and never played at all when the dial failed.)
+    context.setTransferState("dialling", "Dialling transfer target...");
+
+    // Holds the consult target across the attribute-sync listener below and the
+    // dial. Starts null so the listener's `&& transferTargetParticipant` guard
+    // no-ops until the dial assigns it (avoids a temporal-dead-zone error).
+    let transferTargetParticipant: any = null;
+
+    // The Aplisay B2BUA reflects the gateway-facing consult dialog's RFC 3891
+    // Replaces back to us on the consult leg as the X-Aplisay-Refer-Replaces
+    // header (surfaced as sip.h.x-aplisay-refer-replaces once
+    // includeHeaders=SIP_ALL_HEADERS is set on the dial). It can arrive on a
+    // post-answer dialog refresh, after the initial 200 OK snapshot, so also
+    // catch it here. finaliseConsultativeTransfer uses it to build the ?Replaces
+    // on the caller's REFER so the target is not rung twice (attended transfer).
+    // See aplisay-b2bua/freeswitch/scripts/refer_reflect.lua.
+    consultRoom.on(
+      RoomEvent.ParticipantAttributesChanged,
+      (_changed: Record<string, string>, participant: any) => {
+        if (participant?.identity !== transferTargetIdentity) return;
+        const reflected = (participant?.attributes ?? {})[
+          "sip.h.x-aplisay-refer-replaces"
+        ];
+        if (reflected && transferTargetParticipant) {
+          transferTargetParticipant.referReplaces = reflected;
+        }
+      }
+    );
+
+    // Dial transfer target into consultation room
+    transferTargetParticipant = await dialTransferTargetToConsultation(
       consultRoomName,
       args.number,
       effectiveCallerId,
@@ -660,6 +935,40 @@ async function startConsultativeTransfer(
       context.registrationUsername,
     );
     setBridgedParticipant(transferTargetParticipant);
+
+    // Record the consult target so finaliseConsultativeTransfer can build the
+    // REFER ?Replaces from its dialog, and capture the consult leg's SIP dialog
+    // identifiers from the 200 OK headers (mapped to sip.h.* via
+    // includeHeaders=SIP_ALL_HEADERS): the B2BUA-reflected pre-assembled Replaces
+    // (X-Aplisay-Refer-Replaces) for the proxy path, plus the LiveKit-facing
+    // Call-ID/to-tag/from-tag as the SBC-path fallback.
+    context.setCurrentBridged(transferTargetParticipant);
+    try {
+      const targetParticipant = Array.from(
+        consultRoom.remoteParticipants.values()
+      ).find((p: any) => p?.identity === transferTargetIdentity);
+      const attrs = ((targetParticipant as any)?.attributes ?? {}) as Record<
+        string,
+        string
+      >;
+      const parseTag = (header?: string): string | undefined =>
+        header?.match(/;tag=([^;>\s]+)/i)?.[1];
+      const callIdFull = attrs["sip.callIDFull"] || attrs["sip.h.call-id"];
+      const toTag = parseTag(attrs["sip.h.to"]);
+      const fromTag = parseTag(attrs["sip.h.from"]);
+      const referReplaces = attrs["sip.h.x-aplisay-refer-replaces"];
+      if (callIdFull) transferTargetParticipant.callIdFull = callIdFull;
+      if (toTag) transferTargetParticipant.toTag = toTag;
+      if (fromTag) transferTargetParticipant.fromTag = fromTag;
+      if (referReplaces) transferTargetParticipant.referReplaces = referReplaces;
+      logger.info(
+        { consultRoomName, callIdFull, toTag, fromTag, referReplaces },
+        "consult target answered: captured SIP dialog tags for Replaces"
+      );
+    } catch (error) {
+      logger.error({ error }, "failed to capture consult target dialog tags");
+    }
+
     // Step 5: Create TransferAgent with conversation history
     const prevCtx = session.chatCtx;
     const ctxCopy = prevCtx.copy({
@@ -695,6 +1004,9 @@ async function startConsultativeTransfer(
 
 You are now speaking with the person that it has been decided to transfer the call to based on the previous Conversation, and you should act as if you were 
 the agent involved in this conversation with full knowledge of the conversation history.
+
+You have just dialled this person and they have only this second answered. Let them speak first - wait until you have heard them greet you before you say anything. If they stay silent for a few seconds, open with a brief greeting yourself.
+
 Your role is to:
 1. Summarize the call history for the transfer target
 2. Ask if they want to accept the transfer and speak with the caller
@@ -787,18 +1099,18 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     });
 
     // Step 6: Create TransferAgent session and connect to consultation room
-    const transferSession = new voice.AgentSession({
-      llm: getLlmForTransferSession(session),
-    });
+    const consultLlm = getLlmForTransferSession(session);
+    const transferSession = new voice.AgentSession({ llm: consultLlm });
     setTransferSession(transferSession);
 
     // Persist the consultation conversation onto the consult CALL RECORD.
-    // Historically the consult leg had NO transcript wiring at all, so its
-    // transcript was always empty. Mirror the main session's ConversationItemAdded
-    // -> transaction-log capture, but target the consult call: buffer each turn and
-    // attach the buffer as the consult call's batched transaction logs, which
-    // consultCall.end() flushes on every terminal path (accept / reject /
-    // init-fail / destroy). See api-client call.end and the /call/{id}/end handler.
+    // Historically the consult leg had NO transcript wiring at all (only usage
+    // metering below), so its transcript was always empty. Mirror the main
+    // session's ConversationItemAdded -> transaction-log capture, but target the
+    // consult call: buffer each turn and attach the buffer as the consult call's
+    // batched transaction logs, which consultCall.end() flushes on every terminal
+    // path (accept / reject / init-fail / destroy). See api-client call.end and
+    // finaliseConsultativeTransfer/endConsultationRecord.
     const consultTranscriptLogs: Array<{
       userId: string;
       organisationId: string;
@@ -831,12 +1143,51 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       },
     );
 
-    await transferSession.start({
-      room: consultRoom,
-      agent: transferAgent,
-      // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
-      record: false,
+    // Meter the consult leg's llm/tts/stt onto the consult call record. The
+    // consult LLM is the primary's, so resolve vendors from the primary model.
+    // Per-session, so it never double-counts the primary call's usage.
+    const consultUsageMeter = makeUsageMeter({
+      getCall: () => context.getConsultCall(),
+      usageVendors: resolveUsageVendors(context.agent, context.agent.modelName),
+      voiceMode: resolveVoiceMode(context.agent.modelName, context.agent.options),
+      fallbackDetail: context.agent.modelName,
     });
+    consultUsageMeter.wire(transferSession);
+
+    // The consult leg DIALS the target, so the target answers and greets first —
+    // the opposite posture to the inbound primary call whose model instance this
+    // session shares. Left on the model default (FIRST_SPEAKER_AGENT) the
+    // TransferAgent opens its own turn ~0.5s after connect, straight over the
+    // target's greeting, which Ultravox then discards as barge-in: the consult
+    // transcript loses that turn and the agent never hears who it is talking to.
+    // Ultravox owns the opening turn, so express it there, for THIS session only.
+    // `fallback` keeps a silent target (voicemail, IVR, someone waiting for us to
+    // speak) from producing dead air; `prompt` rather than `text` so the greeting is
+    // generated in the TransferAgent's own voice and is not echoed back to us as a
+    // synthetic user turn.
+    setNextSessionFirstSpeaker(consultLlm, {
+      user: {
+        fallback: {
+          delay: CONSULT_FIRST_SPEAKER_FALLBACK_DELAY,
+          prompt:
+            "The person you dialled has not said anything yet. Greet them briefly and explain that you are calling about transferring a caller to them.",
+        },
+      },
+    });
+
+    try {
+      await transferSession.start({
+        room: consultRoom,
+        agent: transferAgent,
+        // Don't try to record the transfer session as this causes the start to throw due to recording primary session in parallel
+        record: false,
+      });
+    } finally {
+      // start() consumes the one-shot when it builds the realtime session; if it
+      // threw before that, drop the override so it cannot land on an unrelated
+      // session later (e.g. a primary-agent handover on the same model).
+      clearNextSessionFirstSpeaker(consultLlm);
+    }
 
     logger.info({}, "transfer agent started in consultation room");
 
@@ -854,6 +1205,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       calledId: args.number,
       callerId: effectiveCallerId,
       modelName: agent.modelName,
+      // The consult leg is a carried dial to the transfer target — chargeable on our
+      // public trunk unless registration-originated (target via the customer B2BUA).
+      outboundTrunkId: chargeableOutboundTrunkId(context.registrationOriginated),
       options: context.options,
       metadata: {
         ...instance.metadata,
@@ -872,15 +1226,15 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       if (!consultLog.callId) consultLog.callId = consultCallRecord.id;
     }
     (consultCallRecord as any).batchedTransactionLogs = consultTranscriptLogs;
+    consultUsageMeters.set(consultCallRecord, consultUsageMeter);
     logger.info(
       { consultCallId: consultCallRecord.id, consultRoomName },
       "created consultation call record"
     );
 
-    // Step 8: Update state to dialling
-    context.setTransferState("dialling", "Dialling transfer target...");
-
-    // Step 9: Start the consultation call (transfer target has answered)
+    // Step 8: Start the consultation call (transfer target has answered).
+    // State is already "dialling" from before the dial; it stays in the
+    // tone's active set through this brief setup window until "talking" below.
     await consultCallRecord.start();
     logger.info(
       { consultCallId: consultCallRecord.id },
@@ -937,6 +1291,15 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
   } catch (e: any) {
     const error = e instanceof Error ? e : new Error(String(e));
     logger.error({ e, useRefer }, "failed to initiate warm transfer");
+    // Close the TransferAgent session if it got as far as starting. Initiation can
+    // fail after transferSession.start() (e.g. creating the consult call record), and
+    // nothing downstream closes it: this path leaves consultInProgress false, so both
+    // destroyInProgressTransfer and the background reject handler short-circuit. The
+    // session and its Ultravox call would otherwise stay live and billed.
+    await closeTransferSessionBounded(
+      context.getTransferSession(),
+      "initiation-failure"
+    );
     // Clean up consultation room if it was created
     const consultRoomName = context.getConsultRoomName();
     if (consultRoomName) {
@@ -950,6 +1313,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const consultCall = context.getConsultCall();
     if (consultCall) {
       try {
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end("Transfer initiation failed");
         logger.info(
           { consultCallId: consultCall.id },
@@ -1016,15 +1380,78 @@ async function finaliseConsultativeTransfer(
     "finalising warm transfer"
   );
 
+  /**
+   * End the consult CALL RECORD. Hoisted out of the try below so the error path can
+   * reach it too: every other terminal path ends the record, and if this one does not
+   * the row is stranded `live=true` forever — its agent-concurrency slot never
+   * released and the transcript `end()` flushes never written.
+   *
+   * `call.end()` is idempotent (its `_endCalled` latch returns the original promise),
+   * so calling this on a record another path already ended is a no-op, as is the
+   * meter flush.
+   */
+  const endConsultRecord = async (reason: string): Promise<void> => {
+    const consultCall = getConsultCall();
+    if (!consultCall) {
+      return;
+    }
+    await flushConsultUsageMeter(consultCall);
+    await consultCall.end(reason);
+    logger.info({ consultCallId: consultCall.id }, "ended consultation call");
+  };
+
   try {
     const transferTargetIdentity = "transfer-target";
 
-    // Clear the in-progress flag and update state
+    // Clear the in-progress flag, but do NOT mark the transfer "none"/completed
+    // here. Terminal state is owned by the background accept_transfer handler,
+    // which sets "none" only once this function RETURNS ok (reached only after the
+    // REFER/move actually completes) and "failed" if it throws. Marking "none"
+    // up-front — as the old code did — reported success while the REFER was still
+    // in flight (or about to 408), so the middle agent told the caller they were
+    // connected when they were not. During the REFER flight transfer_status
+    // correctly stays at the in-progress "talking" set when the target answered.
     setConsultInProgress(false);
-    setTransferState("none", "Transfer completed successfully");
+
+    // Stop the TransferAgent bot and flush + end the consult CALL RECORD. This is
+    // DB/bookkeeping only — it does NOT touch the consult SIP dialog or room. Kept
+    // separate from room teardown because on the REFER+Replaces path the consult
+    // dialog must stay alive until the caller's REFER (whose ?Replaces names that
+    // dialog) has been honoured by the carrier.
+    const endConsultationRecord = async () => {
+      // Deliberately NOT awaited, and deliberately still ahead of the flush below.
+      // close() drains the session, and that drain is what emits the TransferAgent's
+      // closing turn into the batched transcript — starting it here and flushing
+      // concurrently is what gives that turn a chance to land in `end()`'s snapshot.
+      // The far more common hazard is close() hanging (see
+      // TRANSFER_SESSION_CLOSE_TIMEOUT_MS), so it must never gate this path.
+      if (transferSession) {
+        void closeTransferSessionBounded(transferSession, "finalise");
+      }
+      // endConsultRecord flushes the consult usage meter before ending the record.
+      await endConsultRecord("Transfer completed");
+    };
+
+    // Delete the consult room (drops any remaining consult SIP leg). Best-effort.
+    const deleteConsultationRoom = async () => {
+      await deleteRoomWithRetry(consultRoomName);
+      logger.info({}, "consultation room cleaned up");
+    };
 
     if (useRefer) {
-      // Case 4: Use SIP REFER to transfer the original caller to the transfer target
+      // Case 4: SIP REFER the original caller to the transfer target (attended
+      // transfer when a Replaces token is available).
+      //
+      // End the consult call RECORD BEFORE the (blocking) REFER — transferParticipant
+      // does not return until the caller's SIP leg leaves the room, and the
+      // caller-disconnect graceful shutdown then races the record teardown
+      // (destroyInProgressTransfer no-ops because setConsultInProgress(false) ran
+      // above), which previously orphaned the consult record. BUT keep the consult
+      // SIP dialog ALIVE: the REFER carries ?Replaces naming the B2BUA<->carrier
+      // consult dialog, which the carrier can only honour while that dialog still
+      // exists — so the room is deleted AFTER the REFER, not before.
+      await endConsultationRecord();
+
       // Determine registrar and transport for the transfer
       let registrar: string | null = null;
       let transport: string | null = null;
@@ -1039,21 +1466,86 @@ async function finaliseConsultativeTransfer(
         );
       }
 
-      // Use SIP REFER to transfer the original participant to the transfer target
-      await transferParticipant(
-        room.name!,
-        participant.identity!,
-        args.number,
-        aplisayId!,
-        registrar,
-        transport,
-        callerId,
-        context.call?.id
-      );
+      // Build the RFC 3891 Replaces from the consult leg so the caller's endpoint
+      // replaces the consultation dialog instead of ringing the target again.
+      // Prefer the B2BUA-reflected value (correct for the proxy-refer path);
+      // otherwise fall back to the LiveKit-facing dialog tags (SBC path), then to
+      // a call-id-only Replaces, then to a plain REFER.
+      const consultTarget = context.getCurrentBridged();
+      const callId = consultTarget?.callIdFull || consultTarget?.sipCallId || null;
+      const toTag = consultTarget?.toTag || null;
+      const fromTag = consultTarget?.fromTag || null;
+      let replaces: string | null = null;
+      if (consultTarget?.referReplaces) {
+        replaces = consultTarget.referReplaces;
+        logger.info(
+          { referReplaces: replaces },
+          "using B2BUA-reflected RFC 3891 Replaces (gateway-facing consult dialog)"
+        );
+      } else if (callId && toTag && fromTag) {
+        replaces = `${callId};to-tag=${toTag};from-tag=${fromTag}`;
+        logger.info(
+          { callId, toTag, fromTag },
+          "built RFC 3891 Replaces from LiveKit-facing consult dialog tags"
+        );
+      } else if (callId) {
+        replaces = callId;
+        logger.warn(
+          { callId, toTag, fromTag },
+          "incomplete consult dialog tags; sending call-id-only Replaces (may be rejected upstream)"
+        );
+      } else {
+        logger.warn(
+          { consultTarget },
+          "no consult dialog id available; falling back to plain REFER without Replaces"
+        );
+      }
 
-      logger.info({}, "transfer executed via SIP REFER");
+      // Use SIP REFER to transfer the original participant to the transfer target.
+      // LiveKit can report a spurious failure even when the REFER actually
+      // completed (same race as handleBlindReferTransfer); swallow the known
+      // false-failures so a successful transfer is not marked as failed.
+      try {
+        await transferParticipant(
+          room.name!,
+          participant.identity!,
+          args.number,
+          aplisayId!,
+          registrar,
+          transport,
+          callerId,
+          context.call?.id,
+          replaces
+        );
+        logger.info(
+          { replaces },
+          "transfer executed via SIP REFER (+Replaces best-effort)"
+        );
+      } catch (referError: any) {
+        const e =
+          referError instanceof Error ? referError : new Error(String(referError));
+        if (
+          e.message?.includes("500: Internal Server Error") ||
+          e.message?.includes("twirp error unknown: participant does not exist")
+        ) {
+          logger.info(
+            { message: e.message, replaces },
+            "consult REFER reported failure but actually succeeded; continuing"
+          );
+        } else {
+          throw e;
+        }
+      }
+
+      // Cleanup only AFTER the REFER — by now the Replaces has taken over (and
+      // BYE'd) the consult dialog, or the caller has left. Best-effort; may race
+      // the caller-disconnect shutdown, which is fine since the record is ended.
+      await deleteConsultationRoom();
     } else {
-      // Case 3: Move transfer target from consultation room to caller room
+      // Case 3: Move the transfer target from the consultation room into the
+      // caller room. The target must still be present, so move FIRST, then tear
+      // the consultation down and emit the telephony:bridged-call child for the
+      // in-room caller<->target bridge.
       await roomService.moveParticipant(
         consultRoomName,
         transferTargetIdentity,
@@ -1061,28 +1553,23 @@ async function finaliseConsultativeTransfer(
       );
 
       logger.info({}, "transfer target moved to caller room");
+
+      await endConsultationRecord();
+      await deleteConsultationRoom();
+
+      const bridgedCallRecord = await finaliseBridgedCallFn();
+
+      // Human→agent hand-back (options.bridgedTransferToAgent) and bridged-
+      // segment transcription (options.bridgedTransferTranscribe): the target
+      // is now bridged into the caller room under the consult identity —
+      // watch its DTMF / transcribe both humans for the life of the bridge.
+      // No-op when neither option is set.
+      armBridgedTransferToAgentWatch(
+        context,
+        bridgedCallRecord,
+        transferTargetIdentity,
+      );
     }
-
-    // Step 3: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      transferSession.close();
-    }
-
-    // Step 4: Delete consultation room
-    await deleteRoomWithRetry(consultRoomName);
-
-
-    logger.info({}, "consultation room cleaned up");
-
-    // Step 5: End consultation call and create transaction logs for transcript
-    const consultCall = getConsultCall();
-    if (consultCall) {
-      await consultCall.end("Transfer completed");
-      logger.info({ consultCallId: consultCall.id }, "ended consultation call");
-    }
-
-    // Step 6: Finalize the call record
-    await finaliseBridgedCallFn();
 
     return {
       status: "OK",
@@ -1098,11 +1585,22 @@ async function finaliseConsultativeTransfer(
       "failed",
       `Transfer finalization failed: ${error.message}`
     );
-    // Cleanup on error
+    // Cleanup on error. This path is NOT recoverable by anything downstream:
+    // setConsultInProgress(false) above disarms destroyInProgressTransfer, and the
+    // background reject handler is gated on the same flag — so if the consult record
+    // is not ended here it is never ended at all. Reachable in practice on the
+    // bridged branch, where roomService.moveParticipant runs before the record is
+    // ended and can throw when the target has already gone.
     try {
-      if (transferSession) {
-        await transferSession.close();
-      }
+      await endConsultRecord(`Transfer finalisation failed: ${error.message}`);
+    } catch (endError) {
+      logger.error(
+        { endError, consultCallId: getConsultCall()?.id },
+        "failed to end consultation call during finalise error cleanup"
+      );
+    }
+    try {
+      await closeTransferSessionBounded(transferSession, "finalise-error");
       if (consultRoom) {
         await consultRoom.disconnect();
       }
@@ -1158,14 +1656,11 @@ export async function destroyInProgressTransfer(
   const consultCall = getConsultCall();
 
   try {
-    // Step 1: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      try {
-        await transferSession.close();
-      } catch (e) {
-        logger.error({ e }, "failed to close transfer session");
-      }
-    }
+    // Step 1: Close TransferAgent session and disconnect from consultation room.
+    // Bounded: this function is awaited from the PRIMARY call's disconnect handling,
+    // immediately before that call's own end() and process.exit(0), so a close() that
+    // hangs strands the primary call record as well as this one.
+    await closeTransferSessionBounded(transferSession, "destroy");
     if (consultRoom) {
       try {
         await consultRoom.disconnect();
@@ -1187,10 +1682,15 @@ export async function destroyInProgressTransfer(
       }
     }
 
-    // Step 3: End consultation call and create transaction logs for transcript
-    if (consultCall && transferSession) {
+    // Step 3: End consultation call and create transaction logs for transcript.
+    // Gated on the CALL only: the record must be ended even when there is no transfer
+    // session to read a transcript from, or it is stranded live=true with its
+    // concurrency slot held.
+    if (consultCall) {
       try {
-        const transcript = getTransferAgentTranscript(transferSession);
+        const transcript = transferSession
+          ? getTransferAgentTranscript(transferSession)
+          : "";
         if (transcript) {
           const { userId, organisationId } = agent;
           await createTransactionLog({
@@ -1206,6 +1706,7 @@ export async function destroyInProgressTransfer(
             "created transaction log for consultation transcript"
           );
         }
+        await flushConsultUsageMeter(consultCall);
         await consultCall.end(reason);
         logger.info(
           { consultCallId: consultCall.id },
@@ -1281,14 +1782,48 @@ export async function rejectConsultativeTransfer(
   );
 
   try {
-    // Step 1: End consultation call and create transaction logs for transcript
-    //         we do this first because later steps will likely cause an async
-    //         hangup which will cause the consultation call to be ended through
-    //         a different path.
+    // Step 1: End consultation call and create transaction logs for transcript.
+    //         We do this first because later steps cause an async hangup of the
+    //         transfer target. On the rejection path there is no other code path
+    //         that ends the consultation call record (destroyInProgressTransfer
+    //         short-circuits once setConsultInProgress(false) is set below), so
+    //         it must happen here or the record is left started but never ended.
 
     if (!finalSummary) {
       // If no transcript available, use default message
       finalSummary = "Transfer target declined the transfer";
+    }
+
+    const consultCall = getConsultCall();
+    if (consultCall) {
+      try {
+        if (transferSession) {
+          const transcript = getTransferAgentTranscript(transferSession);
+          if (transcript) {
+            const { userId, organisationId } = agent;
+            await createTransactionLog({
+              userId,
+              organisationId,
+              callId: consultCall.id,
+              type: "agent",
+              data: transcript,
+              isFinal: true,
+            });
+            logger.info(
+              { consultCallId: consultCall.id },
+              "created transaction log for consultation transcript"
+            );
+          }
+        }
+        await flushConsultUsageMeter(consultCall);
+        await consultCall.end(finalSummary);
+        logger.info(
+          { consultCallId: consultCall.id },
+          "ended consultation call"
+        );
+      } catch (e) {
+        logger.error({ e }, "error ending consultation call");
+      }
     }
 
     setConsultInProgress(false);
@@ -1319,14 +1854,10 @@ export async function rejectConsultativeTransfer(
       }
     }
 
-    // Step 2: Close TransferAgent session and disconnect from consultation room
-    if (transferSession) {
-      try {
-        await transferSession.close();
-      } catch (e) {
-        logger.error({ e }, "failed to close transfer session");
-      }
-    }
+    // Step 2: Close TransferAgent session and disconnect from consultation room.
+    // Bounded — a rejected consult's peer is typically already gone, and the room
+    // teardown and caller hand-back behind this must not wait on a hung close().
+    await closeTransferSessionBounded(transferSession, "reject");
     if (consultRoom) {
       try {
         await consultRoom.disconnect();
@@ -1367,18 +1898,9 @@ async function handleConsultativeTransfer(
   context: TransferContext,
   effectiveCallerId: string,
   effectiveAplisayId: string,
-  finaliseBridgedCallFn: () => Promise<Call | null>
+  finaliseBridgedCallFn: () => Promise<Call | null>,
+  useRefer: boolean
 ): Promise<TransferResult> {
-  const { participant, registrationOriginated, trunkInfo } = context;
-
-  // Check canRefer capability
-  const canRefer = canParticipantRefer(
-    participant,
-    registrationOriginated,
-    trunkInfo
-  );
-  const isSip = isSipParticipant(participant);
-
   // Set up promise to wait for TransferAgent decision
   let resolveDecision: (
     accepted: boolean,
@@ -1411,18 +1933,18 @@ async function handleConsultativeTransfer(
   };
 
   try {
-    // Start consultation (this will set up the consultation room and TransferAgent)
-    // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-    // When fixed, restore: if (isSip && canRefer) to use Case 4 (REFER) for registration-originated calls
+    // Start consultation (this will set up the consultation room and
+    // TransferAgent). useRefer decides how the eventual finalisation hands the
+    // caller over: SIP REFER (caller sent to the target, LiveKit drops out of
+    // the media path) or bridge (target moved into the caller's room).
     let startResult: TransferResult;
 
     startResult = await startConsultativeTransfer(
       consultativeContext,
       effectiveCallerId,
       effectiveAplisayId,
-      false // canRefer && isSip && !useBridged
+      useRefer
     );
-    // }
 
     // If starting consultation failed, clear flag and return error
     if (startResult.status !== "OK") {
@@ -1456,16 +1978,13 @@ async function handleConsultativeTransfer(
         const decision = await Promise.race([decisionPromise, timeoutPromise]);
 
         if (decision.accepted) {
-          // Finalize the transfer
-          // TODO: Temporarily disabled REFER method for consultative transfers due to LiveKit issue
-
+          // Finalize the transfer using the resolved mode (REFER or bridge).
           let finaliseResult: TransferResult;
           finaliseResult = await finaliseConsultativeTransfer(
             consultativeContext,
             finaliseBridgedCallFn,
-            false
+            useRefer
           );
-          // }
 
           if (finaliseResult.status === "OK") {
             context.setTransferState("none", "Transfer completed successfully");
@@ -1620,7 +2139,22 @@ export async function handleTransfer(
   // Check if forceBridged is set from phone registration endpoint options
   // This overrides args.forceBridged if set to true
   const forceBridgedFromEndpoint = context.forceBridged === true;
-  const effectiveForceBridged = forceBridgedFromEndpoint || args.forceBridged === true;
+  // Human-to-agent transfers (options.bridgedTransferToAgent): while the map
+  // is set, the transfer target's DTMF must remain observable AFTER the
+  // handover, so transfers are forced onto the bridged path — a SIP REFER
+  // hands the call off-platform where no DTMF can be seen. Overrides the
+  // REFER resolution for both blind transfers and the consultative finalise.
+  const bridgedTransferToAgent = parseBridgedTransferMap(options) !== null;
+  // Bridged-segment transcription (options.bridgedTransferTranscribe)
+  // likewise needs the media to stay on-platform — the humans' audio tracks
+  // must remain observable in the room — so it forces the bridged path too.
+  const bridgedTransferTranscribe =
+    parseBridgedTranscribeOption(options) !== null;
+  const effectiveForceBridged =
+    forceBridgedFromEndpoint ||
+    args.forceBridged === true ||
+    bridgedTransferToAgent ||
+    bridgedTransferTranscribe;
 
   logger.info(
     {
@@ -1636,6 +2170,8 @@ export async function handleTransfer(
       canRefer,
       forceBridged: args.forceBridged,
       forceBridgedFromEndpoint,
+      bridgedTransferToAgent,
+      bridgedTransferTranscribe,
       effectiveForceBridged,
       aplisayId,
     },
@@ -1654,17 +2190,29 @@ export async function handleTransfer(
       calledId,
       options,
       session,
-      context.setBridgedCallRecord
+      context.setBridgedCallRecord,
+      chargeableOutboundTrunkId(context.registrationOriginated)
     );
   };
 
-  // Route based on operation and participant capabilities
-  // Check if forceBridged is set to override REFER capability
-  // Use effectiveForceBridged which considers both endpoint options and args
+  // Route based on operation and participant capabilities.
+  // useRefer: complete the final hop via SIP REFER when the participant is a
+  // REFER-capable SIP leg (registration endpoints default to canRefer=true) and
+  // bridging has not been forced (forceBridged / options.forceBridged). This now
+  // governs BOTH blind and consultative transfers, so a REFER-capable
+  // consultative transfer hands the caller to the target instead of bridging
+  // them inside the LiveKit room — and therefore does not emit a
+  // telephony:bridged-call child.
   const useBridged = effectiveForceBridged;
-  
+  const useRefer = isSip && canRefer && !useBridged;
+
+  logger.info(
+    { operation, isSip, canRefer, useBridged, useRefer },
+    "resolved transfer mode"
+  );
+
   if (operation === "blind") {
-    if (isSip && canRefer && !useBridged) {
+    if (useRefer) {
       // Case 2: Blind transfer using SIP REFER
       return handleBlindReferTransfer(context);
     } else {
@@ -1681,7 +2229,8 @@ export async function handleTransfer(
       context,
       effectiveCallerId,
       effectiveAplisayId,
-      finaliseBridgedCallFn
+      finaliseBridgedCallFn,
+      useRefer
     );
   } else {
     throw new Error(`Unknown transfer operation: ${operation}`);

@@ -18,6 +18,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [multi-agent-api.md](multi-agent-api.md) | The multi-agent REST surface and agent-to-agent transfer |
 | [mcp-servers.md](mcp-servers.md) | Attaching remote MCP tool servers to agents |
 | [tool-call-chaining-metadata-priming.md](tool-call-chaining-metadata-priming.md) | Static/metadata parameter sourcing and chained tool calls |
+| [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |
 | [uninterruptible-greetings.md](uninterruptible-greetings.md) | Barge-in control for opening prompts |
 | [ultravox-vendor-specific-options.md](ultravox-vendor-specific-options.md) | Ultravox model variants and tuning options |
 | [agent-concurrency-limits.md](agent-concurrency-limits.md) | Per-agent/user/organisation concurrency caps |
@@ -29,8 +30,11 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | Doc | What it covers |
 |---|---|
 | [call-transfers.md](call-transfers.md) | Blind, consultative and bridged transfers; REFER/deflect; anti-fraud rules |
+| [send-dtmf.md](send-dtmf.md) | The `send_dtmf` builtin: play out-of-band (RFC 4733) DTMF digits over a SIP call |
+| [sip-headers.md](sip-headers.md) | Surfacing inbound SIP INVITE `X-` headers to the agent as `aplisay.sipHeaders` |
 | [redirecting-calls.md](redirecting-calls.md) | Redirection as distinct from transfer |
 | [human-handback-howto.md](human-handback-howto.md) | Handing a call back to a human with context |
+| [transfer-back-plan.md](transfer-back-plan.md) | Delivery plan for transfer-back: listener override, transfer metadata, summariser pattern, bridged recording |
 | [call-recording.md](call-recording.md) | Recording lifecycle, encryption, storage and retrieval |
 | [call-hooks.md](call-hooks.md) | Webhooks on call milestones |
 | [originate-api.md](originate-api.md) | Placing outbound calls from an agent/listener |

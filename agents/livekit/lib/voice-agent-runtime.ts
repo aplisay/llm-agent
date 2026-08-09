@@ -23,7 +23,12 @@ import { resolveVoiceMode } from "./voice-mode.js";
 import {
   createVoiceModelAndSession,
   inactivityAwayTimeoutSecs,
+  inactivityHangupEnabled,
+  INACTIVITY_PROMPT_COUNT,
 } from "./voice-session-factory.js";
+import { resolveUsageVendors } from "./usage-vendors.js";
+import type { UsageVendors } from "./usage-vendors.js";
+import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
 export async function runAgentWorker({
   ctx,
@@ -45,12 +50,15 @@ export async function runAgentWorker({
   modelRef,
   getConsultInProgress,
   getActiveCall,
+  getAgentCall,
   endTransferActivityIfNeeded,
   getTransferState,
   recordingOptions,
   setActiveAgentCall,
   startHandoverTone,
   stopHandoverTone,
+  registerBridgedTakeover,
+  registerHangupExecutor,
   transferOnly = false,
   transferArgs,
 }: RunAgentWorkerParams & {
@@ -59,6 +67,13 @@ export async function runAgentWorker({
     state: "none" | "dialling" | "talking" | "rejected" | "failed";
     description: string;
   };
+  /**
+   * Hands the worker the live human→agent takeover capability for
+   * `options.bridgedTransferToAgent` (see bridged-transfer-to-agent.ts); the
+   * transfer handler reads it when arming the post-bridge DTMF watch.
+   * Re-registered with null on teardown.
+   */
+  registerBridgedTakeover?: (rt: BridgedTakeoverRuntime | null) => void;
 }) {
   /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
   let useRecorderIO = false;
@@ -235,6 +250,35 @@ export async function runAgentWorker({
   let watchdogInterval: NodeJS.Timeout | null = null;
   const WATCHDOG_INTERVAL_MS = 120 * 1000;
 
+  // ---- Agent-initiated hangup ------------------------------------------
+  // The healthy path closes the call on the AgentStateChanged → "listening"
+  // edge, which lets a closing utterance finish before the line drops. That
+  // edge is not guaranteed: it only fires on a state TRANSITION, so a hangup
+  // issued while the session is already listening (a tool-call-only turn with
+  // no goodbye) never triggers it. These two guards make the latch safe:
+  //   - lastAgentState lets executeHangup see there is no speech to wait for
+  //     and close on a short grace instead of waiting for a transition;
+  //   - hangupTimer bounds every other case, so no missing or late transition
+  //     can strand a live, billed call.
+  let lastAgentState: string | null = null;
+  let hangupTimer: NodeJS.Timeout | null = null;
+  let hangupArmed = false;
+  /**
+   * Long-stop measured from the LAST state change, not from the hangup request:
+   * while the session keeps transitioning (thinking ↔ speaking) it is alive and
+   * working through a closing utterance, so the timer is pushed out each time.
+   * It only expires when the session has gone quiet with a hangup outstanding —
+   * which is exactly the stuck case, and never a long-but-healthy goodbye.
+   */
+  const HANGUP_WATCHDOG_MS = 15 * 1000;
+  /**
+   * Grace applied when no speech is pending at all. Long enough for the hangup
+   * tool result to reach the model and for a generation that started in the
+   * same turn to announce itself (which re-arms to the full watchdog above),
+   * short enough that the stuck case ends in seconds rather than minutes.
+   */
+  const HANGUP_IDLE_GRACE_MS = 2 * 1000;
+
   // DTMF buffering: accumulate digits and send as a single input after timeout.
   // Both values default here and may be overridden per-agent from
   // `agent.options.dtmfTimeout` / `agent.options.dtmfTerminator` once the agent
@@ -243,6 +287,18 @@ export async function runAgentWorker({
   let dtmfTimeout: NodeJS.Timeout | null = null;
   let dtmfTimeoutMs = 1500; // 1.5 seconds of silence before sending
   let dtmfTerminator = "#"; // Send immediately when this is pressed
+
+  // Outbound DTMF (the send_dtmf builtin). RFC 4733 event codes for the
+  // alphabet we accept (0-9, * and #); publishDtmf needs both the numeric
+  // code and the string form. Digits are paced so the SIP side emits distinct
+  // tones, and the burst length is capped to bound one tool call.
+  const DTMF_EVENT_CODES: Record<string, number> = {
+    "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
+    "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+    "*": 10, "#": 11,
+  };
+  const MAX_DTMF_DIGITS = 64;
+  const DTMF_INTER_DIGIT_MS = 200;
 
   // Inactivity "kick": repeating timer that re-speaks options.inactivity.message
   // every `timeout` seconds while the user is in the "away" state. The first
@@ -453,6 +509,10 @@ export async function runAgentWorker({
     string,
     { technology: string; provider?: string; detail?: string; units: Record<string, number> }
   >();
+  // Canonical {vendor, detail} per technology from the configured services, so
+  // rows carry the real vendor even on the LiveKit-Inference path (whose metric
+  // label is vendor-blind, e.g. "inference.TTS"). Resolved once per worker.
+  const usageVendors = resolveUsageVendors(agent, modelName);
   const addMeter = (
     technology: string,
     label: string | undefined,
@@ -460,9 +520,19 @@ export async function runAgentWorker({
     quantity: number | undefined,
   ): void => {
     if (!quantity || quantity <= 0) return;
-    const detail = label || modelName;
-    // Derive a coarse vendor from a "vendor.Component" / "vendor/model" label.
-    const provider = label ? label.split(/[./]/)[0] || undefined : undefined;
+    // Realtime (speech-to-speech) models bundle STT+TTS into the model charge
+    // (per-minute for Ultravox, per-token for gpt-realtime), so they must NOT
+    // emit separate stt/tts component rows. The UserInputTranscribed listener
+    // fires for realtime agents too, so without this gate it tags the user's
+    // transcript characters with the *pipeline-default* STT vendor (deepgram) —
+    // a phantom row that double-charges. LLM token rows still flow (gpt-realtime).
+    if (resolvedVoiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
+    // Prefer the configured vendor/model; fall back to the SDK label
+    // ("vendor.Component" / "vendor/model") then the bare modelName.
+    const resolved = usageVendors[technology as keyof UsageVendors];
+    const detail = resolved?.detail || label || modelName;
+    const provider =
+      resolved?.vendor || (label ? label.split(/[./]/)[0] || undefined : undefined);
     const key = `${technology}|${detail}`;
     const meter = usageMeters.get(key) || { technology, provider, detail, units: {} };
     meter.units[unit] = (meter.units[unit] || 0) + quantity;
@@ -500,10 +570,23 @@ export async function runAgentWorker({
       if (isStaleSession(s)) return;
       onMetrics(ev?.metrics);
     });
+    // STT characters: the STT metric only carries audio ms, so count transcript
+    // characters from the final user-input transcription (Q-G dual-basis).
+    s.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev: any) => {
+      if (isStaleSession(s)) return;
+      if (ev?.isFinal && typeof ev?.transcript === "string") {
+        addMeter("stt", undefined, "characters", ev.transcript.length);
+      }
+    });
   };
   const flushUsage = async (finalised: boolean): Promise<void> => {
     try {
-      const c: any = getActiveCall();
+      // Attribute the agent session's accumulated token/stt/tts meters to the
+      // AGENT's call, not getActiveCall() — after a blind-bridge transfer the
+      // latter flips to the no-agent bridged tail leg, so these component meters
+      // would otherwise mis-attribute there (the bridged leg is billed only for
+      // its own audio-path minutes via its Call.end()). Falls back when unset.
+      const c: any = (getAgentCall ?? getActiveCall)();
       if (!c?.id) return;
       const records: any[] = [];
       for (const meter of usageMeters.values()) {
@@ -542,6 +625,13 @@ export async function runAgentWorker({
       return;
     }
     isCleaningUp = true;
+
+    // The call is coming down: no bridged human→agent takeover can start now.
+    registerBridgedTakeover?.(null);
+    // Likewise the hangup path — drop the executor and any pending timer so a
+    // late hangup tool call cannot re-enter teardown on a dead session.
+    registerHangupExecutor?.(null);
+    clearHangupTimer();
 
     const exitStatus: {
       callEnded: boolean;
@@ -588,16 +678,19 @@ export async function runAgentWorker({
       }
       // Flush any pending DTMF buffer before closing
       if (dtmfBuffer.length > 0 && session) {
+        const digitsToSend = dtmfBuffer;
+        dtmfBuffer = "";
         logger.debug(
-          { buffer: dtmfBuffer },
+          { buffer: digitsToSend },
           "Flushing remaining DTMF buffer during cleanup",
         );
+        // Log the keypad input as a user turn too (see flushDtmfBuffer).
+        sendMessage({ user: digitsToSend });
         try {
-          session.generateReply({ userInput: dtmfBuffer });
+          session.generateReply({ userInput: digitsToSend });
         } catch (e) {
           logger.debug({ e }, "Failed to flush DTMF buffer during cleanup");
         }
-        dtmfBuffer = "";
       }
 
 
@@ -655,6 +748,116 @@ export async function runAgentWorker({
       exitStatus.error =
         error.message || "unknown error caught during cleanup and close";
     }
+  };
+
+  /** Cancels a pending hangup timer (teardown, or a superseded arming). */
+  const clearHangupTimer = () => {
+    if (hangupTimer) {
+      clearTimeout(hangupTimer);
+      hangupTimer = null;
+    }
+  };
+
+  /**
+   * (Re)arms the hangup long-stop, replacing any timer already pending.
+   *
+   * `reason` distinguishes the two ways this timer legitimately fires: a plain
+   * silent hangup (nothing was pending, so there was never going to be a
+   * "listening" edge) is an ordinary agent-initiated end and must record as
+   * one; firing while speech was outstanding means the state machine went
+   * quiet without ever reaching "listening", which is the stuck case and is
+   * recorded distinctly so it stays visible in call records.
+   */
+  const armHangupTimer = (delayMs: number, reason: string) => {
+    clearHangupTimer();
+    hangupTimer = setTimeout(() => {
+      hangupTimer = null;
+      // cleanupAndClose is idempotent (isCleaningUp), so losing the race to the
+      // state-change handler is a no-op rather than a double teardown.
+      void cleanupAndClose(reason).catch((e) =>
+        logger.error({ e }, "error closing call after hangup"),
+      );
+    }, delayMs);
+    // Never hold the process open on this timer alone.
+    hangupTimer.unref?.();
+  };
+
+  /**
+   * Drives an agent-initiated hangup to completion. Called by the worker's
+   * `onHangup` the moment the latch is set, rather than waiting on a state
+   * transition that may never arrive.
+   *
+   * The AgentStateChanged → "listening" handler still runs and will usually
+   * win the race — that is the path that lets a goodbye finish. This exists so
+   * that when it does not fire, the call still ends.
+   */
+  const executeHangup = () => {
+    if (hangupArmed) return;
+    hangupArmed = true;
+
+    // If the session is mid-generation there IS a closing utterance to wait
+    // for, and the "listening" edge will arrive when it finishes. If it is idle
+    // there is nothing to wait for and that edge will never come — the stuck
+    // case — so fall back to the short grace. Either way the timer is a
+    // long-stop: noteAgentState below pushes it out on every transition, and
+    // the normal listening-edge handler still does the actual close first.
+    const speechPending =
+      lastAgentState === "speaking" || lastAgentState === "thinking";
+    const delay = speechPending ? HANGUP_WATCHDOG_MS : HANGUP_IDLE_GRACE_MS;
+
+    logger.info(
+      { callId: call.id, lastAgentState, speechPending, delayMs: delay },
+      speechPending
+        ? "agent hangup requested; waiting for speech to finish (watchdog armed)"
+        : "agent hangup requested with nothing pending; closing on grace timer",
+    );
+    armHangupTimer(
+      delay,
+      speechPending
+        ? DISCONNECT_REASONS.HANGUP_WATCHDOG
+        : DISCONNECT_REASONS.AGENT_INITIATED_HANGUP,
+    );
+  };
+
+  /**
+   * Records the session's agent state and, while a hangup is outstanding,
+   * re-arms the long-stop. A session that is still transitioning is still
+   * working — pushing the timer out is what keeps a long goodbye from being
+   * cut off mid-sentence, and what lets a generation that starts just after
+   * the hangup call (state still "listening" at request time) complete.
+   */
+  const noteAgentState = (state: string) => {
+    lastAgentState = state;
+    if (!hangupArmed) return;
+    // "listening" is handled by the AgentStateChanged handlers, which close the
+    // call outright; re-arming there would only delay the long-stop behind it.
+    if (state === "listening") return;
+    // Reaching here means speech is outstanding: if it never lands us back in
+    // "listening" the call is stuck, so this arming records as the watchdog.
+    armHangupTimer(HANGUP_WATCHDOG_MS, DISCONNECT_REASONS.HANGUP_WATCHDOG);
+  };
+
+  /**
+   * Forced teardown after the tool breaker sees a tool spinning past its kill
+   * threshold. At that point the model has demonstrated it will not stop, so
+   * the only way to stop the spend is to end the call.
+   */
+  const onToolLoopDetected = ({
+    tool,
+    calls,
+    windowMs,
+  }: {
+    tool: string;
+    calls: number;
+    windowMs: number;
+  }) => {
+    logger.error(
+      { callId: call.id, tool, calls, windowMs },
+      "terminating call: runaway tool-call loop",
+    );
+    void cleanupAndClose(DISCONNECT_REASONS.TOOL_LOOP_DETECTED).catch((e) =>
+      logger.error({ e }, "error closing call after tool loop"),
+    );
   };
 
   // ---- Agent-to-agent transfer (builtin transfer_agent) ----
@@ -778,6 +981,7 @@ export async function runAgentWorker({
       voice.AgentSessionEventTypes.AgentStateChanged,
       async (ev: voice.AgentStateChangedEvent) => {
         if (isStaleSession(s)) return;
+        noteAgentState(ev.newState);
         // The incoming agent has produced audio — the handover gap is over, so
         // stop any comfort tone covering it (idempotent / no-op otherwise).
         if (ev.newState === "speaking") {
@@ -844,11 +1048,34 @@ export async function runAgentWorker({
    * transcripts from here on are attributed to the new agent + model, and the
    * original call ends with a pointer to its continuation. Prompt-only
    * (in-place) swaps deliberately do NOT do this.
+   *
+   * `opts.takeover` switches the machinery into bridged human→agent takeover
+   * mode (options.bridgedTransferToAgent): the "call being continued" is the
+   * telephony:bridged-call record rather than getActiveCall(), the child's
+   * parentId points at the original agent call, the bridge is dropped by the
+   * `onReserved` hook once the concurrency slot is held (a busy rejection
+   * still throws before anything is touched, leaving the humans talking),
+   * and the parent record is NOT ended here — the hook already ended the
+   * bridged record with its own reason, and the original agent call ended at
+   * bridge time.
    */
   const restartWithAgent = async (
     newAgentDef: Agent,
     instructions: string,
+    opts?: {
+      takeover?: {
+        /** Field source for the continuation record (the bridged call). */
+        parentCall: Call;
+        /** parentId for the continuation record (the original agent call). */
+        parentId: string;
+        /** Drops the bridge once the continuation slot is reserved. */
+        onReserved: () => Promise<void>;
+        /** Transcript marker, injected onto the NEW call record. */
+        announcement: string;
+      };
+    },
   ): Promise<void> => {
+    const takeover = opts?.takeover;
     const targetModelName = newAgentDef.modelName!;
     const targetHandler = targetModelName.split(":")[0];
     if (targetHandler !== "livekit") {
@@ -857,11 +1084,11 @@ export async function runAgentWorker({
       );
     }
 
-    const oldCall = getActiveCall();
+    const oldCall = takeover?.parentCall ?? getActiveCall();
     // Reserve the continuation call (concurrency slot) BEFORE touching the
     // running session, so a busy rejection leaves the current agent intact.
     const newCall = (await createCall({
-      parentId: oldCall.id,
+      parentId: takeover?.parentId ?? oldCall.id,
       userId: oldCall.userId,
       organisationId: oldCall.organisationId,
       instanceId: oldCall.instanceId,
@@ -879,14 +1106,32 @@ export async function runAgentWorker({
     })) as Call;
     await newCall.start();
 
-    // Slot reserved and the continuation call accepted: the handover will
-    // proceed. Announce it now — before the outgoing session is torn down and
-    // the incoming agent greets — so the transcript marker precedes the new
-    // agent's first turn. A busy rejection throws at newCall.start() above,
-    // before this point, so a failed transfer leaves no marker.
-    sendMessage({
-      inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
-    });
+    if (takeover) {
+      // Slot held: commit the takeover — drop the transfer target and end the
+      // bridged record. Belt-and-braces: the hook is best-effort internally,
+      // but if it does throw, release the reserved call and abort with the
+      // bridge in whatever state the hook left it (the humans keep talking).
+      try {
+        await takeover.onReserved();
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e));
+        await newCall
+          .end(`bridged agent takeover aborted: ${error.message}`)
+          .catch(() => undefined);
+        throw error;
+      }
+    } else {
+      // Slot reserved and the continuation call accepted: the handover will
+      // proceed. Announce it now — before the outgoing session is torn down and
+      // the incoming agent greets — so the transcript marker precedes the new
+      // agent's first turn. A busy rejection throws at newCall.start() above,
+      // before this point, so a failed transfer leaves no marker. (Takeover
+      // mode announces later, onto the NEW call record — the outgoing records
+      // are already ended, so a marker batched onto them would be lost.)
+      sendMessage({
+        inject: `Call transferred to agent ${newAgentDef.name || newAgentDef.id}`,
+      });
+    }
 
     // Cover the dead-air gap: from here until the incoming agent first speaks
     // (or fails) the caller would otherwise hear silence while the old session
@@ -945,12 +1190,19 @@ export async function runAgentWorker({
       resolvedVoiceMode = voiceMode;
       setActiveAgentCall?.(newCall);
 
-      // Hand the records over: the original call ends pointing at its child.
-      await oldCall
-        .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
-        .catch((e) => {
-          logger.warn({ e }, "agent handover: ending original call failed");
-        });
+      if (takeover) {
+        // The marker lands on the NEW call record (activeAgentCall just
+        // flipped above) — the outgoing agent call and the bridged record
+        // are both already ended.
+        sendMessage({ inject: takeover.announcement });
+      } else {
+        // Hand the records over: the original call ends pointing at its child.
+        await oldCall
+          .end(`transferred to agent ${newAgentDef.id}, continued as call ${newCall.id}`)
+          .catch((e) => {
+            logger.warn({ e }, "agent handover: ending original call failed");
+          });
+      }
 
       if (recordingOptions?.enabled) {
         logger.warn(
@@ -1078,6 +1330,76 @@ export async function runAgentWorker({
     return { detail: "full agent-stack handover with new call record" };
   };
 
+  /**
+   * Resolve a send_dtmf builtin call: play the digits to the caller as
+   * out-of-band (RFC 4733) DTMF via localParticipant.publishDtmf — the SIP
+   * participant in the room relays telephone-event to the phone user. Only
+   * valid on a SIP call: a WebRTC/browser participant has no telephone leg,
+   * so it returns FAILED (never throws). Digits are validated to the 0-9 * #
+   * set and paced so the SIP side emits distinct events.
+   */
+  const onSendDtmf = async ({
+    digits,
+  }: {
+    digits: string;
+  }): Promise<{ status: string; detail?: string; error?: string }> => {
+    const cleaned = (digits ?? "").trim();
+    // Reject browser/WebRTC sessions — there is no telephone leg to relay tones
+    // to. The worker stamps the "WebRTC" sentinel on BOTH callerId and calledId
+    // for browser calls (worker.ts); any SIP call — inbound OR outbound — has
+    // real numbers. Do NOT gate on the inbound caller participant's SIP
+    // attributes: outbound calls have a null `participant` (the SIP leg is the
+    // "sip-outbound-call" participant), which previously mis-flagged every
+    // outbound call as WebRTC and blocked DTMF to IVRs.
+    if (callerId === "WebRTC" && calledId === "WebRTC") {
+      return {
+        status: "FAILED",
+        error:
+          "DTMF can only be sent on a telephone (SIP) call, not a browser/WebRTC session",
+      };
+    }
+    if (!cleaned) {
+      return {
+        status: "FAILED",
+        error: "send_dtmf requires a non-empty 'digits' string",
+      };
+    }
+    if (cleaned.length > MAX_DTMF_DIGITS) {
+      return {
+        status: "FAILED",
+        error: `send_dtmf 'digits' is limited to ${MAX_DTMF_DIGITS} characters`,
+      };
+    }
+    if (!/^[0-9*#]+$/.test(cleaned)) {
+      return {
+        status: "FAILED",
+        error:
+          "send_dtmf 'digits' may only contain the characters 0-9, * and #",
+      };
+    }
+    // Publish from the connected room's local participant. NB: the `room`
+    // closure var is the job's room-info object (only `room.name` is real —
+    // worker.ts casts `job.room as unknown as Room`); the live rtc-node room
+    // with a localParticipant is `ctx.room` (cf. ctx.room.on(DtmfReceived) and
+    // ctx.room.localParticipant.publishData elsewhere).
+    const local = ctx.room?.localParticipant;
+    if (!local) {
+      return {
+        status: "FAILED",
+        error: "no local participant available to publish DTMF",
+      };
+    }
+    for (const digit of cleaned) {
+      await local.publishDtmf(DTMF_EVENT_CODES[digit], digit);
+      await new Promise((resolve) => setTimeout(resolve, DTMF_INTER_DIGIT_MS));
+    }
+    logger.info(
+      { callId: call.id, digits: cleaned },
+      "send_dtmf: published DTMF to SIP participant",
+    );
+    return { status: "OK", detail: `sent ${cleaned.length} DTMF digit(s)` };
+  };
+
   const buildTools = (agentDef: Agent) =>
     createTools({
       agent: agentDef,
@@ -1090,7 +1412,40 @@ export async function runAgentWorker({
       onTransfer,
       getTransferState,
       onAgentTransfer,
+      onSendDtmf,
+      onToolLoopDetected,
     });
+
+  // Give the worker's hangup latch a way to close the call itself. Registered
+  // before the session starts so a hangup on the very first turn is covered,
+  // and cleared in cleanupAndClose alongside registerBridgedTakeover.
+  registerHangupExecutor?.(executeHangup);
+
+  // ---- Bridged human→agent takeover (options.bridgedTransferToAgent) ----
+  // Expose the live handover machinery to the transfer handler: when a
+  // bridged transfer completes it arms a DTMF watch on the transfer target
+  // (see bridged-transfer-to-agent.ts), and a match re-enters here to start
+  // the mapped agent's stack on the room the caller is still connected to.
+  // The history snapshot is taken by the arming code at bridge time.
+  registerBridgedTakeover?.({
+    getConversationHistoryText: () =>
+      conversationHistory
+        .map(
+          ({ role, text }) => `${role === "user" ? "Caller" : "Agent"}: ${text}`,
+        )
+        .join("\n"),
+    takeover: ({ newAgentDef, instructions, parentCall, parentId, onReserved }) =>
+      restartWithAgent(newAgentDef, instructions, {
+        takeover: {
+          parentCall,
+          parentId,
+          onReserved,
+          announcement: `Human transfer target handed the call back; continuing with agent ${
+            newAgentDef.name || newAgentDef.id
+          }`,
+        },
+      }),
+  });
 
   try {
     // Wrap setup operations with timeout
@@ -1191,6 +1546,7 @@ export async function runAgentWorker({
           voice.AgentSessionEventTypes.AgentStateChanged,
           async (ev: voice.AgentStateChangedEvent) => {
             if (isStaleSession(setupSession)) return;
+            noteAgentState(ev.newState);
             logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
@@ -1215,6 +1571,59 @@ export async function runAgentWorker({
             logger.error({ ev }, "error");
           },
         );
+
+        // When the realtime provider ends the session itself — Ultravox's own
+        // maxDuration, an options.inactivity.hangup endBehavior hangup, or a genuine
+        // outage — the agent is dead but the SIP leg is still up. Nothing else notices:
+        // the SDK turns it into an unrecoverable error whose `recoverable` flag is
+        // stripped before any listener sees it (see setProviderEndedCallback), and the
+        // Close event never arrives because closeImpl blocks in drain(). Observed on
+        // staging: 2m10s of dead air on a live leg, then teardown under the unrelated
+        // "Session timeout" long-stop, then a 120s forced process exit.
+        //
+        // The callback fires for the PRIMARY session only, so a consult TransferAgent
+        // session or a post-handover session ending cannot reach here. The guards below
+        // cover the cases where the primary model is deliberately dead but the call is
+        // healthy or already coming down.
+        // NB the realtime model is `session.llm`, NOT the `model` this factory returns
+        // — that one is the voice.Agent (behaviour/instructions). The RealtimeModel is
+        // constructed inline inside createVoiceModelAndSession and is reachable only
+        // through the session, the same way getLlmForTransferSession does it.
+        const realtimeModel = session.llm as unknown as {
+          setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
+        } | null;
+        if (typeof realtimeModel?.setProviderEndedCallback === "function") {
+          realtimeModel.setProviderEndedCallback((info: unknown) => {
+            if (isCleaningUp) return;
+            if (agentHandoverInProgress) return;
+            // Bridged/transferred out: the caller no longer hears this agent, so its
+            // model dying is expected and must not end the bridged call.
+            if (getBridgedParticipant()) return;
+            if (getConsultInProgress()) return;
+            logger.warn(
+              { info, callId: call.id },
+              "realtime provider ended the session; ending call",
+            );
+            void cleanupAndClose(
+              DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED,
+            ).catch((e) =>
+              logger.error({ e }, "error ending call after provider end"),
+            );
+          });
+          // Logged at INFO deliberately: app-level debug is invisible inside job
+          // processes, so a silently-unregistered hook is exactly how this shipped
+          // broken once already (it was wired to the wrong object and the optional
+          // call no-opped). If this line is absent, the hook is NOT armed.
+          logger.info(
+            { callId: call.id, modelName },
+            "provider-ended teardown hook armed",
+          );
+        } else {
+          logger.info(
+            { callId: call.id, modelName },
+            "realtime model does not report provider-ended; teardown hook not armed",
+          );
+        }
 
         // Watch for any non-recoverable model/STT/TTS errors that occur while
         // the session is still starting. If we see one before callStarted is
@@ -1425,6 +1834,28 @@ export async function runAgentWorker({
           session &&
           !isUltravoxRealtime
         ) {
+          // Consecutive unanswered prompts in the current away streak. Reset the
+          // moment the user comes back (see the UserStateChanged handler), so the
+          // hangup only ever fires on a genuinely abandoned call.
+          let inactivityPrompts = 0;
+          const hangupAfterPrompts = inactivityHangupEnabled(agent);
+
+          /**
+           * True while the caller is legitimately unattended by us: held through a
+           * consultation, or already bridged/transferring. Their silence is expected
+           * and must not be counted towards abandonment.
+           *
+           * NB the Ultravox native path cannot make this distinction — Ultravox
+           * enforces its own endBehavior server-side with no view of a transfer.
+           * See the `hangup` option docs in api-client.
+           */
+          const transferInFlight = () => {
+            if (getConsultInProgress()) return true;
+            if (getBridgedParticipant()) return true;
+            const st = getTransferState?.();
+            return st?.state === "dialling" || st?.state === "talking";
+          };
+
           const speakInactivity = async () => {
             // Suppress during/after a transfer bridge — the local agent's audio
             // is no longer what the caller hears.
@@ -1447,6 +1878,26 @@ export async function runAgentWorker({
             } catch (e) {
               logger.info({ e }, "inactivity kick failed");
             }
+
+            // Count only prompts the caller actually heard, and only when we are the
+            // ones they are waiting on. Without the opt-in this stays a pure counter
+            // and the kick repeats indefinitely, exactly as before.
+            if (!hangupAfterPrompts) return;
+            if (transferInFlight()) return;
+            inactivityPrompts += 1;
+            if (inactivityPrompts < INACTIVITY_PROMPT_COUNT) return;
+
+            if (inactivityInterval) {
+              clearInterval(inactivityInterval);
+              inactivityInterval = null;
+            }
+            logger.info(
+              { prompts: inactivityPrompts, inactivityTimeoutSecs },
+              "inactivity prompt unanswered, ending call",
+            );
+            await cleanupAndClose(DISCONNECT_REASONS.INACTIVITY_TIMEOUT).catch(
+              (e) => logger.error({ e }, "error ending call on inactivity"),
+            );
           };
 
           session.on(
@@ -1464,7 +1915,10 @@ export async function runAgentWorker({
                   void speakInactivity();
                 }, inactivityTimeoutSecs * 1000);
               } else {
-                // User became active again (speaking / listening) — stop kicking.
+                // User became active again (speaking / listening) — stop kicking and
+                // forget the streak, so three prompts spread across a long call never
+                // add up to a hangup.
+                inactivityPrompts = 0;
                 if (inactivityInterval) {
                   clearInterval(inactivityInterval);
                   inactivityInterval = null;
@@ -1532,19 +1986,13 @@ export async function runAgentWorker({
     // First pass:
     // - OpenAI realtime: `generateReply({ instructions: <greeting>, allowInterruptions:false })` and wait for playout.
     // - Pipeline: fixed greeting uses `say(<text>, { allowInterruptions:false })`; LLM greeting uses `generateReply(...)`.
-    // - Ultravox realtime: prefer vendorSpecific.ultravox.firstSpeakerSettings (handled provider-side), so we skip here
-    //   unless a portable greeting is explicitly configured and no Ultravox firstSpeakerSettings are present.
+    // - Ultravox realtime: always handled provider-side — caller-supplied
+    //   vendorSpecific.ultravox.firstSpeakerSettings pass through, and a portable
+    //   options.greeting is mapped to firstSpeakerSettings by the session factory.
+    //   The say()/generateReply fallback below is inert for Ultravox (no TTS, and the
+    //   plugin never sends response.create), so skip it entirely.
     try {
       const greeting = agent?.options?.greeting;
-      const hasUltravoxFirstSpeaker =
-        Boolean(
-          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
-            ?.text,
-        ) ||
-        Boolean(
-          agent?.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.agent
-            ?.prompt,
-        );
 
       const voiceMode = resolvedVoiceMode || resolveVoiceMode(modelName, agent.options);
       const text = (greeting?.text || "").trim();
@@ -1555,8 +2003,7 @@ export async function runAgentWorker({
       const wantGreeting =
         hasGreeting &&
         !invalidGreeting &&
-        // For Ultravox realtime, let provider-native firstSpeakerSettings handle it.
-        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/") && hasUltravoxFirstSpeaker);
+        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/"));
 
       if (wantGreeting && session) {
         const waitForPlayout = true;
@@ -1730,6 +2177,14 @@ export async function runAgentWorker({
           { digits: digitsToSend },
           "Flushing accumulated DTMF digits to LLM",
         );
+        // Record the received DTMF as a user turn in the transcript BEFORE the
+        // reply is generated. generateReply's `userInput` seeds the model but
+        // emits no ConversationItemAdded event, so without this the keypresses
+        // never appear in the transcript / transaction log or in the handover
+        // history (Pipecat logs them via the DTMFAggregator's transcription
+        // frame — this keeps the two runtimes at parity).
+        conversationHistory.push({ role: "user", text: digitsToSend });
+        sendMessage({ user: digitsToSend });
         try {
           session.generateReply({ userInput: digitsToSend });
         } catch (e) {

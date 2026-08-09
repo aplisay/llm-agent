@@ -3,8 +3,11 @@
 These exercise the pure adapter logic — name namespacing, result-text
 extraction, descriptor shape, and the ``execute`` proxy — against a fake MCP
 ``ClientSession``, so no network or real MCP server is needed. The
-network-bearing ``connect_mcp_servers`` is covered only for its
-misconfiguration / empty-list short-circuits.
+network-bearing ``connect_mcp_servers`` is covered for its misconfiguration /
+empty-list short-circuits and, with faked transports, for its connect-failure
+and success paths (including the diagnostic content of the logs — see the
+2026-07-18 emf-bar incident, where a bare "failed to connect" line hid a 404
+from a url missing its ``/mcp`` path).
 """
 
 from __future__ import annotations
@@ -190,3 +193,146 @@ class _NullLog:
 
     info = debug
     warning = debug
+
+
+class _CapturingLog(_NullLog):
+    """Records (level, message) tuples so tests can assert on log content."""
+
+    def __init__(self):
+        self.records = []
+
+    def debug(self, message, *_a, **_k):
+        self.records.append(("debug", message))
+
+    def info(self, message, *_a, **_k):
+        self.records.append(("info", message))
+
+    def warning(self, message, *_a, **_k):
+        self.records.append(("warning", message))
+
+    def messages(self, level):
+        return [m for lvl, m in self.records if lvl == level]
+
+
+# --- connect: error summaries and log diagnosability -------------------------
+
+def test_error_summary_unwraps_nested_exception_groups():
+    leaf = ValueError("Client error '404 Not Found' for url 'https://x/'")
+    grouped = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [ExceptionGroup("sub-group", [leaf]), ValueError(str(leaf))],
+    )
+    summary = mcp_tools._error_summary(grouped)
+    assert "404 Not Found" in summary
+    assert "TaskGroup" not in summary
+    # duplicate leaves collapse to one
+    assert summary == "ValueError: Client error '404 Not Found' for url 'https://x/'"
+
+
+def test_error_summary_plain_exception_keeps_type_and_text():
+    assert mcp_tools._error_summary(RuntimeError("boom")) == "RuntimeError: boom"
+    assert mcp_tools._error_summary(RuntimeError()) == "RuntimeError"
+
+
+class _ExplodingCM:
+    """Async CM standing in for ``streamablehttp_client`` whose enter fails the
+    way anyio surfaces transport errors — wrapped in an ExceptionGroup."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    async def __aenter__(self):
+        raise self._exc
+
+    async def __aexit__(self, *_exc_info):
+        return False
+
+
+def test_connect_failure_log_names_server_url_and_cause(monkeypatch):
+    import mcp.client.streamable_http as shttp
+
+    url = "https://mcp.example.com"  # note: missing the /mcp path
+    cause = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [ValueError(f"Client error '404 Not Found' for url '{url}/'")],
+    )
+    monkeypatch.setattr(
+        shttp, "streamablehttp_client", lambda *_a, **_k: _ExplodingCM(cause)
+    )
+
+    log = _CapturingLog()
+    descriptors, closers = asyncio.run(
+        mcp_tools.connect_mcp_servers(
+            {"mcpServers": [{"name": "emf_bar", "url": url}]}, log=log
+        )
+    )
+
+    assert descriptors == []
+    assert closers == []
+    [warning] = log.messages("warning")
+    # The message itself must carry the diagnosis: which server, which url,
+    # and the leaf error — not the ExceptionGroup wrapper text.
+    assert "emf_bar" in warning
+    assert url in warning
+    assert "404 Not Found" in warning
+    assert "TaskGroup" not in warning
+
+
+class _FakeStreamsCM:
+    async def __aenter__(self):
+        return ("read", "write", None)
+
+    async def __aexit__(self, *_exc_info):
+        return False
+
+
+class _FakeClientSessionCM:
+    """Stands in for ``mcp.ClientSession``: yields a session that lists tools."""
+
+    def __init__(self, *_a, **_k):
+        pass
+
+    async def __aenter__(self):
+        return _FakeSession(result=_ToolResult([_Content("ok")]))
+
+    async def __aexit__(self, *_exc_info):
+        return False
+
+
+def test_connect_success_logs_server_and_tool_names(monkeypatch):
+    import mcp
+    import mcp.client.streamable_http as shttp
+
+    async def _list_tools(self):
+        class _Listed:
+            tools = [_Tool("order_drink", "Order a drink", {})]
+
+        return _Listed()
+
+    async def _initialize(self):
+        return None
+
+    monkeypatch.setattr(_FakeSession, "initialize", _initialize, raising=False)
+    monkeypatch.setattr(_FakeSession, "list_tools", _list_tools, raising=False)
+    monkeypatch.setattr(
+        shttp, "streamablehttp_client", lambda *_a, **_k: _FakeStreamsCM()
+    )
+    monkeypatch.setattr(mcp, "ClientSession", _FakeClientSessionCM)
+
+    log = _CapturingLog()
+
+    async def _connect_and_close():
+        descriptors, closers = await mcp_tools.connect_mcp_servers(
+            {"mcpServers": [{"name": "emf_bar", "url": "https://mcp.example.com/mcp"}]},
+            log=log,
+        )
+        await mcp_tools.close_mcp_servers(closers, log=log)
+        return descriptors
+
+    descriptors = asyncio.run(_connect_and_close())
+
+    assert [d["schema"]["name"] for d in descriptors] == ["emf_bar_order_drink"]
+    [info] = log.messages("info")
+    assert "emf_bar" in info
+    assert "https://mcp.example.com/mcp" in info
+    assert "emf_bar_order_drink" in info

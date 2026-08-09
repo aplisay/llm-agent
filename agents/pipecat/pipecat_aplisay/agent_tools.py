@@ -102,6 +102,8 @@ def build_agent_tools(
     get_transfer_state: Callable[[], dict],
     on_agent_transfer: Optional[Callable[[dict], Awaitable[Any]]] = None,
     on_subagent: Optional[Callable[[dict, dict], Awaitable[Any]]] = None,
+    on_send_dtmf: Optional[Callable[[dict], Awaitable[Any]]] = None,
+    on_transfer_summary: Optional[Callable[[dict], Awaitable[Any]]] = None,
     extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
@@ -144,6 +146,10 @@ def build_agent_tools(
         builtins["transfer_agent"] = _builtin_factory_agent_transfer(on_agent_transfer)
     if on_subagent is not None:
         builtins["subagent"] = _builtin_factory_subagent(on_subagent)
+    if on_send_dtmf is not None:
+        builtins["send_dtmf"] = _builtin_factory_send_dtmf(on_send_dtmf)
+    if on_transfer_summary is not None:
+        builtins["transfer_summary"] = _builtin_factory_transfer_summary(on_transfer_summary)
     if extra_builtins:
         builtins.update(extra_builtins)
 
@@ -180,7 +186,20 @@ def build_agent_tools(
                 logger.bind(error=str(e)).info("error executing function")
                 raise RuntimeError(f"error executing function: {e}") from e
 
-        descriptor: dict = {"schema": schema, "execute": execute}
+        descriptor: dict = {
+            "schema": schema,
+            "execute": execute,
+            # Coarse classification surfaced in the InvocationLog tool logs
+            # (see voice_session._runner / tool_log.py). MCP tools set their
+            # own "mcp" kind in mcp_tools._make_descriptor. The `subagent`
+            # builtin (delegation to a headless text agent) is split out from
+            # the generic `builtin` so agent-to-agent calls read distinctly.
+            "kind": "subagent"
+            if fn_def.get("platform") == "subagent"
+            else "builtin"
+            if fn_def.get("implementation") == "builtin"
+            else "function",
+        }
         if (
             fn_def.get("implementation") == "builtin"
             and fn_def.get("platform") == "transfer_agent"
@@ -235,8 +254,26 @@ def _builtin_factory_agent_transfer(on_agent_transfer: Callable[[dict], Awaitabl
     return _impl
 
 
+def _builtin_factory_transfer_summary(on_transfer_summary: Callable[[dict], Awaitable[Any]]):
+    """Builtin ``transfer_summary``: collect the result of the summaryAgent
+    pre-fired at a bridgedTransferToAgent hand-back (docs/transfer-back-plan.md).
+    Returns ``{status: ready|pending|failed|none, ...}``."""
+
+    async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
+        return await on_transfer_summary(args)
+
+    return _impl
+
+
 def _builtin_factory_subagent(on_subagent: Callable[[dict, dict], Awaitable[Any]]):
     async def _impl(args: dict, metadata: dict, _options: dict) -> Any:
         return await on_subagent(args, metadata)
+
+    return _impl
+
+
+def _builtin_factory_send_dtmf(on_send_dtmf: Callable[[dict], Awaitable[Any]]):
+    async def _impl(args: dict, _metadata: dict, _options: dict) -> Any:
+        return await on_send_dtmf(args)
 
     return _impl

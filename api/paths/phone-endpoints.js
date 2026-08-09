@@ -267,19 +267,26 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      // Validate that the trunk exists and is associated with the organisation
-      const trunk = await Trunk.findByPk(data.trunkId, {
-        include: [{
-          model: Organisation,
-          where: { id: organisationId },
-          required: true
-        }]
-      });
-      
+      // Resolve the trunk. Chargeable trunks are shared platform carrier trunks
+      // (our public inbound/outbound trunks) that organisations consume but do
+      // not own — any org may allocate a number onto one (capped downstream by
+      // chargeableNumberLimit). Non-chargeable trunks are customer BYO/PBX/
+      // registration trunks and MUST be associated with the caller's org.
+      const trunk = await Trunk.findByPk(data.trunkId);
       if (!trunk) {
         return res.status(400).send({
-          error: 'Trunk not found or not associated with your organisation'
+          error: 'Trunk not found'
         });
+      }
+      if (!trunk.chargeable) {
+        const ownedByOrg = organisationId
+          ? await trunk.hasOrganisation(organisationId)
+          : false;
+        if (!ownedByOrg) {
+          return res.status(400).send({
+            error: 'Trunk not found or not associated with your organisation'
+          });
+        }
       }
 
       // Determine outbound behaviour: cannot exceed trunk's outbound capability
@@ -290,15 +297,70 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      const phoneNumber = await PhoneNumber.create({
-        number: normalizedNumber,
-        // Handler is always derived from the trunk (or defaulted) and cannot be chosen by the caller for DDI endpoints
-        handler: trunk.handler || 'livekit',
-        outbound: requestedOutbound,
-        organisationId: organisationId,
-        // Internally store the trunk association using the aplisayId foreign key
-        aplisayId: data.trunkId
-      });
+      // Numbers on chargeable trunks (carrier trunks shared into the org, i.e.
+      // not owned by it) are capped by Organisation.chargeableNumberLimit
+      // (null = unlimited). Count + create share a transaction behind a FOR
+      // UPDATE lock on the organisation row so concurrent claims cannot race
+      // past the limit. Numbers on the org's own trunks are never counted.
+      let phoneNumber;
+      try {
+        phoneNumber = await PhoneNumber.sequelize.transaction(async (transaction) => {
+          if (trunk.chargeable && organisationId) {
+            const org = await Organisation.findByPk(organisationId, {
+              transaction,
+              lock: transaction.LOCK.UPDATE,
+            });
+            const limit = org?.chargeableNumberLimit ?? null;
+            if (limit != null) {
+              const chargeableTrunks = await Trunk.findAll({
+                where: { chargeable: true },
+                attributes: ['id'],
+                transaction,
+              });
+              const used = await PhoneNumber.count({
+                where: {
+                  organisationId,
+                  aplisayId: { [Op.in]: chargeableTrunks.map((t) => t.id) },
+                },
+                transaction,
+              });
+              if (used >= limit) {
+                const err = new Error(`Chargeable number limit reached (${used} of ${limit} in use)`);
+                err.code = 'chargeable_number_limit';
+                err.limit = limit;
+                err.used = used;
+                throw err;
+              }
+            }
+          }
+          return PhoneNumber.create({
+            number: normalizedNumber,
+            // Handler is always derived from the trunk (or defaulted) and cannot be chosen by the caller for DDI endpoints
+            handler: trunk.handler || 'livekit',
+            outbound: requestedOutbound,
+            organisationId: organisationId,
+            // Internally store the trunk association using the aplisayId foreign key
+            aplisayId: data.trunkId
+          }, { transaction });
+        });
+      } catch (err) {
+        if (err.code === 'chargeable_number_limit') {
+          return res.status(403).send({
+            error: err.message,
+            code: err.code,
+            limit: err.limit,
+            used: err.used
+          });
+        }
+        // The pre-check above races exact simultaneous claims; the PK constraint
+        // is the backstop — report it as the same conflict.
+        if (err.name === 'SequelizeUniqueConstraintError') {
+          return res.status(409).send({
+            error: 'Phone number already exists'
+          });
+        }
+        throw err;
+      }
 
       return res.status(201).send({
         success: true,
@@ -582,6 +644,22 @@ createPhoneEndpoint.apiDoc = {
                   type: 'string'
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    403: {
+      description: 'Chargeable number limit reached — the organisation already holds its maximum number of DDIs on chargeable (non-owned) trunks',
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              code: { type: 'string', example: 'chargeable_number_limit' },
+              limit: { type: 'integer', description: 'The organisation\'s chargeable number limit' },
+              used: { type: 'integer', description: 'Numbers currently held on chargeable trunks' }
             }
           }
         }

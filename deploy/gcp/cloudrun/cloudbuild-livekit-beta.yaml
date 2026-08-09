@@ -1,0 +1,90 @@
+# Cloud Build — livekit-agent (beta channel).
+#
+# Trigger: push of a beta version tag (beta-n.n.n) on aplisay/llm-agent — a
+# beta tag is a whole-stack snapshot, so this fires alongside llm-agent-beta
+# and pipecat-beta (no jambonz: it is being dropped, so it has no beta channel):
+#
+#   gcloud builds triggers create github --project=llm-voice \
+#       --name=livekit-agent-beta \
+#       --repo-owner=aplisay --repo-name=llm-agent \
+#       --tag-pattern='^beta-[0-9]+\.[0-9]+\.[0-9]+$' \
+#       --build-config=deploy/gcp/cloudrun/cloudbuild-livekit-beta.yaml
+#
+# Publishes to the PRODUCTION image repo (livekit-agent) tagged :$COMMIT_SHA +
+# :beta + :$TAG_NAME. Build + push only — no deploy: the GCE docker-compose
+# host pulls its channel tag and is restarted out of band.
+#
+# SKIP-OR-BUILD: when livekit-agent:$COMMIT_SHA already exists (a previous
+# beta release of the same commit, or a per-commit main build), Check PROMOTES
+# server-side (digest-pinned manifest copy via `docker buildx imagetools
+# create` — NOT `tags add`, which cannot MOVE an existing :beta under the
+# Cloud Build SA) and the Submodules/Build/Push steps no-op via a /workspace
+# skip marker — the submodule fetch is skipped too. See cloudbuild-beta.yaml
+# for the full rationale (incl. why there is no `images:` list). No build-time
+# secrets: this image no longer bakes any, so the same artefact is valid in
+# every environment.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: Check
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REG="$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME"
+        # NB parse the Digest: line — the GCB builder's buildx ignores
+        # `imagetools inspect --format` and prints the human output anyway.
+        digest=$$(docker buildx imagetools inspect "$$REG/$_SERVICE_NAME:$COMMIT_SHA" 2>/dev/null \
+                    | awk '/^Digest:/{print $$2; exit}' || true)
+        if [ -n "$$digest" ]; then
+          echo "[promote] $_SERVICE_NAME:$COMMIT_SHA already published ($$digest) — tagging :$TAG_NAME + :beta, skipping build"
+          # --prefer-index=false: keep the promoted manifest byte-identical
+          # (same digest as :$COMMIT_SHA) — no new OCI index wrapper.
+          docker buildx imagetools create --prefer-index=false \
+            -t "$$REG/$_SERVICE_NAME:$TAG_NAME" \
+            -t "$$REG/$_SERVICE_NAME:beta" \
+            "$$REG/$_SERVICE_NAME@$$digest"
+          touch /workspace/skip-livekit-agent
+        else
+          echo "[build] no $_SERVICE_NAME:$COMMIT_SHA in the registry — full build"
+        fi
+  - name: gcr.io/cloud-builders/git
+    id: Submodules
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec git submodule update --init --recursive
+  - name: gcr.io/cloud-builders/docker
+    id: Build
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker build --no-cache \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:beta \
+          -t $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:$TAG_NAME \
+          -f agents/livekit/Dockerfile .
+  - name: gcr.io/cloud-builders/docker
+    id: Push
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        [ -f /workspace/skip-livekit-agent ] && { echo "[skip] promoted existing image"; exit 0; }
+        exec docker push --all-tags $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
+options:
+  substitutionOption: ALLOW_LOOSE
+  automapSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _SERVICE_NAME: livekit-agent
+  _AR_HOSTNAME: europe-west1-docker.pkg.dev
+tags:
+  - livekit-agent-beta
+# No availableSecrets: agents/livekit/Dockerfile takes no SECRETENV_* build
+# args any more. The image is secret-free — the container reads the pair from
+# Secret Manager itself at start-up.

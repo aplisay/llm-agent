@@ -71,8 +71,46 @@ class InboundCallContext:
     # Pre-existing platform call UUID if the gateway can stamp one through.
     call_id: Optional[str] = None  # X-Aplisay-Call-Id
 
+    # All X- headers from the inbound SIP INVITE, lowercased, as
+    # ``{"x-header-name": value}``. Only the sipbridge and voiceblender gateways
+    # populate this — they carry the raw INVITE headers (sipbridge on the WS
+    # handshake, voiceblender in the ``leg.ringing`` custom_headers). It stays
+    # ``None`` for the Daily / FreeSWITCH ingress, which don't surface arbitrary
+    # inbound headers. Surfaced to the agent as ``metadata.aplisay.sipHeaders``
+    # (see ``call_session.setup_inbound_call``).
+    sip_headers: Optional[dict] = None
+
     # Free-form gateway-specific bag (e.g. Daily room metadata, raw SIP headers).
     raw: dict = field(default_factory=dict)
+
+
+def collect_sip_headers(
+    pairs,
+    *,
+    exclude: frozenset = frozenset(),
+    exclude_prefixes: tuple = (),
+) -> dict:
+    """Build a ``metadata.aplisay.sipHeaders`` map from ``(name, value)`` header
+    pairs (INVITE X- headers).
+
+    Keeps only ``x-*`` entries, lowercases the header names, and drops any name
+    in ``exclude`` or matching one of ``exclude_prefixes`` — used to filter out a
+    gateway's own transport / handshake headers that didn't come from the
+    INVITE. ``None`` values are skipped; later duplicates win. Shared by the
+    sipbridge (WS handshake headers) and voiceblender (``leg.ringing``
+    custom_headers) inbound paths.
+    """
+    out: dict = {}
+    for name, value in pairs:
+        if value is None:
+            continue
+        lname = str(name).lower()
+        if not lname.startswith("x-"):
+            continue
+        if lname in exclude or any(lname.startswith(p) for p in exclude_prefixes):
+            continue
+        out[lname] = value
+    return out
 
 
 @dataclass
@@ -135,6 +173,20 @@ class TransferRequest:
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
 
+    # Egress routing for the legs the gateway *originates* (dial_bridge and
+    # the consultative consult leg). Same tuple as OutboundCallParams, for the
+    # same reason: the bridge has no outbound proxy, so a bare-number
+    # destination must be resolved to a routable URI — registration origin →
+    # the registration's B2BUA gateway, trunk origin → the global outbound
+    # SBC — and the upstream SBC picks the carrier route off
+    # X-Aplisay-Trunk / X-Aplisay-PhoneRegistration. Populated by the call
+    # session from the origin call's context; all-None falls through to the
+    # outbound-SBC default with no trunk header (IP-gated SBCs).
+    aplisay_id: Optional[str] = None
+    registration_endpoint_id: Optional[str] = None
+    b2bua_gateway_ip: Optional[str] = None
+    b2bua_gateway_transport: Optional[str] = None
+
     # Force the final hop to be completed via SIP REFER (with ?Replaces for
     # the consultative finalize) regardless of the origin default. Takes
     # precedence over ``force_bridged`` when both are set. Mirrors the
@@ -156,6 +208,22 @@ class TransferRequest:
     transfer_prompt_template: Optional[str] = None
     parent_transcript: Optional[str] = None
 
+    # Human-to-agent transfers (``options.bridgedTransferToAgent``): ask the
+    # gateway to keep watching the transfer-target leg for DTMF after the
+    # bridge is installed, so the worker can drop the target and hand the
+    # caller to another agent. Only meaningful on the bridged paths — the
+    # caller session forces ``force_bridged`` when the option is set. See
+    # ``bridged_transfer.py`` and ``docs/call-transfers.md``.
+    monitor_dtmf: bool = False
+
+    # Bridged-segment transcription (``options.bridgedTransferTranscribe``):
+    # ask the gateway to keep a transcription path over the bridge. On
+    # sipbridge this streams a stereo audio tap on the kept-open monitor WS;
+    # on voiceblender the worker starts the container's native per-leg STT
+    # instead (this flag still forces the bridged path + monitoring WS/
+    # record lifecycle). See ``bridge_transcript.py``.
+    tap_audio: bool = False
+
 
 class GatewaySession(Protocol):
     """A live media session owned by the gateway.
@@ -174,13 +242,20 @@ class GatewaySession(Protocol):
 
     async def shutdown(self) -> None: ...
 
-    async def bridge_with(self, other: "GatewaySession") -> None:
+    async def bridge_with(
+        self, other: "GatewaySession", *, monitor_dtmf: bool = False, tap_audio: bool = False
+    ) -> None:
         """Install media relay between this session and ``other``.
 
         Used to finalise consultative transfers — when the TransferAgent
         on the consult leg calls ``accept_transfer``, the parent leg
         and the consult leg get bridged together (bot WSes close, A and
         C talk directly through the gateway until either BYEs).
+
+        ``monitor_dtmf`` (human-to-agent transfers,
+        ``options.bridgedTransferToAgent``) asks the gateway to keep
+        surfacing transfer-target DTMF to the worker after the bridge is
+        installed — see ``bridged_transfer.py``.
 
         Default implementation raises ``NotImplementedError`` —
         gateways that support consultative transfer override this with
@@ -210,6 +285,26 @@ class GatewaySession(Protocol):
             f"fall back to bridge_with."
         )
 
+    async def send_dtmf(self, digits: str) -> None:
+        """Play ``digits`` to the remote party as out-of-band RFC 4733
+        (telephone-event) DTMF over the SIP leg.
+
+        Drives the ``send_dtmf`` builtin platform function. The gateway is
+        responsible for putting genuine telephone-event onto the wire —
+        sipbridge encodes it in its own RTP layer; voiceblender asks the
+        external media platform to. ``digits`` is pre-validated by the caller
+        to the alphabet 0-9, * and #.
+
+        Default implementation raises ``NotImplementedError`` — gateways whose
+        media plane can't synthesise out-of-band DTMF (e.g. Daily, FreeSWITCH)
+        inherit this, and the call session surfaces it to the LLM as a clean
+        "not supported on this gateway" tool result.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support send_dtmf "
+            f"(out-of-band RFC 4733 DTMF)."
+        )
+
 
 @dataclass
 class ConsultPayload:
@@ -237,11 +332,20 @@ class ConsultPayload:
     voiceblender gateways. Each gateway's ``_do_consultative`` calls
     ``register_consult_session`` to stash it and the worker's per-
     gateway WS handler reads it via ``consult_payload``.
+
+    ``destination`` is the transfer target as requested (pre URI
+    normalisation) — the consult call record's ``calledId``. Gateways
+    whose WS arrival carries the dialled number natively (FreeSWITCH
+    ``start.called_id``, voiceblender's pending inbound ctx) may leave
+    it empty; sipbridge has nothing else to read it from (the bridge
+    dials us back with only the session id in the URL), and the
+    agent-db API rejects a null calledId outright.
     """
 
     parent_session_id: str
     transfer_prompt_template: str
     parent_transcript: str
+    destination: str = ""
 
 
 class ConsultStateMixin:
@@ -265,6 +369,22 @@ class ConsultStateMixin:
     def _init_consult_state(self) -> None:
         self._consult_payloads: dict[str, ConsultPayload] = {}
         self._consult_call_ids: dict[str, str] = {}
+        # Human-to-agent takeovers (``options.bridgedTransferToAgent``):
+        # pending payloads keyed by the fresh agent-WS session id chosen at
+        # DTMF-match time. The per-gateway WS handler reads these to build the
+        # incoming agent's CallSession — mirrors the consult stash above. The
+        # values are ``bridged_transfer.TakeoverPayload`` instances (kept
+        # untyped here to avoid a circular import).
+        self._takeover_payloads: dict[str, Any] = {}
+
+    def register_takeover_session(self, session_id: str, payload: Any) -> None:
+        self._takeover_payloads[session_id] = payload
+
+    def takeover_payload(self, session_id: str) -> Optional[Any]:
+        return self._takeover_payloads.get(session_id)
+
+    def clear_takeover_session(self, session_id: str) -> None:
+        self._takeover_payloads.pop(session_id, None)
 
     def register_consult_session(
         self,
@@ -273,11 +393,13 @@ class ConsultStateMixin:
         parent_session_id: str,
         transfer_prompt_template: str,
         parent_transcript: str,
+        destination: str = "",
     ) -> None:
         self._consult_payloads[consult_session_id] = ConsultPayload(
             parent_session_id=parent_session_id,
             transfer_prompt_template=transfer_prompt_template,
             parent_transcript=parent_transcript,
+            destination=destination,
         )
 
     def consult_payload(self, session_id: str) -> Optional[ConsultPayload]:

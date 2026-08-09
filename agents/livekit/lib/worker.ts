@@ -14,7 +14,7 @@ import {
 // Internal modules
 import logger from "./logger.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
-import { bridgeParticipant } from "./telephony.js";
+import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
   getInstanceById,
   getInstanceByNumber,
@@ -39,7 +39,9 @@ import {
   type TransferContext,
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
+import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import { withTimeout } from "./utils.js";
+import { sipAttribute } from "./sip-attributes.js";
 import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
@@ -59,6 +61,8 @@ import type {
   SetupCallParams,
   TransferArgs,
   MessageData,
+  HangupResult,
+  HangupExecutor,
 } from "./types.js";
 
 dotenv.config();
@@ -231,6 +235,7 @@ export default defineAgent({
         b2buaGatewayTransport = null,
         aLegEncrypted = true,
         forceBridged,
+        sipHeaders = {},
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -272,6 +277,8 @@ export default defineAgent({
         getTransferState,
         startHandoverTone,
         stopHandoverTone,
+        registerBridgedTakeover,
+        registerHangupExecutor,
       } = await setupCallAndUtilities({
         ctx,
         room,
@@ -300,6 +307,7 @@ export default defineAgent({
         setBridgedParticipant: (p) => (bridgedParticipant = p),
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
+        outbound: outboundCall,
         registrationOriginated,
         trunkInfo,
         registrationRegistrar,
@@ -310,6 +318,7 @@ export default defineAgent({
         b2buaGatewayTransport: capturedB2buaTransport,
         aLegEncrypted,
         forceBridged,
+        sipHeaders,
         requestHangup: () => {},
         participant: participant,
       });
@@ -436,6 +445,8 @@ export default defineAgent({
             setActiveAgentCall,
             startHandoverTone,
             stopHandoverTone,
+            registerBridgedTakeover,
+            registerHangupExecutor,
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
@@ -624,45 +635,137 @@ export default defineAgent({
       logger.error(
         `error: closing room ${(e as Error).message} ${(e as Error).stack}`,
       );
-      // Mark the call failed so it isn't left orphaned (no endedAt/reason): this
-      // records the failure reason on the call and lets the diagnosis loop find
-      // it. The InvocationLog is persisted by ctx.shutdown() below. Best-effort.
-      try {
-        if (recordedCall && !recordedCall._endCalled) {
-          await recordedCall.end(`Agent setup failed: ${(e as Error).message}`);
-        }
-      } catch (endErr) {
-        logger.error({ endErr }, "error marking call failed during cleanup");
-      }
-      // End transfer activity if in progress
-      // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
-      if (endTransferActivityIfNeeded) {
+      const cleanup = async (): Promise<void> => {
+        // Mark the call failed so it isn't left orphaned (no endedAt/reason):
+        // this records the failure reason on the call and lets the diagnosis
+        // loop find it. The InvocationLog is persisted by ctx.shutdown() below.
         try {
-          await endTransferActivityIfNeeded("Error occurred");
-        } catch (transferError) {
-          logger.error(
-            { transferError },
-            "error ending transfer activity during error cleanup",
-          );
+          if (recordedCall && !recordedCall._endCalled) {
+            await recordedCall.end(
+              `Agent setup failed: ${(e as Error).message}`,
+            );
+          }
+        } catch (endErr) {
+          logger.error({ endErr }, "error marking call failed during cleanup");
         }
-      }
-      try {
-        room && room.name && (await deleteRoomWithRetry(room.name));
-      } catch (e) {
-        logger.error({ e }, "error deleting room");
-      }
-      // Best-effort shutdown; invocation logs are only persisted when the agent
-      // session has started and the shutdown callback has been registered.
-      try {
-        await ctx.shutdown((e as Error).message);
-      } catch (e) {
-        logger.error({ e }, "error shutting down");
+        // End transfer activity if in progress
+        // Note: endTransferActivityIfNeeded may not be available if error occurred before setupCallAndUtilities completed
+        if (endTransferActivityIfNeeded) {
+          try {
+            await endTransferActivityIfNeeded("Error occurred");
+          } catch (transferError) {
+            logger.error(
+              { transferError },
+              "error ending transfer activity during error cleanup",
+            );
+          }
+        }
+        try {
+          room && room.name && (await deleteRoomWithRetry(room.name));
+        } catch (err) {
+          logger.error({ err }, "error deleting room");
+        }
+        // Best-effort shutdown; invocation logs are only persisted when the agent
+        // session has started and the shutdown callback has been registered.
+        try {
+          await ctx.shutdown((e as Error).message);
+        } catch (err) {
+          logger.error({ err }, "error shutting down");
+        }
+      };
+
+      const cleanupTimeoutMs = parseInt(
+        process.env.SETUP_FAILURE_CLEANUP_MS ?? "15000",
+        10,
+      );
+      let cleanupTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        cleanup(),
+        new Promise<void>((resolve) => {
+          cleanupTimer = setTimeout(() => {
+            logger.error(
+              { cleanupTimeoutMs },
+              "setup-failure cleanup timed out; abandoning it and ending the job",
+            );
+            resolve();
+          }, cleanupTimeoutMs);
+        }),
+      ]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+
+      // Returning from here is not enough — see above, the SDK will not
+      // complete the job on its own. A job process is one-shot and the SDK's
+      // own success path ends in process.exit(0) (job_proc_lazy_main.js), so
+      // exiting reaches exactly the same end state while making an orphan
+      // structurally impossible whichever step stalled. `done` first so the
+      // pool's bookkeeping matches, then exit on the next tick so the IPC
+      // write has a chance to flush.
+      if (typeof process.send === "function") {
+        try {
+          process.send({ case: "done" });
+        } catch {
+          /* channel already closed */
+        }
+        logger.warn("setup failed; ending job process");
+        setImmediate(() => process.exit(0));
       }
     }
   },
 });
 
 // ---- Helpers ----
+
+/**
+ * Collect every X- header from an inbound SIP INVITE into a
+ * `{ "x-header-name": value }` map (keys lowercased) for
+ * `metadata.aplisay.sipHeaders`.
+ *
+ * LiveKit's inbound trunk is created with `includeHeaders=SIP_X_HEADERS` (see
+ * initialise.ts), which maps every `X-*` INVITE header to a `sip.h.x-*`
+ * participant attribute — the header name lowercased — per the LiveKit SIP
+ * participant reference. That dotted form is the authoritative source and is
+ * lossless (strip the `sip.h.` prefix to recover the exact `x-header-name`).
+ *
+ * Some SDK/deploy paths have historically surfaced the same headers as
+ * camelCased attribute keys instead (e.g. `sipHXAplisayTrunk` for
+ * `sip.h.x-aplisay-trunk`; this is how the inbound routing reads its own
+ * headers just below). We fold those in as a best-effort fallback ONLY when no
+ * dotted `sip.h.x-*` keys are present, reconstructing the hyphenated name from
+ * the camelCase word boundaries. That reconstruction is lossy for header names
+ * whose original word breaks don't line up with the casing, so the dotted form
+ * is always preferred when available.
+ *
+ * This deliberately includes the Aplisay/LiveKit routing headers
+ * (`x-aplisay-trunk`, `x-lk-realip`, …) — they are genuine INVITE X- headers.
+ */
+function collectSipInviteHeaders(
+  attributes: Record<string, string> | undefined | null,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!attributes) return out;
+  const entries = Object.entries(attributes).filter(([, v]) => v != null);
+  const hasDotted = entries.some(([k]) =>
+    k.toLowerCase().startsWith("sip.h.x-"),
+  );
+  if (hasDotted) {
+    for (const [k, v] of entries) {
+      const lower = k.toLowerCase();
+      if (lower.startsWith("sip.h.x-")) out[lower.slice("sip.h.".length)] = v;
+    }
+    return out;
+  }
+  // Best-effort camelCase fallback: `sipHX<Rest>` encodes `x-<rest>`, with the
+  // `<Rest>` word boundaries carried by capitalisation (e.g. AplisayTrunk ->
+  // aplisay-trunk).
+  for (const [k, v] of entries) {
+    const m = /^sipHX([A-Za-z0-9].*)$/.exec(k);
+    if (!m) continue;
+    const name =
+      "x-" + m[1].replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+    out[name] = v;
+  }
+  return out;
+}
 
 async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   const jobMetadata: JobMetadata =
@@ -709,6 +812,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   let registrationEndpointId: string | null = null;
   let b2buaGatewayIp: string | null = null;
   let b2buaGatewayTransport: string | null = null;
+  // All X- headers from the inbound SIP INVITE, harvested from the caller's
+  // participant attributes (see collectSipInviteHeaders). Surfaced to the agent
+  // as metadata.aplisay.sipHeaders. Stays {} for outbound / WebRTC.
+  let sipHeaders: Record<string, string> = {};
   // Whether the inbound A-leg media is encrypted (SRTP). Drives the
   // media-encryption policy of the B-leg registration trunk used for transfers:
   // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
@@ -717,6 +824,23 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   // prior behaviour when the B2BUA does not stamp the signal.
   let aLegEncrypted = true;
   let forceBridged: boolean | undefined = undefined;
+  // Resolve a registration endpoint's "bridge instead of REFER" transfer default
+  // from its options. The DOCUMENTED, snake_case key is `bridged_transfer` (see
+  // docs/phone-endpoints-api.md / call-transfers.md); `forceBridged` is accepted as
+  // a camelCase alias — that is the internal name the value maps to. Returns
+  // undefined when neither key is present so the flag is only touched when the
+  // endpoint actually specifies it. Truthy = boolean true or the string "true".
+  const resolveRegistrationForceBridged = (
+    options: Record<string, any> | null | undefined,
+  ): boolean | undefined => {
+    if (!options || typeof options !== "object") return undefined;
+    const raw = options.bridged_transfer ?? options.forceBridged;
+    if (raw === undefined) return undefined;
+    return (
+      raw === true ||
+      (typeof raw === "string" && raw.trim().toLowerCase() === "true")
+    );
+  };
   /*
 
   Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
@@ -784,6 +908,19 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
             }
             registrationOriginated = true;
             registrationEndpointId = callerIdStr;
+            // Honour the registration's bridged_transfer default for OUTBOUND-
+            // originated calls too, so a transfer later in the call bridges rather
+            // than REFERs when the endpoint (or its carrier) can't do REFER.
+            const regForceBridged = resolveRegistrationForceBridged(
+              regInfo.options,
+            );
+            if (regForceBridged !== undefined) {
+              forceBridged = regForceBridged;
+              logger.info(
+                { forceBridged, registrationEndpointId: callerIdStr },
+                "Extracted bridged_transfer (forceBridged) from outbound registration options",
+              );
+            }
             const gatewayHost = String(regInfo.b2buaId ?? "").trim();
             const gatewayTransport = "tcp";
             if (!gatewayHost) {
@@ -834,21 +971,41 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               "participants",
             );
             if (participant) {
-              const {
-                sipTrunkPhoneNumber: calledIdAttr,
-                sipPhoneNumber: callerIdAttr,
-                sipHXAplisayTrunk: aplisayIdAttr,
-                sipHXAplisayPhoneregistration: phoneRegistrationAttr,
-                sipHostname: sipHostnameAttr,
-                sipHXLkRealIp: b2buaGatewayIpAttr,
-                sipHXLkTransport: b2buaGatewayTransportAttr,
-                sipHXLkMediaEncryption: aLegMediaEncryptionAttr,
-              } = participant.attributes || {};
+              // Read via sipAttribute(): LiveKit delivers these dotted
+              // (`sip.trunkPhoneNumber`, `sip.h.x-aplisay-trunk`, …), while
+              // some paths have used camelCase aliases. Reading only the
+              // camelCase form left every value undefined against a real
+              // dotted-key participant, so inbound calls failed to resolve to
+              // an instance. See lib/sip-attributes.ts.
+              const attrs = participant.attributes || {};
+              const calledIdAttr = sipAttribute(attrs, "calledNumber");
+              const callerIdAttr = sipAttribute(attrs, "callerNumber");
+              const aplisayIdAttr = sipAttribute(attrs, "aplisayTrunk");
+              const phoneRegistrationAttr = sipAttribute(
+                attrs,
+                "phoneRegistration",
+              );
+              const sipHostnameAttr = sipAttribute(attrs, "sipHostname");
+              const b2buaGatewayIpAttr = sipAttribute(attrs, "lkRealIp");
+              const b2buaGatewayTransportAttr = sipAttribute(
+                attrs,
+                "lkTransport",
+              );
+              const aLegMediaEncryptionAttr = sipAttribute(
+                attrs,
+                "lkMediaEncryption",
+              );
 
               calledId = calledIdAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
-              phoneRegistration = phoneRegistrationAttr;
+              phoneRegistration = phoneRegistrationAttr ?? null;
+
+              // Surface all inbound INVITE X- headers as metadata.aplisay.sipHeaders.
+              // This is the inbound-SIP branch, so every such call qualifies (the
+              // upstream SBC — sipbridge/voiceblender/etc. — stamps the X- headers,
+              // which LiveKit maps to sip.h.x-* participant attributes).
+              sipHeaders = collectSipInviteHeaders(participant.attributes);
 
               // Determine A-leg media encryption from the B2BUA-stamped header
               // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
@@ -919,12 +1076,18 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 // Trunk username (= the A-leg's To-user / SIP extension), used as
                 // the calling number presented toward the gateway on transfers.
                 registrationUsername = regInfo.username || null;
-                // Store forceBridged option from phone registration endpoint
-                if (regInfo.options?.forceBridged !== undefined) {
-                  forceBridged = regInfo.options.forceBridged === true;
+                // Registration transfer default: documented as
+                // options.bridged_transfer (snake_case); surfaces internally as
+                // forceBridged. Accepts the forceBridged alias too. See
+                // docs/phone-endpoints-api.md / call-transfers.md.
+                const regForceBridged = resolveRegistrationForceBridged(
+                  regInfo.options,
+                );
+                if (regForceBridged !== undefined) {
+                  forceBridged = regForceBridged;
                   logger.info(
                     { forceBridged, phoneRegistration },
-                    "Extracted forceBridged from phone registration options",
+                    "Extracted bridged_transfer (forceBridged) from phone registration options",
                   );
                 }
                 // PhoneRegistration now has instanceId, so we can lookup the instance
@@ -1018,6 +1181,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     b2buaGatewayTransport,
     aLegEncrypted,
     forceBridged,
+    sipHeaders,
   };
 }
 
@@ -1095,6 +1259,7 @@ async function setupCallAndUtilities({
   setBridgedParticipant,
   setConsultInProgress,
   getConsultInProgress,
+  outbound,
   registrationOriginated,
   trunkInfo,
   registrationRegistrar,
@@ -1105,6 +1270,7 @@ async function setupCallAndUtilities({
   b2buaGatewayTransport,
   aLegEncrypted = true,
   forceBridged,
+  sipHeaders = {},
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -1115,6 +1281,13 @@ async function setupCallAndUtilities({
   );
 
   let wantHangup = false;
+  // Set by the voice runtime once its stack is up (see registerHangupExecutor);
+  // null before that and after teardown. onHangup calls it to close the call
+  // itself instead of waiting for a state-change edge that may never come.
+  let hangupExecutor: HangupExecutor | null = null;
+  const registerHangupExecutor = (execute: HangupExecutor | null) => {
+    hangupExecutor = execute;
+  };
   let currentBridged: SipParticipant | null = null;
   let bridgedCallRecord: Call | null = null;
   const setBridgedCallRecord = (call: Call | null) => {
@@ -1173,6 +1346,15 @@ async function setupCallAndUtilities({
       )
     : null;
 
+  // Human→agent takeover capability (options.bridgedTransferToAgent): the
+  // voice runtime registers its live handover machinery here once its stack
+  // is up (and clears it on teardown); the transfer handler reads it when a
+  // bridged transfer completes to arm the post-bridge DTMF watch.
+  let bridgedTakeoverRuntime: BridgedTakeoverRuntime | null = null;
+  const registerBridgedTakeover = (rt: BridgedTakeoverRuntime | null) => {
+    bridgedTakeoverRuntime = rt;
+  };
+
   const getTransferState = () => transferState;
   const setTransferState = (
     state: "none" | "dialling" | "talking" | "rejected" | "failed",
@@ -1194,6 +1376,9 @@ async function setupCallAndUtilities({
     calledId,
     callerId,
     modelName,
+    // Destination billing (D3): only an org-originated OUTBOUND leg carried on our
+    // public trunk is chargeable — inbound legs and registration egress are not.
+    outboundTrunkId: outbound ? chargeableOutboundTrunkId(registrationOriginated) : undefined,
     options,
     metadata: {
       ...instance.metadata,
@@ -1203,6 +1388,9 @@ async function setupCallAndUtilities({
         calledId,
         fallbackNumbers,
         model: agent.modelName,
+        // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
+        // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
+        ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
       },
     },
   });
@@ -1338,6 +1526,7 @@ async function setupCallAndUtilities({
         setTransferState,
         getTransferState,
         setBridgedCallRecord,
+        getBridgedTakeover: () => bridgedTakeoverRuntime,
       };
 
       return await handleTransfer(transferContext);
@@ -1365,8 +1554,32 @@ async function setupCallAndUtilities({
     return wantHangup;
   };
 
-  async function onHangup() {
+  async function onHangup(): Promise<HangupResult> {
+    // Idempotent: a model that calls hangup twice must not re-arm teardown,
+    // and must be told plainly that the first call was accepted. Returning the
+    // same cheerful "call is ending" for a repeat invites another repeat.
+    if (wantHangup) {
+      return {
+        status: "OK",
+        detail:
+          "hangup is already in progress and the call is ending — do not call hangup again",
+      };
+    }
     wantHangup = true;
+
+    // Drive teardown directly rather than relying solely on the runtime's
+    // AgentStateChanged → "listening" edge. That edge only fires on a state
+    // TRANSITION, so a hangup issued while the session is already listening —
+    // e.g. a tool-call-only turn with no closing utterance — never fires it,
+    // the latch is never read, and the call stays up and billed until the far
+    // end drops. Not awaited: teardown must not block this tool's result, and
+    // the executor applies its own grace period so the result still flushes.
+    hangupExecutor?.();
+
+    return {
+      status: "OK",
+      detail: "the call is ending now — say nothing further",
+    };
   }
 
   // Helper function to destroy any in-progress transfer when original caller disconnects
@@ -1395,8 +1608,18 @@ async function setupCallAndUtilities({
     checkForHangup,
     modelRef,
     sessionRef,
+    // Registration point for the runtime's bridged human→agent takeover
+    // capability (options.bridgedTransferToAgent).
+    registerBridgedTakeover,
+    // Registration point for the runtime's direct teardown path, used by
+    // onHangup so an agent-initiated hangup cannot strand the call.
+    registerHangupExecutor,
     // expose helper to check the currently active call for logging
     getActiveCall: () => bridgedCallRecord || activeAgentCall,
+    // The agent's own call WITHOUT the bridge override — usage attribution must
+    // target this so agent-session component meters never land on the no-agent
+    // bridged tail leg (whose only billable component is its audio-path minutes).
+    getAgentCall: () => activeAgentCall,
     setActiveAgentCall,
     endTransferActivityIfNeeded,
     getTransferState,

@@ -73,4 +73,19 @@ export const roomJoinLimiter = rateLimit({
   message: { error: 'Too many requests. Please try again later.' },
 });
 
+/**
+ * GET /api/oauth-handoff — OAuth → polite-ai session hand-off
+ * (lib/auth/oauth-handoff.js). Per-IP: each hit can mint a one-time session
+ * token (a DB write) for a browser holding a better-auth session; drive-by
+ * loops are pure waste, so cap them. Legit flows use exactly one per sign-in.
+ */
+export const oauthHandoffLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 1000, // 1 minute
+  limit: 30,           // per IP per minute — headroom for shared-NAT onboarding
+                       // bursts; the endpoint's cost is one indexed DB insert.
+  keyGenerator: perIp,
+  message: { error: 'Too many requests. Please try again later.' },
+});
+
 export default signupLimiter;

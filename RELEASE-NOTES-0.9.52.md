@@ -1,0 +1,65 @@
+# 0.9.52 — release notes
+
+A large release: a complete usage-metering and billing engine, human-to-agent bridged transfers with transcription, persisted text-chat sessions, a rebuilt multi-provider model layer with three new providers, and significantly faster WebRTC call setup.
+
+## Billing & usage metering
+
+- **Per-call usage metering** across all voice and text platforms: LLM tokens, STT/TTS (metered on both duration and character bases), and call minutes, including consult/transfer legs. `GET /api/usage` gains cost totals, an uncosted-record count, and a `callId` filter for per-call breakdowns.
+- **Rate cards and costing engine**: named, dated, per-component rate cards; costs computed and frozen at transaction end; rate cards become immutable once referenced; a reconciliation sweep backfills, retries, and re-costs corrected records. A platform default rate card is auto-assigned to new organisations.
+- **Rates admin API**: `/api/rates` CRUD and a `/api/rate-components` catalogue (RBAC-guarded); organisation rate history, prepaid balance with idempotent credit application, and per-user rate overrides. A least-privilege `billingService` role covers the balance-credit seam.
+- **Balance enforcement**: hot-path call refusal when an organisation is billing-blocked, a sweep trigger endpoint, and edge-triggered `balanceLow` / `balanceNegative` webhook callbacks.
+- **Destination (carrier) billing**: tariff decks with longest-prefix matching, peak/off-peak schedules, 6-second rounding, connection and minimum charges; bulk deck upload (up to 48 MB) and a `POST /api/tariffs/{id}/quote` endpoint to price a hypothetical call. Destination charging is gated on chargeable trunks, with the outbound trunk stamped on every carried call.
+
+## Transfers & DTMF
+
+- **Human-to-agent bridged transfers** (`bridgedTransferToAgent`) on both voice stacks: bridge the caller to a human, monitor the bridge for DTMF, and hand the call back to an agent on demand — with a developer guide covering consultative transfer, DTMF hand-back, and automated follow-up.
+- **Bridged-segment transcription** (`bridgedTransferTranscribe`): a stereo tap on the bridged leg produces a transcript and call record for the human conversation segment.
+- New **`send_dtmf` builtin tool** — agents can send out-of-band RFC 4733 DTMF on live calls; received DTMF is now also recorded as a user turn in the transcript.
+- Consultative-transfer robustness: the consultation call record is closed correctly when the target rejects the transfer, and transfer confidence-tone handling was fixed.
+
+## Text chat
+
+- **Persisted chat sessions** with a history API; sessions survive disconnects with a re-attach grace window, and the idle timeout is now 15 minutes.
+- **Streaming completions**, with tool calls announced at generation start rather than after completion.
+- Agent-builder assistant improvements: explicit test-result frames, self-initiated test runs diagnosed as hidden turns, an independent `request_review` builtin, headless sessions, per-session model override, an optional `knowledge` seed for the opening turn, voice search for large catalogues (`list_voices` search mode with ranked matching), armed-key discovery via `GET /agents/{id}/keys`, an eval harness, and substantial token-efficiency work (prompt-cache tuning, slimmer tool echoes).
+- Text-chat post-mortems restored.
+
+## Models & providers
+
+- **OpenAI, Gemini, and Groq drivers rebuilt**: OpenAI on the Responses API with hosted MCP and reasoning replay; Gemini on the current `@google/genai` SDK with full nested tool-schema support; Groq on a new shared chat-completions base with a refreshed catalogue.
+- **New providers**: DeepSeek, Kimi (Moonshot), and OpenRouter (curated multi-vendor catalogue, extensible via `OPENROUTER_MODELS`).
+- **Client-side MCP bridge** exposes MCP servers to providers without a hosted connector, with fail-closed key handling; missing provider keys now fail closed rather than silently falling back.
+- The shared OpenAI-compatible driver base streams completions, fails fast on unresponsive endpoints, and reports prompt-cache usage in metering.
+- Drivers self-heal an invalid tool/MCP history instead of looping forever on provider 400s.
+- Anthropic driver now caches the whole conversation prefix (previously system prompt only), cutting cost and latency on long sessions.
+- Model entitlements are now enforced on run/call paths, not just on reads.
+
+## Voice platform & observability
+
+- **WebRTC call setup is ~5 s faster** on hosted deployments: unnecessary STUN gathering disabled, plus trickle-ICE and renegotiation support on `/webrtc/offer`.
+- Ultravox integration improvements: the native driver honours the portable greeting, inactivity, and `vendorSpecific` options; the LiveKit path passes `timeExceededMessage` through and drops an inert greeting fallback; the Pipecat path registers data tools asynchronously and delivers tool results natively rather than as user text.
+- Agents can now read the current date and time via `get_metadata` (`aplisay.dateTime`).
+- Inbound SIP INVITE `X-` headers are surfaced to agents as `metadata.aplisay.sipHeaders` across all inbound SIP paths.
+- Handler families are automatically dropped from the model roster when their transport environment is unset, enabling clean single-transport builds.
+- Per-call invocation (debug) logs fixed on the Pipecat stack, in a format the log timeline renders; every tool and MCP call/result is now logged into the invocation log at INFO level on both voice stacks, with consistent subagent transaction logging; workers log their build version at startup.
+- Agent listeners can be moved between agent-set versions, guarded against unsafe live-deployment changes.
+
+## Numbers & trunks
+
+- Buy-number flow support: `provisioned` can be set on `PUT /e164-ddi`, numbers can be allocated on global chargeable trunks, and organisations can carry a chargeable-number limit.
+- superAdmin trunk management: all-trunks listing (`scope=all`) and trunk creation via the API.
+
+## Auth & API
+
+- Groundwork for a new OAuth-based authentication stack running alongside the existing sign-in: unified user schema migration, browser-navigation Google sign-in, bearer transport, and service identities for programmatic onboarding.
+- Outbound webhooks hardened against SSRF.
+- `GET /api/me` now includes the caller's organisation name for all roles.
+
+## Release engineering
+
+- A beta release channel was introduced: builds from the integration branch are tagged and published as `beta-*` releases.
+
+## Upgrade notes
+
+- Database schema migrates from v43 to v55 on first boot (usage records, rate cards, tariffs, balances, chat sessions, auth tables).
+- New optional environment: `DEEPSEEK_KEY`, `KIMI_KEY`, `OPENROUTER_KEY` / `OPENROUTER_MODELS` for the new providers; workers stamp destination billing from `APLISAY_OUTBOUND_TRUNK_ID`. `environment-example` has been audited and is now complete.

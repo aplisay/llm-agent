@@ -1,7 +1,6 @@
 import { Agent, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { validateAgentTargets, AgentSetValidationError } from '../../lib/agent-set-labels.js';
-import { listBuiltinAgentSummaries } from '../../lib/builtin-agents.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { isModelAllowed, allowedModelsWhere } from '../../lib/auth/model-access.js';
 
@@ -21,7 +20,7 @@ export default function (logger, voices, wsServer) {
 };
 
 const agentCreate = (async (req, res) => {
-  let { name, description, modelName, prompt, options, functions, mcpServers, keys, type } = req.body;
+  let { name, description, modelName, prompt, promptMetadata, options, functions, mcpServers, keys, type } = req.body;
   let { id: userId, organisationId } = res.locals.user;
   // RBAC: a single `agent` resource — text-vs-audio is NOT a separate permission.
   if (!requirePermission(res, 'agent', 'create')) return;
@@ -31,14 +30,16 @@ const agentCreate = (async (req, res) => {
   }
   // Default the agent type from the model's handler prefix when not given explicitly
   type = type ?? (typeof modelName === 'string' && modelName.startsWith('text:') ? 'text' : 'interactive-audio');
-  let agent = Agent.build({ name, description, modelName, prompt, options, functions, mcpServers, keys, type, userId, organisationId });
+  let agent = Agent.build({ name, description, modelName, prompt, promptMetadata, options, functions, mcpServers, keys, type, userId, organisationId });
 
   log.info({ modelName, prompt, options, functions, mcpServers, userId, organisationId, type }, 'create API call');
 
   try {
-    // Static transfer_agent/subagent targets must reference accessible agents of the right type
-    functions && await validateAgentTargets(functions, {
-      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } })
+    // Static transfer_agent/subagent targets and options.bridgedTransferToAgent
+    // targets must reference accessible agents of the right type
+    (functions || options?.bridgedTransferToAgent) && await validateAgentTargets(functions || [], {
+      lookupAgent: (agentId) => Agent.findOne({ where: { id: agentId, ...scopeWhereForUser(res.locals.user) } }),
+      options
     });
     await agent.save();
     res.send({ ...agent.dataValues, keys: undefined });
@@ -82,6 +83,9 @@ agentCreate.apiDoc = {
             },
             prompt: {
               $ref: '#/components/schemas/Prompt'
+            },
+            promptMetadata: {
+              $ref: '#/components/schemas/PromptMetadata'
             },
             options: {
               $ref: '#/components/schemas/AgentOptions'
@@ -139,6 +143,9 @@ agentCreate.apiDoc = {
               },
               prompt: {
                 $ref: '#/components/schemas/Prompt'
+              },
+              promptMetadata: {
+                $ref: '#/components/schemas/PromptMetadata'
               },
               options: {
                 $ref: '#/components/schemas/AgentOptions'
@@ -226,21 +233,10 @@ const agentList = (async (req, res) => {
     });
 
     const next = count > startOffset + agents.length ? startOffset + size : false;
-    // Read-only built-in agents (available to every tenant) sit at the top of the first page.
-    const builtins = startOffset === 0
-      ? listBuiltinAgentSummaries().filter((b) => {
-        // R1/F7 — built-ins gated by their `builtin:<id>` access prefix.
-        if (!isModelAllowed(b.id, res.locals.user?._allowedModels)) return false;
-        if (!searchRaw) return true;
-        const p = searchRaw.toLowerCase();
-        const inName = (b.name || '').toLowerCase().includes(p);
-        const inModel = (b.modelName || '').toLowerCase().includes(p);
-        if (validField === 'name') return inName;
-        if (validField === 'model') return inModel;
-        return inName || inModel;
-      })
-      : [];
-    return res.send({ agents: [...builtins, ...agents], next });
+    // Built-in platform agents (e.g. the set-builder) are intentionally NOT
+    // listed here: they are internal tooling reachable only by their well-known
+    // id (e.g. the set-builder chat) and must not surface as selectable agents.
+    return res.send({ agents, next });
   }
   catch (err) {
     req.log.error(err, 'listing agents');

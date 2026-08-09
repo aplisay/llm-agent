@@ -201,6 +201,33 @@ Resulting blob is playable OGG/Opus (e.g. create an object URL and set it as `au
 
 ---
 
+## Recording across bridged transfers
+
+A [bridged transfer](./call-transfers.md) ends the agent's pipeline, and with
+it the call's recording — the original call's recording covers everything up
+to the moment the humans are bridged. What happens next depends on topology:
+
+- **Pipecat + sipbridge:** when the original call's effective recording is
+  enabled *and* the bridge is monitored (`bridgedTransferToAgent` and/or
+  `bridgedTransferTranscribe` set), the bridged human↔human segment is
+  recorded too — as a **separate recording on the bridged-segment call
+  record** (`modelName: "telephony:bridged-call"`), stereo with the caller on
+  the left channel and the transfer target on the right, using the same
+  client-key encryption semantics as the parent call. A plain (unmonitored)
+  bridged transfer is not recorded.
+- **Pipecat + voiceblender:** the bridged segment cannot be recorded (the
+  gateway exposes a text-only transcription tap, no audio); bridged records
+  there always have `recordingId: null`.
+- **DTMF hand-back take-over calls** record independently under their own
+  call record, per the incoming agent's own recording configuration.
+
+A transferred journey is therefore a *chain* of per-leg recordings — original
+call, bridged segment, take-over call — each retrievable via its own
+`GET /calls/{callId}/recording`; walk `GET /calls/{callId}/linked` to
+enumerate the chain.
+
+---
+
 ## Deleting a recording
 
 ### Delete endpoint

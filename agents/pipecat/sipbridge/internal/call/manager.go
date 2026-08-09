@@ -90,6 +90,17 @@ type Manager struct {
 
 	mu    sync.Mutex
 	calls map[string]*Call // keyed by SIP Call-ID
+
+	// srtpAvoid remembers egress routes (trunk / registration / destination)
+	// whose gateway rejected an SRTP offer with a media-type error (415 /
+	// 488 / 606), so subsequent originates skip the doomed SRTP first
+	// attempt and offer plaintext immediately — the dynamic downgrade still
+	// works without it, but each first attempt costs a full INVITE round
+	// trip (Magrathea's gateway takes ~1 s to 415). Entries expire after
+	// srtpAvoidTTL so a trunk that gains SRTP support gets re-probed.
+	// Guarded by srtpAvoidMu.
+	srtpAvoidMu sync.Mutex
+	srtpAvoid   map[string]time.Time
 }
 
 // New returns a Manager. Caller is responsible for calling
@@ -108,8 +119,9 @@ func New(cfg Config) *Manager {
 		cfg.RTPTimeoutSeconds = 10
 	}
 	return &Manager{
-		cfg:   cfg,
-		calls: make(map[string]*Call),
+		cfg:       cfg,
+		calls:     make(map[string]*Call),
+		srtpAvoid: make(map[string]time.Time),
 	}
 }
 
@@ -166,6 +178,35 @@ func (m *Manager) Hangup(ctx context.Context, callID string) error {
 	return nil
 }
 
+// SendDTMF plays out-of-band RFC 4733 DTMF digits toward the far end of an
+// active call. The digit string is validated (0-9, * and #) synchronously so
+// a bad request fails fast; the burst itself (~200 ms/digit) is played on a
+// background goroutine so the HTTP control call returns promptly. The call
+// is left up — DTMF is in-dialog signalling, not a teardown.
+func (m *Manager) SendDTMF(callID, digits string) error {
+	if digits == "" {
+		return fmt.Errorf("call: empty DTMF digit string")
+	}
+	for i := 0; i < len(digits); i++ {
+		if _, ok := rtp.EventCode(digits[i]); !ok {
+			return fmt.Errorf("call: invalid DTMF character %q (allowed: 0-9, * and #)", string(digits[i]))
+		}
+	}
+	m.mu.Lock()
+	c, ok := m.calls[callID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("call: unknown call_id %q", callID)
+	}
+	log.Info().Str("call_id", callID).Str("digits", digits).Msg("call: sending DTMF")
+	go func() {
+		if err := c.SendDTMF(context.Background(), digits); err != nil {
+			log.Warn().Err(err).Str("call_id", callID).Str("digits", digits).Msg("call: DTMF send failed")
+		}
+	}()
+	return nil
+}
+
 // OriginateParams carries everything the REST `POST /v1/calls` body
 // needs to feed to ``Originate``.
 type OriginateParams struct {
@@ -208,6 +249,57 @@ func (m *Manager) buildOutboundOffer(
 	return sipx.BuildOffer(rtpSess, m.cfg.MediaIP, encOffer), ourOfferedSDES, nil
 }
 
+// srtpAvoidTTL is how long a route stays in the plaintext-first cache after
+// its gateway rejected an SRTP offer. Long enough that back-to-back transfers
+// don't re-pay the rejection round trip; short enough that a trunk which
+// gains SRTP support is re-probed within the hour.
+const srtpAvoidTTL = time.Hour
+
+// isSRTPMediaReject reports whether a final INVITE response code plausibly
+// means "your RTP/SAVP offer is unacceptable": 488 Not Acceptable Here
+// (Twilio Elastic SIP Trunks), 415 Unsupported Media Type (Magrathea's
+// gateway), 606 Not Acceptable.
+func isSRTPMediaReject(code int) bool {
+	return code == 415 || code == 488 || code == 606
+}
+
+// srtpRouteKey identifies the egress route for the SRTP avoid-cache. Every
+// trunk call is dialled through the same upstream SBC, so the destination
+// host alone cannot distinguish carriers — prefer the routing headers that
+// do, falling back to the destination URI for direct dials.
+func srtpRouteKey(custom map[string]string, destination string) string {
+	if v := custom["X-Aplisay-Trunk"]; v != "" {
+		return "trunk:" + v
+	}
+	if v := custom["X-Aplisay-PhoneRegistration"]; v != "" {
+		return "reg:" + v
+	}
+	return "dest:" + destination
+}
+
+// srtpRecentlyRejected reports whether the route rejected an SRTP offer
+// within srtpAvoidTTL (expired entries are pruned on read).
+func (m *Manager) srtpRecentlyRejected(key string) bool {
+	m.srtpAvoidMu.Lock()
+	defer m.srtpAvoidMu.Unlock()
+	at, ok := m.srtpAvoid[key]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > srtpAvoidTTL {
+		delete(m.srtpAvoid, key)
+		return false
+	}
+	return true
+}
+
+// noteSRTPRejected records that the route just rejected an SRTP offer.
+func (m *Manager) noteSRTPRejected(key string) {
+	m.srtpAvoidMu.Lock()
+	defer m.srtpAvoidMu.Unlock()
+	m.srtpAvoid[key] = time.Now()
+}
+
 // dialAndWireRTP performs the SIP-dial + RTP-socket + codec/SRTP
 // negotiation shared by every outbound leg (agent originate, consult
 // leg, and the agent-less relay leg of a native bridged transfer). It
@@ -233,18 +325,9 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		return nil, nil, fmt.Errorf("call: rtp: %w", err)
 	}
 
-	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled we offer SDES
-	// SRTP (RTP/SAVP). ``ourOfferedSDES`` maps tag → master material so we can
-	// install the outbound SRTP context once the peer picks a tag in its 200 OK.
-	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
-	offer, ourOfferedSDES, err := m.buildOutboundOffer(rtpSess, offeringSDES)
-	if err != nil {
-		rtpSess.Close()
-		return nil, nil, err
-	}
-
 	// Inject X-Aplisay-Call-Id from metadata if present — the upstream
-	// B2BUA uses this as the platform-wide call correlator.
+	// B2BUA uses this as the platform-wide call correlator. Built before the
+	// offer because the routing headers also key the SRTP avoid-cache.
 	custom := map[string]string{}
 	for k, v := range p.CustomHeaders {
 		custom[k] = v
@@ -253,21 +336,45 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		custom["X-Aplisay-Call-Id"] = v
 	}
 
+	// Outbound encryption offer. When SRTPOutbound + SRTPEnabled we offer SDES
+	// SRTP (RTP/SAVP). ``ourOfferedSDES`` maps tag → master material so we can
+	// install the outbound SRTP context once the peer picks a tag in its 200 OK.
+	// A route that rejected SRTP within srtpAvoidTTL goes straight to
+	// plaintext — the downgrade below still works without this, but each
+	// first attempt costs a full INVITE round trip.
+	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
+	routeKey := srtpRouteKey(custom, p.Destination)
+	if offeringSDES && !m.cfg.SRTPRequired && m.srtpRecentlyRejected(routeKey) {
+		log.Debug().
+			Str("route", routeKey).
+			Msg("call: route rejected SRTP recently — offering plaintext RTP/AVP directly")
+		offeringSDES = false
+	}
+	offer, ourOfferedSDES, err := m.buildOutboundOffer(rtpSess, offeringSDES)
+	if err != nil {
+		rtpSess.Close()
+		return nil, nil, err
+	}
+
 	// 2. Send INVITE and wait for the 200 OK + SDP answer.
 	out, _, err := m.sip.Originate(ctx, p.Destination, p.CallerID, offer, custom)
 	if err != nil {
-		// Some carriers (notably Twilio Elastic SIP Trunks unless explicitly
-		// configured for secure media) reject an SRTP offer with 488 Not
-		// Acceptable Here. When we offered SRTP and SRTP isn't strictly
-		// required, retry once with a plaintext RTP/AVP offer so the call still
-		// completes. Trunks that accept SRTP never hit this path, so secure
-		// media is preserved everywhere it's supported.
+		// Some carriers reject an SRTP offer outright: Twilio Elastic SIP
+		// Trunks (unless explicitly configured for secure media) answer 488
+		// Not Acceptable Here; Magrathea's gateway answers 415 Unsupported
+		// Media Type. When we offered SRTP and SRTP isn't strictly required,
+		// retry once with a plaintext RTP/AVP offer so the call still
+		// completes, and remember the route so the next originate skips the
+		// doomed attempt. Trunks that accept SRTP never hit this path, so
+		// secure media is preserved everywhere it's supported.
 		var se *sipx.SIPResponseError
-		if offeringSDES && !m.cfg.SRTPRequired && errors.As(err, &se) && se.Code == 488 {
+		if offeringSDES && !m.cfg.SRTPRequired && errors.As(err, &se) && isSRTPMediaReject(se.Code) {
 			log.Warn().
 				Str("destination", p.Destination).
+				Str("route", routeKey).
 				Int("code", se.Code).
-				Msg("call: peer rejected SRTP offer (488); retrying with plaintext RTP/AVP")
+				Msg("call: peer rejected SRTP offer; retrying with plaintext RTP/AVP")
+			m.noteSRTPRejected(routeKey)
 			offeringSDES = false
 			offer, ourOfferedSDES, err = m.buildOutboundOffer(rtpSess, false)
 			if err != nil {
@@ -373,6 +480,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
 	outCallID := c.callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), outCallID)
@@ -380,7 +488,15 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 
 	c.rtp.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
 	pc.SetCloseHandler(func(err error) {
+		// In relay mode the worker WS is expected to go away (SetPeer
+		// stops it, or a monitoring worker restarts) — the bridged
+		// call itself must survive until a SIP BYE / media timeout.
+		if c.hasPeer() {
+			log.Info().Str("call_id", outCallID).Err(err).Msg("call: ws closed while bridged — call stays up")
+			return
+		}
 		log.Info().Str("call_id", outCallID).Err(err).Msg("call: ws closed (outbound)")
 		c.Close()
 	})
@@ -438,7 +554,8 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 //     ``docs/call-transfers.md``.
 //   - mode "consult": invalid for the transfer endpoint — clients
 //     should call the dedicated /v1/calls/{id}/consult endpoint.
-func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) error {
+// ``opts`` applies to mode "bridged" only — see BridgeOptions.
+func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, opts BridgeOptions) error {
 	if m.sip == nil {
 		return errors.New("call: SIP layer not registered")
 	}
@@ -446,7 +563,7 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) err
 	case "", "blind":
 		return m.sip.Refer(ctx, callID, target)
 	case "bridged":
-		return m.BridgeRelay(callID, target)
+		return m.BridgeRelay(callID, target, opts)
 	case "attended":
 		return m.sip.ReferReplaces(ctx, callID, target)
 	case "consult":
@@ -454,6 +571,22 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) err
 	default:
 		return fmt.Errorf("call: unknown transfer mode %q", mode)
 	}
+}
+
+// BridgeOptions tune a media-relay bridge (modes "bridged" and
+// "dial_bridge"):
+//
+//   - MonitorDTMF keeps the original (A) leg's worker WS open as a
+//     control channel and surfaces transfer-target DTMF presses on it
+//     (options.bridgedTransferToAgent).
+//   - TapAudio additionally streams a decoded stereo copy of both legs
+//     (L = caller, R = target) on the same kept-open WS for
+//     transcription (options.bridgedTransferTranscribe). See tap.go.
+//
+// Either flag keeps the A leg's WS open.
+type BridgeOptions struct {
+	MonitorDTMF bool
+	TapAudio    bool
 }
 
 // BridgeRelay puts two existing calls into peer-to-peer media-relay
@@ -465,7 +598,13 @@ func (m *Manager) Transfer(ctx context.Context, callID, target, mode string) err
 // must be compatible (Phase C v1 supports same-family G.711 only —
 // PCMU↔PCMU or PCMA↔PCMA. Cross-family relay (mu↔A) needs a
 // transcoding step in the codec layer; tracked as follow-up).
-func (m *Manager) BridgeRelay(callA, callB string) error {
+// ``opts.MonitorDTMF`` marks the A leg (the original caller) as the
+// monitoring side: its worker WS is kept open (control-only) and
+// receives ``source: "transfer_target"`` DTMF events detected on the
+// B leg, so the worker can drive a bridged transfer-to-agent.
+// ``opts.TapAudio`` additionally arms the stereo transcription tap on
+// the same WS (see tap.go).
+func (m *Manager) BridgeRelay(callA, callB string, opts BridgeOptions) error {
 	m.mu.Lock()
 	a, okA := m.calls[callA]
 	b, okB := m.calls[callB]
@@ -485,11 +624,28 @@ func (m *Manager) BridgeRelay(callA, callB string) error {
 			a.payload, b.payload,
 		)
 	}
-	a.SetPeer(b)
-	b.SetPeer(a)
+	keepWS := opts.MonitorDTMF || opts.TapAudio
+	a.mu.Lock()
+	a.dtmfMonitor = opts.MonitorDTMF
+	a.mu.Unlock()
+	if opts.TapAudio && a.ws != nil {
+		mixer := newTapMixer(a.ws)
+		a.mu.Lock()
+		a.tap = mixer
+		a.tapSide = tapSideCaller
+		a.mu.Unlock()
+		b.mu.Lock()
+		b.tap = mixer
+		b.tapSide = tapSideTarget
+		b.mu.Unlock()
+	}
+	a.SetPeer(b, keepWS)
+	b.SetPeer(a, false)
 	log.Info().
 		Str("call_a", callA).
 		Str("call_b", callB).
+		Bool("monitor_dtmf", opts.MonitorDTMF).
+		Bool("tap_audio", opts.TapAudio).
 		Msg("call: media relay installed (bridged transfer)")
 	return nil
 }
@@ -504,6 +660,8 @@ type DialBridgeParams struct {
 	CallerID       string
 	CustomHeaders  map[string]string
 	Metadata       map[string]string
+	// Bridge monitoring/tap flags — see BridgeOptions.
+	Options BridgeOptions
 }
 
 // DialAndBridge is the native (non-REFER) blind bridged transfer: it
@@ -555,8 +713,9 @@ func (m *Manager) DialAndBridge(ctx context.Context, p DialBridgeParams) (string
 	m.mu.Unlock()
 
 	// Install the relay. BridgeRelay closes the original leg's bot WS
-	// (SetPeer) so the agent drops out; the new leg never had one.
-	if err := m.BridgeRelay(p.OriginalCallID, newID); err != nil {
+	// (SetPeer) so the agent drops out — unless MonitorDTMF/TapAudio
+	// keep it open as a control channel; the new leg never had one.
+	if err := m.BridgeRelay(p.OriginalCallID, newID, p.Options); err != nil {
 		// Codec mismatch or the original vanished — tear the new leg
 		// down (SIP BYE + media close) so we don't leak it.
 		_ = m.Hangup(context.Background(), newID)
@@ -568,6 +727,118 @@ func (m *Manager) DialAndBridge(ctx context.Context, p DialBridgeParams) (string
 		Str("destination", p.Destination).
 		Msg("call: native blind bridged transfer established")
 	return newID, nil
+}
+
+// UnbridgeParams carries the body of POST /v1/calls/{id}/unbridge: tear
+// the media relay down, hang up the peer (transfer-target) leg, and
+// re-attach the surviving leg to a fresh worker agent WS session so a
+// new bot pipeline can take the caller over. This is the finalise step
+// of a bridged transfer-to-agent (options.bridgedTransferToAgent).
+type UnbridgeParams struct {
+	CallID           string
+	AgentSessionID   string
+	CustomHeaders    map[string]string
+}
+
+// Unbridge reverses a bridged transfer on the monitoring leg: the peer
+// leg is BYE'd, the relay is dismantled, and the leg is re-wired into
+// ordinary Pipecat-bot mode with a NEW worker WS (dialled to
+// /sipbridge/agent/{AgentSessionID}, which the worker pre-registered).
+// The old control-only monitor WS, if still up, is closed first.
+//
+// On WS dial failure the whole call is torn down — the target is
+// already gone by then and an agent-less silent leg helps nobody — and
+// the error is returned so the worker can mark the takeover failed.
+func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
+	if p.AgentSessionID == "" {
+		return errors.New("call: unbridge: AgentSessionID is required")
+	}
+	m.mu.Lock()
+	c, ok := m.calls[p.CallID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("call: unbridge: unknown call_id %q", p.CallID)
+	}
+	c.mu.Lock()
+	peer := c.peer
+	c.mu.Unlock()
+	if peer == nil {
+		return fmt.Errorf("call: unbridge: call %q is not bridged", p.CallID)
+	}
+
+	// 1. Retire the old monitor WS while the relay guard (hasPeer) is
+	// still active, so its close handler doesn't tear the call down.
+	if old := c.ws; old != nil {
+		old.Stop()
+		select {
+		case <-old.Done():
+		case <-time.After(2 * time.Second):
+			log.Warn().Str("call_id", c.callID).Msg("call: unbridge: old ws slow to close; continuing")
+		}
+	}
+
+	// 2. Dismantle the relay BEFORE hanging the peer up so no packet
+	// forwards into a closing RTP session (which would Close us too).
+	c.ClearPeer()
+	peer.ClearPeer()
+	if err := m.Hangup(ctx, peer.callID); err != nil {
+		log.Warn().Err(err).Str("call_id", peer.callID).Msg("call: unbridge: peer hangup failed (continuing)")
+	}
+
+	// 3. Re-attach a fresh bot WS, exactly like an originate. The worker
+	// chose the session id and is already waiting on it.
+	wsURL, err := joinWSPath(m.cfg.WorkerWSBase, "/sipbridge/agent/"+url.PathEscape(p.AgentSessionID))
+	if err != nil {
+		_ = m.Hangup(context.Background(), c.callID)
+		return fmt.Errorf("call: unbridge: ws url: %w", err)
+	}
+	pc := pcclient.NewClient(wsURL)
+	unbridgedID := c.callID
+	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
+	pc.SetCloseHandler(func(err error) {
+		if c.hasPeer() {
+			log.Info().Str("call_id", unbridgedID).Err(err).Msg("call: ws closed while bridged — call stays up")
+			return
+		}
+		log.Info().Str("call_id", unbridgedID).Err(err).Msg("call: ws closed (post-unbridge)")
+		c.Close()
+	})
+	hdr := http.Header{}
+	hdr.Set("X-Sipbridge-Call-ID", c.callID)
+	for k, v := range p.CustomHeaders {
+		hdr.Set(k, v)
+	}
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := pc.Connect(dctx, hdr); err != nil {
+		_ = m.Hangup(context.Background(), c.callID)
+		return fmt.Errorf("call: unbridge: pipecat ws connect: %w", err)
+	}
+
+	// 4. Swap the WS in and restart the decode path (jitter buffer +
+	// release loop) that SetPeer stopped when the relay engaged, plus a
+	// fresh egress pacer (the old one died with the relay's ctx).
+	c.mu.Lock()
+	c.ws = pc
+	c.sessionID = p.AgentSessionID
+	if c.jb == nil {
+		c.jb = rtp.NewJitterBuffer(3, 160)
+	} else {
+		c.jb.Reset()
+	}
+	c.mu.Unlock()
+	releaseCtx, releaseCancel := context.WithCancel(context.Background())
+	c.releaseStop = releaseCancel
+	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
+
+	log.Info().
+		Str("call_id", c.callID).
+		Str("session_id", p.AgentSessionID).
+		Str("dropped_peer", peer.callID).
+		Msg("call: unbridged — agent re-attached")
+	return nil
 }
 
 // ConsultParams is what the REST /v1/calls/{id}/consult endpoint
@@ -697,6 +968,7 @@ func (m *Manager) onInvite(
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
+	c.startPacer(releaseCtx)
 	inCallID := callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), inCallID)
@@ -705,7 +977,14 @@ func (m *Manager) onInvite(
 	// 4. Wire callbacks. Both directions go through the codec layer.
 	rtpSess.SetPayloadHandler(c.onRTPPayload)
 	pc.SetAudioHandler(c.onWSAudio)
+	pc.SetInterruptionHandler(c.clearPacedAudio)
 	pc.SetCloseHandler(func(err error) {
+		// See the outbound handler: a bridged call must survive its
+		// worker WS going away (SetPeer stop or monitor-worker loss).
+		if c.hasPeer() {
+			log.Info().Str("call_id", callID).Err(err).Msg("call: ws closed while bridged — call stays up")
+			return
+		}
 		log.Info().Str("call_id", callID).Err(err).Msg("call: ws closed")
 		c.Close()
 	})
@@ -741,6 +1020,17 @@ func (m *Manager) onInvite(
 	}
 	if headers.AplisayB2BUATransport != "" {
 		hdr.Set("X-Lk-Transport", headers.AplisayB2BUATransport)
+	}
+	// Forward every other X- header from the INVITE verbatim so the worker can
+	// surface the full inbound header set as metadata.aplisay.sipHeaders.
+	// extractHeaders already pulled the X-Aplisay-*/X-Lk-* contract into the
+	// typed fields above and lowercased everything else into Extra; http.Header
+	// canonicalises the key on the wire and the worker lowercases it again on
+	// receipt, so custom carrier headers round-trip case-insensitively.
+	for k, v := range headers.Extra {
+		if v != "" {
+			hdr.Set(k, v)
+		}
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -814,7 +1104,18 @@ func (m *Manager) onBye(callID string) {
 	m.mu.Unlock()
 	if ok {
 		log.Info().Str("call_id", callID).Msg("call: tearing down (BYE)")
+		// A bridged pair lives and dies together: when one side BYEs,
+		// hang the peer leg up too (BYE + media close) rather than
+		// leaving it to leak until the dialog/media timeout.
+		c.mu.Lock()
+		peer := c.peer
+		c.peer = nil
+		c.mu.Unlock()
 		c.Close()
+		if peer != nil {
+			peer.ClearPeer()
+			_ = m.Hangup(context.Background(), peer.callID)
+		}
 	} else {
 		log.Warn().Str("call_id", callID).Msg("call: onBye for unknown call — already torn down or never registered")
 	}
@@ -1280,6 +1581,15 @@ type Call struct {
 	jb           *rtp.JitterBuffer
 	releaseStop  context.CancelFunc
 
+	// outPacer is the egress mirror of jb: worker WS audio arrives at up
+	// to 2× real-time (Pipecat's transport design), so onWSAudio enqueues
+	// encoded 20 ms payloads here and the pacer's loop puts exactly one on
+	// the wire per 20 ms with wall-clock timestamps and talkspurt markers.
+	// Runs on the same context as the jitter release loop (releaseStop
+	// cancels both; SetPeer therefore stops it when a relay engages).
+	// Guarded by mu; recreated on unbridge re-attach.
+	outPacer *pacer
+
 	mu     sync.Mutex
 	closed chan struct{}
 	done   bool
@@ -1290,6 +1600,33 @@ type Call struct {
 	// jitter buffer is bypassed (relay packets pass straight through
 	// to keep the bridged path minimum-latency).
 	peer *Call
+
+	// dtmfMonitor marks this leg as the DTMF-monitoring side of a
+	// bridged transfer (options.bridgedTransferToAgent). While true and
+	// in relay mode, the leg's Pipecat WS is kept open as a control-only
+	// channel: no audio frames flow, but RFC 4733 end-of-event presses
+	// detected on the PEER (transfer-target) leg are surfaced to the
+	// worker as ``{"type":"dtmf",...,"source":"transfer_target"}``
+	// MessageFrames so it can trigger an unbridge + agent re-attach.
+	dtmfMonitor bool
+
+	// lastMonitorDTMF dedupes RFC 4733 end-of-event retransmissions on
+	// the monitor path (senders repeat the final report ~3 times for
+	// loss resilience; each repeat carries the same symbol + duration).
+	// Guarded by mu.
+	lastMonitorDTMF struct {
+		sym      byte
+		duration uint16
+		atNanos  int64
+	}
+
+	// tap / tapSide: transcription tap for a bridged transfer
+	// (``tap_audio`` — options.bridgedTransferTranscribe). Both legs of
+	// the bridge share ONE tapMixer, owned by the monitoring leg's
+	// kept-open WS; each leg pushes its own decoded inbound audio to its
+	// side (caller = left, target = right). Guarded by mu. See tap.go.
+	tap     *tapMixer
+	tapSide int
 
 	// firstRTPLogged: once-flag that gates the "first RTP packet
 	// received" diagnostic log. Useful to confirm whether the upstream
@@ -1316,15 +1653,28 @@ type Call struct {
 	mediaTimeoutStop context.CancelFunc
 }
 
+// SendDTMF plays a string of DTMF digits to the far end of this call as
+// out-of-band RFC 4733 telephone-event RTP on the call's own SSRC. Blocks
+// for the burst duration; returns a write error if the session is gone.
+func (c *Call) SendDTMF(ctx context.Context, digits string) error {
+	if c.rtp == nil {
+		return fmt.Errorf("call: %s has no RTP session", c.callID)
+	}
+	return c.rtp.SendTelephoneEvent(ctx, digits)
+}
+
 // SetPeer puts the call into media-relay mode by stapling it to its
 // peer. The other side of the bridge must call SetPeer with this one
 // before the audio path becomes fully duplex.
 //
 // SetPeer is idempotent and may be called once per call. After SetPeer
-// the call's `ws` is closed — the worker no longer participates in
-// audio — and the jitter-buffer release loop is stopped since the
-// relay path forwards packets immediately without reordering.
-func (c *Call) SetPeer(peer *Call) {
+// the call's `ws` is normally closed — the worker no longer
+// participates in audio — and the jitter-buffer release loop is
+// stopped since the relay path forwards packets immediately without
+// reordering. With ``keepWS`` (DTMF-monitored bridges) the WS is left
+// open as a control-only channel: the release loop still stops, so no
+// audio frames flow, but peer-leg DTMF events can be delivered on it.
+func (c *Call) SetPeer(peer *Call, keepWS bool) {
 	c.mu.Lock()
 	c.peer = peer
 	if c.jb != nil {
@@ -1336,9 +1686,31 @@ func (c *Call) SetPeer(peer *Call) {
 		c.releaseStop()
 		c.releaseStop = nil
 	}
-	if c.ws != nil {
+	if c.ws != nil && !keepWS {
 		c.ws.Stop()
 	}
+}
+
+// ClearPeer takes the call back out of media-relay mode (the unbridge
+// path). The caller is responsible for re-attaching a worker WS and
+// restarting the jitter-release loop — see Manager.Unbridge.
+func (c *Call) ClearPeer() {
+	c.mu.Lock()
+	c.peer = nil
+	c.dtmfMonitor = false
+	tap := c.tap
+	c.tap = nil
+	c.mu.Unlock()
+	if tap != nil {
+		tap.Stop()
+	}
+}
+
+// hasPeer reports whether the call is currently in media-relay mode.
+func (c *Call) hasPeer() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peer != nil
 }
 
 // onRTPPayload is called by the RTP read loop for each inbound packet.
@@ -1389,12 +1761,34 @@ func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bo
 	peer := c.peer
 	c.mu.Unlock()
 	if peer != nil {
+		if pt == rtp.PayloadDTMF {
+			// Never forward RFC 4733 packets across the relay —
+			// SendPayload would re-stamp them with the audio payload
+			// type and the far end would hear a noise blip instead of
+			// a keypress. If the peer leg is monitoring (bridged
+			// transfer-to-agent), surface the press to its worker WS.
+			peer.maybeEmitPeerDTMF(c.callID, payload)
+			return
+		}
 		if err := peer.rtp.SendPayload(payload); err != nil {
 			log.Warn().Err(err).
 				Str("from", c.callID).
 				Str("to", peer.callID).
 				Msg("call: relay forward failed")
 			c.Close()
+			return
+		}
+		// Transcription tap (tap_audio): push a decoded COPY of this
+		// leg's audio to its side of the shared mixer. Purely additive —
+		// the relay write above has already happened.
+		c.mu.Lock()
+		tap := c.tap
+		side := c.tapSide
+		c.mu.Unlock()
+		if tap != nil {
+			if samples := c.decode16k(payload); samples != nil {
+				tap.push(side, samples)
+			}
 		}
 		return
 	}
@@ -1446,6 +1840,53 @@ func (c *Call) handleDTMF(payload []byte) {
 	}
 	if err := c.ws.SendMessage(msg); err != nil {
 		log.Warn().Err(err).Str("call_id", c.callID).Msg("call: dtmf ws send failed")
+	}
+}
+
+// maybeEmitPeerDTMF is called on the MONITORING leg of a DTMF-monitored
+// bridge when an RFC 4733 packet arrives on its peer (the transfer
+// target). On the end-of-event packet it ships a MessageFrame to the
+// monitoring leg's still-open worker WS:
+// ``{"type":"dtmf","digit":"5","duration_ms":120,"call_id":"<this>",
+//    "peer_call_id":"<target>","source":"transfer_target"}``.
+// The ``source`` discriminator lets the worker distinguish these
+// post-bridge target-leg presses from ordinary pre-bridge caller DTMF.
+// No-op unless the leg was bridged with monitor_dtmf.
+func (c *Call) maybeEmitPeerDTMF(peerCallID string, payload []byte) {
+	c.mu.Lock()
+	monitoring := c.dtmfMonitor
+	c.mu.Unlock()
+	if !monitoring || c.ws == nil {
+		return
+	}
+	ev, ok := rtp.ParseDTMF(payload)
+	if !ok || !ev.End {
+		return
+	}
+	sym := ev.Symbol()
+	if sym == 0 {
+		return
+	}
+	// Drop end-of-event retransmissions: same symbol + duration within
+	// 250 ms is the same keypress reported again, not a new press.
+	now := time.Now().UnixNano()
+	c.mu.Lock()
+	last := c.lastMonitorDTMF
+	if last.sym == sym && last.duration == ev.Duration && now-last.atNanos < int64(250*time.Millisecond) {
+		c.mu.Unlock()
+		return
+	}
+	c.lastMonitorDTMF.sym = sym
+	c.lastMonitorDTMF.duration = ev.Duration
+	c.lastMonitorDTMF.atNanos = now
+	c.mu.Unlock()
+	durationMS := int(uint32(ev.Duration) / 8)
+	msg := fmt.Sprintf(
+		`{"type":"dtmf","digit":%q,"duration_ms":%d,"call_id":%q,"peer_call_id":%q,"source":"transfer_target"}`,
+		string(sym), durationMS, c.callID, peerCallID,
+	)
+	if err := c.ws.SendMessage(msg); err != nil {
+		log.Warn().Err(err).Str("call_id", c.callID).Msg("call: monitor dtmf ws send failed")
 	}
 }
 
@@ -1504,22 +1945,72 @@ func (c *Call) startJitterRelease(ctx context.Context) {
 	}()
 }
 
+// startPacer starts the paced egress loop that drains onWSAudio's queue at
+// one 20 ms packet per 20 ms (see pacer.go for why the WS arrival cadence
+// cannot be trusted). Shares ctx with the jitter release loop so SetPeer /
+// Close cancel both together.
+func (c *Call) startPacer(ctx context.Context) {
+	p := &pacer{
+		sendFn:    c.rtp.SendPayloadPaced,
+		suspended: c.hasPeer,
+		onSendError: func(err error) {
+			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
+			c.Close()
+		},
+	}
+	c.mu.Lock()
+	c.outPacer = p
+	c.mu.Unlock()
+	go p.run(ctx)
+}
+
+// clearPacedAudio drops any queued-but-unsent bot audio (worker
+// interruption: the caller barged in, and the tail of the utterance the
+// worker already shipped at 2× must not keep playing over them).
+func (c *Call) clearPacedAudio() {
+	c.mu.Lock()
+	p := c.outPacer
+	c.mu.Unlock()
+	if p == nil {
+		return
+	}
+	if n := p.clear(); n > 0 {
+		log.Debug().Int("packets", n).Str("call_id", c.callID).
+			Msg("call: interruption — dropped queued bot audio")
+	}
+}
+
 // onWSAudio is called when the worker pushes a bot-side AudioRawFrame
 // down the WS. PCM16LE @ 16 kHz mono in, RTP-encoded at 8 kHz on the
 // wire.
 //
-// Pipecat batches its audio output in roughly-20-ms chunks (320
-// samples), which happens to be exactly one downsampled RTP frame at
-// 8 kHz. Larger chunks are split into 160-sample (20 ms) RTP packets
-// to match the negotiated ptime — most carriers and SBCs enforce this.
+// Chunks are split into 160-sample (20 ms) G.711 payloads and ENQUEUED on
+// the egress pacer, never sent inline: Pipecat's websocket transport
+// deliberately sends at up to 2× real-time when it has a backlog, and the
+// PSTN side needs an isochronous 20 ms cadence (see pacer.go).
 func (c *Call) onWSAudio(pcm16LEbytes []byte) {
 	if c.isClosed() {
+		return
+	}
+	// In relay mode the two SIP legs own the media path. A monitored
+	// bridge keeps the worker WS open for control/DTMF only — any bot
+	// audio still in flight must not be mixed onto the caller's RTP.
+	if c.hasPeer() {
+		return
+	}
+	c.mu.Lock()
+	p := c.outPacer
+	c.mu.Unlock()
+	if p == nil {
+		// No pacer running (should not happen outside teardown races —
+		// the pacer starts before the worker WS connects).
 		return
 	}
 	samples16k := codec.BytesToPCMS16LE(pcm16LEbytes)
 	samples8k := codec.Downsample16To8(samples16k)
 
 	const samplesPerPacket = 160 // 20 ms at 8 kHz
+	payloads := make([][]byte, 0, (len(samples8k)+samplesPerPacket-1)/samplesPerPacket)
 	for i := 0; i < len(samples8k); i += samplesPerPacket {
 		end := i + samplesPerPacket
 		if end > len(samples8k) {
@@ -1535,12 +2026,9 @@ func (c *Call) onWSAudio(pcm16LEbytes []byte) {
 		default:
 			return
 		}
-		if err := c.rtp.SendPayload(payload); err != nil {
-			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
-			c.Close()
-			return
-		}
+		payloads = append(payloads, payload)
 	}
+	p.enqueue(payloads)
 }
 
 // Close tears down RTP + WS + jitter buffer release loop. Idempotent.
@@ -1552,7 +2040,12 @@ func (c *Call) Close() {
 	}
 	c.done = true
 	close(c.closed)
+	tap := c.tap
+	c.tap = nil
 	c.mu.Unlock()
+	if tap != nil {
+		tap.Stop()
+	}
 	if c.releaseStop != nil {
 		c.releaseStop()
 	}

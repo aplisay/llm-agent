@@ -108,6 +108,20 @@ Creates a new phone endpoint. Supports E.164 DDI (number on a trunk) and phone-r
 
 - **Request body**: `type`, `number` (or legacy `phoneNumber`), `trunkId`, and optionally `name`, `handler`, `outbound`.
 - Handler and outbound are constrained by the trunk: the effective handler is from the trunk, and `outbound` can only be `true` if the trunk has outbound enabled.
+- **Trunk eligibility**: a **chargeable** trunk is a shared platform carrier trunk that
+  organisations consume but do not own — **any** organisation may allocate a number onto one
+  (there is no `TrunkOrganisation` association to satisfy). A **non-chargeable** trunk is a
+  customer BYO/PBX/registration trunk and MUST be associated with the caller's organisation.
+  A missing trunk id returns `400 "Trunk not found"`; a real but unowned non-chargeable trunk
+  returns `400 "Trunk not found or not associated with your organisation"`. Discover the
+  platform chargeable trunks with [`GET /api/trunks?chargeable=true`](#get-apitrunks) (global,
+  each carrying `flags.provider`).
+- **Chargeable-number limit**: on a chargeable trunk the organisation's
+  `chargeableNumberLimit` applies (default 3, `null` = unlimited; a platform billing policy
+  editable only via the organisations API under `organisation:setRate`). A claim beyond the
+  limit returns `403 { "error": "…", "code": "chargeable_number_limit", "limit": n, "used": n }`.
+  Numbers on the organisation's own (non-chargeable) trunks are never counted or limited.
+  Current allowance is readable at [`GET /api/number-quota`](#get-apinumber-quota).
 - **Response (201)**: `{ "success": true, "number": "1234567890" }` (number without `+`).
 
 **Example:**
@@ -172,7 +186,11 @@ The `options` object carries provider-specific and behavioural settings for the 
 Updates an existing phone endpoint.
 
 - **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration.
-- **Body**: Only send fields you want to change. For E.164 DDI, only `outbound` and `handler` are updatable; for phone-registration, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
+- **Body**: Only send fields you want to change. For E.164 DDI, `outbound`, `handler` and
+  `provisioned` are updatable (`provisioned` marks carrier-side provisioning complete — the
+  dashboard Buy-number flow sets it once the provider has activated the number and pointed it
+  at the platform); for phone-registration, `name`, `outbound`, `handler`, `registrar`,
+  `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
 - **Response (200)**: `{ "success": true }`.
 
 ---
@@ -182,6 +200,44 @@ Updates an existing phone endpoint.
 Deletes a phone endpoint. `identifier` is the number (E.164) or registration ID.
 
 - **Response (200)**: `{ "success": true, "message": "Phone endpoint deleted successfully" }`.
+- **Purchased numbers**: deleting only removes the platform record — it does NOT deactivate
+  the number at the carrier. The polite-ai dashboard releases purchased numbers at the
+  numbering provider before calling this; API callers deleting a provisioned number on a
+  chargeable trunk must arrange the carrier release themselves (see
+  polite-ai `docs/buy-number-design.md`).
+
+---
+
+### GET /api/number-quota
+
+The caller organisation's allowance for numbers on **chargeable** (non-owned, carrier)
+trunks — backs the dashboard Buy-number flow. Requires `phoneEndpoint:read` and an
+organisation membership.
+
+- **Response (200)**: `{ "limit": 3, "used": 1, "remaining": 2 }` — `limit`/`remaining` are
+  `null` when the organisation is unlimited. Numbers on the organisation's own
+  (non-chargeable) trunks are not counted.
+- The limit itself is `Organisation.chargeableNumberLimit` (default 3), editable via the
+  organisations API under `organisation:setRate` (super admin billing policy — deliberately
+  not orgAdmin's `setLimits`).
+
+---
+
+### Trunk administration (super admin)
+
+Trunks are a curated platform resource. Ordinary callers get the org-scoped listing
+(`GET /api/trunks`) and `chargeable=true` (global carrier trunks); super admins additionally get:
+
+- **`GET /api/trunks?scope=all`** (`trunk:assign`): EVERY trunk on the platform, each with its
+  `organisationIds`, for the admin trunk manager (see + edit + assign to any org). A non-super
+  caller passing `scope=all` gets `403`.
+- **`POST /api/trunks`** (`trunk:create`): create a trunk. Body: `id` (**required, admin-supplied**
+  stable identifier — 1–128 chars `[A-Za-z0-9][A-Za-z0-9._-]*`; it is what numbers reference via
+  `aplisayId` and typically mirrors the carrier/telephony trunk, so it is not generated), plus
+  optional `name`, `handler` (`jambonz`/`livekit`/`pipecat`), `outbound`, `chargeable`, `provider`
+  (→ `flags.provider`), and `organisationIds`. Duplicate `id` → `409`; returns `201` with the
+  created trunk incl. `organisationIds`.
+- Editing name / chargeable / provider / org assignments is `PATCH /api/trunks/{id}` (`trunk:assign`).
 
 ---
 
@@ -230,7 +286,9 @@ Deletes a phone endpoint. `identifier` is the number (E.164) or registration ID.
 - All endpoints require authentication. Results are scoped to the caller’s organisation.
 - **400**: Validation failed, invalid body, or trunk not found / not in organisation.
 - **401**: Unauthorized.
-- **403**: Forbidden.
+- **403**: Forbidden — including `code: "chargeable_number_limit"` on POST when the
+  organisation has used its allowance of numbers on chargeable trunks (body carries
+  `limit` and `used`).
 - **404**: Endpoint not found (PUT/DELETE).
 - **409**: Phone number already exists (POST).
 - **500**: Server error.

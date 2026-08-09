@@ -49,6 +49,7 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
     expect(row.finalised).toBe(true);
     expect(row.provider).toBe('livekit');
     expect(row.detail).toBe('livekit:test-model');
+    expect(row.media).toBe('telephony');
     expect(Number(row.quantity)).toBeGreaterThanOrEqual(60_000);
     expect(row.sessionId).toBe(call.id);
   });
@@ -65,5 +66,119 @@ describe('Call.end() records a finalised voice-minute usage row', () => {
 
     await call.destroy();
     expect(await UsageRecord.count({ where: { callId: call.id } })).toBe(0);
+  });
+
+  it('stamps media=webrtc on a browser (WebRTC) call voice row', async () => {
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 20_000);
+    await call.end();
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(row.media).toBe('webrtc');
+  });
+
+  it('pins the bridged tail leg to media=telephony despite inherited WebRTC ids', async () => {
+    // The blind-bridge tail carries the WebRTC-origin ids but is a telephony bridge;
+    // recordUsageMinutes must override mediaFromIds for the telephony:bridged-call sentinel.
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'livekit', modelName: 'telephony:bridged-call',
+    });
+    call.startedAt = new Date(Date.now() - 15_000);
+    await call.end();
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(row.media).toBe('telephony');
+  });
+
+  it('Call.end({ endedAt }) honours an authoritative platform end time for duration', async () => {
+    // The Ultravox webhook reports the real call-end instant; Call.end must use it
+    // (not "now") so duration/minutes reflect the platform timing.
+    const started = new Date('2026-06-30T10:00:00.000Z');
+    const ended = new Date('2026-06-30T10:00:42.000Z'); // 42s
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC',
+      platform: 'ultravox', modelName: 'ultravox:ultravox/ultravox-v0.6',
+    });
+    call.startedAt = started;
+    await call.end('ultravox call ended', { endedAt: ended });
+    expect(call.endedAt.valueOf()).toBe(ended.valueOf());
+    expect(call.duration).toBe(42_000);
+    const row = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(Number(row.quantity)).toBe(42_000);
+  });
+
+  it("Call.mediaFromIds classifies by the leg's own ids", () => {
+    expect(Call.mediaFromIds('WebRTC', 'WebRTC')).toBe('webrtc');
+    expect(Call.mediaFromIds('447700900000', '441234567890')).toBe('telephony');
+    expect(Call.mediaFromIds('WebRTC', '441234567890')).toBe('webrtc');
+    expect(Call.mediaFromIds(null, null)).toBeNull();
+  });
+
+  it('persisted startedAt survives findByPk + Call.end() -> duration + voice row (repro)', async () => {
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC', platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 30_000);
+    await call.save();
+    // Simulate the /call/:id/end endpoint: fresh load, then end (NOT the same instance).
+    const fresh = await Call.findByPk(call.id);
+    expect(fresh.startedAt).toBeTruthy();
+    await fresh.end();
+    const reloaded = await Call.findByPk(call.id);
+    expect(Number(reloaded.duration)).toBeGreaterThan(0);
+    const voice = await UsageRecord.findOne({ where: { callId: call.id, technology: 'voice' } });
+    expect(voice).toBeTruthy();
+  });
+
+  it('Call.end() completes the call record even when usage/billing throws', async () => {
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: 'WebRTC', callerId: 'WebRTC', platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 20_000);
+    await call.save();
+    // Simulate a usage/billing failure (e.g. a usage_records schema mismatch).
+    call.recordUsageMinutes = async () => {
+      throw new Error('simulated usage_records schema error');
+    };
+    await call.end(); // must NOT throw
+    const reloaded = await Call.findByPk(call.id);
+    expect(reloaded.status).toBe('ended normally');
+    expect(reloaded.endedAt).toBeTruthy();
+    expect(Number(reloaded.duration)).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it("GET /api/usage?callId= returns only that call's per-call rows", async () => {
+    const silent = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, child() { return silent; } };
+    const GET = (await import('../api/paths/usage.js')).default(silent).GET;
+    const call = await Call.create({
+      instanceId, agentId, organisationId: orgId, userId,
+      calledId: '441234567890', callerId: '447700900000',
+      platform: 'livekit', modelName: 'livekit:test-model',
+    });
+    call.startedAt = new Date(Date.now() - 45_000);
+    await call.end();
+
+    const req = { query: { callId: call.id }, log: silent };
+    const res = {
+      locals: { user: { role: 'owner', id: userId, organisationId: orgId } },
+      statusCode: 200,
+      status(c) { this.statusCode = c; return this; },
+      send(b) { this.body = b; return this; },
+      json(b) { this.body = b; return this; },
+    };
+    await GET(req, res);
+
+    const usage = res.body?.usage || [];
+    const voice = usage.filter((u) => u.technology === 'voice');
+    expect(voice).toHaveLength(1);
+    expect(voice[0].provider).toBe('livekit');
+    expect(Number(voice[0].quantity)).toBeGreaterThanOrEqual(40_000);
   });
 });

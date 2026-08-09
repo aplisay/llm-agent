@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Organisation } from '../../lib/database.js';
 import { requirePermission, actorCanGrant, validateRbacFields } from '../../lib/auth/permissions.js';
 import { adminScope } from '../../lib/auth/admin-scope.js';
+import { defaultRateHistoryEntry } from '../../lib/rates.js';
 
 /**
  * /api/organisations (collection) — RBAC-gated (`organisation:*`), org-scoped.
@@ -10,7 +11,7 @@ import { adminScope } from '../../lib/auth/admin-scope.js';
  *        admin tab org-filter and the (super-admin-only) org-edit modal.
  *   POST create an organisation — superAdmin only (`organisation:create`).
  */
-const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'role', 'allowedModels', 'permissions'];
+const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'chargeableNumberLimit', 'role', 'allowedModels', 'permissions'];
 
 export default function (logger) {
   const list = async (req, res) => {
@@ -64,14 +65,22 @@ export default function (logger) {
       return res.status(403).json({ message: 'forbidden', detail: 'You may only set an org baseline within capabilities you hold.' });
     }
     try {
+      // Stamp the platform default rate on the new org so it is costed from the
+      // start (null when no default is configured -> untracked, as before).
+      const rateHistory = await defaultRateHistoryEntry();
       const org = await Organisation.create({
         id: randomUUID(),
         name,
         agentLimit: req.body?.agentLimit ?? null,
+        // undefined → model default (3); explicit null = unlimited
+        ...(req.body?.chargeableNumberLimit !== undefined
+          ? { chargeableNumberLimit: req.body.chargeableNumberLimit }
+          : {}),
         status: req.body?.status || 'active',
         role,
         permissions,
         allowedModels: req.body?.allowedModels ?? null,
+        ...(rateHistory ? { rateHistory } : {}),
       });
       return res.status(201).send(org);
     } catch (err) {
@@ -91,6 +100,7 @@ export default function (logger) {
             properties: {
               name: { type: 'string' },
               agentLimit: { type: 'integer', nullable: true },
+              chargeableNumberLimit: { type: 'integer', nullable: true, default: 3, description: 'Max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited' },
               status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'], default: 'active' },
               role: { type: 'string', nullable: true },
               permissions: { type: 'object', nullable: true },

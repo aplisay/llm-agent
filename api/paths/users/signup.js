@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { User, Organisation } from '../../../lib/database.js';
 import { auth } from '../../../lib/auth/index.js';
+import { defaultRateHistoryEntry } from '../../../lib/rates.js';
 
 /**
  * POST /api/users/signup — PUBLIC (skip-listed in middleware/auth.js).
@@ -24,7 +25,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // let a sign-up attach itself to someone else's existing (real) organisation.
 async function createProvisionalOrg(orgName, options = {}) {
   if (!orgName) return null;
-  const org = await Organisation.create({ id: randomUUID(), name: orgName, status: 'provisional' }, options);
+  // Provisional orgs start on the platform default rate too, so a self-signup org
+  // is costed from the moment it is activated (null = untracked, as before).
+  const rateHistory = await defaultRateHistoryEntry();
+  const org = await Organisation.create(
+    { id: randomUUID(), name: orgName, status: 'provisional', ...(rateHistory ? { rateHistory } : {}) },
+    options,
+  );
   return org.id;
 }
 
@@ -96,7 +103,16 @@ export default function (logger) {
       // Double opt-in for the credential-less new row and any existing-unverified
       // re-submit. Enumeration-safe (no-ops for missing/verified user), so the row
       // MUST exist by here. No request headers => not session-scoped.
-      await auth.api.sendVerificationEmail({ body: { email, callbackURL } });
+      try {
+        await auth.api.sendVerificationEmail({ body: { email, callbackURL } });
+      } catch (err) {
+        // The auth hooks 429 a re-submit once the address's send budget is
+        // spent (lib/auth/send-budget.js) — earlier emails already went out, so
+        // the neutral 'pending' answer below stays truthful. Anything else is a
+        // real failure for the outer catch.
+        if (err?.statusCode !== 429) throw err;
+        logger.warn({ email }, 'signup verification email suppressed by send budget');
+      }
       return res.json({ ok: true, status: 'pending', message: 'Check your inbox to confirm.' });
     } catch (err) {
       logger.error({ err: err?.message }, 'signup failed');

@@ -41,6 +41,8 @@ func New(mgr *call.Manager, addr, token string) *Server {
 	mux.HandleFunc("POST /v1/calls", s.handleOriginate)
 	mux.HandleFunc("POST /v1/calls/{id}/transfer", s.handleTransfer)
 	mux.HandleFunc("POST /v1/calls/{id}/consult", s.handleConsult)
+	mux.HandleFunc("POST /v1/calls/{id}/unbridge", s.handleUnbridge)
+	mux.HandleFunc("POST /v1/calls/{id}/dtmf", s.handleDTMF)
 
 	s.hs = &http.Server{
 		Addr:              addr,
@@ -167,6 +169,19 @@ type transferBody struct {
 	CallerID      string            `json:"caller_id"`
 	CustomHeaders map[string]string `json:"custom_headers"`
 	Metadata      map[string]string `json:"metadata"`
+	// MonitorDTMF (modes "bridged" and "dial_bridge" only) keeps this
+	// call's worker WS open across the bridge as a control channel and
+	// surfaces transfer-target DTMF presses on it — the detection half
+	// of a bridged transfer-to-agent (options.bridgedTransferToAgent).
+	// Pair with POST /v1/calls/{id}/unbridge to complete the takeover.
+	MonitorDTMF bool `json:"monitor_dtmf"`
+	// TapAudio (modes "bridged" and "dial_bridge" only) additionally
+	// streams a decoded stereo copy of both bridged legs (L = caller,
+	// R = transfer target; 16 kHz s16le AudioRawFrames) on the same
+	// kept-open WS so the worker can transcribe the human↔human segment
+	// (options.bridgedTransferTranscribe). The RTP relay fast path is
+	// unaffected.
+	TapAudio bool `json:"tap_audio"`
 }
 
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +213,10 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 			CallerID:       body.CallerID,
 			CustomHeaders:  body.CustomHeaders,
 			Metadata:       body.Metadata,
+			Options: call.BridgeOptions{
+				MonitorDTMF: body.MonitorDTMF,
+				TapAudio:    body.TapAudio,
+			},
 		})
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())
@@ -212,7 +231,48 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.mgr.Transfer(ctx, id, body.Target, body.Mode); err != nil {
+	if err := s.mgr.Transfer(ctx, id, body.Target, body.Mode, call.BridgeOptions{
+		MonitorDTMF: body.MonitorDTMF,
+		TapAudio:    body.TapAudio,
+	}); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// unbridgeBody for POST /v1/calls/{id}/unbridge — the finalise step of
+// a bridged transfer-to-agent. Drops the peer (transfer-target) leg,
+// dismantles the relay, and re-attaches this call to a fresh worker
+// agent WS session (which the worker pre-registered under
+// ``agent_ws_session_id``).
+type unbridgeBody struct {
+	AgentWSSessionID string            `json:"agent_ws_session_id"`
+	CustomHeaders    map[string]string `json:"custom_headers"`
+}
+
+func (s *Server) handleUnbridge(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "missing call id")
+		return
+	}
+	var body unbridgeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.AgentWSSessionID == "" {
+		writeErr(w, http.StatusBadRequest, "missing agent_ws_session_id")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.mgr.Unbridge(ctx, call.UnbridgeParams{
+		CallID:         id,
+		AgentSessionID: body.AgentWSSessionID,
+		CustomHeaders:  body.CustomHeaders,
+	}); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -270,6 +330,37 @@ func (s *Server) handleConsult(w http.ResponseWriter, r *http.Request) {
 		"ok":             true,
 		"consult_call_id": consultID,
 	})
+}
+
+// dtmfBody for POST /v1/calls/{id}/dtmf — play out-of-band RFC 4733 DTMF
+// digits toward the far end of an active call. ``digits`` is a string over
+// the alphabet 0-9, * and #. The call stays up; this is in-dialog signalling.
+type dtmfBody struct {
+	Digits string `json:"digits"`
+}
+
+func (s *Server) handleDTMF(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "missing call id")
+		return
+	}
+	var body dtmfBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Digits == "" {
+		writeErr(w, http.StatusBadRequest, "missing digits")
+		return
+	}
+	// SendDTMF validates the alphabet and looks up the call; the burst plays
+	// on a background goroutine so this returns as soon as it's accepted.
+	if err := s.mgr.SendDTMF(id, body.Digits); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

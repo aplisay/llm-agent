@@ -5,31 +5,21 @@ info:
   title: LLM Agent API
   version: 1.0.0
   description: |-
-    Simple platform agnostic API to create, update and monitor agents connecting inbound audio sessions to 
-    a large language model (LLM) based AI engine.
+    Create, run and observe LLM-powered voice agents.
 
-    Extensible architecture that currently supports the following frameworks:
-      * Jambonz: connecting LLMs to telephone calls via an STT->model->TTS pipeline (15 models, any STT,TTS supported by Jambonz)
-      * Livekit: connecting LLMs to WebRTC rooms and SIP calls using the RealTime Agents API
-      * Ultravox: connecting LLMs to WebRTC rooms and SIP calls using the Ultravox API and SDK.
-      
-    Allows the LLM parameters such as `prompt` and `temperature` to be set at agent creation time and later modified via updates which affect all future calls.
-    Also allows setting and modification of text to speech (TTS) and speech to text (STT) parameters which are used for voice recognition and voicing of responses.
+    An **agent** is a definition — a model, a prompt, and options and tools — that the
+    platform runs against live audio: inbound and outbound telephone calls and WebRTC
+    rooms, across multiple gateways (LiveKit, Pipecat, Jambonz) and LLM providers. Agent
+    parameters such as the prompt, temperature and the speech (TTS/STT) options can be
+    updated at any time and apply to all future calls.
 
-    Provides a websocket based `progess` interface which communicates events which take place on calls, allowing the controlling software to capture data and modify
-    the prompt in response to client interaction.
+    Activating an agent creates a **listener** bound to a phone number or a room; each
+    conversation it handles becomes a **call** with a transcript you can retrieve or have
+    delivered by webhook, and a websocket event stream reports call events in real time.
 
-    For a demo of the API in action without writing any code, try out the [Aplisay LLM playground](https://llm.aplisay.com), a hosted React based front-end.
-
-    Typical simple transaction flow will be:
-      
-    1. **[GET models](#operations-Models-modelList)** to obtain a list of valid models.
-    2. **[POST agents](#operations-Agent-createAgent)** with a chosen model identifier and prompt to create an agent.
-    3. **[POST listen](#operations-Agent-activate)** with the agent ID and type to receive an `instanceId` and either
-       a `number` or livekit/ultravox room values from the create call result.
-    4. Open a new livekit client session and join the room to receive transcript updates and send/receive audio, or call the number.
-    5. When done with the agent, shut down the listener **[DELETE /listener/{listenerId}](#operations-Agent-deleteListenerById)**.
-    6. Call **[DELETE agents/{id}](#operations-Agent-deleteAgent)**.
+    Operations are grouped by resource — Agents and Agent Sets, Listeners, Calls, Models
+    and Voices, and Phone Endpoints. For a getting-started guide and worked examples, see
+    the [Aplisay documentation](https://aplisay.com/docs).
 
 tags:
   - name: Calls
@@ -68,7 +58,20 @@ tags:
       `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
       on creation or update.
 
+# All operations require a bearer token unless stated otherwise on the operation.
+security:
+  - bearerAuth: []
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |-
+        Authenticate every request with `Authorization: Bearer <token>`, where the token is either
+        an Aplisay API key issued for your account, or the identity token of a signed-in platform
+        user. Keys are scoped to your organisation: agents, calls, numbers and usage are only ever
+        visible within the organisation that owns them.
   schemas:
     Model:
       type: object
@@ -124,6 +127,8 @@ components:
           $ref: "#/components/schemas/AgentType"
         prompt:
           $ref: "#/components/schemas/Prompt"
+        promptMetadata:
+          $ref: "#/components/schemas/PromptMetadata"
         options:
           $ref: "#/components/schemas/AgentOptions"
         functions:
@@ -162,6 +167,17 @@ components:
               type: string
             description:
               type: string
+            removeFunctions:
+              type: array
+              items:
+                type: string
+              description: |-
+                Names of stored functions to delete from this member explicitly. A stored function that
+                references a write-only key entry (its `key` property) is treated as platform-wired: an
+                update whose `functions` merely omits it keeps it in place, so a document written before
+                the wiring can never strip it. Listing the function's name here is how it is actually
+                removed. Names listed here also delete ordinary stored functions when `functions` is not
+                supplied at all (a remove-only patch).
         - $ref: "#/components/schemas/Agent"
     AgentSetInput:
       type: object
@@ -294,9 +310,9 @@ components:
                example: The city name to be looked up.
              type:
                type: string
-               description: The type of the parameter
+               description: The type of the parameter. `array` is accepted for `generated` parameters whose value is a JSON array (e.g. the builder builtins' `agents` and `removeLabels` parameters).
                default: "string"
-               enum: ["string", "number", "boolean"]
+               enum: ["string", "number", "boolean", "array"]
              in:
                type: string
                description: Where in the request the parameter should be used
@@ -356,6 +372,55 @@ components:
       example: |-
         You work for Robs Flags, a company that manufactures flags.
         You can only chat with callers about submitting or organising the return of an order that the user has previously made...
+    PromptMetadata:
+      type: array
+      description: |-
+        Call metadata to STATE TO THE MODEL IN ITS SYSTEM PROMPT, rather than leaving it to fetch the
+        value with a `get_metadata` tool call. Each entry renders as one `<description> <value>` line
+        appended to the agent's prompt under a "Call context" heading, resolved fresh for every call
+        (and again after a `transfer_agent` handover, for the incoming agent's own declaration).
+
+        Use it for facts the agent must reason with from its FIRST utterance — today's date above all.
+        A tool round-trip only happens if the model remembers to make it, and on realtime providers it
+        freezes the conversation while it runs; a prompt statement is always present and costs nothing
+        at turn time. The `metadata` builtin remains the right tool for values needed occasionally, or
+        that may change during a long call.
+
+        Rules:
+          * `from` is a dot-path into the same call metadata that `source: "metadata"` function
+            parameters read — e.g. `aplisay.callerId`, `aplisay.calledId`, `aplisay.dateTime`, or any
+            key the deployment seeds into instance metadata.
+          * `aplisay.dateTime` is computed live at prompt-composition time (a seeded value wins), so an
+            agent that reasons about dates never has to guess what day it is.
+          * An entry whose value is missing, null or empty is OMITTED — an absent optional fact never
+            becomes a statement the model would then treat as true.
+          * `metadata.toolsCalls.*` paths are only permitted on handlers with dynamic metadata support
+            (LiveKit), matching the rule for `source: "metadata"` parameters and the `metadata` builtin.
+          * Object and array values render as compact JSON; long values are truncated.
+      maxItems: 20
+      items:
+        type: object
+        required:
+          - from
+        properties:
+          description:
+            type: string
+            maxLength: 200
+            description: |-
+              Sentence fragment placed before the value, e.g. "The current date/time is". Written so
+              `<description> <value>` reads as a complete statement of fact. Optional: with no
+              description the bare value is stated on its own line.
+            example: The current date/time is
+          from:
+            type: string
+            maxLength: 200
+            description: Dot-path into the call metadata, e.g. `aplisay.dateTime`.
+            example: aplisay.dateTime
+      example:
+        - description: The current date/time is
+          from: aplisay.dateTime
+        - description: The number this caller is calling from is
+          from: aplisay.callerId
     AgentOptions:
       type: object
       properties:
@@ -553,10 +618,18 @@ components:
 
             Honoured by both the Pipecat worker (via Pipecat's built-in user-idle detection) and the
             LiveKit worker (via the session `userAwayTimeout` / `user_state_changed` → "away" event),
-            including the Ultravox realtime path on both stacks.
+            including the Ultravox realtime path on both stacks. Also honoured by native Ultravox
+            agents (`ultravox:` model names) on every medium — WebRTC, WebSocket, and jambonz-routed
+            telephony — where it is applied provider-side via Ultravox `inactivityMessages` (the same
+            nudge re-fires after each further `timeout` of continued silence, up to 3 times).
+
+            By default the call is never hung up by this mechanism — it prompts and then waits
+            indefinitely. Set `hangup` to end the call once the prompt has gone unanswered three
+            times.
 
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
-            which is handled entirely server-side by Ultravox and is not portable across workers.
+            which is handled entirely server-side by Ultravox and is not portable across workers; when
+            both are set on an Ultravox-backed path, the vendor-specific block wins.
           type: object
           properties:
             timeout:
@@ -572,6 +645,34 @@ components:
               description: The literal phrase the agent speaks verbatim on each idle kick.
               type: string
               example: "Are you still there?"
+            hangup:
+              description: |-
+                End the call once the prompt has gone unanswered three times, instead of prompting
+                indefinitely. Opt-in; omitted or `false` leaves behaviour unchanged.
+
+                Without this, a leg that nobody hangs up is only reclaimed by the session long-stop
+                (the model's `maxDuration` plus a few seconds), so whoever is still on the line can
+                sit through minutes of silence first. That includes an abandoned consultative-transfer
+                target, which has no other party left to hang up on it.
+
+                Honoured on every stack, but enforced in two different places, which matters if the
+                agent performs consultative transfers:
+
+                  * Ultravox-backed paths (native `ultravox:` agents, and the Ultravox realtime path
+                    on the LiveKit and Pipecat workers) apply it provider-side as an
+                    `endBehavior` on the last `inactivityMessages` entry. Ultravox has no knowledge
+                    of a transfer in flight, so a caller held silently through a long consultation
+                    can be hung up on.
+                  * All other models (pipeline STT/LLM/TTS, OpenAI and Gemini realtime) are enforced
+                    by the worker, which suppresses the hangup while a consultation or transfer is in
+                    flight.
+
+                Prefer leaving this off for agents that perform consultative transfers with long
+                holds on an Ultravox-backed path. The resulting call record carries the disconnect
+                reason `Inactivity timeout`, distinct from `Session timeout`.
+              type: boolean
+              default: false
+              example: true
           required:
             - timeout
             - message
@@ -652,6 +753,96 @@ components:
             volume: medium
             gapMs: 2750
             graceMs: 1200
+        bridgedTransferToAgent:
+          description: |-
+            Human-to-agent transfers: after a **bridged** transfer, let the transfer target hand the
+            caller back to an AI agent by pressing a DTMF sequence. Keys are DTMF sequences of 1-8
+            characters from `0-9`, `*` and `#`; values name the voice agent the caller is handed to
+            when the sequence is detected **on the transfer-target leg** (caller digits never trigger it).
+
+            Values are an agent UUID string, or an object `{ agent, includeHistory, summaryAgent }`
+            where `includeHistory` (default `true`) controls whether the incoming agent's prompt
+            carries the conversation the caller had with the original agent, and `summaryAgent`
+            (optional) names a `text:` agent that is pre-fired at hand-back time to summarise the
+            carried transcripts — the incoming agent collects the result with the builtin
+            `transfer_summary` function. Inside an agent-set document (or a listener activation)
+            values may be `label:<label>` references, resolved to member UUIDs on save (recorded as
+            `fromLabel` / `summaryFromLabel` for round-tripping).
+
+            On a hand-back the takeover call's metadata always carries the transcripts under
+            `aplisay.transfer` (`parentTranscript`, `bridgeTranscript`, `consultTranscript`, `key`,
+            `targetNumber`) — addressable by `promptMetadata`, `get_metadata` and
+            `source: "metadata"` function parameters, independent of `includeHistory`.
+
+            While this option is set, transfers are forced onto the bridged path (a SIP REFER would
+            take the call off-platform, out of DTMF sight). Multi-digit sequences are matched with the
+            `dtmfTimeout` inter-digit timeout. On a match the target leg is dropped and the mapped
+            agent answers the caller on a new child call record. May also be set per listener in the
+            `POST /agents/{agentId}/listen` options, wholesale-replacing this map. Not available for
+            WebRTC (browser) origin calls. See docs/call-transfers.md.
+          type: object
+          minProperties: 1
+          additionalProperties:
+            oneOf:
+              - type: string
+                description: Target agent UUID (or `label:<label>` inside an agent-set document).
+              - type: object
+                properties:
+                  agent:
+                    description: Target agent UUID (or `label:<label>` inside an agent-set document).
+                    type: string
+                  includeHistory:
+                    description: Carry the original agent's conversation into the incoming agent's prompt.
+                    type: boolean
+                    default: true
+                  summaryAgent:
+                    description: |-
+                      Optional `text:` agent (UUID, or `label:<label>` inside an agent-set document)
+                      pre-fired at hand-back to summarise the carried transcripts. The takeover agent
+                      collects the result with the builtin `transfer_summary` function. Billed as an
+                      ordinary text-agent invocation.
+                    type: string
+                required:
+                  - agent
+          example:
+            "1": "5f4c0a9e-1111-2222-3333-444455556666"
+            "*7":
+              agent: "9a1b0c2d-7777-8888-9999-000011112222"
+              includeHistory: false
+              summaryAgent: "3c2d1e0f-aaaa-bbbb-cccc-ddddeeeeffff"
+        bridgedTransferTranscribe:
+          description: |-
+            Transcribe the human↔human segment of a bridged transfer (the conversation between the
+            caller and the transfer target after the AI has left the call). When enabled, a
+            speaker-labelled transcript of the bridged segment is stored on the bridged-segment call
+            record, and — when combined with `bridgedTransferToAgent` — is included in the incoming
+            agent's prompt when the transfer target hands the caller back by DTMF.
+
+            Set `true` to enable with defaults, or an object to tune the transcription engine where
+            the gateway runs its own STT (the voiceblender topology; the sipbridge topology taps the
+            bridged audio to the worker and uses the agent's configured STT, ignoring `provider`).
+            Media stays on the gateway fast path in all cases — transcription is a tap, not a detour.
+            See docs/call-transfers.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                provider:
+                  description: Gateway-native STT provider (voiceblender topology only).
+                  type: string
+                  enum: [elevenlabs, deepgram, azure]
+                  default: elevenlabs
+                language:
+                  description: BCP-47 language tag hint for the transcription engine.
+                  type: string
+                  example: en
+          example:
+            provider: deepgram
+            language: en
         transferPrompt:
           description: |-
             Custom prompt to be used by the TransferAgent during consultative transfers. This allows you to customize
@@ -743,8 +934,12 @@ components:
           - If you need an interruptible greeting, do not use this option; prompt the model to greet naturally as part of the normal dialogue.
 
         Availability:
-          - Supported for LiveKit agents and Ultravox WebRTC agents (model names prefixed `livekit:` and `ultravox:`).
-          - No-op on Jambonz telephony agents.
+          - Supported for LiveKit agents (`livekit:` model names) on all stacks.
+          - Supported for native Ultravox agents (`ultravox:` model names) on every medium —
+            WebRTC, WebSocket, and jambonz-routed telephony — applied provider-side via Ultravox
+            `firstSpeakerSettings`. A caller-supplied `vendorSpecific.ultravox.firstSpeakerSettings`
+            takes precedence over this option, as does `options.firstSpeaker: 'user'`.
+          - No-op on Jambonz pipeline telephony agents (non-Ultravox models routed via Jambonz).
 
         Note for LiveKit OpenAI realtime (`livekit:openai/...`):
           - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
@@ -899,7 +1094,7 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "metadata", "transfer_agent", "subagent", "result"]
+            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
@@ -928,7 +1123,31 @@ components:
                   * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
                     (generated) arguments the agent passes become the result returned to the invoker. Define its
                     `input_schema` to describe the output you require from the agent.
+                  * `create_agent_set`, `update_agent_set`, `patch_agent_set`, `list_voices`, `ask_user`, `test_agent`,
+                    `request_review` (text agents only) are the agent-builder builtins. They are dispatched by the
+                    interactive **chat session** tool plane only: inside a chat session they perform org-scoped
+                    agent-set CRUD, voice listing, user questioning, set testing, and requesting an independent review
+                    exactly as the builtin set builder does. `request_review` takes no parameters: it pauses the turn
+                    and emits a `review` frame; the client runs its own review flow and answers with a `review_result`
+                    frame whose result becomes this function's tool result. Outside a chat session the set-CRUD
+                    builtins (`create_agent_set`/`update_agent_set`/`patch_agent_set`) fail closed with an error, and
+                    `ask_user`/`test_agent`/`request_review` yield empty results.
                   * `hangup` takes no parameters and will hang up the call
+                  * `send_dtmf` plays a string of DTMF digits to the remote party as
+                    **out-of-band** (RFC 4733 telephone-event) tones over a SIP telephone
+                    call. Available on `livekit:` and `pipecat:` agents only (on Pipecat, the
+                    sipbridge and voiceblender SIP gateways synthesise the telephone-event
+                    RTP). Parameters:
+                    - `digits` (string, required): the digits to play, over the alphabet
+                      `0-9`, `*` and `#` (max 64 characters). Unlike `transfer`'s `number`,
+                      this MAY be `generated` — the LLM enters what it learned during the call
+                      (an IVR menu selection, an account or reference number) — as well as
+                      `static` or `metadata`. Playing tones on the existing call is not a
+                      redirect, so there is no anti-fraud restriction on the parameter source.
+                    The digits are played serially with standard telephony timing. On a
+                    **WebRTC / browser** session the function returns a `FAILED` result — there
+                    is no telephone leg to signal on — as it does for an empty or out-of-
+                    alphabet digit string; on success it returns `{ "status": "OK", "detail": "sent N DTMF digit(s)" }`.
                   * `metadata` interrogates the call metadata, returning a JSON object with the requested metadata keys and values.
                      `keys` is a comma-separated list of dot-notation paths (arbitrary depth), for example `aplisay.callId` or `toolsCalls.lookupDirectory.result.transferNumber`.
                      References to `toolsCalls...` are only allowed on **LiveKit agents**.
@@ -1088,7 +1307,18 @@ components:
         Language and country dialect specified as an ISO639-1 language code
         followed by a dash and and ISO3166 country code.
         For now, list of supported recognition voices is identical to the voicing languages returned from the `voices` api.
-        This should change in future
+        This should change in future.
+        Ultravox models (`ultravox:`, `livekit:ultravox/` and `pipecat:ultravox/`) are speech-to-speech with
+        no separate STT/TTS stage, so they take a single hint: `tts.language`, falling back to
+        `stt.language`, is sent as the provider-native `languageHint` guiding both recognition and synthesis.
+        Omitted when unset or set to a non-specific value (`any`, `multi`, `auto`, ...), in which case
+        Ultravox auto-detects.
+        On `pipecat:` pipeline (STT-LLM-TTS) models each side prefers its own block and falls back to the
+        other, so declaring the language once configures both: recognition uses `stt.language` then
+        `tts.language`, synthesis the reverse. Regional tags are preserved where the provider accepts them
+        (Deepgram, Google) and reduced to the base code where it does not (Cartesia, ElevenLabs). Deepgram
+        TTS is the exception - its Aura voice id already encodes the language, so pick the voice instead.
+        When unset the provider's own default applies.
       type: string
     Voice:
       type: object
@@ -1340,7 +1570,7 @@ components:
         identity (it is used as the SIP realm / from-domain). It must be a routable
         FQDN or public IP unless a routable `options.register_proxy` is supplied, in
         which case the registrar may be a non-FQDN host (e.g. an internal PBX name).
-      pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9.-]+(?::[0-9]+)?$'
+      pattern: '^(?:sips?:)?(?:[a-zA-Z0-9._-]+@)?[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*(?::[0-9]+)?$'
       example: sip.example.com:5060
     PhoneRegistrationOptions:
       type: object
@@ -1464,7 +1694,7 @@ components:
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
-        For e164-ddi endpoints, only `outbound` and `handler` can be updated.
+        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
       type: object
@@ -1475,6 +1705,9 @@ components:
         outbound:
           type: boolean
           description: Supports outbound
+        provisioned:
+          type: boolean
+          description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
         handler:
           type: string
           enum:

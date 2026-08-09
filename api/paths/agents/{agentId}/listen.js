@@ -63,7 +63,12 @@ export default function (wsServer) {
       }
       else {
         let status = 404;
-        if (err.message.includes('In use:')) {
+        if (typeof err.status === 'number') {
+          // Validation failures (e.g. listener transfer overrides) carry
+          //  their own HTTP status
+          status = err.status;
+        }
+        else if (err.message.includes('In use:')) {
           status = 409;
         }
         else if (err.message.includes('Not supported:')) {
@@ -101,7 +106,7 @@ export default function (wsServer) {
               properties: {
                 number: {
                   type: "string",
-                  description: `The telephone number to request allocate to the agent in E.164 format, or \"*\" to request an ephemeral number.`,
+                  description: `The telephone number to allocate to the agent, in E.164 format. Must be a number your organisation owns.`,
                   example: "+442080996945"
                 },
                 id: {
@@ -136,6 +141,34 @@ export default function (wsServer) {
                           mykey: "mydata"
                         }
                       }
+                    },
+                    bridgedTransferToAgent: {
+                      type: "object",
+                      additionalProperties: true,
+                      description: `Per-listener override of the agent's \`options.bridgedTransferToAgent\` hand-back map
+                        (see \`docs/call-transfers.md\`). When present it wholesale-replaces the agent-level map for
+                        every call on this listener. Keys are DTMF sequences (1-8 chars of 0-9, * and #); values are an
+                        agent UUID or \`{ agent, includeHistory }\`. \`label:\` references are allowed when the agent is
+                        a member of an agent set and are resolved at activation time.`,
+                      example: { "1": "label:followup" }
+                    },
+                    bridgedTransferTranscribe: {
+                      description: `Per-listener override of the agent's \`options.bridgedTransferTranscribe\` (bridged-segment
+                        transcription). Boolean, or \`{ enabled, provider, language }\`. Wholesale-replaces the agent-level
+                        value for every call on this listener.`,
+                      oneOf: [
+                        { type: "boolean" },
+                        { type: "object", additionalProperties: true }
+                      ],
+                      example: true
+                    },
+                    dtmfTimeout: {
+                      type: "integer",
+                      minimum: 100,
+                      maximum: 60000,
+                      description: `Per-listener override of the agent's \`options.dtmfTimeout\` inter-digit timeout in
+                        milliseconds (DTMF input buffering and hand-back sequence matching).`,
+                      example: 1500
                     }
                   },
                   required: [],
@@ -169,6 +202,34 @@ export default function (wsServer) {
                               mykey: "mydata"
                             }
                           }
+                        },
+                        bridgedTransferToAgent: {
+                          type: "object",
+                          additionalProperties: true,
+                          description: `Per-listener override of the agent's \`options.bridgedTransferToAgent\` hand-back map
+                            (see \`docs/call-transfers.md\`). When present it wholesale-replaces the agent-level map for
+                            every call on this listener. Keys are DTMF sequences (1-8 chars of 0-9, * and #); values are an
+                            agent UUID or \`{ agent, includeHistory }\`. \`label:\` references are allowed when the agent is
+                            a member of an agent set and are resolved at activation time.`,
+                          example: { "1": "label:followup" }
+                        },
+                        bridgedTransferTranscribe: {
+                          description: `Per-listener override of the agent's \`options.bridgedTransferTranscribe\` (bridged-segment
+                            transcription). Boolean, or \`{ enabled, provider, language }\`. Wholesale-replaces the agent-level
+                            value for every call on this listener.`,
+                          oneOf: [
+                            { type: "boolean" },
+                            { type: "object", additionalProperties: true }
+                          ],
+                          example: true
+                        },
+                        dtmfTimeout: {
+                          type: "integer",
+                          minimum: 100,
+                          maximum: 60000,
+                          description: `Per-listener override of the agent's \`options.dtmfTimeout\` inter-digit timeout in
+                            milliseconds (DTMF input buffering and hand-back sequence matching).`,
+                          example: 1500
                         }
                       },
                       required: [],

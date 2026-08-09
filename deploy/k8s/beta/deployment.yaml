@@ -1,0 +1,77 @@
+# llm-agent server Deployment (beta). Image: the BETA release lane — a push of
+# a beta-X.Y.Z git tag fires the llm-agent-beta trigger, which publishes
+# llm-agent/llm-agent:{$COMMIT_SHA, beta-X.Y.Z, beta}. This pins the floating
+# :beta channel head (pulled fresh on every pod start); pin :beta-X.Y.Z or a
+# SHA tag here to freeze. Reconcile onto the newest release with
+# polite-ai/reload-beta. NOTE: :beta exists only after the FIRST beta tag has
+# been pushed and built — do not apply this before then.
+#
+# Schema note: sequelize sync({alter}) runs at boot against POSTGRES_DB, but the
+# better-auth satellite tables do NOT auto-migrate — run `yarn auth:migrate`
+# against the beta DB once (see repo memory: signup 500s without them).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-agent
+  namespace: llm-agent
+  labels:
+    app.kubernetes.io/name: llm-agent
+spec:
+  replicas: 1
+  # Recreate: with a single replica on a CPU-tight pool, RollingUpdate's surge
+  # pod can't schedule and the rollout wedges Pending — kill-then-start instead
+  # (brief downtime per deploy, fine for beta).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-agent
+    spec:
+      containers:
+        - name: llm-agent
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/llm-agent:beta
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: LOGLEVEL
+              value: info
+            - name: PORT
+              value: "8080"
+          envFrom:
+            # SECRETENV_KEY + SECRETENV_BUNDLE — the encrypted .env.beta, same
+            # pair the Cloud Run services mount from GCP Secret Manager.
+            - secretRef:
+                name: llm-agent-secretenv
+          # No HTTP health route is guaranteed across API versions — TCP works
+          # everywhere (mirrors Cloud Run's default startup probe).
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 1536Mi

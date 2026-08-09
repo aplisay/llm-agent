@@ -1,0 +1,29 @@
+# llm-agent server on the BETA cluster (LON1 DOKS, node pool llm-voice-prod) at
+# https://api.aplisay.com — the first k8s deploy of the node server (staging
+# remains on Cloud Run). Same runtime contract as Cloud Run: the container
+# receives SECRETENV_KEY + SECRETENV_BUNDLE and rehydrates .env.beta at boot.
+#
+#     kubectl apply -k deploy/k8s/beta
+#
+# Secrets first (from the repo root, with .env.beta filled in — writes Secret
+# `llm-agent-secretenv` in ns llm-agent on the CURRENT kubectl context):
+#     ./deploy/bundle-secretenv.sh --env=beta --target=k8s
+#
+# The namespace's default ServiceAccount must carry the `aplisay-ar-pull`
+# imagePullSecret (same bootstrap as the polite-ai web tier).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: llm-agent
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: aplisay
+      app.kubernetes.io/managed-by: kustomize

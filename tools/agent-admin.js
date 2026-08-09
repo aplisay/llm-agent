@@ -174,8 +174,16 @@ async function main() {
         await authKey.destroy();
         logger.info({  }, 'deleted AuthKey');
         break;
-      case 'upgrade-db':
+      case 'upgrade-db': {
+        // The Sequelize schema sync already ran above (DB_FORCE_SYNC=true set for
+        // this command). Now bring better-auth's OWN tables (account/session/
+        // verification) up to date in the same deliberate maintenance step — they
+        // are not Sequelize-managed, and without them credential sign-up 500s
+        // before the verification-email hook. Fenced off the shared users table.
+        const { runAuthMigrate } = await import('../scripts/auth-migrate.mjs');
+        await runAuthMigrate(logger);
         break;
+      }
 
       case 'normalise-orgs':
         console.log('Starting organisation normalisation...');

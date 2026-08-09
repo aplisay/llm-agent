@@ -36,10 +36,11 @@ type Client struct {
 	mu   sync.Mutex // protects Write — concurrent writes on a single
 	// WebSocket are unsafe.
 
-	onAudio   func(samplesS16LE []byte)
-	onText    func(TextFrame)
-	onTscript func(TranscriptionFrame)
-	onClose   func(err error)
+	onAudio        func(samplesS16LE []byte)
+	onText         func(TextFrame)
+	onTscript      func(TranscriptionFrame)
+	onInterruption func()
+	onClose        func(err error)
 
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -84,6 +85,15 @@ func (c *Client) SetTextHandler(fn func(TextFrame)) {
 // SetTranscriptionHandler registers an optional callback for STT output.
 func (c *Client) SetTranscriptionHandler(fn func(TranscriptionFrame)) {
 	c.onTscript = fn
+}
+
+// SetInterruptionHandler registers an optional callback fired when the
+// worker serializes an InterruptionFrame (caller barge-in — Pipecat's
+// ProtobufFrameSerializer ships it as the Frame oneof's ``interruption``
+// branch). The bridge uses it to drop queued-but-unsent bot audio so the
+// tail of an interrupted utterance doesn't keep playing over the caller.
+func (c *Client) SetInterruptionHandler(fn func()) {
+	c.onInterruption = fn
 }
 
 // SetCloseHandler registers a callback fired exactly once when the
@@ -181,6 +191,26 @@ func (c *Client) SendAudio(pcm16 []byte) error {
 		Audio:      pcm16,
 		SampleRate: 16000,
 		NumChans:   1,
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.conn.Write(wctx, websocket.MessageBinary, frame)
+}
+
+// SendAudioStereo frames a two-channel AudioRawFrame and sends it as one
+// binary message. PCM16 little-endian, 16 kHz, interleaved L/R. Used by
+// the bridged-transfer transcription tap (left = caller leg, right =
+// transfer-target leg) — see internal/call/tap.go.
+func (c *Client) SendAudioStereo(pcm16 []byte) error {
+	if c.conn == nil {
+		return errors.New("pipecat client: not connected")
+	}
+	frame := EncodeAudio(AudioRawFrame{
+		Audio:      pcm16,
+		SampleRate: 16000,
+		NumChans:   2,
 	})
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -333,5 +363,9 @@ func (c *Client) dispatch(frame *IncomingFrame) {
 		// Unused on this path — Pipecat application messages travel via
 		// a different channel in our worker. Log at debug.
 		log.Debug().Str("data", frame.Message.Data).Msg("pipecat ws: message frame ignored")
+	case frame.Interruption:
+		if c.onInterruption != nil {
+			c.onInterruption()
+		}
 	}
 }

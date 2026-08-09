@@ -19,6 +19,27 @@ After executing a tool named `someTool`, in a livekit based agent, the server st
 
 You can reference either of these with `source: "metadata"` using arbitrary-depth dot paths (e.g. `toolsCalls.someTool.result.transferNumber`).
 
+## Platform-provided metadata keys (and `get_metadata`)
+
+Besides `toolsCalls.*`, the platform seeds each call's metadata under `aplisay.*` with call context an agent can read — either as a `source: "metadata"` parameter, or by giving the agent the **metadata builtin** so it can fetch values on demand at conversation time:
+
+```json
+{
+  "name": "get_metadata",
+  "implementation": "builtin",
+  "platform": "metadata",
+  "input_schema": { "properties": { "keys": { "source": "generated", "type": "string" } } }
+}
+```
+
+The model calls it with a comma-separated `keys` list and gets an object back, e.g. `get_metadata(keys: "aplisay.callerId, aplisay.dateTime")`. Readable keys include:
+
+- `aplisay.callerId` / `aplisay.calledId` — the calling / called numbers.
+- `aplisay.callId` — the platform call id.
+- **`aplisay.dateTime` — the current date and time**, e.g. `"Friday 2026-07-24 14:05 Europe/London"` (weekday, ISO-8601 date, 24-hour local time, IANA zone; zone defaults to `Europe/London`, set `AGENT_TIMEZONE` to change it). It is computed live per read, so it is always current.
+
+**Give any agent that reasons about dates or times the `get_metadata` builtin and tell it to call `get_metadata` for `aplisay.dateTime` before doing date maths.** Language models do not know the current date — an agent that books appointments, checks a calendar, or resolves "today" / "tomorrow" / "next Tuesday" will otherwise invent a date (a real agent once queried a calendar for a range over a year in the past). The current date/time is the ground truth it must anchor to.
+
 ## Security model for “hardwiring” sensitive values
 
 The key safety property is this: if a tool parameter is defined with `source: "metadata"`, the LLM cannot “invent” or replace the value because that parameter is resolved algorithmically by the agent framework from metadata. This guards against, for example, prompt injection attacks being used to inject harmful values into critical function calls.

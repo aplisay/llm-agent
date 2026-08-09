@@ -3,6 +3,7 @@ import { scopeWhereForUser } from '../../../lib/scope.js';
 import { validateSetLabels } from '../../../lib/agent-set-labels.js';
 import { reconcileMembers, renderSet, sendAgentSetError } from '../agent-sets.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
+import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
 
 let log;
 
@@ -105,7 +106,12 @@ agentSetUpdate.apiDoc = {
                 existing labels are updated in place (keeping their agent IDs), new labels are created,
                 and members whose label is absent from the document are deleted. All \`label:\` references
                 (and previously fixed-up \`fromLabel\` annotations) are re-resolved against the new membership.
-                The whole operation is transactional: it either fully applies or fails leaving the set unchanged.`,
+                The whole operation is transactional: it either fully applies or fails leaving the set unchanged.
+                A member's stored functions that reference a write-only key entry (their \`key\` property —
+                platform-wired tools such as calendar booking) are PRESERVED even when the incoming member's
+                \`functions\` omits them: an incoming function of the same name replaces the stored one, and a
+                name listed in the member's \`removeFunctions\` deletes it, but omission alone never strips a
+                keyed function. Documents written before such wiring therefore round-trip safely.`,
   operationId: 'updateAgentSet',
   tags: ["Agent Sets"],
   parameters: [agentSetIdParameter],
@@ -125,6 +131,16 @@ agentSetUpdate.apiDoc = {
         'application/json': {
           schema: {
             $ref: '#/components/schemas/AgentSet'
+          }
+        }
+      }
+    },
+    409: {
+      description: 'A member removed by this document still has a phone number or SIP registration listening on it — undeploy first.',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
           }
         }
       }
@@ -151,6 +167,9 @@ const agentSetDelete = async (req, res) => {
       return res.status(404).send({ message: `Agent set with ID ${agentSetId} not found` });
     }
     await AgentSet.sequelize.transaction(async (transaction) => {
+      const members = await Agent.findAll({ where: { agentSetId: set.id }, transaction });
+      // Fail closed: never cascade a live number/registration away with the set.
+      await assertAgentsNotWired(members, { transaction });
       await Agent.destroy({ where: { agentSetId: set.id }, transaction });
       await set.destroy({ transaction });
     });
@@ -158,6 +177,9 @@ const agentSetDelete = async (req, res) => {
     res.status(200).send();
   }
   catch (err) {
+    if (err instanceof WiredListenerError) {
+      return res.status(err.status).send({ message: err.message });
+    }
     req.log.error(err, 'deleting agent set');
     res.status(500).send({ message: err.message });
   }
@@ -171,6 +193,16 @@ agentSetDelete.apiDoc = {
   responses: {
     200: {
       description: 'Deleted agent set.',
+    },
+    409: {
+      description: 'A member still has a phone number or SIP registration listening on it — undeploy first.',
+      content: {
+        'application/json': {
+          schema: {
+            $ref: '#/components/schemas/Error'
+          }
+        }
+      }
     },
     default: {
       description: 'An error occurred',

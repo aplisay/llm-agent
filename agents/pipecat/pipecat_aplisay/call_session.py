@@ -18,6 +18,7 @@ SIP leg is a Daily room, a FreeSWITCH bridge, or anything else.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -26,8 +27,10 @@ from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
 
 from . import api_client
+from . import invocation_log
 from .agent_tools import build_agent_tools
 from .mcp_tools import close_mcp_servers, connect_mcp_servers
+from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .recording import RecordingSession
 from .sip_gateway.base import (
@@ -62,6 +65,13 @@ _UUID_RE = re.compile(
     re.I,
 )
 
+# The alphabet the send_dtmf builtin accepts. Matches the LiveKit worker and
+# the sipbridge Go encoder — 0-9, * and # (KeypadEntry's supported range; RFC
+# 4733 A-D are intentionally excluded end-to-end).
+_DTMF_RE = re.compile(r"^[0-9*#]+$")
+# Bound the tone burst an LLM can request in one call (~200 ms/digit).
+_MAX_DTMF_DIGITS = 64
+
 
 @dataclass
 class _WebrtcEgress:
@@ -82,6 +92,17 @@ class _WebrtcEgress:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+
+
+def _chargeable_outbound_trunk_id(egress: "_WebrtcEgress") -> Optional[str]:
+    """The DB ``Trunk.id`` of our chargeable public outbound trunk, for the
+    server's destination-billing gate (``Trunk.chargeable``). Set only when the
+    leg egresses our public SBC (a trunk), NOT a registration B2BUA (the
+    customer's own PBX, never our carrier). Unset ``APLISAY_OUTBOUND_TRUNK_ID`` env
+    → ``None`` (fail-safe: nothing is destination-charged)."""
+    if egress.registration_endpoint_id or not egress.aplisay_id:
+        return None
+    return os.environ.get("APLISAY_OUTBOUND_TRUNK_ID") or None
 
 
 @dataclass
@@ -152,10 +173,34 @@ class CallSession:
     # X-Aplisay-Origin-Caller-Id on transfer legs so the B2BUA can assert it as
     # P-Asserted-Identity toward the gateway. Mirrors LiveKit's originCallerId.
     origin_caller_id: Optional[str] = None
+    # Egress routing tuple for gateway-originated transfer legs (dial_bridge /
+    # consult): the trunk the call arrived on, or the registration's B2BUA —
+    # threaded from InboundCallContext / OutboundCallParams so a transfer
+    # dials out the same way the call came in. See TransferRequest in
+    # ``sip_gateway/base.py``.
+    aplisay_id: Optional[str] = None
+    registration_endpoint_id: Optional[str] = None
+    b2bua_gateway_ip: Optional[str] = None
+    b2bua_gateway_transport: Optional[str] = None
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
     _consult_use_refer: bool = False
+    # Parsed ``options.bridgedTransferToAgent`` map (human-to-agent
+    # transfers), recorded when ``_on_transfer`` runs so the consultative
+    # accept tool can arm the post-bridge DTMF watch. ``None`` when the
+    # option is unset. See ``bridged_transfer.py``.
+    _bta_targets: Optional[dict] = None
+    # Normalised ``options.bridgedTransferTranscribe`` config (bridged-
+    # segment transcription) and the in-flight transfer destination —
+    # captured alongside ``_bta_targets`` for the post-bridge monitor.
+    # See ``bridge_transcript.py``.
+    _bta_transcribe: Optional[dict] = None
+    _bta_destination: str = ""
+    # Whether the bridged segment should also be RECORDED via the tap
+    # (sipbridge only; gated on the original call's effective recording and
+    # on an armed watch existing at all). See bridged_transfer.py WP1.5.
+    _bta_record: bool = False
 
     # ---- WebRTC-origin transfer support (see media_relay.py + docs) ----
     # A browser session sets ``is_webrtc_origin``. Such a session — and any
@@ -214,6 +259,17 @@ class CallSession:
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
+    # Hand-back take-over sessions only: future resolving to the pre-fired
+    # summaryAgent result, collected by the ``transfer_summary`` builtin
+    # (bridged_transfer.prefire_summary). None everywhere else.
+    _pending_summary: Optional[Any] = None
+
+    def __post_init__(self):
+        # Listener-level transfer overrides (instance columns) wholesale-replace
+        # the same-named agent options for every session under this listener —
+        # including takeover and consult sessions. Idempotent; also applied to
+        # the incoming agent dict on in-place handovers and in prepare_run.
+        self.agent = apply_instance_transfer_overrides(self.agent, self.instance)
 
     async def run(self, *, system_prompt: str) -> None:
         """Run the agent session with fallback handling.
@@ -303,7 +359,19 @@ class CallSession:
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
         """
+        # Handover paths pass their own agent dict; make sure listener-level
+        # transfer overrides apply to it exactly as they did to the original
+        # (idempotent when __post_init__ already merged this dict).
+        agent = apply_instance_transfer_overrides(agent, self.instance)
         metadata = self.call.metadata
+        # Every session's prompt passes through here — the initial run, each
+        # transfer_agent handover and the consult-side bot — so resolving the
+        # agent's own promptMetadata declaration at this one point states its
+        # facts (today's date, caller number, …) to whichever agent is now
+        # speaking, freshly for each. See prompt_metadata.py.
+        system_prompt = prompt_with_metadata(
+            system_prompt, agent.get("promptMetadata"), metadata
+        )
         # When this session is a TransferAgent (consult-side bot), it
         # has a ``parent_session`` and a different tool surface — only
         # accept_transfer / reject_transfer, no hangup or nested
@@ -322,7 +390,14 @@ class CallSession:
         # flow through the existing Ultravox ``one_shot_selected_tools`` +
         # ``register_function`` path with no change to voice_session. Closers are
         # awaited in ``run_prepared``'s finally. See mcp_tools.py.
-        mcp_descriptors, mcp_closers = await connect_mcp_servers(agent, log=logger)
+        # prepare_run executes BEFORE _run_prepared_once's contextualize scope,
+        # so bind the callId here — without it the invocation-log sink drops
+        # these records and a connect failure is invisible in the call's UI
+        # debug log (a silent tool drop reads as "the model won't call tools").
+        with logger.contextualize(callId=self.call.id):
+            mcp_descriptors, mcp_closers = await connect_mcp_servers(
+                agent, log=logger
+            )
         self._mcp_closers = mcp_closers
         if mcp_descriptors:
             tools.extend(mcp_descriptors)
@@ -363,6 +438,7 @@ class CallSession:
             enable_recording=recording_opts.enabled,
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
+            on_inactivity_hangup=self._on_inactivity_hangup,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -416,9 +492,11 @@ class CallSession:
         # Meter LLM token + TTS character usage into the platform usage ledger.
         # Flushed (finalised) from _end(); requires the pipeline's usage metrics
         # to be enabled (see voice_session.py PipelineParams).
-        from .usage import UsageMeteringObserver
+        from .usage import UsageMeteringObserver, usage_vendors
 
-        self._usage_observer = UsageMeteringObserver()
+        self._usage_observer = UsageMeteringObserver(
+            services=usage_vendors(agent, model_name)
+        )
         task.add_observer(self._usage_observer)
 
         # Wire client-disconnect to PipelineTask.cancel(). Without this, the
@@ -587,7 +665,9 @@ class CallSession:
             # pipeline has started.
             self._handover_webrtc_kick = pending["transport"]
             self.call = pending["call"]
-            self.agent = pending["agent"]
+            self.agent = apply_instance_transfer_overrides(
+                pending["agent"], self.instance
+            )
             logger.bind(
                 call_id=self.call.id,
                 agent_id=self.agent.get("id"),
@@ -605,50 +685,68 @@ class CallSession:
 
     async def _run_prepared_once(self, task, max_duration_secs: Optional[int]) -> None:
         """One pipeline execution (see :meth:`run_prepared`)."""
-        runner = PipelineRunner(handle_sigint=False)
-        self._runner = runner
-        self._task = task
+        # Bind this segment's callId into loguru's context for the whole run, so
+        # every log emitted while the pipeline runs (ours and Pipecat's own) is
+        # captured into the per-call InvocationLog buffer and flushed below.
+        # self.call is only swapped to the continuation in run_prepared, AFTER
+        # this returns, so it's stable for this segment — capture it up front.
+        seg_call = self.call
+        with logger.contextualize(callId=seg_call.id):
+            runner = PipelineRunner(handle_sigint=False)
+            self._runner = runner
+            self._task = task
 
-        timeout_task: Optional[asyncio.Task] = None
-        if max_duration_secs:
-            timeout_task = asyncio.create_task(self._timeout_watchdog(max_duration_secs))
+            timeout_task: Optional[asyncio.Task] = None
+            if max_duration_secs:
+                timeout_task = asyncio.create_task(self._timeout_watchdog(max_duration_secs))
 
-        kick_transport = self._handover_webrtc_kick
-        self._handover_webrtc_kick = None
-        kick_task: Optional[asyncio.Task] = None
-        if kick_transport is not None:
-            kick_task = asyncio.create_task(
-                self._fire_rebuilt_webrtc_connected(kick_transport)
-            )
-
-        try:
-            await runner.run(task)
-            if self._pending_agent_handover is not None:
-                # Full agent-stack handover: the old pipeline was cancelled on
-                # purpose, the old call record is already ended with a pointer
-                # to its continuation, and run() restarts on the live transport.
-                logger.bind(call_id=self.call.id).info(
-                    "pipeline ended for agent handover; not ending the call"
+            kick_transport = self._handover_webrtc_kick
+            self._handover_webrtc_kick = None
+            kick_task: Optional[asyncio.Task] = None
+            if kick_transport is not None:
+                kick_task = asyncio.create_task(
+                    self._fire_rebuilt_webrtc_connected(kick_transport)
                 )
-            else:
-                # Normal completion when transport disconnects or pipeline ends.
-                await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
-        finally:
-            if kick_task and not kick_task.done():
-                kick_task.cancel()
-            if timeout_task and not timeout_task.done():
-                timeout_task.cancel()
-            # Tear down any WebRTC-origin relay leg / consult leg this session
-            # was bridged to, so the telephony side and its Call record don't
-            # outlive the browser caller.
-            await self._teardown_relay()
-            # Finalise the recording once the runner has stopped. The
-            # AudioBufferProcessor has already drained any in-flight frames by
-            # this point, so no more ``on_audio_data`` events will fire.
-            await self._finalise_recording()
-            # Release any MCP server connections opened in prepare_run.
-            await close_mcp_servers(self._mcp_closers, log=logger)
-            self._mcp_closers = []
+
+            try:
+                await runner.run(task)
+                if self._pending_agent_handover is not None:
+                    # Full agent-stack handover: the old pipeline was cancelled on
+                    # purpose, the old call record is already ended with a pointer
+                    # to its continuation, and run() restarts on the live transport.
+                    logger.bind(call_id=self.call.id).info(
+                        "pipeline ended for agent handover; not ending the call"
+                    )
+                else:
+                    # Normal completion when transport disconnects or pipeline ends.
+                    await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
+            finally:
+                if kick_task and not kick_task.done():
+                    kick_task.cancel()
+                if timeout_task and not timeout_task.done():
+                    timeout_task.cancel()
+                # Tear down any WebRTC-origin relay leg / consult leg this session
+                # was bridged to, so the telephony side and its Call record don't
+                # outlive the browser caller.
+                await self._teardown_relay()
+                # Finalise the recording once the runner has stopped. The
+                # AudioBufferProcessor has already drained any in-flight frames by
+                # this point, so no more ``on_audio_data`` events will fire.
+                await self._finalise_recording()
+                # Persist this segment's captured logs as its InvocationLog (the
+                # UI "debug log"), keyed to this segment's own Call record — the
+                # per-call analogue of the LiveKit agent's job-shutdown persist.
+                try:
+                    await invocation_log.flush_invocation_logs(
+                        call_id=seg_call.id,
+                        user_id=seg_call.userId,
+                        org_id=seg_call.organisationId,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"invocation log flush failed: {e}")
+                # Release any MCP server connections opened in prepare_run.
+                await close_mcp_servers(self._mcp_closers, log=logger)
+                self._mcp_closers = []
 
     async def inject_dtmf(self, digit: str) -> bool:
         """Inject a DTMF keypress into the running pipeline as an
@@ -788,6 +886,30 @@ class CallSession:
         await self._end(DISCONNECT_REASONS["AGENT_INITIATED_HANGUP"])
         await self.gateway_session.shutdown()
 
+    async def _on_inactivity_hangup(self) -> None:
+        """End the call after ``options.inactivity.hangup`` prompts went unanswered.
+
+        Same teardown as an agent-initiated hangup, under its own disconnect reason
+        so a deliberately reclaimed leg is distinguishable in call records from one
+        that ran out the model's ``maxDuration``.
+
+        Suppressed while a consultation or transfer is in flight: a caller held
+        silently through a consultation looks identical to an abandoned call from the
+        idle detector's point of view, and hanging up on them would be worse than the
+        strand this exists to prevent. (The native Ultravox path enforces its own
+        ``endBehavior`` server-side and cannot make this distinction — see the
+        ``hangup`` option docs.)
+        """
+        state = getattr(self.transfer_state, "state", None)
+        if state in ("dialling", "talking"):
+            logger.bind(transfer_state=state).info(
+                "inactivity hangup suppressed — transfer in flight"
+            )
+            return
+        self._wants_hangup = True
+        await self._end(DISCONNECT_REASONS["INACTIVITY_TIMEOUT"])
+        await self.gateway_session.shutdown()
+
     def _build_tools_for(
         self, agent: dict, *, extra_builtins: Optional[dict] = None
     ) -> list[dict]:
@@ -807,8 +929,49 @@ class CallSession:
             },
             on_agent_transfer=self._on_agent_transfer,
             on_subagent=self._on_subagent,
+            on_send_dtmf=self._on_send_dtmf,
+            on_transfer_summary=self._on_transfer_summary,
             extra_builtins=extra_builtins,
         )
+
+    async def _on_transfer_summary(self, args: dict) -> dict:
+        """Builtin ``transfer_summary``: collect the result of the
+        summaryAgent pre-fired when this take-over call was prepared
+        (``bridged_transfer.prefire_summary``). Waits up to ``timeoutMs``
+        (default 5000, capped 15000) for the pending result; the underlying
+        summariser keeps running across a timeout, so the agent can simply
+        call again. Statuses:
+
+        - ``ready``  — the summary, as ``{"status": "ready", "summary": …}``
+        - ``pending`` — not finished yet; try again shortly
+        - ``failed`` — the summariser errored; fall back to the carried
+          transcripts / includeHistory context
+        - ``none``  — no summaryAgent was configured for this hand-back (or
+          this session is not a hand-back take-over at all)
+        """
+        future = self._pending_summary
+        if future is None:
+            return {
+                "status": "none",
+                "detail": (
+                    "No summary was requested for this call — there is no "
+                    "summaryAgent on the hand-back entry."
+                ),
+            }
+        try:
+            timeout_ms = float(args.get("timeoutMs") or 5000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000.0
+        timeout_s = max(0.0, min(timeout_ms, 15000.0)) / 1000.0
+        try:
+            # shield: a timeout here must not cancel the shared future —
+            # the summariser keeps cooking for the next attempt.
+            return dict(await asyncio.wait_for(asyncio.shield(future), timeout_s))
+        except asyncio.TimeoutError:
+            return {
+                "status": "pending",
+                "detail": "The summary is still being generated — call transfer_summary again.",
+            }
 
     async def _on_subagent(self, args: dict, metadata: dict) -> Any:
         """Builtin ``subagent`` platform function: invoke a headless ``text``
@@ -829,6 +992,59 @@ class CallSession:
             organisation_id=self.call.organisationId,
             call_id=self.call.id,
         )
+
+    async def _on_send_dtmf(self, args: dict) -> dict:
+        """Builtin ``send_dtmf`` platform function: play a string of DTMF
+        digits to the remote party as out-of-band RFC 4733 telephone-event
+        tones over the SIP leg.
+
+        The active gateway synthesises the tones (sipbridge encodes
+        telephone-event RTP itself; voiceblender asks the platform to). We
+        return a ``{status, ...}`` result rather than raising so the LLM gets
+        a clean tool result. It FAILS when:
+
+          - the call is a browser/WebRTC session — there is no SIP leg to
+            signal on (mirrors the LiveKit worker's isSipParticipant guard);
+          - ``digits`` is empty, over-long, or contains anything but 0-9, *
+            and #;
+          - the active SIP gateway can't send DTMF (Daily / FreeSWITCH raise
+            ``NotImplementedError`` from the base ``GatewaySession``).
+        """
+        digits = str(args.get("digits") or "").strip()
+        if self.is_webrtc_origin:
+            return {
+                "status": "FAILED",
+                "error": (
+                    "DTMF can only be sent on a telephone (SIP) call, "
+                    "not a browser/WebRTC session"
+                ),
+            }
+        if not digits:
+            return {"status": "FAILED", "error": "send_dtmf requires a non-empty 'digits' string"}
+        if len(digits) > _MAX_DTMF_DIGITS:
+            return {
+                "status": "FAILED",
+                "error": f"send_dtmf 'digits' is limited to {_MAX_DTMF_DIGITS} characters",
+            }
+        if not _DTMF_RE.match(digits):
+            return {
+                "status": "FAILED",
+                "error": "send_dtmf 'digits' may only contain the characters 0-9, * and #",
+            }
+        try:
+            await self.gateway_session.send_dtmf(digits)
+        except NotImplementedError:
+            return {
+                "status": "FAILED",
+                "error": "DTMF send is not supported on the active SIP gateway",
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.bind(session_id=self.session_id, digits=digits).warning(
+                f"send_dtmf failed: {e}"
+            )
+            return {"status": "FAILED", "error": f"could not send DTMF: {e}"}
+        logger.bind(session_id=self.session_id, digits=digits).info("send_dtmf: played digits")
+        return {"status": "OK", "detail": f"sent {len(digits)} DTMF digit(s)"}
 
     def _needs_full_handover(self, new_agent: dict) -> bool:
         """Whether handing over to ``new_agent`` requires a full agent-stack
@@ -1192,7 +1408,7 @@ class CallSession:
                     LLMRunFrame(),
                 ]
             )
-            self.agent = new_agent
+            self.agent = apply_instance_transfer_overrides(new_agent, self.instance)
             logger.bind(agent_id=new_agent.get("id")).info(
                 "agent transfer: prompt and tools swapped"
             )
@@ -1322,6 +1538,32 @@ class CallSession:
         use_refer = self._resolve_use_refer(args) and not legacy_bridged
         force_bridged = legacy_bridged or (not use_refer)
 
+        # Human-to-agent transfers (``options.bridgedTransferToAgent``) and
+        # bridged-segment transcription (``options.bridgedTransferTranscribe``):
+        # the transfer MUST stay bridged on the platform — a REFER hands the
+        # call off-platform where neither transfer-target DTMF nor audio can
+        # be observed — and the gateway is asked to keep monitoring the
+        # bridge. Overrides any forceRefer/origin-REFER resolution above.
+        from .bridge_transcript import parse_transcribe_option
+        from .bridged_transfer import parse_bta_map
+
+        self._bta_targets = parse_bta_map(self.agent.get("options"))
+        self._bta_transcribe = parse_transcribe_option(self.agent.get("options"))
+        self._bta_destination = str(args.get("number") or "")
+        if self._bta_targets or self._bta_transcribe:
+            use_refer = False
+            force_bridged = True
+        # Bridged-segment recording (docs/transfer-back-plan.md WP1.5): when
+        # the original call records and a monitored bridge exists anyway
+        # (hand-back and/or transcription armed), keep recording across it
+        # via the same tap. sipbridge only — voiceblender has no audio tap —
+        # and never a reason on its own to force the bridged path.
+        self._bta_record = bool(
+            (self._bta_targets or self._bta_transcribe)
+            and hasattr(self.gateway_session, "unbridge")
+            and _resolve_recording_options(self.agent, self.instance).enabled
+        )
+
         # Default the calling number toward the gateway to the registration
         # trunk username (e.g. 8092) when registration-originated, unless the
         # LLM/tool supplied an explicit callerId. Mirrors LiveKit's
@@ -1337,6 +1579,12 @@ class CallSession:
             can_refer=use_refer,  # gateway honours this for the final hop
             force_bridged=force_bridged,
             force_refer=use_refer,
+            monitor_dtmf=bool(self._bta_targets),
+            tap_audio=bool(self._bta_transcribe) or self._bta_record,
+            aplisay_id=self.aplisay_id,
+            registration_endpoint_id=self.registration_endpoint_id,
+            b2bua_gateway_ip=self.b2bua_gateway_ip,
+            b2bua_gateway_transport=self.b2bua_gateway_transport,
         )
 
         if op == "consultative":
@@ -1368,6 +1616,11 @@ class CallSession:
             # / none. For blind, success means we're done.
             if op != "consultative":
                 self.transfer_state = TransferState("talking", "Transfer connected")
+                # Human-to-agent transfers / bridged-segment transcription:
+                # the bridge is up — arm the post-bridge watch and retire
+                # this pipeline (the call now belongs to the two humans).
+                if self._bta_targets or self._bta_transcribe:
+                    await self._arm_bta_monitor()
             return {
                 "ok": True,
                 "status": "OK",
@@ -1387,6 +1640,72 @@ class CallSession:
         ``options.transferTone`` is unset). ``mode``: "blind" | "consult"."""
         if self._tone_injector is not None:
             self._tone_injector.arm(mode)
+
+    async def _arm_bta_monitor(self, consult_transcript: str = "") -> None:
+        """Arm the human-to-agent transfer watch on a just-installed bridge
+        (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
+
+        Snapshot everything the takeover needs (the pipeline and this
+        session's call record end moments later), then arm the gateway-
+        specific watch:
+
+        - **sipbridge** — stash the context on the gateway session; the
+          /sipbridge/agent WS handler keeps reading the (still open) WS for
+          ``source: "transfer_target"`` DTMF events after the pipeline ends.
+          The transport's disconnect is suppressed so tearing the pipeline
+          down doesn't close the WS the watch depends on.
+        - **voiceblender** — register a VSI watcher for the target leg on
+          the gateway; events arrive out-of-band so nothing keeps the WS.
+
+        Finally the pipeline is cancelled from a detached task: the humans
+        are talking through the gateway now, and the original call record
+        ends just like any other bridged transfer.
+        """
+        from .bridged_transfer import (
+            arm_voiceblender_bta_watch,
+            bta_context_from_session,
+            prepare_bridge_monitor,
+        )
+
+        ctx = bta_context_from_session(
+            self,
+            self._bta_targets,
+            transcribe=self._bta_transcribe,
+            destination=self._bta_destination,
+            consult_transcript=consult_transcript,
+            recording=(
+                _resolve_recording_options(self.agent, self.instance)
+                if self._bta_record
+                else None
+            ),
+        )
+        # Bridged-segment call record (+ transcript collector when
+        # transcription is on) — LiveKit parity for the post-transfer
+        # segment. Best-effort: the bridge proceeds without it.
+        await prepare_bridge_monitor(ctx, platform=PLATFORM)
+        gw = self.gateway_session
+        if hasattr(gw, "unbridge"):  # sipbridge
+            gw.bta_context = ctx
+            self._suppress_transport_disconnect(gw.transport)
+            # Outbound-origin calls: wake the WS handler's wait loop so it
+            # can take over reading the kept-open WS (no-op for inbound).
+            signal = getattr(self.sip_gateway, "signal_bta_armed", None)
+            if signal is not None:
+                signal(self.session_id)
+        elif hasattr(gw, "takeover_to_agent"):  # voiceblender
+            await arm_voiceblender_bta_watch(self.sip_gateway, gw, ctx, platform=PLATFORM)
+        else:
+            logger.warning(
+                "bridged transfer: gateway "
+                f"{type(gw).__name__} has no takeover support; watch not armed"
+            )
+            return
+        logger.bind(
+            session_id=self.session_id,
+            keys=sorted(ctx.targets.keys()),
+            transcribe=bool(ctx.transcribe),
+        ).info("bridged transfer: post-bridge watch armed")
+        self._agent_swap_task = asyncio.create_task(self._cancel_for_handover())
 
     # ---- WebRTC-origin transfer (worker-side media relay) ----
 
@@ -1496,7 +1815,10 @@ class CallSession:
     def _reject_daily(self) -> Optional[dict]:
         """WebRTC relay needs a bare ``originate``; the Daily gateway requires
         room pre-provisioning we don't do here. Reject explicitly."""
-        from .sip_gateway.daily_gateway import DailySipGateway
+        # Package-level import: resolves to the placeholder class when the
+        # daily transport is not installed (ONLY_TRANSPORTS build); importing
+        # the submodule directly would raise ImportError there.
+        from .sip_gateway import DailySipGateway
 
         if isinstance(self.sip_gateway, DailySipGateway):
             return self._transfer_failed(
@@ -1505,7 +1827,8 @@ class CallSession:
         return None
 
     async def _create_bridge_call(
-        self, *, caller_id: str, destination: str, consult: bool
+        self, *, caller_id: str, destination: str, consult: bool,
+        outbound_trunk_id: Optional[str] = None
     ) -> tuple[api_client.CallRecord, str]:
         """Create + start the telephony-leg Call record (child of the browser
         call) and return it with its session id."""
@@ -1536,6 +1859,10 @@ class CallSession:
                 "calledId": destination,
                 "callerId": caller_id,
                 "modelName": self.agent["modelName"],
+                # Destination billing (D3): the carried dial to the transfer target is
+                # chargeable when it egresses our public trunk (set by the caller from
+                # the resolved egress); a registration B2BUA leg leaves this None.
+                "outboundTrunkId": outbound_trunk_id,
                 "options": {"outbound": True},
                 "metadata": metadata,
             }
@@ -1599,7 +1926,8 @@ class CallSession:
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=egress.caller_id, destination=destination, consult=False
+                caller_id=egress.caller_id, destination=destination, consult=False,
+                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create bridged call record: {e}")
@@ -1743,7 +2071,8 @@ class CallSession:
 
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
-                caller_id=egress.caller_id, destination=destination, consult=True
+                caller_id=egress.caller_id, destination=destination, consult=True,
+                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create consult call record: {e}")
@@ -1881,7 +2210,23 @@ def _builtin_consult_accept(consult_session: CallSession):
                         consult_session.gateway_session
                     )
             else:
-                await parent.gateway_session.bridge_with(consult_session.gateway_session)
+                # Human-to-agent transfers / bridged-segment transcription:
+                # keep watching the target leg after the bridge
+                # (options.bridgedTransferToAgent / bridgedTransferTranscribe).
+                monitor = bool(parent._bta_targets)
+                tap = bool(parent._bta_transcribe) or parent._bta_record
+                await parent.gateway_session.bridge_with(
+                    consult_session.gateway_session,
+                    monitor_dtmf=monitor,
+                    tap_audio=tap,
+                )
+                if monitor or tap:
+                    # The consult session's own context IS the TransferAgent↔
+                    # target briefing conversation — snapshot it for the
+                    # takeover call's aplisay.transfer.consultTranscript.
+                    await parent._arm_bta_monitor(
+                        consult_transcript=consult_session.get_parent_transcript()
+                    )
         except NotImplementedError as e:
             # The active gateway doesn't support consultative transfer.
             # Should have been rejected upstream by ``transfer()``; if
@@ -1962,6 +2307,42 @@ def _builtin_consult_reject(consult_session: CallSession):
 class _RecordingOptions:
     enabled: bool
     key: Optional[str]
+
+
+_INSTANCE_TRANSFER_OVERRIDE_KEYS = (
+    "bridgedTransferToAgent",
+    "bridgedTransferTranscribe",
+    "dtmfTimeout",
+)
+
+
+def apply_instance_transfer_overrides(agent: dict, instance: dict) -> dict:
+    """Overlay listener-level transfer overrides onto an agent dict.
+
+    The listener (instance) row may carry ``bridgedTransferToAgent``,
+    ``bridgedTransferTranscribe`` and ``dtmfTimeout`` — each one, when set,
+    wholesale-replaces the same-named ``agent.options`` value (mirrors the
+    ``recording`` instance override; see docs/transfer-back-plan.md). Returns
+    the agent unchanged when there is nothing to overlay; otherwise a shallow
+    copy with a merged ``options`` dict, so the caller's original is never
+    mutated. Idempotent — re-applying the same overrides is a no-op.
+    """
+    if not isinstance(agent, dict) or not isinstance(instance, dict):
+        return agent
+    overrides = {
+        key: instance.get(key)
+        for key in _INSTANCE_TRANSFER_OVERRIDE_KEYS
+        if instance.get(key) is not None
+    }
+    if not overrides:
+        return agent
+    options = dict(agent.get("options") or {})
+    if all(options.get(k) == v for k, v in overrides.items()):
+        return agent
+    options.update(overrides)
+    merged = dict(agent)
+    merged["options"] = options
+    return merged
 
 
 def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions:
@@ -2049,6 +2430,14 @@ async def setup_inbound_call(
                     "calledId": inbound.called_id,
                     "callId": inbound.call_id,
                     "model": agent["modelName"],
+                    # Inbound SIP INVITE X- headers, keyed lowercased. Only the
+                    # sipbridge / voiceblender gateways populate inbound.sip_headers
+                    # (Daily / FreeSWITCH leave it None); the key is omitted when
+                    # there are no X- headers, so it is present iff >= 1 was
+                    # received — matching the LiveKit runtime. Referenced in
+                    # prompts/tools via metadata paths like
+                    # `aplisay.sipHeaders.x-my-header`.
+                    **({"sipHeaders": inbound.sip_headers} if inbound.sip_headers else {}),
                 },
             },
         }
@@ -2066,6 +2455,10 @@ async def setup_inbound_call(
         force_bridged_transfer=inbound.force_bridged_transfer,
         registration_username=inbound.registration_username,
         origin_caller_id=inbound.caller_id,
+        aplisay_id=inbound.aplisay_id,
+        registration_endpoint_id=inbound.phone_registration,
+        b2bua_gateway_ip=inbound.b2bua_gateway_ip,
+        b2bua_gateway_transport=inbound.b2bua_gateway_transport,
     )
 
 
@@ -2236,6 +2629,36 @@ async def setup_consult_call(
     )
 
 
+async def setup_takeover_call(
+    sip_gateway: SipGateway,
+    inbound: InboundCallContext,
+    *,
+    payload: Any,
+) -> CallSession:
+    """Build the CallSession for a human-to-agent takeover leg
+    (``options.bridgedTransferToAgent`` — see ``bridged_transfer.py``).
+
+    The heavy lifting already happened at DTMF-match time
+    (``prepare_takeover``): the target agent is resolved, the composed
+    takeover prompt rides in ``payload.agent["prompt"]``, and
+    ``payload.call`` is a started child call record (parentId = the
+    original call). Here we just wire the freshly re-attached media leg
+    to a standard CallSession — the incoming agent gets its own full
+    tool surface, unlike a consult-side TransferAgent.
+    """
+    session_params = GatewaySessionParams(session_id=inbound.session_id)
+    gw_session = await sip_gateway.setup_inbound(inbound, session_params)
+    return CallSession(
+        session_id=inbound.session_id,
+        agent=payload.agent,
+        instance=payload.instance,
+        sip_gateway=sip_gateway,
+        gateway_session=gw_session,
+        call=payload.call,
+        _pending_summary=payload.summary_future,
+    )
+
+
 async def setup_consult_outbound_call(
     sip_gateway: SipGateway,
     *,
@@ -2338,4 +2761,6 @@ async def setup_outbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        origin_caller_id=caller_id,
+        aplisay_id=aplisay_id,
     )

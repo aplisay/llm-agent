@@ -30,6 +30,14 @@ const subagentInvoke = async (req, res) => {
     return res.status(400).send({ error: 'organisationId is required' });
   }
 
+  // R1 model entitlement is enforced inside runSubagentById (below) — gating
+  // there covers this REST path AND in-process / nested delegation uniformly.
+  // A disallowed model throws SubagentError(403), caught below and returned as
+  // { error: 'model_not_permitted: ...' } (fail-closed: the subagent never
+  // runs). NOTE: the pipecat voice worker currently collapses a 403 body to
+  // "API request failed: 403" and delivers a null tool result to the LLM
+  // rather than the reason string — safe but not self-explanatory; improving
+  // that surfacing is a separate worker-side change.
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new SubagentError(`Subagent invocation timed out after ${SUBAGENT_TIMEOUT}ms`, 504)), SUBAGENT_TIMEOUT);
@@ -53,6 +61,17 @@ const subagentInvoke = async (req, res) => {
     });
   }
   catch (err) {
+    // A failed invocation still billed the tokens of its completed turns —
+    // runSubagent rides them on the error (best-effort; never throws).
+    if (Array.isArray(err?.usage)) {
+      recordSubagentUsage({
+        sessionId: callId || crypto.randomUUID(),
+        callId: callId || null,
+        organisationId,
+        usage: err.usage,
+        log,
+      });
+    }
     if (err instanceof SubagentError) {
       log.info({ agentId, callId, message: err.message }, 'subagent invocation failed');
       return res.status(err.status || 400).send({ error: err.message });

@@ -209,6 +209,16 @@ Semantics:
 * `PUT /agent-sets/{id}` reconciles by label: existing labels are updated in
   place (keeping their agent ids — live listeners stay attached), new labels
   are created, absent labels are deleted.
+* A member's stored functions that reference a **write-only key entry** (their
+  `key` property — platform-wired tools such as calendar booking, injected onto
+  the rows by an attach panel rather than authored in the document) are
+  **preserved on update even when the incoming member's `functions` omits
+  them**. Key values never round-trip through `GET`, so no document-driven
+  editor can faithfully re-author a keyed function; a stale working copy must
+  therefore never strip one by omission. An incoming function of the same name
+  still replaces the stored one, and listing a name in the member's
+  `removeFunctions` array deletes it explicitly (`removeFunctions` also works
+  without resending `functions` at all — a remove-only patch).
 * `DELETE /agent-sets/{id}` removes the set and all member agents.
 
 Endpoints: `POST /agent-sets`, `GET /agent-sets`, `GET /agent-sets/{id}`,
@@ -228,7 +238,7 @@ A new agent type for headless work:
   a text agent.
 * Text agents use `text:<provider>/<model>` model names
   (e.g. `text:openai/gpt-4o`, `text:anthropic/claude-3-5-sonnet-20240620`,
-  `text:gemini/gemini-1.5-pro`, `text:groq/...`) — the same provider
+  `text:gemini/gemini-1.5-pro`, `text:kimi/...`) — the same provider
   implementations as the Jambonz pipeline, with no audio leg.
 * They cannot `listen`; they are invoked:
   * by a voice agent through a builtin `subagent` platform function — the
@@ -267,6 +277,22 @@ unchanged; otherwise it falls through to the full restart.
 Validation enforces this: saving an agent with a `transfer_agent`/`subagent`
 function on a handler that doesn't support it is rejected with a clear error,
 as is a `result` function on a non-text agent.
+
+## Related: human hand-back (`bridgedTransferToAgent`)
+
+Two more multi-agent patterns live on the **options** side rather than the
+functions side, and participate in the same `label:` substitution inside a
+set document:
+
+* `options.bridgedTransferToAgent` — after a bridged transfer, the *human*
+  transfer target keys the caller back to a mapped member agent
+  (`"1": "label:followup"`). See
+  [call-transfers.md](./call-transfers.md#human-to-agent-transfers-bridgedtransfertoagent).
+* `summaryAgent` on a hand-back entry — a `text:` member pre-fired at
+  hand-back to summarise the carried transcripts, collected by the takeover
+  agent's `transfer_summary` builtin; the same summariser member is equally
+  usable as an ordinary `subagent` target with metadata-sourced transcript
+  parameters. Worked example: [human-handback-howto.md](./human-handback-howto.md).
 
 ## Internal APIs (shared-token, workers only)
 

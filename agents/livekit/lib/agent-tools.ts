@@ -1,10 +1,21 @@
 import { llm } from "@livekit/agents";
 import type { voice } from "@livekit/agents";
 import logger from "./logger.js";
+import {
+  logToolCall,
+  logToolLoop,
+  logToolResult,
+  type ToolKind,
+} from "./tool-log.js";
 import { functionHandler } from "../agent-lib/function-handler.js";
 import { invokeSubagent } from "./api-client.js";
 import type { Agent, AgentFunction, Call, CallMetadata } from "./api-client.js";
-import type { MessageData, TransferArgs, FunctionResult } from "./types.js";
+import type {
+  MessageData,
+  TransferArgs,
+  FunctionResult,
+  HangupResult,
+} from "./types.js";
 import type { Room } from "@livekit/rtc-node";
 import type { ParticipantInfo } from "./types.js";
 
@@ -14,6 +25,22 @@ export interface AgentTransferArgs {
   includeHistory?: boolean;
   summary?: string;
 }
+
+// ---- Runaway tool-call breaker -------------------------------------------
+// A realtime model that gets an unsatisfying tool result can re-issue the same
+// call as fast as it can generate — far faster than any human-paced turn. On a
+// live call that burns carrier minutes, model minutes and tokens silently, with
+// no error raised anywhere. These bounds are per tool name, per session.
+//
+// Sizing: a genuine voice turn needs speech in and speech out, so even an
+// impatient caller cannot legitimately drive one tool past a handful of calls
+// in 20s. REFUSE is set well above that; KILL is set where the loop is plainly
+// mechanical and the model has shown it will not stop on its own.
+const TOOL_LOOP_WINDOW_MS = 20_000;
+/** Stop executing the tool and hand the model an explicit error instead. */
+const TOOL_LOOP_REFUSE_CALLS = 10;
+/** Unrecoverable: tear the call down rather than keep billing it. */
+const TOOL_LOOP_KILL_CALLS = 25;
 
 /**
  * Creates tools for the agent based on the agent's functions configuration
@@ -29,6 +56,8 @@ export function createTools({
   onTransfer,
   getTransferState,
   onAgentTransfer,
+  onSendDtmf,
+  onToolLoopDetected,
 }: {
   agent: Agent;
   call: Call;
@@ -36,7 +65,13 @@ export function createTools({
   participant: ParticipantInfo | null;
   sendMessage: (message: MessageData, createdAt?: Date) => Promise<void>;
   metadata: CallMetadata;
-  onHangup: () => Promise<void>;
+  /**
+   * Requests agent-initiated termination. Resolves with the result handed to
+   * the model — never void, and never empty (see HangupResult). Repeat calls
+   * while a hangup is already in flight resolve with an explicit
+   * "already in progress" detail rather than silently re-arming teardown.
+   */
+  onHangup: () => Promise<HangupResult>;
   onTransfer: ({
     args,
     participant,
@@ -57,8 +92,54 @@ export function createTools({
   onAgentTransfer?: (
     args: AgentTransferArgs,
   ) => Promise<{ handoffAgent?: voice.Agent; detail: string }>;
+  /**
+   * Plays a string of DTMF digits to the caller as out-of-band (RFC 4733)
+   * tones via localParticipant.publishDtmf. Returns a `{status, ...}` result
+   * (FAILED on a WebRTC session or a bad digit string) rather than throwing,
+   * so the LLM gets a clean tool result — mirrors the transfer builtins.
+   */
+  onSendDtmf?: (args: {
+    digits: string;
+  }) => Promise<{ status: string; detail?: string; error?: string }>;
+  /**
+   * Called when a tool breaches the runaway-loop kill threshold. The runtime
+   * wires this to a forced teardown: at that point the model has demonstrated
+   * it will not stop, and every further second is billed on both legs.
+   */
+  onToolLoopDetected?: (info: {
+    tool: string;
+    calls: number;
+    windowMs: number;
+  }) => void;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
+
+  // Per-session sliding window of invocation times, keyed by tool name. The
+  // closure is created once per createTools() call — i.e. once per agent stack
+  // — so counts do not leak across calls or survive an agent handover.
+  const recentCalls = new Map<string, number[]>();
+  // Teardown is requested once; further refused calls in the window before the
+  // session actually comes down must not re-fire it or spam the error log.
+  let toolLoopKilled = false;
+
+  /**
+   * Records an invocation and reports whether this tool has breached either
+   * loop threshold within the trailing window.
+   */
+  const noteCallAndCheckLoop = (
+    tool: string,
+  ): { calls: number; refuse: boolean; kill: boolean } => {
+    const now = Date.now();
+    const cutoff = now - TOOL_LOOP_WINDOW_MS;
+    const times = (recentCalls.get(tool) ?? []).filter((t) => t > cutoff);
+    times.push(now);
+    recentCalls.set(tool, times);
+    return {
+      calls: times.length,
+      refuse: times.length > TOOL_LOOP_REFUSE_CALLS,
+      kill: times.length > TOOL_LOOP_KILL_CALLS,
+    };
+  };
 
   return (
     functions &&
@@ -105,11 +186,61 @@ export function createTools({
             };
           })(),
           execute: async (args: unknown) => {
+            // Coarse tool classification for the InvocationLog. The livekit
+            // voice worker executes only the agent's own `functions`/builtins
+            // (MCP tools are proxied by the pipecat worker, not here), so a
+            // tool is a user function or a platform builtin — and the `subagent`
+            // builtin (delegation to a headless text agent) is split out as its
+            // own kind so agent-to-agent calls read distinctly in the debug log.
+            const kind: ToolKind =
+              fnc.platform === "subagent"
+                ? "subagent"
+                : fnc.implementation === "builtin"
+                  ? "builtin"
+                  : "function";
+            const startedAt = Date.now();
+            // INFO-level, event-tagged so every tool call is visible in the
+            // per-call debug log for production agents (see ./tool-log.ts).
+            logToolCall(logger, { tool: fnc.name, kind, args });
+
+            // Runaway-loop breaker. Checked BEFORE dispatch so a spinning model
+            // cannot keep re-entering the tool body, and after logToolCall so
+            // the refused attempts still appear in the debug log rather than
+            // vanishing from the record of what the model actually did.
+            const loop = noteCallAndCheckLoop(fnc.name);
+            if (loop.refuse) {
+              const kill = loop.kill && !toolLoopKilled;
+              logToolLoop(logger, {
+                tool: fnc.name,
+                kind,
+                calls: loop.calls,
+                windowMs: TOOL_LOOP_WINDOW_MS,
+                action: kill ? "terminated" : "refused",
+              });
+              if (kill) {
+                toolLoopKilled = true;
+                onToolLoopDetected?.({
+                  tool: fnc.name,
+                  calls: loop.calls,
+                  windowMs: TOOL_LOOP_WINDOW_MS,
+                });
+              }
+              const error = `tool "${fnc.name}" has been called ${loop.calls} times in the last ${
+                Math.round(TOOL_LOOP_WINDOW_MS / 1000)
+              } seconds and is being rate limited. Do not call it again. Continue the conversation, or say nothing.`;
+              logToolResult(logger, {
+                tool: fnc.name,
+                kind,
+                ok: false,
+                error,
+                durationMs: Date.now() - startedAt,
+              });
+              // Returned (not thrown) so the model receives it as this tool's
+              // result and can act on it, mirroring the builtin failure path.
+              return JSON.stringify({ status: "FAILED", error });
+            }
+
             try {
-              logger.debug(
-                { name: fnc.name, args, fnc },
-                `Got function call ${fnc.name}`,
-              );
               // A builtin transfer_agent performs its handover INSIDE the
               // handler below (not after functionHandler returns) so the result
               // the shared handler records and emits — the persisted tool
@@ -128,7 +259,10 @@ export function createTools({
                 sendMessage,
                 metadata,
                 {
-                  hangup: () => onHangup(),
+                  // Returns onHangup's result verbatim: the model must be told
+                  // the hangup was accepted, otherwise it reads the empty
+                  // result as a failure and immediately retries.
+                  hangup: async () => await onHangup(),
                   transfer: async (a: TransferArgs) =>
                     await onTransfer({ args: a, participant: participant! }),
                   transfer_status: async () => {
@@ -190,6 +324,10 @@ export function createTools({
                       { organisationId: agent.organisationId, callId: call.id },
                     );
                   },
+                  ...(onSendDtmf && {
+                    send_dtmf: async (a: { digits: string }) =>
+                      await onSendDtmf(a),
+                  }),
                 },
                 {
                   allowToolsCallsMetadataPaths: true,
@@ -198,12 +336,18 @@ export function createTools({
               )) as FunctionResult;
               let { function_results } = result;
               let [{ result: data, error }] = function_results;
-              if (error) {
-                logger.info(
-                  { data, error, agentId: agent.id, callId: call.id },
-                  "error executing function",
-                );
-              }
+              // Emit the matching tool_result BEFORE any early return so it is
+              // recorded for every outcome, including an agent handover. `data`
+              // is the result the model sees (already redacted for `redact`
+              // functions), so nothing sensitive is added to the log here.
+              logToolResult(logger, {
+                tool: fnc.name,
+                kind,
+                ok: !error,
+                result: data,
+                error: error ?? undefined,
+                durationMs: Date.now() - startedAt,
+              });
               if (pendingHandoff) {
                 const { handoffAgent } = pendingHandoff;
                 if (handoffAgent) {
@@ -214,14 +358,16 @@ export function createTools({
                 // replaced; this result has no LLM left to speak it.
                 return data;
               }
-              logger.debug(
-                { data },
-                `function execute returning ${JSON.stringify(data)}`,
-              );
               return data;
             } catch (e) {
               const message = (e as Error).message;
-              logger.info({ error: message }, "error executing function");
+              logToolResult(logger, {
+                tool: fnc.name,
+                kind,
+                ok: false,
+                error: message,
+                durationMs: Date.now() - startedAt,
+              });
               throw new Error(`error executing function: ${message}`);
             }
           },

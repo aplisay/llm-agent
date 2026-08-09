@@ -4,6 +4,7 @@ export default {
     '**/tests/*.test.mjs',
   ],
   testPathIgnorePatterns: [
+    '/node_modules/',
     '/agents/',
     '.claude',
     'agent-concurrency-redis-skeleton\\.test\\.mjs',

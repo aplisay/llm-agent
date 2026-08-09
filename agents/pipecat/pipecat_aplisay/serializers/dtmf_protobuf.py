@@ -50,6 +50,13 @@ class DtmfProtobufFrameSerializer(ProtobufFrameSerializer):
         if not isinstance(message, dict) or message.get("type") != "dtmf":
             return frame
 
+        # Post-bridge transfer-target presses (``options.bridgedTransferToAgent``,
+        # ``source: "transfer_target"``) belong to the monitor loop in
+        # ``bridged_transfer.py``, not to a live pipeline — a stray one racing
+        # the pipeline teardown must not be mistaken for caller input.
+        if message.get("source") == "transfer_target":
+            return None
+
         # ``digit`` is the field the sipbridge/voiceblender media layer emits;
         # ``dtmf`` is accepted as an alias for parity with the FreeSWITCH path.
         digit = message.get("digit") or message.get("dtmf")
