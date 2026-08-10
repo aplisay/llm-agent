@@ -12,6 +12,7 @@ import {
   keyRestrictionStatements,
   validateRbacFields,
 } from '../lib/auth/permissions.js';
+import { targetInScope } from '../lib/auth/admin-scope.js';
 
 function mockRes(user) {
   const res = { locals: { user }, statusCode: null, body: null };
@@ -63,18 +64,23 @@ describe('permissions — roles vocabulary', () => {
     // superAdmin still holds credit (superset).
     expect(can({ role: 'superAdmin' }, 'organisation', 'credit')).toBe(true);
   });
-  test('onboardingService can ONLY manage users + create orgs (least privilege)', () => {
-    // Enough to activate an invite-completion: find the user, flip status, attach an org.
+  test('onboardingService can ONLY manage users + create/read/update orgs (least privilege)', () => {
+    // Enough to activate an invite-completion: find the user, flip status, attach an org,
+    // then read the org back or rename it.
     expect(can({ role: 'onboardingService' }, 'user', 'read')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'user', 'readAll')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'user', 'update')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'organisation', 'create')).toBe(true);
-    // Nothing else — no deletes, no grants, no org read/update, no product, no billing.
+    expect(can({ role: 'onboardingService' }, 'organisation', 'read')).toBe(true);
+    // readAll is load-bearing: an org-less principal is out of scope without it.
+    expect(can({ role: 'onboardingService' }, 'organisation', 'readAll')).toBe(true);
+    expect(can({ role: 'onboardingService' }, 'organisation', 'update')).toBe(true);
+    expect(targetInScope({ role: 'onboardingService' }, 'organisation', { id: 'org-1' })).toBe(true);
+    // Nothing else — no deletes, no grants, no billing, no product.
     expect(can({ role: 'onboardingService' }, 'user', 'delete')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'user', 'setRole')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'user', 'setPermissions')).toBe(false);
-    expect(can({ role: 'onboardingService' }, 'organisation', 'read')).toBe(false);
-    expect(can({ role: 'onboardingService' }, 'organisation', 'update')).toBe(false);
+    expect(can({ role: 'onboardingService' }, 'organisation', 'delete')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'organisation', 'credit')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'agent', 'read')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'rate', 'read')).toBe(false);
