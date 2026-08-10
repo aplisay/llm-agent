@@ -4,6 +4,7 @@ import { getHandler } from '../../../../lib/handlers/index.js';
 import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { authoriseOutboundDestination } from '../../../../lib/outbound-authorisation.js';
 
 let appParameters, log;
 
@@ -87,21 +88,26 @@ const originateCall = (async (req, res) => {
       }
     }
 
-    // Validate that calledId matches the agent's outboundCallFilter if specified
-    if (agent.options?.outboundCallFilter) {
-      const filterRegexp = new RegExp(agent.options.outboundCallFilter);
-      if (!filterRegexp.test(calledId)) {
-        return res.status(400).send({
-          error: `Called number ${calledId} does not match the agent's outbound call filter pattern`
-        });
-      }
-    } else {
-      // Fallback to default UK validation if no filter is specified
-      if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-        return res.status(400).send({
-          error: `Called number ${calledId} is not a valid UK geographic or mobile number`
-        });
-      }
+    // Authorise the destination. On a non-chargeable egress (a registration B2BUA to
+    // the customer's own PBX, a BYO trunk) this is the historical agent-filter check.
+    // On one of OUR chargeable carrier trunks the operator's per-trunk filter plus the
+    // organisation's rating deck decide, and the agent's own filter may only narrow
+    // them — the tenant does not choose which destinations we pay a carrier for.
+    // See lib/outbound-authorisation.js.
+    const decision = await authoriseOutboundDestination({
+      calledId,
+      agentOptions: agent.options,
+      organisationId: instance.organisationId || agent.organisationId,
+      userId: instance.userId || agent.userId,
+      aplisayId,
+      registrationOriginated: !!callerPhoneRegistration,
+    });
+    if (!decision.allowed) {
+      req.log.info(
+        { listenerId, calledId, code: decision.code, trunkId: decision.trunkId, chargeable: decision.chargeable },
+        'originate refused: destination not authorised',
+      );
+      return res.status(400).send({ error: decision.reason, code: decision.code });
     }
 
     // Check if the handler for this model has a outbound handler
@@ -164,7 +170,10 @@ originateCall.apiDoc = {
           properties: {
             calledId: {
               type: "string",
-              description: "The phone number to call (must be a valid UK geographic or mobile number)",
+              description: "The phone number to call. Must be permitted by the agent's options.outboundCallFilter "
+                + "(default: a UK geographic or mobile number). When the call egresses one of the platform's "
+                + "chargeable carrier trunks it must ALSO be permitted by that trunk's outboundCallFilter and be "
+                + "priced by the organisation's destination tariff; the agent's own filter can only narrow that.",
               example: "+447911123456"
             },
             callerId: {

@@ -328,8 +328,26 @@ class CallSession:
                     active_model = fallback_cfg["model"]
                     continue
 
-                # 3. Number-level fallback (blind transfer)
+                # 3. Number-level fallback (blind transfer). Configured on the agent
+                #    rather than chosen by the model, but it still puts a leg out on
+                #    (possibly) our carrier, so it clears the same gate as a tool-call
+                #    transfer — see _on_transfer / outbound_filter.py.
                 if fallback_cfg.get("number"):
+                    from .outbound_filter import authorise_destination
+
+                    fallback_decision = await authorise_destination(
+                        number=str(fallback_cfg["number"]),
+                        agent=active_agent,
+                        aplisay_id=self.aplisay_id,
+                        registration_endpoint_id=self.registration_endpoint_id,
+                        registration_originated=self.registration_originated,
+                    )
+                    if not fallback_decision.allowed:
+                        logger.error(
+                            "fallback transfer refused: "
+                            f"{fallback_decision.failure_message}"
+                        )
+                        raise
                     try:
                         await self.gateway_session.transfer(
                             TransferRequest(
@@ -1510,7 +1528,38 @@ class CallSession:
         tools on the consult bot drive subsequent state changes
         (talking / rejected / none).
         """
+        from .outbound_filter import authorise_destination
         from .transfer_prompts import resolve_transfer_prompt
+
+        # Destination authorisation — the FIRST thing every transfer path does, so
+        # blind, consultative and both WebRTC (media-relay) flows are gated by the
+        # one check. The policy is server-side (lib/outbound-authorisation.js): the
+        # agent's own options.outboundCallFilter on a customer-owned egress, and the
+        # operator's per-trunk filter + a rateable destination on one of OUR
+        # chargeable carrier trunks, where the agent's filter may only narrow it.
+        # Fails CLOSED — an unreachable platform is a refusal.
+        #
+        # A callerId that is a registration-endpoint UUID means the leg egresses
+        # THAT registration's B2BUA (the customer's own PBX, never our carrier) —
+        # the discriminator _resolve_webrtc_egress uses. Ownership of the
+        # registration is validated there; here it only decides whose minutes are
+        # at risk, so a bogus UUID buys nothing: egress resolution still fails.
+        caller_id_arg = str(args.get("callerId") or "")
+        egress_is_registration = (
+            bool(self.registration_endpoint_id)
+            or self.registration_originated
+            or bool(_UUID_RE.match(caller_id_arg))
+        )
+        decision = await authorise_destination(
+            number=str(args.get("number") or ""),
+            agent=self.agent,
+            caller_id=(None if egress_is_registration else caller_id_arg or None),
+            aplisay_id=self.aplisay_id,
+            registration_endpoint_id=self.registration_endpoint_id,
+            registration_originated=egress_is_registration,
+        )
+        if not decision.allowed:
+            return self._transfer_failed(decision.failure_message)
 
         op = args.get("operation", "blind")
         # Legacy callers may pass "consult" or "bridged"; normalize for
@@ -1711,7 +1760,7 @@ class CallSession:
 
     def _transfer_failed(self, reason: str) -> dict:
         """Record a failed transfer_state and return the tool-result dict."""
-        logger.bind(session_id=self.session_id).warning(f"webrtc transfer failed: {reason}")
+        logger.bind(session_id=self.session_id).warning(f"transfer failed: {reason}")
         self.transfer_state = TransferState("failed", reason)
         return {"error": reason, "status": "FAILED", "reason": reason}
 

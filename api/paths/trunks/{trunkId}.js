@@ -1,5 +1,6 @@
 import { Trunk, Organisation } from '../../../lib/database.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
+import { validateOutboundCallFilter, DEFAULT_TRUNK_OUTBOUND_FILTER } from '../../../lib/outbound-filter.js';
 
 /**
  * /api/trunks/{trunkId} (item) — superAdmin-only trunk administration.
@@ -12,7 +13,8 @@ import { requirePermission } from '../../../lib/auth/permissions.js';
  * assignment-gated so trunk sharing isn't leaked cross-tenant.
  *
  *   GET   full trunk incl. its organisation assignments (organisationIds).
- *   PATCH edit name / chargeable ("billable") / organisation assignments.
+ *   PATCH edit name / chargeable ("billable") / outboundCallFilter / organisation
+ *         assignments.
  */
 export default function (logger) {
   // Project a Trunk row (with an eager Organisations include) to the wire shape.
@@ -22,6 +24,7 @@ export default function (logger) {
     handler: trunk.handler ?? null,
     outbound: !!trunk.outbound,
     chargeable: !!trunk.chargeable,
+    outboundCallFilter: trunk.outboundCallFilter ?? null,
     flags: trunk.flags ?? null,
     organisationIds: (trunk.Organisations || []).map((o) => o.id),
   });
@@ -51,10 +54,14 @@ export default function (logger) {
     const trunk = await Trunk.findByPk(req.params.trunkId, withOrgs);
     if (!trunk) return res.status(404).send({ message: `Trunk ${req.params.trunkId} not found` });
 
-    const { name, chargeable, organisationIds, provider } = req.body || {};
+    const { name, chargeable, outboundCallFilter, organisationIds, provider } = req.body || {};
 
     if (provider !== undefined && provider !== null && typeof provider !== 'string') {
       return res.status(400).send({ message: 'provider must be a string, or null to clear it' });
+    }
+    if (outboundCallFilter !== undefined && outboundCallFilter !== null) {
+      const filterError = validateOutboundCallFilter(outboundCallFilter);
+      if (filterError) return res.status(400).send({ message: filterError });
     }
 
     // Validate the assignment set up-front (before any write) so a bad org id
@@ -76,6 +83,13 @@ export default function (logger) {
         // name is nullable in the model; treat an empty string as "clear it".
         if (name !== undefined) trunk.name = typeof name === 'string' && name.trim() ? name.trim() : null;
         if (chargeable !== undefined) trunk.chargeable = !!chargeable;
+        // Operator allow-pattern for destinations carried on this trunk; empty/null
+        // clears it back to the UK geographic/mobile default.
+        if (outboundCallFilter !== undefined) {
+          trunk.outboundCallFilter = (typeof outboundCallFilter === 'string' && outboundCallFilter.trim())
+            ? outboundCallFilter.trim()
+            : null;
+        }
         // provider is stored under flags.provider (the numbering provider this
         // chargeable trunk fronts, e.g. "magrathea"); reassign flags so the
         // JSONB column is marked dirty. Empty/null clears it.
@@ -98,7 +112,7 @@ export default function (logger) {
     }
   };
   update.apiDoc = {
-    summary: 'Update a trunk: name, chargeable (billable), organisation assignments (super admin).',
+    summary: 'Update a trunk: name, chargeable (billable), outbound call filter, organisation assignments (super admin).',
     operationId: 'updateTrunk',
     tags: ['Phone Endpoints'],
     parameters: [{ in: 'path', name: 'trunkId', required: true, schema: { type: 'string' } }],
@@ -110,6 +124,7 @@ export default function (logger) {
             properties: {
               name: { type: 'string', nullable: true, description: 'Free-form human name; empty clears it' },
               chargeable: { type: 'boolean', description: 'Whether outbound minutes are destination-billed to the org' },
+              outboundCallFilter: { type: 'string', nullable: true, description: `Operator allow-pattern (regex) for outbound destinations carried on this trunk, matched against the canonical +E.164 destination. On a chargeable trunk this is authoritative — an agent's options.outboundCallFilter may only narrow it. Empty/null clears it back to the UK geographic/mobile default (${DEFAULT_TRUNK_OUTBOUND_FILTER}).` },
               provider: { type: 'string', nullable: true, description: 'Numbering provider this chargeable trunk fronts (stored under flags.provider, e.g. "magrathea"); the Buy-number flow lands a bought number on the chargeable trunk whose provider matches the carrier it was bought from. Empty/null clears it.' },
               organisationIds: {
                 type: 'array',

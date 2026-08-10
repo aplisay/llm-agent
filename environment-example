@@ -132,7 +132,9 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # PIPECAT_DISPATCH_TOKEN=      # bearer token for dispatch calls
 # PIPECAT_JOIN_SECRET=         # shared secret for join callbacks
 # PIPECAT_PUBLIC_URL=          # public URL handed to the worker for callbacks
-# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution):
+# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution AND
+# outbound destination authorisation — docs/outbound-call-authorisation.md). Set the
+# same value here and on both voice workers.
 # APLISAY_OUTBOUND_TRUNK_ID=
 
 # ── Call recordings ──────────────────────────────────────────────────────────
