@@ -114,6 +114,19 @@ describe('outbound destination authorisation', () => {
         .resolves.toMatchObject({ allowed: false, code: 'default_filter' });
     });
 
+    test('keeps the historical refusal wording', async () => {
+      // listener-join-originate.test.mjs asserts these substrings, and they are
+      // the strings the originate API has always returned to API clients.
+      await expect(authorise('+1234567890', {
+        aplisayId: byoTrunkId, agentOptions: { outboundCallFilter: '^\\+44\\d+$' },
+      })).resolves.toMatchObject({
+        reason: expect.stringContaining("does not match the agent's outbound call filter pattern"),
+      });
+      await expect(authorise('+1234567890', { aplisayId: byoTrunkId })).resolves.toMatchObject({
+        reason: expect.stringContaining('is not a valid UK geographic or mobile number'),
+      });
+    });
+
     test("honours the agent's own filter, wide or narrow", async () => {
       await expect(authorise('+18005550199', {
         aplisayId: byoTrunkId, agentOptions: { outboundCallFilter: WIDE_OPEN_FILTER },
