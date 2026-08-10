@@ -95,6 +95,22 @@ describe('user PATCH — cross-tenant status gate (#215)', () => {
     expect(u.status).toBe('active');
   });
 
+  // A self-signup user is auto-activated on first Firebase login (lib/database.js)
+  // while their ORG stays provisional; the accept PATCH (or a retry of a partially
+  // applied one) must still succeed and run the org side-effect.
+  test('accept still works for an ALREADY-ACTIVE user whose org is provisional', async () => {
+    const u = makeUser('u-1', 'org-target', { status: 'active' });
+    const org = makeOrg('org-target');
+    const res = await call({
+      user: { role: 'onboardingService', organisationId: null },
+      userId: 'u-1',
+      body: { status: 'active' },
+    });
+    expect(res._status).toBe(200);
+    expect(u.status).toBe('active');
+    expect(org.status).toBe('active');
+  });
+
   test('onboardingService may still edit a non-status field cross-tenant', async () => {
     const u = makeUser('u-1', 'org-target');
     const res = await call({

@@ -9,7 +9,7 @@ import { targetInScope } from '../../../lib/auth/admin-scope.js';
  *          `status` is the soft-delete lever (DELETE sets status='deactivated'), so
  *          ANY cross-tenant status change requires the same `user:delete` capability
  *          as DELETE — with one exemption, the onboarding accept seam
- *          (`provisional` -> `active`). Re-activating an already suspended/deactivated
+ *          (-> `active` for a user no admin has actioned). Re-activating an already suspended/deactivated
  *          user is NOT exempt: it reverses an admin action. A `user:readAll` principal
  *          counts as cross-tenant by definition (it can move the target into its own
  *          org via `organisationId` on this same route); orgAdmin editing their OWN
@@ -104,10 +104,19 @@ export default function (logger) {
       || u.organisationId !== res.locals.user?.organisationId;
     if ('status' in req.body && statusCrossTenant) {
       // The ONLY cross-tenant status transition that isn't a privilege move is the
-      // onboarding accept seam: lifting a `provisional` user to `active`. Anything
-      // else — suspending, deactivating, or RE-activating a user an admin has already
-      // suspended/deactivated (reversing the #215 soft-delete) — needs `user:delete`.
-      const acceptSeam = req.body.status === 'active' && u.status === 'provisional';
+      // onboarding accept seam: moving a user to `active` when no admin has taken a
+      // lifecycle action against them. Anything else — suspending, deactivating, or
+      // RE-activating a user an admin has already suspended/deactivated (reversing
+      // the #215 soft-delete) — needs `user:delete`.
+      //
+      // The seam is keyed on the ABSENCE of an admin action, NOT on
+      // `u.status === 'provisional'`: a self-signup user is auto-activated on first
+      // Firebase login (lib/database.js `activate`) and by the startup heal, while
+      // their ORGANISATION stays provisional. Accept — and any retry of a partially
+      // applied accept — must therefore still work for an already-`active` user, or
+      // the org is wedged provisional with no recovery path for that principal.
+      const adminActioned = u.status === 'suspended' || u.status === 'deactivated';
+      const acceptSeam = req.body.status === 'active' && !adminActioned;
       if (!acceptSeam && !can(res.locals.user, 'user', 'delete')) {
         return res.status(403).json({ message: 'forbidden', detail: 'Requires user:delete to change status cross-tenant' });
       }
