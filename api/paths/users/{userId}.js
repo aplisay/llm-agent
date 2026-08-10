@@ -7,10 +7,13 @@ import { targetInScope } from '../../../lib/auth/admin-scope.js';
  *   GET    fetch a user (orgAdmin: own org only).
  *   PATCH  accept/activate (status), and edit role / agentLimit / name /
  *          `status` is the soft-delete lever (DELETE sets status='deactivated'), so
- *          moving ANOTHER tenant's user to a non-`active` status requires the same
- *          `user:delete` capability as DELETE. Activation stays open to the
- *          cross-tenant onboarding seam, and orgAdmin editing their OWN org's
- *          users is unaffected.
+ *          ANY cross-tenant status change requires the same `user:delete` capability
+ *          as DELETE — with one exemption, the onboarding accept seam
+ *          (`provisional` -> `active`). Re-activating an already suspended/deactivated
+ *          user is NOT exempt: it reverses an admin action. A `user:readAll` principal
+ *          counts as cross-tenant by definition (it can move the target into its own
+ *          org via `organisationId` on this same route); orgAdmin editing their OWN
+ *          org's users is unaffected.
  *          permissions / allowedModels / organisationId / emailVerified.
  *          `emailVerified` asserts address ownership (equivalent to what better-auth
  *          writes on a proven emailed link), so it needs the cross-tenant `user:readAll`
@@ -86,16 +89,28 @@ export default function (logger) {
       return res.status(403).json({ message: 'forbidden', detail: 'Requires user:readAll' });
     }
     // `status` is a lifecycle lever: DELETE soft-deletes by setting
-    // status='deactivated', so a principal changing SOMEONE ELSE'S tenant's user to
-    // any non-`active` status must hold the same capability as DELETE (`user:delete`).
-    // `active` is deliberately exempt — cross-tenant activation is the onboarding
-    // seam (`onboardingService` accepting an invited user) and can only ever widen
-    // access to that user's own account. orgAdmin deactivating a user in their OWN
-    // org is unaffected (documented above), and superAdmin holds `user:delete`.
-    if ('status' in req.body && req.body.status !== 'active'
-        && (u.organisationId == null || u.organisationId !== res.locals.user?.organisationId)
-        && !can(res.locals.user, 'user', 'delete')) {
-      return res.status(403).json({ message: 'forbidden', detail: 'Requires user:delete to change status cross-tenant' });
+    // status='deactivated', so a principal changing SOMEONE ELSE'S tenant's user
+    // must hold the same capability as DELETE (`user:delete`).
+    //
+    // "Cross-tenant" cannot be decided from the target's CURRENT organisationId alone:
+    // `organisationId` is itself editable on this very route under `user:readAll`, so a
+    // readAll+update principal could move the user into its own org and then deactivate
+    // it as an "own-org" edit. A `user:readAll` principal is therefore cross-tenant by
+    // definition (and an `organisationId` in the same body counts too); only a
+    // tenant-confined admin (orgAdmin) gets the own-org path.
+    const statusCrossTenant = actorReadAll
+      || 'organisationId' in req.body
+      || u.organisationId == null
+      || u.organisationId !== res.locals.user?.organisationId;
+    if ('status' in req.body && statusCrossTenant) {
+      // The ONLY cross-tenant status transition that isn't a privilege move is the
+      // onboarding accept seam: lifting a `provisional` user to `active`. Anything
+      // else — suspending, deactivating, or RE-activating a user an admin has already
+      // suspended/deactivated (reversing the #215 soft-delete) — needs `user:delete`.
+      const acceptSeam = req.body.status === 'active' && u.status === 'provisional';
+      if (!acceptSeam && !can(res.locals.user, 'user', 'delete')) {
+        return res.status(403).json({ message: 'forbidden', detail: 'Requires user:delete to change status cross-tenant' });
+      }
     }
     // An admin may only grant a role/permission set within their OWN effective perms
     // — blocks cross-tenant readAll AND intra-tenant capability escalation by proxy.
@@ -116,6 +131,18 @@ export default function (logger) {
       // `organisation:update` AND have the org in tenancy scope (own org, or
       // `organisation:readAll`). Without that we simply skip the side-effect — the
       // user edit itself was legitimate, so this is a no-op, not a 403.
+      //
+      // RECORDED DECISION (#216, deliberate divergence): the DIRECT route
+      // PATCH /api/organisations/{organisationId} requires `organisation:delete` for
+      // ANY cross-tenant status change, including -> active. This seam is gated on the
+      // weaker `organisation:update` on purpose, because `onboardingService` holds
+      // organisation:['create','read','readAll','update'] and NOT `delete`; requiring
+      // `delete` here would break self-signup acceptance. The exposure is bounded to
+      // exactly the transition onboarding needs — `provisional` -> `active` on the org
+      // of a user being accepted — and can never suspend or deactivate an org. So the
+      // #216 invariant holds in the strong form for org DEACTIVATION everywhere, and in
+      // this weaker form only for provisional-org activation. Closing the gap fully
+      // means giving onboardingService its own capability; out of scope here.
       if (req.body.status === 'active' && u.organisationId) {
         const actor = res.locals.user;
         const org = await Organisation.findByPk(u.organisationId);
