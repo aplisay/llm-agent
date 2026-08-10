@@ -6,7 +6,10 @@ import { targetInScope } from '../../../lib/auth/admin-scope.js';
  * /api/users/{userId} (item) — RBAC-gated (`user:*`), org-scoped.
  *   GET    fetch a user (orgAdmin: own org only).
  *   PATCH  accept/activate (status), and edit role / agentLimit / name /
- *          permissions / allowedModels / organisationId. Cross-tenant edits
+ *          permissions / allowedModels / organisationId / emailVerified.
+ *          `emailVerified` asserts address ownership (equivalent to what better-auth
+ *          writes on a proven emailed link), so it needs the cross-tenant `user:readAll`
+ *          and can never be set on the actor's own user. Cross-tenant edits
  *          (granting a cross-tenant role/permission, or moving a user to another
  *          org) require the cross-tenant `user:readAll` (superAdmin).
  *   DELETE soft-deactivate (status='deactivated'); superAdmin only (`user:delete`).
@@ -16,7 +19,7 @@ import { targetInScope } from '../../../lib/auth/admin-scope.js';
  * This route must stay GET/PATCH/DELETE only — the POST-only signup sibling
  * (/api/users/signup) relies on there being no POST here.
  */
-const EDITABLE = ['status', 'role', 'agentLimit', 'name', 'permissions', 'allowedModels', 'organisationId'];
+const EDITABLE = ['status', 'role', 'agentLimit', 'name', 'permissions', 'allowedModels', 'organisationId', 'emailVerified'];
 const VALID_ROLES = ['owner', 'member', 'textOnly', 'audioOnly', 'support', 'orgAdmin', 'superAdmin'];
 
 export default function (logger) {
@@ -54,8 +57,8 @@ export default function (logger) {
     // their own model allow-list past an admin-set restriction). Bootstrap
     // super-admins are env-driven so this never locks them out; name/agentLimit
     // self-edits are fine.
-    if (isSelf && ['role', 'permissions', 'status', 'organisationId', 'allowedModels'].some((k) => k in req.body)) {
-      return res.status(403).json({ message: 'forbidden', detail: 'You cannot change your own role, permissions, status, organisation, or model access.' });
+    if (isSelf && ['role', 'permissions', 'status', 'organisationId', 'allowedModels', 'emailVerified'].some((k) => k in req.body)) {
+      return res.status(403).json({ message: 'forbidden', detail: 'You cannot change your own role, permissions, status, organisation, model access, or email verification.' });
     }
 
     // Per-field capability guards.
@@ -71,6 +74,11 @@ export default function (logger) {
     }
     if ('organisationId' in req.body && !actorReadAll) {
       return res.status(403).json({ message: 'forbidden', detail: 'Only a super admin may move a user between organisations.' });
+    }
+    // Marking an address verified is an identity assertion: cross-tenant privilege only
+    // (superAdmin / onboardingService), and never on your own user (see self-guard above).
+    if ('emailVerified' in req.body && !actorReadAll) {
+      return res.status(403).json({ message: 'forbidden', detail: 'Requires user:readAll' });
     }
     // An admin may only grant a role/permission set within their OWN effective perms
     // — blocks cross-tenant readAll AND intra-tenant capability escalation by proxy.
@@ -98,7 +106,7 @@ export default function (logger) {
     }
   };
   update.apiDoc = {
-    summary: 'Modify a user (admin): accept/activate, set role, agentLimit, name, permissions, allowedModels, organisation.',
+    summary: 'Modify a user (admin): accept/activate, set role, agentLimit, name, permissions, allowedModels, organisation, emailVerified.',
     operationId: 'updateUser',
     tags: ['Users'],
     parameters: [{ in: 'path', name: 'userId', required: true, schema: { type: 'string' } }],
@@ -115,6 +123,7 @@ export default function (logger) {
               permissions: { type: 'object', nullable: true },
               allowedModels: { type: 'array', items: { type: 'string' }, nullable: true },
               organisationId: { type: 'string', nullable: true },
+              emailVerified: { type: 'boolean' },
             },
             required: [],
           },
