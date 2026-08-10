@@ -169,6 +169,41 @@ async def invoke_subagent(
     return (data or {}).get("result") if isinstance(data, dict) else data
 
 
+async def authorise_outbound_destination(
+    *,
+    called_id: str,
+    caller_id: Optional[str] = None,
+    agent_options: Optional[dict] = None,
+    organisation_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    aplisay_id: Optional[str] = None,
+    outbound_trunk_id: Optional[str] = None,
+    registration_originated: bool = False,
+) -> dict:
+    """Authorise one outbound destination against the platform's policy.
+
+    Returns the decision dict (``allowed``, ``code``, ``reason``, ``chargeable``,
+    ``trunkId``, ``destination``). Raises on transport/server failure — the caller
+    (``outbound_filter.authorise_destination``) treats that as a REFUSAL, since the
+    policy it enforces (per-trunk operator filter + destination rating on our own
+    carrier trunks) cannot be evaluated here.
+    """
+    return await _request(
+        "POST",
+        "/api/agent-db/outbound-authorisation",
+        body={
+            "calledId": called_id,
+            "callerId": caller_id,
+            "agentOptions": agent_options or {},
+            "organisationId": organisation_id,
+            "userId": user_id,
+            "aplisayId": aplisay_id,
+            "outboundTrunkId": outbound_trunk_id,
+            "registrationOriginated": bool(registration_originated),
+        },
+    )
+
+
 async def get_phone_number(number: str) -> Optional[dict]:
     """Look up a provisioned PhoneNumber (DDI/trunk number) by E.164 number.
 

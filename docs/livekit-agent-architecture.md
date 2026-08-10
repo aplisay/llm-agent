@@ -425,7 +425,8 @@ All outbound destination numbers are normalized to E.164 form. The platform has 
 Destination validation is applied before any outbound is dispatched:
 
 - `agent.options.outboundCallFilter` — anchored regex applied to the destination. Calls whose destination doesn't match are rejected.
-- `transfer.callerId` override — when a caller ID is overridden on a transfer call, the agent validates that the user owns that number before honoring the override.
+- **Egress-aware authorisation** — the destination check is delegated to the platform (`POST /api/agent-db/outbound-authorisation`), not evaluated in the worker, because it depends on the egress trunk and the organisation's rating deck. On a chargeable (our-carrier) trunk the trunk's operator filter and a rateable destination are the authority, and the agent's own filter can only narrow them; on a customer-owned egress the agent's filter remains authoritative. The worker fails **closed** if the platform cannot be reached. See [outbound-call-authorisation.md](outbound-call-authorisation.md).
+- `transfer.callerId` override — when a caller ID is overridden on a transfer call, the agent validates that the user owns that number before honoring the override. The authorisation call is made *after* this resolution, since a registration caller-ID changes the egress.
 
 ### 6.7 Transfer — REFER vs blind-bridge decision
 
@@ -512,7 +513,7 @@ A re-implementer must honor:
 **Number handling**
 
 - E.164 normalization with default-country setting.
-- `agent.options.outboundCallFilter` regex gates outbound destinations.
+- `agent.options.outboundCallFilter` regex gates outbound destinations, narrowing (never widening) the platform's own per-trunk + rating policy on a chargeable trunk — see [outbound-call-authorisation.md](outbound-call-authorisation.md).
 - Caller-ID override on `transfer` requires user ownership.
 
 ## 7. Call lifecycle and disconnect taxonomy

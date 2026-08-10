@@ -17,7 +17,8 @@ repo, REST + VSI) — with a focus on call transfers.
 | Consultative finalise, bridged | ✅ `moveParticipant` into caller room | ✅ `mode: "bridged"` relay | ✅ room bridge |
 | Consultative finalise, attended REFER-with-Replaces | ✅ | ✅ `mode: "attended"` | ❌ — falls back to media bridge (voiceblender's transfer API takes `replaces_leg_id`, but the worker integration for the consult finalise is not wired; the bridged fallback is used) |
 | Transfer mode selection (origin defaults + `forceBridged`/`forceRefer` + endpoint options) | ✅ | ✅ | ✅ |
-| `transfer_status`, `transferPrompt`, `consultFeedback`, `callerId` override, outboundCallFilter | ✅ | ✅ | ✅ |
+| `transfer_status`, `transferPrompt`, `consultFeedback`, `callerId` override | ✅ | ✅ | ✅ |
+| Outbound destination authorisation (`outboundCallFilter` + per-trunk/rating policy — [doc](outbound-call-authorisation.md)) | ✅ platform call in `validateTransferArgs` | ✅ platform call in `_on_transfer` (gateway-independent) | ✅ same |
 | Confidence tone (`options.transferTone`) | ✅ | ✅ | ✅ |
 | WebRTC (browser) origin transfers | n/a (LiveKit rooms native) | ✅ worker-side media relay | ✅ worker-side media relay |
 | Bridged call record for the post-transfer segment | ✅ child call, `modelName: "telephony:bridged-call"` | ✅ when the bridge is monitored/transcribed; plain bridges still have no record (no event path) | ✅ same condition |

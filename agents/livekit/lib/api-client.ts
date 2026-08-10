@@ -564,6 +564,54 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   }
 }
 
+/** Decision returned by the platform's outbound destination authorisation. */
+export interface OutboundAuthorisation {
+  allowed: boolean;
+  code:
+    | "ok"
+    | "agent_filter"
+    | "default_filter"
+    | "trunk_filter"
+    | "not_rateable"
+    | "invalid_destination";
+  reason: string | null;
+  /** True when the leg egresses one of the platform's own (carrier-cost) trunks. */
+  chargeable: boolean;
+  trunkId: string | null;
+  /** Canonical +E.164 form of the destination, when it is a dialable number. */
+  destination: string | null;
+  tariff?: string;
+  prefix?: string;
+}
+
+/**
+ * Ask the platform whether this destination may be dialled on this leg.
+ *
+ * The policy is SERVER-side (lib/outbound-authorisation.js) because only the API
+ * server can see the trunk's operator filter and the organisation's rating deck:
+ * on a chargeable (our-carrier) trunk the agent's own `options.outboundCallFilter`
+ * may only narrow the operator policy, never widen it. The worker must therefore
+ * never re-implement this check, and must fail CLOSED if the call throws — the
+ * caller treats a transport failure as a refusal.
+ */
+export async function authoriseOutboundDestination(params: {
+  calledId: string;
+  /** Caller-ID for the leg; lets the platform resolve the egress trunk when aplisayId isn't known. */
+  callerId?: string | null;
+  agentId?: string;
+  agentOptions?: Record<string, any> | null;
+  organisationId?: string | null;
+  userId?: string | null;
+  aplisayId?: string | null;
+  outboundTrunkId?: string | null;
+  registrationOriginated?: boolean;
+}): Promise<OutboundAuthorisation> {
+  return makeApiRequest<OutboundAuthorisation>(`/api/agent-db/outbound-authorisation`, {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
 // Get instance by ID from the API
 export async function getInstanceById(instanceId: string): Promise<any> {
   return makeApiRequest(`/api/agent-db/instance?instanceId=${instanceId}`);

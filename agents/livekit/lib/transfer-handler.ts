@@ -14,6 +14,8 @@ import {
   createCall,
   createTransactionLog,
   saveUsage,
+  authoriseOutboundDestination,
+  type OutboundAuthorisation,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
@@ -293,30 +295,14 @@ async function validateTransferArgs(
   args: TransferArgs,
   agent: Agent,
   calledId: string,
-  aplisayId: string
+  aplisayId: string,
+  registrationOriginated?: boolean
 ): Promise<{
   effectiveCallerId: string;
   effectiveAplisayId: string;
   /** Set when the caller-ID is a phone_registration: the B-leg must egress via its B2BUA gateway. */
   registrationEgress?: RegistrationEgress;
 }> {
-  // Validate that transfer number matches the agent's outboundCallFilter if specified
-  if (agent.options?.outboundCallFilter) {
-    const filterRegexp = new RegExp(agent.options.outboundCallFilter);
-    if (!filterRegexp.test(args.number)) {
-      throw new Error(
-        `Invalid number: transfer target ${args.number} does not match the agent's outbound call filter pattern`
-      );
-    }
-  } else {
-    // Fallback to default UK validation if no filter is specified
-    if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      throw new Error(
-        "Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets"
-      );
-    }
-  }
-
   let effectiveCallerId = args.callerId || calledId;
   let effectiveAplisayId = aplisayId;
   let registrationEgress: RegistrationEgress | undefined;
@@ -417,6 +403,44 @@ async function validateTransferArgs(
       };
       effectiveCallerId = regCallerNumber;
     }
+  }
+
+  // Destination authorisation — deliberately AFTER the caller-ID resolution above,
+  // because whether this leg egresses one of OUR chargeable carrier trunks (and so
+  // whether the operator's per-trunk filter + the org's rating deck are the
+  // authority, rather than the agent's own outboundCallFilter) depends on the
+  // resolved egress. A registration caller-ID leaves via the customer's own B2BUA,
+  // which is never our carrier. The policy lives server-side; see
+  // lib/outbound-authorisation.js and api/paths/agent-db/outbound-authorisation.js.
+  //
+  // Fail CLOSED: an unreachable/erroring platform means "not authorised", never
+  // "allowed by default".
+  let decision: OutboundAuthorisation;
+  try {
+    decision = await authoriseOutboundDestination({
+      calledId: args.number,
+      callerId: registrationEgress ? null : effectiveCallerId,
+      agentOptions: agent.options ?? null,
+      organisationId: agent.organisationId,
+      userId: agent.userId,
+      aplisayId: effectiveAplisayId || aplisayId || null,
+      registrationOriginated: !!registrationEgress || registrationOriginated === true,
+    });
+  } catch (err) {
+    logger.error(
+      { number: args.number, err },
+      "outbound destination authorisation failed; refusing transfer"
+    );
+    throw new Error(
+      `Invalid number: transfer target ${args.number} could not be authorised`
+    );
+  }
+  if (!decision.allowed) {
+    logger.warn(
+      { number: args.number, code: decision.code, trunkId: decision.trunkId, chargeable: decision.chargeable },
+      "transfer refused: destination not authorised"
+    );
+    throw new Error(`Invalid number: ${decision.reason}`);
   }
 
   return {
@@ -2111,7 +2135,7 @@ export async function handleTransfer(
 
   // Validate and resolve transfer arguments
   const { effectiveCallerId, effectiveAplisayId, registrationEgress } =
-    await validateTransferArgs(args, agent, calledId, aplisayId);
+    await validateTransferArgs(args, agent, calledId, aplisayId, registrationOriginated);
 
   // A registration caller-ID must egress via the registration's B2BUA gateway
   // (X-Aplisay-PhoneRegistration header + the registration username as the

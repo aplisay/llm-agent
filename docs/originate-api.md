@@ -10,7 +10,7 @@ The originate endpoint validates and starts an outbound call from an **agent lis
 
 - **`listenerId`**: Listener / instance ID (from `POST …/listen`).
 - **Body**
-  - **`calledId`**: Destination number. If the agent has no custom `outboundCallFilter`, default validation is UK geographic/mobile (same rules as historically).
+  - **`calledId`**: Destination number, subject to [outbound call authorisation](outbound-call-authorisation.md). If the agent has no custom `outboundCallFilter`, default validation is UK geographic/mobile (same rules as historically). If the call egresses one of the platform's **chargeable** carrier trunks, the trunk's own `outboundCallFilter` and the organisation's destination tariff decide instead, and the agent's filter can only narrow that — a refusal comes back as `400` with a `code` (`trunk_filter`, `not_rateable`, …).
   - **`callerId`**: Either **E.164** for an allocated number in `phone_numbers`, or a **UUID** primary key of a row in `phone_registrations`.
   - **`metadata`**: Optional; forwarded to the LiveKit outbound dispatch.
 

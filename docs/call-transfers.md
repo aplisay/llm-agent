@@ -763,6 +763,23 @@ Add the `outboundCallFilter` option to your agent definition:
 - The regexp is anchored with `^` and `$` to match the complete phone number
 - Only outbound calls (via `transfer` or `originate`) where the destination number matches this pattern will be allowed
 - If a transfer is attempted to a number that doesn't match the filter, the transfer will fail with an error
+- It is enforced identically on the originate API and on both voice workers (LiveKit and Pipecat), across blind, consultative and WebRTC-origin transfers, and on an agent's `fallback.number`
+
+### On a chargeable (platform carrier) trunk, the filter can only narrow
+
+This filter is **your** control over **your** agent, and on a leg that leaves via
+your own PBX registration or your own BYO trunk it is the whole of the policy.
+
+When a call goes out on one of Aplisay's own carrier trunks — where Aplisay pays
+the carrier for the minutes — the platform applies its own policy *first*: the
+trunk's operator allow-pattern (UK geographic/mobile by default) and a destination
+the organisation actually has a rate for. Your `outboundCallFilter` is then applied
+on top and can only remove destinations, never add them. A wide filter therefore
+does not open up international or premium-rate dialling on a platform trunk;
+refusals come back to the agent as a `transfer` failure with a reason.
+
+See [outbound call authorisation](outbound-call-authorisation.md) for the full
+policy, refusal codes and trunk configuration.
 
 ### Example Patterns
 
