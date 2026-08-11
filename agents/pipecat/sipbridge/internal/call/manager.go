@@ -70,6 +70,14 @@ type Config struct {
 	// send a BYE. 0 disables the watchdog. Default 10.
 	RTPTimeoutSeconds int
 
+	// RTPSilenceFill: transmit a frame of codec silence every 20 ms
+	// while the bot has nothing to say, instead of suppressing the
+	// packet and carrying the pause as an RTP timestamp jump. On by
+	// default — ordinary SIP UA behaviour, and what keeps the PEER's
+	// equivalent of RTPTimeoutSeconds (and any carrier NAT pinhole)
+	// alive through a silent stretch. See pacer.go.
+	RTPSilenceFill bool
+
 	// DTLSCert is the X.509 cert (with private key) we use for
 	// DTLS-SRTP handshakes. Reuse of the SIP TLS cert is recommended —
 	// the same identity covers both signalling and media. nil disables
@@ -505,7 +513,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 	outCallID := c.callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), outCallID)
@@ -856,7 +864,7 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 
 	log.Info().
 		Str("call_id", c.callID).
@@ -993,7 +1001,7 @@ func (m *Manager) onInvite(
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
 	c.releaseStop = releaseCancel
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 	inCallID := callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), inCallID)
@@ -1974,10 +1982,26 @@ func (c *Call) startJitterRelease(ctx context.Context) {
 // one 20 ms packet per 20 ms (see pacer.go for why the WS arrival cadence
 // cannot be trusted). Shares ctx with the jitter release loop so SetPeer /
 // Close cancel both together.
-func (c *Call) startPacer(ctx context.Context) {
+//
+// With silenceFill (SIPBRIDGE_RTP_SILENCE_FILL, on by default), slots with no
+// bot audio carry a frame of codec silence so egress is continuous for the
+// life of the call — see pacer.go. The fill func returns nil while the peer's
+// media address is unknown (a send before that is a guaranteed error, and
+// onSendError tears the call down) or while a DTMF burst is on the wire.
+func (c *Call) startPacer(ctx context.Context, silenceFill bool) {
+	var fill func() []byte
+	if silenceFill {
+		fill = func() []byte {
+			if !c.rtp.CanFill() {
+				return nil
+			}
+			return c.rtp.SilencePayload()
+		}
+	}
 	p := &pacer{
 		sendFn:    c.rtp.SendPayloadPaced,
 		suspended: c.hasPeer,
+		fill:      fill,
 		onSendError: func(err error) {
 			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
 			c.Close()

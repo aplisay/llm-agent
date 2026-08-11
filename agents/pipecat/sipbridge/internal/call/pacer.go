@@ -24,28 +24,57 @@ import (
 //
 // Shape: onWSAudio enqueues encoded 20 ms G.711 payloads; a single goroutine
 // (run) pops one payload per 20 ms frame slot and hands it to sendFn together
-// with the accumulated silence gap (in frames) and the talkspurt marker.
-// Empty slots while a stream is live count toward the next packet's timestamp
-// jump, so playout timing survives bot pauses without sending silence
-// packets. clear() drops queued-but-unsent audio (barge-in — the worker has
-// already shipped the rest of the utterance at 2×, and it must not play over
-// the caller).
+// with the accumulated timestamp gap (in frames) and the talkspurt marker.
+// clear() drops queued-but-unsent audio (barge-in — the worker has already
+// shipped the rest of the utterance at 2×, and it must not play over the
+// caller).
+//
+// Empty slots — the bot has nothing to say — are handled by fill:
+//
+//   - fill non-nil (the default, "continuous transmission"): the slot carries
+//     a frame of codec silence, so the outbound stream never stops. This is
+//     what a SIP UA is supposed to do: RTP flows every 20 ms for the life of
+//     the call regardless of who is talking. It matters because the far end
+//     usually has a media watchdog — ours tears the call down after
+//     SIPBRIDGE_RTP_TIMEOUT_SECONDS of no inbound RTP — and because carrier
+//     NAT/firewall pinholes lapse on an idle flow. Suppressing silence made
+//     two of our own legs bridged through a carrier kill each other the moment
+//     both bots stopped speaking (2026-08-11).
+//   - fill nil (SIPBRIDGE_RTP_SILENCE_FILL=false): the older
+//     silence-suppressed behaviour — transmit nothing and let the next real
+//     packet carry a timestamp jump. Kept as an escape hatch for a peer that
+//     genuinely wants VAD-style suppression.
+//
+// Either way the RTP timestamp advances one frame per 20 ms of wall clock, so
+// playout timing is identical; the difference is only whether the untransmitted
+// slots go on the wire.
 type pacer struct {
 	// sendFn writes one payload to the wire. gapFrames is how many whole
-	// 20 ms frames of silence preceded this packet (0 = contiguous speech);
-	// marker flags a talkspurt start.
+	// 20 ms frames were NOT transmitted before this packet (0 = the packet
+	// occupies the slot immediately after the previous one); marker flags a
+	// talkspurt start.
 	sendFn func(payload []byte, gapFrames uint32, marker bool) error
 	// suspended reports whether sending must be withheld (relay mode owns
 	// the media path). Queued audio is discarded while suspended.
 	suspended func() bool
+	// fill returns one frame of codec silence for an otherwise empty slot,
+	// or nil to transmit nothing in that slot (media path not ready yet).
+	// A nil fill func disables continuous transmission entirely.
+	fill func() []byte
 	// onSendError is invoked once if sendFn fails; the run loop exits after.
 	onSendError func(err error)
 
-	mu      sync.Mutex
-	queue   [][]byte
-	idle    uint32 // empty frame slots since the last send (pending ts jump)
-	started bool   // at least one packet sent (first ever packet gets marker)
-	dropped int    // payloads discarded by overflow/clear/suspend since last log
+	mu    sync.Mutex
+	queue [][]byte
+	// untransmitted counts frame slots since the last packet actually put
+	// on the wire — it becomes the next packet's gapFrames so the timestamp
+	// keeps tracking the wall clock. Stays 0 under continuous transmission.
+	untransmitted uint32
+	// silentRun counts consecutive slots with no real bot audio, whether or
+	// not they were filled. Only used to decide the talkspurt marker.
+	silentRun uint32
+	started   bool // at least one packet sent (first ever packet gets marker)
+	dropped   int  // payloads discarded by overflow/clear/suspend since last log
 }
 
 const (
@@ -108,10 +137,11 @@ func (p *pacer) warnDroppedLocked(reason string) {
 }
 
 // run is the pacing loop. One frame slot per paceFrame: a queued payload is
-// sent with the pending gap/marker state; an empty slot just extends the gap.
-// After a scheduler stall the loop sends back-to-back until it has caught up
-// with the wall clock (bounded by maxPaceLag, past which it re-anchors and
-// converts the lost slots into silence gap).
+// sent with the pending gap/marker state; an empty slot is filled with codec
+// silence, or (fill disabled / media not ready) extends the gap. After a
+// scheduler stall the loop sends back-to-back until it has caught up with the
+// wall clock (bounded by maxPaceLag, past which it re-anchors and converts the
+// lost slots into gap — those really were not transmitted).
 func (p *pacer) run(ctx context.Context) {
 	next := time.Now()
 	for {
@@ -134,8 +164,9 @@ func (p *pacer) run(ctx context.Context) {
 				skipped := uint32(-d / paceFrame)
 				p.mu.Lock()
 				if p.started {
-					p.idle += skipped
+					p.untransmitted += skipped
 				}
+				p.silentRun += skipped
 				p.mu.Unlock()
 				next = time.Now()
 			}
@@ -143,7 +174,8 @@ func (p *pacer) run(ctx context.Context) {
 
 		if p.suspended != nil && p.suspended() {
 			// Relay mode owns the media path; stale bot audio must not be
-			// mixed onto the caller's RTP stream.
+			// mixed onto the caller's RTP stream — and neither must fill,
+			// or we would talk over the bridged peer with silence.
 			p.mu.Lock()
 			if n := len(p.queue); n > 0 {
 				p.dropped += n
@@ -151,8 +183,9 @@ func (p *pacer) run(ctx context.Context) {
 				p.warnDroppedLocked("suspended")
 			}
 			if p.started {
-				p.idle++
+				p.untransmitted++
 			}
+			p.silentRun++
 			p.mu.Unlock()
 			next = next.Add(paceFrame)
 			continue
@@ -164,17 +197,36 @@ func (p *pacer) run(ctx context.Context) {
 			payload = p.queue[0]
 			p.queue = p.queue[1:]
 		}
-		if payload == nil {
-			if p.started {
-				p.idle++
+		speech := payload != nil
+		if !speech {
+			// Empty slot: fill it with codec silence so the stream stays
+			// continuous. A nil fill (disabled) or a nil return (remote
+			// address not known yet, so a send would just error) leaves the
+			// slot untransmitted and defers it to the next packet's gap.
+			if p.fill != nil {
+				payload = p.fill()
 			}
-			p.mu.Unlock()
-			next = next.Add(paceFrame)
-			continue
+			if payload == nil {
+				if p.started {
+					p.untransmitted++
+				}
+				p.silentRun++
+				p.mu.Unlock()
+				next = next.Add(paceFrame)
+				continue
+			}
 		}
-		gap := p.idle
-		marker := !p.started || gap > 0
-		p.idle = 0
+		gap := p.untransmitted
+		// Marker opens a talkspurt: the first packet ever, or the first real
+		// audio after any run of silence (filled or not). Fill packets are
+		// not talkspurts.
+		marker := speech && (!p.started || p.silentRun > 0)
+		p.untransmitted = 0
+		if speech {
+			p.silentRun = 0
+		} else {
+			p.silentRun++
+		}
 		p.started = true
 		p.mu.Unlock()
 

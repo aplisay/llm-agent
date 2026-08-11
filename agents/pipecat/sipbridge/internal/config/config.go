@@ -57,6 +57,14 @@ type Config struct {
 	// brief network blips (typical packet-loss bursts are 1–3s) but
 	// short enough that the bot doesn't keep talking into the void.
 	RTPTimeoutSeconds int
+	// RTPSilenceFill: transmit a frame of codec silence every 20 ms while
+	// the bot has nothing to say, rather than suppressing the packet and
+	// carrying the pause as an RTP timestamp jump. On (the default) is
+	// ordinary SIP UA behaviour — media flows for the life of the call
+	// whoever is talking — and it is what keeps the PEER's media watchdog
+	// (RTPTimeoutSeconds above, at their end) and any carrier NAT pinhole
+	// alive through a silent stretch. Set false to restore suppression.
+	RTPSilenceFill bool
 
 	// SRTP encrypted-media policy.
 	//
@@ -140,6 +148,7 @@ func Load() (*Config, error) {
 		RTPPortMin:        envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
 		RTPPortMax:        envInt("SIPBRIDGE_RTP_PORT_MAX", 20000),
 		RTPTimeoutSeconds: envInt("SIPBRIDGE_RTP_TIMEOUT_SECONDS", 10),
+		RTPSilenceFill:    envBool("SIPBRIDGE_RTP_SILENCE_FILL", true),
 		WorkerWSBase:   env("SIPBRIDGE_WORKER_WS_BASE", "ws://pipecat-worker:8082"),
 		APIBindAddr:    env("SIPBRIDGE_API_BIND_ADDR", ":8090"),
 		APIBearerToken: env("SIPBRIDGE_API_TOKEN", ""),

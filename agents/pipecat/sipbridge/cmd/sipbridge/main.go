@@ -102,6 +102,7 @@ func main() {
 		RTPPortMin:        cfg.RTPPortMin,
 		RTPPortMax:        cfg.RTPPortMax,
 		RTPTimeoutSeconds: cfg.RTPTimeoutSeconds,
+		RTPSilenceFill:    cfg.RTPSilenceFill,
 		SRTPEnabled:       cfg.SRTPEnabled,
 		SRTPRequired:      cfg.SRTPRequired,
 		SRTPDTLSEnabled:   cfg.SRTPDTLSEnabled,

@@ -87,6 +87,10 @@ type Session struct {
 	// calls don't interleave events on the shared SSRC. It does NOT block the
 	// audio SendPayload path (only DTMF sends contend on it).
 	dtmfMu sync.Mutex
+	// dtmfSending is true for the duration of a SendTelephoneEvent burst.
+	// Read by CanFill so the pacer's silence fill doesn't splice audio
+	// frames into a contiguous RFC 4733 event stream.
+	dtmfSending atomic.Bool
 
 	// onPayload receives raw decoded RTP payloads (one packet worth at
 	// a time) plus the sequence number (for the jitter buffer to
@@ -266,14 +270,45 @@ func (s *Session) SendPayload(payload []byte) error {
 	return s.writeRTP(uint8(s.payloadType.Load()), s.ts.Add(tsIncrement), false, payload)
 }
 
-// SendPayloadPaced is SendPayload for a silence-suppressed paced stream:
-// the packet's sampling instant is gapFrames whole frames after the
-// previous packet (0 = contiguous speech), so the RTP timestamp tracks the
-// wall clock across bot pauses without silence packets; marker flags the
-// first packet of a talkspurt (RFC 3550 §5.1). Shares the sequence/ts
-// space with SendPayload and SendTelephoneEvent.
+// SendPayloadPaced is SendPayload for a paced stream: the packet's sampling
+// instant is gapFrames whole frames after the previous packet (0 = the
+// previous 20 ms slot), so the RTP timestamp tracks the wall clock across any
+// slot the pacer chose not to transmit; marker flags the first packet of a
+// talkspurt (RFC 3550 §5.1). Shares the sequence/ts space with SendPayload and
+// SendTelephoneEvent.
 func (s *Session) SendPayloadPaced(payload []byte, gapFrames uint32, marker bool) error {
 	return s.writeRTP(uint8(s.payloadType.Load()), s.ts.Add(tsIncrement*(1+gapFrames)), marker, payload)
+}
+
+// HasRemote reports whether the peer's media address is known yet. Sending
+// before it is set is a guaranteed error (see writeRTP), so callers that
+// transmit on a timer rather than in response to real audio must gate on it.
+func (s *Session) HasRemote() bool {
+	return s.remoteAddr.Load() != nil
+}
+
+// CanFill reports whether it is safe to transmit a filler audio frame right
+// now: the peer's address is known and no RFC 4733 DTMF burst is in flight.
+func (s *Session) CanFill() bool {
+	return s.HasRemote() && !s.dtmfSending.Load()
+}
+
+// SilencePayload returns one 20 ms frame of digital silence in whatever codec
+// is currently selected for egress: 0xFF for PCMU, 0xD5 for PCMA — the G.711
+// encodings of zero amplitude. Used to keep the outbound stream continuous
+// while the bot has nothing to say (see the pacer's fill mode). A SIP UA is
+// expected to transmit every 20 ms for the life of the call whether or not
+// anyone is talking; peers with a media watchdog read a gap as a dead call.
+func (s *Session) SilencePayload() []byte {
+	fill := byte(0xFF)
+	if PayloadType(s.payloadType.Load()) == PayloadPCMA {
+		fill = 0xD5
+	}
+	buf := make([]byte, packetSamples20ms)
+	for i := range buf {
+		buf[i] = fill
+	}
+	return buf
 }
 
 // SetDTMFPayloadType overrides the payload type used for outbound RFC 4733
@@ -305,6 +340,13 @@ func (s *Session) SendTelephoneEvent(ctx context.Context, digits string) error {
 	}
 	s.dtmfMu.Lock()
 	defer s.dtmfMu.Unlock()
+	// Hold off silence fill for the duration of the burst: an RFC 4733 event
+	// is a contiguous run of packets sharing one timestamp, and splicing
+	// audio frames into it can confuse a receiver's digit detector. Real bot
+	// audio was always allowed to interleave here, but it is rare mid-burst
+	// whereas fill would be continuous.
+	s.dtmfSending.Store(true)
+	defer s.dtmfSending.Store(false)
 
 	pt := uint8(s.dtmfPayloadType.Load())
 	tonesPerDigit := dtmfToneMs / dtmfPacketMs

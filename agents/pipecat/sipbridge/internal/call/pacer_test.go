@@ -188,6 +188,138 @@ func TestPacerSuspendedDiscards(t *testing.T) {
 	}
 }
 
+// silenceFill is the fill payload the continuous-transmission tests use; a
+// distinct byte so a fill packet is trivially distinguishable from the
+// numbered speech payloads produced by payloadsN.
+var silenceFill = []byte{0xFF}
+
+func isFill(p []byte) bool { return len(p) == 1 && p[0] == 0xFF }
+
+// With fill configured, an idle pacer must keep putting packets on the wire —
+// this is the property that stops the far end's media watchdog firing during
+// a silent stretch.
+func TestPacerFillsSilentSlots(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{
+		sendFn:    rec.send,
+		suspended: func() bool { return false },
+		fill:      func() []byte { return silenceFill },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	// Nothing is ever enqueued: every packet must be fill.
+	time.Sleep(200 * time.Millisecond)
+	sends := rec.snapshot()
+	if len(sends) < 5 {
+		t.Fatalf("idle pacer sent %d packets in 200 ms — the stream stopped", len(sends))
+	}
+	for i, s := range sends {
+		if !isFill(s.payload) {
+			t.Fatalf("packet %d is not fill", i)
+		}
+		if s.marker {
+			t.Errorf("packet %d: fill must not open a talkspurt", i)
+		}
+		if s.gap != 0 {
+			t.Errorf("packet %d: continuous transmission means gap 0, got %d", i, s.gap)
+		}
+	}
+}
+
+// Under continuous transmission the timestamp must advance purely by
+// packet count — so real audio resuming after silence carries gap 0 (the
+// fill packets already moved the clock) but still marks the talkspurt.
+func TestPacerFillKeepsTimestampContiguousAcrossSilence(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{
+		sendFn:    rec.send,
+		suspended: func() bool { return false },
+		fill:      func() []byte { return silenceFill },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	p.enqueue(payloadsN(2))
+	time.Sleep(300 * time.Millisecond) // both go out, then ~13 fill slots
+	p.enqueue(payloadsN(1))
+	time.Sleep(120 * time.Millisecond)
+
+	var speech []recordedSend
+	for _, s := range rec.snapshot() {
+		if !isFill(s.payload) {
+			speech = append(speech, s)
+		}
+	}
+	if len(speech) != 3 {
+		t.Fatalf("expected 3 speech packets, got %d", len(speech))
+	}
+	resumed := speech[2]
+	if !resumed.marker {
+		t.Error("audio resuming after a filled silence must still carry the talkspurt marker")
+	}
+	if resumed.gap != 0 {
+		t.Errorf("fill already advanced the clock, so gap must be 0, got %d", resumed.gap)
+	}
+}
+
+// fill returning nil (media path not ready — no remote address yet) must fall
+// back to suppression rather than erroring, and the deferred slots must show
+// up as a timestamp gap on the first packet that does go out.
+func TestPacerFillNotReadyFallsBackToGap(t *testing.T) {
+	rec := &sendRecorder{}
+	var ready bool
+	var mu sync.Mutex
+	p := &pacer{
+		sendFn:    rec.send,
+		suspended: func() bool { return false },
+		fill: func() []byte {
+			mu.Lock()
+			defer mu.Unlock()
+			if !ready {
+				return nil
+			}
+			return silenceFill
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+	if n := len(rec.snapshot()); n != 0 {
+		t.Fatalf("pacer sent %d packets before the media path was ready", n)
+	}
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	if n := len(rec.snapshot()); n == 0 {
+		t.Fatal("pacer never started transmitting once fill became available")
+	}
+}
+
+// Relay mode still owns the media path: fill must not be transmitted while
+// suspended, or the bridge would mix silence onto the peer's stream.
+func TestPacerSuspendedSendsNoFill(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{
+		sendFn:    rec.send,
+		suspended: func() bool { return true },
+		fill:      func() []byte { return silenceFill },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+	if n := len(rec.snapshot()); n != 0 {
+		t.Fatalf("suspended pacer transmitted %d fill packets", n)
+	}
+}
+
 // Overflow beyond the queue bound drops the newest payloads instead of
 // growing without bound.
 func TestPacerOverflowBounded(t *testing.T) {
