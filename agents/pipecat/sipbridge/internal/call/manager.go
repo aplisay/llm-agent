@@ -263,6 +263,19 @@ func isSRTPMediaReject(code int) bool {
 	return code == 415 || code == 488 || code == 606
 }
 
+// srtpOptOutHeader carries the egress trunk's media-security contract from the
+// worker (Trunk.flags.srtp in llm-agent). Value "off" means do not offer SDES
+// on this leg; the header is absent for every trunk that hasn't opted out, so
+// nothing changes for existing carriers.
+const srtpOptOutHeader = "X-Aplisay-Srtp"
+
+// srtpOptedOut reports whether the worker asked us not to offer SDES on this
+// leg. Only the exact value "off" counts: an unrecognised value leaves the
+// historical behaviour rather than silently disabling encryption.
+func srtpOptedOut(custom map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(custom[srtpOptOutHeader]), "off")
+}
+
 // srtpRouteKey identifies the egress route for the SRTP avoid-cache. Every
 // trunk call is dialled through the same upstream SBC, so the destination
 // host alone cannot distinguish carriers — prefer the routing headers that
@@ -344,6 +357,18 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 	// first attempt costs a full INVITE round trip.
 	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
 	routeKey := srtpRouteKey(custom, p.Destination)
+	// Per-trunk opt-out, stamped by the worker from Trunk.flags.srtp. This is
+	// the case the reject-driven downgrade below cannot reach: a carrier that
+	// ANSWERS RTP/SAVP with a crypto line and then sends plain RTP never
+	// rejects anything, so we would keep offering SRTP forever while every
+	// inbound packet failed its auth tag and got dropped. Honoured unless
+	// SRTPRequired makes encryption non-negotiable.
+	if offeringSDES && !m.cfg.SRTPRequired && srtpOptedOut(custom) {
+		log.Info().
+			Str("route", routeKey).
+			Msg("call: trunk forbids SRTP (X-Aplisay-Srtp: off) — offering plaintext RTP/AVP")
+		offeringSDES = false
+	}
 	if offeringSDES && !m.cfg.SRTPRequired && m.srtpRecentlyRejected(routeKey) {
 		log.Debug().
 			Str("route", routeKey).

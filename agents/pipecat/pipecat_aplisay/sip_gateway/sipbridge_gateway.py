@@ -749,6 +749,12 @@ def _transfer_egress_headers(req: TransferRequest) -> dict[str, str]:
         h["X-Lk-Transport"] = req.b2bua_gateway_transport
     if req.origin_caller_id:
         h["X-Aplisay-Origin-Caller-Id"] = req.origin_caller_id
+    if req.srtp is False:
+        # Same per-trunk opt-out as the originate path — see
+        # ``_custom_headers_for``. A transfer leg egresses over a trunk too, so
+        # a carrier that advertises SAVP and then sends plain RTP breaks a
+        # transfer exactly as it breaks an originate.
+        h["X-Aplisay-Srtp"] = "off"
     return h
 
 
@@ -780,4 +786,9 @@ def _custom_headers_for(params: OutboundCallParams) -> dict[str, str]:
         h["X-Lk-RealIp"] = params.b2bua_gateway_ip
     if params.b2bua_gateway_transport:
         h["X-Lk-Transport"] = params.b2bua_gateway_transport
+    if params.srtp is False:
+        # Per-trunk opt-out (Trunk.flags.srtp). Only ever sent to say "don't":
+        # its ABSENCE means the historical behaviour, so a bridge that predates
+        # the header keeps offering SAVP exactly as it does today.
+        h["X-Aplisay-Srtp"] = "off"
     return h

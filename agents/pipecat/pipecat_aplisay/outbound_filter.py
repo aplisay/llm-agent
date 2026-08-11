@@ -38,6 +38,12 @@ class OutboundDecision:
     chargeable: bool = False
     trunk_id: Optional[str] = None
     destination: Optional[str] = None
+    # Egress trunk's media-security contract (``Trunk.flags.srtp``). Present on
+    # allowed decisions; None when the platform didn't say (older API, or no
+    # trunk resolved), which reads as "unchanged". This is the one place every
+    # transfer origin — inbound, outbound and WebRTC — passes through, so it is
+    # where the contract is picked up for the leg. See ``TransferRequest.srtp``.
+    srtp: Optional[bool] = None
 
     @property
     def failure_message(self) -> str:
@@ -98,6 +104,9 @@ async def authorise_destination(
         chargeable=bool(raw.get("chargeable")),
         trunk_id=raw.get("trunkId"),
         destination=raw.get("destination"),
+        # Only a real boolean counts: an absent or malformed value leaves the
+        # historical behaviour rather than silently disabling encryption.
+        srtp=raw.get("srtp") if isinstance(raw.get("srtp"), bool) else None,
     )
     if not decision.allowed:
         logger.bind(

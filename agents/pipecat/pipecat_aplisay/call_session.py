@@ -92,6 +92,10 @@ class _WebrtcEgress:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+    # Trunk media-security contract (``Trunk.flags.srtp``), surfaced on the
+    # phone-number row. None = unchanged; False = do not offer SRTP on legs
+    # egressing this trunk. See ``OutboundCallParams.srtp``.
+    srtp: Optional[bool] = None
 
 
 def _chargeable_outbound_trunk_id(egress: "_WebrtcEgress") -> Optional[str]:
@@ -182,6 +186,10 @@ class CallSession:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+    # Media-security contract of that egress trunk (``Trunk.flags.srtp``),
+    # threaded the same way so a transfer leg offers what the trunk can
+    # actually do. None = unchanged. See ``OutboundCallParams.srtp``.
+    srtp: Optional[bool] = None
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
@@ -355,6 +363,11 @@ class CallSession:
                                 operation="blind",
                                 can_refer=False,
                                 force_bridged=True,
+                                srtp=(
+                                    fallback_decision.srtp
+                                    if fallback_decision.srtp is not None
+                                    else self.srtp
+                                ),
                             )
                         )
                         return
@@ -1634,6 +1647,10 @@ class CallSession:
             registration_endpoint_id=self.registration_endpoint_id,
             b2bua_gateway_ip=self.b2bua_gateway_ip,
             b2bua_gateway_transport=self.b2bua_gateway_transport,
+            # The authorisation decision resolved the egress trunk for THIS
+            # destination, so its contract is the authoritative one; the
+            # session's own value is the fallback for callers that skip it.
+            srtp=decision.srtp if decision.srtp is not None else self.srtp,
         )
 
         if op == "consultative":
@@ -1859,7 +1876,15 @@ class CallSession:
                 "webrtc egress: number has no aplisayId (egress trunk); "
                 "the gateway will need a default outbound SBC route"
             )
-        return _WebrtcEgress(caller_id=caller_id, aplisay_id=aplisay_id)
+        # ``srtp`` is the egress trunk's media-security contract, surfaced on
+        # the row by the agent-db phone-numbers route. Absent (older API) reads
+        # as None = unchanged.
+        srtp = row.get("srtp")
+        return _WebrtcEgress(
+            caller_id=caller_id,
+            aplisay_id=aplisay_id,
+            srtp=srtp if isinstance(srtp, bool) else None,
+        )
 
     def _reject_daily(self) -> Optional[dict]:
         """WebRTC relay needs a bare ``originate``; the Daily gateway requires
@@ -2767,6 +2792,7 @@ async def setup_outbound_call(
     caller_id: str,
     called_id: str,
     aplisay_id: Optional[str],
+    srtp: Optional[bool] = None,
     extra_session_params: Optional[dict] = None,
 ) -> CallSession:
     """Note: the originate side reserves the concurrency slot at the JS layer.
@@ -2774,12 +2800,16 @@ async def setup_outbound_call(
     The JS handler creates the Call record and calls ``call.start()`` before
     dispatching, so we re-fetch the existing Call here rather than creating a
     new one.
+
+    ``srtp`` is the egress trunk's media-security contract; see
+    ``OutboundCallParams.srtp``.
     """
     params = OutboundCallParams(
         caller_id=caller_id,
         called_id=called_id,
         call_id=call_id,
         aplisay_id=aplisay_id,
+        srtp=srtp,
     )
     session_params = GatewaySessionParams(session_id=session_id)
     if extra_session_params:
@@ -2812,4 +2842,7 @@ async def setup_outbound_call(
         call=call,
         origin_caller_id=caller_id,
         aplisay_id=aplisay_id,
+        # Carry the originate's trunk contract onto the session so a transfer
+        # off this call egresses under the same rules.
+        srtp=srtp,
     )

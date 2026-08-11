@@ -5,7 +5,7 @@ import {
 import { randomUUID } from 'crypto';
 import {
   authoriseOutboundDestination, resolveEgressTrunk, isDestinationRateable,
-  filterAllows, validateOutboundCallFilter,
+  filterAllows, validateOutboundCallFilter, trunkAllowsSrtp,
   DEFAULT_TRUNK_OUTBOUND_FILTER,
 } from '../lib/outbound-authorisation.js';
 
@@ -47,6 +47,26 @@ describe('outbound call filter primitives', () => {
     for (const bad of ['+449098790123', '+18005550199', '+8801700000000', '+447700900123456']) {
       expect(filterAllows(DEFAULT_TRUNK_OUTBOUND_FILTER, bad)).toBe(false);
     }
+  });
+});
+
+describe('per-trunk SRTP contract (Trunk.flags.srtp)', () => {
+  test('defaults to offering SRTP when the trunk says nothing', () => {
+    expect(trunkAllowsSrtp(null)).toBe(true);
+    expect(trunkAllowsSrtp({})).toBe(true);
+    expect(trunkAllowsSrtp({ flags: null })).toBe(true);
+    expect(trunkAllowsSrtp({ flags: {} })).toBe(true);
+    // Other flags on the same object must not be read as an opt-out.
+    expect(trunkAllowsSrtp({ flags: { somethingElse: false } })).toBe(true);
+  });
+
+  test('only an explicit false opts the trunk out', () => {
+    expect(trunkAllowsSrtp({ flags: { srtp: false } })).toBe(false);
+    expect(trunkAllowsSrtp({ flags: { srtp: true } })).toBe(true);
+    // Not falsy-tolerant on purpose: a stray "" or 0 in operator-edited JSONB
+    // must not silently disable encryption on a trunk that supports it.
+    expect(trunkAllowsSrtp({ flags: { srtp: '' } })).toBe(true);
+    expect(trunkAllowsSrtp({ flags: { srtp: 0 } })).toBe(true);
   });
 });
 

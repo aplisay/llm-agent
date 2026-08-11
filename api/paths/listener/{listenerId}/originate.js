@@ -118,7 +118,9 @@ const originateCall = (async (req, res) => {
       });
     }
 
-    const { callId } = await handler.outbound({ instance, callerId, calledId, metadata, aplisayId });
+    const { callId } = await handler.outbound({
+      instance, callerId, calledId, metadata, aplisayId, srtp: decision.srtp,
+    });
 
     // If all validations pass, return success
     res.send({

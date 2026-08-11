@@ -544,6 +544,9 @@ async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:
         caller_id=payload["callerId"],
         called_id=payload["calledId"],
         aplisay_id=payload.get("aplisayId"),
+        # Absent = unchanged (offer SRTP, downgrade if the carrier rejects it);
+        # only an explicit false suppresses the offer. See OutboundCallParams.
+        srtp=payload.get("srtp"),
         extra_session_params=extra_session_params or None,
     )
     app.state.live_calls[payload["callId"]] = session

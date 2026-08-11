@@ -74,6 +74,29 @@ def test_trunk_egress_headers():
     }
 
 
+def test_trunk_srtp_opt_out_is_stamped_on_the_transfer_leg():
+    """``Trunk.flags.srtp == false`` reaches the bridge as X-Aplisay-Srtp: off.
+
+    A transfer leg egresses over a trunk exactly as an originate does, so a
+    carrier that advertises RTP/SAVP and then sends plain RTP breaks a transfer
+    the same way — and the reject-driven downgrade never fires there either,
+    because nothing is ever rejected.
+    """
+    req = _req(aplisay_id="magrathea", srtp=False)
+    assert _transfer_egress_headers(req) == {
+        "X-Aplisay-Trunk": "magrathea",
+        "X-Aplisay-Srtp": "off",
+    }
+
+
+def test_srtp_header_absent_unless_explicitly_off():
+    """Absence means unchanged, so None and True must stamp nothing."""
+    for value in (None, True):
+        assert "X-Aplisay-Srtp" not in _transfer_egress_headers(
+            _req(aplisay_id="magrathea", srtp=value)
+        )
+
+
 def test_registration_egress_headers():
     req = _req(
         registration_endpoint_id="reg-1",
