@@ -1,4 +1,4 @@
-import { RoomServiceClient, AccessToken, VideoGrant } from "livekit-server-sdk";
+import { AccessToken, VideoGrant } from "livekit-server-sdk";
 import { Room, RoomEvent } from "@livekit/rtc-node";
 import { voice, llm } from "@livekit/agents";
 import logger from "./logger.js";
@@ -32,6 +32,7 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import { getRoomService } from "./livekit-constants.js";
 import { closeSessionBounded } from "./utils.js";
 import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
@@ -46,12 +47,6 @@ import {
 } from "./bridge-transcription.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
-
-const roomService = new RoomServiceClient(
-  LIVEKIT_URL!,
-  LIVEKIT_API_KEY!,
-  LIVEKIT_API_SECRET!
-);
 
 export type TransferState =
   | "none"
@@ -493,7 +488,7 @@ async function finaliseBridgedCall(
         `Agent left call, new bridged call: ${bridgedCallRecord.id}`
       );
       await bridgedCallRecord.start();
-      await roomService.updateRoomMetadata(
+      await getRoomService().updateRoomMetadata(
         room.name!,
         JSON.stringify({ bridgedCallId: bridgedCallRecord.id })
       );
@@ -603,7 +598,7 @@ function armBridgedTransferToAgentWatch(
     setBridgedParticipant: context.setBridgedParticipant,
     setBridgedCallRecord: context.setBridgedCallRecord,
     removeParticipant: (name, identity) =>
-      roomService.removeParticipant(name, identity),
+      getRoomService().removeParticipant(name, identity),
   });
 }
 
@@ -1570,7 +1565,7 @@ async function finaliseConsultativeTransfer(
       // caller room. The target must still be present, so move FIRST, then tear
       // the consultation down and emit the telephony:bridged-call child for the
       // in-room caller<->target bridge.
-      await roomService.moveParticipant(
+      await getRoomService().moveParticipant(
         consultRoomName,
         transferTargetIdentity,
         room.name!
@@ -1613,7 +1608,7 @@ async function finaliseConsultativeTransfer(
     // setConsultInProgress(false) above disarms destroyInProgressTransfer, and the
     // background reject handler is gated on the same flag — so if the consult record
     // is not ended here it is never ended at all. Reachable in practice on the
-    // bridged branch, where roomService.moveParticipant runs before the record is
+    // bridged branch, where moveParticipant runs before the record is
     // ended and can throw when the target has already gone.
     try {
       await endConsultRecord(`Transfer finalisation failed: ${error.message}`);
@@ -1868,7 +1863,10 @@ export async function rejectConsultativeTransfer(
     // Step 1: Remove transfer target from consultation room (hangs up call)
     if (consultRoomName) {
       try {
-        await roomService.removeParticipant(consultRoomName, "transfer-target");
+        await getRoomService().removeParticipant(
+          consultRoomName,
+          "transfer-target",
+        );
         logger.debug({}, "removed transfer target from consultation room");
       } catch (e) {
         logger.error(

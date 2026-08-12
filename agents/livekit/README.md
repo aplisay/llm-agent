@@ -44,11 +44,29 @@ yarn stage
 
 ### Setup SIP Configuration
 
+This configures LiveKit SIP trunks and dispatch rules. From a local checkout, with a
+`.env` alongside:
+
 ```bash
 node dist/realtime.js setup
 ```
 
-This will configure LiveKit SIP trunks and dispatch rules.
+Inside a container, run it **through the image entrypoint** instead:
+
+```bash
+docker compose run --rm livekit-agent setup
+```
+
+`dotenv` is aliased to secretenv, so `LIVEKIT_*` and everything else are decrypted out
+of `SECRETENV_BUNDLE` — and only `entrypoint.sh` puts that pair in the environment
+(see [deploy/gcp/README.md](deploy/gcp/README.md)). Those exports live in PID 1 alone;
+`docker exec` builds its environment from the image and compose config, so a bare
+`docker exec … node dist/realtime.js setup` runs with no credentials at all. To use an
+already-running container rather than a fresh one, invoke the entrypoint explicitly:
+
+```bash
+docker exec <container> /bin/sh /usr/src/app/entrypoint.sh setup
+```
 
 ### Programmatic Usage
 

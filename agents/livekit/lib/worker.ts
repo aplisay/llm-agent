@@ -46,7 +46,7 @@ import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
 } from "./confidence-tone.js";
-import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
+import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { userOwnsRow } from "./scope.js";
@@ -946,7 +946,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           }
         } else {
           logger.info({ room }, "room name getting participants");
-          const participants = await roomService.listParticipants(room.name!);
+          const participants = await getRoomService().listParticipants(
+            room.name!,
+          );
           participant = participants.find(
             (p) => p.identity !== "sip-outbound-call",
           ) as ParticipantInfo;
@@ -1206,7 +1208,7 @@ async function waitForExistingBridgedParticipant(
     return "no bridged participant found";
   }
   // We have already bridged this call, so we need to get the bridged participant
-  const roomInfo = await roomService.listRooms([room.name!]);
+  const roomInfo = await getRoomService().listRooms([room.name!]);
   const metadata = roomInfo[0]?.metadata as any;
   const bridgedCallId = JSON.parse(metadata)?.bridgedCallId || null;
   logger.info(

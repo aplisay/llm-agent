@@ -15,7 +15,7 @@ import {
 import type { Agent, Call } from "./api-client.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
-import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
+import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
@@ -96,7 +96,9 @@ export async function runAgentWorker({
             sid: participant?.sid,
             identity: participant?.identity,
           },
-          roomParticipants: (await roomService.listParticipants(room.name)).map(
+          roomParticipants: (
+            await getRoomService().listParticipants(room.name)
+          ).map(
             (pp) => ({ sid: pp.sid, identity: pp.identity }),
           ),
         },
@@ -2279,7 +2281,7 @@ export async function runAgentWorker({
             // remove bridged participant if still present in server state (it should be gone already)
             try {
               bp?.participantIdentity &&
-                (await roomService.removeParticipant(
+                (await getRoomService().removeParticipant(
                   room.name,
                   bp.participantId,
                 ));

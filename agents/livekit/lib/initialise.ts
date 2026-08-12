@@ -3,15 +3,15 @@ import { SipClient } from "livekit-server-sdk";
 import { SIPHeaderOptions, SIPTransport, SIPMediaEncryption } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers, setPhoneNumberProvisioned } from "./api-client.js";
+import { livekitCredentials } from "./livekit-constants.js";
 
 dotenv.config();
 
-const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-  LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
+const { LIVEKIT_SIP_OUTBOUND, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
 
 export async function setupSIPClients(): Promise<any> {
-  const sipClient = new SipClient(process.env.LIVEKIT_URL!, process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!);
+  const sipClient = new SipClient(...livekitCredentials());
 
   const phoneNumbersData = await getPhoneNumbers('livekit');
   const phoneNumbers = phoneNumbersData.map((p: any) => `+${p.number}`).concat('00000');
@@ -111,9 +111,16 @@ export async function setupSIPClients(): Promise<any> {
 }
 
 export async function runSetup(): Promise<void> {
-  setupSIPClients().then(({ phoneNumbers, dispatchRule }) => {
+  // Awaited and caught, not fire-and-forget: an unhandled rejection here printed a
+  // bare stack and left the exit code to Node, which is the wrong shape for a
+  // one-shot command an operator runs by hand and reads the result of.
+  try {
+    const { phoneNumbers, dispatchRule } = await setupSIPClients();
     logger.info({ phoneNumbers, dispatchRule }, 'SIP clients setup');
     logger.info('SIP clients setup, exiting');
     process.exit(0);
-  });
-} 
+  } catch (err) {
+    logger.error({ err }, 'SIP client setup failed');
+    process.exit(1);
+  }
+}
