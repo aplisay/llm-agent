@@ -546,14 +546,23 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 func (s *Server) contactForDialog(dlg *sipgo.DialogServerSession) *sip.ContactHeader {
 	transport := ""
 	if dlg.Dialog.InviteRequest != nil {
-		transport = strings.ToLower(dlg.Dialog.InviteRequest.Transport())
+		transport = dlg.Dialog.InviteRequest.Transport()
 	}
+	return &sip.ContactHeader{Address: s.contactURI(transport)}
+}
+
+// contactURI builds the Contact address for a dialog running over the
+// named transport. Shared by the UAS path (contactForDialog, answering
+// an inbound INVITE) and the UAC path (Originate, dialling out) so both
+// directions advertise a reachable target — see contactForDialog for
+// why a transport-mismatched Contact breaks in-dialog routing.
+func (s *Server) contactURI(transport string) sip.Uri {
 	uri := sip.Uri{
 		User: "sipbridge",
 		Host: s.signalIP,
 		Port: s.signalPort,
 	}
-	switch transport {
+	switch strings.ToLower(transport) {
 	case "tls", "wss":
 		uri.Scheme = "sips"
 		if s.tlsSignalPort > 0 {
@@ -562,7 +571,16 @@ func (s *Server) contactForDialog(dlg *sipgo.DialogServerSession) *sip.ContactHe
 		uri.UriParams = sip.NewParams()
 		uri.UriParams.Add("transport", "tls")
 	}
-	return &sip.ContactHeader{Address: uri}
+	return uri
+}
+
+// isTLSURI reports whether a request URI names a TLS destination —
+// either a ``sips:`` scheme or an explicit ``;transport=tls``.
+func isTLSURI(u sip.Uri) bool {
+	if strings.EqualFold(u.Scheme, "sips") {
+		return true
+	}
+	return strings.EqualFold(u.UriParams.GetOr("transport", ""), "tls")
 }
 
 func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
@@ -732,7 +750,27 @@ func (s *Server) Originate(
 		extra = append(extra, sip.NewHeader(k, v))
 	}
 
-	dlg, err := s.ub.Invite(ctx, targetURI, sdpOffer, extra...)
+	// Advertise a Contact that matches the transport we're dialling out
+	// over. The DialogUA carries a single static ContactHDR, built in
+	// NewServer for the plaintext UDP case; for a TLS target we Invite on
+	// a shallow copy carrying the ``sips:``/TLS-port/``;transport=tls``
+	// form instead. (Copy rather than mutate: Originate runs concurrently
+	// for every outbound call on this Server.)
+	//
+	// This is the UAC twin of the contactForDialog bug, and it fails the
+	// same silent way — the peer takes our Contact as the remote target
+	// for the whole dialog, so a ``sip:...:5060`` Contact on a TLS dialog
+	// sends their BYE to UDP 5060. Kamailio logs "protocol/port mismatch
+	// (forced tls:...:5061, to udp:...:5060)", the BYE times out at 408,
+	// and the leg lingers until the RTP watchdog reaps it seconds later.
+	ua := s.ub
+	if isTLSURI(targetURI) {
+		tlsUA := *s.ub
+		tlsUA.ContactHDR = sip.ContactHeader{Address: s.contactURI("tls")}
+		ua = &tlsUA
+	}
+
+	dlg, err := ua.Invite(ctx, targetURI, sdpOffer, extra...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sip: Invite: %w", err)
 	}
