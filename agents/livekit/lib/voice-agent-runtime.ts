@@ -39,6 +39,7 @@ export async function runAgentWorker({
   calledId,
   modelName,
   metadata,
+  organisationKeys,
   sendMessage,
   call,
   onHangup,
@@ -1181,6 +1182,11 @@ export async function runAgentWorker({
           call: newCall,
           tools,
           vad,
+          // The incoming agent's own BYOK bag: getInternalAgentById fetched it
+          // fresh with this handover, filtered to the NEW agent's providers.
+          // Read from newAgentDef (the spread above drops the non-enumerable
+          // property, deliberately, so agentForSession stays dump-safe).
+          organisationKeys: newAgentDef.organisationKeys,
         });
       wireHandoverSession(newSession, newAgentDef);
 
@@ -1490,6 +1496,7 @@ export async function runAgentWorker({
           call,
           tools,
           vad,
+          organisationKeys,
         });
         /** Skip echo of opening user line (Ultravox) and empty STT placeholders. */
         const initialUserTranscriptToSkip =

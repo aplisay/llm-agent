@@ -158,6 +158,16 @@ class CallSession:
     # CallSession — used so the accept/reject tools can drive the parent's
     # transfer_state and trigger the bridge.
     parent_session: Optional["CallSession"] = None
+    # Per-call organisation (BYOK) provider-key bag — ``{slug: value}`` from
+    # the fetched agent-db document, need-to-know filtered server-side.
+    # SECRET: consumed only by ``build_voice_session`` at service
+    # construction; never logged, never embedded in agent/transfer dicts,
+    # metadata, or transaction/invocation logs (docs/byok.md). Constructors
+    # either pass it explicitly (after popping it off the fetched doc) or
+    # leave it for ``__post_init__`` to pop from ``instance`` / ``agent``.
+    # ``repr=False`` keeps the plaintext keys out of any repr of the session
+    # (debug prints, loguru diagnose frames, ...).
+    organisation_keys: dict = field(default_factory=dict, repr=False)
 
     # Origin / transfer-mode context, threaded from the inbound lookup
     # (worker.py) so ``_on_transfer`` can resolve REFER-vs-bridge at transfer
@@ -273,6 +283,17 @@ class CallSession:
     _pending_summary: Optional[Any] = None
 
     def __post_init__(self):
+        # BYOK: strip the provider-key bag off the fetched documents at this
+        # one choke point (every constructor path passes through) so the
+        # stored instance / agent dicts never carry key material into
+        # metadata dumps or the invocation-log capture. When a constructor
+        # already popped the bag (to stamp byokProviders / inherit from a
+        # parent) it arrives via ``organisation_keys`` and these pops are
+        # empty no-ops.
+        instance_bag = api_client.pop_organisation_keys(self.instance)
+        agent_bag = api_client.pop_organisation_keys(self.agent)
+        if not self.organisation_keys:
+            self.organisation_keys = instance_bag or agent_bag
         # Listener-level transfer overrides (instance columns) wholesale-replace
         # the same-named agent options for every session under this listener —
         # including takeover and consult sessions. Idempotent; also applied to
@@ -317,7 +338,23 @@ class CallSession:
                     and fallback_cfg["agent"] != active_agent.get("id")
                 ):
                     try:
-                        next_agent = await api_client.get_agent_by_id(fallback_cfg["agent"])
+                        # Internal fetch (same-organisation guarded, like the
+                        # transfer_agent handover) so the fallback agent's own
+                        # organisationKeys bag rides along — the public agent
+                        # route omits it, which would silently run a fallback
+                        # model on the platform key (docs/byok.md: org key
+                        # wins, no silent fallback).
+                        next_agent = await api_client.get_internal_agent_by_id(
+                            fallback_cfg["agent"],
+                            expected_organisation_id=self.call.organisationId,
+                        )
+                        # Pop + adopt immediately, mirroring _on_agent_transfer:
+                        # the rebuilt session resolves provider keys from the
+                        # incoming agent's own bag, and the stored dict never
+                        # carries key material.
+                        self.organisation_keys = api_client.pop_organisation_keys(
+                            next_agent
+                        )
                         active_agent = next_agent
                         active_model = next_agent["modelName"]
                         used_fallback_agent = True
@@ -470,6 +507,10 @@ class CallSession:
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
             on_inactivity_hangup=self._on_inactivity_hangup,
+            # BYOK: the active agent's provider keys, applied at every
+            # construction path through here — initial run, transfer_agent
+            # handover continuations and the consult-side bot alike.
+            org_keys=self.organisation_keys,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -1124,6 +1165,11 @@ class CallSession:
             )
         except api_client.ApiRequestError as e:
             return self._transfer_failed(f"could not load target agent: {e}")
+        # BYOK: strip the incoming agent's key bag off the dict immediately —
+        # it must never ride into prompts, transfer dicts or logs. Adopted
+        # onto the session only once the handover commits (below), so a
+        # refused handover leaves the current agent's bag untouched.
+        new_org_keys = api_client.pop_organisation_keys(new_agent)
 
         if (new_agent.get("type") or "interactive-audio") != "interactive-audio":
             return self._transfer_failed(
@@ -1149,6 +1195,9 @@ class CallSession:
         if self._needs_full_handover(new_agent):
             result = await self._begin_agent_handover(new_agent, prompt)
             if result.get("status") == "OK":
+                # The continuation's prepare_run (run_prepared loop) resolves
+                # provider keys from the incoming agent's own bag.
+                self.organisation_keys = new_org_keys
                 await self._send_message(
                     {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
                 )
@@ -1163,6 +1212,10 @@ class CallSession:
             include_history=include_history,
         ).info("transfer_agent: handing session to new agent (in place)")
 
+        # In-place swap keeps the running services (and their keys); adopt the
+        # incoming agent's bag so any LATER rebuild (full handover, fallback)
+        # resolves against it. Same organisation is enforced by the fetch.
+        self.organisation_keys = new_org_keys
         # Apply the swap from a detached task so the tool call's own result
         # (delivered with run_llm=False) lands before the context is replaced,
         # and so the swap survives the LLM cancelling this coroutine on a
@@ -2485,6 +2538,10 @@ async def setup_inbound_call(
 ) -> CallSession:
     session_params = GatewaySessionParams(session_id=inbound.session_id)
     gw_session = await sip_gateway.setup_inbound(inbound, session_params)
+    # BYOK: pop the provider-key bag off the fetched instance document BEFORE
+    # its metadata is embedded anywhere; the values ride only on the session
+    # (below) while the metadata carries just the provider NAMES for billing.
+    org_keys = api_client.pop_organisation_keys(instance)
     call = await api_client.create_call(
         {
             "userId": agent["userId"],
@@ -2512,6 +2569,9 @@ async def setup_inbound_call(
                     # prompts/tools via metadata paths like
                     # `aplisay.sipHeaders.x-my-header`.
                     **({"sipHeaders": inbound.sip_headers} if inbound.sip_headers else {}),
+                    # Providers this call runs on organisation (BYOK) keys —
+                    # names only, informational for billing (docs/byok.md).
+                    **({"byokProviders": sorted(org_keys)} if org_keys else {}),
                 },
             },
         }
@@ -2524,6 +2584,7 @@ async def setup_inbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        organisation_keys=org_keys,
         registration_originated=inbound.registration_originated,
         force_refer_transfer=inbound.force_refer_transfer,
         force_bridged_transfer=inbound.force_bridged_transfer,
@@ -2633,7 +2694,10 @@ def build_transfer_agent_dict(
         ],
         # Drop platform keys — the TransferAgent's tools call the
         # bridge / esl-poller / voiceblender REST via the parent's
-        # gateway, not via the agent's own credentials.
+        # gateway, not via the agent's own credentials. The BYOK
+        # ``organisationKeys`` bag is likewise never embedded in this (or
+        # any) agent dict — consult sessions inherit it out-of-band via
+        # ``CallSession.organisation_keys`` (docs/byok.md).
         "keys": [],
     }
 
@@ -2700,6 +2764,10 @@ async def setup_consult_call(
         gateway_session=gw_session,
         call=call,
         parent_session=parent,
+        # The TransferAgent runs the parent's model in the parent's org —
+        # inherit the parent's BYOK bag (its instance dict is already
+        # stripped, so __post_init__ would otherwise find nothing).
+        organisation_keys=dict(getattr(parent, "organisation_keys", None) or {}),
     )
 
 
@@ -2730,6 +2798,10 @@ async def setup_takeover_call(
         gateway_session=gw_session,
         call=payload.call,
         _pending_summary=payload.summary_future,
+        # The incoming agent's own BYOK bag, popped off the internal fetch in
+        # ``prepare_takeover`` and carried on the payload — never in the
+        # agent dict itself.
+        organisation_keys=dict(getattr(payload, "organisation_keys", None) or {}),
     )
 
 
@@ -2779,6 +2851,9 @@ async def setup_consult_outbound_call(
         gateway_session=gw_session,
         call=call,
         parent_session=parent,
+        # Inherit the parent's BYOK bag — same model, same organisation (see
+        # setup_consult_call).
+        organisation_keys=dict(getattr(parent, "organisation_keys", None) or {}),
     )
 
 
@@ -2819,7 +2894,9 @@ async def setup_outbound_call(
 
     # The Call record was created in lib/handlers/pipecat.js. The Python worker
     # needs a representation to drive end(); reconstruct it from the agent /
-    # instance the dispatcher passed.
+    # instance the dispatcher passed. The BYOK bag is popped off the instance
+    # document first so only the provider NAMES land in metadata (billing).
+    org_keys = api_client.pop_organisation_keys(instance)
     call = api_client.CallRecord(
         id=call_id,
         userId=agent["userId"],
@@ -2827,7 +2904,13 @@ async def setup_outbound_call(
         instanceId=instance["id"],
         agentId=agent["id"],
         metadata={
-            "aplisay": {"callerId": caller_id, "calledId": called_id, "callId": call_id, "model": agent["modelName"]},
+            "aplisay": {
+                "callerId": caller_id,
+                "calledId": called_id,
+                "callId": call_id,
+                "model": agent["modelName"],
+                **({"byokProviders": sorted(org_keys)} if org_keys else {}),
+            },
             "aplisayId": aplisay_id,
             "outbound": True,
         },
@@ -2840,6 +2923,7 @@ async def setup_outbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        organisation_keys=org_keys,
         origin_caller_id=caller_id,
         aplisay_id=aplisay_id,
         # Carry the originate's trunk contract onto the session so a transfer

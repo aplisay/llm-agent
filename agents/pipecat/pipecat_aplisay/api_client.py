@@ -112,7 +112,26 @@ async def _request(
 # ---- Lookup ----
 
 
+def pop_organisation_keys(doc: Any) -> dict:
+    """Remove and return the BYOK provider-key bag from a fetched document.
+
+    The agent-db API delivers the organisation's decrypted provider keys
+    per call as a top-level ``organisationKeys`` object — a sibling of
+    ``Agent`` on the instance document, and a property of the agent json
+    from ``/api/agent-db/agent`` (see docs/byok.md). Callers pop it off
+    immediately after the fetch so the instance / agent dicts they store,
+    serialise, or log never carry key material. Returns ``{}`` when the
+    document has no bag (the server omits it when empty).
+    """
+    if not isinstance(doc, dict):
+        return {}
+    bag = doc.pop("organisationKeys", None)
+    return bag if isinstance(bag, dict) else {}
+
+
 async def get_instance_by_id(instance_id: str) -> dict:
+    # The returned document may carry a top-level ``organisationKeys`` bag
+    # (BYOK); callers that build sessions pop it via pop_organisation_keys.
     return await _request("GET", "/api/agent-db/instance", params={"instanceId": instance_id})
 
 
@@ -132,6 +151,10 @@ async def get_internal_agent_by_id(
     Used for in-call ``transfer_agent`` handover. Always pass the calling
     call's organisation id so the server can refuse cross-tenant fetches —
     mirrors ``getInternalAgentById`` in the LiveKit worker's api-client.ts.
+
+    The returned agent json may carry an ``organisationKeys`` property (the
+    incoming agent's own BYOK bag) — callers must pop it off with
+    :func:`pop_organisation_keys` before storing or embedding the dict.
     """
     params: dict = {"agentId": agent_id}
     if expected_organisation_id:

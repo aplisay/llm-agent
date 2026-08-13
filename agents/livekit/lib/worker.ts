@@ -32,7 +32,7 @@ import {
   type PhoneRegistrationInfo,
   type TrunkInfo,
   endCallById,
-  getAgentById,
+  getInternalAgentById,
 } from "./api-client.js";
 import {
   handleTransfer,
@@ -410,6 +410,11 @@ export default defineAgent({
        */
       let activeAgent = agent;
       let activeModelName = modelName;
+      // BYOK bag for the ACTIVE agent (docs/byok.md): starts as the instance
+      // doc's bag and is replaced by the fallback agent's own bag on an agent
+      // switch below. Carried separately from activeAgent because the bag is
+      // non-enumerable and would be dropped by the options-normalising spread.
+      let activeOrganisationKeys = instance.organisationKeys;
       let usedFallbackModel = false;
       let usedFallbackAgent = false;
 
@@ -431,6 +436,12 @@ export default defineAgent({
             calledId,
             modelName: activeModelName,
             metadata,
+            // BYOK bag for the active agent. The instance doc's bag covers
+            // the primary agent's providers (including options.fallback.model,
+            // so model fallback retries reuse it); a fallback AGENT switch
+            // swaps in that agent's own bag, fetched with it via the internal
+            // agent-db API — see docs/byok.md need-to-know filtering.
+            organisationKeys: activeOrganisationKeys,
             sendMessage,
             call,
             onHangup,
@@ -484,7 +495,14 @@ export default defineAgent({
                 },
                 "Retrying with fallback agent after failure",
               );
-              const nextAgent = await getAgentById(fallbackConfig.agent);
+              // Internal agent-db fetch (not the public /api/agents API) so
+              // the fallback agent arrives with its own organisationKeys bag,
+              // exactly like the transfer_agent restart path; the server
+              // refuses a cross-organisation fetch.
+              const nextAgent = await getInternalAgentById(
+                fallbackConfig.agent,
+                call.organisationId,
+              );
               if (!nextAgent) {
                 throw new Error(
                   `Fallback agent ${fallbackConfig.agent} not found`,
@@ -507,6 +525,10 @@ export default defineAgent({
               let nextAgentOptions = nextAgent.options || {};
               // Switch active agent and model; subsequent fallback decisions will
               // be driven by the new agent's options.fallback.
+              // Read the BYOK bag off the fetched doc first: the spread below
+              // deliberately drops the non-enumerable property (dump-safety),
+              // as restartWithAgent's handover path does.
+              activeOrganisationKeys = nextAgent.organisationKeys;
               activeAgent = { ...nextAgent, options: nextAgentOptions };
               activeModelName = nextAgent.modelName;
               usedFallbackAgent = true;
@@ -1367,6 +1389,11 @@ async function setupCallAndUtilities({
     logger.debug({ state, description }, "Transfer state updated");
   };
 
+  // BYOK (docs/byok.md): stamp WHICH providers have org keys on this call —
+  // provider slugs only, never values — so billing can distinguish BYOK
+  // traffic later. Informational / best-effort.
+  const byokProviders = Object.keys(instance.organisationKeys || {});
+
   const call = await createCall({
     id: callId,
     userId,
@@ -1393,6 +1420,7 @@ async function setupCallAndUtilities({
         // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
         // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
         ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
+        ...(byokProviders.length ? { byokProviders } : {}),
       },
     },
   });

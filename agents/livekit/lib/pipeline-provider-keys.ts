@@ -47,8 +47,12 @@ function parseDeepgramStt(agent: Agent): { model: string; language: string } {
   return { model: m[1]!, language: deepgramSttLanguage(agent) };
 }
 
-export function buildProviderPipelineStt(agent: Agent): stt.STT {
-  const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
+export function buildProviderPipelineStt(
+  agent: Agent,
+  // BYOK org key, already resolved fail-closed by the caller; env otherwise.
+  apiKeyOverride?: string,
+): stt.STT {
+  const apiKey = apiKeyOverride ?? process.env.DEEPGRAM_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
       "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: DEEPGRAM_API_KEY is missing or empty (set it in the environment or .env loaded before the agent runs).",
@@ -77,6 +81,8 @@ function parseLivekitModelName(modelName: string): { plugin: string; modelId: st
 export function buildProviderPipelineLlm(
   agent: Agent,
   modelName: string,
+  // BYOK org key, already resolved fail-closed by the caller; env otherwise.
+  apiKeyOverride?: string,
 ): llm.LLM {
   const { plugin, modelId } = parseLivekitModelName(modelName);
   const temperature =
@@ -85,6 +91,16 @@ export function buildProviderPipelineLlm(
       : undefined;
 
   if (plugin === "google") {
+    // A BYOK google key is a Gemini API key (docs/byok.md): force API-key
+    // auth so the org key is never routed via Vertex service-account config.
+    if (apiKeyOverride) {
+      return new google.LLM({
+        model: modelId,
+        temperature,
+        apiKey: apiKeyOverride,
+        vertexai: false,
+      });
+    }
     return new google.LLM({
       model: modelId,
       temperature,
@@ -98,6 +114,7 @@ export function buildProviderPipelineLlm(
       model: modelId,
       temperature,
       strictToolSchema: false,
+      ...(apiKeyOverride ? { apiKey: apiKeyOverride } : {}),
     });
   }
   throw new Error(
@@ -118,8 +135,11 @@ function deepgramAuraModelFromSuffix(suffix: string): string {
   return `aura-${s}-en`;
 }
 
-function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string): tts.TTS {
-  const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
+function buildDeepgramPluginTtsFromAuraDescriptor(
+  descriptor: string,
+  apiKeyOverride?: string,
+): tts.TTS {
+  const apiKey = apiKeyOverride ?? process.env.DEEPGRAM_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
       "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: DEEPGRAM_API_KEY is required for Deepgram TTS (aura).",
@@ -150,11 +170,22 @@ function cartesiaLanguage(agent: Agent): string {
 /**
  * Direct-provider TTS (ElevenLabs, Cartesia, Deepgram Aura). Google Gemini TTS is handled separately in `voice-session-factory`.
  */
-export function buildProviderPipelineTts(agent: Agent): tts.TTS {
+export function buildProviderPipelineTts(
+  agent: Agent,
+  // BYOK org key, already resolved fail-closed by the caller; env otherwise.
+  apiKeyOverride?: string,
+): tts.TTS {
   const t = agent.options?.tts;
   const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
+  // BYOK path only (the caller resolved an org key for the vendor prefix):
+  // `vendor` may be model-scoped (`deepgram/aura-2`, `cartesia/sonic-3`), so
+  // the plugin is chosen by that prefix, model resolution below unchanged.
+  // The platform path (no override) keeps exact vendor matching — a
+  // model-scoped vendor remains an unsupported-vendor error, byte-identical
+  // to pre-BYOK behaviour.
+  const vendorKey = apiKeyOverride !== undefined ? vendor.split("/")[0]! : vendor;
 
-  if (vendor === "elevenlabs") {
+  if (vendorKey === "elevenlabs") {
     const voiceRaw = String(t?.voice || "").trim();
     const id = voiceRaw.includes(":")
       ? voiceRaw.split(":").pop()!.trim()
@@ -165,9 +196,10 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       voiceId: id,
       model: model as never,
       language: ttsPrimaryLanguage(agent),
+      ...(apiKeyOverride ? { apiKey: apiKeyOverride } : {}),
     });
   }
-  if (vendor === "cartesia") {
+  if (vendorKey === "cartesia") {
     const voiceRaw = String(t?.voice || "").trim();
     const id = voiceRaw.includes(":")
       ? voiceRaw.split(":").pop()!.trim()
@@ -178,12 +210,13 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       voice: id,
       model,
       language: cartesiaLanguage(agent),
+      ...(apiKeyOverride ? { apiKey: apiKeyOverride } : {}),
     });
   }
-  if (vendor === "deepgram") {
+  if (vendorKey === "deepgram") {
     const ttsStr = resolvePipelineTts(agent);
     if (ttsStr.startsWith("deepgram/aura-2:")) {
-      return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr);
+      return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr, apiKeyOverride);
     }
     throw new Error(
       `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.tts.vendor to be "deepgram/aura-2" (or voice config to infer deepgram) so it resolves to deepgram/aura-2:... (got "${ttsStr}")`,

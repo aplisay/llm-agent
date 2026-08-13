@@ -7,7 +7,7 @@ import type { VAD } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
-import type { Agent, Call } from "./api-client.js";
+import type { Agent, Call, OrganisationKeys } from "./api-client.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
@@ -115,7 +115,7 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
 }
 
 /** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
-function buildPipelineTts(agent: Agent) {
+function buildPipelineTts(agent: Agent, organisationKeys?: OrganisationKeys) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;
@@ -129,6 +129,8 @@ function buildPipelineTts(agent: Agent) {
     }
     const model =
       process.env.LIVEKIT_PIPELINE_GEMINI_TTS_MODEL?.trim() || "gemini-2.5-flash-preview-tts";
+    // Google TTS stays on platform credentials even under BYOK: it uses
+    // service-account / Vertex auth, which docs/byok.md scopes out of v1.
     return new google.beta.TTS({
       model,
       voiceName: geminiVoiceNameForGoogleTtsOption(agent),
@@ -136,6 +138,21 @@ function buildPipelineTts(agent: Agent) {
       project: process.env.GOOGLE_CLOUD_PROJECT,
       location: process.env.GOOGLE_CLOUD_LOCATION,
     });
+  }
+
+  // BYOK: an org key for the TTS vendor forces the direct provider plugin with
+  // that key, even when LIVEKIT_PIPELINE_USE_PROVIDER_KEYS is unset. The
+  // vendor string may be model-scoped (`deepgram/aura-2`, `cartesia/sonic-3`);
+  // the provider slug is the vendor prefix. Google is excluded above.
+  const vendorPrefix = vendor.split("/")[0]!;
+  const ttsOrgKey = resolveOrganisationKey(
+    organisationKeys,
+    ["elevenlabs", "cartesia", "deepgram"].includes(vendorPrefix)
+      ? vendorPrefix
+      : undefined,
+  );
+  if (ttsOrgKey !== undefined) {
+    return buildProviderPipelineTts(agent, ttsOrgKey);
   }
 
   if (useKeys) {
@@ -173,6 +190,42 @@ export function getRealtimePlugin(modelName: string): {
 export function parseProviderModelName(modelName: string): string | undefined {
   const m = modelName.match(/^livekit:[^/]+\/(.+)$/);
   return m ? m[1] : undefined;
+}
+
+/**
+ * Canonical BYOK provider slug for the provider segment of a
+ * `livekit:<provider>/…` model name (docs/byok.md registry):
+ * openai→openai, google|gemini→google, ultravox|fixie-ai→ultravox.
+ * Undefined for anything else — no BYOK injection for that component.
+ */
+export function providerSlugForModelSegment(
+  segment: string | undefined,
+): string | undefined {
+  const s = (segment || "").trim().toLowerCase();
+  if (s === "openai") return "openai";
+  if (s === "google" || s === "gemini") return "google";
+  if (s === "ultravox" || s === "fixie-ai") return "ultravox";
+  return undefined;
+}
+
+/**
+ * Fail-closed BYOK key lookup. A slug absent from the bag returns undefined
+ * (platform behaviour unchanged); a slug present with a null/empty value is a
+ * stored key the server could not read, and MUST fail the session rather than
+ * silently substitute the platform key (docs/byok.md: org key wins, no silent
+ * fallback — the org would otherwise burn platform credit believing its own
+ * key was in use).
+ */
+export function resolveOrganisationKey(
+  organisationKeys: OrganisationKeys | undefined,
+  slug: string | undefined,
+): string | undefined {
+  if (!slug || !organisationKeys || !(slug in organisationKeys)) return undefined;
+  const value = organisationKeys[slug];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`organisation BYOK key for ${slug} could not be read`);
+  }
+  return value;
 }
 
 const PIPELINE_ON_ENTER_REPLY_INSTRUCTIONS =
@@ -334,12 +387,27 @@ export interface CreateVoiceModelAndSessionParams {
   tools: llm.ToolContext;
   /** Required for pipeline mode (Silero VAD from prewarm). */
   vad?: VAD;
+  /**
+   * Org BYOK provider keys for this call (docs/byok.md). Used solely as
+   * provider-plugin constructor `apiKey` arguments here; never logged. Pass
+   * the bag from whichever agent-db document this session was fetched for —
+   * the initial instance doc, or the fresh agent doc on a handover.
+   */
+  organisationKeys?: OrganisationKeys;
 }
 
 export function createVoiceModelAndSession(
   params: CreateVoiceModelAndSessionParams,
 ): { session: voice.AgentSession; model: voice.Agent } {
-  const { voiceMode, modelName, agent: agentDef, call, tools, vad } = params;
+  const {
+    voiceMode,
+    modelName,
+    agent: agentDef,
+    call,
+    tools,
+    vad,
+    organisationKeys,
+  } = params;
 
   // Resolve the agent's `promptMetadata` declaration ONCE, here: every session
   // passes through this factory — the initial run and each transfer_agent
@@ -375,15 +443,35 @@ export function createVoiceModelAndSession(
   if (voiceMode === "pipeline") {
     const providerSeg = parseProviderModelName(modelName);
     const useProviderKeys = pipelineUsesProviderApiKeys();
-    const sttModel = useProviderKeys
-      ? buildProviderPipelineStt(agent)
-      : resolvePipelineStt(agent);
-    const pipelineLlm = useProviderKeys
-      ? buildProviderPipelineLlm(agent, modelName)
-      : new inference.LLM({
-          model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
-        });
-    const ttsModel = buildPipelineTts(agent);
+    // BYOK per-component forcing (docs/byok.md): a component whose provider
+    // has an org key is built as a direct provider plugin with that key even
+    // when LIVEKIT_PIPELINE_USE_PROVIDER_KEYS is unset — LiveKit Inference
+    // cannot carry provider keys. Components without an org key keep today's
+    // behaviour exactly.
+    const sttDescriptor = resolvePipelineStt(agent);
+    const sttOrgKey = resolveOrganisationKey(
+      organisationKeys,
+      sttDescriptor.startsWith("deepgram/") ? "deepgram" : undefined,
+    );
+    const sttModel =
+      sttOrgKey !== undefined
+        ? buildProviderPipelineStt(agent, sttOrgKey)
+        : useProviderKeys
+          ? buildProviderPipelineStt(agent)
+          : sttDescriptor;
+    const llmOrgKey = resolveOrganisationKey(
+      organisationKeys,
+      providerSlugForModelSegment(modelName.match(/^livekit:([^/]+)\//)?.[1]),
+    );
+    const pipelineLlm =
+      llmOrgKey !== undefined
+        ? buildProviderPipelineLlm(agent, modelName, llmOrgKey)
+        : useProviderKeys
+          ? buildProviderPipelineLlm(agent, modelName)
+          : new inference.LLM({
+              model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
+            });
+    const ttsModel = buildPipelineTts(agent, organisationKeys);
 
     // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
     // otherwise use STT-based turn detection (no extra native deps).
@@ -406,7 +494,7 @@ export function createVoiceModelAndSession(
     return { session, model };
   }
 
-  const { realtime } = getRealtimePlugin(modelName);
+  const { plugin, realtime } = getRealtimePlugin(modelName);
   if (!realtime) {
     throw new Error(
       `Unsupported realtime model: ${modelName} (expected livekit:<openai|ultravox|google>/...)`,
@@ -414,6 +502,17 @@ export function createVoiceModelAndSession(
   }
 
   const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id);
+  // BYOK: the org's key for this realtime provider wins over the plugin's env
+  // fallback (openai/google/ultravox all accept an `apiKey` constructor
+  // option). Applied here, not in buildRealtimeLlmOptions, so the exported
+  // option-mapping stays a pure, key-free translation.
+  const realtimeOrgKey = resolveOrganisationKey(
+    organisationKeys,
+    providerSlugForModelSegment(plugin),
+  );
+  if (realtimeOrgKey !== undefined) {
+    llmOptions.apiKey = realtimeOrgKey;
+  }
 
   // Ultravox does idle natively (mapped to provider inactivityMessages in
   // buildRealtimeLlmOptions); only NON-ultravox realtime uses the SDK

@@ -1,4 +1,5 @@
 import { Agent } from '../../../lib/database.js';
+import { providersForAgent, resolveOrganisationKeys } from '../../../lib/org-keys.js';
 
 let log;
 
@@ -34,7 +35,15 @@ const agentGet = async (req, res) => {
       log.warn({ agentId, expectedOrganisationId, actual: agent.organisationId }, 'cross-organisation agent fetch refused');
       return res.status(404).send({ error: 'Agent not found' });
     }
-    res.send(agent.toJSON());
+    const result = agent.toJSON();
+    // BYOK (docs/byok.md): decrypted org keys for the providers this agent can
+    // actually use, delivered ONLY over this internal shared-token API. Never
+    // logged; omitted entirely when the org has no relevant keys.
+    const organisationKeys = await resolveOrganisationKeys(agent.organisationId, providersForAgent(agent));
+    if (Object.keys(organisationKeys).length) {
+      result.organisationKeys = organisationKeys;
+    }
+    res.send(result);
   }
   catch (err) {
     log.error(err, 'error fetching agent');
@@ -43,7 +52,7 @@ const agentGet = async (req, res) => {
 };
 
 agentGet.apiDoc = {
-  summary: 'Internal: returns a full agent definition by ID.',
+  summary: 'Internal: returns a full agent definition by ID. When the organisation holds BYOK keys for providers the agent references, they are included decrypted as an `organisationKeys` property of the agent JSON (omitted when empty).',
   operationId: 'agentDbGetAgent',
   tags: ["Agent"],
   parameters: [
