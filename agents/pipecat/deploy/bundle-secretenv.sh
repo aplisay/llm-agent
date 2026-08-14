@@ -14,7 +14,10 @@
 #                                      (the loader appends _KEY / _BUNDLE).
 #
 #   .../agents/pipecat/deploy/k8s   →  Kubernetes Secret in the `pipecat`
-#                                      namespace:
+#                                      namespace, on the cluster BOUND to the
+#                                      environment (staging -> AMS3,
+#                                      beta -> LON1; --k8s-context overrides,
+#                                      and dev/production have no binding):
 #                                        pipecat-secretenv-{env}   (per env)
 #                                        pipecat-secretenv         (alias to the
 #                                                                   one just
@@ -53,6 +56,9 @@ ENVIRONMENT=""
 ENV_FILE=""
 ASSUME_YES=0
 DRY_RUN=0
+# Empty = derive from the environment (see "k8s cluster binding" below); set by
+# --k8s-context for a cluster this script knows nothing about.
+K8S_CONTEXT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,6 +68,8 @@ while [ $# -gt 0 ]; do
         --env)          ENVIRONMENT="${2:-}"; shift 2 ;;
         --file=*)       ENV_FILE="${1#*=}"; shift ;;
         --file)         ENV_FILE="${2:-}"; shift 2 ;;
+        --k8s-context=*) K8S_CONTEXT="${1#*=}"; shift ;;
+        --k8s-context)   K8S_CONTEXT="${2:-}"; shift 2 ;;
         --yes|-y)       ASSUME_YES=1; shift ;;
         --dry-run)      DRY_RUN=1; shift ;;
         -h|--help)
@@ -141,6 +149,47 @@ case "$BACKEND" in
     k8s) require kubectl ;;
 esac
 
+# ---- k8s cluster binding -----------------------------------------------------
+#
+# The k8s backend used to publish to whatever `kubectl config current-context`
+# happened to be. Every environment writes the SAME Secret names into the SAME
+# namespace, so aiming at the wrong cluster fails SILENTLY: the write succeeds,
+# the intended cluster keeps its old bundle, and the only symptom is config that
+# "didn't take" (2026-08-14, the sibling bundlers: a beta bundle landed on the
+# staging cluster and beta restarted onto month-old values).
+#
+# So the environment BINDS the cluster — staging -> AMS3, beta -> LON1 — matched
+# by REGION substring against the configured contexts, which survives a cluster
+# rebuild (the DOKS id in the context name changes, the region does not). No
+# match, or more than one, is a hard error: never a silent fall back to whatever
+# context happens to be current.
+#
+# dev and production have NO binding: this agent's production overlay has run on
+# more than one cluster, so guessing is exactly the failure being fixed. Name the
+# cluster with --k8s-context there.
+
+k8s_context_for_env() {
+    local pattern matches count
+    case "$1" in
+        staging) pattern="ams3" ;;
+        beta)    pattern="lon1" ;;
+        *)
+            echo -e "${RED}No cluster is bound to environment '$1'. Pass --k8s-context=<context>.${NC}" >&2
+            exit 2
+            ;;
+    esac
+    matches=$(kubectl config get-contexts -o name | grep -- "$pattern" || true)
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -ne 1 ]; then
+        echo -e "${RED}Expected exactly one kubectl context matching '$pattern' for environment '$1'; found $count.${NC}" >&2
+        echo -e "${RED}Configured contexts:${NC}" >&2
+        kubectl config get-contexts -o name | sed 's/^/  /' >&2
+        echo -e "${RED}Pass --k8s-context=<context> to choose explicitly.${NC}" >&2
+        exit 1
+    fi
+    printf '%s' "$matches"
+}
+
 # ---- Confirm -----------------------------------------------------------------
 
 case "$BACKEND" in
@@ -158,7 +207,15 @@ case "$BACKEND" in
         ;;
     k8s)
         NAMESPACE=${NAMESPACE:-pipecat}
-        TARGET_DESC="Kubernetes namespace ${GREEN}$NAMESPACE${NC} — secrets ${GREEN}pipecat-secretenv-${ENVIRONMENT}${NC} + alias ${GREEN}pipecat-secretenv${NC}"
+        if [ -n "$K8S_CONTEXT" ]; then
+            kubectl config get-contexts -o name | grep -Fxq -- "$K8S_CONTEXT" || {
+                echo -e "${RED}kubectl context '$K8S_CONTEXT' is not configured.${NC}" >&2
+                exit 1
+            }
+        else
+            K8S_CONTEXT=$(k8s_context_for_env "$ENVIRONMENT")
+        fi
+        TARGET_DESC="Kubernetes context ${GREEN}$K8S_CONTEXT${NC}, namespace ${GREEN}$NAMESPACE${NC} — secrets ${GREEN}pipecat-secretenv-${ENVIRONMENT}${NC} + alias ${GREEN}pipecat-secretenv${NC}"
         ;;
 esac
 
@@ -254,10 +311,10 @@ publish_k8s() {
         [ -f "$cand" ] && { NS_MANIFEST="$cand"; break; }
     done
     if [ -n "$NS_MANIFEST" ]; then
-        kubectl apply -f "$NS_MANIFEST" >/dev/null
-    elif ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl --context="$K8S_CONTEXT" apply -f "$NS_MANIFEST" >/dev/null
+    elif ! kubectl --context="$K8S_CONTEXT" get namespace "$NAMESPACE" >/dev/null 2>&1; then
         echo -e "${YELLOW}  Creating namespace $NAMESPACE (without PSA labels — apply the overlay to add them)${NC}"
-        kubectl create namespace "$NAMESPACE" >/dev/null
+        kubectl --context="$K8S_CONTEXT" create namespace "$NAMESPACE" >/dev/null
     fi
 
     apply_secret() {
@@ -267,13 +324,13 @@ publish_k8s() {
         # values to `ps`, but the alternative (a temp file on disk) is worse for
         # the constraint "no secrets on the filesystem". The wrapper exits in
         # well under a second.
-        kubectl create secret generic "$name" \
+        kubectl --context="$K8S_CONTEXT" create secret generic "$name" \
             --namespace="$NAMESPACE" \
             --from-literal=SECRETENV_KEY="$SECRETENV_KEY" \
             --from-literal=SECRETENV_BUNDLE="$SECRETENV_BUNDLE" \
-            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+            --dry-run=client -o yaml | kubectl --context="$K8S_CONTEXT" apply -f - >/dev/null
         # Label so it's obvious which env the secret belongs to.
-        kubectl label secret "$name" --namespace="$NAMESPACE" --overwrite \
+        kubectl --context="$K8S_CONTEXT" label secret "$name" --namespace="$NAMESPACE" --overwrite \
             app.kubernetes.io/name=pipecat-agent \
             aplisay.com/pipecat-env="$ENVIRONMENT" >/dev/null
     }
@@ -285,11 +342,11 @@ publish_k8s() {
     echo
     echo -e "${GREEN}Done.${NC} The overlays' envFrom resolves $alias_name; you don't need to change anything in kustomize."
     echo -e "Per-env copies ($per_env_name) are retained so you can roll back with:"
-    echo -e "  ${YELLOW}kubectl get secret $per_env_name -n $NAMESPACE -o yaml \\${NC}"
-    echo -e "  ${YELLOW}  | sed 's/$per_env_name/$alias_name/' | kubectl apply -f -${NC}"
+    echo -e "  ${YELLOW}kubectl --context=$K8S_CONTEXT get secret $per_env_name -n $NAMESPACE -o yaml \\${NC}"
+    echo -e "  ${YELLOW}  | sed 's/$per_env_name/$alias_name/' | kubectl --context=$K8S_CONTEXT apply -f -${NC}"
     echo
     echo -e "If your DaemonSet pods are already running, restart them to pick up the new env:"
-    echo -e "  ${YELLOW}kubectl rollout restart daemonset/pipecat-sip -n $NAMESPACE${NC}"
+    echo -e "  ${YELLOW}kubectl --context=$K8S_CONTEXT rollout restart daemonset/pipecat-sip -n $NAMESPACE${NC}"
 }
 
 case "$BACKEND" in

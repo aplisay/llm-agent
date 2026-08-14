@@ -12,7 +12,9 @@
 #                             SECRETENV_{ENV}_BUNDLE
 #   --target=k8s            Kubernetes Secret `llm-agent-secretenv` (keys
 #                           SECRETENV_KEY + SECRETENV_BUNDLE) in namespace
-#                           `llm-agent` on the CURRENT kubectl context — the
+#                           `llm-agent` on the cluster BOUND to the environment
+#                           (staging -> AMS3, beta -> LON1; --k8s-context
+#                           overrides, and no other env has a binding) — the
 #                           pair deploy/k8s/beta mounts via envFrom. Override
 #                           with --k8s-secret / --k8s-namespace /
 #                           --k8s-deployment (rollout hint only).
@@ -24,7 +26,7 @@
 # Usage (from the repo root or deploy/):
 #   ./bundle-secretenv.sh                       # interactive
 #   ./bundle-secretenv.sh --env=staging --yes
-#   ./bundle-secretenv.sh --env=beta --target=k8s   # kubectl context = beta cluster
+#   ./bundle-secretenv.sh --env=beta --target=k8s   # LON1, whatever context is current
 #   ./bundle-secretenv.sh --env=production --file=path/to/.env
 #   ./bundle-secretenv.sh --dry-run             # plan only, no writes
 #
@@ -50,6 +52,9 @@ DRY_RUN=0
 # k8s target details (defaults match deploy/k8s/beta).
 K8S_NAMESPACE="llm-agent"
 K8S_SECRET_NAME="llm-agent-secretenv"
+# Empty = derive from the environment (see "k8s cluster binding" below); set by
+# --k8s-context for a cluster this script knows nothing about.
+K8S_CONTEXT=""
 K8S_DEPLOYMENT="llm-agent"   # only used in the post-publish rollout hint
 
 while [ $# -gt 0 ]; do
@@ -66,6 +71,8 @@ while [ $# -gt 0 ]; do
         --k8s-namespace)   K8S_NAMESPACE="${2:-}"; shift 2 ;;
         --k8s-deployment=*) K8S_DEPLOYMENT="${1#*=}"; shift ;;
         --k8s-deployment)   K8S_DEPLOYMENT="${2:-}"; shift 2 ;;
+        --k8s-context=*)   K8S_CONTEXT="${1#*=}"; shift ;;
+        --k8s-context)     K8S_CONTEXT="${2:-}"; shift 2 ;;
         --yes|-y)  ASSUME_YES=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help)
@@ -123,12 +130,50 @@ require node
 [ "$TARGET" = gcp ] && require gcloud
 [ "$TARGET" = k8s ] && require kubectl
 
+# ---- k8s cluster binding -----------------------------------------------------
+#
+# The k8s target used to publish to whatever `kubectl config current-context`
+# happened to be. Every environment writes the SAME Secret name into the SAME
+# namespace, so aiming at the wrong cluster fails SILENTLY: the write succeeds,
+# the intended cluster keeps its old bundle, and the only symptom is config that
+# "didn't take" (2026-08-14: a beta bundle landed on the staging cluster — into a
+# namespace with no pods, staging's server being on Cloud Run — while beta
+# restarted onto month-old values).
+#
+# So the environment BINDS the cluster — staging -> AMS3, beta -> LON1 — matched
+# by REGION substring against the configured contexts, which survives a cluster
+# rebuild (the DOKS id in the context name changes, the region does not). No
+# match, or more than one, is a hard error: never a silent fall back to whatever
+# context happens to be current. Environments with no binding here must name a
+# context explicitly with --k8s-context.
+
+k8s_context_for_env() {
+    local pattern matches count
+    case "$1" in
+        staging) pattern="ams3" ;;
+        beta)    pattern="lon1" ;;
+        *)
+            echo -e "${RED}No cluster is bound to environment '$1'. Pass --k8s-context=<context>.${NC}" >&2
+            exit 2
+            ;;
+    esac
+    matches=$(kubectl config get-contexts -o name | grep -- "$pattern" || true)
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -ne 1 ]; then
+        echo -e "${RED}Expected exactly one kubectl context matching '$pattern' for environment '$1'; found $count.${NC}" >&2
+        echo -e "${RED}Configured contexts:${NC}" >&2
+        kubectl config get-contexts -o name | sed 's/^/  /' >&2
+        echo -e "${RED}Pass --k8s-context=<context> to choose explicitly.${NC}" >&2
+        exit 1
+    fi
+    printf '%s' "$matches"
+}
+
 # ---- Target details ----------------------------------------------------------
 # gcp: PROJECT_ID from the deploy config (not the secrets source).
-# k8s: the CURRENT kubectl context — point it at the right cluster first.
+# k8s: the context BOUND to the environment above.
 
 PROJECT_ID=""
-K8S_CONTEXT=""
 if [ "$TARGET" = gcp ]; then
     PROJECT_ID="llm-voice"
     for f in "$SCRIPT_DIR/.env.$ENVIRONMENT" "$SCRIPT_DIR/env-example-$ENVIRONMENT"; do
@@ -141,12 +186,13 @@ if [ "$TARGET" = gcp ]; then
         echo -e "${RED}Could not determine GCP PROJECT_ID (not in deploy/gcp/.env.$ENVIRONMENT or env-example-$ENVIRONMENT, no gcloud default).${NC}" >&2
         exit 1
     fi
-else
-    K8S_CONTEXT=$(kubectl config current-context 2>/dev/null || true)
-    if [ -z "$K8S_CONTEXT" ]; then
-        echo -e "${RED}No current kubectl context.${NC}" >&2
+elif [ -n "$K8S_CONTEXT" ]; then
+    kubectl config get-contexts -o name | grep -Fxq -- "$K8S_CONTEXT" || {
+        echo -e "${RED}kubectl context '$K8S_CONTEXT' is not configured.${NC}" >&2
         exit 1
-    fi
+    }
+else
+    K8S_CONTEXT=$(k8s_context_for_env "$ENVIRONMENT")
 fi
 
 # ---- Plan + confirm ----------------------------------------------------------
@@ -234,21 +280,23 @@ publish_gcp() {
 }
 
 publish_k8s() {
-    if ! kubectl get namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
+    # EVERY call is --context pinned: an inherited current-context is exactly the
+    # foot-gun this script no longer has.
+    if ! kubectl --context="$K8S_CONTEXT" get namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
         echo -e "${YELLOW}  Creating namespace $K8S_NAMESPACE${NC}"
-        kubectl create namespace "$K8S_NAMESPACE" >/dev/null
+        kubectl --context="$K8S_CONTEXT" create namespace "$K8S_NAMESPACE" >/dev/null
     fi
-    echo -e "${YELLOW}  Writing Secret $K8S_SECRET_NAME (namespace $K8S_NAMESPACE)${NC}"
-    kubectl create secret generic "$K8S_SECRET_NAME" -n "$K8S_NAMESPACE" \
+    echo -e "${YELLOW}  Writing Secret $K8S_SECRET_NAME (namespace $K8S_NAMESPACE, context $K8S_CONTEXT)${NC}"
+    kubectl --context="$K8S_CONTEXT" create secret generic "$K8S_SECRET_NAME" -n "$K8S_NAMESPACE" \
         --from-literal=SECRETENV_KEY="$SECRETENV_KEY" \
         --from-literal=SECRETENV_BUNDLE="$SECRETENV_BUNDLE" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-    kubectl annotate secret "$K8S_SECRET_NAME" -n "$K8S_NAMESPACE" --overwrite \
+        --dry-run=client -o yaml | kubectl --context="$K8S_CONTEXT" apply -f - >/dev/null
+    kubectl --context="$K8S_CONTEXT" annotate secret "$K8S_SECRET_NAME" -n "$K8S_NAMESPACE" --overwrite \
         aplisay.com/llm-agent-env="$ENVIRONMENT" >/dev/null
 
     echo
     echo -e "${GREEN}Done.${NC} Roll the pods onto the new values:"
-    echo -e "  ${YELLOW}kubectl rollout restart deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE${NC}"
+    echo -e "  ${YELLOW}kubectl --context=$K8S_CONTEXT rollout restart deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE${NC}"
 }
 
 if [ "$TARGET" = gcp ]; then publish_gcp; else publish_k8s; fi

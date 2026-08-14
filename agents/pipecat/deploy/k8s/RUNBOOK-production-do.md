@@ -158,7 +158,10 @@ base) and, for outbound, `PIPECAT_SIP_OUTBOUND` + `PIPECAT_SIP_FROM_DOMAIN`.
 ```bash
 kubectl config use-context do-lon1-k8s-1-36-0-do-2-lon1-1782604340196
 cd agents/pipecat/deploy/k8s
-../bundle-secretenv.sh --env=production      # creates ns (PSA privileged) +
+# NB --env=production has no cluster binding in the bundler (staging->AMS3 and
+# beta->LON1 are the only two), so name this cluster explicitly:
+../bundle-secretenv.sh --env=production \
+    --k8s-context=do-lon1-k8s-1-36-0-do-2-lon1-1782604340196  # creates ns (PSA privileged) +
                                              # pipecat-secretenv-production + alias
 ```
 

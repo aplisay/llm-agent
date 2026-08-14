@@ -126,6 +126,12 @@ kubectl apply -k overlays/sipbridge
 # 6. Verify (see "Verification" below).
 ```
 
+> **Which cluster:** the bundler binds `--env=staging` to AMS3 and `--env=beta`
+> to LON1, and pins `--context` on every kubectl call, so your current context is
+> irrelevant and a bundle cannot land on the wrong cluster. `dev` and
+> `production` have no binding — name the cluster with `--k8s-context=<context>`
+> (production's overlay has run on more than one cluster, so it is not guessed).
+
 `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` in the
 bundle **must match the llm-agent server side**. Also set `SERVICE_BASE_URI` (the
 llm-agent REST base) in `base/configmap.yaml`.
