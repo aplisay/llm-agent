@@ -84,6 +84,17 @@ EMAIL_SEND_KEY=<SMTP2GO API KEY>
 EMAIL_FROM_ADDRESS=hello@aplisay.com
 EMAIL_FROM_NAME="polite.ai"
 
+# Sender personas for the verification/reset emails (lib/auth/email-brands.js).
+# The caller names one per request with `x-email-brand`; the persona supplies the
+# sender, the product name, the tagline and — optionally — the whole copy, so a
+# front end can speak in its own voice without a change in this repo. Unset =
+# the addresses above plus the built-in product-neutral wording. Either a path to
+# a JSON document (mounted Secret/ConfigMap, preferred) or the same JSON inline;
+# a persona without a `from` is ignored, and any parse error degrades to the
+# built-ins rather than failing the boot.
+# EMAIL_BRANDS_FILE=/etc/llm-agent/email-brands.json
+# EMAIL_BRANDS={"default":"aplisay","brands":{"aplisay":{"from":"hello@aplisay.com"},"example":{"from":"hello@example.com","fromName":"Example","productName":"Example","tagline":"Your tagline here."}}}
+
 # ── Core service ─────────────────────────────────────────────────────────────
 # HTTP/WS listen port for this API service (also the better-auth baseURL
 # fallback port when BETTER_AUTH_URL is unset).
