@@ -61,7 +61,12 @@ Run against the **target cluster context** (`kubectl config use-context <ctx>`).
    kubectl get ns pipecat                                   # namespace exists
    kubectl get secret -n pipecat ar-pull pipecat-secretenv  # pull + secretenv secrets
    kubectl get nodes -l aplisay.com/pipecat-sip=true        # SIP nodes labelled
+   doctl kubernetes cluster node-pool list <cluster-id>     # ...and the POOL too
    ```
+
+   The pool label is the one that matters: without it, autoscaled and replacement
+   nodes come up bare and quietly run no SIP pod (see the k8s README's
+   *Prerequisites*).
 
    Confirm the right secretenv bundle is loaded for the env
    (`SECRETENV_PIPECAT_{staging|production}_*`).
