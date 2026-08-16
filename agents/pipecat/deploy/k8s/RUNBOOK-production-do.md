@@ -23,7 +23,7 @@ because it adds the steps the cutover doc assumes are already done — chiefly
 | DO cluster id | `51e21669-564d-41da-b5fb-26a7c26e127a` | `76c8a432-7d14-4946-b667-e71078bd60bb` |
 | Node firewall tag | `k8s:51e21669-564d-41da-b5fb-26a7c26e127a` | `k8s:76c8a432-7d14-4946-b667-e71078bd60bb` |
 | Region | ams3 | lon1 |
-| SIP node pool | `pool-741oen40n` (1 node, labelled) | `llm-voice-prod` (2 nodes, **unlabelled**) |
+| SIP node pool | `pool-741oen40n` (1 node, pool-labelled) | `llm-voice-prod` (2 nodes, pool-labelled 2026-08-15; autoscales 2→5) |
 | Node external IPs | 164.92.154.188 | 138.68.185.22, 138.68.162.72 |
 | Overlay | `do-staging` | `do-production` |
 | Gateway | sipbridge (RTP **10000-20000**) | sipbridge (RTP **10000-20000**) |
@@ -60,7 +60,9 @@ These are the things that will silently break a naïve `kubectl apply -k do-prod
 2. **Cert placeholder.** `REPLACE_WITH_PRODUCTION_DO_CERT_ID` is still in the
    overlay. Apply with it → the DO LB drops the 443 TLS listener (SIP 5061 still
    works → *silent partial failure*; WebRTC/dispatch unreachable over HTTPS).
-3. **Prod nodes are unlabelled.** DaemonSet `nodeSelector: aplisay.com/pipecat-sip=true`.
+3. **Prod nodes are unlabelled.** DaemonSet `nodeSelector: aplisay.com/pipecat-sip=true`
+   — and the label belongs on the node POOL (Step 6), or it is lost on every
+   autoscale and node replacement.
    Apply without labelling → DaemonSet `DESIRED=0`, **no pods**, no Service
    endpoints → with `externalTrafficPolicy: Local` the LB health check (tcp/5061)
    fails on every node → the LB gets an IP but **both 5061 and 443 are dead**.
@@ -180,15 +182,24 @@ kubectl -n pipecat patch serviceaccount default \
     -p '{"imagePullSecrets":[{"name":"ar-pull"}]}'
 ```
 
-### Step 6 — Label the SIP nodes (else 0 pods)
+### Step 6 — Label the SIP node POOL (else 0 pods)
 
 ```bash
-kubectl label node llm-voice-prod-3cadsb llm-voice-prod-3cadsw \
-    aplisay.com/pipecat-sip=true
+doctl kubernetes cluster node-pool update 76c8a432-7d14-4946-b667-e71078bd60bb \
+    llm-voice-prod --label aplisay.com/pipecat-sip=true
 ```
 
-(Both nodes → HA: one DaemonSet pod each, each advertising its own public IP for
-media; the LB spreads 5061 across both.)
+(Every node in the pool → HA: one DaemonSet pod each, each advertising its own
+public IP for media; the LB spreads 5061 across all of them.)
+
+> Label the **POOL**, not the nodes. A pool label is stamped on every node DOKS
+> creates from then on; `kubectl label node …` only marks the nodes that exist at
+> that moment. This pool autoscales 2→5, so hand-labelling means an autoscaled
+> node runs no SIP pod (`DESIRED` just stays put — nothing alerts), and a node
+> replaced by an upgrade or auto-repair takes SIP capacity down with it. That is
+> exactly what happened here: the pool was labelled only at the node level and
+> was corrected on 2026-08-15. Pool labels apply to NEW nodes, so if the existing
+> nodes were never labelled by hand, recycle them after setting it.
 
 ### Step 7 — Apply
 

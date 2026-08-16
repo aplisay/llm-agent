@@ -73,10 +73,20 @@ deploy/k8s/
 ## Prerequisites
 
 1. **A dedicated SIP node pool** whose nodes have **public/external IPs** (or 1:1
-   NAT) reachable by your SBCs, labelled so the DaemonSet lands only there:
+   NAT) reachable by your SBCs, labelled so the DaemonSet lands only there.
+   Label the **POOL**, not the nodes, so that every node the pool ever creates
+   carries it — an autoscaled node, or a node replaced by an upgrade or an
+   auto-repair, comes up bare otherwise and silently runs no SIP pod:
    ```
-   kubectl label node <node> aplisay.com/pipecat-sip=true
+   # DigitalOcean (--label REPLACES the pool's label set, so pass them all):
+   doctl kubernetes cluster node-pool update <cluster-id> <pool> \
+       --label aplisay.com/pipecat-sip=true
+   # GKE:  gcloud container node-pools create … --node-labels=aplisay.com/pipecat-sip=true
+   # EKS:  eksctl … --node-labels aplisay.com/pipecat-sip=true
    ```
+   `kubectl label node <node> aplisay.com/pipecat-sip=true` is for
+   single-node/test clusters only: it labels the node that exists right now, and
+   nothing the cluster creates later.
 2. **Firewall** opened on those nodes:
    - `TCP 5061` (SIP TLS) — from your SBC source ranges
    - `UDP 10000-20000` (RTP — sipbridge / voiceblender) **or** `UDP 16384-16484`
@@ -112,8 +122,8 @@ cd deploy/k8s
 
 # 3. Label the node(s) the SIP pod should run on. The DaemonSet ONLY schedules
 #    on nodes with this label — without it you get a DaemonSet with 0 pods.
-#    On a dedicated SIP node pool, label that pool (see Prerequisites). On a
-#    single-node / test cluster:
+#    On a real cluster label the POOL (see Prerequisites) so autoscaled and
+#    replacement nodes inherit it. On a single-node / test cluster:
 kubectl label nodes --all aplisay.com/pipecat-sip=true
 
 # 4. (Optional) a CA-signed SIP TLS cert; otherwise the gateway self-signs.
@@ -512,6 +522,22 @@ kubectl get nodes -L aplisay.com/pipecat-sip    # is any node labelled?
 kubectl label nodes --all aplisay.com/pipecat-sip=true   # label them (test cluster)
 ```
 
+**Fewer pods than nodes after a scale-up?** Same cause, quieter: the DaemonSet
+looks healthy (all its pods Ready) and only `DESIRED` fails to grow, so nothing
+alerts. It means the label is on the NODES rather than on the POOL, so nodes the
+autoscaler added came up bare. Compare the two:
+
+```bash
+kubectl get nodes -L aplisay.com/pipecat-sip                  # which nodes have it
+doctl kubernetes cluster node-pool list <cluster-id>          # does the POOL have it
+```
+
+Fix it at the pool (Prerequisites step 1) rather than re-labelling by hand —
+otherwise it recurs on the next scale-up or node replacement. Node replacement is
+the worse direction: capacity silently DROPS. Watch for it on the LB too, since
+`externalTrafficPolicy: Local` means an unlabelled node has no local pod to serve
+the tcp/5061 health check and shows up as an unhealthy backend.
+
 If pods exist but stay in `Init:` or `ImagePullBackOff`, `kubectl describe pod
 -n pipecat <pod>` shows why — commonly the private Artifact Registry images need
 an `imagePullSecret` (see *imagePullSecret for Artifact Registry* above), or
@@ -525,8 +551,9 @@ UDP ranges are intentionally open to all sources (direct media from any source I
 
 ## Out of scope (follow-ups)
 
-- **Autoscaling** — a DaemonSet scales with the node pool; size the SIP pool for
-  peak concurrent calls (each call uses 2 RTP ports).
+- **Autoscaling** — a DaemonSet scales with the node pool *provided the
+  nodeSelector label is set on the POOL* (Prerequisites step 1); size the SIP
+  pool for peak concurrent calls (each call uses 2 RTP ports).
 - **Production secret backend** — only templates + guidance here; wire
   sealed-secrets / SOPS / External Secrets Operator for real deployments.
 - **Dedicated k8s image pipeline** — the deploy reuses the existing Artifact
