@@ -559,6 +559,10 @@ function armBridgedTransferToAgentWatch(
         agent: context.agent,
         transcribe,
         streamLog: context.instance?.streamLog === true,
+        // BYOK bag from the fetched instance doc (docs/byok.md): the bag is a
+        // non-enumerable property, so it must be read explicitly here — it
+        // does not survive spreads/serialisation of the doc.
+        organisationKeys: context.instance?.organisationKeys,
       });
     } catch (e) {
       logger.warn(

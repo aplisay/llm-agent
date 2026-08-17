@@ -351,13 +351,17 @@ def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
     )
 
 
-def build_stt_service(agent: dict) -> Any:
+def build_stt_service(agent: dict, org_keys: Optional[dict] = None) -> Any:
     """Construct a fresh STT service from ``agent.options.stt`` (defaulting
     to Deepgram). Used by the pipeline build below and by the bridged-
     transfer transcription tap (``bridged_transfer.py``), which runs extra
     STT streams over the human↔human segment of a monitored bridge —
     each call returns a NEW service instance, safe to run alongside the
-    pipeline's own."""
+    pipeline's own.
+
+    ``org_keys`` is the per-call BYOK bag (see ``_resolve_provider_key``);
+    only Deepgram is BYOK-injectable here — Google STT authenticates with a
+    service account, which stays on platform credentials (docs/byok.md)."""
     stt_opts = (agent.get("options") or {}).get("stt") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     # ``options.stt.language`` (falling back to ``options.tts.language``). Each
@@ -371,7 +375,7 @@ def build_stt_service(agent: dict) -> Any:
         # Deepgram takes the full regional tag — nova-3 accepts en-GB/en-AU/…
         # alongside the bare primary tags, so there is nothing to truncate.
         return DeepgramSTTService(
-            api_key=_require_env("DEEPGRAM_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, stt_vendor, "DEEPGRAM_API_KEY"),
             **(
                 {"settings": DeepgramSTTSettings(language=language)}
                 if language is not None
@@ -408,9 +412,11 @@ def build_stt_service(agent: dict) -> Any:
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
 
-def build_tts_service(agent: dict) -> Any:
+def build_tts_service(agent: dict, org_keys: Optional[dict] = None) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
-    (defaulting to Cartesia).
+    (defaulting to Cartesia). ``org_keys`` is the per-call BYOK bag — the
+    cartesia / elevenlabs / deepgram vendors resolve their API key through
+    ``_resolve_provider_key`` (org key wins, fail-closed).
 
     Peer of :func:`build_stt_service`, split out of ``_build_pipeline`` for the
     same reason: each call returns a NEW instance, and having it addressable
@@ -436,7 +442,7 @@ def build_tts_service(agent: dict) -> Any:
         from pipecat.services.cartesia.tts import CartesiaTTSService
 
         return CartesiaTTSService(
-            api_key=_require_env("CARTESIA_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, tts_vendor, "CARTESIA_API_KEY"),
             settings=CartesiaTTSService.Settings(
                 voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121",
                 **({"language": language} if language is not None else {}),
@@ -455,7 +461,9 @@ def build_tts_service(agent: dict) -> Any:
         # for the language anyway, using both would mean relying on the
         # settings-wins precedence rule between them.
         return ElevenLabsTTSService(
-            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+            api_key=_resolve_provider_key(
+                org_keys, tts_vendor, "ELEVENLABS_API_KEY", "ELEVEN_API_KEY"
+            ),
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
                 **({"language": language} if language is not None else {}),
@@ -474,7 +482,7 @@ def build_tts_service(agent: dict) -> Any:
         from pipecat.services.deepgram.tts import DeepgramTTSService
 
         return DeepgramTTSService(
-            api_key=_require_env("DEEPGRAM_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, tts_vendor, "DEEPGRAM_API_KEY"),
             voice=voice or "aura-asteria-en",
         )
     raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
@@ -500,6 +508,66 @@ def _require_env(name: str, *aliases: str) -> str:
         f"(remember to fully restart the worker after setting env vars; "
         f"uvicorn --reload only watches code, not the shell's exports)."
     )
+
+
+class ByokKeyError(RuntimeError):
+    """An organisation-supplied (BYOK) provider key is configured but unusable.
+
+    Raised when the per-call ``organisationKeys`` bag carries an entry for the
+    provider whose value is null/empty (e.g. the stored key failed to decrypt
+    server-side). Fail-closed by design: the platform's own key is never
+    silently substituted for a call the organisation believes runs on its key
+    (docs/byok.md). The message is surfaced to tenants (``/webrtc/offer``
+    returns it as the HTTP error detail), so it must name neither key material
+    nor platform env vars.
+    """
+
+
+#: Model-id provider segment → canonical BYOK provider slug. Must stay in
+#: step with the registry in lib/utils/provider-keys.js (docs/byok.md).
+_MODEL_PROVIDER_SLUGS = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "google",
+    "gemini": "google",
+    "ultravox": "ultravox",
+    "fixie-ai": "ultravox",
+}
+
+
+def _model_provider_slug(model_id: str) -> Optional[str]:
+    """Canonical provider slug for a model id's provider segment
+    (``google/gemini-2.0-flash`` → ``google``), or ``None`` when the segment
+    is not a BYOK-registered provider."""
+    return _MODEL_PROVIDER_SLUGS.get(model_id.split("/", 1)[0].strip().lower())
+
+
+def _resolve_provider_key(
+    org_keys: Optional[dict], slug: str, *env_names: str
+) -> str:
+    """Resolve a provider API key: organisation (BYOK) key first, worker env
+    otherwise.
+
+    The ``org_keys`` bag is the need-to-know-filtered ``organisationKeys``
+    object from the per-call agent-db document. Precedence per docs/byok.md:
+
+    - slug present with a usable value → that value (org key wins);
+    - slug present but null/empty → :class:`ByokKeyError` — fail closed,
+      NEVER fall through to the platform env key;
+    - slug absent (or no bag at all) → the existing ``_require_env`` path,
+      platform behaviour unchanged.
+    """
+    if org_keys and slug in org_keys:
+        value = org_keys.get(slug)
+        if isinstance(value, str) and value.strip():
+            return value
+        raise ByokKeyError(
+            f"The organisation's stored {slug} API key could not be used "
+            "(missing or unreadable). Re-save or delete the key in the "
+            "organisation's provider-key settings; the platform's own "
+            f"{slug} credentials are never substituted for it."
+        )
+    return _require_env(*env_names)
 from pipecat.transports.base_transport import BaseTransport
 
 from .voice_mode import VoiceMode, model_id_from_name, resolve_voice_mode
@@ -891,8 +959,13 @@ async def build_voice_session(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    org_keys: Optional[dict] = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
+
+    ``org_keys`` is the per-call organisation (BYOK) provider-key bag —
+    consumed only at service construction via ``_resolve_provider_key``,
+    never stored on the agent dict or logged (docs/byok.md).
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
     is appended to the pipeline (stereo, user-left/bot-right per
@@ -923,12 +996,12 @@ async def build_voice_session(
     if mode == "realtime":
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, org_keys=org_keys,
         )
     else:
         task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, org_keys=org_keys,
         )
     return task, audio_buffer, context, llm
 
@@ -944,9 +1017,13 @@ async def _build_realtime(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    org_keys: Optional[dict] = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
+    # BYOK slug for the realtime provider, derived from the model id's
+    # provider segment (matches the branch prefixes below).
+    provider_slug = _model_provider_slug(model_id)
 
     if model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
@@ -969,7 +1046,7 @@ async def _build_realtime(
         _, openai_model = model_id.split("/", 1)
         voice = (options.get("tts") or {}).get("voice") or "alloy"
         llm = OpenAIRealtimeLLMService(
-            api_key=_require_env("OPENAI_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, provider_slug, "OPENAI_API_KEY"),
             settings=OpenAIRealtimeLLMService.Settings(
                 model=openai_model,
                 system_instruction=system_prompt,
@@ -985,7 +1062,9 @@ async def _build_realtime(
         from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
 
         llm = GeminiLiveLLMService(
-            api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
+            api_key=_resolve_provider_key(
+                org_keys, provider_slug, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"
+            ),
             system_instruction=system_prompt,
         )
     elif model_id.startswith("ultravox/"):
@@ -1096,7 +1175,7 @@ async def _build_realtime(
         # field storage and Pipecat's downstream code only stringifies the
         # value.
         params = OneShotInputParams(
-            api_key=_require_env("ULTRAVOX_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, provider_slug, "ULTRAVOX_API_KEY"),
             system_prompt=system_prompt,
             # ``model`` on the request body maps to the Ultravox catalogue
             # id (``ultravox-v0.6`` etc.). The default in the library is
@@ -1254,12 +1333,16 @@ async def _build_pipeline(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    org_keys: Optional[dict] = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
+    # BYOK slug for the pipeline LLM, derived from the model id's provider
+    # segment (matches the branch prefixes below).
+    provider_slug = _model_provider_slug(model_id)
 
     # STT
-    stt = build_stt_service(agent)
+    stt = build_stt_service(agent, org_keys=org_keys)
 
     # LLM
     if model_id.startswith("openai/"):
@@ -1267,7 +1350,7 @@ async def _build_pipeline(
 
         _, openai_model = model_id.split("/", 1)
         llm = OpenAILLMService(
-            api_key=_require_env("OPENAI_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, provider_slug, "OPENAI_API_KEY"),
             model=openai_model,
             settings=OpenAILLMService.Settings(system_instruction=system_prompt),
         )
@@ -1276,7 +1359,9 @@ async def _build_pipeline(
 
         _, gemini_model = model_id.split("/", 1)
         llm = GoogleLLMService(
-            api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
+            api_key=_resolve_provider_key(
+                org_keys, provider_slug, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"
+            ),
             model=gemini_model,
             settings=GoogleLLMService.Settings(system_instruction=system_prompt),
         )
@@ -1285,14 +1370,14 @@ async def _build_pipeline(
 
         _, anthropic_model = model_id.split("/", 1)
         llm = AnthropicLLMService(
-            api_key=_require_env("ANTHROPIC_API_KEY"),
+            api_key=_resolve_provider_key(org_keys, provider_slug, "ANTHROPIC_API_KEY"),
             model=anthropic_model,
             settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
         )
     else:
         raise RuntimeError(f"Unsupported LLM in pipeline mode: {model_id}")
 
-    tts = build_tts_service(agent)
+    tts = build_tts_service(agent, org_keys=org_keys)
 
     schemas = _register_tools_on_llm(llm, tools)
 

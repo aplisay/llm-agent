@@ -16,6 +16,7 @@ rather than accumulated forever.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from typing import Any
 
@@ -99,12 +100,24 @@ def install_capture(level: str | None = None) -> None:
     """Register the buffering sink on the shared loguru logger (idempotent).
 
     Call once at worker startup, after all imports, so nothing later resets the
-    handler set out from under us. Adds a handler; the existing stderr sink is
-    left untouched, so console output is unchanged.
+    handler set out from under us.
+
+    Also replaces loguru's DEFAULT stderr handler, which ships
+    ``diagnose=True``: its exception tracebacks render each frame's local
+    variables, so a failure inside service construction would print the
+    decrypted BYOK ``org_keys`` bag in plaintext to the worker logs
+    (docs/byok.md — keys must never be logged). The replacement is otherwise
+    equivalent (same default level/format, ``backtrace`` kept) so console
+    output is unchanged apart from the variable rendering.
     """
     global _installed
     if _installed:
         return
+    try:
+        logger.remove(0)  # loguru's default stderr handler (diagnose=True)
+    except ValueError:
+        pass  # already removed/replaced (e.g. by a test harness)
+    logger.add(sys.stderr, backtrace=True, diagnose=False)
     logger.add(
         _capture_sink,
         level=(level or os.environ.get("LOGLEVEL", "INFO")).upper(),

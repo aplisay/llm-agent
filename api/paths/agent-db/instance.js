@@ -1,4 +1,5 @@
 import { Instance, Agent, PhoneNumber } from '../../../lib/database.js';
+import { providersForAgent, resolveOrganisationKeys } from '../../../lib/org-keys.js';
 
 let appParameters, log;
 
@@ -64,6 +65,14 @@ const instanceGet = (async (req, res) => {
       Agent: agent
     };
 
+    // BYOK (docs/byok.md): decrypted org keys for the providers this agent can
+    // actually use, delivered ONLY over this internal shared-token API. Never
+    // logged; omitted entirely when the org has no relevant keys.
+    const organisationKeys = await resolveOrganisationKeys(agent.organisationId, providersForAgent(agent));
+    if (Object.keys(organisationKeys).length) {
+      result.organisationKeys = organisationKeys;
+    }
+
     res.send(result);
   }
   catch (err) {
@@ -73,7 +82,7 @@ const instanceGet = (async (req, res) => {
 });
 
 instanceGet.apiDoc = {
-  summary: 'Returns an instance by ID or phone number with its associated agent.',
+  summary: 'Returns an instance by ID or phone number with its associated agent. Internal: when the organisation holds BYOK keys for providers the agent references, they are included decrypted as a top-level `organisationKeys` object (omitted when empty).',
   operationId: 'getInstance',
   tags: ["Agent"],
   parameters: [

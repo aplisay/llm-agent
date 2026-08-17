@@ -39,11 +39,27 @@ export class AgentConcurrencyLimitExceededBusyError extends Error {
 }
 
 // API-related type definitions
+
+/**
+ * Decrypted org-level BYOK provider keys by canonical provider slug
+ * (docs/byok.md: openai, google, ultravox, deepgram, elevenlabs, cartesia, …).
+ * A `null` value is a stored key the server could not decrypt: the affected
+ * provider must fail the session rather than fall back to platform keys.
+ */
+export type OrganisationKeys = Record<string, string | null>;
+
 export interface Instance {
   id: string;
   metadata?: Record<string, any>;
   Agent?: Agent;
   streamLog?: boolean;
+  /**
+   * Org BYOK keys for this call (internal agent-db responses only; omitted
+   * when the org has none). Re-attached non-enumerably on fetch (see
+   * concealOrganisationKeys) so dumps of the doc never emit key values — read
+   * the property explicitly, and note object spreads of the doc drop it.
+   */
+  organisationKeys?: OrganisationKeys;
   recording?: {
     enabled: boolean;
     key?: string;
@@ -300,6 +316,34 @@ export interface Agent {
   };
   functions?: AgentFunction[];
   keys?: string[];
+  /**
+   * Org BYOK keys, present on `GET /api/agent-db/agent` responses only (the
+   * public /api/agents API never carries them). Same non-enumerable handling
+   * and caveats as {@link Instance.organisationKeys}.
+   */
+  organisationKeys?: OrganisationKeys;
+}
+
+/**
+ * Re-attach `organisationKeys` (BYOK secrets) as a non-enumerable property of
+ * the fetched document, so logging or serialising the doc — pino, invocation
+ * log capture, JSON.stringify — can never emit key values (all of those walk
+ * enumerable own properties only). Consumers still read `doc.organisationKeys`
+ * directly; anything that spreads/clones the doc drops the bag, so pass it
+ * explicitly wherever it must travel.
+ */
+function concealOrganisationKeys<T>(doc: T): T {
+  if (doc && typeof doc === 'object' && 'organisationKeys' in doc) {
+    const keys = (doc as { organisationKeys?: OrganisationKeys }).organisationKeys;
+    delete (doc as { organisationKeys?: OrganisationKeys }).organisationKeys;
+    Object.defineProperty(doc, 'organisationKeys', {
+      value: keys,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return doc;
 }
 
 /**
@@ -323,7 +367,9 @@ export async function getInternalAgentById(
     agentId,
     ...(expectedOrganisationId ? { expectedOrganisationId } : {}),
   });
-  return makeApiRequest<Agent>(`/api/agent-db/agent?${query.toString()}`);
+  return concealOrganisationKeys(
+    await makeApiRequest<Agent>(`/api/agent-db/agent?${query.toString()}`),
+  );
 }
 
 /**
@@ -614,12 +660,16 @@ export async function authoriseOutboundDestination(params: {
 
 // Get instance by ID from the API
 export async function getInstanceById(instanceId: string): Promise<any> {
-  return makeApiRequest(`/api/agent-db/instance?instanceId=${instanceId}`);
+  return concealOrganisationKeys(
+    await makeApiRequest(`/api/agent-db/instance?instanceId=${instanceId}`),
+  );
 }
 
 // Get instance by phone number from the API
 export async function getInstanceByNumber(number: string): Promise<any> {
-  return makeApiRequest(`/api/agent-db/instance?number=${encodeURIComponent(number)}`);
+  return concealOrganisationKeys(
+    await makeApiRequest(`/api/agent-db/instance?number=${encodeURIComponent(number)}`),
+  );
 }
 
 // Get phone numbers from the API

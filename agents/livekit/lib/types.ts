@@ -6,6 +6,7 @@ import type {
   AgentFunction,
   Call,
   CallMetadata,
+  OrganisationKeys,
   OutboundInfo,
 } from './api-client.js';
 import { type ParticipantInfo } from "livekit-server-sdk";
@@ -149,6 +150,15 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   calledId: string;
   modelName: string;
   metadata: any;
+  /**
+   * Org BYOK provider keys from the fetched instance document — or, after an
+   * agent-level fallback, from that agent's own agent-db document
+   * (docs/byok.md). Consumed only as provider-plugin constructor arguments in
+   * voice-session-factory — never logged and never placed in room/participant
+   * metadata. A slug present with a null value must fail that provider's
+   * session rather than fall back to platform keys.
+   */
+  organisationKeys?: OrganisationKeys;
   sendMessage: (message: any, createdAt?: Date) => Promise<void>;
   call: Call;
   onHangup: () => Promise<HangupResult>;

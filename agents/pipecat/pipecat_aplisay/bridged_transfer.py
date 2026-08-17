@@ -227,6 +227,11 @@ class BtaContext:
     # bridged call record, encrypted with the same client key.
     recording_enabled: bool = False
     recording_key: Optional[str] = None
+    # The parent session's BYOK provider-key bag — carried so the sipbridge
+    # transcription tap's STT streams resolve the same (organisation) key the
+    # parent pipeline used. SECRET: never logged or embedded in metadata
+    # (``repr=False`` keeps it out of any repr of the context).
+    organisation_keys: dict = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -246,6 +251,11 @@ class TakeoverPayload:
     # threaded onto the takeover CallSession so its ``transfer_summary``
     # builtin can await it. None when the map entry has no summaryAgent.
     summary_future: Optional[Any] = None
+    # The takeover agent's own BYOK provider-key bag, popped off the internal
+    # agent fetch in ``prepare_takeover`` — carried here (never inside the
+    # ``agent`` dict) to ``setup_takeover_call``. SECRET: never logged
+    # (``repr=False`` keeps it out of any repr of the payload).
+    organisation_keys: dict = field(default_factory=dict, repr=False)
 
 
 def bta_context_from_session(
@@ -288,6 +298,7 @@ def bta_context_from_session(
         consult_transcript=consult_transcript,
         recording_enabled=bool(getattr(recording, "enabled", False)),
         recording_key=getattr(recording, "key", None),
+        organisation_keys=dict(getattr(session, "organisation_keys", None) or {}),
     )
 
 
@@ -522,6 +533,9 @@ async def prepare_takeover(
     new_agent = await api_client.get_internal_agent_by_id(
         target.agent_id, expected_organisation_id=ctx.organisation_id
     )
+    # BYOK: strip the incoming agent's key bag before the dict is copied /
+    # embedded anywhere; it rides the TakeoverPayload separately.
+    org_keys = api_client.pop_organisation_keys(new_agent)
     if (new_agent.get("type") or "interactive-audio") != "interactive-audio":
         raise RuntimeError(
             f"bridgedTransferToAgent target {target.agent_id} is type "
@@ -586,6 +600,7 @@ async def prepare_takeover(
         instance=ctx.instance,
         call=call,
         summary_future=summary_future,
+        organisation_keys=org_keys,
     )
 
 
@@ -759,8 +774,14 @@ async def run_sipbridge_bta_watch(
             async def _target_text(text: str) -> None:
                 await collector.add(bt.TARGET, text)
 
-            caller_stt = bt.SttStream(build_stt_service(ctx.agent), _caller_text)
-            target_stt = bt.SttStream(build_stt_service(ctx.agent), _target_text)
+            caller_stt = bt.SttStream(
+                build_stt_service(ctx.agent, org_keys=ctx.organisation_keys),
+                _caller_text,
+            )
+            target_stt = bt.SttStream(
+                build_stt_service(ctx.agent, org_keys=ctx.organisation_keys),
+                _target_text,
+            )
             await caller_stt.start()
             await target_stt.start()
         except Exception as e:  # noqa: BLE001

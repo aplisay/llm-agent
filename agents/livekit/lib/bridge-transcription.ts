@@ -50,12 +50,13 @@ import type {
 import type { ReadableStream } from "node:stream/web";
 import logger from "./logger.js";
 import { createTransactionLog } from "./api-client.js";
-import type { Agent, Call } from "./api-client.js";
+import type { Agent, Call, OrganisationKeys } from "./api-client.js";
 import { resolvePipelineStt } from "./pipeline-inference-options.js";
 import {
   buildProviderPipelineStt,
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
+import { resolveOrganisationKey } from "./voice-session-factory.js";
 
 /** Speaker labels — the exact strings pipecat's collector renders. */
 export const CALLER = "caller";
@@ -176,8 +177,17 @@ export class BridgeTranscriptCollector {
  * nova-3 when `options.stt` is absent (realtime models) — or the direct
  * Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS. A `language`
  * from the transcribe option overrides the agent's STT language.
+ *
+ * BYOK (docs/byok.md): an org deepgram key forces the direct plugin with
+ * that key, mirroring the pipeline's own STT resolution in
+ * voice-session-factory. A null/unreadable entry throws (fail-closed) —
+ * the bridge segment must never silently run on the platform key.
  */
-export function buildBridgeStt(agent: Agent, language?: string | null): stt.STT {
+export function buildBridgeStt(
+  agent: Agent,
+  language?: string | null,
+  organisationKeys?: OrganisationKeys,
+): stt.STT {
   const effectiveAgent: Agent = language
     ? ({
         ...agent,
@@ -187,6 +197,15 @@ export function buildBridgeStt(agent: Agent, language?: string | null): stt.STT 
         },
       } as Agent)
     : agent;
+  const sttOrgKey = resolveOrganisationKey(
+    organisationKeys,
+    resolvePipelineStt(effectiveAgent).startsWith("deepgram/")
+      ? "deepgram"
+      : undefined,
+  );
+  if (sttOrgKey !== undefined) {
+    return buildProviderPipelineStt(effectiveAgent, sttOrgKey);
+  }
   if (pipelineUsesProviderApiKeys()) {
     return buildProviderPipelineStt(effectiveAgent);
   }
@@ -329,6 +348,12 @@ export interface ArmBridgedTranscriptionParams {
   transcribe: BridgedTranscribeConfig;
   /** instance.streamLog: live transaction-log POST per utterance vs batch. */
   streamLog: boolean;
+  /**
+   * Org BYOK provider keys for this call (docs/byok.md), read from the
+   * fetched instance doc. Consumed only as the STT plugin's constructor
+   * apiKey; never logged.
+   */
+  organisationKeys?: OrganisationKeys;
 }
 
 /**
@@ -349,6 +374,7 @@ export function armBridgedTranscription(
     agent,
     transcribe,
     streamLog,
+    organisationKeys,
   } = params;
 
   const collector = new BridgeTranscriptCollector(bridgedCall, streamLog);
@@ -395,7 +421,11 @@ export function armBridgedTranscription(
       const track = await waitForAudioTrack(room, participant);
       if (disposed) return;
 
-      const sttInstance = buildBridgeStt(agent, transcribe.language);
+      const sttInstance = buildBridgeStt(
+        agent,
+        transcribe.language,
+        organisationKeys,
+      );
       const sttStream = sttInstance.stream();
       const audioStream = new AudioStream(track, {
         sampleRate: BRIDGE_STT_SAMPLE_RATE,

@@ -126,6 +126,8 @@ POSTGRES_PASSWORD=<DB PASSWORD>
 # Encryption key for stored credentials (SIP registration passwords, agent key
 # material). If UNSET those secrets are stored in PLAINTEXT (a warning is
 # logged) — set it in every real deployment: `openssl rand -base64 32`
+# Also protects organisation BYOK provider keys (docs/byok.md) — those writes
+# are fail-closed: BYOK key storage is REFUSED (500) when this is unset.
 CREDENTIALS_KEY=<RANDOM SECRET>
 
 # ── Model / voice providers (enable the ones this deployment uses) ──────────
