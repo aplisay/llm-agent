@@ -105,28 +105,39 @@ authoriseOutbound.apiDoc = {
   requestBody: {
     content: {
       'application/json': {
+        // Every optional field is NULLABLE, not just omittable: the pipecat
+        // worker serialises unknowns as literal nulls (a WebRTC-origin
+        // transfer has no callerId or aplisayId to send), and a bare
+        // `type: 'string'` made express-openapi 400 the request before the
+        // handler — which already guards every field for null — could decide.
+        // The worker fails CLOSED on any non-200, so that validation gap
+        // refused every human transfer out of a browser test call.
         schema: {
           type: 'object',
           properties: {
             calledId: { type: 'string', description: 'The destination as dialled' },
             callerId: {
               type: 'string',
-              description: "Caller-ID for the leg. Used to resolve the egress trunk when aplisayId isn't known (e.g. a WebRTC-origin transfer). Ignored when registrationOriginated is true.",
+              nullable: true,
+              description: "Caller-ID for the leg, when known. Used to resolve the egress trunk when aplisayId isn't known (e.g. a WebRTC-origin transfer). Ignored when registrationOriginated is true.",
             },
             agentId: {
               type: 'string',
+              nullable: true,
               description: 'Agent whose stored options.outboundCallFilter applies. Preferred over agentOptions.',
             },
             agentOptions: {
               type: 'object',
+              nullable: true,
               description: 'Resolved agent options when the caller already holds them (reads outboundCallFilter). Ignored when agentId is supplied.',
             },
-            organisationId: { type: 'string', description: 'Owning organisation, for the rating check' },
-            userId: { type: 'string', description: 'Owning user, for a per-user rate override' },
-            aplisayId: { type: 'string', description: "The caller number's trunk id" },
-            outboundTrunkId: { type: 'string', description: 'Explicit egress trunk id when the caller knows it' },
+            organisationId: { type: 'string', nullable: true, description: 'Owning organisation, for the rating check' },
+            userId: { type: 'string', nullable: true, description: 'Owning user, for a per-user rate override' },
+            aplisayId: { type: 'string', nullable: true, description: "The caller number's trunk id" },
+            outboundTrunkId: { type: 'string', nullable: true, description: 'Explicit egress trunk id when the caller knows it' },
             registrationOriginated: {
               type: 'boolean',
+              nullable: true,
               description: 'True when the leg egresses a customer B2BUA (never our carrier, so never chargeable)',
             },
           },
