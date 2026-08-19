@@ -11,7 +11,11 @@ RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
 COPY lib/* ./agent-lib/
 RUN npm install -g pnpm@latest-10
-RUN yarn install --development
+# --frozen-lockfile: the whole-directory COPY above does bring yarn.lock in, but
+# without this yarn would still silently re-resolve on any package.json/yarn.lock
+# drift and the image would float off the committed tree (see the main image's
+# better-auth 1.6.25 -> 1.7.1 incident). Drift should fail the build instead.
+RUN yarn install --development --frozen-lockfile
 RUN yarn build
 ENV NODE_ENV production
 RUN chmod +x entrypoint.sh
