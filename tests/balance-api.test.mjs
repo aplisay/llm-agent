@@ -4,6 +4,7 @@ import {
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import { penniesToMicros, microsToPennies, MICROS_PER_PENNY } from '../lib/rates.js';
+import { can } from '../lib/auth/permissions.js';
 
 // Phase-3 billing edge: rate-history assignment, balance read (pennies), and the
 // idempotent balance/credit (Stripe top-up seam) backed by the BalanceCredit table.
@@ -126,15 +127,44 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(await BalanceCredit.count({ where: { organisationId: orgId } })).toBe(2);
   });
 
-  it('the billingService role can credit but cannot assign rates (least privilege)', async () => {
+  it('the billingService role can credit AND put an org on its rate card', async () => {
     const c = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { idempotencyKey: 'svc-1', amountPennies: 300 } });
     await creditPOST(c.req, c.res);
     expect(c.res.statusCode).toBe(200);
     expect(c.res.body.balancePennies).toBe(300);
-    // …but not rate assignment (organisation:setRate) — that stays superAdmin-only.
-    const r = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { rateHistory: [] } });
+
+    // Rate assignment is the same seam's job: a client billing service puts an
+    // org on the card its subscription package implies when the account is
+    // approved or the subscription changes. Reading FIRST is part of it — the
+    // assignment is idempotent, so it compares the existing timeline before
+    // writing — and this principal carries no organisationId of its own, so it
+    // reaches the row only via organisation:readAll.
+    const before = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
+    await rateHistGET(before.req, before.res);
+    expect(before.res.statusCode).toBe(200);
+
+    const r = mockReqRes({
+      role: 'billingService',
+      params: { organisationId: orgId },
+      body: { rateHistory: [{ name: `${PREFIX}r1`, startDate: '2026-02-01T00:00:00.000Z' }] },
+    });
     await rateHistPUT(r.req, r.res);
-    expect(r.res.statusCode).toBe(403);
+    expect(r.res.statusCode).toBe(200);
+    const saved = (await Organisation.findByPk(orgId)).rateHistory;
+    expect(saved).toHaveLength(1);
+    expect(saved[0].name).toBe(`${PREFIX}r1`);
+  });
+
+  it('billingService still cannot author or alter the rate cards themselves', async () => {
+    // The boundary that survives: it prices its own tenants against cards a
+    // super admin authors. Widening `organisation:setRate` must not have
+    // dragged the pricing config along with it.
+    for (const action of ['create', 'update', 'delete']) {
+      expect(can({ role: 'billingService' }, 'rate', action)).toBe(false);
+      expect(can({ role: 'billingService' }, 'tariff', action)).toBe(false);
+    }
+    expect(can({ role: 'billingService' }, 'organisation', 'update')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'delete')).toBe(false);
   });
 
   it('credit 400s missing key / zero amount, and 403s a non-super', async () => {
