@@ -143,7 +143,7 @@ summariser mention), release notes.
   transcription switch and `dtmfTimeout`. Overlay in `agent-patch.server.ts`
   with delete-on-empty; faithful-posting discipline. First map-shaped option
   in the drawer → dedicated sub-component.
-- Team graph: `"handback"` edge kind derived from the option (labelled with
+- Team diagram: `"handback"` edge kind derived from the option (labelled with
   the key). The summariser link renders for free as an existing `subagent`
   edge.
 - Listener-override UI: deferred (API-first); later home is the numbering
