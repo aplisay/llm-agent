@@ -6,7 +6,8 @@ import { validateRateLines, getDefaultRateName } from '../../lib/rates.js';
  * /api/rates (collection) — the named, date-ranged pricing rate cards that value
  * usage at transaction end (Phase 2/3 billing). Global platform config, NOT
  * org-scoped: gated purely on the `rate` resource (superAdmin). The per-name
- * non-overlap + immutable-once-referenced invariants are enforced in the model.
+ * immutable-once-referenced invariant is enforced in the model. Same-name cards
+ * may overlap: the latest start covering the billing instant wins.
  *   GET   list cards (optional ?name= filter), newest interval last.
  *   POST  create a card (supersede an existing name with a later startDate).
  */
@@ -52,9 +53,13 @@ export default function (logger) {
       });
       return res.status(201).send(card);
     } catch (err) {
-      // Per-name overlap (EXCLUDE gist) or duplicate (name,startDate) -> 409 conflict.
+      // Duplicate (name, startDate) -> 409 conflict. Overlapping PERIODS are fine
+      // (schema v59) — only an identical start for the same name is rejected,
+      // because that is the one case resolveRateCard's ordering cannot resolve.
+      // The exclusion branch is kept for a DB still carrying the pre-v59
+      // constraint, so it answers 409 rather than a bare 400.
       if (err?.name === 'SequelizeExclusionConstraintError' || err?.name === 'SequelizeUniqueConstraintError') {
-        return res.status(409).send({ message: `A rate card for "${name}" already covers that period; supersede with a later startDate.` });
+        return res.status(409).send({ message: `A rate card for "${name}" already starts at that instant; give the superseding card a different startDate.` });
       }
       req.log.error(err, 'creating rate card');
       return res.status(400).send({ message: err?.message || 'Failed to create rate card' });
@@ -89,7 +94,7 @@ export default function (logger) {
     responses: {
       201: { description: 'Created rate card' },
       400: { description: 'Invalid', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
-      409: { description: 'Overlaps an existing card for this name' },
+      409: { description: 'A card for this name already starts at that instant' },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

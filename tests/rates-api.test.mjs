@@ -5,7 +5,8 @@ import {
 import { randomUUID } from 'crypto';
 
 // Phase-3 admin API: /api/rates CRUD (super-admin gated via the `rate` resource),
-// honouring the per-name non-overlap + immutable-once-referenced invariants.
+// honouring the duplicate-start + immutable-once-referenced invariants. Periods
+// may overlap since v59 — the latest start covering the billing instant wins.
 
 const mockLogger = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, child() { return mockLogger; } };
 
@@ -75,10 +76,18 @@ describe('/api/rates CRUD (super admin)', () => {
     expect(missing.statusCode).toBe(400);
   });
 
-  it('409s when a new card overlaps an existing interval for the same name', async () => {
+  it('201s a card that overlaps an open-ended one for the same name (it supersedes)', async () => {
+    // Since v59 there is no period constraint: the later card simply takes over
+    // from its own start, which is what lets an in-use card be superseded at all.
     const name = `${PREFIX}ov`;
     expect((await create({ name, startDate: '2026-01-01Z' })).statusCode).toBe(201); // open-ended
-    const dup = await create({ name, startDate: '2026-06-01Z' }); // overlaps the open interval
+    expect((await create({ name, startDate: '2026-06-01Z' })).statusCode).toBe(201); // overlaps it
+  });
+
+  it('409s a second card starting at the SAME instant for one name', async () => {
+    const name = `${PREFIX}same-start`;
+    expect((await create({ name, startDate: '2026-01-01Z' })).statusCode).toBe(201);
+    const dup = await create({ name, startDate: '2026-01-01Z' });
     expect(dup.statusCode).toBe(409);
   });
 

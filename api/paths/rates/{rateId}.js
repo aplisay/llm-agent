@@ -60,7 +60,7 @@ export default function (logger) {
         return res.status(409).send({ message: err.message });
       }
       if (err?.name === 'SequelizeExclusionConstraintError' || err?.name === 'SequelizeUniqueConstraintError') {
-        return res.status(409).send({ message: 'That change overlaps another card for this name.' });
+        return res.status(409).send({ message: 'A card for this name already starts at that instant.' });
       }
       req.log.error(err, 'updating rate card');
       return res.status(400).send({ message: err?.message || 'Failed to update rate card' });
@@ -91,7 +91,7 @@ export default function (logger) {
     responses: {
       200: { description: 'Updated rate card' },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
-      409: { description: 'Immutable once referenced / overlaps another card' },
+      409: { description: 'Immutable once referenced / duplicate start for this name' },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
