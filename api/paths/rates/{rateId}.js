@@ -59,8 +59,15 @@ export default function (logger) {
       if (/immutable once referenced/.test(err?.message || '')) {
         return res.status(409).send({ message: err.message });
       }
-      if (err?.name === 'SequelizeExclusionConstraintError' || err?.name === 'SequelizeUniqueConstraintError') {
+      if (err?.name === 'SequelizeUniqueConstraintError') {
         return res.status(409).send({ message: 'A card for this name already starts at that instant.' });
+      }
+      // Only reachable on a database still carrying the pre-v59 overlap
+      // constraint — a deployment state rather than a bad request.
+      if (err?.name === 'SequelizeExclusionConstraintError') {
+        return res.status(409).send({
+          message: 'This database still enforces the pre-v59 rate-card overlap constraint, so this period cannot overlap another card of the same name. Run the schema upgrade to v59, or end-date the other card first.',
+        });
       }
       req.log.error(err, 'updating rate card');
       return res.status(400).send({ message: err?.message || 'Failed to update rate card' });
