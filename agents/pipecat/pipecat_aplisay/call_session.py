@@ -32,6 +32,7 @@ from .agent_tools import build_agent_tools
 from .mcp_tools import close_mcp_servers, connect_mcp_servers
 from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
+from .pipeline_error_alarm import PipelineErrorAlarm
 from .recording import RecordingSession
 from .sip_gateway.base import (
     GatewaySession,
@@ -263,6 +264,12 @@ class CallSession:
     # Rebuilt transport awaiting a manual client-connected kick (SmallWebRTC
     # only — its connected event has already fired for the old client).
     _handover_webrtc_kick: Optional[Any] = None
+    # True while building/running the continuation pipeline of a full-stack
+    # agent handover, so errors on that generation are reported as handover
+    # failures — the case where dead air is most likely and least visible.
+    _is_handover_generation: bool = False
+    # Escalates this generation's ErrorFrames (see pipeline_error_alarm).
+    _error_alarm: Optional[Any] = None
     # Closers for any MCP server connections opened in ``prepare_run`` (the
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
@@ -566,6 +573,13 @@ class CallSession:
         # TODO if the playground UX needs uninterruptible greetings.
         await self._wire_greeting(transport, task, agent, mode, model_name)
 
+        # Listen for this generation's ErrorFrames. Nothing did before, which
+        # is why 1283 of them went unnoticed while a caller sat in silence.
+        self._error_alarm = PipelineErrorAlarm(
+            call_id=self.call.id, handover=self._is_handover_generation
+        )
+        self._error_alarm.attach(task)
+
         max_duration_secs = _parse_duration((agent.get("options") or {}).get("maxDuration"))
         return task, max_duration_secs
 
@@ -704,6 +718,7 @@ class CallSession:
                 agent_id=self.agent.get("id"),
                 model=self.agent.get("modelName"),
             ).info("agent handover: starting new agent stack on the live transport")
+            self._is_handover_generation = True
             task, max_duration_secs = await self.prepare_run(
                 self.agent, self.agent["modelName"], pending["system_prompt"]
             )
@@ -756,6 +771,13 @@ class CallSession:
                     kick_task.cancel()
                 if timeout_task and not timeout_task.done():
                     timeout_task.cancel()
+                # Before the InvocationLog is flushed, so a generation that
+                # errored says so IN the call's own debug log rather than only
+                # in pod logs. Silent on a clean generation.
+                alarm = self._error_alarm
+                self._error_alarm = None
+                if alarm is not None:
+                    alarm.log_final_summary()
                 # Tear down any WebRTC-origin relay leg / consult leg this session
                 # was bridged to, so the telephony side and its Call record don't
                 # outlive the browser caller.
@@ -2426,6 +2448,14 @@ def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions
     instance level; the instance value wins when set, otherwise the agent
     default applies. ``enabled`` is the gate; ``key`` (when present) selects
     client-side decryption per section 9.2.
+
+    The engine records only when it is ASKED to: an absent ``recording`` option
+    means no recording, full stop. This is deliberately not a product policy —
+    "record everything unless the customer opts out" is a statement a given
+    client application makes about its own users, and it belongs to that client
+    (polite-ai materialises it at its API boundary; see its
+    ``withRecordingPolicy``). An engine that recorded by default would record
+    for every API consumer, including ones whose users never agreed to it.
     """
     agent_opts = (agent.get("options") or {}).get("recording") or {}
     instance_opts = (instance.get("recording") if isinstance(instance, dict) else None) or {}

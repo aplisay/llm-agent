@@ -38,6 +38,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .output_rate_guard import OutputRateGuard
 from .tool_log import log_tool_call, log_tool_result
 
 
@@ -1201,7 +1202,16 @@ async def _build_realtime(
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     # Confidence tone (options.transferTone) sits upstream of the relay
     # injector so an engaged relay drops tone frames too — see confidence_tone.
+    # Bind it to the output transport it feeds: the tone MUST be emitted at that
+    # transport's own sample rate, not StartFrame's (see confidence_tone._out_rate).
     tone = [tone_injector] if tone_injector is not None else []
+    if tone_injector is not None:
+        tone_injector.bind_output(transport.output())
+    # Defence in depth, immediately before output(): normalise every outbound
+    # audio frame to the transport's rate so nothing upstream can latch its
+    # stream resampler at the wrong ratio and mute the call. See
+    # output_rate_guard for the incident this prevents recurring.
+    rate_guard = OutputRateGuard(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped.
@@ -1214,6 +1224,7 @@ async def _build_realtime(
         llm,
         *tone,
         *relay_inject,
+        rate_guard,
         transport.output(),
     ]
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
@@ -1311,7 +1322,16 @@ async def _build_pipeline(
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     # Confidence tone (options.transferTone) sits upstream of the relay
     # injector so an engaged relay drops tone frames too — see confidence_tone.
+    # Bind it to the output transport it feeds: the tone MUST be emitted at that
+    # transport's own sample rate, not StartFrame's (see confidence_tone._out_rate).
     tone = [tone_injector] if tone_injector is not None else []
+    if tone_injector is not None:
+        tone_injector.bind_output(transport.output())
+    # Defence in depth, immediately before output(): normalise every outbound
+    # audio frame to the transport's rate so nothing upstream can latch its
+    # stream resampler at the wrong ratio and mute the call. See
+    # output_rate_guard for the incident this prevents recurring.
+    rate_guard = OutputRateGuard(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
     # audio frames, so ordering relative to it is immaterial.
@@ -1326,6 +1346,7 @@ async def _build_pipeline(
         tts,
         *tone,
         *relay_inject,
+        rate_guard,
         transport.output(),
     ]
     if audio_buffer is not None:

@@ -33,10 +33,15 @@ Speaking detection is frame-driven: ``UserStarted/StoppedSpeakingFrame``
 here travelling upstream). A configurable quiet "grace" window after the last
 speech keeps the tone from blipping into normal turn-taking pauses.
 
-Tone frames are pushed at the same sample rate the local bot's own audio uses
-(learned from passing ``OutputAudioRawFrame``s, exactly like
-``media_relay._RelayInjector``) because the output transport's resampler
-locks onto the first input rate it sees and rejects changes.
+Tone frames are pushed at the output transport's own ``sample_rate`` (see
+``_out_rate``) because that transport's resampler locks onto the first input
+rate it sees and rejects changes — permanently, for the rest of the call.
+
+Asking the transport, rather than inferring the rate from passing
+``OutputAudioRawFrame``s the way ``media_relay._RelayInjector`` does, is what
+makes this safe on an agent handover: there the injector is rebuilt and armed
+BEFORE the incoming agent has rendered any audio, so there is nothing to infer
+from and a guess is what silences the leg.
 """
 
 from __future__ import annotations
@@ -63,9 +68,6 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # 20 ms chunks — matches typical transport frame sizing.
 _CHUNK_SECS = 0.02
-# Fallback when no bot audio has been seen yet (telephony-standard 16 kHz,
-# the rate every SIP gateway transport here runs at).
-_DEFAULT_SAMPLE_RATE = 16000
 # Backstop for handover mode: a full-stack agent handover normally completes
 # (incoming agent's first BotStartedSpeakingFrame) within a few seconds. If
 # the new agent never speaks — a stuck/failed continuation — cap the comfort
@@ -170,11 +172,16 @@ class ConfidenceToneInjector(FrameProcessor):
         config: ToneConfig,
         *,
         get_transfer_state: Callable[[], Any],
+        output_transport: Any = None,
     ):
         super().__init__()
         self._config = config
         # Returns the owning CallSession's TransferState (``.state`` str).
         self._get_transfer_state = get_transfer_state
+        # The output transport processor we sit upstream of. Its ``sample_rate``
+        # is the ONLY authoritative answer to "what rate must our frames be" —
+        # see ``_out_rate``. Bound by voice_session at splice time.
+        self._output_transport = output_transport
         self._mode: Optional[str] = None  # None | "blind" | "consult"
         # True while covering a full-stack agent-to-agent handover gap. In this
         # mode play is gated only by speech grace, NOT by the transfer state
@@ -234,6 +241,43 @@ class ConfidenceToneInjector(FrameProcessor):
         self._last_voice = time.monotonic()
         logger.info("confidence tone started for agent handover")
 
+    def bind_output(self, output_transport: Any) -> None:
+        """Tell the injector which output transport it feeds.
+
+        Called by ``voice_session`` when the injector is spliced into the
+        pipeline. See :meth:`_out_rate` for why this matters.
+        """
+        self._output_transport = output_transport
+
+    def _out_rate(self) -> Optional[int]:
+        """The sample rate our frames MUST carry, or None if not yet knowable.
+
+        ``BaseOutputTransport`` resolves its own rate at StartFrame as
+        ``params.audio_out_sample_rate or frame.audio_out_sample_rate`` and
+        exposes it as the public ``sample_rate`` property. That is the only
+        authoritative value: the SIP gateways pin 16 kHz on the transport while
+        StartFrame still advertises pipecat's 24 kHz default.
+
+        This is load-bearing, not cosmetic. ``BaseOutputTransport`` owns ONE
+        ``SOXRStreamAudioResampler`` for the whole call and that resampler
+        latches the first (in_rate, out_rate) pair it is ever given — every
+        later frame at a different rate raises and is DROPPED, permanently. On
+        an agent handover the injector is rebuilt and armed before the incoming
+        agent's first audio, so a tone frame at the wrong rate is what latches
+        it, and the new agent is never heard again. (It went unnoticed on the
+        WebRTC path only because that transport leaves its rate unpinned, so
+        tone frames matched it and the resampler short-circuits on equal rates.)
+        """
+        rate = getattr(self._output_transport, "sample_rate", None)
+        if isinstance(rate, int) and rate > 0:
+            return rate
+        # Transport not started yet (or not a BaseOutputTransport): fall back to
+        # a rate learned from the bot's own rendered audio, which by definition
+        # already passed through this transport.
+        if isinstance(self._dst_rate, int) and self._dst_rate > 0:
+            return self._dst_rate
+        return None
+
     # ---- Frame plumbing ----
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -241,7 +285,13 @@ class ConfidenceToneInjector(FrameProcessor):
 
         if isinstance(frame, StartFrame):
             if self._dst_rate is None:
-                # Provisional until the first bot frame teaches us better.
+                # LAST-RESORT fallback only. StartFrame carries
+                # ``PipelineParams.audio_out_sample_rate``, which we never set,
+                # so it is pipecat's 24 kHz default — NOT the rate the output
+                # transport is pinned to (16 kHz on the SIP gateways). Emitting
+                # at this rate latches the transport's stream resampler at the
+                # wrong ratio and silences the whole leg; ``_out_rate`` prefers
+                # the transport's own value for exactly that reason.
                 rate = getattr(frame, "audio_out_sample_rate", None)
                 if isinstance(rate, int) and rate > 0:
                     self._dst_rate = rate
@@ -291,6 +341,17 @@ class ConfidenceToneInjector(FrameProcessor):
         if self._handover:
             # Handover backstop: the incoming agent never signalled speaking.
             if (time.monotonic() - self._handover_started_at) > _HANDOVER_MAX_SECS:
+                # This is a FAILED HANDOVER, not a tidy timeout: we covered the
+                # gap for the full backstop and the incoming agent never once
+                # spoke, so the caller is about to be dropped into dead air with
+                # the call still up. It is the earliest unambiguous signal of
+                # the 2026-08-21 silent-leg class of fault, so say so loudly —
+                # the tone then stops and the caller hears silence, which is
+                # exactly what nobody noticed for 55 seconds last time.
+                logger.error(
+                    f"agent handover FAILED: the incoming agent produced no audio in "
+                    f"{_HANDOVER_MAX_SECS:.0f}s; comfort tone exhausted, caller now in silence"
+                )
                 self.disarm()
                 return False
             # Otherwise fall straight through to the speech-grace gate below:
@@ -357,7 +418,12 @@ class ConfidenceToneInjector(FrameProcessor):
                 next_deadline = time.monotonic()
             if not self._should_play():
                 continue
-            rate = self._dst_rate or _DEFAULT_SAMPLE_RATE
+            rate = self._out_rate()
+            if rate is None:
+                # Never guess: a frame at the wrong rate permanently poisons the
+                # output transport's resampler (see _out_rate). Skipping this
+                # tick costs 20 ms of comfort tone; guessing costs the call.
+                continue
             samples = int(rate * _CHUNK_SECS)
             audio = self._make_chunk(rate, samples)
             try:
