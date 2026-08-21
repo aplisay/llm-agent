@@ -435,7 +435,11 @@ components:
           description: |-
             Call recording configuration for this agent.
 
-            When enabled, calls handled by this agent can be recorded to a storage bucket.
+            Recording is OPT-IN: calls are recorded only when this object is present with
+            `enabled: true`. Omitting it means no recording. (A client application that wants
+            recording on by default is responsible for sending it — the API does not assume
+            consent on your users' behalf.)
+
             Recordings are always encrypted. If you provide a `key`, the recording will be
             encrypted with a key derived from that value and the server will not be able
             to decrypt it for you. If you omit `key`, a random per-call key will be
@@ -446,7 +450,9 @@ components:
           properties:
             enabled:
               type: boolean
-              description: Enable or disable call recording for this agent.
+              description: |-
+                Enable call recording for this agent. Absent or `false` means the call is not
+                recorded; only `true` arms recording.
             key:
               type: string
               nullable: true
