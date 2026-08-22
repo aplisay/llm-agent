@@ -49,6 +49,7 @@ import {
 import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
+import { runFallbackMessage } from "./fallback-message.js";
 import { userOwnsRow } from "./scope.js";
 
 // Types
@@ -401,12 +402,17 @@ export default defineAgent({
        *  - First attempt runs with the primary modelName from the agent.
        *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
        *    we consult the current agent's options.fallback with precedence:
-       *      1. fallback.agent  – fetch and substitute a different agent, then retry.
-       *      2. fallback.model  – retry the same agent with a different modelName.
-       *      3. fallback.number – perform a blind transfer to this number and exit.
+       *      1. fallback.agent   – fetch and substitute a different agent, then retry.
+       *      2. fallback.model   – retry the same agent with a different modelName.
+       *      3. fallback.message – play a fixed TTS announcement at the caller.
+       *      4. fallback.number  – perform a blind transfer to this number and exit.
        *
        * Once we have switched to a fallback agent, any further fallback decisions are
        * controlled by that agent's own options.fallback.
+       *
+       * Concurrency rejections enter this chain at step 3 (see the catch block):
+       * retrying a different agent or model cannot help, but an announcement is
+       * exactly what a caller who arrived at a full system should hear.
        */
       let activeAgent = agent;
       let activeModelName = modelName;
@@ -455,13 +461,19 @@ export default defineAgent({
           break fallbackLoop;
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
-          // Concurrency limit failures should not trigger fallback attempts.
-          // We want to fail fast so LiveKit can reject with a "busy" cause.
-          if ((error as any)?.code === "AGENT_CONCURRENCY_LIMIT_EXCEEDED") {
-            throw error;
-          }
+          // A concurrency rejection is not a fault we can retry around: the limit
+          // is enforced in Call.start() regardless of which agent or model is
+          // behind it, so fallback.agent and fallback.model would spend setup
+          // time only to be refused identically, and fallback.number's
+          // transfer-only path calls Call.start() too. Only the fixed message
+          // can actually serve a caller who arrived at a full system, because it
+          // plays from cache without starting a call at all — so `busy` skips
+          // straight to step 3 and, failing that, rethrows so LiveKit still
+          // signals busy rather than answering and dropping.
+          const busy =
+            (error as any)?.code === "AGENT_CONCURRENCY_LIMIT_EXCEEDED";
           logger.error(
-            { error, message: error.message, fallbackConfig },
+            { error, message: error.message, busy, fallbackConfig },
             "runAgentWorker failed, evaluating fallback options",
           );
 
@@ -472,6 +484,7 @@ export default defineAgent({
 
           // 1. Agent-level fallback: fetch and substitute a different agent
           if (
+            !busy &&
             !usedFallbackAgent &&
             fallbackConfig.agent &&
             fallbackConfig.agent !== activeAgent.id
@@ -532,6 +545,7 @@ export default defineAgent({
 
           // 2. Model-level fallback (restart with a different modelName)
           if (
+            !busy &&
             !usedFallbackModel &&
             fallbackConfig.model &&
             activeModelName !== fallbackConfig.model
@@ -549,7 +563,33 @@ export default defineAgent({
             continue fallbackLoop;
           }
 
-          // 3. Number-level fallback (transfer to a phone number / endpoint)
+          // 3. Fixed-message fallback: play the operator's announcement.
+          //
+          // Terminal on success — the chain stops at the first step that works,
+          // and the caller having heard the announcement *is* the outcome. The
+          // original error is then rethrown so the outer handler performs its
+          // usual setup-failure teardown: the call keeps its real failure reason
+          // and stays diagnosable, with the announcement having been a courtesy
+          // played on the way out rather than a different result.
+          if (fallbackConfig.message) {
+            const played = await playFixedFallbackMessage(ctx, activeAgent);
+            if (played) {
+              throw error;
+            }
+            logger.warn(
+              {},
+              "fixed fallback message unavailable; continuing down the fallback chain",
+            );
+          }
+
+          // A busy call has no route left: the number fallback would reserve
+          // concurrency it cannot get. Rethrow so the SIP leg is refused rather
+          // than answered and dropped.
+          if (busy) {
+            throw error;
+          }
+
+          // 4. Number-level fallback (transfer to a phone number / endpoint)
           if (fallbackConfig.number) {
             try {
               logger.info(
@@ -1199,6 +1239,39 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
  * It is not a perfect solution, but it is a better experience for the customer.
  *
  */
+/**
+ * Play an agent's fixed fallback announcement (`options.fallback.message`).
+ *
+ * Never throws: this runs when setup has already failed, so a problem here must
+ * cost the caller the announcement and nothing more, leaving the fallback chain
+ * free to try `fallback.number`.
+ *
+ * Connects to the room if we are not already in it. The main flow reserves
+ * concurrency in `Call.start()` *before* `ctx.connect()` precisely so a refused
+ * call is never answered — which means the busy path arrives here having never
+ * joined, and audio cannot be published from outside the room. Connecting
+ * answers the SIP leg, and that is the intended trade: an operator who
+ * configured an announcement has asked for the caller to hear it instead of
+ * getting a busy tone.
+ *
+ * Publishes from `ctx.room` rather than the worker's `room`, which is the job
+ * assignment's room info and has no local participant to publish from.
+ */
+async function playFixedFallbackMessage(
+  ctx: JobContext,
+  agent: Agent,
+): Promise<boolean> {
+  try {
+    if (!ctx.room?.isConnected) {
+      await ctx.connect();
+    }
+    return await runFallbackMessage(ctx.room, agent);
+  } catch (e) {
+    logger.error({ e }, "fixed fallback message failed");
+    return false;
+  }
+}
+
 async function waitForExistingBridgedParticipant(
   ctx: JobContext,
   room: Room,

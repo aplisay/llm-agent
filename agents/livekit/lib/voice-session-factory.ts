@@ -115,7 +115,7 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
 }
 
 /** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
-function buildPipelineTts(agent: Agent) {
+export function buildPipelineTts(agent: Agent) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;

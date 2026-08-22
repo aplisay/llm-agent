@@ -195,9 +195,10 @@ export interface Agent {
      * how to recover when the primary model fails to connect or run.
      *
      * Precedence:
-     *  1. agent  - restart with a different agent (not yet implemented in worker).
-     *  2. model  - restart the session with a different modelName.
-     *  3. number - transfer the call to this number using the builtin transfer function.
+     *  1. agent   - restart with a different agent.
+     *  2. model   - restart the session with a different modelName.
+     *  3. message - play a fixed TTS announcement at the caller.
+     *  4. number  - transfer the call to this number using the builtin transfer function.
      */
     fallback?: {
       /**
@@ -208,6 +209,23 @@ export interface Agent {
        * Fallback model name to use if the primary model fails.
        */
       model?: string;
+      /**
+       * Fixed announcement played at the caller when no agent could be started.
+       * Always an object — there is no bare-string shorthand.
+       *
+       * `vendor`/`voice`/`language` may be overridden so the announcement is
+       * spoken by a stack that is known-good even when the agent's own is what
+       * failed. A pipeline agent defaults them from its `options.tts`; a
+       * realtime agent inherits only `language`, since its `tts.voice` names a
+       * timbre of the model that no TTS can render. See
+       * lib/fallback-message/CONTRACT.md.
+       */
+      message?: {
+        text?: string;
+        vendor?: string;
+        voice?: string;
+        language?: string;
+      };
       /**
        * Fallback transfer destination (phone number or endpoint ID).
        */
