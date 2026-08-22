@@ -216,7 +216,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
 
     const read = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
     await billingGET(read.req, read.res);
-    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3 });
+    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3, agentLimit: null });
 
     // balance read (own-org member) surfaces the block flag
     const bal = mockReqRes({ role: 'owner', organisationId: orgId, params: { organisationId: orgId } });
@@ -224,7 +224,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(bal.res.body.blocked).toBe(true);
 
     const cleared = await patch({ billingBlocked: false, billingConfig: null });
-    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3 });
+    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3, agentLimit: null });
   });
 
   it('billing PATCH sets chargeableNumberLimit (integer >= 0, null = unlimited) and validates it', async () => {
@@ -262,6 +262,46 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect((await patch({ chargeableNumberLimit: 99 }, 'owner')).statusCode).toBe(403);
   });
 
+  it('billing PATCH sets agentLimit (the concurrency cap lib/concurrency already enforces)', async () => {
+    // Exposed on the billing seam for the same reason as chargeableNumberLimit:
+    // a client billing service sets it from whatever package the customer is
+    // on, without holding the stricter organisation:setLimits the direct
+    // org-PATCH route requires. The CAP is generic here; what number goes in it
+    // is the billing system's policy, not ours.
+    const patch = (body, role = 'billingService') => {
+      const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+
+    const capped = await patch({ agentLimit: 2 });
+    expect(capped.statusCode).toBe(200);
+    expect(capped.body.agentLimit).toBe(2);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(2);
+
+    // 0 is meaningful and distinct from null: no concurrent calls at all.
+    const none = await patch({ agentLimit: 0 });
+    expect(none.statusCode).toBe(200);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(0);
+
+    const unlimited = await patch({ agentLimit: null });
+    expect(unlimited.statusCode).toBe(200);
+    expect(unlimited.body.agentLimit).toBeNull();
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBeNull();
+
+    // Settable alongside the other controls in one PATCH.
+    const combined = await patch({ agentLimit: 6, chargeableNumberLimit: 10 });
+    expect(combined.body).toMatchObject({ agentLimit: 6, chargeableNumberLimit: 10 });
+
+    // Invalid values reject without persisting anything.
+    expect((await patch({ agentLimit: -1 })).statusCode).toBe(400);
+    expect((await patch({ agentLimit: 1.5 })).statusCode).toBe(400);
+    expect((await patch({ agentLimit: '2' })).statusCode).toBe(400);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(6);
+
+    // Same gate as the rest of the billing controls.
+    expect((await patch({ agentLimit: 99 }, 'owner')).statusCode).toBe(403);
+  });
+
   it('billing PATCH validates: unsafe URL, short hashKey, bad types, empty body, owner 403', async () => {
     const patch = (body, role = 'billingService') => {
       const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
@@ -271,7 +311,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'short' } })).statusCode).toBe(400);
     expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'k'.repeat(32), balanceLowPennies: -5 } })).statusCode).toBe(400);
     expect((await patch({ billingBlocked: 'yes' })).statusCode).toBe(400);
-    expect((await patch({})).statusCode).toBe(400);
+    expect((await patch({})).statusCode).toBe(400); // still 400 with agentLimit added to the accepted set
     expect((await patch({ billingBlocked: true }, 'owner')).statusCode).toBe(403);
     // nothing stuck from the failed attempts
     const org = await Organisation.findByPk(orgId);
