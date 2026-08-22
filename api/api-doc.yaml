@@ -504,8 +504,15 @@ components:
              1. `agent` – if specified, the current call/room will be torn down and restarted using the given fallback agent.
              2. `model` – if specified and no `agent` fallback is configured, the session will be restarted using this fallback model name,
                 keeping all other agent configuration the same.
-             3. `number` – if neither an `agent` nor `model` fallback is available (or the configured fallback model also fails),
-                the call will be transferred to this number using the builtin `transfer` platform function.
+             3. `message` – if no agent or model fallback is available (or those also failed), a fixed announcement is spoken
+                to the caller and the call then ends. The chain stops here when the announcement plays.
+             4. `number` – if none of the above is available or succeeded, the call will be transferred to this number using
+                the builtin `transfer` platform function.
+
+            An agent concurrency limit rejection is a special case: `agent` and `model` are skipped (the limit applies whichever
+            agent or model is behind it) and `number` is unreachable (its transfer would need the same slot), so `message` is the
+            only fallback that can serve such a caller. It can do so because a cached announcement calls no TTS vendor, records no
+            usage, and therefore holds no concurrency slot of its own.
           properties:
             agent:
               description: |-
@@ -523,6 +530,58 @@ components:
                 definition (prompt, tools, options, etc).
               type: string
               example: "gpt-4.1-mini"
+            message:
+              type: object
+              required: [text]
+              description: |-
+                A fixed announcement spoken to the caller when no agent could be started — for example
+                "Sorry, we are unusually busy right now; please call back shortly."
+
+                Set `text` alone to speak it in the agent's own voice, or add `vendor` / `voice` to have it
+                spoken by a different TTS from the agent's own. That matters when the agent's configured TTS
+                stack is itself what failed: pointing the announcement at a vendor known to be healthy keeps
+                it playable in exactly the circumstances it exists for.
+
+                The rendered audio is synthesised once, on the first call that needs it, and cached; every
+                later playout replays that recording. Editing the text (or the voice, vendor, or language)
+                changes the cache key, so the next call re-synthesises automatically — there is nothing to
+                invalidate by hand. TTS characters are therefore billed once per distinct announcement, not
+                once per failed call.
+
+                Playing the announcement does not start a call or reserve an agent concurrency slot, which is
+                what allows it to be the fallback for a concurrency rejection.
+
+                Voice and vendor are validated against the catalogue of voices a TTS can render, NOT against the
+                agent model's own voices. For a realtime speech-to-speech model (Ultravox, OpenAI Realtime, Gemini
+                Live) those are different sets: the model has no TTS, and `tts.voice` names a timbre of the model
+                itself. Since the announcement plays precisely when that model could not be started, a discrete TTS
+                always speaks it — so an ElevenLabs voice on an Ultravox agent is valid here, and is the
+                configuration that works.
+
+                For the same reason, a realtime agent does NOT inherit `tts.vendor` / `tts.voice` as defaults:
+                without an explicit override the worker's default TTS voice is used. `language` is inherited either
+                way. Pipeline agents inherit all three as you would expect.
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+                  description: The words to speak.
+                  example: "Sorry, we are unusually busy right now. Please call back shortly."
+                vendor:
+                  type: string
+                  description: |-
+                    TTS provider for the announcement. Same form and constraints as `tts.vendor`.
+                    Defaults to `tts.vendor` for a pipeline agent; for a realtime agent there is no
+                    default and the worker's own default TTS is used.
+                  example: elevenlabs
+                voice:
+                  type: string
+                  description: |-
+                    TTS voice for the announcement. Defaults to `tts.voice` for a pipeline agent;
+                    for a realtime agent there is no default.
+                  example: en-GB-Wavenet-A
+                language:
+                  $ref: "#/components/schemas/Language"
             number:
               description: |-
                 A phone number or endpoint ID to transfer the call to if the LLM is unavailable or not responding (telephone agents only).

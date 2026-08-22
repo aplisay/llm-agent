@@ -8,8 +8,9 @@ contract:
 - Run the Pipecat ``PipelineTask``.
 - On any disconnect / error, end the call with the right reason from the
   taxonomy in section 7.3 and flush invocation logs.
-- Fallback loop per section 9.1: try ``modelName`` → ``fallback.model`` →
-  ``fallback.agent`` → ``fallback.number`` (last-resort blind transfer).
+- Fallback loop per section 9.1: try ``modelName`` → ``fallback.agent`` →
+  ``fallback.model`` → ``fallback.message`` (fixed TTS announcement) →
+  ``fallback.number`` (last-resort blind transfer).
 
 The :class:`SipGateway` indirection means this module does not know whether the
 SIP leg is a Daily room, a FreeSWITCH bridge, or anything else.
@@ -191,6 +192,13 @@ class CallSession:
     # threaded the same way so a transfer leg offers what the trunk can
     # actually do. None = unchanged. See ``OutboundCallParams.srtp``.
     srtp: Optional[bool] = None
+    # Set by ``setup_inbound_call`` when the agent concurrency limit refused
+    # this call and the agent has an ``options.fallback.message`` to play
+    # instead of a busy tone. Such a session exists ONLY to play that
+    # announcement: ``run`` plays it and returns without ever building a
+    # pipeline, and ``self.call`` was deliberately never started, so no
+    # concurrency slot is held while it plays. See ``fixed_message.py``.
+    fixed_message_only: bool = False
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
@@ -295,6 +303,19 @@ class CallSession:
         transport + child call record and runs the incoming agent's pipeline
         on the same live media connection.
         """
+        if self.fixed_message_only:
+            # Refused by the concurrency limiter before this session was even
+            # constructed. There is no agent to run and nothing to fall back
+            # through: play the announcement and let the caller go. Crucially
+            # this holds no concurrency slot — ``self.call`` was never started,
+            # and a cached announcement calls no vendor, so there is nothing to
+            # meter and nothing to reserve. Were it otherwise, playing "we are
+            # busy" would itself consume the capacity it is apologising for.
+            from .fixed_message import run_fixed_message
+
+            await run_fixed_message(self.gateway_session.transport, self.agent)
+            return
+
         active_agent = self.agent
         active_model = active_agent["modelName"]
         active_prompt = system_prompt
@@ -310,7 +331,15 @@ class CallSession:
                 await self._run_once(active_agent, active_model, active_prompt)
                 return
             except api_client.AgentConcurrencyLimitExceededBusyError:
-                # Map upstream — caller signals SIP busy / 429 to its caller.
+                # A concurrency rejection reaching *here* comes from a child
+                # call started mid-session (an agent handover, a consult leg),
+                # not from the caller's own arrival — that one is refused in
+                # ``setup_inbound_call`` before this loop exists, and is where
+                # the fixed message gets its chance (see ``fixed_message_only``).
+                # Retrying a model or agent cannot help either way, and a
+                # mid-call announcement to someone already talking to an agent
+                # would be worse than the failure. Map upstream — the caller
+                # signals SIP busy / 429 to its own caller.
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.error(f"voice session failed: {e}; evaluating fallback")
@@ -343,7 +372,24 @@ class CallSession:
                     active_model = fallback_cfg["model"]
                     continue
 
-                # 3. Number-level fallback (blind transfer). Configured on the agent
+                # 3. Fixed-message fallback: play the operator's announcement.
+                #
+                #    Terminal on success — the chain stops at the first step that
+                #    works, and the caller having heard the announcement *is* the
+                #    outcome. The original error is then re-raised so the caller's
+                #    usual setup-failure teardown runs and the call keeps its real
+                #    failure reason, with the announcement having been a courtesy
+                #    played on the way out rather than a different result.
+                if fallback_cfg.get("message"):
+                    from .fixed_message import run_fixed_message
+
+                    if await run_fixed_message(self.gateway_session.transport, active_agent):
+                        raise
+                    logger.warning(
+                        "fixed fallback message unavailable; continuing down the fallback chain"
+                    )
+
+                # 4. Number-level fallback (blind transfer). Configured on the agent
                 #    rather than chosen by the model, but it still puts a leg out on
                 #    (possibly) our carrier, so it clears the same gate as a tool-call
                 #    transfer — see _on_transfer / outbound_filter.py.
@@ -2546,7 +2592,26 @@ async def setup_inbound_call(
             },
         }
     )
-    await api_client.start_call(call)
+    # A concurrency rejection is raised by ``start_call``. When the agent has a
+    # fixed announcement configured, answer and play it instead of refusing the
+    # call: that is precisely the case the feature exists for. The call stays
+    # unstarted — the server has already marked it failed with the limit as the
+    # reason — so no slot is reserved, which is what makes it safe to do this at
+    # the very moment we are out of slots. Without a message, behaviour is
+    # unchanged and the caller gets the busy signal.
+    fixed_message_only = False
+    try:
+        await api_client.start_call(call)
+    except api_client.AgentConcurrencyLimitExceededBusyError:
+        from .fixed_message import fixed_message_for
+
+        if not fixed_message_for(agent):
+            raise
+        logger.bind(call_id=call.id, agent_id=agent.get("id")).warning(
+            "agent concurrency limit reached; playing fixed fallback message instead of busy"
+        )
+        fixed_message_only = True
+
     return CallSession(
         session_id=inbound.session_id,
         agent=agent,
@@ -2554,6 +2619,7 @@ async def setup_inbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        fixed_message_only=fixed_message_only,
         registration_originated=inbound.registration_originated,
         force_refer_transfer=inbound.force_refer_transfer,
         force_bridged_transfer=inbound.force_bridged_transfer,
