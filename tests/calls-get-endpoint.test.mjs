@@ -117,7 +117,8 @@ describe('GET /calls/{callId} Endpoint Test', () => {
     // Exactly the attributes the handler selects (matches the OpenAPI Call schema).
     const expectedKeys = [
       'id', 'index', 'agentId', 'parentId', 'modelName',
-      'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId'
+      'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId',
+      'costMicros'
     ].sort();
     expect(Object.keys(res._body).sort()).toEqual(expectedKeys);
 

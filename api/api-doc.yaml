@@ -1525,6 +1525,15 @@ components:
             When present, a recording is available for this call. Use `GET /calls/{callId}/recording`
             to stream or download it. Omit or null when the call has no recording.
           example: "development-recordings/648aa45d-204a-4c0c-a1e1-419406254134.enc"
+        costMicros:
+          type: number
+          nullable: true
+          description: |-
+            Finalised cost of this call in micro-pounds (1e-6 GBP): the sum of the call's costed,
+            finalised usage records. Costs are stamped at call end, so a completed call either
+            carries its figure or was not costed; `null` means "not costed", which is distinct
+            from a zero-cost call.
+          example: 777000
     CallId:
       type: string
       description: The Call ID the event relates to

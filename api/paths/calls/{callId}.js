@@ -1,5 +1,10 @@
 import { Call } from '../../../lib/database.js';
+import { Sequelize } from 'sequelize';
 import { requirePermission } from '../../../lib/auth/permissions.js';
+
+/** Finalised per-call cost in micro-pounds — see api/paths/calls.js. */
+const COST_MICROS_LITERAL =
+  '(SELECT SUM(ur.cost_micros)::float8 FROM usage_records ur WHERE ur.call_id = "Call"."id" AND ur.finalised AND ur.cost_micros IS NOT NULL)';
 
 export default function (logger) {
 
@@ -13,7 +18,7 @@ export default function (logger) {
     try {
       const call = await Call.findOne({
         where,
-        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId'],
+        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],
       });
 
       if (!call) {

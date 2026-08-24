@@ -1,7 +1,13 @@
 import { Call, Op } from '../../../../lib/database.js';
+import { Sequelize } from 'sequelize';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 let appParameters, log;
+
+/** Finalised per-call cost in micro-pounds — see api/paths/calls.js. */
+const COST_MICROS_LITERAL =
+  '(SELECT SUM(ur.cost_micros)::float8 FROM usage_records ur WHERE ur.call_id = "Call"."id" AND ur.finalised AND ur.cost_micros IS NOT NULL)';
+
 
 export default function (logger) {
 
@@ -29,7 +35,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'parentId', 'instanceId', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status'],
+        attributes: ['id', 'parentId', 'instanceId', 'callerId', 'calledId', 'startedAt', 'endedAt', 'recordingId', 'status', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],
         where,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),
