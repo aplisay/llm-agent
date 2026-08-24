@@ -26,8 +26,12 @@
  *    ALSO declare column-level references with no onDelete — the live constraint
  *    is ambiguous (sync({alter}) doesn't reconcile onDelete on existing FKs), so
  *    we delete them explicitly rather than gamble on the cascade.
- *  - polite-ai's `waitlist_signups` invite table lives in the same DB; a stale
- *    row blocks re-signup, so we clear it here too (by email).
+ *  - polite-ai's `waitlist_signups` invite table is cleared by email too — a
+ *    stale COMPLETED row blocks re-signup and keeps the emailed invite page
+ *    claiming the account exists. NOTE: in deployed environments that table
+ *    lives in polite-ai's OWN database, not this one; set POLITE_DATABASE_URL
+ *    to reach it, or the tool tells you it was skipped (it never silently
+ *    omits the step any more).
  *
  * WHAT WE INTENTIONALLY DO NOT DELETE:
  *  - RateCard: a SHARED pricing table keyed by rateName (orgs point at it via
@@ -106,9 +110,11 @@ if (options.help || (!options.email && !options.userId)) {
 }
 
 let stop; // stopDatabase, set once the DB is up
+let closeAppDb; // set when a separate polite-ai app DB connection was opened
 
 function done(code) {
   process.exitCode = code;
+  if (closeAppDb) closeAppDb().catch(() => {});
   if (stop) stop().then(() => logger.debug('database stopped')).catch(() => {});
 }
 
@@ -155,6 +161,34 @@ async function main() {
   const haveAccount = await tableExists('account');
   const haveVerification = await tableExists('verification');
   const haveWaitlist = await tableExists('waitlist_signups');
+
+  // waitlist_signups usually is NOT in this database: each polite-ai
+  // deployment keeps it in its own Postgres. When it's absent here, reach the
+  // app DB via POLITE_DATABASE_URL (postgres:// URL; append ?sslmode=require
+  // for managed hosts). Cross-database, so this step runs OUTSIDE the main
+  // transaction, after everything else committed.
+  let appDb = null;
+  let haveAppWaitlist = false;
+  if (!haveWaitlist && process.env.POLITE_DATABASE_URL) {
+    const url = process.env.POLITE_DATABASE_URL;
+    appDb = new Sequelize(url, {
+      logging: false,
+      dialectOptions: /sslmode=require/.test(url)
+        ? { ssl: { require: true, rejectUnauthorized: false } }
+        : {},
+    });
+    try {
+      const [row] = await appDb.query('SELECT to_regclass($1) AS t', {
+        bind: ['public.waitlist_signups'], type: Sequelize.QueryTypes.SELECT,
+      });
+      haveAppWaitlist = !!row?.t;
+      closeAppDb = () => appDb.close();
+    } catch (e) {
+      console.error(`POLITE_DATABASE_URL unreachable: ${e.message}`);
+      await appDb.close().catch(() => {});
+      appDb = null;
+    }
+  }
 
   // ---- Resolve the target -------------------------------------------------
   // A COMPLETED signup has an llm-agent `users` row (+ org, satellite, waitlist).
@@ -305,6 +339,29 @@ async function main() {
       count: () => rawCount('SELECT count(*)::int AS n FROM waitlist_signups WHERE lower(email) = ANY($1)', [emails]),
       run: (t) => rawDelete('DELETE FROM waitlist_signups WHERE lower(email) = ANY($1)', [emails], t),
     });
+  } else if (appDb && haveAppWaitlist) {
+    steps.push({
+      label: 'waitlist_signups (polite-ai invite state, by email — SEPARATE app DB, non-transactional)',
+      appDb: true,
+      count: async () => {
+        const [row] = await appDb.query(
+          'SELECT count(*)::int AS n FROM waitlist_signups WHERE lower(email) = ANY($1)',
+          { bind: [emails], type: Sequelize.QueryTypes.SELECT },
+        );
+        return Number(row?.n ?? 0);
+      },
+      run: async () => {
+        const res = await appDb.query('DELETE FROM waitlist_signups WHERE lower(email) = ANY($1)', { bind: [emails] });
+        const meta = Array.isArray(res) ? res[1] : res;
+        return meta?.rowCount ?? null;
+      },
+    });
+  } else {
+    console.error('');
+    console.error('NOTICE: waitlist_signups is NOT in this database — polite-ai invite rows are NOT cleaned.');
+    console.error('        A completed row left behind blocks re-signup under this email and keeps the emailed');
+    console.error('        invite page claiming the account exists. Set POLITE_DATABASE_URL to the polite-ai');
+    console.error("        app database (postgres://…?sslmode=require) and re-run, or delete the row there yourself.");
   }
   if (dropOrg && orgId) {
     steps.push({
@@ -346,14 +403,26 @@ async function main() {
     return done(0);
   }
 
-  // ---- Execute (single transaction) ---------------------------------------
+  // ---- Execute (single transaction; separate-DB steps after commit) -------
+  const txSteps = steps.filter((s) => !s.appDb);
+  const appSteps = steps.filter((s) => s.appDb);
   const t = await sequelize.transaction();
   try {
-    for (const s of steps) {
+    for (const s of txSteps) {
       const affected = await s.run(t);
       console.log(`  deleted ${String(affected ?? '?').padStart(6)}  ${s.label}`);
     }
     await t.commit();
+    // Cross-DB steps can't join the transaction above; run them once it has
+    // committed, and report a failure without pretending the main purge failed.
+    for (const s of appSteps) {
+      try {
+        const affected = await s.run();
+        console.log(`  deleted ${String(affected ?? '?').padStart(6)}  ${s.label}`);
+      } catch (e) {
+        console.error(`  FAILED  ${s.label}: ${e.message} — delete the row(s) in the app DB yourself.`);
+      }
+    }
   } catch (e) {
     await t.rollback();
     console.error('');
