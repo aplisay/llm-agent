@@ -938,6 +938,13 @@ components:
             
             Each vendor can have its own set of options under a vendor-specific key (e.g., `ultravox`).
             These options are passed through to the vendor's implementation without validation at the API level.
+
+            `ultravox.vadSettings`: when omitted, the platform applies a default of
+            `{ "minimumInterruptionDuration": "0.48s" }` on every Ultravox-backed path (native driver,
+            LiveKit worker, Pipecat worker) — Ultravox's own 0.09s default lets any ~90ms sound cancel
+            agent speech mid-turn. Supplying an explicit `vadSettings` object replaces the default
+            wholesale (it is not merged), so include `minimumInterruptionDuration` in any override
+            where you still want it raised.
             
             Example for Ultravox:
               ```json
