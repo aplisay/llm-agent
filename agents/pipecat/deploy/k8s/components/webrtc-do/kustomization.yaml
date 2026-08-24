@@ -7,8 +7,14 @@
 # LB keeps its IP (it's the same Service / do-loadbalancer-name).
 #
 # Browsers POST /webrtc/offer to https://<fqdn>/ ; an off-cluster llm-agent POSTs
-# /dispatch there too. The offer is self-contained from the join token, so any
-# node can answer — no session affinity needed.
+# /dispatch there too. Sessions are pod-local: the offer and its follow-up PATCH
+# /webrtc/offer (trickle ICE) must reach the pod that owns the session — any
+# other pod 404s them. With 2 SIP nodes and no affinity we observed exactly
+# that: intermittent 404s on offer/PATCH, browser connects wedging, and one-way
+# media. sessionAffinity: ClientIP restored reliable connects (verified
+# empirically; SIP on 5061 is unaffected — each TLS dialog is one connection).
+# A durable fix is routing by the session token (or shared session state) so
+# any pod can serve any client; until then this narrows the failure window.
 #
 # Layer AFTER cloud-digitalocean (which creates the annotations object), then set
 # the per-env cert ID + LB name in the overlay:
@@ -48,6 +54,9 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-tls-ports
         value: "443"
+      - op: add
+        path: /spec/sessionAffinity
+        value: ClientIP
 
   # Disable STUN on DigitalOcean. DO puts the droplet's public IP directly on the
   # NIC, so the worker's *host* ICE candidate is already browser-reachable — a
