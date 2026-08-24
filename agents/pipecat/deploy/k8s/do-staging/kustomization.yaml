@@ -38,6 +38,14 @@ patches:
       # Paste its ID below. MUST be a real cert ID before `kubectl apply` — a
       # placeholder makes the DO LB reject the 443 listener. (Remove this op + the
       # webrtc-do component to deploy SIP-only.)
+      #
+      # GOTCHA: DO mints a NEW certificate ID on every Let's Encrypt auto-renewal
+      # (~90 days). The CCM keeps the LIVE Service annotation current, but this
+      # pinned copy goes stale — and the DO admission webhook then rejects the
+      # whole apply (even --dry-run=server) with "certificate not found". Before
+      # applying, refresh the value from the live object:
+      #   kubectl -n pipecat get svc pipecat-sip -o jsonpath=\
+      #     '{.metadata.annotations.service\.beta\.kubernetes\.io/do-loadbalancer-certificate-id}'
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
-        value: b0d6588d-fd3e-4280-8e98-4b6da8b3cb8b
+        value: 4ca3a6bb-3516-4b7c-901d-7648c42916c3
