@@ -37,6 +37,14 @@ patches:
       #     --name pipecat-production --dns-names production.pipecat.aplisay.net
       # Paste its ID below. MUST be a real cert ID before `kubectl apply`.
       # (Remove this op + the webrtc-do component to deploy SIP-only.)
+      #
+      # GOTCHA: DO mints a NEW certificate ID on every Let's Encrypt auto-renewal
+      # (~90 days). The CCM keeps the LIVE Service annotation current, but this
+      # pinned copy goes stale — and the DO admission webhook then rejects the
+      # whole apply (even --dry-run=server) with "certificate not found". Before
+      # applying, refresh the value from the live object:
+      #   kubectl -n pipecat get svc pipecat-sip -o jsonpath=\
+      #     '{.metadata.annotations.service\.beta\.kubernetes\.io/do-loadbalancer-certificate-id}'
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
-        value: 00e0dbb7-ccbc-4ec6-925e-c418c7c679db
+        value: 2119c655-7cdd-4b5b-84a1-d9be184323a1
