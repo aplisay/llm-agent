@@ -175,6 +175,35 @@ def _language_setting(agent: dict, prefer: str) -> Language | str | None:
     return _language_enum(tag) or tag
 
 
+#: Default Ultravox ``vadSettings`` for the /calls request body, applied when
+#: the agent supplies no explicit ``options.vendorSpecific.ultravox.vadSettings``.
+#: Ultravox's stock ``minimumInterruptionDuration`` is 0.09s — any ~90ms sound
+#: (a breath, a backchannel "mm-hm", handset rustle) cancels agent speech
+#: mid-turn and the truncated text is finalised, with nothing re-offering the
+#: lost answer. 0.48s (15 × the VAD's 32ms frames) requires deliberate speech
+#: to barge in, at the cost of ~0.4s extra latency on a deliberate
+#: interruption. Must stay in step with DEFAULT_VAD_SETTINGS in
+#: lib/models/ultravox.js and ULTRAVOX_DEFAULT_VAD_SETTINGS in the LiveKit
+#: worker's voice-session-factory.ts.
+ULTRAVOX_DEFAULT_VAD_SETTINGS = {"minimumInterruptionDuration": "0.48s"}
+
+
+def _ultravox_vad_extra(agent: dict) -> dict:
+    """Native Ultravox ``vadSettings`` for the /calls request body.
+
+    An explicit ``options.vendorSpecific.ultravox.vadSettings`` dict passes
+    through verbatim — caller wins wholesale, the same contract as the native
+    driver and the LiveKit plugin (this is also the first vendorSpecific field
+    this worker honours at all). Otherwise the platform default applies; see
+    :data:`ULTRAVOX_DEFAULT_VAD_SETTINGS`.
+    """
+    vendor = ((agent.get("options") or {}).get("vendorSpecific") or {})
+    supplied = (vendor.get("ultravox") or {}).get("vadSettings") if isinstance(vendor, dict) else None
+    if isinstance(supplied, dict) and supplied:
+        return {"vadSettings": supplied}
+    return {"vadSettings": dict(ULTRAVOX_DEFAULT_VAD_SETTINGS)}
+
+
 def _ultravox_language_extra(agent: dict) -> dict:
     """Native Ultravox ``languageHint`` derived from ``options.tts.language``.
 
@@ -1120,6 +1149,9 @@ async def _build_realtime(
                 # Same reason: no separate TTS stage to carry the language, so
                 # this single hint drives both recognition and synthesis.
                 **_ultravox_language_extra(agent),
+                # Interruption sensitivity: platform default unless the agent
+                # carries an explicit vendorSpecific override.
+                **_ultravox_vad_extra(agent),
             },
         )
         if voice:

@@ -32,6 +32,19 @@ import {
  */
 export const INACTIVITY_PROMPT_COUNT = 3;
 
+// Default Ultravox vadSettings, applied when the agent supplies no explicit
+// `vendorSpecific.ultravox.vadSettings`. Ultravox's stock
+// minimumInterruptionDuration is 0.09s — any ~90ms sound (a breath, a
+// backchannel "mm-hm", handset rustle) cancels agent speech mid-turn and the
+// truncated text is finalised, with nothing re-offering the lost answer. 0.48s
+// (15 × the VAD's 32ms frames) requires deliberate speech to barge in, at the
+// cost of ~0.4s extra latency on a deliberate interruption. Must stay in step
+// with DEFAULT_VAD_SETTINGS in lib/models/ultravox.js and
+// ULTRAVOX_DEFAULT_VAD_SETTINGS in the pipecat worker's voice_session.py.
+export const ULTRAVOX_DEFAULT_VAD_SETTINGS = Object.freeze({
+  minimumInterruptionDuration: "0.48s",
+});
+
 /**
  * Whether `options.inactivity.hangup` opts this agent into ending the call once the
  * inactivity prompt has gone unanswered {@link INACTIVITY_PROMPT_COUNT} times.
@@ -304,6 +317,26 @@ export function buildRealtimeLlmOptions(
         ultravox: {
           ...((base && base.ultravox) || {}),
           inactivityMessages: messages,
+        },
+      };
+    }
+  }
+
+  // Ultravox realtime: default vadSettings unless the caller supplied their
+  // own (which wins wholesale, same contract as the other native blocks) —
+  // see ULTRAVOX_DEFAULT_VAD_SETTINGS for why the stock 0.09s interruption
+  // threshold is unusable on live calls.
+  if (modelName.includes("livekit:ultravox/")) {
+    const base =
+      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+      vendorSpecific ||
+      undefined;
+    if (!(base as any)?.ultravox?.vadSettings) {
+      llmOptions.vendorSpecific = {
+        ...(base || {}),
+        ultravox: {
+          ...((base && (base as any).ultravox) || {}),
+          vadSettings: { ...ULTRAVOX_DEFAULT_VAD_SETTINGS },
         },
       };
     }

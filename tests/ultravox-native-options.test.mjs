@@ -34,7 +34,11 @@ describe('Ultravox native driver option mapping', () => {
       expect(data.timeExceededMessage).toMatch(/great chatting/);
       expect(data.firstSpeakerSettings).toBeUndefined();
       expect(data.inactivityMessages).toBeUndefined();
-      expect(data.vadSettings).toBeUndefined();
+      // Interruption sensitivity is a platform default, not an opt-in:
+      // Ultravox's stock 0.09s minimumInterruptionDuration lets any ~90ms
+      // sound cancel agent speech mid-turn (2026-08-24: gas-safety answer
+      // finalised as "If you ever smell" by a caller's overlapping speech).
+      expect(data.vadSettings).toEqual({ minimumInterruptionDuration: '0.48s' });
       expect(data.experimentalSettings).toBeUndefined();
     });
 
@@ -163,6 +167,23 @@ describe('Ultravox native driver option mapping', () => {
       }).modelData;
       expect(data.vadSettings).toBe(vadSettings);
       expect(data.experimentalSettings).toBe(experimentalSettings);
+    });
+
+    test('explicit vadSettings replace the default wholesale, never merged', () => {
+      // Documented contract (api-doc.yaml vendorSpecific): an override that
+      // wants a raised interruption threshold must carry it itself.
+      const data = makeModel({
+        vendorSpecific: { ultravox: { vadSettings: { turnEndpointDelay: '0.5s' } } },
+      }).modelData;
+      expect(data.vadSettings).toEqual({ turnEndpointDelay: '0.5s' });
+      expect(data.vadSettings.minimumInterruptionDuration).toBeUndefined();
+    });
+
+    test('the default object is fresh per call, so callers cannot mutate the constant', () => {
+      const a = makeModel().modelData.vadSettings;
+      a.minimumInterruptionDuration = '9s';
+      expect(makeModel().modelData.vadSettings.minimumInterruptionDuration).toBe('0.48s');
+      expect(Ultravox.DEFAULT_VAD_SETTINGS.minimumInterruptionDuration).toBe('0.48s');
     });
 
     test('unlisted vendorSpecific keys are not forwarded', () => {
