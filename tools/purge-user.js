@@ -174,9 +174,12 @@ Options:
   --polite-env <file>     path to polite-ai's env file (e.g. ../polite-ai/.env.staging),
                           used to reach its SEPARATE database for the waitlist_signups
                           step — the app's POSTGRES_* vars there carry the client-cert
-                          mTLS material a plain URL cannot. Also settable as the
-                          POLITE_ENV_FILE env var (handy inside this repo's own .env.*),
-                          with POLITE_DATABASE_URL as a last-resort plain-URL fallback.
+                          mTLS material a plain URL cannot. Also accepted as the
+                          POLITE_ENV_FILE env var for the invocation; treat it as a
+                          per-run argument rather than persisting it in an env file —
+                          .env files here may be bundled into server environments,
+                          where a workstation path is meaningless. POLITE_DATABASE_URL
+                          remains a last-resort plain-URL fallback.
   --help, -h              this help
 
 Without --confirm nothing is deleted; you get a per-table plan of what WOULD go.`);
@@ -244,10 +247,11 @@ async function main() {
   // waitlist_signups usually is NOT in this database: each polite-ai
   // deployment keeps it in its own Postgres, reached with client-certificate
   // mTLS. When the table is absent here, connect using polite-ai's OWN env
-  // file — --polite-env <path>, or the POLITE_ENV_FILE env var (settable once
-  // in this repo's .env.* so the usual command needs no extra flag) — parsed
-  // standalone and mirrored through politeSequelizeOptions, never merged into
-  // process.env. POLITE_DATABASE_URL remains a last-resort plain-URL fallback
+  // file — --polite-env <path>, or the POLITE_ENV_FILE env var for the
+  // invocation (a per-run argument by design: this repo's .env files may be
+  // bundled into server environments, where a workstation path is
+  // meaningless) — parsed standalone and mirrored through
+  // politeSequelizeOptions, never merged into process.env. POLITE_DATABASE_URL remains a last-resort plain-URL fallback
   // for setups without client certs. Cross-database, so the step runs OUTSIDE
   // the main transaction, after everything else committed.
   let appDb = null;
