@@ -29,9 +29,11 @@
  *  - polite-ai's `waitlist_signups` invite table is cleared by email too — a
  *    stale COMPLETED row blocks re-signup and keeps the emailed invite page
  *    claiming the account exists. NOTE: in deployed environments that table
- *    lives in polite-ai's OWN database, not this one; set POLITE_DATABASE_URL
- *    to reach it, or the tool tells you it was skipped (it never silently
- *    omits the step any more).
+ *    lives in polite-ai's OWN database, not this one, reached with client-cert
+ *    mTLS: point --polite-env (or POLITE_ENV_FILE) at polite-ai's env file and
+ *    the tool connects exactly as the app does (POLITE_DATABASE_URL stays as a
+ *    plain-URL fallback). Otherwise it tells you the step was skipped — it
+ *    never silently omits it any more.
  *
  * WHAT WE INTENTIONALLY DO NOT DELETE:
  *  - RateCard: a SHARED pricing table keyed by rateName (orgs point at it via
@@ -60,6 +62,7 @@
  *   node tools/purge-user.js --userId <id> --confirm a@b.com --force
  */
 import dotenv from 'dotenv';
+import { readFileSync } from 'node:fs';
 import dir from 'path';
 import commandLineArgs from 'command-line-args';
 import logger from '../lib/logger.js';
@@ -72,6 +75,7 @@ const optionDefinitions = [
   { name: 'force', type: Boolean },
   { name: 'allow-production', type: Boolean },
   { name: 'path', alias: 'p', type: String },
+  { name: 'polite-env', type: String },
   { name: 'help', alias: 'h', type: Boolean },
 ];
 
@@ -80,6 +84,75 @@ const configArgs = options.path && { path: dir.resolve(process.cwd(), options.pa
 dotenv.config(configArgs);
 
 const norm = (s) => String(s ?? '').trim().toLowerCase();
+
+/**
+ * Build a Sequelize config for polite-ai's own database FROM ITS OWN env file,
+ * mirroring the app's lib/db-ssl.mjs semantics exactly (the connection is mTLS
+ * with inline client-certificate PEMs, which a postgres:// URL cannot carry):
+ *   - DATABASE_URL wins when set; else POSTGRES_HOST/PORT/USER/PASSWORD/DB.
+ *   - POSTGRES_CA / POSTGRES_CERT / POSTGRES_KEY as inline PEMs ("\n" escapes
+ *     unfolded) or their *_FILE path variants; POSTGRES_KEY_PASSWORD as the key
+ *     passphrase; POSTGRES_RO_SERVER_NAME as the TLS servername (SNI + the name
+ *     the server certificate is checked against, e.g. Cloud SQL).
+ *   - POSTGRES_SSLMODE: default verify-full when a CA is given, else require
+ *     (encrypt, don't verify); verify-ca validates the chain but skips hostname
+ *     matching; disable turns TLS off.
+ * The file is parsed standalone — never merged into process.env, so it cannot
+ * collide with THIS repo's own POSTGRES_* configuration.
+ */
+function politeSequelizeOptions(envPath) {
+  const vars = dotenv.parse(readFileSync(envPath, 'utf8'));
+  const read = (name) => {
+    const file = vars[`${name}_FILE`];
+    if (file && file.trim()) return readFileSync(file.trim(), 'utf8');
+    const inline = vars[name];
+    return inline && inline.trim() ? inline.replace(/\\n/g, '\n') : null;
+  };
+  const ca = read('POSTGRES_CA');
+  const cert = read('POSTGRES_CERT');
+  const key = read('POSTGRES_KEY');
+  const servername = vars.POSTGRES_RO_SERVER_NAME?.trim() || undefined;
+  const mode = (vars.POSTGRES_SSLMODE || (ca ? 'verify-full' : '')).toLowerCase();
+  let ssl;
+  if ((ca || cert || key || servername || mode) && mode !== 'disable') {
+    ssl = {};
+    if (ca) ssl.ca = ca;
+    if (cert) ssl.cert = cert;
+    if (key) ssl.key = key;
+    if (vars.POSTGRES_KEY_PASSWORD) ssl.passphrase = vars.POSTGRES_KEY_PASSWORD;
+    if (servername) ssl.servername = servername;
+    if (mode === 'require' || (!ca && mode !== 'verify-ca' && mode !== 'verify-full')) {
+      ssl.rejectUnauthorized = false;
+    } else {
+      ssl.rejectUnauthorized = true;
+      if (mode === 'verify-ca') ssl.checkServerIdentity = () => undefined;
+    }
+  }
+  const dialectOptions = {};
+  if (ssl) dialectOptions.ssl = ssl;
+  const schema = vars.POSTGRES_SCHEMA;
+  if (schema && schema !== 'public') dialectOptions.options = `-c search_path=${schema}`;
+  if (vars.DATABASE_URL && vars.DATABASE_URL.trim()) {
+    return { url: vars.DATABASE_URL.trim(), options: { logging: false, dialectOptions } };
+  }
+  if (!vars.POSTGRES_HOST || !vars.POSTGRES_DB || !vars.POSTGRES_USER) {
+    throw new Error(
+      `${envPath} has no DATABASE_URL and no complete POSTGRES_HOST/POSTGRES_DB/POSTGRES_USER set`,
+    );
+  }
+  return {
+    options: {
+      database: vars.POSTGRES_DB,
+      username: vars.POSTGRES_USER,
+      password: vars.POSTGRES_PASSWORD || undefined,
+      host: vars.POSTGRES_HOST,
+      port: Number(vars.POSTGRES_PORT || '5432'),
+      dialect: 'postgres',
+      logging: false,
+      dialectOptions,
+    },
+  };
+}
 
 function usage(code = 0) {
   console.log(`purge-user — hard-delete a user (+ their org) for signup re-testing.
@@ -98,6 +171,12 @@ Options:
   --force                 override the superAdmin / co-member / owns-numbers refusals
   --allow-production      override the NODE_ENV=production refusal
   --path, -p <file>       path to the .env to load (which DB to act on)
+  --polite-env <file>     path to polite-ai's env file (e.g. ../polite-ai/.env.staging),
+                          used to reach its SEPARATE database for the waitlist_signups
+                          step — the app's POSTGRES_* vars there carry the client-cert
+                          mTLS material a plain URL cannot. Also settable as the
+                          POLITE_ENV_FILE env var (handy inside this repo's own .env.*),
+                          with POLITE_DATABASE_URL as a last-resort plain-URL fallback.
   --help, -h              this help
 
 Without --confirm nothing is deleted; you get a per-table plan of what WOULD go.`);
@@ -163,30 +242,54 @@ async function main() {
   const haveWaitlist = await tableExists('waitlist_signups');
 
   // waitlist_signups usually is NOT in this database: each polite-ai
-  // deployment keeps it in its own Postgres. When it's absent here, reach the
-  // app DB via POLITE_DATABASE_URL (postgres:// URL; append ?sslmode=require
-  // for managed hosts). Cross-database, so this step runs OUTSIDE the main
-  // transaction, after everything else committed.
+  // deployment keeps it in its own Postgres, reached with client-certificate
+  // mTLS. When the table is absent here, connect using polite-ai's OWN env
+  // file — --polite-env <path>, or the POLITE_ENV_FILE env var (settable once
+  // in this repo's .env.* so the usual command needs no extra flag) — parsed
+  // standalone and mirrored through politeSequelizeOptions, never merged into
+  // process.env. POLITE_DATABASE_URL remains a last-resort plain-URL fallback
+  // for setups without client certs. Cross-database, so the step runs OUTSIDE
+  // the main transaction, after everything else committed.
   let appDb = null;
   let haveAppWaitlist = false;
-  if (!haveWaitlist && process.env.POLITE_DATABASE_URL) {
-    const url = process.env.POLITE_DATABASE_URL;
-    appDb = new Sequelize(url, {
-      logging: false,
-      dialectOptions: /sslmode=require/.test(url)
-        ? { ssl: { require: true, rejectUnauthorized: false } }
-        : {},
-    });
+  let appDbLabel = null;
+  if (!haveWaitlist) {
+    const politeEnvPath = options['polite-env'] || process.env.POLITE_ENV_FILE;
     try {
-      const [row] = await appDb.query('SELECT to_regclass($1) AS t', {
-        bind: ['public.waitlist_signups'], type: Sequelize.QueryTypes.SELECT,
-      });
-      haveAppWaitlist = !!row?.t;
-      closeAppDb = () => appDb.close();
+      if (politeEnvPath) {
+        const resolved = dir.resolve(process.cwd(), politeEnvPath);
+        appDbLabel = resolved;
+        const built = politeSequelizeOptions(resolved);
+        appDb = built.url ? new Sequelize(built.url, built.options) : new Sequelize(built.options);
+      } else if (process.env.POLITE_DATABASE_URL) {
+        const url = process.env.POLITE_DATABASE_URL;
+        appDbLabel = 'POLITE_DATABASE_URL';
+        appDb = new Sequelize(url, {
+          logging: false,
+          dialectOptions: /sslmode=require/.test(url)
+            ? { ssl: { require: true, rejectUnauthorized: false } }
+            : {},
+        });
+      }
     } catch (e) {
-      console.error(`POLITE_DATABASE_URL unreachable: ${e.message}`);
-      await appDb.close().catch(() => {});
+      console.error(`polite-ai app DB config unusable (${appDbLabel}): ${e.message}`);
       appDb = null;
+    }
+    if (appDb) {
+      try {
+        const [row] = await appDb.query('SELECT to_regclass($1) AS t', {
+          bind: ['public.waitlist_signups'], type: Sequelize.QueryTypes.SELECT,
+        });
+        haveAppWaitlist = !!row?.t;
+        closeAppDb = () => appDb.close();
+        if (!haveAppWaitlist) {
+          console.error(`NOTICE: connected to the polite-ai DB via ${appDbLabel}, but it has no waitlist_signups table.`);
+        }
+      } catch (e) {
+        console.error(`polite-ai app DB unreachable (${appDbLabel}): ${e.message}`);
+        await appDb.close().catch(() => {});
+        appDb = null;
+      }
     }
   }
 
@@ -360,8 +463,9 @@ async function main() {
     console.error('');
     console.error('NOTICE: waitlist_signups is NOT in this database — polite-ai invite rows are NOT cleaned.');
     console.error('        A completed row left behind blocks re-signup under this email and keeps the emailed');
-    console.error('        invite page claiming the account exists. Set POLITE_DATABASE_URL to the polite-ai');
-    console.error("        app database (postgres://…?sslmode=require) and re-run, or delete the row there yourself.");
+    console.error('        invite page claiming the account exists. Point --polite-env (or POLITE_ENV_FILE) at');
+    console.error("        polite-ai's env file (e.g. ../polite-ai/.env.staging) and re-run — its POSTGRES_* vars");
+    console.error('        carry the client-cert mTLS material — or delete the row there yourself.');
   }
   if (dropOrg && orgId) {
     steps.push({
