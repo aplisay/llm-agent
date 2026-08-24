@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import uuid
 
 # The ``websockets`` library logs every frame it sends/receives as a hex dump
@@ -503,6 +504,63 @@ app.add_middleware(
 )
 
 
+# Watermarks for /healthz, env-overridable. The canary below is the decisive
+# check; these catch runaway accumulation before it starves the process (the
+# healthy baseline on a SIP node is ~1-2 concurrent sessions and ~25 threads).
+HEALTHZ_MAX_SESSIONS = int(os.environ.get("HEALTHZ_MAX_SESSIONS", "64"))
+HEALTHZ_MAX_THREADS = int(os.environ.get("HEALTHZ_MAX_THREADS", "400"))
+
+
+@app.get("/healthz")
+async def healthz(request: Request) -> JSONResponse:
+    """Liveness/readiness that actually detects a worker unable to run calls.
+
+    The decisive check is the THREAD-SPAWN CANARY. aiortc starts one decoder
+    thread per received track inside RTCPeerConnection's connect sequence —
+    AFTER the sender side is already up. When ``Thread.start()`` raises under
+    process resource exhaustion, every new call connects with working outbound
+    audio and no inbound audio at all: the receiver never registers with the
+    RTP router, inbound RTP is silently dropped, and the only in-log trace is a
+    deferred "Task exception was never retrieved". A bare TCP probe stays green
+    through all of that (HTTP keeps serving); this endpoint goes 503 the moment
+    the process can no longer start a thread.
+
+    Session/peer-registry and thread-count watermarks ride along as early
+    warning for the accumulation that produces the exhaustion.
+    """
+    problems: list[str] = []
+    try:
+        canary = threading.Thread(target=lambda: None, name="healthz-canary", daemon=True)
+        canary.start()
+        canary.join(1.0)
+        if canary.is_alive():
+            problems.append("thread canary did not complete within 1s")
+    except Exception as e:  # noqa: BLE001 — this is precisely the failure probed for
+        problems.append(f"cannot start threads: {type(e).__name__}: {e}")
+    live_calls = len(getattr(request.app.state, "live_calls", {}) or {})
+    peers = len(getattr(request.app.state, "webrtc_connections", {}) or {})
+    try:
+        threads = len(os.listdir("/proc/self/task"))
+    except OSError:  # non-Linux dev hosts
+        threads = threading.active_count()
+    if live_calls > HEALTHZ_MAX_SESSIONS:
+        problems.append(f"live_calls={live_calls} above {HEALTHZ_MAX_SESSIONS}")
+    if peers > HEALTHZ_MAX_SESSIONS:
+        problems.append(f"webrtc_connections={peers} above {HEALTHZ_MAX_SESSIONS}")
+    if threads > HEALTHZ_MAX_THREADS:
+        problems.append(f"threads={threads} above {HEALTHZ_MAX_THREADS}")
+    return JSONResponse(
+        {
+            "ok": not problems,
+            "live_calls": live_calls,
+            "webrtc_connections": peers,
+            "threads": threads,
+            "problems": problems,
+        },
+        status_code=200 if not problems else 503,
+    )
+
+
 @app.post("/dispatch")
 async def dispatch(request: Request, authorization: Optional[str] = Header(default=None)):
     require_dispatch_token(authorization)
@@ -684,6 +742,18 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         await existing.renegotiate(
             sdp=sdp, type=sdp_type, restart_pc=bool(body.get("restart_pc"))
         )
+        # A restart_pc renegotiation mints a FRESH pc_id: the upstream wrapper
+        # strips the old aiortc peer's listeners before closing it (so no
+        # "closed" event ever fires for the old identity) and _initialize()
+        # assigns a new id, which the answer below hands to the browser. Re-key
+        # the registry to the current id, or (a) the browser's follow-up
+        # trickle PATCH — sent with the NEW id — 404s on the very pod that owns
+        # the peer, forcing reconnects to limp through peer-reflexive ICE, and
+        # (b) the entry under the old id can never be popped and leaks for the
+        # life of the process (one leaked entry per reconnect attempt).
+        if existing.pc_id != pc_id:
+            request.app.state.webrtc_connections.pop(pc_id, None)
+            request.app.state.webrtc_connections[existing.pc_id] = existing
         answer = existing.get_answer()
         if not answer:
             raise HTTPException(

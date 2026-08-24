@@ -117,16 +117,27 @@ spec:
             - name: worker-http
               containerPort: 8082
               protocol: TCP
+          # /healthz, not a bare TCP probe: the worker's proven silent-failure
+          # mode (thread-spawn exhaustion — new calls connect with outbound
+          # audio but the per-track decoder thread can't start, so inbound RTP
+          # is dropped without a single error line) keeps accepting TCP and
+          # serving HTTP throughout. /healthz runs a thread-spawn canary plus
+          # session/thread watermarks and returns 503 in that state, so the
+          # kubelet restarts the container instead of a human deleting the pod.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: 8082
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: 8082
             initialDelaySeconds: 15
             periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 250m
