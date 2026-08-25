@@ -85,6 +85,7 @@ from .sip_gateway import (
     VoiceblenderSipGateway,
     collect_sip_headers,
 )
+from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 
@@ -732,12 +733,17 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     # SmallWebRTC client re-POSTs to the same endpoint carrying the pc_id we
     # handed back in the original answer (restart_pc=true for an ICE restart).
     # Reuse the live connection and its running pipeline rather than standing up
-    # a whole new session. Affinity caveat as on the PATCH handler: this must
-    # reach the worker that owns the pc_id.
+    # a whole new session. Like the PATCH handler, this must reach the worker
+    # that owns the pc_id, so hand it on if that is not us.
     pc_id = body.get("pc_id")
     if pc_id:
         existing = request.app.state.webrtc_connections.get(pc_id)
         if existing is None:
+            owner = await forward_to_owner(
+                method="POST", token=token, body=body, headers=request.headers
+            )
+            if owner is not None:
+                return JSONResponse(owner)
             raise HTTPException(status_code=404, detail="unknown pc_id")
         await existing.renegotiate(
             sdp=sdp, type=sdp_type, restart_pc=bool(body.get("restart_pc"))
@@ -1052,11 +1058,12 @@ async def webrtc_ice_candidate(request: Request) -> JSONResponse:
     leaves ICE restart / reconnect (restart_pc) dead.
 
     SESSION AFFINITY: the offer is stateless (self-contained token, any node
-    answers — see deploy/k8s README), but a peer lives on ONE node once created.
-    In a multi-node pool with no LB affinity a PATCH can land on a different node
-    and 404 here; the client logs and ignores that, falling back to
-    peer-reflexive discovery. Reliable trickle needs signalling affinity (a
-    single WebRTC replica, or LB sticky sessions).
+    answers — see deploy/k8s README), but a peer lives on ONE node once created,
+    and a PATCH is load-balanced independently of the POST that created it. On a
+    two-node staging pool that put five of six sessions' candidates on the wrong
+    node. Rather than depend on load-balancer stickiness — which cannot work
+    here; see webrtc_peers for why — a node that does not hold this pc_id asks
+    its siblings and returns their answer.
     """
     body = await request.json()
     token = request.query_params.get("token") or body.get("token")
@@ -1068,6 +1075,11 @@ async def webrtc_ice_candidate(request: Request) -> JSONResponse:
     pc_id = body.get("pc_id")
     pc = request.app.state.webrtc_connections.get(pc_id) if pc_id else None
     if pc is None:
+        owner = await forward_to_owner(
+            method="PATCH", token=token, body=body, headers=request.headers
+        )
+        if owner is not None:
+            return JSONResponse(owner)
         raise HTTPException(status_code=404, detail="unknown pc_id")
 
     for c in body.get("candidates") or []:
