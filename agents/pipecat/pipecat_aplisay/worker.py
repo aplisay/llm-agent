@@ -74,6 +74,7 @@ from .call_session import (
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .invocation_log import flush_invocation_logs, install_capture
+from .output_cushion import install as install_output_cushion
 from .output_underrun import install as install_underrun_stats
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
@@ -119,6 +120,9 @@ async def lifespan(app: FastAPI):
     # cushion could have covered the gap or whether the audio was never coming.
     # See output_underrun for the measurements this exists to settle.
     install_underrun_stats()
+    # ...and let the queue those stats measure actually hold something. Layered
+    # after the instrumentation so the cushioned class inherits it.
+    install_output_cushion()
 
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
