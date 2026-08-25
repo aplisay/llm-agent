@@ -1,0 +1,193 @@
+"""The output queue is allowed to run ahead, so a short stall drains it not the wire.
+
+Measured cause (see output_cushion's docstring): `write_audio_frame` awaits the
+future `add_audio_bytes` returns, and the stock track hands that future to the
+LAST chunk of the batch — so the producer is released only once the track has
+drained everything. The queue is pinned near empty by design, and a stall of
+more than a few tens of milliseconds becomes arithmetic zero on the wire.
+
+These tests pin the two properties that make the fix a fix: the producer is
+released while audio remains queued, and a stall the cushion is sized for is
+absorbed without a single silent frame. Plus the shape of the parent's queue,
+because we append to it directly and an upstream change there would break us
+quietly.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from pipecat.transports.smallwebrtc.transport import RawAudioTrack
+
+from pipecat_aplisay.output_cushion import cushioned, install
+
+RATE = 16000
+PER_CHUNK = RATE * 10 // 1000            # samples in 10 ms
+
+
+def _track(monkeypatch: pytest.MonkeyPatch, ms: int):
+    monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", str(ms))
+    return cushioned(RawAudioTrack)(sample_rate=RATE)
+
+
+def _audio(chunks: int) -> bytes:
+    return b"\x11\x11" * PER_CHUNK * chunks
+
+
+def _is_silence(frame) -> bool:
+    return not any(bytes(frame.planes[0]))
+
+
+class TestBackpressure:
+    def test_stock_behaviour_holds_the_producer_until_the_queue_drains(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The thing being fixed: nothing may accumulate."""
+
+        async def run() -> None:
+            t = _track(monkeypatch, 0)
+            fut = t.add_audio_bytes(_audio(3))
+            assert not fut.done(), "stock track releases only after the last chunk"
+            for _ in range(3):
+                await t.recv()
+            assert fut.done()
+
+        asyncio.run(run())
+
+    def test_a_cushion_releases_the_producer_while_audio_is_still_queued(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def run() -> None:
+            t = _track(monkeypatch, 60)          # 6 chunks
+            fut = t.add_audio_bytes(_audio(3))
+            assert fut.done(), "below the cushion the producer must not be held"
+            assert len(t._chunk_queue) == 3, "and the audio stays queued"
+
+        asyncio.run(run())
+
+    def test_the_producer_is_held_once_the_cushion_is_full(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It is a cushion, not an unbounded buffer — flow control still applies."""
+
+        async def run() -> None:
+            t = _track(monkeypatch, 60)
+            for _ in range(3):
+                t.add_audio_bytes(_audio(3))     # 9 chunks queued, over the cushion
+            fut = t.add_audio_bytes(_audio(3))
+            assert not fut.done(), "past the cushion the producer waits again"
+
+        asyncio.run(run())
+
+
+class TestStallsAreAbsorbed:
+    def test_sixty_ms_of_stall_produces_no_silence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The measured cluster is 20-60 ms. None of it should reach the wire."""
+
+        async def run() -> None:
+            t = _track(monkeypatch, 60)
+            # producer runs until the cushion holds it
+            while True:
+                fut = t.add_audio_bytes(_audio(3))
+                if not fut.done():
+                    break
+            # ...then stalls completely for six slots
+            frames = [await t.recv() for _ in range(6)]
+            assert not any(_is_silence(f) for f in frames), "a stall reached the wire"
+
+        asyncio.run(run())
+
+    def test_without_the_cushion_the_same_stall_reaches_the_wire(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control: same stall, stock track, silence goes out."""
+
+        async def run() -> None:
+            t = _track(monkeypatch, 0)
+            t.add_audio_bytes(_audio(3))         # all a held producer could deliver
+            frames = [await t.recv() for _ in range(6)]
+            assert sum(_is_silence(f) for f in frames) == 3
+
+        asyncio.run(run())
+
+
+class TestContract:
+    def test_an_odd_sized_write_still_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def run() -> None:
+            t = _track(monkeypatch, 60)
+            with pytest.raises(ValueError, match="multiple of 10ms"):
+                t.add_audio_bytes(b"\x00" * 7)
+
+        asyncio.run(run())
+
+    def test_the_parent_queue_is_still_chunk_future_pairs(self) -> None:
+        """We append to _chunk_queue directly; if upstream changes its shape this
+        breaks quietly, so fail loudly here instead."""
+
+        async def run() -> None:
+            stock = RawAudioTrack(sample_rate=RATE)
+            stock.add_audio_bytes(_audio(2))
+            assert len(stock._chunk_queue) == 2
+            for entry in stock._chunk_queue:
+                assert isinstance(entry, tuple) and len(entry) == 2
+                chunk, fut = entry
+                assert isinstance(chunk, (bytes, bytearray))
+                assert fut is None or isinstance(fut, asyncio.Future)
+
+        asyncio.run(run())
+
+    def test_frames_are_identical_to_the_stock_track(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def run() -> None:
+            a = RawAudioTrack(sample_rate=RATE)
+            b = _track(monkeypatch, 60)
+            a.add_audio_bytes(_audio(1))
+            b.add_audio_bytes(_audio(1))
+            fa, fb = await a.recv(), await b.recv()
+            assert fa.sample_rate == fb.sample_rate and fa.samples == fb.samples
+            assert bytes(fa.planes[0]) == bytes(fb.planes[0])
+
+        asyncio.run(run())
+
+
+class TestInstall:
+    def test_install_is_idempotent_and_disabled_by_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat.transports.smallwebrtc import transport as t
+
+        original = t.RawAudioTrack
+        try:
+            monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", "60")
+            assert install() is True
+            assert t.RawAudioTrack.__name__ == "CushionedRawAudioTrack"
+            assert install() is False
+        finally:
+            t.RawAudioTrack = original
+        monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", "0")
+        assert install() is False
+        assert t.RawAudioTrack is original
+
+    def test_it_layers_over_the_instrumented_track(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both must survive: we still want to measure what the cushion changed."""
+        from pipecat.transports.smallwebrtc import transport as t
+
+        from pipecat_aplisay.output_underrun import install as install_stats
+
+        original = t.RawAudioTrack
+        try:
+            monkeypatch.setenv("WEBRTC_UNDERRUN_STATS", "1")
+            monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", "60")
+            assert install_stats() is True
+            assert install() is True
+            made = t.RawAudioTrack(sample_rate=RATE)
+            assert hasattr(made, "underrun"), "lost the instrumentation"
+            assert made._cushion_chunks == 6
+        finally:
+            t.RawAudioTrack = original
