@@ -1,0 +1,41 @@
+# Peer discovery for WebRTC signalling — a HEADLESS sibling of pipecat-worker.
+#
+# A browser's SDP offer is stateless and any node can answer it, but the aiortc
+# peer that answering creates lives on ONE node. The trickle-ICE PATCHes and
+# renegotiation POSTs that follow are load-balanced independently, so they reach
+# the owning node only by chance (measured: 5 of 6 sessions landed wrong on a
+# two-node staging pool). The worker fixes that by asking its siblings, and this
+# is how it finds them: clusterIP None means DNS returns an A record per READY
+# pod, so `getaddrinfo("pipecat-worker-peers")` IS the peer list — no Kubernetes
+# API, no RBAC, no service account.
+#
+# Why not the existing pipecat-worker Service: it has a cluster IP, so resolving
+# it yields one virtual address that load-balances to a random pod — useless for
+# enumerating peers.
+#
+# The pods are hostNetwork, so the addresses here are node IPs, which is also
+# what the downward-API PIPECAT_SELF_IP reports — that is what lets a pod
+# exclude itself. `dnsPolicy: ClusterFirstWithHostNet` on the DaemonSet is what
+# makes cluster DNS resolvable from a host-network pod at all; without it this
+# Service exists but cannot be looked up.
+#
+# Not published to not-ready addresses on purpose: a pod that is failing its
+# health check should not be handed signalling traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipecat-worker-peers
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+  ports:
+    - name: worker-http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP

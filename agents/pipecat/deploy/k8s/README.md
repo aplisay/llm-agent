@@ -410,6 +410,16 @@ The flow: the browser calls the llm-agent server's `…/join`, gets back
 answering node** directly. The offer is self-contained from the join token, so
 any worker node can answer any offer (no session affinity).
 
+Everything *after* that offer is a different matter: the aiortc peer lives on
+the node that answered, keyed by `pc_id`, and the browser's trickle-ICE
+`PATCH`es and any renegotiation `POST` are load-balanced independently. They
+therefore reach the owning node only by chance — measured at 1 in 6 on the
+two-node staging pool. A node that does not hold the `pc_id` now **forwards to
+its siblings**, discovered through the headless `pipecat-worker-peers` Service
+(`pipecat_aplisay/webrtc_peers.py`); the request carries a marker header so a
+forward is never forwarded again. Set `WEBRTC_PEER_HOST=""` to switch it off on
+single-replica deploys.
+
 **1. Public TLS endpoint — on the EXISTING SIP LB.** The base `pipecat-worker`
 Service is ClusterIP (in-cluster only). Rather than a second LB, the
 **`components/webrtc-do`** component (already wired into `do-staging` /

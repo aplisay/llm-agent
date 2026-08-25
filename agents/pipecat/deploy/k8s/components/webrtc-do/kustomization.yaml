@@ -7,14 +7,24 @@
 # LB keeps its IP (it's the same Service / do-loadbalancer-name).
 #
 # Browsers POST /webrtc/offer to https://<fqdn>/ ; an off-cluster llm-agent POSTs
-# /dispatch there too. Sessions are pod-local: the offer and its follow-up PATCH
-# /webrtc/offer (trickle ICE) must reach the pod that owns the session — any
-# other pod 404s them. With 2 SIP nodes and no affinity we observed exactly
-# that: intermittent 404s on offer/PATCH, browser connects wedging, and one-way
-# media. sessionAffinity: ClientIP restored reliable connects (verified
-# empirically; SIP on 5061 is unaffected — each TLS dialog is one connection).
-# A durable fix is routing by the session token (or shared session state) so
-# any pod can serve any client; until then this narrows the failure window.
+# /dispatch there too. Sessions are pod-local: the first offer is stateless and
+# any pod can answer it, but everything after it (trickle-ICE PATCH,
+# renegotiation POST carrying a pc_id) must reach the pod that owns the session.
+#
+# sessionAffinity: ClientIP below is kept as a cheap first-hit optimisation, but
+# it is NOT what makes this correct, and on its own it does not work: with
+# externalTrafficPolicy: Local and one pod per node, the pod is decided by which
+# NODE the DO LB picked, and kube-proxy's affinity table is per-node — it can
+# never move a request between nodes. Measured on staging over 20 hours with
+# this setting live: 6 of 6 offer POSTs succeeded (they are stateless, so that
+# proves nothing about pinning) while 5 of 6 trickle PATCHes 404'd on the wrong
+# node.
+#
+# The correctness now comes from the worker: a pod that does not hold the pc_id
+# forwards to its siblings, found via the headless pipecat-worker-peers Service
+# (see pipecat_aplisay/webrtc_peers.py). That is the "route by session" fix this
+# comment used to call for. SIP on 5061 is unaffected either way — each TLS
+# dialog is one connection.
 #
 # Layer AFTER cloud-digitalocean (which creates the annotations object), then set
 # the per-env cert ID + LB name in the overlay:

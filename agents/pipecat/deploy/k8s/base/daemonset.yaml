@@ -113,6 +113,15 @@ spec:
                 name: pipecat-secretenv
                 optional: true
           # SIP_GATEWAY is set by each overlay (sipbridge / freeswitch / ...).
+          # Our own address, so the WebRTC signalling forwarder can exclude
+          # itself from the peer list resolved out of pipecat-worker-peers.
+          # These pods are hostNetwork, so podIP is the node IP — the same
+          # value that Service's DNS returns for us.
+          env:
+            - name: PIPECAT_SELF_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - name: worker-http
               containerPort: 8082
