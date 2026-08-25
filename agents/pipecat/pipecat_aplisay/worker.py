@@ -74,6 +74,7 @@ from .call_session import (
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .invocation_log import flush_invocation_logs, install_capture
+from .output_underrun import install as install_underrun_stats
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
@@ -112,6 +113,12 @@ async def lifespan(app: FastAPI):
     # Capture call-scoped logs into the InvocationLog buffer. Installed here (at
     # runtime, after all imports) so nothing resets loguru's handlers on us.
     install_capture()
+
+    # Count how often the WebRTC output track runs dry and, crucially, how LATE
+    # the audio was when it came back — the number that says whether an output
+    # cushion could have covered the gap or whether the audio was never coming.
+    # See output_underrun for the measurements this exists to settle.
+    install_underrun_stats()
 
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
