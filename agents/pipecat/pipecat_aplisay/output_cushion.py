@@ -70,6 +70,14 @@ def cushioned(base: type) -> type:
             cushion = self._cushion_chunks
             if cushion <= 0:
                 return super().add_audio_bytes(audio_bytes)
+            # We are reimplementing the parent's method rather than delegating,
+            # so anything it does BESIDES chunking has to be done here too. The
+            # instrumentation underneath closes its open starvation event on
+            # refill; without this the counters read zero for ever and the
+            # measurement quietly stops working.
+            note = getattr(self, "note_refill", None)
+            if note is not None:
+                note(audio_bytes)
             if len(audio_bytes) % self._bytes_per_10ms != 0:
                 # Same contract as the parent — an odd-sized write is a bug
                 # upstream and must not be silently repacked.

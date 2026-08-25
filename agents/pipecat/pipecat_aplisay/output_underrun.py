@@ -112,12 +112,23 @@ def instrumented(base: type) -> type:
             self._summary_s = float(os.environ.get("WEBRTC_UNDERRUN_SUMMARY_S", "30"))
 
         # --- observation points ------------------------------------------
+        def note_refill(self, audio_bytes: bytes) -> None:
+            """Real audio has been queued — close any open starvation event.
+
+            Separate from add_audio_bytes because a SUBCLASS may reimplement
+            that method rather than delegating to it (output_cushion does, to
+            place the backpressure future differently). When it does, it must
+            still call this, or every event stays open, nothing is ever counted
+            and the whole instrument silently reports zero.
+            """
+            if self._starved_at is not None and audio_bytes:
+                self._close(time.monotonic())
+
         def add_audio_bytes(self, audio_bytes: bytes):  # noqa: ANN201
             # The instant real audio comes back is what makes lateness
             # measurable at all; close the open event here rather than waiting
             # for the next recv(), which would add up to one slot of error.
-            if self._starved_at is not None and audio_bytes:
-                self._close(time.monotonic())
+            self.note_refill(audio_bytes)
             return super().add_audio_bytes(audio_bytes)
 
         async def recv(self):  # noqa: ANN201
