@@ -189,5 +189,19 @@ class TestInstall:
             made = t.RawAudioTrack(sample_rate=RATE)
             assert hasattr(made, "underrun"), "lost the instrumentation"
             assert made._cushion_chunks == 6
+
+            # Attributes surviving is not the same as the instrument WORKING.
+            # The cushion reimplements add_audio_bytes instead of delegating,
+            # so unless it calls the refill hook the event never closes and the
+            # counters read zero for ever — which is exactly what happened on
+            # the first call after this shipped.
+            async def starve_then_refill() -> None:
+                await made.recv()          # queue empty: starvation begins
+                await made.recv()
+                made.add_audio_bytes(_audio(1))
+
+            asyncio.run(starve_then_refill())
+            assert made.underrun.events == 1, "the cushion swallowed the measurement"
+            assert made.underrun.max_gap_ms == pytest.approx(20.0)
         finally:
             t.RawAudioTrack = original
