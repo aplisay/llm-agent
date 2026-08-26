@@ -70,6 +70,7 @@ class UnderrunStats:
         self.chunks_filled = 0            # 10 ms slots filled with zeroes
         self.max_gap_ms = 0.0
         self.late_ms: list[float] = []    # one per event that was refilled
+        self.gap_hist: dict[str, int] = {}  # gap size distribution, for the summary
         self.never_refilled = 0           # starved and the track ended first
         self.depth = {label: 0 for _, label in _BUCKETS}
         self.depth[">10"] = 0
@@ -85,6 +86,12 @@ class UnderrunStats:
     def silence_ms(self) -> float:
         return self.chunks_filled * self.chunk_ms
 
+    def note_gap(self, gap_ms: float) -> None:
+        b = ("<=20 ms" if gap_ms <= 20 else "21-50 ms" if gap_ms <= 50
+             else "51-100 ms" if gap_ms <= 100 else "101-250 ms" if gap_ms <= 250
+             else ">250 ms")
+        self.gap_hist[b] = self.gap_hist.get(b, 0) + 1
+
     def summary(self) -> str:
         if not self.events:
             return f"no output underruns in {self.recvs} slots"
@@ -95,6 +102,8 @@ class UnderrunStats:
         depth = " ".join(
             f"{k}:{100.0 * v / max(1, self.recvs):.0f}%" for k, v in self.depth.items() if v
         )
+        order = ("<=20 ms", "21-50 ms", "51-100 ms", "101-250 ms", ">250 ms")
+        gaps = " ".join(f"{k}:{self.gap_hist[k]}" for k in order if k in self.gap_hist)
         inflight = ""
         if self.inflight_at_starve:
             arr = sorted(self.inflight_at_starve)
@@ -105,8 +114,8 @@ class UnderrunStats:
             f"output underruns: {self.events} events, {self.silence_ms:.0f} ms of inserted "
             f"silence over {self.recvs * self.chunk_ms / 1000:.0f} s, worst gap "
             f"{self.max_gap_ms:.0f} ms; refill lateness p50 {p50:.0f} ms / p90 {p90:.0f} ms / "
-            f"max {worst:.0f} ms ({self.never_refilled} never refilled); queue depth {depth}"
-            + inflight
+            f"max {worst:.0f} ms ({self.never_refilled} never refilled); gaps {gaps}; "
+            f"queue depth {depth}" + inflight
         )
 
 
@@ -122,9 +131,14 @@ def instrumented(base: type) -> type:
             self._starved_slots = 0
             self.queued_ms = 0.0            # audio handed to this track, ever
             self.inflight_probe = None      # set by OutputCushionInterrupt
-            self._last_summary = time.monotonic()
-            self._event_log_ms = float(os.environ.get("WEBRTC_UNDERRUN_LOG_MS", "20"))
-            self._summary_s = float(os.environ.get("WEBRTC_UNDERRUN_SUMMARY_S", "30"))
+            # Per-event logging is OFF by default and exists only for a
+            # deliberate debugging session. Degradation that is survivable but
+            # quality-impacting hits every concurrent call at once: at ~50
+            # events per call, a pod carrying a few dozen calls through a bad
+            # minute would emit thousands of lines a second, burning the CPU
+            # and log bandwidth that the degradation is already eating. Set
+            # WEBRTC_UNDERRUN_LOG_MS to a gap size to turn it back on.
+            self._event_log_ms = float(os.environ.get("WEBRTC_UNDERRUN_LOG_MS", "0"))
 
         # --- observation points ------------------------------------------
         def note_refill(self, audio_bytes: bytes) -> None:
@@ -166,9 +180,7 @@ def instrumented(base: type) -> type:
                             pass
                 self._starved_slots += 1
                 st.chunks_filled += 1
-            frame = await super().recv()
-            self._maybe_summarise()
-            return frame
+            return await super().recv()
 
         # --- bookkeeping --------------------------------------------------
         def _close(self, now: float) -> None:
@@ -178,7 +190,8 @@ def instrumented(base: type) -> type:
             st.events += 1
             st.max_gap_ms = max(st.max_gap_ms, gap_ms)
             st.late_ms.append(late_ms)
-            if gap_ms >= self._event_log_ms:
+            st.note_gap(gap_ms)
+            if self._event_log_ms > 0 and gap_ms >= self._event_log_ms:
                 # The verdict this line exists to support: a lateness of a few
                 # tens of ms means a cushion would have covered it; a lateness
                 # far larger than the gap means the audio was never coming.
@@ -189,19 +202,11 @@ def instrumented(base: type) -> type:
             self._starved_at = None
             self._starved_slots = 0
 
-        def _maybe_summarise(self) -> None:
-            now = time.monotonic()
-            if now - self._last_summary < self._summary_s:
-                return
-            self._last_summary = now
-            if self.underrun.events:
-                logger.info(self.underrun.summary())
-
         def stop(self) -> None:  # noqa: ANN201
             if self._starved_at is not None:
                 self.underrun.never_refilled += 1
                 self._starved_at = None
-            if self.underrun.events:
+            if self.underrun.recvs:
                 logger.info(f"track finished — {self.underrun.summary()}")
             return super().stop()
 
