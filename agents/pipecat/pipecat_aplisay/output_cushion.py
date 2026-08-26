@@ -42,7 +42,48 @@ even after a barge-in. That is true today at up to 5 chunks; this raises the
 ceiling to ``cushion``, so an interrupted bot may talk over the caller for a few
 tens of milliseconds longer than it does now.
 
-``WEBRTC_OUTPUT_CUSHION_MS=0`` restores the stock lock-step behaviour.
+THE KNOBS, AND WHAT ``WEBRTC_OUTPUT_TARGET_MS`` ACTUALLY DOES
+------------------------------------------------------------
+``WEBRTC_OUTPUT_TARGET_MS`` (300) is a **ceiling on the stretcher, not a depth
+the queue reaches.** Measured on staging: with it at 300 the queue never
+exceeded 10 chunks — 100 ms — because backpressure still releases at
+``WEBRTC_OUTPUT_CUSHION_MS`` (60). The producer is held once the queue passes
+the hard cushion, so stretching can push depth to roughly cushion+4 and no
+further. The target only ever stops the stretcher going higher.
+
+That is deliberate as it stands, because the result was good: pause-stretching
+took mid-speech starvation from 39 events per call to 1, at an effective cushion
+of 60-100 ms. Raising the release point to the target instead would triple the
+audio queued behind an interrupting caller for no measured benefit — the
+experiment below says the depth was never the binding constraint.
+
+Do not "fix" this by keying the release point to the target without re-running
+that measurement. If the knob's name is the problem, rename the knob.
+
+WHAT THE RELEASE POINT IS *NOT* FOR
+-----------------------------------
+Tested directly (staging, 2026-08-26): ``WEBRTC_OUTPUT_CUSHION_MS=300`` with
+``WEBRTC_STRETCH_EVERY=0`` — release backpressure at 30 chunks, no stretching.
+The queue **still never exceeded 10 chunks** and mid-speech starvation was
+essentially unchanged (36 events, 5.38 ms/s against 6.46 stock). The producer
+was free to run 300 ms ahead and could not: there was no audio to buffer.
+
+So Ultravox really does deliver at about realtime with no surplus, and the
+transport's own audio queue is an UNBOUNDED ``asyncio.Queue`` — holding the
+track's future never back-pressures anything upstream. Releasing backpressure
+later achieves almost nothing; the stretcher works precisely because it
+MANUFACTURES slack that does not otherwise exist.
+
+  ================================  =========  ==============
+  configuration                     starves    ms/s of speech
+  ================================  =========  ==============
+  60 ms release, no stretch              39              6.46
+  300 ms release, no stretch             36              5.38
+  60 ms release + pause-stretch           1              0.06
+  ================================  =========  ==============
+
+``WEBRTC_OUTPUT_CUSHION_MS=0`` restores the stock lock-step behaviour;
+``WEBRTC_STRETCH_EVERY=0`` keeps the hard cushion but disables stretching.
 """
 
 from __future__ import annotations
