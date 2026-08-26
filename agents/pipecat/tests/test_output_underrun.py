@@ -175,3 +175,78 @@ class TestInstall:
             assert bytes(a.planes[0]) == bytes(b.planes[0])
 
         asyncio.run(run())
+
+
+class TestItStaysQuiet:
+    """One line per call, and only at the end.
+
+    Degradation that is survivable but quality-impacting hits every concurrent
+    call at once. At ~50 events per call, a pod carrying a few dozen calls
+    through a bad minute would emit thousands of lines a second — burning the
+    CPU and log bandwidth that the degradation is already eating, which is the
+    last thing wanted at that moment.
+    """
+
+    def _capture(self):
+        from loguru import logger
+
+        lines: list[str] = []
+        sink = logger.add(lines.append, format="{message}", level="DEBUG")
+        return lines, (lambda: logger.remove(sink))
+
+    def _starve_and_refill(self, t) -> None:
+        async def run() -> None:
+            for _ in range(4):
+                await t.recv()
+            t.add_audio_bytes(_audio())
+
+        asyncio.run(run())
+
+    def test_no_per_event_line_by_default(self) -> None:
+        lines, stop = self._capture()
+        try:
+            t = _track()
+            self._starve_and_refill(t)
+            assert t.underrun.events == 1, "the event must still be COUNTED"
+            assert not [l for l in lines if "output underrun:" in l], lines
+        finally:
+            stop()
+
+    def test_per_event_logging_can_be_switched_back_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kept for a deliberate debugging session, not for normal running."""
+        monkeypatch.setenv("WEBRTC_UNDERRUN_LOG_MS", "20")
+        lines, stop = self._capture()
+        try:
+            self._starve_and_refill(_track())
+            assert [l for l in lines if "output underrun:" in l], lines
+        finally:
+            stop()
+
+    def test_the_summary_carries_the_gap_distribution(self) -> None:
+        """Since the per-event lines are gone, the one summary has to say what
+        the gaps looked like or the detail is simply lost."""
+        t = _track()
+        self._starve_and_refill(t)
+        assert "gaps" in t.underrun.summary()
+        assert "<=20 ms" in t.underrun.summary() or "21-50 ms" in t.underrun.summary()
+
+    def test_the_summary_fires_even_with_nothing_to_report(self) -> None:
+        """The depth histogram is the diagnostic, and it is meaningful whether
+        or not anything starved."""
+
+        async def run() -> None:
+            t = _track()
+            t.add_audio_bytes(_audio(3))
+            for _ in range(3):
+                await t.recv()
+            assert t.underrun.events == 0
+            lines, stop = self._capture()
+            try:
+                t.stop()
+                assert [l for l in lines if "track finished" in l], lines
+            finally:
+                stop()
+
+        asyncio.run(run())
