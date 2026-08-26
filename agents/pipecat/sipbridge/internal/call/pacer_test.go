@@ -335,3 +335,111 @@ func TestPacerOverflowBounded(t *testing.T) {
 		t.Fatalf("queue grew past cap: %d", d)
 	}
 }
+
+// --- starvation accounting -------------------------------------------------
+//
+// The pacer fills an empty slot with codec silence, which is correct for a SIP
+// UA but makes running dry invisible: the wire looks perfect and the caller
+// hears a hole. On the WebRTC path the same blind spot needed a purpose-built
+// rig to find. These pin the counters that would make it announce itself here.
+
+// fillFn reuses the package's existing silenceFill payload so a filled slot
+// stays distinguishable from speech (see isFill above).
+func fillFn() []byte { return silenceFill }
+
+// TestPacerCountsAShortStarve: a brief run of fill that ends with real audio is
+// the queue running dry mid-utterance — the case that is audible.
+func TestPacerCountsAShortStarve(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{sendFn: rec.send, fill: fillFn}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	p.enqueue(payloadsN(2))
+	time.Sleep(3 * paceFrame) // drains, then starves
+	time.Sleep(3 * paceFrame) // ~3 filled slots
+	p.enqueue(payloadsN(2))   // real audio resumes: the run ends here
+	time.Sleep(4 * paceFrame)
+
+	p.mu.Lock()
+	events, frames, worst := p.starveEvents, p.starveFrames, p.starveMaxRun
+	p.mu.Unlock()
+	if events != 1 {
+		t.Fatalf("starveEvents = %d, want 1", events)
+	}
+	if frames == 0 || frames > maxStarveRun {
+		t.Fatalf("starveFrames = %d, want a short run", frames)
+	}
+	if worst == 0 {
+		t.Fatalf("starveMaxRun = 0, want the length of the run")
+	}
+}
+
+// TestPacerIgnoresALongQuietPeriod: the bot simply not talking must not be
+// counted as starvation. Getting this wrong on the Python side made a 9.8 s
+// caller turn read as a 9.8 s "underrun".
+func TestPacerIgnoresALongQuietPeriod(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{sendFn: rec.send, fill: fillFn}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	p.enqueue(payloadsN(1))
+	time.Sleep(2 * paceFrame)
+	// a quiet stretch longer than the threshold, then speech again
+	p.mu.Lock()
+	p.silentRun = maxStarveRun + 10
+	p.mu.Unlock()
+	p.enqueue(payloadsN(1))
+	time.Sleep(3 * paceFrame)
+
+	p.mu.Lock()
+	events := p.starveEvents
+	p.mu.Unlock()
+	if events != 0 {
+		t.Fatalf("starveEvents = %d, want 0 — a long quiet run is not a fault", events)
+	}
+}
+
+// TestPacerRecordsQueueDepth: time spent shallow is the thing that makes a
+// hiccup audible, so the histogram has to reflect the queue the slot saw.
+func TestPacerRecordsQueueDepth(t *testing.T) {
+	rec := &sendRecorder{}
+	p := &pacer{sendFn: rec.send, fill: fillFn}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx)
+
+	p.enqueue(payloadsN(8))
+	time.Sleep(10 * paceFrame)
+
+	p.mu.Lock()
+	slots, hist := p.slots, p.depthHist
+	p.mu.Unlock()
+	if slots == 0 {
+		t.Fatal("no slots recorded")
+	}
+	total := 0
+	for _, n := range hist {
+		total += n
+	}
+	if total != slots {
+		t.Fatalf("histogram totals %d, slots %d — every slot must be bucketed", total, slots)
+	}
+	if hist[depthBucket(6)] == 0 && hist[depthBucket(8)] == 0 {
+		t.Fatalf("depth never recorded above 5 despite an 8-deep queue: %v", hist)
+	}
+}
+
+func TestDepthBucketBoundaries(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want int
+	}{{0, 0}, {1, 1}, {2, 1}, {3, 2}, {5, 2}, {6, 3}, {10, 3}, {11, 4}, {3000, 4}} {
+		if got := depthBucket(c.n); got != c.want {
+			t.Errorf("depthBucket(%d) = %d, want %d", c.n, got, c.want)
+		}
+	}
+}
