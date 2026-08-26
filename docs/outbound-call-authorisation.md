@@ -115,5 +115,6 @@ Notes:
 | `POST /api/listener/{id}/originate` | in-process, all handlers |
 | LiveKit worker `transfer` (blind, consultative, bridge) | `validateTransferArgs` → internal endpoint |
 | Pipecat worker `transfer` (blind, consultative, WebRTC relay) | `_on_transfer` → `outbound_filter.py` → internal endpoint |
-| Pipecat worker `fallback.number` | same gate as a tool-call transfer |
+| LiveKit worker `fallback.number` | same gate as a tool-call transfer (`transferOnly` → `handleTransfer`) |
+| Pipecat worker `fallback.number` | same gate as a tool-call transfer (`authorise_destination` before the blind transfer) |
 | jambonz / native Ultravox | no outbound or transfer capability; nothing to gate |
