@@ -207,7 +207,16 @@ def instrumented(base: type) -> type:
                 self.underrun.never_refilled += 1
                 self._starved_at = None
             if self.underrun.recvs:
-                logger.info(f"track finished — {self.underrun.summary()}")
+                # The cushion counts its own pause-repeats but has nowhere to
+                # report them; ride the one per-call line rather than add a
+                # second. Without this there is no way to tell the stretcher
+                # fired at all, short of inferring it from the depth histogram.
+                banked = getattr(self, "stretched_chunks", 0)
+                extra = ""
+                if banked:
+                    extra = (f"; stretched {banked} chunks "
+                             f"({banked * self.underrun.chunk_ms:.0f} ms banked from pauses)")
+                logger.info(f"track finished — {self.underrun.summary()}{extra}")
             return super().stop()
 
     _InstrumentedRawAudioTrack.__name__ = "InstrumentedRawAudioTrack"

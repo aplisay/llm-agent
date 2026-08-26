@@ -423,3 +423,33 @@ class TestInflightProbe:
             assert proc._forwarded_ms == pytest.approx(50.0)
 
         asyncio.run(run())
+
+
+class TestStretcherIsVisible:
+    def test_the_per_call_line_reports_what_the_stretcher_banked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Counted but never logged is the same as not measured — that gap cost
+        a run's worth of ambiguity about whether the stretcher had fired."""
+        from loguru import logger
+
+        from pipecat_aplisay.output_underrun import instrumented
+
+        monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", "60")
+        lines: list[str] = []
+        sink = logger.add(lines.append, format="{message}", level="INFO")
+        try:
+            t = cushioned(instrumented(RawAudioTrack))(sample_rate=RATE)
+
+            async def run() -> None:
+                t.add_audio_bytes(b"\x05\x00" * PER_CHUNK * 9)   # quiet: stretchable
+                await t.recv()
+
+            asyncio.run(run())
+            assert t.stretched_chunks == 3
+            t.stop()
+            banked = [l for l in lines if "stretched 3 chunks" in l]
+            assert banked, lines
+            assert "banked from pauses" in banked[0]
+        finally:
+            logger.remove(sink)
