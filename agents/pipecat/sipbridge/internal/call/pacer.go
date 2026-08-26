@@ -87,7 +87,6 @@ type pacer struct {
 	starveEvents int    // runs of fill that ended with real audio resuming
 	starveFrames int    // total filled slots attributed to those runs
 	starveMaxRun int    // longest such run, in frames
-	lastStats    time.Time
 }
 
 // depthBucket indexes depthHist. Time spent at 0 or 1-2 is time with no
@@ -166,8 +165,6 @@ const (
 	// sits an order of magnitude clear of the former and well below the
 	// latter.
 	maxStarveRun = 25 // frames, 500 ms at 20 ms/frame
-	// paceStatsInterval bounds how often a starving pacer reports itself.
-	paceStatsInterval = 30 * time.Second
 )
 
 // enqueue appends encoded payloads for paced sending. Payloads beyond the
@@ -226,6 +223,11 @@ func (p *pacer) run(ctx context.Context) {
 	// One line per call, whatever the exit path. The depth histogram is worth
 	// having even when nothing starved: time spent at depth 0-2 is time with
 	// no cushion, which is the condition that turns a hiccup into a hole.
+	// ONE line per call, and only at the end. Degradation that is survivable
+	// but quality-impacting hits every concurrent connection at once, so
+	// anything per-event — or even periodic — turns a bad minute into
+	// thousands of log lines a second across the pod, costing exactly the CPU
+	// and log bandwidth that the degradation is already eating.
 	defer func() {
 		p.mu.Lock()
 		p.logStatsLocked("call ended")
@@ -285,14 +287,6 @@ func (p *pacer) run(ctx context.Context) {
 		// pacer is not driving the media path.
 		p.slots++
 		p.depthHist[depthBucket(len(p.queue))]++
-		if now := time.Now(); p.lastStats.IsZero() {
-			p.lastStats = now
-		} else if now.Sub(p.lastStats) >= paceStatsInterval {
-			p.lastStats = now
-			if p.starveEvents > 0 {
-				p.logStatsLocked("periodic")
-			}
-		}
 		var payload []byte
 		if len(p.queue) > 0 {
 			payload = p.queue[0]
