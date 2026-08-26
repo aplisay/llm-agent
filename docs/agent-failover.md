@@ -45,6 +45,7 @@ When an agent fails to start (e.g., model connection timeout, unsupported model,
    - If none of the above is configured (or they fail), the call is transferred
    - The system performs a blind transfer to the specified phone number or endpoint ID
    - The transfer uses the same mechanisms as the builtin `transfer` function, this is a bridged transfer by default.
+   - Including its authorisation: the destination is checked when it is dialled, so a number the outbound call filter does not admit is refused mid-outage — see [The fallback number is authorised when it is dialled](#the-fallback-number-is-authorised-when-it-is-dialled)
    - This is the final fallback option
 
 ### When Failover is Triggered
@@ -71,6 +72,8 @@ this is only useful to recover from failure of a single LLM vendor to accept a c
 If the Aplisay platform itself is degraded by e.g. a Livekit failure then it is likely that the failover option will be of limited use.
 
 Failover operates on the LiveKit and Pipecat agent runtimes. It does not operate on legacy Jambonz agents, nor on platform-specific (e.g. native Ultravox) WebRTC agents — those stacks own their own session lifecycle and never enter the fallback chain.
+
+A configured `fallback.number` is still handed to those stacks as `metadata.aplisay.fallbackNumbers`, so the model can see it as context. Nothing dials it on their behalf, and no agent, model or message fallback is attempted: on those runtimes the option is information, not a mechanism.
 
 #### Voices
 
@@ -199,9 +202,24 @@ To configure a number-level fallback (transfer), specify a phone number or endpo
 ```
 
 When all higher-priority fallbacks are exhausted or unavailable, the system will:
+- Authorise the destination, exactly as it would for a tool-call transfer
 - Perform a blind transfer to the specified number
 - The transfer uses the same mechanisms as the builtin `transfer` function
 - The call lifecycle is managed by the transfer system
+
+#### The fallback number is authorised when it is dialled
+
+A fallback number is configured by the agent's author rather than chosen by a model, but it still puts a leg out of the platform — possibly over one of our carrier trunks. It therefore clears exactly the same gate as a tool-call `transfer`. Both workers ask `POST /api/agent-db/outbound-authorisation` and the single policy in `lib/outbound-authorisation.js` decides: LiveKit arrives there through its transfer handler, Pipecat through `outbound_filter.authorise_destination`. Neither worker carries its own copy of the rules.
+
+What that means for a number you are about to configure:
+
+- **On an egress we do not pay for** — a registration B2BUA to the customer's own PBX, a BYO trunk — the agent's `options.outboundCallFilter` is authoritative, defaulting to UK geographic, non-geographic and mobile numbers (`^(\+44|44|0)[1237]\d{6,15}$`). A fallback number outside that range needs the filter widened to admit it. Note what the default excludes: any international destination, and UK `08`/`09` ranges — an `0800` overflow line does **not** pass the default filter.
+- **On one of our chargeable carrier trunks** the operator's per-trunk filter plus a rateable destination decide, and the agent's own filter may only narrow that further, never widen it. A number the operator's filter does not admit is refused whatever the agent is configured with.
+- **The gate fails closed.** If the authorisation decision cannot be obtained at all, the destination is refused rather than allowed.
+
+The trap is the timing. Unlike `options.fallback.message`, whose `voice` and `vendor` are validated when the agent is saved, **`number` is never checked against the filter at write time** — the agent saves cleanly and nothing warns. The refusal then lands at the one moment the option exists for: the agent has already failed to start, and the transfer meant to rescue the call is declined on the spot. The call ends in failure exactly as it would have with no fallback number configured, logging `transfer refused: destination not authorised` and `fallback transfer refused` on Pipecat, or `Invalid number: …` and `Fallback transfer failed` on LiveKit.
+
+So a fallback number that is not an ordinary UK landline or mobile — an international answering service, an `0800` overflow number, a supplier abroad — is worth checking against the filter that will be applied to it, and worth proving with a real failover rather than assuming. The full policy, including which trunks count as chargeable, is in [Outbound call authorisation](./outbound-call-authorisation.md).
 
 #### Combined Fallback Configuration
 
@@ -410,6 +428,7 @@ Without `message` configured, step 2 onwards is replaced by an immediate busy re
    - Number fallback as a last resort to human operators
 3. **Avoid Circular References**: Don't create fallback chains that reference each other
 4. **Consider Costs**: Each fallback attempt may incur LLM costs, different models have different token or per minute costs
+5. **Check the Fallback Number Against the Outbound Filter**: `number` is authorised when it is dialled, never when the agent is saved. A destination the agent's `outboundCallFilter` — or, on a chargeable trunk, the operator's — does not admit is refused at precisely the moment the fallback was needed. See [The fallback number is authorised when it is dialled](#the-fallback-number-is-authorised-when-it-is-dialled)
 
 ## API Reference
 
@@ -422,13 +441,14 @@ The `options.fallback` object supports the following properties:
 - `agent` (string, optional): UUID of a fallback agent
 - `model` (string, optional): Model name for fallback (e.g., `"livekit:openai/gpt-4.1-mini"`)
 - `message` (object, optional): Fixed announcement spoken to the caller. Takes `text` (required, max 1000 characters) plus optional `vendor`, `voice`, and `language`. There is no bare-string form. For a pipeline agent these default to the matching `options.tts` value; for a realtime agent only `language` is inherited, and the worker's default TTS voice is used unless `vendor`/`voice` are stated — see [Realtime agents](#realtime-agents-ultravox-openai-realtime-gemini-live)
-- `number` (string, optional): Phone number or endpoint ID for fallback transfer (E.164 format or endpoint UUID)
+- `number` (string, optional): Phone number or endpoint ID for fallback transfer (E.164 format or endpoint UUID). Authorised against the outbound call filter when it is dialled, not when the agent is saved — see [The fallback number is authorised when it is dialled](#the-fallback-number-is-authorised-when-it-is-dialled)
 
 All properties are optional, but at least one should be specified for failover to be useful.
 
 ### Related Documentation
 
 - [Call Transfers](./call-transfers.md) - Details on the transfer mechanism used by number fallback
+- [Outbound call authorisation](./outbound-call-authorisation.md) - The policy a fallback number is checked against when it is dialled
 - [API Documentation](https://llm.aplisay.com/api) - Complete API reference
 - [Agent Options Schema](https://llm.aplisay.com/api#/components/schemas/AgentOptions) - Full schema definition
 
@@ -460,5 +480,6 @@ Configuring `options.fallback.message` deliberately answers calls that would oth
 ### Transfer Fallback Not Working
 
 - **Verify number format**: Use E.164 format (e.g., `+441234567890`) or valid endpoint ID
+- **Check the destination clears the outbound filter**: look for `fallback transfer refused` (Pipecat) or `Invalid number:` / `Fallback transfer failed` (LiveKit). The number is authorised when it is dialled, not when the agent is saved, so a destination outside the agent's `outboundCallFilter` — or outside the operator's filter on a chargeable trunk — is declined here even though the agent saved cleanly. See [The fallback number is authorised when it is dialled](#the-fallback-number-is-authorised-when-it-is-dialled)
 - **Check outbound calling**: Ensure outbound calling is enabled for the provider trunk
 - **Review transfer documentation**: See [Call Transfers](./call-transfers.md) for transfer requirements
