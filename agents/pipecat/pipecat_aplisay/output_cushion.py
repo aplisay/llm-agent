@@ -49,11 +49,19 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
+from typing import Any, Optional
 
+import numpy as np
 from loguru import logger
+from pipecat.frames.frames import Frame, InterruptionFrame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 DEFAULT_CUSHION_MS = 60
+DEFAULT_TARGET_MS = 300
+DEFAULT_STRETCH_QUIET_DBFS = -50.0
+#: Duplicate one quiet chunk in every N — a ~33% stretch of pause regions, which
+#: is what the measurement below is sized against.
+DEFAULT_STRETCH_EVERY = 3
 
 
 def cushioned(base: type) -> type:
@@ -65,6 +73,13 @@ def cushioned(base: type) -> type:
             ms = float(os.environ.get("WEBRTC_OUTPUT_CUSHION_MS", DEFAULT_CUSHION_MS))
             chunk_ms = 1000.0 * self._samples_per_10ms / max(1, self._sample_rate)
             self._cushion_chunks = max(0, int(round(ms / chunk_ms)))
+            target = float(os.environ.get("WEBRTC_OUTPUT_TARGET_MS", DEFAULT_TARGET_MS))
+            self._target_chunks = max(self._cushion_chunks, int(round(target / chunk_ms)))
+            db = float(os.environ.get("WEBRTC_STRETCH_QUIET_DBFS", DEFAULT_STRETCH_QUIET_DBFS))
+            self._quiet_peak = 32767.0 * (10.0 ** (db / 20.0))
+            self._stretch_every = max(0, int(os.environ.get("WEBRTC_STRETCH_EVERY", DEFAULT_STRETCH_EVERY)))
+            self._quiet_seen = 0
+            self.stretched_chunks = 0
 
         def add_audio_bytes(self, audio_bytes: bytes):  # noqa: ANN201
             cushion = self._cushion_chunks
@@ -95,6 +110,17 @@ def cushioned(base: type) -> type:
             release = max(0, len(chunks) - 1 - cushion)
             for i, chunk in enumerate(chunks):
                 self._chunk_queue.append((chunk, future if i == release else None))
+                # Build the cushion out of the agent's own pauses. A quarter of
+                # in-turn agent audio is pause (measured: 60 s in 240 s, ~360
+                # runs of >=40 ms), so repeating one quiet chunk in three banks
+                # ~67 ms of cushion per second of audio — 13x what a flat 95%
+                # playout rate would yield, and inaudible, because a repeated
+                # near-silent frame has no pitch to shift and no transient to
+                # smear. Voiced audio is never touched: that would need WSOLA,
+                # and these pods have little CPU to spare.
+                if self._should_stretch(chunk):
+                    self._chunk_queue.append((chunk, None))
+                    self.stretched_chunks += 1
 
             # While the queue is still shallower than the cushion, do not hold
             # the producer at all: this is what lets the cushion form at the
@@ -103,8 +129,72 @@ def cushioned(base: type) -> type:
                 future.set_result(True)
             return future
 
+        def _should_stretch(self, chunk: bytes) -> bool:
+            """May this chunk be repeated to lengthen a pause?"""
+            if self._stretch_every <= 0 or len(self._chunk_queue) >= self._target_chunks:
+                return False
+            samples = np.frombuffer(chunk, dtype=np.int16)
+            if samples.size == 0 or np.abs(samples).max() > self._quiet_peak:
+                self._quiet_seen = 0          # voiced: never stretch, and reset
+                return False
+            self._quiet_seen += 1
+            return self._quiet_seen % self._stretch_every == 0
+
+        def clear(self) -> int:
+            """Drop everything queued — the caller has interrupted.
+
+            Without this the cushion is a liability: the track plays out whatever
+            it holds no matter what the pipeline decides, so a deeper queue means
+            the agent talks over the caller for longer. Any future still riding a
+            dropped chunk MUST be resolved here or write_audio_frame waits on it
+            for ever and the leg goes silent.
+            """
+            n = len(self._chunk_queue)
+            for _chunk, fut in self._chunk_queue:
+                if fut is not None and not fut.done():
+                    fut.set_result(True)
+            self._chunk_queue.clear()
+            self._quiet_seen = 0
+            return n
+
     _CushionedRawAudioTrack.__name__ = "CushionedRawAudioTrack"
     return _CushionedRawAudioTrack
+
+
+class OutputCushionInterrupt(FrameProcessor):
+    """Empty the output track's queue the moment the caller interrupts.
+
+    The track sits below the transport and nothing upstream can reach it, so
+    clearing the transport's own buffers is not enough: whatever the track holds
+    still goes on the wire. That is tolerable at the 60 ms hard cushion and not
+    at a 300 ms stretched one, which is why this ships with the stretcher rather
+    than after it.
+
+    Place it immediately before ``transport.output()`` so it sees the
+    InterruptionFrame on its way down.
+    """
+
+    def __init__(self, *, output_transport: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._output = output_transport
+
+    def _track(self) -> Optional[Any]:
+        # transport.output() -> SmallWebRTCClient -> the live RawAudioTrack.
+        # Both hops are private, so a test pins this path: if pipecat renames
+        # either, that test fails instead of barge-in quietly regressing.
+        client = getattr(self._output, "_client", None)
+        return getattr(client, "_audio_output_track", None) if client else None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame):
+            track = self._track()
+            clear = getattr(track, "clear", None)
+            if callable(clear):
+                dropped = clear()
+                if dropped:
+                    logger.debug(f"interruption: dropped {dropped} queued output chunks")
+        await self.push_frame(frame, direction)
 
 
 def install() -> bool:

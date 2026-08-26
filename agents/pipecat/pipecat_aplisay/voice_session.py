@@ -38,6 +38,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
 from .tool_log import log_tool_call, log_tool_result
 
@@ -1244,6 +1245,11 @@ async def _build_realtime(
     # stream resampler at the wrong ratio and mute the call. See
     # output_rate_guard for the incident this prevents recurring.
     rate_guard = OutputRateGuard(output_transport=transport.output())
+    # Barge-in has to reach BELOW the transport: the output track plays out
+    # whatever it holds regardless of what the pipeline decides, so the cushion
+    # that protects against starvation would otherwise become tail-talk over an
+    # interrupting caller. Inert unless the cushioned track is installed.
+    cushion_interrupt = OutputCushionInterrupt(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped.
@@ -1257,6 +1263,7 @@ async def _build_realtime(
         *tone,
         *relay_inject,
         rate_guard,
+        cushion_interrupt,
         transport.output(),
     ]
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
