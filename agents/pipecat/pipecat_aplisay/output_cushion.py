@@ -53,7 +53,7 @@ from typing import Any, Optional
 
 import numpy as np
 from loguru import logger
-from pipecat.frames.frames import Frame, InterruptionFrame
+from pipecat.frames.frames import Frame, InterruptionFrame, OutputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 DEFAULT_CUSHION_MS = 60
@@ -172,11 +172,23 @@ class OutputCushionInterrupt(FrameProcessor):
 
     Place it immediately before ``transport.output()`` so it sees the
     InterruptionFrame on its way down.
+
+    It also carries the IN-FLIGHT PROBE, because it is the only place that holds
+    both halves of the measurement: every OutputAudioRawFrame passes through here
+    on its way to the transport, and the track is reachable from here too. The
+    difference between what we have forwarded and what the track has received is
+    exactly the audio sitting in the transport's own (unbounded) queue. Sampled
+    when a starve begins, that number answers the question nothing else can: did
+    the audio EXIST and we failed to move it, or had it not arrived at all? The
+    two have opposite fixes, so the same class does both jobs rather than
+    resolving the track twice.
     """
 
     def __init__(self, *, output_transport: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._output = output_transport
+        self._forwarded_ms = 0.0
+        self._wired: Any = None
 
     def _track(self) -> Optional[Any]:
         # transport.output() -> SmallWebRTCClient -> the live RawAudioTrack.
@@ -185,8 +197,22 @@ class OutputCushionInterrupt(FrameProcessor):
         client = getattr(self._output, "_client", None)
         return getattr(client, "_audio_output_track", None) if client else None
 
+    def _wire_probe(self) -> None:
+        """Give the track a way to ask how much audio is still in flight."""
+        track = self._track()
+        if track is None or track is self._wired:
+            return
+        if hasattr(track, "inflight_probe"):
+            track.inflight_probe = lambda: self._forwarded_ms
+            self._wired = track
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
+        if isinstance(frame, OutputAudioRawFrame) and frame.audio:
+            rate = getattr(frame, "sample_rate", 0) or 0
+            if rate:
+                self._forwarded_ms += 1000.0 * (len(frame.audio) / 2) / rate
+            self._wire_probe()
         if isinstance(frame, InterruptionFrame):
             track = self._track()
             clear = getattr(track, "clear", None)
