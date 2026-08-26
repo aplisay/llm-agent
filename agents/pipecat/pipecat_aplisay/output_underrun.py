@@ -74,6 +74,12 @@ class UnderrunStats:
         self.depth = {label: 0 for _, label in _BUCKETS}
         self.depth[">10"] = 0
         self.recvs = 0
+        #: ms of audio already forwarded downstream but not yet handed to the
+        #: track, sampled at the instant each starve began. Non-zero means the
+        #: audio EXISTED and we simply had not moved it — the starve is ours.
+        #: Zero means nothing had arrived from upstream. Nothing else in the
+        #: system distinguishes those two, and they call for opposite fixes.
+        self.inflight_at_starve: list[float] = []
 
     @property
     def silence_ms(self) -> float:
@@ -89,11 +95,18 @@ class UnderrunStats:
         depth = " ".join(
             f"{k}:{100.0 * v / max(1, self.recvs):.0f}%" for k, v in self.depth.items() if v
         )
+        inflight = ""
+        if self.inflight_at_starve:
+            arr = sorted(self.inflight_at_starve)
+            waiting = sum(1 for x in arr if x > 5.0)
+            inflight = (f"; audio in flight at starve: p50 {arr[len(arr)//2]:.0f} ms, "
+                        f"max {arr[-1]:.0f} ms, {waiting}/{len(arr)} starved with audio waiting")
         return (
             f"output underruns: {self.events} events, {self.silence_ms:.0f} ms of inserted "
             f"silence over {self.recvs * self.chunk_ms / 1000:.0f} s, worst gap "
             f"{self.max_gap_ms:.0f} ms; refill lateness p50 {p50:.0f} ms / p90 {p90:.0f} ms / "
             f"max {worst:.0f} ms ({self.never_refilled} never refilled); queue depth {depth}"
+            + inflight
         )
 
 
@@ -107,6 +120,8 @@ def instrumented(base: type) -> type:
             self.underrun = UnderrunStats(chunk_ms)
             self._starved_at: Optional[float] = None
             self._starved_slots = 0
+            self.queued_ms = 0.0            # audio handed to this track, ever
+            self.inflight_probe = None      # set by OutputCushionInterrupt
             self._last_summary = time.monotonic()
             self._event_log_ms = float(os.environ.get("WEBRTC_UNDERRUN_LOG_MS", "20"))
             self._summary_s = float(os.environ.get("WEBRTC_UNDERRUN_SUMMARY_S", "30"))
@@ -121,6 +136,8 @@ def instrumented(base: type) -> type:
             still call this, or every event stays open, nothing is ever counted
             and the whole instrument silently reports zero.
             """
+            if audio_bytes:
+                self.queued_ms += 1000.0 * (len(audio_bytes) / 2) / max(1, self._sample_rate)
             if self._starved_at is not None and audio_bytes:
                 self._close(time.monotonic())
 
@@ -141,6 +158,12 @@ def instrumented(base: type) -> type:
                 if self._starved_at is None:
                     self._starved_at = time.monotonic()
                     self._starved_slots = 0
+                    probe = self.inflight_probe
+                    if probe is not None:
+                        try:
+                            st.inflight_at_starve.append(max(0.0, probe() - self.queued_ms))
+                        except Exception:  # noqa: BLE001
+                            pass
                 self._starved_slots += 1
                 st.chunks_filled += 1
             frame = await super().recv()

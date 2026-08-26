@@ -349,3 +349,77 @@ class TestClearOnInterruption:
             "SmallWebRTCClient no longer holds the output track as _audio_output_track — "
             "barge-in will not clear the queue"
         )
+
+
+class TestInflightProbe:
+    """Did the audio exist and we failed to move it, or had it not arrived?
+
+    The transport's own audio queue is an UNBOUNDED asyncio.Queue, so holding
+    the track's future never back-pressures anything upstream — frames simply
+    accumulate there. Which means a starve has two possible causes with opposite
+    fixes: audio waiting in that queue (ours to move) versus nothing arriving
+    (upstream's to deliver). Every OutputAudioRawFrame passes through the
+    processor and everything the track holds passed through it first, so the
+    difference between the two counters is exactly what is sitting in between.
+    """
+
+    def _mk(self, monkeypatch: pytest.MonkeyPatch):
+        from types import SimpleNamespace
+
+        from pipecat_aplisay.output_cushion import OutputCushionInterrupt
+        from pipecat_aplisay.output_underrun import instrumented
+
+        monkeypatch.setenv("WEBRTC_OUTPUT_CUSHION_MS", "60")
+        track = cushioned(instrumented(RawAudioTrack))(sample_rate=RATE)
+        transport = SimpleNamespace(_client=SimpleNamespace(_audio_output_track=track))
+        return track, OutputCushionInterrupt(output_transport=transport)
+
+    def test_audio_waiting_in_the_transport_is_visible_at_a_starve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def run() -> None:
+            track, proc = self._mk(monkeypatch)
+            proc._forwarded_ms = 100.0          # 100 ms forwarded downstream...
+            proc._wire_probe()
+            track.add_audio_bytes(_audio(3))    # ...of which 30 ms reached the track
+            for _ in range(3):
+                await track.recv()
+            await track.recv()                  # queue now empty: starve begins
+            assert track.underrun.inflight_at_starve, "nothing sampled"
+            assert track.underrun.inflight_at_starve[0] == pytest.approx(70.0, abs=1.0)
+            # the starve is still OPEN — summary() only reports once an event
+            # closes, so give it the refill that closes one
+            track.add_audio_bytes(_audio(1))
+            assert "starved with audio waiting" in track.underrun.summary()
+
+        asyncio.run(run())
+
+    def test_nothing_in_flight_reads_as_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The other answer: upstream had delivered everything it had."""
+
+        async def run() -> None:
+            track, proc = self._mk(monkeypatch)
+            proc._forwarded_ms = 30.0
+            proc._wire_probe()
+            track.add_audio_bytes(_audio(3))    # all 30 ms handed over
+            for _ in range(3):
+                await track.recv()
+            await track.recv()
+            assert track.underrun.inflight_at_starve[0] == pytest.approx(0.0, abs=1.0)
+
+        asyncio.run(run())
+
+    def test_the_processor_counts_what_it_forwards(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat.frames.frames import OutputAudioRawFrame
+
+        async def run() -> None:
+            _track_, proc = self._mk(monkeypatch)
+            f = OutputAudioRawFrame(audio=_audio(5), sample_rate=RATE, num_channels=1)
+            # count directly rather than driving a pipeline: process_frame needs
+            # a running processor, and the arithmetic is what matters here
+            proc._forwarded_ms += 1000.0 * (len(f.audio) / 2) / f.sample_rate
+            assert proc._forwarded_ms == pytest.approx(50.0)
+
+        asyncio.run(run())
