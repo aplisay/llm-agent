@@ -58,7 +58,7 @@ const agentChat = async (req, res) => {
     // it the builder root-causes prompt/function bugs blind), and/or a
     // caller-formatted context block (e.g. website-knowledge state) appended
     // verbatim to the opening turn.
-    const { set, testResult, subjectAgent, knowledge, model, headless } = req.body || {};
+    const { set, testResult, subjectAgent, knowledge, model, headless, history, resumedFrom } = req.body || {};
     // Optional per-SESSION model override (e.g. a user's builder-model
     // preference). Two gates: the id must be a loadable `text:` catalogue
     // model, and the caller must be allowed to use it. The override is set
@@ -74,9 +74,9 @@ const agentChat = async (req, res) => {
       }
       agent.modelName = model;
     }
-    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, headless, logger: req.log });
+    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, history, resumedFrom, headless, logger: req.log });
     log.info(
-      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, headless: !!headless, model: model || undefined },
+      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, headless: !!headless, model: model || undefined, resume: Array.isArray(history) ? history.length : undefined, resumedFrom: resumedFrom || undefined },
       'agent chat session started');
     res.send({ id: session.id, socket: `/chat/${session.id}` });
   }
@@ -120,6 +120,22 @@ agentChat.apiDoc = {
             knowledge: { type: 'string', nullable: true, description: 'A caller-formatted context block appended verbatim to the opening turn (e.g. website-knowledge state).' },
             model: { type: 'string', nullable: true, description: 'Per-session model override (a `text:` catalogue model the caller is allowed to use, e.g. from a user preference). 400 if unknown, 403 if not permitted.' },
             headless: { type: 'boolean', nullable: true, description: 'When true, SKIP the builder opening turn — the session waits for the caller\'s first user message instead of auto-running the build/edit/diagnose greeting. For headless callers (e.g. polite.ai\'s independent reviewer) that drive the agent programmatically over the socket.' },
+            history: {
+              type: 'array',
+              nullable: true,
+              description: 'RESUME seed: the transcript of a prior session this one replaces (the predecessor was '
+                + 'lost to a server restart or a lapsed re-attach grace). The opening turn becomes a resume — the '
+                + 'model continues the embedded conversation instead of greeting afresh. Entries beyond the '
+                + 'server\'s caps are trimmed oldest-first.',
+              items: {
+                type: 'object',
+                properties: {
+                  role: { type: 'string', enum: ['user', 'agent', 'system'] },
+                  text: { type: 'string' },
+                },
+              },
+            },
+            resumedFrom: { type: 'string', nullable: true, description: 'The prior chat session id `history` came from — recorded on the persisted session for lineage (ignored unless it is a UUID).' },
           },
         },
       },
