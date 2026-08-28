@@ -70,10 +70,10 @@ server.use(cors({
 const { auth: betterAuth } = await import('./lib/auth/index.js');
 if (betterAuth) {
   const { toNodeHandler } = await import('better-auth/node');
-  const { createClientIpGate } = await import('./lib/auth/client-ip-gate.js');
+  const { createAuthProxyGate } = await import('./lib/auth/auth-proxy-gate.js');
   server.all(
     '/api/auth/*',
-    createClientIpGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
+    createAuthProxyGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
     toNodeHandler(betterAuth),
   );
   logger.info('mounted better-auth at /api/auth/*');
