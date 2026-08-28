@@ -12,7 +12,10 @@
  *   - `event: "tool_loop"`   — the same tool breached the runaway-loop rate
  *                              limit (ERROR; this is the alertable signal that
  *                              a model is spinning a tool on a live, billed
- *                              call — see the breaker in agent-tools.ts)
+ *                              call — see ./tool-loop-breaker.ts). The
+ *                              one exception is `action: "exempt"`, a WARN
+ *                              emitted for a poll-by-design builtin that ran
+ *                              hot but was allowed through unharmed.
  *
  * The field shape is kept deliberately identical to the Pipecat worker's
  * `pipecat_aplisay/tool_log.py` so tool activity reads and correlates the same
@@ -115,14 +118,19 @@ export function logToolResult(
 }
 
 /**
- * Log a runaway tool-call loop at ERROR with `event: "tool_loop"`.
+ * Log a runaway tool-call loop with `event: "tool_loop"`.
  *
  * This is the alertable signal for the class of failure where a realtime model
  * re-issues the same tool as fast as it can generate (observed at ~2.5 calls/s
  * against Ultravox): the call stays up and billed, no error is raised anywhere
  * else, and nothing in the transcript looks wrong. `action` says what the
  * breaker did — `"refused"` (tool not executed, hard error returned to the
- * model) or `"terminated"` (call torn down).
+ * model), `"terminated"` (call torn down), or `"exempt"` (poll-by-design
+ * builtin — counted and reported, but executed anyway; see the exemption set
+ * in ./tool-loop-breaker.ts).
+ *
+ * `"exempt"` logs at WARN, not ERROR: nothing is broken and no call is at
+ * risk, but a poll running this hot is still worth seeing in the debug log.
  */
 export function logToolLoop(
   log: ToolLogger,
@@ -137,11 +145,19 @@ export function logToolLoop(
     kind: ToolKind;
     calls: number;
     windowMs: number;
-    action: "refused" | "terminated";
+    action: "refused" | "terminated" | "exempt";
   },
 ): void {
+  const fields = { event: "tool_loop", tool, kind, calls, windowMs, action };
+  if (action === "exempt") {
+    log.warn(
+      fields,
+      `hot tool poll: ${tool} called ${calls} times in ${windowMs}ms (exempt from the loop breaker)`,
+    );
+    return;
+  }
   log.error(
-    { event: "tool_loop", tool, kind, calls, windowMs, action },
+    fields,
     `runaway tool loop: ${tool} called ${calls} times in ${windowMs}ms (${action})`,
   );
 }

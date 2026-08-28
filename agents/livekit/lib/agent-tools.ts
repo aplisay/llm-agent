@@ -7,6 +7,11 @@ import {
   logToolResult,
   type ToolKind,
 } from "./tool-log.js";
+import {
+  createToolLoopBreaker,
+  isLoopExempt,
+  TOOL_LOOP_WINDOW_MS,
+} from "./tool-loop-breaker.js";
 import { functionHandler } from "../agent-lib/function-handler.js";
 import { invokeSubagent } from "./api-client.js";
 import type { Agent, AgentFunction, Call, CallMetadata } from "./api-client.js";
@@ -25,22 +30,6 @@ export interface AgentTransferArgs {
   includeHistory?: boolean;
   summary?: string;
 }
-
-// ---- Runaway tool-call breaker -------------------------------------------
-// A realtime model that gets an unsatisfying tool result can re-issue the same
-// call as fast as it can generate — far faster than any human-paced turn. On a
-// live call that burns carrier minutes, model minutes and tokens silently, with
-// no error raised anywhere. These bounds are per tool name, per session.
-//
-// Sizing: a genuine voice turn needs speech in and speech out, so even an
-// impatient caller cannot legitimately drive one tool past a handful of calls
-// in 20s. REFUSE is set well above that; KILL is set where the loop is plainly
-// mechanical and the model has shown it will not stop on its own.
-const TOOL_LOOP_WINDOW_MS = 20_000;
-/** Stop executing the tool and hand the model an explicit error instead. */
-const TOOL_LOOP_REFUSE_CALLS = 10;
-/** Unrecoverable: tear the call down rather than keep billing it. */
-const TOOL_LOOP_KILL_CALLS = 25;
 
 /**
  * Creates tools for the agent based on the agent's functions configuration
@@ -114,32 +103,13 @@ export function createTools({
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
-  // Per-session sliding window of invocation times, keyed by tool name. The
-  // closure is created once per createTools() call — i.e. once per agent stack
-  // — so counts do not leak across calls or survive an agent handover.
-  const recentCalls = new Map<string, number[]>();
+  // Runaway-loop breaker, created once per createTools() call — i.e. once per
+  // agent stack — so counts do not leak across calls or survive an agent
+  // handover. Policy and thresholds live in ./tool-loop-breaker.ts.
+  const noteCallAndCheckLoop = createToolLoopBreaker();
   // Teardown is requested once; further refused calls in the window before the
   // session actually comes down must not re-fire it or spam the error log.
   let toolLoopKilled = false;
-
-  /**
-   * Records an invocation and reports whether this tool has breached either
-   * loop threshold within the trailing window.
-   */
-  const noteCallAndCheckLoop = (
-    tool: string,
-  ): { calls: number; refuse: boolean; kill: boolean } => {
-    const now = Date.now();
-    const cutoff = now - TOOL_LOOP_WINDOW_MS;
-    const times = (recentCalls.get(tool) ?? []).filter((t) => t > cutoff);
-    times.push(now);
-    recentCalls.set(tool, times);
-    return {
-      calls: times.length,
-      refuse: times.length > TOOL_LOOP_REFUSE_CALLS,
-      kill: times.length > TOOL_LOOP_KILL_CALLS,
-    };
-  };
 
   return (
     functions &&
@@ -207,7 +177,20 @@ export function createTools({
             // cannot keep re-entering the tool body, and after logToolCall so
             // the refused attempts still appear in the debug log rather than
             // vanishing from the record of what the model actually did.
-            const loop = noteCallAndCheckLoop(fnc.name);
+            // Poll-by-design builtins are counted but never refused or killed.
+            const loop = noteCallAndCheckLoop(fnc.name, isLoopExempt(fnc));
+            if (loop.hot) {
+              // Diagnostic only: the tool still runs. Emitted once per hot
+              // spell so a legitimate poll cannot flood the size-bounded
+              // InvocationLog, while an unexpectedly hot poll stays visible.
+              logToolLoop(logger, {
+                tool: fnc.name,
+                kind,
+                calls: loop.calls,
+                windowMs: TOOL_LOOP_WINDOW_MS,
+                action: "exempt",
+              });
+            }
             if (loop.refuse) {
               const kill = loop.kill && !toolLoopKilled;
               logToolLoop(logger, {
