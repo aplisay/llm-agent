@@ -76,7 +76,7 @@ const listChatSessions = async (req, res) => {
       ...(agentId ? { agentId } : {}),
     };
     const { count, rows } = await ChatSession.findAndCountAll({
-      attributes: ['id', 'agentId', 'setId', 'mode', 'title', 'modelName', 'startedAt', 'endedAt', 'turns'],
+      attributes: ['id', 'agentId', 'setId', 'mode', 'title', 'modelName', 'startedAt', 'endedAt', 'turns', 'resumedFrom'],
       where,
       order: [['startedAt', 'DESC']],
       limit,
