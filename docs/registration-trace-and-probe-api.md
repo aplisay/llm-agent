@@ -240,7 +240,8 @@ Both routes answer `503` unless the deployment is configured to reach nodes:
 
 | Variable | Meaning |
 |---|---|
-| `REGCLIENT_API_TOKEN` | Bearer token presented to nodes; shared through the same secretenv bundle the nodes get. Absent ⇒ routes disabled |
+| `REGCLIENT_API_TOKEN` | Bearer token presented to nodes; shared through the same secretenv bundle the nodes get. Absent ⇒ routes disabled. It also derives the key that signs probe handles |
+| `REGCLIENT_API_TOKEN_PREVIOUS` | Optional, verification only. Nodes accept two bearer tokens at once so rotation is add-new, flip-caller, drop-old; set this to the outgoing token for the same grace on probe handles, or every probe in flight 404s the moment the token flips. Never used to sign |
 | `REGCLIENT_API_PORT` | Node API port (default 8443) |
 | `REGCLIENT_CA_CERT` | Public certificate of the private CA that signs node certificates; PEM or base64 of a PEM |
 | `TRACE_PROXY_TIMEOUT_MS` | Hard per-request timeout, default 2000 ms. No retries |

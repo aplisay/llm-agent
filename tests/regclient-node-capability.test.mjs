@@ -11,6 +11,7 @@ import {
   CAPABILITY_NONE,
   CAPABILITY_UNKNOWN
 } from '../lib/regclient.js';
+import { signProbeHandle, verifyProbeHandle } from '../lib/regclient-probe-handle.js';
 
 // Knowing whether a b2bua node serves the trace API at all.
 //
@@ -174,5 +175,52 @@ describe('what the caller is told', () => {
     expect(body.node).toBe('203.0.113.99');
     expect(body.message).toMatch(/FreeSWITCH/);
     expect(body.message).toMatch(/migrate/i);
+  });
+});
+
+describe('probe handle rotation grace', () => {
+  // Nodes accept two bearer tokens at once so rotation is add-new,
+  // flip-caller, drop-old with no downtime. The facade signed and verified
+  // with one, so the moment REGCLIENT_API_TOKEN flipped, every outstanding
+  // probe handle stopped verifying — a 404 mid-watch on a probe still running
+  // perfectly well.
+  const REG = '11111111-2222-3333-4444-555555555555';
+
+  it('verifies a handle signed with the previous token', () => {
+    const before = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-1' },
+      { token: 'old-token' }
+    );
+    expect(before).toBeTruthy();
+
+    const afterRotation = { token: 'new-token', tokenPrevious: 'old-token' };
+    const verified = verifyProbeHandle(before, { registrationId: REG }, afterRotation);
+    expect(verified.ok).toBe(true);
+    expect(verified.node).toBe('203.0.113.10');
+    expect(verified.probeId).toBe('p-1');
+  });
+
+  it('still refuses a handle signed with neither', () => {
+    const forged = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-1' },
+      { token: 'somebody-elses-token' }
+    );
+    const verified = verifyProbeHandle(
+      forged,
+      { registrationId: REG },
+      { token: 'new-token', tokenPrevious: 'old-token' }
+    );
+    expect(verified.ok).toBe(false);
+  });
+
+  // Signing never uses the old secret, so a handle issued after the rotation
+  // does not depend on it.
+  it('signs with the current token only', () => {
+    const handle = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-2' },
+      { token: 'new-token', tokenPrevious: 'old-token' }
+    );
+    expect(verifyProbeHandle(handle, { registrationId: REG }, { token: 'new-token' }).ok).toBe(true);
+    expect(verifyProbeHandle(handle, { registrationId: REG }, { token: 'old-token' }).ok).toBe(false);
   });
 });

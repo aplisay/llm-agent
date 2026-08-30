@@ -4,7 +4,15 @@ import {
   assertHandleNodeAllowed
 } from '../../../../../../lib/regclient-facade.js';
 import { verifyProbeHandle } from '../../../../../../lib/regclient-probe-handle.js';
-import { buildProbeUrl, openNodeStream } from '../../../../../../lib/regclient.js';
+import {
+  buildProbeUrl,
+  openNodeStream,
+  capabilityFromFailure,
+  rememberNodeCapability,
+  unsupportedNodeBody,
+  CAPABILITY_NONE,
+  CAPABILITY_TRACE
+} from '../../../../../../lib/regclient.js';
 
 let log;
 
@@ -58,14 +66,37 @@ const streamRegistrationProbe = async (req, res) => {
       });
     }
     catch (err) {
+      // Classified and cached the same way the sibling routes do. openNodeStream
+      // did neither, so this route alone answered 504 for a node already known
+      // not to serve this API, and never learned anything from the attempt —
+      // every stream against such a node paid the full cost again.
+      if (capabilityFromFailure(err) === CAPABILITY_NONE) {
+        rememberNodeCapability(node, CAPABILITY_NONE);
+        req.log?.info({ node }, 'b2bua node does not provide the probe API');
+        return res.status(501).send(unsupportedNodeBody(node));
+      }
       req.log?.warn({ err: err.message, node }, 'b2bua node probe stream failed');
       return res.status(504).send({ error: 'probe unavailable', node, reason: err.message });
     }
 
+    // Answering at all proves the node serves this API, whatever it answered.
+    rememberNodeCapability(node, CAPABILITY_TRACE);
+
     if (upstream.statusCode !== 200) {
       upstream.resume();
+      // 501 "probing is disabled here" and 429 are answers, not failures; 502
+      // would throw the reason away. Matches the report route.
+      if ([400, 404, 409, 429, 501].includes(upstream.statusCode)) {
+        if (upstream.statusCode === 429 && upstream.headers?.['retry-after'] != null) {
+          res.setHeader('Retry-After', String(upstream.headers['retry-after']));
+        }
+        return res.status(upstream.statusCode).send({
+          message: `The b2bua node returned ${upstream.statusCode}`,
+          node
+        });
+      }
       return res
-        .status(upstream.statusCode === 404 ? 404 : 502)
+        .status(502)
         .send({ error: 'probe unavailable', node, reason: `node returned ${upstream.statusCode}` });
     }
 
@@ -113,6 +144,8 @@ streamRegistrationProbe.apiDoc = {
     403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
     409: { description: 'No b2bua node is available', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    429: { description: 'The node is rate-limiting probe requests. Retry after the interval given in the Retry-After header.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+    501: { description: 'The node holding this registration does not provide this API (it runs the FreeSWITCH stack)', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeCapabilityUnavailable' } } } },
     502: { description: 'The node answered with an error', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
     503: { description: 'Node proxying is not configured in this deployment', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     504: { description: 'The node did not answer in time', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
