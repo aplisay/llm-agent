@@ -1,5 +1,12 @@
 import { resolveRegistrationNode } from '../../../../lib/regclient-facade.js';
-import { buildProbeUrl, nodeRequest, describeNodeFailure } from '../../../../lib/regclient.js';
+import {
+  buildProbeUrl,
+  nodeRequest,
+  describeNodeFailure,
+  capabilityFromFailure,
+  unsupportedNodeBody,
+  CAPABILITY_NONE
+} from '../../../../lib/regclient.js';
 
 let log;
 
@@ -46,10 +53,15 @@ const startRegistrationProbe = async (req, res) => {
         url,
         method: 'POST',
         data: { registrationId: identifier, discover: !!discover, apply: !!apply },
-        config
+        config,
+        node
       });
     }
     catch (err) {
+      if (capabilityFromFailure(err) === CAPABILITY_NONE) {
+        req.log?.info({ node }, 'b2bua node does not provide the probe API');
+        return res.status(501).send(unsupportedNodeBody(node));
+      }
       req.log?.warn({ err: err.message, node }, 'b2bua node probe start failed');
       return res.status(504).send({ ...describeNodeFailure(err, node), error: 'probe unavailable' });
     }
@@ -116,6 +128,7 @@ startRegistrationProbe.apiDoc = {
     403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
     409: { description: 'No b2bua node is available to run the probe', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    501: { description: 'The node holding this registration does not provide this API (it runs the FreeSWITCH stack)', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeCapabilityUnavailable' } } } },
     502: { description: 'The node answered with an error, or is not an address we will contact', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
     503: { description: 'Node proxying is not configured in this deployment', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     504: { description: 'The node did not answer in time', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },

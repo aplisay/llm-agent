@@ -32,6 +32,8 @@ jest.unstable_mockModule('axios', () => ({
   }
 }));
 
+const { resetNodeCapabilities, nodeCapability, CAPABILITY_NONE } = await import('../lib/regclient.js');
+
 const { default: traceRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace.js');
 const { default: traceTransactionRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace/{transactionId}.js');
 const { default: probeRoute } = await import('../api/paths/phone-endpoints/{identifier}/probe.js');
@@ -88,6 +90,7 @@ const callProbe = async ({ identifier = REG, body = {} } = {}) => {
 beforeEach(() => {
   rows.clear();
   lastRequest = null;
+  resetNodeCapabilities();
   nextResponse = { status: 200, data: {} };
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('REGCLIENT_') || key === 'TRACE_PROXY_TIMEOUT_MS') delete process.env[key];
@@ -178,6 +181,51 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
     expect(lastRequest.responseType).toBe('arraybuffer');
   });
 
+  // During the migration both stacks run against the same table, so a
+  // registration held by a FreeSWITCH node is an ordinary state of affairs.
+  // Reporting it as an outage would send somebody looking for a fault.
+  it('says plainly when the node has no trace API at all', async () => {
+    makeReg();
+    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const res = await callTrace();
+
+    expect(res._status).toBe(501);
+    expect(res._body.code).toBe('trace-api-unavailable');
+    expect(res._body.node).toBe('203.0.113.10');
+    expect(res._body.message).toMatch(/FreeSWITCH/);
+  });
+
+  // And having learned it once, it costs nothing thereafter — which is the
+  // whole point: no timeout, and not even a connection.
+  it('answers a known FreeSWITCH node without touching the network', async () => {
+    makeReg();
+    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    await callTrace();
+    expect(nodeCapability('203.0.113.10')).toBe(CAPABILITY_NONE);
+
+    lastRequest = null;
+    const res = await callTrace();
+    expect(res._status).toBe(501);
+    expect(lastRequest).toBeNull();
+  });
+
+  // A slow node is a different thing from an absent one, and must not be
+  // remembered as one.
+  it('still reports a timeout as a timeout', async () => {
+    makeReg();
+    nextResponse = Object.assign(new Error('timeout of 750ms exceeded'), { code: 'ECONNABORTED' });
+    const res = await callTrace();
+
+    expect(res._status).toBe(504);
+    expect(res._body.reason).toBe('timeout');
+
+    // Nothing was concluded, so the next call tries again.
+    lastRequest = null;
+    nextResponse = { status: 200, data: { registrationId: REG } };
+    expect((await callTrace())._status).toBe(200);
+    expect(lastRequest).not.toBeNull();
+  });
+
   it('turns an unreachable node into a 504 that names the node', async () => {
     makeReg();
     nextResponse = Object.assign(new Error('timeout of 2000ms exceeded'), { code: 'ECONNABORTED' });
@@ -266,6 +314,14 @@ describe('POST /phone-endpoints/{identifier}/probe', () => {
     const res = await callProbe();
     expect(res._status).toBe(202);
     expect(lastRequest.url).toBe('https://198.51.100.7:8443/probe');
+  });
+
+  it('says plainly when the node has no probe API either', async () => {
+    makeReg();
+    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const res = await callProbe();
+    expect(res._status).toBe(501);
+    expect(res._body.code).toBe('trace-api-unavailable');
   });
 
   it('409s an unclaimed registration when there is no pool to run it on', async () => {

@@ -1847,6 +1847,22 @@ components:
           description: Registration password (for registrations)
         options:
           $ref: '#/components/schemas/PhoneRegistrationOptions'
+    NodeCapabilityUnavailable:
+      type: object
+      description: |-
+        Returned when the b2bua node holding this registration does not provide the trace and probe
+        API at all — it is running the FreeSWITCH stack, which has no such interface. This is not a
+        fault and retrying will not help: migrate the registration to a regclient node.
+      properties:
+        code:
+          type: string
+          enum: [trace-api-unavailable]
+        node:
+          type: string
+          description: Address of the b2bua node holding this registration
+          example: 203.0.113.10
+        message:
+          type: string
     NodeUnavailable:
       type: object
       description: |-

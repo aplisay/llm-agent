@@ -45,6 +45,52 @@ A node that is down therefore produces a prompt `504 {error, node, reason}`
 rather than a hung request — and names the node, so an operator knows which
 instance to look at.
 
+## Nodes that have no trace API
+
+Not every b2bua node serves these routes. The FreeSWITCH stack has no HTTP
+surface at all, and during the migration both stacks run side by side against
+the same table — so `b2bua_id` may perfectly legitimately point at a node that
+cannot answer.
+
+That case returns **`501`**, not `504`:
+
+```json
+{
+  "code": "trace-api-unavailable",
+  "node": "203.0.113.10",
+  "message": "The b2bua node holding this registration (203.0.113.10) does not provide the trace and probe API..."
+}
+```
+
+The distinction is the point. `504` means a node that should have answered
+did not — worth investigating. `501` means the registration is held by a node
+running the older stack, which is an ordinary state of affairs during a
+migration and is fixed by moving the registration, not by retrying.
+
+**It is fast, and it stays fast.** No separate capability endpoint or handshake
+is involved, because the request already proves the answer: a FreeSWITCH node
+has no HTTP surface, and nothing else can present a certificate signed by the
+private CA in our own bundle. So reaching a node at all — even to be refused
+with a `401` — establishes that it is regclient.
+
+That verdict is cached per node, so it is paid at most once:
+
+- **First call to an unknown node**: bounded by `REGCLIENT_DISCOVERY_TIMEOUT_MS`
+  (750 ms) rather than the full request budget. A closed port refuses in
+  milliseconds; only a firewall that drops rather than rejects costs the whole
+  750 ms, and only once.
+- **Every call after that**: answered from cache with no network call at all —
+  microseconds.
+- **A timeout is never cached.** Something may be listening and merely busy, and
+  marking a slow regclient node as having no API would be a lie that outlived
+  the moment. Only connection-level failures — refused, unreachable, TLS —
+  settle the question.
+
+Positive verdicts are held for `REGCLIENT_CAPABILITY_TTL_MS` (10 minutes;
+a node does not change stack without a redeploy). Negative ones for
+`REGCLIENT_UNSUPPORTED_TTL_MS` (1 minute), because migrating a node to regclient
+is exactly when somebody will go looking for its traces.
+
 ## Two steps, not one
 
 A full trace runs to tens of kilobytes of SIP text — eight REGISTER ladders and
@@ -159,6 +205,9 @@ Both routes answer `503` unless the deployment is configured to reach nodes:
 | `REGCLIENT_NODE_ALLOWLIST` | Optional pin: only these node addresses may be contacted |
 | `REGCLIENT_ALLOW_PRIVATE_NODES` | Permit node addresses in private ranges (compose, kind). Off by default |
 | `REGCLIENT_API_INSECURE` | Development only: skip TLS verification |
+| `REGCLIENT_DISCOVERY_TIMEOUT_MS` | 750. Bound on the first request to a node we have never reached, so learning it runs FreeSWITCH is cheap |
+| `REGCLIENT_CAPABILITY_TTL_MS` | 600000. How long a node is remembered as serving this API |
+| `REGCLIENT_UNSUPPORTED_TTL_MS` | 60000. How long a node is remembered as not serving it — short, so a migration is picked up promptly |
 
 ### The node address is untrusted input
 

@@ -182,6 +182,14 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # base64 of a PEM. Required unless REGCLIENT_API_INSECURE=1.
 # REGCLIENT_CA_CERT=
 # TRACE_PROXY_TIMEOUT_MS=2000     # hard per-request timeout; no retries
+# During the migration a registration may be held by a FreeSWITCH node, which
+# has no HTTP surface at all. That is discovered from the request itself (only
+# regclient can present a certificate our CA signed), reported as 501 rather
+# than 504, and cached — so it costs one short attempt per node, not a timeout
+# per call.
+# REGCLIENT_DISCOVERY_TIMEOUT_MS=750    # bound on the first try to an unknown node
+# REGCLIENT_CAPABILITY_TTL_MS=600000    # how long "serves traces" is remembered
+# REGCLIENT_UNSUPPORTED_TTL_MS=60000    # how long "does not" is remembered
 # Nodes able to run a probe for a registration no node has claimed yet.
 # REGCLIENT_PROBE_NODES=
 # Optional pin: only these node addresses may be contacted at all.

@@ -3,7 +3,10 @@ import {
   TRACE_FORMATS,
   buildTraceUrl,
   nodeRequest,
-  describeNodeFailure
+  describeNodeFailure,
+  capabilityFromFailure,
+  unsupportedNodeBody,
+  CAPABILITY_NONE
 } from '../../../../../lib/regclient.js';
 
 let log;
@@ -45,10 +48,18 @@ const getRegistrationTraceTransaction = async (req, res) => {
       response = await nodeRequest({
         url,
         responseType: wantsBinary ? 'arraybuffer' : 'json',
-        config
+        config,
+        node
       });
     }
     catch (err) {
+      // A refused or unreachable connection is a statement about the node, not
+      // an outage: it is running the FreeSWITCH stack, which has no such API.
+      // nodeRequest has already cached that, so the next call answers at once.
+      if (capabilityFromFailure(err) === CAPABILITY_NONE) {
+        req.log?.info({ node }, 'b2bua node does not provide the trace API');
+        return res.status(501).send(unsupportedNodeBody(node));
+      }
       req.log?.warn({ err: err.message, node }, 'b2bua node trace fetch failed');
       return res.status(504).send(describeNodeFailure(err, node));
     }
@@ -162,6 +173,7 @@ getRegistrationTraceTransaction.apiDoc = {
     403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     404: { description: 'No such registration, or that exchange has rotated out of the buffer', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
     409: { description: 'Registration is not claimed by any b2bua node', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    501: { description: 'The node holding this registration does not provide this API (it runs the FreeSWITCH stack)', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeCapabilityUnavailable' } } } },
     502: { description: 'The owning node answered with an error, or is not an address we will contact', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
     503: { description: 'Node proxying is not configured in this deployment', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     504: { description: 'The owning node did not answer in time', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
