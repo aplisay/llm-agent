@@ -1847,6 +1847,63 @@ components:
           description: Registration password (for registrations)
         options:
           $ref: '#/components/schemas/PhoneRegistrationOptions'
+    B2buaNodeHeartbeat:
+      type: object
+      description: A b2bua node announcing itself, about once a minute.
+      required: [nodeId]
+      properties:
+        nodeId:
+          type: string
+          description: |-
+            The node's public address — the same value it writes into
+            `phone_registrations.b2bua_id`, which is what makes this joinable to a registration.
+          example: 203.0.113.10
+        type:
+          type: string
+          enum: [regclient, freeswitch]
+          default: regclient
+          description: Which stack this node is running. Only regclient serves the trace and probe API.
+        version:
+          type: string
+          description: Build version, for telling a fleet mid-rollout apart
+          example: 1.4.2
+        registrations:
+          type: integer
+          description: Registrations this node currently holds
+        failedRegistrations:
+          type: integer
+          description: How many of those are currently failing
+        systemLoad:
+          type: number
+          description: One-minute load average as the node sees it
+    B2buaNode:
+      type: object
+      description: A b2bua node as it last reported itself.
+      properties:
+        nodeId:
+          type: string
+        type:
+          type: string
+          enum: [regclient, freeswitch]
+        version:
+          type: string
+          nullable: true
+        registrations:
+          type: integer
+        failedRegistrations:
+          type: integer
+        systemLoad:
+          type: number
+          nullable: true
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+          description: |-
+            Whether this node has stopped heartbeating. Reported rather than omitted: a node that
+            has gone quiet is the thing worth seeing, and it is invisible if the row disappears.
     NodeCapabilityUnavailable:
       type: object
       description: |-

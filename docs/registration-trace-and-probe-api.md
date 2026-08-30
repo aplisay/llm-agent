@@ -67,11 +67,30 @@ did not — worth investigating. `501` means the registration is held by a node
 running the older stack, which is an ordinary state of affairs during a
 migration and is fixed by moving the registration, not by retrying.
 
-**It is fast, and it stays fast.** No separate capability endpoint or handshake
-is involved, because the request already proves the answer: a FreeSWITCH node
-has no HTTP surface, and nothing else can present a certificate signed by the
-private CA in our own bundle. So reaching a node at all — even to be refused
-with a `401` — establishes that it is regclient.
+**It is known before it is asked.** Every regclient node reports itself to
+`POST /api/agent-db/b2bua-nodes` once a minute — what it is, what version, how
+many registrations it holds, how many are failing, its load — so a node that has
+announced itself is classified without any network call at all, from the very
+first request.
+
+That registry is also the first fleet view this system has had. What each node
+is running was previously spread across whichever registrations it happened to
+have claimed, and a node holding none was indistinguishable from a node that was
+not there. `GET /api/agent-db/b2bua-nodes` now lists them, marking any that has
+stopped heartbeating as `stale` rather than dropping it — a node that has gone
+quiet is the thing worth seeing.
+
+A **stale** row is treated as saying nothing, not as a denial. A regclient node
+whose heartbeat has broken is still a regclient node, and refusing its traces
+because we stopped hearing from it would be exactly backwards: that is when
+somebody most wants to look.
+
+**And discovery still works underneath.** A node that has never announced itself
+— one mid-rollout, or a deployment with no heartbeat configured — is classified
+from the request itself, because that already proves the answer: a FreeSWITCH
+node has no HTTP surface, and nothing else can present a certificate signed by
+the private CA in our own bundle. So reaching a node at all, even to be refused
+with a `401`, establishes that it is regclient.
 
 That verdict is cached per node, so it is paid at most once:
 

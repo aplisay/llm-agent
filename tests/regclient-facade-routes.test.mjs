@@ -13,10 +13,17 @@ import { jest } from '@jest/globals';
 
 const rows = new Map();
 
+// The heartbeat registry is deliberately empty here: these tests exercise the
+// discovery path, which is what a node that has never announced itself falls
+// back to.
 jest.unstable_mockModule('../lib/database.js', () => ({
   PhoneRegistration: {
     findByPk: async (id) => rows.get(id) || null
-  }
+  },
+  B2buaNode: {
+    findByPk: async () => null
+  },
+  B2BUA_NODE_TYPES: ['regclient', 'freeswitch']
 }));
 
 let nextResponse = { status: 200, data: {} };
