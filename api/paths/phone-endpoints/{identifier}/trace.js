@@ -1,6 +1,6 @@
 import { resolveRegistrationNode } from '../../../../lib/regclient-facade.js';
 import {
-  TRACE_FORMATS,
+  TRACE_INDEX_FORMATS,
   buildTraceUrl,
   nodeRequest,
   describeNodeFailure
@@ -16,14 +16,21 @@ export default function (logger) {
 };
 
 /**
- * SIP trace for one registration, fetched live from the node that holds it.
+ * Index of the SIP exchanges captured for one registration.
  *
  * The b2bua keeps a bounded ring buffer of the SIP conversation per
- * registration — REGISTER transactions (the most recent successful and the
- * most recent failed one are pinned so a storm cannot evict the pair you want
+ * registration — REGISTER transactions (the most recent successful and the most
+ * recent failed one are pinned so a retry storm cannot evict the pair you want
  * to compare), recent call dialogs, and keepalive counters. Nothing is stored
  * centrally, so this route is a thin, strictly time-bounded proxy to the one
  * node that owns the registration.
+ *
+ * This route lists what the buffer holds — one line per exchange, with its
+ * outcome, timing and size — rather than returning all of it. A full trace runs
+ * to tens of kilobytes of SIP text, which is the wrong thing to re-download
+ * every time a listing renders. Fetch one exchange in full from
+ * `/phone-endpoints/{identifier}/trace/{transactionId}` using the ids returned
+ * here.
  */
 const getRegistrationTrace = async (req, res) => {
   const { organisationId } = res.locals.user || {};
@@ -31,8 +38,11 @@ const getRegistrationTrace = async (req, res) => {
   const { format = 'json', since } = req.query;
 
   try {
-    if (!TRACE_FORMATS.includes(format)) {
-      return res.status(400).send({ message: `format must be one of: ${TRACE_FORMATS.join(', ')}` });
+    if (!TRACE_INDEX_FORMATS.includes(format)) {
+      return res.status(400).send({
+        message: `format must be one of: ${TRACE_INDEX_FORMATS.join(', ')}. ` +
+          'Use /trace/{transactionId} for the decoded packets of a single exchange.'
+      });
     }
 
     const resolved = await resolveRegistrationNode({ identifier, organisationId, log: req.log });
@@ -91,20 +101,26 @@ const getRegistrationTrace = async (req, res) => {
 };
 
 getRegistrationTrace.apiDoc = {
-  summary: 'Fetch the SIP trace for a phone registration',
-  description: `Returns the SIP conversation captured by the b2bua node that currently holds this
-                registration: recent REGISTER transactions (the most recent successful and most
-                recent failed one are always retained), recent call dialogs, and keepalive counters.
+  summary: 'List the SIP exchanges captured for a phone registration',
+  description: `Lists what the b2bua node holding this registration has captured: recent REGISTER
+                transactions (the most recent successful and most recent failed one are always
+                retained), recent call dialogs, and keepalive counters. Each entry carries an
+                \`id\`, its outcome, when it happened and how many messages it holds — but not the
+                messages themselves, which would be tens of kilobytes of SIP text on every listing.
 
-                Three representations are available via \`format\`:
-                  * \`json\` (default) — a transaction-grouped transcript, ready to render as a ladder.
-                  * \`decode\` — a flat, chronological array of per-packet decodes with headers, CSeq and SDP parsed out.
-                  * \`pcap\` — a synthesised packet capture for Wireshark or sngrep; TLS legs are exported decrypted.
+                Fetch one exchange in full from
+                \`GET /phone-endpoints/{identifier}/trace/{transactionId}\`, which additionally
+                offers \`format=decode\` for parsed packets.
+
+                \`format=pcap\` is available here and returns a capture of the **whole**
+                registration for Wireshark or sngrep — TLS legs included, exported decrypted, which
+                an on-wire capture can never show.
 
                 Traces live in a bounded in-memory buffer on the node, so they cover recent activity
-                rather than full history, and are lost if that node restarts. Digest credentials are
-                always redacted at this API. The request is proxied to the owning node with a hard
-                timeout and no retries: if that node is unreachable the response is 504.`,
+                rather than full history, and are lost if that node restarts. What has been
+                discarded is reported in \`evictions\`, so a gap is never silent. Digest credentials
+                are always redacted at this API. The request is proxied to the owning node with a
+                hard timeout and no retries: if that node is unreachable the response is 504.`,
   operationId: 'getPhoneEndpointTrace',
   tags: ['Phone Endpoints'],
   parameters: [
@@ -119,8 +135,8 @@ getRegistrationTrace.apiDoc = {
       name: 'format',
       in: 'query',
       required: false,
-      schema: { type: 'string', enum: ['json', 'decode', 'pcap'], default: 'json' },
-      description: 'Representation to return'
+      schema: { type: 'string', enum: ['json', 'pcap'], default: 'json' },
+      description: 'json (default) lists the captured exchanges; pcap exports the whole registration as a capture file'
     },
     {
       name: 'since',
@@ -132,15 +148,10 @@ getRegistrationTrace.apiDoc = {
   ],
   responses: {
     200: {
-      description: 'SIP trace in the requested representation',
+      description: 'Index of captured SIP exchanges, or a whole-registration capture file',
       content: {
         'application/json': {
-          schema: {
-            oneOf: [
-              { $ref: '#/components/schemas/SipTrace' },
-              { type: 'array', items: { $ref: '#/components/schemas/SipTracePacket' } }
-            ]
-          }
+          schema: { $ref: '#/components/schemas/SipTraceIndex' }
         },
         'application/vnd.tcpdump.pcap': {
           schema: { type: 'string', format: 'binary' }

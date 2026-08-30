@@ -1865,6 +1865,95 @@ components:
           type: string
           description: Why the node could not answer
           example: timeout
+    SipTraceIndexEntry:
+      type: object
+      description: |-
+        One captured SIP exchange, described but not reproduced. Fetch it in full from
+        `/phone-endpoints/{identifier}/trace/{id}`.
+      properties:
+        id:
+          type: string
+          description: Identifier of this exchange, for the trace detail route
+          example: reg-8
+        kind:
+          type: string
+          enum: [register, call]
+        summary:
+          type: string
+          description: One line saying what happened, suitable to show in a list
+          example: REGISTER → 403 Forbidden
+        outcome:
+          type: string
+          description: |-
+            For a REGISTER: success, failure or in-progress. For a call: active or completed.
+        code:
+          type: integer
+          description: Final SIP response code, when there was one
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          description: For a call, which way it went
+        callId:
+          type: string
+          description: For a call, its SIP Call-ID
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        rttMs:
+          type: number
+          description: Time from first request to final response, in milliseconds
+        pinned:
+          type: boolean
+          description: |-
+            Whether this entry is retained regardless of rotation. The most recent successful and
+            most recent failed REGISTER are always pinned, so a retry storm cannot evict the last
+            known-good exchange.
+        messages:
+          type: integer
+          description: How many messages fetching this entry would return
+        bytes:
+          type: integer
+          description: Approximate size of that detail, in bytes
+    SipTraceIndex:
+      type: object
+      description: |-
+        What a registration's trace buffer currently holds. A listing rather than the trace itself:
+        a full trace runs to tens of kilobytes of SIP text.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          description: Address of the b2bua node that holds this trace
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the node took this snapshot
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When this API fetched it from the node
+        transactions:
+          type: array
+          description: Captured exchanges, most recent first
+          items:
+            $ref: '#/components/schemas/SipTraceIndexEntry'
+        keepalive:
+          $ref: '#/components/schemas/SipTraceKeepalive'
+        evictions:
+          type: object
+          description: What the ring buffer has discarded, so a gap in the trace is never silent.
+          properties:
+            registerTransactions:
+              type: integer
+            calls:
+              type: integer
+            truncatedMessages:
+              type: integer
     SipTraceMessage:
       type: object
       description: One captured SIP message, as it appeared on the wire.
@@ -1938,6 +2027,10 @@ components:
       type: object
       description: The signalling of one call dialog involving this registration.
       properties:
+        id:
+          type: string
+          description: Identifier of this dialog, for the trace detail route
+          example: call-2
         callId:
           type: string
         direction:

@@ -33,10 +33,12 @@ jest.unstable_mockModule('axios', () => ({
 }));
 
 const { default: traceRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace.js');
+const { default: traceTransactionRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace/{transactionId}.js');
 const { default: probeRoute } = await import('../api/paths/phone-endpoints/{identifier}/probe.js');
 
 const quietLog = { info() {}, error() {}, warn() {}, debug() {} };
 const getTrace = traceRoute(quietLog).GET;
+const getTraceTransaction = traceTransactionRoute(quietLog).GET;
 const startProbe = probeRoute(quietLog).POST;
 
 const ORG = 'org-1';
@@ -71,6 +73,12 @@ const callTrace = async ({ identifier = REG, query = {}, user } = {}) => {
   return res;
 };
 
+const callTraceTransaction = async ({ identifier = REG, transactionId = 'reg-8', query = {} } = {}) => {
+  const res = makeRes();
+  await getTraceTransaction({ params: { identifier, transactionId }, query, log: quietLog }, res);
+  return res;
+};
+
 const callProbe = async ({ identifier = REG, body = {} } = {}) => {
   const res = makeRes();
   await startProbe({ params: { identifier }, body, log: quietLog }, res);
@@ -97,6 +105,16 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
     makeReg();
     const res = await callTrace({ query: { format: 'sqlite' } });
     expect(res._status).toBe(400);
+    expect(lastRequest).toBeNull();
+  });
+
+  // decode on the index would be the fat response the split exists to avoid,
+  // so it is refused here with a pointer at the route that does serve it.
+  it('sends decode to the per-transaction route rather than serving it', async () => {
+    makeReg();
+    const res = await callTrace({ query: { format: 'decode' } });
+    expect(res._status).toBe(400);
+    expect(res._body.message).toMatch(/transactionId/);
     expect(lastRequest).toBeNull();
   });
 
@@ -135,27 +153,22 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
     expect(lastRequest).toBeNull();
   });
 
-  it('proxies the transcript, adding provenance', async () => {
+  it('proxies the index, adding provenance', async () => {
     makeReg();
-    nextResponse = { status: 200, data: { registrationId: REG, registerTransactions: [] } };
+    nextResponse = {
+      status: 200,
+      data: { registrationId: REG, transactions: [{ id: 'reg-8', kind: 'register' }] }
+    };
     const res = await callTrace();
     expect(res._status).toBe(200);
     expect(res._body.node).toBe('203.0.113.10');
     expect(typeof res._body.fetchedAt).toBe('string');
+    expect(res._body.transactions).toHaveLength(1);
     expect(lastRequest.url).toBe(`https://203.0.113.10:8443/debug/registrations/${REG}/trace`);
     expect(lastRequest.headers.Authorization).toBe('Bearer node-token');
   });
 
-  it('keeps the decode representation an array, with provenance in headers', async () => {
-    makeReg();
-    nextResponse = { status: 200, data: [{ ts: '2026-08-30T10:00:00Z' }] };
-    const res = await callTrace({ query: { format: 'decode' } });
-    expect(Array.isArray(res._body)).toBe(true);
-    expect(res._headers['X-Regclient-Node']).toBe('203.0.113.10');
-    expect(new URL(lastRequest.url).searchParams.get('format')).toBe('decode');
-  });
-
-  it('returns pcap as a binary attachment', async () => {
+  it('returns pcap as a whole-registration binary attachment', async () => {
     makeReg();
     nextResponse = { status: 200, data: Buffer.from([0xd4, 0xc3, 0xb2, 0xa1]) };
     const res = await callTrace({ query: { format: 'pcap' } });
@@ -179,6 +192,58 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
     expect((await callTrace())._status).toBe(502);
     nextResponse = { status: 404, data: {} };
     expect((await callTrace())._status).toBe(404);
+  });
+});
+
+describe('GET /phone-endpoints/{identifier}/trace/{transactionId}', () => {
+  it('fetches one exchange in full', async () => {
+    makeReg();
+    nextResponse = {
+      status: 200,
+      data: { registrationId: REG, registerTransactions: [{ id: 'reg-8', messages: [{}, {}] }] }
+    };
+    const res = await callTraceTransaction();
+    expect(res._status).toBe(200);
+    expect(res._body.node).toBe('203.0.113.10');
+    expect(lastRequest.url).toBe(`https://203.0.113.10:8443/debug/registrations/${REG}/trace/reg-8`);
+  });
+
+  it('offers the decoded packets of that exchange', async () => {
+    makeReg();
+    nextResponse = { status: 200, data: [{ ts: '2026-08-30T10:00:00Z' }] };
+    const res = await callTraceTransaction({ query: { format: 'decode' } });
+    expect(Array.isArray(res._body)).toBe(true);
+    expect(res._headers['X-Regclient-Node']).toBe('203.0.113.10');
+    expect(new URL(lastRequest.url).searchParams.get('format')).toBe('decode');
+  });
+
+  it('names the exchange in the capture filename', async () => {
+    makeReg();
+    nextResponse = { status: 200, data: Buffer.from([0xd4, 0xc3, 0xb2, 0xa1]) };
+    const res = await callTraceTransaction({ query: { format: 'pcap' } });
+    expect(res._headers['Content-Disposition']).toContain(`${REG}-reg-8.pcap`);
+  });
+
+  // Trace entries rotate. An id listed a few minutes ago may have aged out
+  // behind a burst of retries, and saying so beats implying the registration
+  // itself is unknown.
+  it('explains a transaction that has rotated out', async () => {
+    makeReg();
+    nextResponse = { status: 404, data: {} };
+    const res = await callTraceTransaction();
+    expect(res._status).toBe(404);
+    expect(res._body.message).toMatch(/rotated out/);
+  });
+
+  it('applies the same organisation and node checks as the index', async () => {
+    makeReg({ organisationId: 'org-2' });
+    expect((await callTraceTransaction())._status).toBe(403);
+    expect(lastRequest).toBeNull();
+
+    rows.clear();
+    makeReg({ b2buaId: null });
+    expect((await callTraceTransaction())._status).toBe(409);
+    expect(lastRequest).toBeNull();
   });
 });
 

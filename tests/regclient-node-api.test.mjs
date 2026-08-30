@@ -8,7 +8,8 @@ import {
   nodeRequest,
   describeNodeFailure,
   selectProbeNode,
-  TRACE_FORMATS
+  TRACE_FORMATS,
+  TRACE_INDEX_FORMATS
 } from '../lib/regclient.js';
 
 // The regclient node API client: URL construction, the guard on which node
@@ -143,9 +144,23 @@ describe('URL construction', () => {
   const config = loadRegclientConfig(baseEnv);
   const registrationId = '11111111-2222-3333-4444-555555555555';
 
-  it('builds the default trace URL without a redundant format', () => {
+  it('builds the trace index URL without a redundant format', () => {
     expect(buildTraceUrl({ node: '203.0.113.10', registrationId }, config))
       .toBe(`https://203.0.113.10:8443/debug/registrations/${registrationId}/trace`);
+  });
+
+  // The index describes the exchanges; one exchange is fetched by id. That is
+  // what keeps a dashboard listing from re-downloading tens of kilobytes of SIP
+  // text every time it renders.
+  it('addresses a single transaction by id', () => {
+    expect(buildTraceUrl({ node: '203.0.113.10', registrationId, transactionId: 'reg-8' }, config))
+      .toBe(`https://203.0.113.10:8443/debug/registrations/${registrationId}/trace/reg-8`);
+  });
+
+  it('escapes a transaction id rather than letting it reshape the path', () => {
+    const url = buildTraceUrl({ node: '203.0.113.10', registrationId, transactionId: '../../probe' }, config);
+    expect(url).not.toContain('/probe');
+    expect(url).toContain('%2F');
   });
 
   it('carries format and since', () => {
@@ -167,6 +182,11 @@ describe('URL construction', () => {
 
   it('offers exactly the three documented trace formats', () => {
     expect(TRACE_FORMATS).toEqual(['json', 'decode', 'pcap']);
+  });
+
+  // decode on the index would be the fat response the split exists to avoid.
+  it('offers only listing and whole-registration capture on the index', () => {
+    expect(TRACE_INDEX_FORMATS).toEqual(['json', 'pcap']);
   });
 });
 

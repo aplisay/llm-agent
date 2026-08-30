@@ -5,7 +5,8 @@ from the dashboard instead of from a node shell:
 
 | Route | Purpose |
 |---|---|
-| `GET /api/phone-endpoints/{id}/trace` | The SIP conversation captured for this registration — REGISTER ladders, recent call dialogs, keepalive counters |
+| `GET /api/phone-endpoints/{id}/trace` | Index of the SIP exchanges captured for this registration — REGISTER ladders, recent call dialogs, keepalive counters |
+| `GET /api/phone-endpoints/{id}/trace/{transactionId}` | One of those exchanges, in full |
 | `POST /api/phone-endpoints/{id}/probe` | Run a live registration attempt now and report what happens |
 | `GET /api/phone-endpoints/{id}/probe/{probeId}/events` | Server-sent events from a running probe |
 | `GET /api/phone-endpoints/{id}/probe/{probeId}` | The finished probe report |
@@ -44,28 +45,72 @@ A node that is down therefore produces a prompt `504 {error, node, reason}`
 rather than a hung request — and names the node, so an operator knows which
 instance to look at.
 
+## Two steps, not one
+
+A full trace runs to tens of kilobytes of SIP text — eight REGISTER ladders and
+a couple of call dialogs, each message up to 4 KiB. That is the right thing for
+a node to hold and the wrong thing to return on every read: a dashboard listing
+wants to know *what happened*, not to re-download all of it each time it
+renders.
+
+So reading a trace is two steps.
+
+**The index** (`GET …/trace`) lists the exchanges, most recent first, at a
+couple of hundred bytes each:
+
+```json
+{
+  "registrationId": "…", "node": "203.0.113.10",
+  "capturedAt": "…", "fetchedAt": "…",
+  "transactions": [
+    { "id": "reg-8", "kind": "register", "summary": "REGISTER → 403 Forbidden",
+      "outcome": "failure", "code": 403, "startedAt": "…", "rttMs": 34,
+      "pinned": true, "messages": 4, "bytes": 2870 },
+    { "id": "call-2", "kind": "call", "direction": "inbound",
+      "summary": "INVITE → 200 OK", "outcome": "completed",
+      "callId": "…", "startedAt": "…", "endedAt": "…", "messages": 8, "bytes": 9012 }
+  ],
+  "keepalive": { "sent": 412, "ok": 411, "failed": 1, "transitions": [ … ] },
+  "evictions": { "registerTransactions": 12, "calls": 3, "truncatedMessages": 0 }
+}
+```
+
+`pinned` marks the entries kept regardless of rotation — the most recent
+successful and most recent failed REGISTER — so a retry storm cannot evict the
+last known-good exchange you want to diff against. `evictions` says what has
+been discarded, so a gap in the history is never silent.
+
+**The detail** (`GET …/trace/{transactionId}`) returns one of those entries with
+every message, in the representation you ask for.
+
 ## Trace formats
 
-`?format=` selects the representation; the node renders all three.
+`?format=` selects the representation.
 
-- **`json`** (default) — transaction-grouped transcript. REGISTER exchanges are
-  grouped (request, challenge, authenticated request, final response) with an
-  outcome and round-trip time; call dialogs carry their full signalling;
-  keepalives appear as counters and up/down transitions rather than messages.
+On the **detail** route, all three:
+
+- **`json`** (default) — the transcript: each message with its envelope
+  (direction, transport, five-tuple, timestamp) and raw text.
 - **`decode`** — a flat chronological array of decoded packets: parsed headers
   (order and duplicates preserved, so Via chains and route sets survive), CSeq,
   dialog identifiers and parsed SDP. For building a UI that renders a ladder
   without a SIP parser in the browser.
-- **`pcap`** — a synthesised capture, `application/vnd.tcpdump.pcap`. Opens in
-  Wireshark or sngrep with the real five-tuples. TLS legs are exported
-  **decrypted**, which an on-wire capture can never give you.
+- **`pcap`** — that exchange as a capture file.
 
-The trace is a bounded ring buffer, not a log: it holds recent REGISTER
-transactions (with the most recent successful and most recent failed one pinned,
-so a retry storm cannot evict the last known-good exchange to compare against),
-the last few call dialogs, and keepalive counters. It does not survive a node
-restart. What has been discarded is reported in `evictions`, so a gap is never
-silent.
+On the **index** route, `json` (the listing) and `pcap`. Asking a listing for
+`decode` would be exactly the fat response the split exists to avoid, so it is
+refused with a pointer at the right route. `pcap` on the index is deliberate and
+covers the **whole** registration: "give me everything for Wireshark" is a real
+request, and a capture of one transaction on its own rarely is.
+
+Captures are `application/vnd.tcpdump.pcap` and open in Wireshark or sngrep with
+the real five-tuples. TLS legs are exported **decrypted**, which an on-wire
+capture can never give you.
+
+The trace is a bounded ring buffer, not a log. It does not survive a node
+restart, and entries rotate as new activity arrives — an id you listed a few
+minutes ago may since have aged out behind a burst of retries, which the detail
+route reports as a 404 saying so.
 
 Digest credentials in `Authorization` and `Proxy-Authorization` are redacted at
 this API and cannot be un-redacted through it.
