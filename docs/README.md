@@ -43,6 +43,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [number-lifecycle-adding-a-number.md](number-lifecycle-adding-a-number.md) | Carrier-side provisioning and routing a new number in |
 | [registration-workflow.md](registration-workflow.md) | SIP registration handling end to end |
 | [registration-simulation.md](registration-simulation.md) | Exercising registration flows without a real carrier |
+| [registration-trace-and-probe-api.md](registration-trace-and-probe-api.md) | SIP traces and live registration probes, proxied to the owning b2bua node |
 | [uac_registation_address_tracking.md](uac_registation_address_tracking.md) | UAC registration address tracking notes |
 
 ## Runtimes and gateways

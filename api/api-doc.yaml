@@ -1695,6 +1695,67 @@ components:
             When set to true, will send the extension user in the SIP Contact header. This is useful when the remote 
             gateway needs the extension user to be included in the Contact header for proper routing or authentication.
           example: true
+        register:
+          type: boolean
+          default: true
+          description: |-
+            Whether to REGISTER with the registrar at all. Set false for a static (IP-authenticated)
+            trunk: no registration is attempted, but calls still route in both directions. Such an
+            endpoint stays in state `initial` — there is no registration to report on — with
+            reachability reflected in `error` and `lastSeenAt` from keepalives.
+        from_domain:
+          type: string
+          description: |-
+            Optional From-domain override for REGISTER and outbound calls. Applied only when the
+            registrar is not itself routable; otherwise the registrar host is used.
+          example: provider.example.com
+        ping:
+          type: integer
+          default: 30
+          description: |-
+            Keepalive (SIP OPTIONS) interval in seconds towards the registrar; 0 disables keepalives.
+            Results feed the endpoint liveness reported in `error` and in the trace keepalive counters.
+          example: 30
+        caller_id_in_from:
+          type: boolean
+          default: true
+          description: |-
+            Present the calling party identity in the From header on outbound calls towards the
+            registrar. Where a provider requires the registered account in From instead, the true
+            caller is still asserted in P-Asserted-Identity.
+        media:
+          type: string
+          enum:
+            - direct
+            - relay
+          default: direct
+          description: |-
+            Media path for calls on this registration. `direct` (the default) relays SDP end to end
+            so RTP flows directly between the far end and the media server, which is both the cheaper
+            and the historical behaviour. `relay` terminates and forwards media on the b2bua node:
+            use it for a registrar behind NAT that advertises unroutable addresses, or where the two
+            legs cannot agree on encryption. There is no automatic selection — relay is opt-in per
+            registration.
+        bridged_transfer:
+          type: boolean
+          description: |-
+            Bridge transfers on this endpoint instead of releasing them with SIP REFER, even where
+            REFER is available. Set it for a PBX whose REFER handling is unreliable, or where the
+            call path has to be retained for recording or billing. A per-transfer `forceBridged` or
+            `forceRefer` on the transfer call overrides this default; `forceRefer` wins over both.
+          example: true
+        forceBridged:
+          type: boolean
+          deprecated: true
+          description: |-
+            camelCase alias for `bridged_transfer`, accepted for compatibility. `bridged_transfer` is
+            the documented spelling and takes precedence when both are present.
+        displayNumber:
+          type: string
+          description: |-
+            Calling number to present on outbound calls placed through this registration, when the
+            registered `username` is not itself a dialable number. Falls back to `username`.
+          example: "+441234567890"
       example:
         transport: tls
         auth_username: "authuser123"
@@ -1806,4 +1867,553 @@ components:
           description: Registration password (for registrations)
         options:
           $ref: '#/components/schemas/PhoneRegistrationOptions'
+    B2buaNodeHeartbeat:
+      type: object
+      description: A b2bua node announcing itself, about once a minute.
+      required: [nodeId]
+      properties:
+        nodeId:
+          type: string
+          description: |-
+            The node's public address — the same value it writes into
+            `phone_registrations.b2bua_id`, which is what makes this joinable to a registration.
+          example: 203.0.113.10
+        type:
+          type: string
+          enum: [regclient, freeswitch]
+          default: regclient
+          description: Which stack this node is running. Only regclient serves the trace and probe API.
+        version:
+          type: string
+          description: Build version, for telling a fleet mid-rollout apart
+          example: 1.4.2
+        registrations:
+          type: integer
+          description: Registrations this node currently holds
+        failedRegistrations:
+          type: integer
+          description: How many of those are currently failing
+        systemLoad:
+          type: number
+          description: One-minute load average as the node sees it
+    B2buaNode:
+      type: object
+      description: A b2bua node as it last reported itself.
+      properties:
+        nodeId:
+          type: string
+        type:
+          type: string
+          enum: [regclient, freeswitch]
+        version:
+          type: string
+          nullable: true
+        registrations:
+          type: integer
+        failedRegistrations:
+          type: integer
+        systemLoad:
+          type: number
+          nullable: true
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+          description: |-
+            Whether this node has stopped heartbeating. Reported rather than omitted: a node that
+            has gone quiet is the thing worth seeing, and it is invisible if the row disappears.
+    NodeCapabilityUnavailable:
+      type: object
+      description: |-
+        Returned when the b2bua node holding this registration does not provide the trace and probe
+        API at all — it is running the FreeSWITCH stack, which has no such interface. This is not a
+        fault and retrying will not help: migrate the registration to a regclient node.
+      properties:
+        code:
+          type: string
+          enum: [trace-api-unavailable]
+        node:
+          type: string
+          description: Address of the b2bua node holding this registration
+          example: 203.0.113.10
+        message:
+          type: string
+    NodeUnavailable:
+      type: object
+      description: |-
+        Returned when the b2bua node that owns a registration could not be reached or refused the
+        request. `node` names the instance that was asked, so an operator can tell which node is
+        unhealthy rather than guessing.
+      properties:
+        error:
+          type: string
+          example: trace unavailable
+        node:
+          type: string
+          description: Address of the b2bua node that owns this registration
+          example: 203.0.113.10
+        reason:
+          type: string
+          description: Why the node could not answer
+          example: timeout
+    SipTraceIndexEntry:
+      type: object
+      description: |-
+        One captured SIP exchange, described but not reproduced. Fetch it in full from
+        `/phone-endpoints/{identifier}/trace/{id}`.
+      properties:
+        id:
+          type: string
+          description: Identifier of this exchange, for the trace detail route
+          example: reg-8
+        kind:
+          type: string
+          enum: [register, call]
+        summary:
+          type: string
+          description: One line saying what happened, suitable to show in a list
+          example: REGISTER → 403 Forbidden
+        outcome:
+          type: string
+          description: |-
+            For a REGISTER: success, failure or in-progress. For a call: active or completed.
+        code:
+          type: integer
+          description: Final SIP response code, when there was one
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          description: For a call, which way it went
+        callId:
+          type: string
+          description: For a call, its SIP Call-ID
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        rttMs:
+          type: number
+          description: Time from first request to final response, in milliseconds
+        pinned:
+          type: boolean
+          description: |-
+            Whether this entry is retained regardless of rotation. The most recent successful and
+            most recent failed REGISTER are always pinned, so a retry storm cannot evict the last
+            known-good exchange.
+        messages:
+          type: integer
+          description: How many messages fetching this entry would return
+        bytes:
+          type: integer
+          description: Approximate size of that detail, in bytes
+    SipTraceIndex:
+      type: object
+      description: |-
+        What a registration's trace buffer currently holds. A listing rather than the trace itself:
+        a full trace runs to tens of kilobytes of SIP text.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          description: Address of the b2bua node that holds this trace
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the node took this snapshot
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When this API fetched it from the node
+        transactions:
+          type: array
+          description: Captured exchanges, most recent first
+          items:
+            $ref: '#/components/schemas/SipTraceIndexEntry'
+        keepalive:
+          $ref: '#/components/schemas/SipTraceKeepalive'
+        evictions:
+          type: object
+          description: What the ring buffer has discarded, so a gap in the trace is never silent.
+          properties:
+            registerTransactions:
+              type: integer
+            calls:
+              type: integer
+            truncatedMessages:
+              type: integer
+    SipTraceMessage:
+      type: object
+      description: One captured SIP message, as it appeared on the wire.
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Capture timestamp
+        direction:
+          type: string
+          enum: [in, out]
+          description: Direction relative to the b2bua node
+        transport:
+          type: string
+          enum: [udp, tcp, tls]
+        src:
+          type: string
+          description: Source address and port
+          example: 203.0.113.10:5060
+        dst:
+          type: string
+          description: Destination address and port
+          example: 198.51.100.7:5061
+        size:
+          type: integer
+          description: Message size in bytes on the wire
+        requestLine:
+          type: string
+          description: |-
+            RFC 3261 Request-Line. Present on a request, absent on a response —
+            exactly one of `requestLine` and `statusLine` appears on any message,
+            so the key itself says which kind it is.
+          example: REGISTER sip:pbx.example.com SIP/2.0
+        statusLine:
+          type: string
+          description: RFC 3261 Status-Line. Present on a response, absent on a request.
+          example: SIP/2.0 401 Unauthorized
+        callId:
+          type: string
+        cseq:
+          type: string
+          example: 3 REGISTER
+        raw:
+          type: string
+          description: |-
+            The full message text. Digest credentials in `Authorization` and `Proxy-Authorization`
+            are redacted. Long messages are truncated with a marker.
+        truncated:
+          type: boolean
+          description: Whether `raw` was truncated to fit the capture budget
+    SipTraceTransaction:
+      type: object
+      description: A grouped SIP transaction — typically REGISTER, challenge, authenticated REGISTER, final response.
+      properties:
+        outcome:
+          type: string
+          enum: [success, failure, in-progress]
+        startedAt:
+          type: string
+          format: date-time
+        rttMs:
+          type: number
+          description: Time from first request to final response, in milliseconds
+        code:
+          type: integer
+          description: Final SIP response code, when there was one
+        pinned:
+          type: boolean
+          description: |-
+            Whether this transaction is retained regardless of rotation. The most recent successful
+            and most recent failed transaction are always pinned, so a failure storm cannot evict the
+            last known-good exchange.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceMessage'
+    SipTraceDialog:
+      type: object
+      description: The signalling of one call dialog involving this registration.
+      properties:
+        id:
+          type: string
+          description: Identifier of this dialog, for the trace detail route
+          example: call-2
+        callId:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceMessage'
+    SipTraceKeepalive:
+      type: object
+      description: |-
+        Keepalive (OPTIONS) activity, kept as counters and state transitions rather than full
+        messages — the volume is high and the diagnostic value is in the outcome, not the bytes.
+      properties:
+        sent:
+          type: integer
+        ok:
+          type: integer
+        failed:
+          type: integer
+        lastRtt:
+          type: number
+          description: Round-trip time of the most recent keepalive, in milliseconds
+        lastCode:
+          type: integer
+        transitions:
+          type: array
+          description: Recent up/down transitions, most recent last
+          items:
+            type: object
+            properties:
+              at:
+                type: string
+                format: date-time
+              state:
+                type: string
+                enum: [up, down]
+              detail:
+                type: string
+    SipTrace:
+      type: object
+      description: Transaction-grouped SIP trace for one registration.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          description: Address of the b2bua node that produced this trace
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the node took this snapshot
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When this API fetched the snapshot from the node
+        registerTransactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceTransaction'
+        calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceDialog'
+        keepalive:
+          $ref: '#/components/schemas/SipTraceKeepalive'
+        evictions:
+          type: object
+          description: What the ring buffer has discarded, so a gap in the trace is never silent.
+          properties:
+            registerTransactions:
+              type: integer
+            calls:
+              type: integer
+            truncatedMessages:
+              type: integer
+    SipTracePacket:
+      type: object
+      description: |-
+        One decoded SIP packet, returned by `format=decode`. Header order and duplicate headers are
+        preserved so Via chains and route sets survive the decode.
+      properties:
+        ts:
+          type: string
+          format: date-time
+        direction:
+          type: string
+          enum: [in, out]
+        transport:
+          type: string
+          enum: [udp, tcp, tls]
+        src:
+          type: string
+        dst:
+          type: string
+        size:
+          type: integer
+        sip:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum: [request, response]
+            method:
+              type: string
+            requestUri:
+              type: string
+            statusCode:
+              type: integer
+            reasonPhrase:
+              type: string
+            headers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  value:
+                    type: string
+            cseq:
+              type: object
+              properties:
+                seq:
+                  type: integer
+                method:
+                  type: string
+            callId:
+              type: string
+            fromTag:
+              type: string
+            toTag:
+              type: string
+        sdp:
+          type: object
+          nullable: true
+          description: Parsed SDP body, when the message carried one.
+          properties:
+            origin:
+              type: string
+            connection:
+              type: string
+            media:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  port:
+                    type: integer
+                  protocol:
+                    type: string
+                  direction:
+                    type: string
+                  payloads:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pt:
+                          type: integer
+                        codec:
+                          type: string
+                        rate:
+                          type: integer
+                  attributes:
+                    type: array
+                    items:
+                      type: string
+        correlation:
+          type: object
+          properties:
+            registrationId:
+              type: string
+            transaction:
+              type: string
+            dialog:
+              type: string
+    RegistrationProbeRequest:
+      type: object
+      description: Options for a live registration probe.
+      properties:
+        discover:
+          type: boolean
+          default: false
+          description: |-
+            Try a matrix of transports and next-hop choices rather than a single attempt, and report
+            the minimal `options` that work.
+        apply:
+          type: boolean
+          default: false
+          description: |-
+            Merge the discovered `options` patch into the endpoint and restart its registration.
+            Only meaningful with `discover`, and only honoured where the deployment enables it.
+    RegistrationProbeAccepted:
+      type: object
+      required: [probeId]
+      properties:
+        probeId:
+          type: string
+          description: Identifier to stream or fetch this probe's results
+        node:
+          type: string
+          description: The b2bua node running the probe
+    RegistrationProbeReport:
+      type: object
+      description: The result of a registration probe.
+      properties:
+        probeId:
+          type: string
+        node:
+          type: string
+        registrationId:
+          type: string
+        state:
+          type: string
+          enum: [running, complete]
+        verdict:
+          type: string
+          description: Machine-readable outcome
+          enum:
+            - registered
+            - bad-credentials
+            - rejected
+            - unreachable
+            - tls-failure
+            - no-route
+            - timeout
+            - error
+        summary:
+          type: string
+          description: One-line diagnosis suitable to show a user
+          example: 'REGISTER → 403 Forbidden from 198.51.100.7 (TLS, 34ms)'
+        diagnosis:
+          type: array
+          description: Specific observations that led to the verdict
+          items:
+            type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        branches:
+          type: array
+          description: One entry per attempt made — a single-attempt probe has exactly one.
+          items:
+            type: object
+            properties:
+              transport:
+                type: string
+                enum: [udp, tcp, tls]
+              nextHop:
+                type: string
+              outcome:
+                type: string
+              code:
+                type: integer
+              rttMs:
+                type: number
+              messages:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SipTraceMessage'
+        suggestedOptions:
+          type: object
+          nullable: true
+          description: |-
+            Minimal `options` patch that made the registration succeed, for discovery probes.
+            Note that a later full update of an endpoint's `options` replaces them wholesale.
+          additionalProperties: true
+        applied:
+          type: boolean
+          description: Whether `suggestedOptions` was written back to the endpoint
 paths: {}
