@@ -171,6 +171,27 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # TEXT_CHAT_PENDING_TTL_MS=       # pending text-chat session TTL
 # SUBAGENT_TIMEOUT=60000          # agent-invoke/subagent timeout (ms)
 
+# ── b2bua node API (SIP traces and registration probes) ─────────────────────
+# The regclient b2bua exposes a small authenticated HTTPS API per node. The API
+# proxies to it for GET /phone-endpoints/{id}/trace and the probe routes, using
+# phone_registrations.b2bua_id to find the node that owns each registration.
+# Leave REGCLIENT_API_TOKEN unset to disable those routes (they answer 503).
+# REGCLIENT_API_TOKEN=<shared with the node secretenv bundle>
+# REGCLIENT_API_PORT=8443
+# Public certificate of the private CA that signs node certificates. PEM, or
+# base64 of a PEM. Required unless REGCLIENT_API_INSECURE=1.
+# REGCLIENT_CA_CERT=
+# TRACE_PROXY_TIMEOUT_MS=2000     # hard per-request timeout; no retries
+# Nodes able to run a probe for a registration no node has claimed yet.
+# REGCLIENT_PROBE_NODES=
+# Optional pin: only these node addresses may be contacted at all.
+# REGCLIENT_NODE_ALLOWLIST=
+# Allow node addresses in private ranges (compose/kind); public IPs only by
+# default. Link-local is never allowed.
+# REGCLIENT_ALLOW_PRIVATE_NODES=0
+# Dev only: skip TLS verification (and, with REGCLIENT_API_SCHEME=http, TLS).
+# REGCLIENT_API_INSECURE=0
+
 # ── Number administration (tools/number.js — manual admin script only) ──────
 # Magrathea carrier credentials + SIP ingress hosts for bulk/manual number
 # maintenance. NOT read by the API service itself; the self-service Buy-number
