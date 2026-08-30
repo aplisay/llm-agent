@@ -39,7 +39,7 @@ jest.unstable_mockModule('axios', () => ({
   }
 }));
 
-const { resetNodeCapabilities, nodeCapability, CAPABILITY_NONE } = await import('../lib/regclient.js');
+const { resetNodeCapabilities, nodeCapability, CAPABILITY_NONE, CAPABILITY_UNKNOWN } = await import('../lib/regclient.js');
 const { verifyProbeHandle, signProbeHandle } = await import('../lib/regclient-probe-handle.js');
 
 const { default: traceRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace.js');
@@ -234,23 +234,30 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
   // During the migration both stacks run against the same table, so a
   // registration held by a FreeSWITCH node is an ordinary state of affairs.
   // Reporting it as an outage would send somebody looking for a fault.
-  it('says plainly when the node has no trace API at all', async () => {
+  // A refused connection is a node that did not answer, not a node running the
+  // FreeSWITCH stack. The two are indistinguishable on the wire, and calling it
+  // 501 "migrate this registration" sends an operator to redo a migration that
+  // already happened when the real answer is that a node is down.
+  it('reports a refused connection as a node that did not answer', async () => {
     makeReg();
     nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     const res = await callTrace();
 
-    expect(res._status).toBe(501);
-    expect(res._body.code).toBe('trace-api-unavailable');
+    expect(res._status).toBe(504);
     expect(res._body.node).toBe('203.0.113.10');
-    expect(res._body.message).toMatch(/FreeSWITCH/);
+    expect(nodeCapability('203.0.113.10')).toBe(CAPABILITY_UNKNOWN);
   });
 
-  // And having learned it once, it costs nothing thereafter — which is the
-  // whole point: no timeout, and not even a connection.
-  it('answers a known FreeSWITCH node without touching the network', async () => {
+  // A certificate our CA did not sign is still proof: something is serving
+  // HTTPS there and it is not this API. That is cached, so it costs nothing
+  // thereafter — no timeout, and not even a connection.
+  it('answers a node with a foreign certificate without touching the network', async () => {
     makeReg();
-    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
-    await callTrace();
+    nextResponse = new Error('unable to verify the first certificate');
+    const first = await callTrace();
+    expect(first._status).toBe(501);
+    expect(first._body.code).toBe('trace-api-unavailable');
+    expect(first._body.message).toMatch(/FreeSWITCH/);
     expect(nodeCapability('203.0.113.10')).toBe(CAPABILITY_NONE);
 
     lastRequest = null;
@@ -375,10 +382,18 @@ describe('POST /phone-endpoints/{identifier}/probe', () => {
 
   it('says plainly when the node has no probe API either', async () => {
     makeReg();
-    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    nextResponse = new Error('unable to verify the first certificate');
     const res = await callProbe();
     expect(res._status).toBe(501);
     expect(res._body.code).toBe('trace-api-unavailable');
+  });
+
+  // As on the trace route: unreachable is not the same as wrong-stack.
+  it('reports an unreachable probe node as a node that did not answer', async () => {
+    makeReg();
+    nextResponse = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const res = await callProbe();
+    expect(res._status).toBe(504);
   });
 
   it('409s an unclaimed registration when there is no pool to run it on', async () => {

@@ -29,10 +29,22 @@ beforeEach(() => resetNodeCapabilities());
 describe('capability from a failed round-trip', () => {
   // These all say the same thing: whatever is at that address, it is not a
   // regclient node. They are also all fast by nature.
-  it('reads a connection-level failure as "no trace API here"', () => {
+  // A refused connection looks the same whether the address holds a FreeSWITCH
+  // node with no HTTP surface or a regclient node that is simply down — and the
+  // second is exactly when somebody wants to look. Answering 501 "migrate it"
+  // to a node that has already been migrated and has merely fallen over sends
+  // the operator to the wrong place, so a transport failure draws no
+  // conclusion. Only a heartbeat proves what a node is running.
+  it('draws no conclusion from a connection-level failure', () => {
     for (const code of ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EPROTO']) {
-      expect(capabilityFromFailure({ code })).toBe(CAPABILITY_NONE);
+      expect(capabilityFromFailure({ code })).toBe(CAPABILITY_UNKNOWN);
     }
+  });
+
+  // The exception: a TLS handshake that got far enough to reject the
+  // certificate proves something is serving HTTPS there and that it is not
+  // something our CA signed — so it is not a regclient node serving this API.
+  it('still reads a rejected certificate as proof', () => {
     expect(capabilityFromFailure({ message: 'wrong version number' })).toBe(CAPABILITY_NONE);
     expect(capabilityFromFailure({ message: 'unable to verify the first certificate' })).toBe(CAPABILITY_NONE);
   });
@@ -106,7 +118,10 @@ describe('nodeRequest learns as it goes', () => {
     expect(nodeCapability('203.0.113.10')).toBe(CAPABILITY_TRACE);
   });
 
-  it('records a refused connection so the next call costs nothing', async () => {
+  // Not cached, and not condemned: a node that refuses a connection may be a
+  // regclient node that is down, and caching "no trace API" would outlive the
+  // outage that produced it.
+  it('does not condemn a node that refused the connection', async () => {
     const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     await expect(nodeRequest({
       url: 'https://203.0.113.99:8443/health',
@@ -114,7 +129,19 @@ describe('nodeRequest learns as it goes', () => {
       node: '203.0.113.99',
       requestImpl: async () => { throw refused; }
     })).rejects.toThrow();
-    expect(nodeCapability('203.0.113.99')).toBe(CAPABILITY_NONE);
+    expect(nodeCapability('203.0.113.99')).toBe(CAPABILITY_UNKNOWN);
+  });
+
+  // A certificate we cannot verify is still proof, and still worth caching.
+  it('records a rejected certificate so the next call costs nothing', async () => {
+    const badCert = new Error('unable to verify the first certificate');
+    await expect(nodeRequest({
+      url: 'https://203.0.113.98:8443/health',
+      config,
+      node: '203.0.113.98',
+      requestImpl: async () => { throw badCert; }
+    })).rejects.toThrow();
+    expect(nodeCapability('203.0.113.98')).toBe(CAPABILITY_NONE);
   });
 
   it('does not condemn a node that merely timed out', async () => {

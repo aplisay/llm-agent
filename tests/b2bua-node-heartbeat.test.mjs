@@ -209,3 +209,43 @@ describe('capabilityFromHeartbeat', () => {
     expect(await capabilityFromHeartbeat('203.0.113.10', { model: broken })).toBe(CAPABILITY_UNKNOWN);
   });
 });
+
+describe('the scoped node principal', () => {
+  // A node runs internet-facing SIP and needs exactly one route. The
+  // fleet-wide SHARED_API_TOKEN is accepted on every internal route and mints
+  // a full system principal, so a node carrying it turns one compromised SIP
+  // machine into complete internal-API access. B2BUA_HEARTBEAT_TOKEN mints
+  // this principal instead: it may announce, and nothing else.
+  const nodePrincipal = () => ({
+    locals: { user: { id: 'b2bua-node', isB2buaNode: true } },
+    _status: null,
+    _body: null,
+    status(code) { this._status = code; return this; },
+    send(body) { this._body = body; this._status = this._status || 200; return this; },
+    json(body) { return this.send(body); }
+  });
+
+  it('may announce itself', async () => {
+    const res = nodePrincipal();
+    await post({ body: { nodeId: '203.0.113.77', type: 'regclient' }, log: quietLog }, res);
+    expect(res._status).toBe(200);
+    expect(res._body.nodeId).toBe('203.0.113.77');
+  });
+
+  // The listing is every node's public IP, stack, version, registration counts
+  // and load — a map of the estate. A node has no business reading it.
+  it('may not read the fleet listing back', async () => {
+    const res = nodePrincipal();
+    await get({ query: {}, log: quietLog }, res);
+    expect(res._status).toBe(403);
+  });
+
+  // Anything without one of the two internal principals is refused, which is
+  // what stops a tenant reaching this route and mislabelling a node's stack.
+  it('refuses an ordinary caller', async () => {
+    const res = nodePrincipal();
+    res.locals.user = { id: 'someone', organisationId: 'org-1' };
+    await post({ body: { nodeId: '203.0.113.77', type: 'freeswitch' }, log: quietLog }, res);
+    expect(res._status).toBe(403);
+  });
+});

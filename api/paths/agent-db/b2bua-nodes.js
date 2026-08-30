@@ -21,13 +21,19 @@ export default function (logger) {
  * repeated for every node until something caches it. A heartbeat makes it known
  * before the first trace request ever arrives.
  *
- * Internal: authenticated by the shared token, which is what makes the caller
- * the system user. Restricted to that user deliberately — an ordinary caller
- * able to post here could mark a node as the wrong stack, which would either
- * deny traces that exist or send requests at a node that cannot answer them.
+ * Internal, and restricted deliberately — an ordinary caller able to post here
+ * could mark a node as the wrong stack, which would either deny traces that
+ * exist or send requests at a node that cannot answer them.
+ *
+ * Two principals are accepted: the system user, and the narrowly-scoped
+ * b2bua-node principal that B2BUA_HEARTBEAT_TOKEN mints. Nodes should carry the
+ * scoped token: they are internet-facing SIP machines, and SHARED_API_TOKEN is
+ * accepted on every route in the internal API. The scoped one reaches this
+ * route and nothing else — not even the fleet listing below.
  */
 const heartbeat = async (req, res) => {
-  if (res.locals.user?.isSystem !== true) {
+  const caller = res.locals.user;
+  if (caller?.isSystem !== true && caller?.isB2buaNode !== true) {
     return res.status(403).send({ message: 'b2bua node heartbeats are accepted only from internal callers' });
   }
 
@@ -77,12 +83,12 @@ const heartbeat = async (req, res) => {
  * indistinguishable from a node that was not there.
  */
 const listNodes = async (req, res) => {
-  // The same gate the heartbeat applies. `/api/agent-db` is already refused at
-  // the prefix for anything without the shared token (middleware/auth.js), so
-  // this is defence in depth — but a route that leans entirely on an invariant
-  // declared in another file, while its sibling checks explicitly, reads as
-  // though the difference were deliberate. It is not: this listing is every
-  // node's public IP, stack, version, registration counts and load.
+  // A stricter gate than the heartbeat's, and deliberately so: this listing is
+  // every node's public IP, stack, version, registration counts and load — a
+  // map of the estate — so the scoped b2bua-node principal that may announce
+  // itself above is refused here. `/api/agent-db` is already refused at the
+  // prefix for anything without an internal token (middleware/auth.js); this is
+  // the second lock.
   if (res.locals.user?.isSystem !== true) {
     return res.status(403).send({ message: 'the b2bua node listing is available only to internal callers' });
   }
