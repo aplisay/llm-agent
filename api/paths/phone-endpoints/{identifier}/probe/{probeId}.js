@@ -1,4 +1,6 @@
+import { requirePermission } from '../../../../../lib/auth/permissions.js';
 import { resolveRegistrationNode } from '../../../../../lib/regclient-facade.js';
+import { verifyProbeHandle } from '../../../../../lib/regclient-probe-handle.js';
 import {
   buildProbeUrl,
   nodeRequest,
@@ -22,6 +24,9 @@ export default function (logger) {
  * discovery mode — the minimal `options` patch that made the registration work.
  */
 const getRegistrationProbe = async (req, res) => {
+  // Reading a report is a read; starting the probe took update.
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
+
   const { organisationId } = res.locals.user || {};
   const { identifier, probeId } = req.params;
 
@@ -33,11 +38,30 @@ const getRegistrationProbe = async (req, res) => {
       log: req.log
     });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
-    const { node, config } = resolved;
+    const { config } = resolved;
+
+    // The handle decides which node to ask and confirms the probe belongs to
+    // the registration in the path — not the registration's *current*
+    // `b2bua_id`, which may have moved since the probe started, and not the
+    // path parameter alone, which the probe id is not derived from. Ownership
+    // was already checked above; this is about asking the right node the right
+    // question.
+    const handle = verifyProbeHandle(probeId, { registrationId: identifier }, config);
+    if (!handle.ok) {
+      req.log?.info({ reason: handle.reason }, 'rejecting a probe id');
+      // 404 rather than 403: whether a probe exists on a node is itself a fact
+      // about somebody else's registration.
+      return res.status(404).send({ message: 'Probe not found' });
+    }
+    const { node, probeId: nodeProbeId } = handle;
 
     let response;
     try {
-      response = await nodeRequest({ url: buildProbeUrl({ node, probeId }, config), config, node });
+      response = await nodeRequest({
+        url: buildProbeUrl({ node, probeId: nodeProbeId, registrationId: identifier }, config),
+        config,
+        node
+      });
     }
     catch (err) {
       if (capabilityFromFailure(err) === CAPABILITY_NONE) {

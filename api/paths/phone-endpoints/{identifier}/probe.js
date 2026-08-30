@@ -1,4 +1,6 @@
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { resolveRegistrationNode } from '../../../../lib/regclient-facade.js';
+import { signProbeHandle } from '../../../../lib/regclient-probe-handle.js';
 import {
   buildProbeUrl,
   nodeRequest,
@@ -32,6 +34,13 @@ export default function (logger) {
  * be used as a credential-testing oracle against arbitrary registrars.
  */
 const startRegistrationProbe = async (req, res) => {
+  // A probe is a write, not a read. It puts a real REGISTER on the wire from an
+  // address the customer's PBX trusts, it exercises their stored credential,
+  // and with `apply` it modifies the registration's options. phoneEndpoint.update
+  // is the permission that already governs changing an endpoint, and this
+  // changes one.
+  if (!requirePermission(res, 'phoneEndpoint', 'update')) return;
+
   const { organisationId } = res.locals.user || {};
   const { identifier } = req.params;
   const { discover = false, apply = false } = req.body || {};
@@ -76,7 +85,23 @@ const startRegistrationProbe = async (req, res) => {
       });
     }
 
-    return res.status(202).send({ ...response.data, node });
+    // The id handed back names the node this probe is running on and the
+    // registration it is for, signed. A bare node-local id would send every
+    // follow-up to whichever node holds the registration *at that moment* —
+    // wrong the instant somebody migrates the row, which is exactly what an
+    // operator watching a probe is likely to be doing — and it would let a
+    // caller pair their own registration in the path with somebody else's
+    // probe id in the URL. See lib/regclient-probe-handle.js.
+    const handle = signProbeHandle(
+      { node, registrationId: identifier, probeId: response.data?.probeId },
+      config
+    );
+    if (!handle) {
+      req.log?.error({ node }, 'could not sign a probe handle; refusing to return an unbound probe id');
+      return res.status(500).send({ message: 'Internal server error' });
+    }
+
+    return res.status(202).send({ ...response.data, probeId: handle, node });
   }
   catch (err) {
     req.log?.error(err, 'starting registration probe');

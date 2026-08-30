@@ -1,3 +1,4 @@
+import { requirePermission } from '../../../../../lib/auth/permissions.js';
 import { resolveRegistrationNode } from '../../../../../lib/regclient-facade.js';
 import {
   TRACE_FORMATS,
@@ -27,6 +28,10 @@ export default function (logger) {
  * for the exchange somebody actually opened.
  */
 const getRegistrationTraceTransaction = async (req, res) => {
+  // Same gate as the index this transaction id came from: one exchange in full
+  // is strictly more than the line describing it.
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
+
   const { organisationId } = res.locals.user || {};
   const { identifier, transactionId } = req.params;
   const { format = 'json', since } = req.query;

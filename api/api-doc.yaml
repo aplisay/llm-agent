@@ -1736,6 +1736,26 @@ components:
             use it for a registrar behind NAT that advertises unroutable addresses, or where the two
             legs cannot agree on encryption. There is no automatic selection — relay is opt-in per
             registration.
+        bridged_transfer:
+          type: boolean
+          description: |-
+            Bridge transfers on this endpoint instead of releasing them with SIP REFER, even where
+            REFER is available. Set it for a PBX whose REFER handling is unreliable, or where the
+            call path has to be retained for recording or billing. A per-transfer `forceBridged` or
+            `forceRefer` on the transfer call overrides this default; `forceRefer` wins over both.
+          example: true
+        forceBridged:
+          type: boolean
+          deprecated: true
+          description: |-
+            camelCase alias for `bridged_transfer`, accepted for compatibility. `bridged_transfer` is
+            the documented spelling and takes precedence when both are present.
+        displayNumber:
+          type: string
+          description: |-
+            Calling number to present on outbound calls placed through this registration, when the
+            registered `username` is not itself a dialable number. Falls back to `username`.
+          example: "+441234567890"
       example:
         transport: tls
         auth_username: "authuser123"
@@ -2053,9 +2073,16 @@ components:
         size:
           type: integer
           description: Message size in bytes on the wire
-        firstLine:
+        requestLine:
           type: string
-          description: Request line or status line
+          description: |-
+            RFC 3261 Request-Line. Present on a request, absent on a response —
+            exactly one of `requestLine` and `statusLine` appears on any message,
+            so the key itself says which kind it is.
+          example: REGISTER sip:pbx.example.com SIP/2.0
+        statusLine:
+          type: string
+          description: RFC 3261 Status-Line. Present on a response, absent on a request.
           example: SIP/2.0 401 Unauthorized
         callId:
           type: string

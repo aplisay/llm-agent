@@ -1,4 +1,6 @@
+import { requirePermission } from '../../../../../../lib/auth/permissions.js';
 import { resolveRegistrationNode } from '../../../../../../lib/regclient-facade.js';
+import { verifyProbeHandle } from '../../../../../../lib/regclient-probe-handle.js';
 import { buildProbeUrl, openNodeStream } from '../../../../../../lib/regclient.js';
 
 let log;
@@ -18,6 +20,9 @@ export default function (logger) {
  * goes away, and either side closing tears down the other.
  */
 const streamRegistrationProbe = async (req, res) => {
+  // Reading a probe as it happens is the same read as reading its report.
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
+
   const { organisationId } = res.locals.user || {};
   const { identifier, probeId } = req.params;
 
@@ -29,12 +34,21 @@ const streamRegistrationProbe = async (req, res) => {
       log: req.log
     });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
-    const { node, config } = resolved;
+    const { config } = resolved;
+
+    // As for the report: the handle pins the node and binds the probe to this
+    // registration. See lib/regclient-probe-handle.js.
+    const handle = verifyProbeHandle(probeId, { registrationId: identifier }, config);
+    if (!handle.ok) {
+      req.log?.info({ reason: handle.reason }, 'rejecting a probe id');
+      return res.status(404).send({ message: 'Probe not found' });
+    }
+    const { node, probeId: nodeProbeId } = handle;
 
     let upstream;
     try {
       upstream = await openNodeStream({
-        url: buildProbeUrl({ node, probeId, events: true }, config),
+        url: buildProbeUrl({ node, probeId: nodeProbeId, registrationId: identifier, events: true }, config),
         config
       });
     }

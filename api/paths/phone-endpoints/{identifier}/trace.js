@@ -1,3 +1,4 @@
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { resolveRegistrationNode } from '../../../../lib/regclient-facade.js';
 import {
   TRACE_INDEX_FORMATS,
@@ -36,6 +37,14 @@ export default function (logger) {
  * here.
  */
 const getRegistrationTrace = async (req, res) => {
+  // A SIP trace is the endpoint's signalling in full — its registrar, its
+  // account identity, who has been calling it — so it is at least as sensitive
+  // as the endpoint record the same organisation can already see. Organisation
+  // ownership on its own is a weaker gate than the endpoint routes apply: a
+  // member without phoneEndpoint.read cannot read the endpoint, and must not be
+  // able to read its wire traffic instead.
+  if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
+
   const { organisationId } = res.locals.user || {};
   const { identifier } = req.params;
   const { format = 'json', since } = req.query;

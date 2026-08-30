@@ -52,8 +52,9 @@ const beat = async (body, user) => {
   return res;
 };
 
-const list = async (query = {}) => {
+const list = async (query = {}, user) => {
   const res = makeRes();
+  if (user !== undefined) res.locals.user = user;
   await get({ query, log: quietLog }, res);
   return res;
 };
@@ -155,6 +156,18 @@ describe('GET /agent-db/b2bua-nodes', () => {
     // Reported, not omitted: a node that has gone quiet is the thing worth
     // seeing, and it is invisible if the row simply disappears.
     expect(quiet.stale).toBe(true);
+  });
+
+  // `/api/agent-db` is already refused at the prefix for anything without the
+  // shared token, so this is defence in depth — but the POST checks explicitly
+  // and a GET that did not read as though the difference were deliberate. It
+  // is not: this listing is every node's public IP, stack, version,
+  // registration counts and load.
+  it('is refused to a caller who is not the internal system user', async () => {
+    await beat({ nodeId: '203.0.113.10', type: 'regclient' });
+    const res = await list({}, { id: 'u1', organisationId: 'org-1' });
+    expect(res._status).toBe(403);
+    expect(res._body.nodes).toBeUndefined();
   });
 });
 

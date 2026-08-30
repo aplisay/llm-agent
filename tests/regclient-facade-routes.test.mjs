@@ -40,15 +40,18 @@ jest.unstable_mockModule('axios', () => ({
 }));
 
 const { resetNodeCapabilities, nodeCapability, CAPABILITY_NONE } = await import('../lib/regclient.js');
+const { verifyProbeHandle, signProbeHandle } = await import('../lib/regclient-probe-handle.js');
 
 const { default: traceRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace.js');
 const { default: traceTransactionRoute } = await import('../api/paths/phone-endpoints/{identifier}/trace/{transactionId}.js');
 const { default: probeRoute } = await import('../api/paths/phone-endpoints/{identifier}/probe.js');
+const { default: probeReportRoute } = await import('../api/paths/phone-endpoints/{identifier}/probe/{probeId}.js');
 
 const quietLog = { info() {}, error() {}, warn() {}, debug() {} };
 const getTrace = traceRoute(quietLog).GET;
 const getTraceTransaction = traceTransactionRoute(quietLog).GET;
 const startProbe = probeRoute(quietLog).POST;
+const getProbeReport = probeReportRoute(quietLog).GET;
 
 const ORG = 'org-1';
 const REG = '11111111-2222-3333-4444-555555555555';
@@ -58,8 +61,23 @@ const configuredEnv = {
   REGCLIENT_CA_CERT: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
 };
 
-const makeRes = () => ({
-  locals: { user: { organisationId: ORG } },
+// A principal that holds the endpoint permissions these routes now require.
+// The routes gate on phoneEndpoint:read / :update as the endpoint routes
+// themselves do — organisation ownership alone was a weaker gate than the
+// record the trace describes.
+const OPERATOR = {
+  organisationId: ORG,
+  _effectivePermissions: { phoneEndpoint: ['claim', 'read', 'update', 'release'] }
+};
+
+// Read-only: may see the endpoint, may not change it. A probe changes it.
+const READER = {
+  organisationId: ORG,
+  _effectivePermissions: { phoneEndpoint: ['read'] }
+};
+
+const makeRes = (user = OPERATOR) => ({
+  locals: { user: { ...user } },
   _status: null,
   _body: null,
   _headers: {},
@@ -82,14 +100,23 @@ const callTrace = async ({ identifier = REG, query = {}, user } = {}) => {
   return res;
 };
 
-const callTraceTransaction = async ({ identifier = REG, transactionId = 'reg-8', query = {} } = {}) => {
+const callTraceTransaction = async ({ identifier = REG, transactionId = 'reg-8', query = {}, user } = {}) => {
   const res = makeRes();
+  if (user !== undefined) res.locals.user = user;
   await getTraceTransaction({ params: { identifier, transactionId }, query, log: quietLog }, res);
   return res;
 };
 
-const callProbe = async ({ identifier = REG, body = {} } = {}) => {
+const callProbeReport = async ({ identifier = REG, probeId, user } = {}) => {
   const res = makeRes();
+  if (user !== undefined) res.locals.user = user;
+  await getProbeReport({ params: { identifier, probeId }, log: quietLog }, res);
+  return res;
+};
+
+const callProbe = async ({ identifier = REG, body = {}, user } = {}) => {
+  const res = makeRes();
+  if (user !== undefined) res.locals.user = user;
   await startProbe({ params: { identifier }, body, log: quietLog }, res);
   return res;
 };
@@ -308,7 +335,14 @@ describe('POST /phone-endpoints/{identifier}/probe', () => {
     nextResponse = { status: 200, data: { probeId: 'p-1' } };
     const res = await callProbe({ body: { discover: true } });
     expect(res._status).toBe(202);
-    expect(res._body).toEqual({ probeId: 'p-1', node: '203.0.113.10' });
+    expect(res._body.node).toBe('203.0.113.10');
+    // The id handed back is a signed handle, not the node's own probe id: it
+    // names the node this probe is running on and the registration it is for,
+    // so a follow-up cannot be misrouted by a migration or pointed at somebody
+    // else's probe. See lib/regclient-probe-handle.js.
+    expect(res._body.probeId).not.toBe('p-1');
+    expect(verifyProbeHandle(res._body.probeId, { registrationId: REG }, { token: 'node-token' }))
+      .toMatchObject({ ok: true, node: '203.0.113.10', probeId: 'p-1' });
     expect(lastRequest.url).toBe('https://203.0.113.10:8443/probe');
     expect(lastRequest.method).toBe('POST');
     expect(lastRequest.data).toEqual({ registrationId: REG, discover: true, apply: false });
@@ -341,6 +375,102 @@ describe('POST /phone-endpoints/{identifier}/probe', () => {
   it('never probes another organisation\'s registration', async () => {
     makeReg({ organisationId: 'org-2' });
     expect((await callProbe())._status).toBe(403);
+    expect(lastRequest).toBeNull();
+  });
+});
+
+// ── RBAC ────────────────────────────────────────────────────────────────────
+
+// Organisation ownership was the only gate these routes applied, while the
+// endpoint routes they hang off require phoneEndpoint:read. That made the SIP
+// trace — the endpoint's registrar, its account identity, who has been calling
+// it — readable by a member who cannot read the endpoint record itself.
+describe('permissions', () => {
+  const NO_RIGHTS = { organisationId: ORG, _effectivePermissions: {} };
+
+  it('requires phoneEndpoint:read for the trace index and one exchange', async () => {
+    makeReg();
+    for (const call of [callTrace, callTraceTransaction]) {
+      const res = await call({ user: NO_RIGHTS });
+      expect(res._status).toBe(403);
+      expect(lastRequest).toBeNull();
+    }
+  });
+
+  // A probe is a write: it puts a real REGISTER on the wire from an address the
+  // customer's PBX trusts, and with `apply` it edits the registration.
+  it('requires phoneEndpoint:update to start a probe, not merely :read', async () => {
+    makeReg();
+    const res = await callProbe({ user: READER });
+    expect(res._status).toBe(403);
+    expect(lastRequest).toBeNull();
+  });
+
+  it('lets a reader read a probe report they may not have started', async () => {
+    makeReg();
+    nextResponse = { status: 200, data: { probeId: 'p-1', verdict: 'registered' } };
+    const handle = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-1' },
+      { token: 'node-token' }
+    );
+    const res = await callProbeReport({ probeId: handle, user: READER });
+    expect(res._status).toBe(200);
+  });
+});
+
+// ── probe handles ───────────────────────────────────────────────────────────
+
+describe('probe handles', () => {
+  it('asks the node the handle names, not whichever node holds the row now', async () => {
+    // The registration has since migrated. The probe is still running where it
+    // started, and that is where the follow-up has to go — an operator watching
+    // a probe is exactly the person likely to be moving the row.
+    makeReg({ b2buaId: '203.0.113.99' });
+    nextResponse = { status: 200, data: { probeId: 'p-1', verdict: 'registered' } };
+
+    const handle = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-1' },
+      { token: 'node-token' }
+    );
+    const res = await callProbeReport({ probeId: handle });
+    expect(res._status).toBe(200);
+    expect(lastRequest.url).toContain('203.0.113.10');
+    expect(lastRequest.url).not.toContain('203.0.113.99');
+    // And the node is told which registration to check the probe against, so
+    // the binding is enforced by the process that actually knows the answer.
+    expect(lastRequest.url).toContain(`registrationId=${REG}`);
+  });
+
+  it('refuses a probe handle issued for a different registration', async () => {
+    makeReg();
+    const other = signProbeHandle(
+      { node: '203.0.113.10', registrationId: 'someone-elses-registration', probeId: 'p-1' },
+      { token: 'node-token' }
+    );
+    const res = await callProbeReport({ probeId: other });
+    // 404, not 403: whether a probe exists on a node is itself a fact about
+    // another registration.
+    expect(res._status).toBe(404);
+    expect(lastRequest).toBeNull();
+  });
+
+  it('refuses a forged or bare probe id', async () => {
+    makeReg();
+    for (const probeId of ['p-1', 'v1.abc.def', '']) {
+      const res = await callProbeReport({ probeId });
+      expect(res._status).toBe(404);
+      expect(lastRequest).toBeNull();
+    }
+  });
+
+  it('refuses a handle signed with a different node token', async () => {
+    makeReg();
+    const forged = signProbeHandle(
+      { node: '203.0.113.10', registrationId: REG, probeId: 'p-1' },
+      { token: 'not-our-token' }
+    );
+    const res = await callProbeReport({ probeId: forged });
+    expect(res._status).toBe(404);
     expect(lastRequest).toBeNull();
   });
 });

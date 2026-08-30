@@ -77,6 +77,16 @@ const heartbeat = async (req, res) => {
  * indistinguishable from a node that was not there.
  */
 const listNodes = async (req, res) => {
+  // The same gate the heartbeat applies. `/api/agent-db` is already refused at
+  // the prefix for anything without the shared token (middleware/auth.js), so
+  // this is defence in depth — but a route that leans entirely on an invariant
+  // declared in another file, while its sibling checks explicitly, reads as
+  // though the difference were deliberate. It is not: this listing is every
+  // node's public IP, stack, version, registration counts and load.
+  if (res.locals.user?.isSystem !== true) {
+    return res.status(403).send({ message: 'the b2bua node listing is available only to internal callers' });
+  }
+
   const staleAfterSeconds = Number(req.query.staleAfterSeconds ?? 180);
 
   try {
@@ -181,6 +191,7 @@ listNodes.apiDoc = {
         }
       }
     },
+    403: { description: 'Not an internal caller', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     500: { description: 'Internal server error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } }
   }
 };

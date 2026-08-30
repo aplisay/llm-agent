@@ -14,6 +14,14 @@ from the dashboard instead of from a node shell:
 Both apply only to `phone-registration` endpoints; a DDI number has no
 registration to trace.
 
+**Permissions.** The trace routes and the probe report require
+`phoneEndpoint:read`; starting a probe requires `phoneEndpoint:update`. That
+split is not cosmetic. A trace is the endpoint's signalling in full — its
+registrar, its account identity, who has been calling it — so it is gated
+exactly as the endpoint record is. A probe is a *write*: it puts a real REGISTER
+on the wire from an address the customer's PBX trusts, it exercises their stored
+credential, and with `apply` it edits the endpoint's options.
+
 ## Why these exist
 
 Until now the only observable signal from a registration was the `state` and
@@ -203,8 +211,24 @@ Note the interaction with `PUT /phone-endpoints/{id}`: an update replaces
 patch is re-derivable by re-probing.
 
 Probing a registration that is currently registered is safe: the node reuses the
-registration's existing contact, so the probe degrades to a forced refresh and
-cannot create a second binding at the registrar or drop the live one.
+registration's existing contact and asks for the expiry that binding already
+holds, so the probe degrades to a forced refresh — it cannot create a second
+binding at the registrar, drop the live one, or shorten it.
+
+Discovery against a live registration is refused with `409`. The matrix would
+re-register the live contact once per transport, and since a contact URI differs
+by `;transport=`, that is three separate bindings at the registrar — none of
+which a refresh cleans up. Disable the registration first, or probe without
+`discover` to force a refresh.
+
+**Probe ids are opaque handles.** The `probeId` returned by `POST` names the node
+the probe is running on and the registration it is for, signed. Two things follow
+that a bare id could not give you: a follow-up reaches the node that is actually
+running the probe even if the registration migrates to another node while you
+watch, and a probe id cannot be paired with a different registration in the path
+to read somebody else's transcript. A handle that does not verify — a forgery, or
+one for another registration — answers `404`, because whether a probe exists on a
+node is itself a fact about another registration.
 
 Only registrations the caller's organisation owns can be probed. There is no
 free-form "try these credentials against this registrar" form on this API,
