@@ -45,7 +45,7 @@ const getRegistrationTrace = async (req, res) => {
   // able to read its wire traffic instead.
   if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
 
-  const { organisationId } = res.locals.user || {};
+  const user = res.locals.user;
   const { identifier } = req.params;
   const { format = 'json', since } = req.query;
 
@@ -57,7 +57,7 @@ const getRegistrationTrace = async (req, res) => {
       });
     }
 
-    const resolved = await resolveRegistrationNode({ identifier, organisationId, log: req.log });
+    const resolved = await resolveRegistrationNode({ identifier, user, log: req.log });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { node, config } = resolved;
 

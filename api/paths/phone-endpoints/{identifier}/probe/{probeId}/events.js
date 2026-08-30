@@ -1,5 +1,8 @@
 import { requirePermission } from '../../../../../../lib/auth/permissions.js';
-import { resolveRegistrationNode } from '../../../../../../lib/regclient-facade.js';
+import {
+  resolveRegistrationForHandle,
+  assertHandleNodeAllowed
+} from '../../../../../../lib/regclient-facade.js';
 import { verifyProbeHandle } from '../../../../../../lib/regclient-probe-handle.js';
 import { buildProbeUrl, openNodeStream } from '../../../../../../lib/regclient.js';
 
@@ -23,16 +26,15 @@ const streamRegistrationProbe = async (req, res) => {
   // Reading a probe as it happens is the same read as reading its report.
   if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
 
-  const { organisationId } = res.locals.user || {};
+  const user = res.locals.user;
   const { identifier, probeId } = req.params;
 
   try {
-    const resolved = await resolveRegistrationNode({
-      identifier,
-      organisationId,
-      allowUnclaimed: true,
-      log: req.log
-    });
+    // Ownership and configuration only; the handle picks the node. Re-resolving
+    // the current owner would break the stream for a probe whose registration
+    // has been rolled back or migrated mid-watch — see the note on the report
+    // route.
+    const resolved = await resolveRegistrationForHandle({ identifier, user, log: req.log });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { config } = resolved;
 
@@ -44,6 +46,9 @@ const streamRegistrationProbe = async (req, res) => {
       return res.status(404).send({ message: 'Probe not found' });
     }
     const { node, probeId: nodeProbeId } = handle;
+
+    const refused = assertHandleNodeAllowed(node, config, req.log);
+    if (refused) return res.status(refused.status).send(refused.body);
 
     let upstream;
     try {

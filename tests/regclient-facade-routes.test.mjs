@@ -166,6 +166,22 @@ describe('GET /phone-endpoints/{identifier}/trace', () => {
     expect(lastRequest).toBeNull();
   });
 
+  // Both sides of an organisation comparison can legitimately be null: an
+  // org-less principal, and a row left org-less by the `SET NULL` on
+  // organisation delete. A bare `registration.organisationId !== organisationId`
+  // reads `null !== null` as false and so *granted* access — letting two
+  // unrelated org-less tenants read each other's registrar, account identity
+  // and credentials in flight. scope.js's userOwnsRow requires both sides to be
+  // non-null and equal, which is why the routes must go through it.
+  it('403s an org-less caller against an org-less registration', async () => {
+    makeReg({ organisationId: null });
+    const res = await callTrace({
+      user: { organisationId: null, _effectivePermissions: { phoneEndpoint: ['read'] } }
+    });
+    expect(res._status).toBe(403);
+    expect(lastRequest).toBeNull();
+  });
+
   it('409s a registration no node has ever claimed', async () => {
     makeReg({ b2buaId: null });
     const res = await callTrace();

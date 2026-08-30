@@ -1,5 +1,9 @@
 import { requirePermission } from '../../../../../lib/auth/permissions.js';
-import { resolveRegistrationNode } from '../../../../../lib/regclient-facade.js';
+import {
+  resolveRegistrationForHandle,
+  assertHandleNodeAllowed,
+  passThroughNodeStatus
+} from '../../../../../lib/regclient-facade.js';
 import { verifyProbeHandle } from '../../../../../lib/regclient-probe-handle.js';
 import {
   buildProbeUrl,
@@ -27,25 +31,25 @@ const getRegistrationProbe = async (req, res) => {
   // Reading a report is a read; starting the probe took update.
   if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
 
-  const { organisationId } = res.locals.user || {};
+  const user = res.locals.user;
   const { identifier, probeId } = req.params;
 
   try {
-    const resolved = await resolveRegistrationNode({
-      identifier,
-      organisationId,
-      allowUnclaimed: true,
-      log: req.log
-    });
+    // Ownership and configuration only — deliberately not a node lookup. The
+    // handle names the node the probe is actually running on, and re-resolving
+    // the registration's *current* owner here would 409 a row that has since
+    // been unclaimed or 501 one that has since moved to a FreeSWITCH node,
+    // about a probe still running fine on the node the handle names. Watching a
+    // probe while rolling the registration back is exactly the case the signed
+    // handle exists to survive.
+    const resolved = await resolveRegistrationForHandle({ identifier, user, log: req.log });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { config } = resolved;
 
     // The handle decides which node to ask and confirms the probe belongs to
-    // the registration in the path — not the registration's *current*
-    // `b2bua_id`, which may have moved since the probe started, and not the
-    // path parameter alone, which the probe id is not derived from. Ownership
-    // was already checked above; this is about asking the right node the right
-    // question.
+    // the registration in the path — not the path parameter alone, which the
+    // probe id is not derived from. Ownership was already checked above; this
+    // is about asking the right node the right question.
     const handle = verifyProbeHandle(probeId, { registrationId: identifier }, config);
     if (!handle.ok) {
       req.log?.info({ reason: handle.reason }, 'rejecting a probe id');
@@ -54,6 +58,9 @@ const getRegistrationProbe = async (req, res) => {
       return res.status(404).send({ message: 'Probe not found' });
     }
     const { node, probeId: nodeProbeId } = handle;
+
+    const refused = assertHandleNodeAllowed(node, config, req.log);
+    if (refused) return res.status(refused.status).send(refused.body);
 
     let response;
     try {
@@ -76,6 +83,9 @@ const getRegistrationProbe = async (req, res) => {
       return res.status(404).send({ message: 'Probe not found on the b2bua node', node });
     }
     if (response.status >= 400) {
+      // As on the start route: a node saying 501 "probing is disabled here" or
+      // 429 is telling the caller something, and 502 would throw it away.
+      if (passThroughNodeStatus(res, response, node)) return;
       return res.status(502).send({
         error: 'probe unavailable',
         node,
@@ -113,6 +123,7 @@ getRegistrationProbe.apiDoc = {
     403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
     409: { description: 'No b2bua node is available', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    429: { description: 'The node is rate-limiting probe requests. Retry after the interval given in the Retry-After header.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     501: { description: 'The node holding this registration does not provide this API (it runs the FreeSWITCH stack)', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeCapabilityUnavailable' } } } },
     502: { description: 'The node answered with an error', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
     503: { description: 'Node proxying is not configured in this deployment', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },

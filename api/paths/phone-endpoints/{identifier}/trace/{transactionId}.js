@@ -32,7 +32,7 @@ const getRegistrationTraceTransaction = async (req, res) => {
   // is strictly more than the line describing it.
   if (!requirePermission(res, 'phoneEndpoint', 'read')) return;
 
-  const { organisationId } = res.locals.user || {};
+  const user = res.locals.user;
   const { identifier, transactionId } = req.params;
   const { format = 'json', since } = req.query;
 
@@ -41,7 +41,7 @@ const getRegistrationTraceTransaction = async (req, res) => {
       return res.status(400).send({ message: `format must be one of: ${TRACE_FORMATS.join(', ')}` });
     }
 
-    const resolved = await resolveRegistrationNode({ identifier, organisationId, log: req.log });
+    const resolved = await resolveRegistrationNode({ identifier, user, log: req.log });
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { node, config } = resolved;
 

@@ -1,5 +1,5 @@
 import { requirePermission } from '../../../../lib/auth/permissions.js';
-import { resolveRegistrationNode } from '../../../../lib/regclient-facade.js';
+import { resolveRegistrationNode, passThroughNodeStatus } from '../../../../lib/regclient-facade.js';
 import { signProbeHandle } from '../../../../lib/regclient-probe-handle.js';
 import {
   buildProbeUrl,
@@ -41,14 +41,14 @@ const startRegistrationProbe = async (req, res) => {
   // changes one.
   if (!requirePermission(res, 'phoneEndpoint', 'update')) return;
 
-  const { organisationId } = res.locals.user || {};
+  const user = res.locals.user;
   const { identifier } = req.params;
   const { discover = false, apply = false } = req.body || {};
 
   try {
     const resolved = await resolveRegistrationNode({
       identifier,
-      organisationId,
+      user,
       allowUnclaimed: true,
       log: req.log
     });
@@ -77,7 +77,11 @@ const startRegistrationProbe = async (req, res) => {
 
     if (response.status >= 400) {
       req.log?.warn({ node, status: response.status }, 'b2bua node rejected probe request');
-      return res.status(response.status === 404 ? 404 : 502).send({
+      // 409 (discovery against a live registration), 429 (+Retry-After), 501
+      // (probing disabled here) and the caller's own 400/404 are answers, not
+      // failures — they go back as they came.
+      if (passThroughNodeStatus(res, response, node)) return;
+      return res.status(502).send({
         error: 'probe unavailable',
         node,
         reason: `node returned ${response.status}`,
@@ -152,7 +156,8 @@ startRegistrationProbe.apiDoc = {
     400: { description: 'Bad request', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
-    409: { description: 'No b2bua node is available to run the probe', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    409: { description: 'No b2bua node is available to run the probe, or discovery was requested against a currently-registered endpoint (disable it first)', content: { 'application/json': { schema: { $ref: '#/components/schemas/Conflict' } } } },
+    429: { description: 'The node is already running its maximum number of concurrent probes. Retry after the interval given in the Retry-After header.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     501: { description: 'The node holding this registration does not provide this API (it runs the FreeSWITCH stack)', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeCapabilityUnavailable' } } } },
     502: { description: 'The node answered with an error, or is not an address we will contact', content: { 'application/json': { schema: { $ref: '#/components/schemas/NodeUnavailable' } } } },
     503: { description: 'Node proxying is not configured in this deployment', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
