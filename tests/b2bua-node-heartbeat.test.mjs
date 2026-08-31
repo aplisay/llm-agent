@@ -30,7 +30,7 @@ jest.unstable_mockModule('../lib/database.js', () => ({
 const { default: route } = await import('../api/paths/agent-db/b2bua-nodes.js');
 const { nodeCapability, resetNodeCapabilities, CAPABILITY_TRACE, CAPABILITY_NONE, CAPABILITY_UNKNOWN } =
   await import('../lib/regclient.js');
-const { capabilityFromHeartbeat } = await import('../lib/regclient-facade.js');
+const { capabilityFromHeartbeat, nodeDialAddress } = await import('../lib/regclient-facade.js');
 
 const quietLog = { info() {}, error() {}, warn() {}, debug() {} };
 const post = route(quietLog).POST;
@@ -247,5 +247,85 @@ describe('the scoped node principal', () => {
     res.locals.user = { id: 'someone', organisationId: 'org-1' };
     await post({ body: { nodeId: '203.0.113.77', type: 'freeswitch' }, log: quietLog }, res);
     expect(res._status).toBe(403);
+  });
+});
+
+describe('the private address a node reports', () => {
+  // A node reports where it answers from inside its own network, and llm-agent
+  // uses that when the two share a VPC: the request never leaves it, so the
+  // node API needs no public exposure and no firewall rule keyed to an egress
+  // address Cloud Run does not have.
+  //
+  // It lives here and not in phone_registrations.b2bua_id because that column
+  // is also read as a SIP gateway address by the LiveKit agent and the pipecat
+  // poller, where a compound value would break outbound call routing.
+  const PUBLIC = '203.0.113.10';
+  const PRIVATE = '10.154.0.62';
+
+  const internal = () => ({
+    locals: { user: { id: 'system', isSystem: true } },
+    _status: null,
+    _body: null,
+    status(code) { this._status = code; return this; },
+    send(body) { this._body = body; this._status = this._status || 200; return this; },
+    json(body) { return this.send(body); }
+  });
+
+  const announce = async (body) => {
+    const res = internal();
+    await post({ body, log: quietLog }, res);
+    return res;
+  };
+
+  beforeEach(() => { rows.clear(); });
+
+  it('is stored when the node reports one', async () => {
+    expect((await announce({ nodeId: PUBLIC, privateAddress: PRIVATE }))._status).toBe(200);
+    expect(rows.get(PUBLIC).privateAddress).toBe(PRIVATE);
+  });
+
+  // A node that has no distinct private address, or predates the field, must
+  // leave the column null rather than empty — so "never told us" and "told us
+  // nothing" read the same downstream.
+  it('is null when the node reports none', async () => {
+    await announce({ nodeId: PUBLIC });
+    expect(rows.get(PUBLIC).privateAddress).toBeNull();
+    await announce({ nodeId: PUBLIC, privateAddress: '   ' });
+    expect(rows.get(PUBLIC).privateAddress).toBeNull();
+  });
+
+  it('is only dialled when the deployment opts in', async () => {
+    await announce({ nodeId: PUBLIC, privateAddress: PRIVATE });
+    const config = { scheme: 'https', port: 8443 };
+
+    expect(await nodeDialAddress(PUBLIC, config, { env: {}, model: B2buaNode }))
+      .toBe(PUBLIC);
+    expect(await nodeDialAddress(PUBLIC, config, { env: { REGCLIENT_USE_PRIVATE_NODE_ADDRESS: '1' }, model: B2buaNode }))
+      .toBe(PRIVATE);
+  });
+
+  // The heartbeat token is shared across nodes, so a node reporting the
+  // metadata server's address must not be believed. assertNodeAddressAllowed
+  // refuses link-local whatever else is permitted, and that is the property
+  // this asserts.
+  it('never dials link-local, opted in or not', async () => {
+    await announce({ nodeId: PUBLIC, privateAddress: '169.254.169.254' });
+    const got = await nodeDialAddress(PUBLIC, { scheme: 'https', port: 8443 }, {
+      env: { REGCLIENT_USE_PRIVATE_NODE_ADDRESS: '1' },
+      model: B2buaNode,
+      log: quietLog
+    });
+    expect(got).toBe(PUBLIC);
+  });
+
+  // A node that has never heartbeated, or a registry read that fails, must fall
+  // back to the public address rather than failing the request.
+  it('falls back to the public address when nothing is known', async () => {
+    const env = { REGCLIENT_USE_PRIVATE_NODE_ADDRESS: '1' };
+    const config = { scheme: 'https', port: 8443 };
+    expect(await nodeDialAddress('198.51.100.7', config, { env, model: B2buaNode })).toBe('198.51.100.7');
+
+    const broken = { async findByPk() { throw new Error('database is down'); } };
+    expect(await nodeDialAddress(PUBLIC, config, { env, model: broken })).toBe(PUBLIC);
   });
 });

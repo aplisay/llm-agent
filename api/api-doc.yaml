@@ -1878,6 +1878,14 @@ components:
             The node's public address — the same value it writes into
             `phone_registrations.b2bua_id`, which is what makes this joinable to a registration.
           example: 203.0.113.10
+        privateAddress:
+          type: string
+          description: |-
+            Where this node answers from inside its own network, when that differs from `nodeId`.
+            Used in preference to the public address when llm-agent shares a network with the node
+            (`REGCLIENT_USE_PRIVATE_NODE_ADDRESS`), so the request never leaves the VPC and the node
+            API needs no public exposure. Omitted by a node with no distinct private address.
+          example: 10.154.0.62
         type:
           type: string
           enum: [regclient, freeswitch]
@@ -1902,6 +1910,10 @@ components:
       properties:
         nodeId:
           type: string
+        privateAddress:
+          type: string
+          nullable: true
+          description: Where the node answers from inside its own network, or null if it reported none.
         type:
           type: string
           enum: [regclient, freeswitch]

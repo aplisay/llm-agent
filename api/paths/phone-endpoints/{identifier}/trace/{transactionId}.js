@@ -1,5 +1,5 @@
 import { requirePermission } from '../../../../../lib/auth/permissions.js';
-import { resolveRegistrationNode } from '../../../../../lib/regclient-facade.js';
+import { resolveRegistrationNode, nodeDialAddress } from '../../../../../lib/regclient-facade.js';
 import {
   TRACE_FORMATS,
   buildTraceUrl,
@@ -45,7 +45,8 @@ const getRegistrationTraceTransaction = async (req, res) => {
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { node, config } = resolved;
 
-    const url = buildTraceUrl({ node, registrationId: identifier, transactionId, format, since }, config);
+    const address = await nodeDialAddress(node, config, { log: req.log });
+    const url = buildTraceUrl({ node: address, registrationId: identifier, transactionId, format, since }, config);
     const wantsBinary = format === 'pcap';
 
     let response;

@@ -37,7 +37,7 @@ const heartbeat = async (req, res) => {
     return res.status(403).send({ message: 'b2bua node heartbeats are accepted only from internal callers' });
   }
 
-  const { nodeId, type = 'regclient', version, registrations, failedRegistrations, systemLoad } = req.body || {};
+  const { nodeId, privateAddress, type = 'regclient', version, registrations, failedRegistrations, systemLoad } = req.body || {};
 
   if (!nodeId || typeof nodeId !== 'string' || !nodeId.trim()) {
     return res.status(400).send({ message: 'nodeId is required' });
@@ -50,6 +50,11 @@ const heartbeat = async (req, res) => {
     const now = new Date();
     const [record] = await B2buaNode.upsert({
       nodeId: nodeId.trim(),
+      // Trusted only as far as it goes: this is an internal caller, but the
+      // address still passes the same allow-list as any other before anything
+      // dials it — see nodeDialAddress. Stored as null rather than "" so
+      // "never told us" and "told us nothing" read the same downstream.
+      privateAddress: (typeof privateAddress === 'string' && privateAddress.trim()) ? privateAddress.trim() : null,
       type,
       version: version ?? null,
       // A node that cannot count its own registrations should not be able to
@@ -104,6 +109,10 @@ const listNodes = async (req, res) => {
         const ageSeconds = lastSeenAt ? Math.round((now - lastSeenAt.getTime()) / 1000) : null;
         return {
           nodeId: node.nodeId,
+          // Part of how the node is reached, so it belongs in the view of the
+          // fleet: "why is llm-agent dialling that address" should be
+          // answerable from here rather than from the database.
+          privateAddress: node.privateAddress ?? null,
           type: node.type,
           version: node.version,
           registrations: node.registrations,
