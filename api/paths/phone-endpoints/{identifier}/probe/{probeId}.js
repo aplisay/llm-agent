@@ -2,7 +2,8 @@ import { requirePermission } from '../../../../../lib/auth/permissions.js';
 import {
   resolveRegistrationForHandle,
   assertHandleNodeAllowed,
-  passThroughNodeStatus
+  passThroughNodeStatus,
+  nodeDialAddress
 } from '../../../../../lib/regclient-facade.js';
 import { verifyProbeHandle } from '../../../../../lib/regclient-probe-handle.js';
 import {
@@ -62,10 +63,12 @@ const getRegistrationProbe = async (req, res) => {
     const refused = assertHandleNodeAllowed(node, config, req.log);
     if (refused) return res.status(refused.status).send(refused.body);
 
+    const address = await nodeDialAddress(node, config, { log: req.log });
+
     let response;
     try {
       response = await nodeRequest({
-        url: buildProbeUrl({ node, probeId: nodeProbeId, registrationId: identifier }, config),
+        url: buildProbeUrl({ node: address, probeId: nodeProbeId, registrationId: identifier }, config),
         config,
         node
       });

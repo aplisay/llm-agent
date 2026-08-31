@@ -1,5 +1,9 @@
 import { requirePermission } from '../../../../lib/auth/permissions.js';
-import { resolveRegistrationNode, passThroughNodeStatus } from '../../../../lib/regclient-facade.js';
+import {
+  resolveRegistrationNode,
+  passThroughNodeStatus,
+  nodeDialAddress
+} from '../../../../lib/regclient-facade.js';
 import { signProbeHandle } from '../../../../lib/regclient-probe-handle.js';
 import {
   buildProbeUrl,
@@ -55,7 +59,8 @@ const startRegistrationProbe = async (req, res) => {
     if (!resolved.ok) return res.status(resolved.status).send(resolved.body);
     const { node, config } = resolved;
 
-    const url = buildProbeUrl({ node }, config);
+    const address = await nodeDialAddress(node, config, { log: req.log });
+    const url = buildProbeUrl({ node: address }, config);
     let response;
     try {
       response = await nodeRequest({
