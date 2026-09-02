@@ -245,7 +245,7 @@ Both routes answer `503` unless the deployment is configured to reach nodes:
 | `REGCLIENT_API_PORT` | Node API port (default 8443) |
 | `REGCLIENT_CA_CERT` | Public certificate of the private CA that signs node certificates; PEM or base64 of a PEM |
 | `TRACE_PROXY_TIMEOUT_MS` | Hard per-request timeout, default 2000 ms. No retries |
-| `REGCLIENT_PROBE_NODES` | Nodes that may run a probe for a registration no node has claimed |
+| `REGCLIENT_PROBE_NODES` | Optional override: nodes that may run a probe for a registration no node has claimed. Unset by default — the least loaded regclient node that has heartbeated in the last three minutes is chosen from `b2bua_nodes` |
 | `REGCLIENT_NODE_ALLOWLIST` | Optional pin: only these node addresses may be contacted |
 | `REGCLIENT_ALLOW_PRIVATE_NODES` | Permit node addresses in private ranges (compose, kind). Off by default |
 | `REGCLIENT_API_INSECURE` | Development only: skip TLS verification |

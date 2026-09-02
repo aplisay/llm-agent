@@ -12,6 +12,7 @@ import { jest } from '@jest/globals';
  */
 
 const rows = new Map();
+let nodeRows = [];
 
 // The heartbeat registry is deliberately empty here: these tests exercise the
 // discovery path, which is what a node that has never announced itself falls
@@ -21,7 +22,8 @@ jest.unstable_mockModule('../lib/database.js', () => ({
     findByPk: async (id) => rows.get(id) || null
   },
   B2buaNode: {
-    findByPk: async () => null
+    findByPk: async () => null,
+    findAll: async () => nodeRows
   },
   B2BUA_NODE_TYPES: ['regclient', 'freeswitch']
 }));
@@ -397,13 +399,30 @@ describe('POST /phone-endpoints/{identifier}/probe', () => {
     expect(lastRequest.data).toEqual({ registrationId: REG, discover: true, apply: false });
   });
 
-  it('uses the probe node pool when no node has claimed the registration', async () => {
+  it('uses the probe node pool override when one is set and no node has claimed the registration', async () => {
     process.env.REGCLIENT_PROBE_NODES = '198.51.100.7';
     makeReg({ b2buaId: null });
     nextResponse = { status: 200, data: { probeId: 'p-2' } };
     const res = await callProbe();
     expect(res._status).toBe(202);
     expect(lastRequest.url).toBe('https://198.51.100.7:8443/probe');
+  });
+
+  it('otherwise probes an unclaimed registration on the least loaded live regclient node', async () => {
+    delete process.env.REGCLIENT_PROBE_NODES;
+    const fresh = new Date().toISOString();
+    nodeRows = [
+      { nodeId: '198.51.100.8', type: 'regclient', systemLoad: 1.4, registrations: 12, lastSeenAt: fresh },
+      { nodeId: '198.51.100.9', type: 'regclient', systemLoad: 0.3, registrations: 30, lastSeenAt: fresh },
+      { nodeId: '198.51.100.5', type: 'regclient', systemLoad: 0.0, registrations: 0, lastSeenAt: new Date(Date.now() - 20 * 60_000).toISOString() },
+    ];
+    makeReg({ b2buaId: null });
+    nextResponse = { status: 200, data: { probeId: 'p-3' } };
+    const res = await callProbe();
+    nodeRows = [];
+    expect(res._status).toBe(202);
+    expect(res._body.node).toBe('198.51.100.9');
+    expect(lastRequest.url).toBe('https://198.51.100.9:8443/probe');
   });
 
   it('says plainly when the node has no probe API either', async () => {
