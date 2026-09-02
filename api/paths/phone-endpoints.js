@@ -1,4 +1,4 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, NumberReservation, Op } from '../../lib/database.js';
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi, validateRegistrationTrunkFields } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
@@ -314,6 +314,39 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // A number on a chargeable trunk is one the platform pays the carrier
+      // for, so a claim must show that the carrier seam agreed to it: a
+      // reservation minted under phoneEndpoint:reserve for this exact number,
+      // trunk and organisation, still live and not yet used. Platform
+      // operators (trunk:create) may claim without one, which is how a
+      // number already routed at the carrier is attached by hand. A
+      // reservation that IS presented is always checked and consumed.
+      let reservation = null;
+      if (trunk.chargeable) {
+        const ref = typeof data.reservationRef === 'string' ? data.reservationRef.trim() : '';
+        if (!ref && !can(res.locals.user, 'trunk', 'create')) {
+          return res.status(403).send({
+            error: 'Claiming a number on a chargeable trunk requires a carrier reservation reference',
+            code: 'reservation_required'
+          });
+        }
+        if (ref) {
+          reservation = /^[0-9a-f-]{36}$/i.test(ref) ? await NumberReservation.findByPk(ref) : null;
+          const matches = reservation
+            && !reservation.consumedAt
+            && reservation.expiresAt > new Date()
+            && reservation.number === normalizedNumber
+            && reservation.trunkId === data.trunkId
+            && reservation.organisationId === (organisationId ?? null);
+          if (!matches) {
+            return res.status(403).send({
+              error: 'The carrier reservation reference is missing, expired, already used, or names a different number, trunk or organisation',
+              code: 'reservation_invalid'
+            });
+          }
+        }
+      }
+
       // Numbers on chargeable trunks (carrier trunks shared into the org, i.e.
       // not owned by it) are capped by Organisation.chargeableNumberLimit
       // (null = unlimited). Count + create share a transaction behind a FOR
@@ -350,7 +383,7 @@ const createPhoneEndpoint = async (req, res) => {
               }
             }
           }
-          return PhoneNumber.create({
+          const created = await PhoneNumber.create({
             number: normalizedNumber,
             // Handler is always derived from the trunk (or defaulted) and cannot be chosen by the caller for DDI endpoints
             handler: trunk.handler || 'livekit',
@@ -359,8 +392,29 @@ const createPhoneEndpoint = async (req, res) => {
             // Internally store the trunk association using the aplisayId foreign key
             aplisayId: data.trunkId
           }, { transaction });
+          if (reservation) {
+            // Consume it here, under the same transaction, with the liveness
+            // conditions repeated in the WHERE: two claims racing on one ticket
+            // both pass the read above, and only one of them updates a row.
+            const [consumed] = await NumberReservation.update(
+              { consumedAt: new Date(), phoneNumberId: created.id },
+              {
+                where: { id: reservation.id, consumedAt: null, expiresAt: { [Op.gt]: new Date() } },
+                transaction,
+              },
+            );
+            if (consumed !== 1) {
+              const err = new Error('The carrier reservation reference has already been used or has expired');
+              err.code = 'reservation_invalid';
+              throw err;
+            }
+          }
+          return created;
         });
       } catch (err) {
+        if (err.code === 'reservation_invalid') {
+          return res.status(403).send({ error: err.message, code: err.code });
+        }
         if (err.code === 'chargeable_number_limit') {
           return res.status(403).send({
             error: err.message,

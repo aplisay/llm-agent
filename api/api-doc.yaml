@@ -1812,6 +1812,15 @@ components:
                 trunkId:
                   type: string
                   description: Trunk identifier for e164-ddi type. The handler and outbound capabilities for the created number are inherited from this trunk; callers cannot request a handler that is incompatible with the trunk.
+                reservationRef:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Required when the trunk is chargeable, unless the caller holds trunk:create.
+                    The id of a reservation minted by POST /number-reservations for this same
+                    number, trunk and organisation; it is consumed by the claim. Missing gives
+                    403 code reservation_required; expired, used or mismatched gives 403 code
+                    reservation_invalid.
             - description: Phone registration endpoint
               type: object
               required:

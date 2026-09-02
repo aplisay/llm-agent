@@ -69,6 +69,13 @@ describe('permissions — roles vocabulary', () => {
     // the cross-tenant capability targetInScope 404s every org it is asked about.
     expect(can({ role: 'billingService' }, 'organisation', 'readAll')).toBe(true);
     expect(targetInScope({ role: 'billingService' }, 'organisation', { id: 'org-1' })).toBe(true);
+    // Number purchases: it reserves the number it bought at the carrier so the
+    // org's own key can claim it, and holds nothing else over numbers.
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'reserve')).toBe(true);
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'claim')).toBe(false);
+    expect(can({ role: 'owner' }, 'phoneEndpoint', 'reserve')).toBe(false);
+    expect(can({ role: 'orgAdmin' }, 'phoneEndpoint', 'reserve')).toBe(false);
+    expect(can({ role: 'superAdmin' }, 'phoneEndpoint', 'reserve')).toBe(true);
   });
   test('billingService holds no product access and cannot administer rates or users', () => {
     // Still least-privilege: it prices ITS OWN tenants against cards someone

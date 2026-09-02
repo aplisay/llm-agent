@@ -9,6 +9,7 @@ import {
   setupRealDatabase,
   teardownRealDatabase,
   PhoneNumber,
+  NumberReservation,
   Organisation,
   Trunk,
   databaseStarted,
@@ -80,7 +81,11 @@ describe('Phone numbers are organisation-scoped', () => {
 
   const create = async (organisationId, trunkId) => {
     const r = res(organisationId);
-    await createEndpoint(req({ body: { type: 'e164-ddi', number: `+${NUMBER}`, trunkId } }), r);
+    // The shared carrier trunk is chargeable, so its claims carry a reservation.
+    const reservation = trunkId === carrier.id
+      ? await NumberReservation.create({ number: NUMBER, trunkId, organisationId, expiresAt: new Date(Date.now() + 60000) })
+      : null;
+    await createEndpoint(req({ body: { type: 'e164-ddi', number: `+${NUMBER}`, trunkId, ...(reservation ? { reservationRef: reservation.id } : {}) } }), r);
     return r;
   };
 

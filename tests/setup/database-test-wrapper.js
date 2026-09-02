@@ -73,6 +73,7 @@ export async function setupRealDatabase() {
       User: dbModule.User,
       PhoneNumber: dbModule.PhoneNumber,
       PhoneRegistration: dbModule.PhoneRegistration,
+      NumberReservation: dbModule.NumberReservation,
       Agent: dbModule.Agent,
       AgentSet: dbModule.AgentSet,
       Instance: dbModule.Instance,
@@ -99,6 +100,7 @@ export async function setupRealDatabase() {
   Instance = dbModule.Instance;
   PhoneNumber = dbModule.PhoneNumber;
   PhoneRegistration = dbModule.PhoneRegistration;
+  NumberReservation = dbModule.NumberReservation;
   Call = dbModule.Call;
   TransactionLog = dbModule.TransactionLog;
   InvocationLog = dbModule.InvocationLog;
@@ -135,6 +137,7 @@ export async function teardownRealDatabase() {
     Instance = undefined;
     PhoneNumber = undefined;
     PhoneRegistration = undefined;
+    NumberReservation = undefined;
     Call = undefined;
     TransactionLog = undefined;
     InvocationLog = undefined;
@@ -166,6 +169,6 @@ export function getRealDatabase() {
 
 // Export the same objects as database.js for drop-in replacement
 // These will be populated after setupRealDatabase() is called
-export let Metadata, Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, InvocationLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
+export let Metadata, Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, NumberReservation, Call, TransactionLog, InvocationLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
 export let Op, Sequelize;
 export let databaseStarted, stopDatabase;

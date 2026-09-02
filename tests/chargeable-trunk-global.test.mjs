@@ -1,4 +1,4 @@
-import { setupRealDatabase, teardownRealDatabase, PhoneNumber, Organisation, Trunk } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, PhoneNumber, Organisation, Trunk, NumberReservation } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
 /**
@@ -37,10 +37,20 @@ describe('Chargeable trunks are global (not org-owned)', () => {
 
   const nextNumber = () => `+44${unique}${String(seq++).padStart(3, '0')}`;
 
+
+  // Claims onto a chargeable trunk must present a reservation minted by the
+  // carrier seam (schema 63); mint one per claim so these tests keep
+  // exercising the limit, not the gate.
+  const reserve = async (number, trunkId, organisationId) =>
+    NumberReservation.create({ number: number.replace(/^\+/, ''), trunkId, organisationId, expiresAt: new Date(Date.now() + 60000) });
+
   const claim = async (trunkId, { user, number } = {}) => {
-    const r = req({ body: { type: 'e164-ddi', number: number || nextNumber(), trunkId } });
+    const n = number || nextNumber();
+    const u = user || { role: 'owner', organisationId: orgId };
+    const reservation = trunkId === chargeableTrunkId && u.organisationId ? await reserve(n, trunkId, u.organisationId) : null;
+    const r = req({ body: { type: 'e164-ddi', number: n, trunkId, ...(reservation ? { reservationRef: reservation.id } : {}) } });
     const s = res();
-    s.locals.user = user || { role: 'owner', organisationId: orgId };
+    s.locals.user = u;
     await createPhoneEndpoint(r, s);
     return s;
   };
