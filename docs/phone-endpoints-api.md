@@ -261,7 +261,9 @@ Trunks are a curated platform resource. Ordinary callers get the org-scoped list
 A phone-registration created with `"trunk": true` is a **registration trunk**: it owns a trunk
 (`trunkId` in the response, `reg-<id>` unless a super names it with `trunkId`), numbers attach to
 that trunk with `POST /api/phone-endpoints` `type: e164-ddi`, and each number is given its own
-agent. The registration itself is never attached to an agent. `didSource` says where the dialled
+agent. The registration itself is never attached to an agent. Outbound calls and transfers that
+present one of the trunk's numbers as caller id egress through the registration's B2BUA (the
+trunk is never destination-billed), so the registration must be held by a SIP node. `didSource` says where the dialled
 number is found on an inbound INVITE (`request-uri` default, `to`, `header:<Name>`, `none`), and
 `didCountry` normalises a national-format number. `PUT` with `trunk: true` turns a line into a
 trunk (detaching it from any agent); `trunk: false` and `DELETE` are refused with 409 while numbers

@@ -817,6 +817,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     aplisayId,
     outbound,
     callMetadata,
+    registrationEndpointId: metaRegistrationEndpointId,
+    b2buaGatewayIp: metaB2buaGatewayIp,
+    b2buaGatewayTransport: metaB2buaGatewayTransport,
   } = jobMetadata || {};
   logger.info(
     {
@@ -914,7 +917,24 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           const uuidRe =
             /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-          if (!aplisayStr && uuidRe.test(callerIdStr)) {
+          if (metaRegistrationEndpointId && metaB2buaGatewayIp) {
+            // A NUMBER on a registration trunk. The originate route resolved
+            // the trunk's registration and its B2BUA; the leg dials that
+            // B2BUA with the registration header and presents the number,
+            // and keeps its trunk identity for the X-Aplisay-Trunk header.
+            registrationOriginated = true;
+            registrationEndpointId = String(metaRegistrationEndpointId);
+            b2buaGatewayIp = String(metaB2buaGatewayIp);
+            b2buaGatewayTransport = String(metaB2buaGatewayTransport || "tcp");
+            registrationUsername = callerIdStr.replace(/^\+/, "");
+            callerId = registrationUsername;
+            outboundInfo = {
+              toNumber: calledId,
+              fromNumber: callerId,
+              aplisayId: aplisayStr || undefined,
+              instanceId: instanceId,
+            };
+          } else if (!aplisayStr && uuidRe.test(callerIdStr)) {
             const regEndpoint = await getPhoneEndpointById(callerIdStr);
             if (!regEndpoint || !("id" in regEndpoint)) {
               throw new Error(
@@ -969,6 +989,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
             b2buaGatewayIp = gatewayHost;
             b2buaGatewayTransport = gatewayTransport;
             callerId = cliRaw.replace(/^\+/, "");
+            // The calling number presented towards the gateway. Only the
+            // inbound path set this before, so an originated registration
+            // call presented the 00000 placeholder instead of its CLI.
+            registrationUsername = callerId;
             outboundInfo = {
               toNumber: calledId,
               fromNumber: callerId,

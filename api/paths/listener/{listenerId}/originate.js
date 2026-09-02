@@ -1,5 +1,5 @@
 import { Op } from 'sequelize';
-import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { Agent, Instance, PhoneNumber, PhoneRegistration, Trunk } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
@@ -58,10 +58,18 @@ const originateCall = (async (req, res) => {
         [Op.or]: [{ organisationId: res.locals.user?.organisationId ?? null }, { organisationId: null }],
       },
       order: [[PhoneNumber.sequelize.literal('"PhoneNumber"."organisation_id" IS NULL'), 'ASC']],
-      include: [{ model: Instance, attributes: ['id', 'userId', 'organisationId'] }]
+      include: [
+        { model: Instance, attributes: ['id', 'userId', 'organisationId'] },
+        { model: Trunk, as: 'Trunk', required: false, attributes: ['id', 'flags'] },
+      ]
     });
     let callerPhoneRegistration = null;
     let aplisayId = null;
+    // Set when the caller is a NUMBER on a registration trunk: the leg goes
+    // through that registration's B2BUA, presenting the number, and the
+    // worker gets the B2BUA explicitly rather than inferring it from the
+    // caller id (which stays the number).
+    let registrationEgress = null;
 
     if (callerPhoneNumber && userOwnsPhoneNumber(res.locals.user, callerPhoneNumber)) {
       // Found in phone numbers table
@@ -71,6 +79,26 @@ const originateCall = (async (req, res) => {
         });
       }
       aplisayId = callerPhoneNumber.aplisayId;
+      const trunkFlags = callerPhoneNumber.Trunk?.flags;
+      if (trunkFlags?.provider === 'registration' && trunkFlags.registrationId) {
+        const registration = await PhoneRegistration.findByPk(String(trunkFlags.registrationId));
+        if (!registration || !userOwnsRow(res.locals.user, registration)) {
+          return res.status(400).send({
+            error: `Caller phone number ${callerId} is on a registration trunk whose registration is missing`
+          });
+        }
+        const b2buaHost = String(registration.b2buaId || '').trim();
+        if (!b2buaHost) {
+          return res.status(400).send({
+            error: `Caller phone number ${callerId} is on a registration trunk that is not currently held by a SIP node`
+          });
+        }
+        registrationEgress = {
+          registrationEndpointId: registration.id,
+          b2buaGatewayIp: b2buaHost,
+          b2buaGatewayTransport: String(registration.options?.transport || 'tcp').toLowerCase(),
+        };
+      }
     } else {
       // Try phone registrations table (PK is UUID; invalid UUID strings make Postgres throw)
       const uuidRe =
@@ -108,7 +136,7 @@ const originateCall = (async (req, res) => {
       organisationId: instance.organisationId || agent.organisationId,
       userId: instance.userId || agent.userId,
       aplisayId,
-      registrationOriginated: !!callerPhoneRegistration,
+      registrationOriginated: !!callerPhoneRegistration || !!registrationEgress,
     });
     if (!decision.allowed) {
       req.log.info(
@@ -128,6 +156,7 @@ const originateCall = (async (req, res) => {
 
     const { callId } = await handler.outbound({
       instance, callerId, calledId, metadata, aplisayId, srtp: decision.srtp,
+      ...(registrationEgress || {}),
     });
 
     // If all validations pass, return success

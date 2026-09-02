@@ -77,10 +77,10 @@ def _patch_endpoint_by_id(monkeypatch, reg) -> None:
 
 
 def _patch_number(monkeypatch, row) -> None:
-    async def fake(_number: str):
+    async def fake(_number: str, trunk_id=None):
         return row
 
-    monkeypatch.setattr(api_client, "get_phone_number", fake)
+    monkeypatch.setattr(api_client, "get_phone_endpoint_by_number", fake)
 
 
 class TestOrgOwns:
@@ -247,3 +247,47 @@ def test_missing_caller_id_rejected() -> None:
     with pytest.raises(_WebrtcEgressError) as exc:
         asyncio.run(session._resolve_webrtc_egress({}))
     assert "callerId is required" in str(exc.value)
+
+
+class TestRegistrationTrunkNumber:
+    """A number on a REGISTRATION trunk egresses through that registration's
+    B2BUA, presenting the number and keeping its trunk id."""
+
+    def _row(self, org, reg_id=REG_UUID):
+        return {
+            "number": NUMBER,
+            "outbound": True,
+            "organisationId": org,
+            "aplisayId": f"reg-{reg_id}",
+            "instanceId": None,
+            "trunk": {"id": f"reg-{reg_id}", "outbound": True, "flags": {"provider": "registration", "registrationId": reg_id}},
+        }
+
+    def test_registration_trunk_number_dials_the_b2bua(self, monkeypatch) -> None:
+        _patch_number(monkeypatch, self._row("org-1"))
+        _patch_endpoint_by_id(monkeypatch, {"id": REG_UUID, "b2buaId": "203.0.113.10", "options": {"transport": "tls"}})
+        session = _session(agent_org="org-1")
+        egress = asyncio.run(session._resolve_webrtc_egress({"callerId": NUMBER}))
+        assert egress.caller_id == NUMBER
+        assert egress.aplisay_id == f"reg-{REG_UUID}"
+        assert egress.registration_endpoint_id == REG_UUID
+        assert egress.b2bua_gateway_ip == "203.0.113.10"
+        assert egress.b2bua_gateway_transport == "tls"
+
+    def test_registration_trunk_not_held_is_rejected(self, monkeypatch) -> None:
+        _patch_number(monkeypatch, self._row("org-1"))
+        _patch_endpoint_by_id(monkeypatch, {"id": REG_UUID, "b2buaId": None, "options": {}})
+        session = _session(agent_org="org-1")
+        with pytest.raises(_WebrtcEgressError) as exc:
+            asyncio.run(session._resolve_webrtc_egress({"callerId": NUMBER}))
+        assert "not held by a SIP node" in str(exc.value)
+
+    def test_a_plain_trunk_number_is_unchanged(self, monkeypatch) -> None:
+        row = self._row("org-1")
+        row["aplisayId"] = "trunk-1"
+        row["trunk"] = {"id": "trunk-1", "outbound": True, "flags": {"canRefer": True}}
+        _patch_number(monkeypatch, row)
+        session = _session(agent_org="org-1")
+        egress = asyncio.run(session._resolve_webrtc_egress({"callerId": NUMBER}))
+        assert egress.registration_endpoint_id is None
+        assert egress.aplisay_id == "trunk-1"

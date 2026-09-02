@@ -331,6 +331,26 @@ async function validateTransferArgs(
       if (!pn.outbound) {
         throw new Error("Invalid callerId: outbound not enabled on this number");
       }
+      // A number on a REGISTRATION trunk egresses through that registration's
+      // B2BUA, presenting the number, exactly like a registration caller id
+      // — the trunk row names the registration (flags.registrationId).
+      const trunkFlags = (pn.trunk?.flags ?? {}) as { provider?: unknown; registrationId?: unknown };
+      if (trunkFlags.provider === "registration" && typeof trunkFlags.registrationId === "string" && trunkFlags.registrationId) {
+        const reg: PhoneRegistrationInfo | null = await getPhoneEndpointById(trunkFlags.registrationId);
+        if (!reg) {
+          throw new Error("Invalid callerId: the number's registration trunk has no registration");
+        }
+        const b2buaGatewayIp = String(reg.b2buaId ?? "").trim();
+        if (!b2buaGatewayIp) {
+          throw new Error("Invalid callerId: the number's registration trunk is not held by a SIP node");
+        }
+        registrationEgress = {
+          registrationEndpointId: trunkFlags.registrationId,
+          b2buaGatewayIp,
+          b2buaGatewayTransport: String((reg.options as { transport?: string } | undefined)?.transport || "tcp"),
+          registrationUsername: pn.number,
+        };
+      }
       // If inbound has aplisayId, require match
       if (aplisayId) {
         if (pn.aplisayId && pn.aplisayId !== aplisayId) {
