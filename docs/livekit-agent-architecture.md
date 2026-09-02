@@ -630,7 +630,7 @@ Two endpoints capture call activity, distinguished by when they fire and what da
 Some handlers — including LiveKit — need their upstream platform to be configured for a phone number before the number can route calls (e.g. trunk numbers must be registered with the SIP service). This is handled out-of-band:
 
 - The operator runs the agent in a dedicated **setup mode** (cron-driven, batch).
-- The setup process walks the platform's phone-number database, provisions any unprovisioned numbers in the upstream platform, and PATCHes **`/api/agent-db/phone-endpoints/:number`** with `{ provisioned: true }` for each number it has configured.
+- The setup process walks the platform's phone-number database, provisions any unprovisioned numbers in the upstream platform, and PATCHes **`/api/agent-db/phone-endpoints/:number`** with `{ provisioned: true }` for each number it has configured (every organisation's row for that number is stamped; provisioning is a fact about the number at the carrier).
 - A handler-level config flag (forthcoming) tells the REST server whether the handler requires this provisioning workflow, so number-creation can short-circuit when not needed (e.g. handlers that talk directly to a PSTN provider with no per-number trunk configuration).
 
 This workflow is part of the contract only for handlers that need it.

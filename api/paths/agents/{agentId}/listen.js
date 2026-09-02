@@ -31,7 +31,9 @@ export default function (wsServer) {
       
       // If number is provided, look up the PhoneNumber record
       if (number) {
-        const phoneNumber = await PhoneNumber.findByPk(number);
+        // Existence only; ownership and allocation are decided in
+        // Instance.linkNumber, which is organisation-scoped.
+        const phoneNumber = await PhoneNumber.findOne({ where: { number: String(number).replace(/^\+/, '') } });
         if (!phoneNumber) {
           throw new Error(`Phone number ${number} not found`);
         }

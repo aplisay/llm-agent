@@ -96,7 +96,7 @@ describe('Chargeable trunks are global (not org-owned)', () => {
     const s = await claim(chargeableTrunkId);
     expect(s._status).toBe(201);
     expect(s._body).toMatchObject({ success: true, trunkId: chargeableTrunkId });
-    const row = await PhoneNumber.findByPk(s._body.number);
+    const row = await PhoneNumber.findOne({ where: { number: s._body.number } });
     expect(row.organisationId).toBe(orgId);
     expect(row.aplisayId).toBe(chargeableTrunkId);
     // Handler is derived from the trunk (routes the number to the right ingress).

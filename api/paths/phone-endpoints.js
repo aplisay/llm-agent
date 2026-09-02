@@ -259,11 +259,24 @@ const createPhoneEndpoint = async (req, res) => {
 
       const normalizedNumber = normalizeE164(data.phoneNumber);
       
-      // Check if number already exists
-      const existingNumber = await PhoneNumber.findByPk(normalizedNumber);
+      // A number is unique per organisation and per trunk (schema 61), not
+      // platform-wide: another organisation holding the same number on its
+      // own trunk is not a conflict. The unique indexes are the backstop for
+      // the race this pre-check cannot close.
+      const existingNumber = await PhoneNumber.findOne({
+        where: {
+          number: normalizedNumber,
+          [Op.or]: [
+            { organisationId: organisationId ?? null },
+            { aplisayId: data.trunkId },
+          ],
+        },
+      });
       if (existingNumber) {
         return res.status(409).send({
-          error: 'Phone number already exists'
+          error: existingNumber.aplisayId === data.trunkId && existingNumber.organisationId !== (organisationId ?? null)
+            ? 'Phone number already exists on this trunk'
+            : 'Phone number already exists'
         });
       }
 
@@ -352,8 +365,8 @@ const createPhoneEndpoint = async (req, res) => {
             used: err.used
           });
         }
-        // The pre-check above races exact simultaneous claims; the PK constraint
-        // is the backstop — report it as the same conflict.
+        // The pre-check above races exact simultaneous claims; the unique
+        // indexes are the backstop — report it as the same conflict.
         if (err.name === 'SequelizeUniqueConstraintError') {
           return res.status(409).send({
             error: 'Phone number already exists'

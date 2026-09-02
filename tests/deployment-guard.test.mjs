@@ -149,7 +149,7 @@ describe('Deployment guard and listener repoint', () => {
     // Transactional: the member, listener and number binding all survive.
     expect(await Agent.findByPk(byLabel.back.id)).not.toBeNull();
     expect(await Instance.findByPk(instance.id)).not.toBeNull();
-    expect((await PhoneNumber.findByPk(phoneNumber.number)).instanceId).toBe(instance.id);
+    expect((await PhoneNumber.findOne({ where: { number: phoneNumber.number } })).instanceId).toBe(instance.id);
   });
 
   test('PUT still reconciles away an unwired member, and one holding only a bare WebRTC listener', async () => {
@@ -195,7 +195,7 @@ describe('Deployment guard and listener repoint', () => {
 
     await instance.destroy();
     // Number detached (SET NULL), not deleted, when the listener goes.
-    expect((await PhoneNumber.findByPk(phoneNumber.number)).instanceId).toBeNull();
+    expect((await PhoneNumber.findOne({ where: { number: phoneNumber.number } })).instanceId).toBeNull();
     const ok = makeRes(user);
     await deleteAgent(makeReq({}, { agentId: byLabel.front.id }), ok);
     expect(ok.statusCode).toBe(200);
@@ -212,7 +212,7 @@ describe('Deployment guard and listener repoint', () => {
     expect(res.body).toEqual({ id: instance.id, agentId: byLabel.back.id });
     const after = await Instance.findByPk(instance.id);
     expect(after.agentId).toBe(byLabel.back.id);
-    expect((await PhoneNumber.findByPk(phoneNumber.number)).instanceId).toBe(instance.id);
+    expect((await PhoneNumber.findOne({ where: { number: phoneNumber.number } })).instanceId).toBe(instance.id);
 
     // The old agent is now unwired and can be reconciled away.
     const doc = setDocument();

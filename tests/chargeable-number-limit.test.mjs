@@ -239,7 +239,7 @@ describe('Chargeable number limit', () => {
     await updatePhoneEndpoint(req, res);
     expect(res._status).toBe(200);
 
-    const row = await PhoneNumber.findByPk(number.replace(/^\+/, ''));
+    const row = await PhoneNumber.findOne({ where: { number: number.replace(/^\+/, '') } });
     expect(row.provisioned).toBe(true);
 
     // Bad type is rejected.
