@@ -620,6 +620,12 @@ async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:
         # Absent = unchanged (offer SRTP, downgrade if the carrier rejects it);
         # only an explicit false suppresses the offer. See OutboundCallParams.
         srtp=payload.get("srtp"),
+        # A number on a registration trunk: the JS side resolved the trunk's
+        # registration and its B2BUA, so the leg dials that rather than the
+        # SBC, presenting the number.
+        registration_endpoint_id=payload.get("registrationEndpointId"),
+        b2bua_gateway_ip=payload.get("b2buaGatewayIp"),
+        b2bua_gateway_transport=payload.get("b2buaGatewayTransport"),
         extra_session_params=extra_session_params or None,
     )
     app.state.live_calls[payload["callId"]] = session

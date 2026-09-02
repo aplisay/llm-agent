@@ -284,6 +284,22 @@ describe('outbound destination authorisation', () => {
   });
 
   describe('helpers', () => {
+    test('resolveEgressTrunk never charges a number on a registration trunk, even against the platform default', async () => {
+      const regTrunkId = `${PREFIX}regtrunk`;
+      await Trunk.create({ id: regTrunkId, name: 'Customer registration trunk', outbound: true, chargeable: false, flags: { provider: 'registration', registrationId: '11111111-2222-4333-8444-555555555555' } });
+      try {
+        const withDefault = { env: { APLISAY_OUTBOUND_TRUNK_ID: chargeableTrunkId } };
+        const r = await resolveEgressTrunk({ aplisayId: regTrunkId }, withDefault);
+        expect(r.chargeable).toBe(false);
+        expect(r.trunk?.id).toBe(regTrunkId);
+        // A plain BYO trunk still loses to the platform default, as before.
+        const byo = await resolveEgressTrunk({ aplisayId: byoTrunkId }, withDefault);
+        expect(byo.chargeable).toBe(true);
+      } finally {
+        await Trunk.destroy({ where: { id: regTrunkId } });
+      }
+    });
+
     test('resolveEgressTrunk prefers a chargeable trunk among the candidates', async () => {
       await expect(resolveEgressTrunk({ outboundTrunkId: byoTrunkId, aplisayId: chargeableTrunkId }, NO_ENV))
         .resolves.toMatchObject({ chargeable: true, trunk: expect.objectContaining({ id: chargeableTrunkId }) });

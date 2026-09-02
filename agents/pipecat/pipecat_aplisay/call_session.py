@@ -1911,7 +1911,15 @@ class CallSession:
             )
 
         # --- Trunk (E.164 number callerId) ---
-        row = await api_client.get_phone_number(caller_id)
+        # The endpoint lookup rather than the bare number list: it carries the
+        # number's trunk (id, outbound, flags), which says whether the trunk
+        # is a registration trunk, and the srtp contract when there is one.
+        try:
+            row = await api_client.get_phone_endpoint_by_number(caller_id)
+        except api_client.ApiRequestError as e:
+            if e.status != 404:
+                raise
+            row = None
         if not row:
             raise _WebrtcEgressError(f"callerId {caller_id!r} is not a known number")
         if not row.get("outbound"):
@@ -1939,6 +1947,25 @@ class CallSession:
                 "organisation"
             )
         aplisay_id = row.get("aplisayId")
+        trunk_flags = ((row.get("trunk") or {}).get("flags")) or {}
+        if trunk_flags.get("provider") == "registration" and trunk_flags.get("registrationId"):
+            # A number on a registration trunk: dial through that registration's
+            # B2BUA, presenting the number, and keep the trunk id for the header.
+            reg_id = str(trunk_flags["registrationId"])
+            reg = await api_client.get_phone_endpoint_by_id(reg_id)
+            b2bua = str((reg or {}).get("b2buaId") or "").strip()
+            if not b2bua:
+                raise _WebrtcEgressError(
+                    f"caller-ID {caller_id!r} is on a registration trunk that is not held by a SIP node"
+                )
+            opts = (reg or {}).get("options") or {}
+            return _WebrtcEgress(
+                caller_id=caller_id,
+                aplisay_id=aplisay_id,
+                registration_endpoint_id=reg_id,
+                b2bua_gateway_ip=b2bua,
+                b2bua_gateway_transport=str(opts.get("transport") or "tcp"),
+            )
         if not aplisay_id:
             logger.bind(caller_id=caller_id).warning(
                 "webrtc egress: number has no aplisayId (egress trunk); "
@@ -2889,6 +2916,9 @@ async def setup_outbound_call(
     called_id: str,
     aplisay_id: Optional[str],
     srtp: Optional[bool] = None,
+    registration_endpoint_id: Optional[str] = None,
+    b2bua_gateway_ip: Optional[str] = None,
+    b2bua_gateway_transport: Optional[str] = None,
     extra_session_params: Optional[dict] = None,
 ) -> CallSession:
     """Note: the originate side reserves the concurrency slot at the JS layer.
@@ -2900,12 +2930,19 @@ async def setup_outbound_call(
     ``srtp`` is the egress trunk's media-security contract; see
     ``OutboundCallParams.srtp``.
     """
+    # A registration-trunk number: the gateway dials the registration's B2BUA
+    # (registration header + X-Lk-RealIp) instead of the SBC. The caller id
+    # stays the number; the trunk id rides along as X-Aplisay-Trunk.
+    via_registration = bool(registration_endpoint_id and b2bua_gateway_ip)
     params = OutboundCallParams(
         caller_id=caller_id,
         called_id=called_id,
         call_id=call_id,
         aplisay_id=aplisay_id,
         srtp=srtp,
+        registration_endpoint_id=registration_endpoint_id if via_registration else None,
+        b2bua_gateway_ip=b2bua_gateway_ip if via_registration else None,
+        b2bua_gateway_transport=(b2bua_gateway_transport or "tcp") if via_registration else None,
     )
     session_params = GatewaySessionParams(session_id=session_id)
     if extra_session_params:
@@ -2941,4 +2978,11 @@ async def setup_outbound_call(
         # Carry the originate's trunk contract onto the session so a transfer
         # off this call egresses under the same rules.
         srtp=srtp,
+        # ...and its egress: a transfer off a registration-trunk call goes
+        # back through the same B2BUA, presenting the same number.
+        registration_originated=via_registration,
+        registration_endpoint_id=registration_endpoint_id if via_registration else None,
+        b2bua_gateway_ip=b2bua_gateway_ip if via_registration else None,
+        b2bua_gateway_transport=(b2bua_gateway_transport or "tcp") if via_registration else None,
+        registration_username=caller_id if via_registration else None,
     )

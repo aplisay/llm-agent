@@ -90,6 +90,12 @@ export interface CallScenario {
 }
 
 export interface JobMetadata {
+  /** Outbound from a number on a REGISTRATION trunk: the B2BUA leg to dial,
+   *  set by the originate route. The caller id stays the number. */
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
+  srtp?: boolean | null;
   callId?: string;
   callerId?: string;
   calledId?: string;
