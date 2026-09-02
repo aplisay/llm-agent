@@ -1865,7 +1865,9 @@ components:
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
-        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated.
+        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated;
+        `organisationId` (with `phoneEndpoint:assign`) moves the number to another organisation
+        or the unallocated pool and is refused with 409 code number_in_use while it is attached to an agent.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
       type: object
@@ -1879,6 +1881,21 @@ components:
         provisioned:
           type: boolean
           description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
+        organisationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            e164-ddi only, requires phoneEndpoint:assign. The organisation to move the number to,
+            or null for the unallocated pool. Refused (409, code number_in_use) while the number is
+            attached to an agent; detach it first. The move is exclusive: no other field is applied.
+        fromOrganisationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            With organisationId: which row to move when the number is held by an organisation other
+            than the caller's (null names the pool). Defaults to the caller's own organisation.
         handler:
           type: string
           enum:

@@ -76,6 +76,10 @@ describe('permissions — roles vocabulary', () => {
     expect(can({ role: 'owner' }, 'phoneEndpoint', 'reserve')).toBe(false);
     expect(can({ role: 'orgAdmin' }, 'phoneEndpoint', 'reserve')).toBe(false);
     expect(can({ role: 'superAdmin' }, 'phoneEndpoint', 'reserve')).toBe(true);
+    // Moving a number between organisations is platform administration.
+    expect(can({ role: 'superAdmin' }, 'phoneEndpoint', 'assign')).toBe(true);
+    expect(can({ role: 'owner' }, 'phoneEndpoint', 'assign')).toBe(false);
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'assign')).toBe(false);
   });
   test('billingService holds no product access and cannot administer rates or users', () => {
     // Still least-privilege: it prices ITS OWN tenants against cards someone

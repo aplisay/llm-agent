@@ -1,9 +1,76 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Op } from '../../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Op } from '../../../lib/database.js';
 import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy, validateRegistrationTrunkFields } from '../../../lib/validation.js';
 import { createRegistrationTrunk } from '../phone-endpoints.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
-import { requirePermission } from '../../../lib/auth/permissions.js';
+import { requirePermission, can } from '../../../lib/auth/permissions.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Move a number between organisations, or into and out of the unallocated
+ * pool (organisationId null). Platform operators only (phoneEndpoint:assign).
+ *
+ * Refused while the number is attached to an agent: the attachment belongs to
+ * the organisation that made it, and moving the row under it would leave one
+ * organisation's calls answered by another's agent. Detach first, then move.
+ * The source row is the caller's own organisation's (or the pool's) unless
+ * `fromOrganisationId` names another; a number is not unique on its own since
+ * schema 61, so the source has to be said.
+ */
+async function movePhoneNumber(req, res, normalizedNumber) {
+  if (!can(res.locals.user, 'phoneEndpoint', 'assign')) {
+    return res.status(403).send({ error: 'Moving a number between organisations requires phoneEndpoint:assign' });
+  }
+  const { organisationId: to, fromOrganisationId } = req.body;
+  const from = fromOrganisationId === undefined ? (res.locals.user.organisationId ?? null) : fromOrganisationId;
+  if (to !== null && !(typeof to === 'string' && UUID.test(to))) {
+    return res.status(400).send({ error: 'organisationId must be an organisation id, or null for the unallocated pool' });
+  }
+  if (from !== null && !(typeof from === 'string' && UUID.test(from))) {
+    return res.status(400).send({ error: 'fromOrganisationId must be an organisation id, or null for the unallocated pool' });
+  }
+
+  const row = await PhoneNumber.findOne({ where: { number: normalizedNumber, organisationId: from } });
+  if (!row) {
+    return res.status(404).send({ error: 'Phone endpoint not found' });
+  }
+  if (to === from) {
+    return res.send({ success: true, number: row.number, organisationId: to });
+  }
+  if (to && !(await Organisation.findByPk(to, { attributes: ['id'] }))) {
+    return res.status(404).send({ error: 'Organisation not found' });
+  }
+  if (row.instanceId) {
+    return res.status(409).send({
+      error: 'This number is attached to an agent; detach it before moving it to another organisation',
+      code: 'number_in_use',
+    });
+  }
+  if (await PhoneNumber.findOne({ where: { number: normalizedNumber, organisationId: to }, attributes: ['id'] })) {
+    return res.status(409).send({ error: 'The target organisation already holds this number' });
+  }
+  // A customer trunk (non-chargeable) is assigned to organisations; the
+  // number cannot outrun its trunk. Carrier trunks are shared, so no check.
+  if (to && row.aplisayId) {
+    const trunk = await Trunk.findByPk(row.aplisayId);
+    if (trunk && !trunk.chargeable && !(await trunk.hasOrganisation(to))) {
+      return res.status(409).send({ error: "The number's trunk is not assigned to the target organisation" });
+    }
+  }
+  try {
+    await row.update({ organisationId: to });
+  } catch (err) {
+    if (err.code === 'number_in_use') {
+      return res.status(409).send({ error: err.message, code: err.code });
+    }
+    if (err.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).send({ error: 'The target organisation already holds this number' });
+    }
+    throw err;
+  }
+  return res.send({ success: true, number: row.number, organisationId: to });
+}
 
 /**
  * A DDI addressed by number, as the caller sees it: their organisation's own
@@ -208,6 +275,9 @@ const updatePhoneEndpoint = async (req, res) => {
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
+      if (updateData.organisationId !== undefined) {
+        return movePhoneNumber(req, res, normalizedNumber);
+      }
       const phoneNumber = await findOwnOrPoolNumber(normalizedNumber, organisationId);
       
       if (!phoneNumber) {
