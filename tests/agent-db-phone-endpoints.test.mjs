@@ -1,4 +1,4 @@
-import { setupRealDatabase, teardownRealDatabase, PhoneNumber, PhoneRegistration, Organisation, Op, databaseStarted } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, PhoneNumber, PhoneRegistration, Organisation, Trunk, Op, databaseStarted } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
 describe('Agent DB Phone Endpoints API', () => {
@@ -286,6 +286,76 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(res._status).toBe(200);
       expect(res._body.items.length).toBeLessThanOrEqual(1);
       expect(res._body.nextOffset).toBeDefined();
+    });
+  });
+
+  describe('Trunk-qualified lookup', () => {
+    let trunkA;
+    let trunkB;
+    let onTrunkA;
+    let onNoTrunk;
+
+    beforeEach(async () => {
+      trunkA = await Trunk.create({ id: `trunk-a-${testOrgId.slice(0, 8)}`, name: 'Trunk A', handler: 'livekit' });
+      trunkB = await Trunk.create({ id: `trunk-b-${testOrgId.slice(0, 8)}`, name: 'Trunk B', handler: 'livekit' });
+      onTrunkA = await PhoneNumber.create({
+        number: '1555333333',
+        handler: 'livekit',
+        organisationId: testOrgId,
+        aplisayId: trunkA.id,
+      });
+      onNoTrunk = await PhoneNumber.create({
+        number: '1555444444',
+        handler: 'livekit',
+        organisationId: testOrgId,
+        aplisayId: null,
+      });
+    });
+
+    afterEach(async () => {
+      await PhoneNumber.destroy({ where: { number: [onTrunkA.number, onNoTrunk.number] } });
+      await Trunk.destroy({ where: { id: [trunkA.id, trunkB.id] } });
+    });
+
+    test('returns the number when the call arrived on its trunk', async () => {
+      const req = createMockRequest({ number: onTrunkA.number, trunkId: trunkA.id });
+      const res = createMockResponse();
+      await phoneEndpointsList(req, res);
+      expect(res._status).toBe(200);
+      expect(res._body.items[0]).toHaveProperty('number', onTrunkA.number);
+      expect(res._body.items[0].trunk).toHaveProperty('id', trunkA.id);
+    });
+
+    test('accepts a ;-separated list of candidate trunks', async () => {
+      const req = createMockRequest({ number: onTrunkA.number, trunkId: `${trunkB.id};${trunkA.id}` });
+      const res = createMockResponse();
+      await phoneEndpointsList(req, res);
+      expect(res._status).toBe(200);
+    });
+
+    test('rejects a call that arrived on a different trunk', async () => {
+      const req = createMockRequest({ number: onTrunkA.number, trunkId: trunkB.id });
+      const res = createMockResponse();
+      await phoneEndpointsList(req, res);
+      expect(res._status).toBe(400);
+      expect(res._body.error).toContain('Trunk mismatch');
+    });
+
+    /* A number with no trunk is reachable through no trunk. Waving it through
+       would make "unassigned" the one state a trunk check never applies to. */
+    test('rejects a trunk-qualified lookup of a number assigned to no trunk', async () => {
+      const req = createMockRequest({ number: onNoTrunk.number, trunkId: trunkA.id });
+      const res = createMockResponse();
+      await phoneEndpointsList(req, res);
+      expect(res._status).toBe(400);
+      expect(res._body.error).toContain('Trunk mismatch');
+    });
+
+    test('still answers an unqualified lookup of a number with no trunk', async () => {
+      const req = createMockRequest({ number: onNoTrunk.number });
+      const res = createMockResponse();
+      await phoneEndpointsList(req, res);
+      expect(res._status).toBe(200);
     });
   });
 

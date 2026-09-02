@@ -68,8 +68,11 @@ const phoneEndpointsList = (async (req, res) => {
         }
 
 
-        // Validate trunkId if provided (for inbound call validation)
-        if (trunkId && phoneNumber.aplisayId !== null && !trunkCandidates.includes(phoneNumber.aplisayId)) {
+        // A trunk-qualified lookup is an inbound call asking "is this number
+        // reachable through this trunk". A number with no trunk is not
+        // reachable through any trunk, so it fails the check like any other
+        // mismatch rather than being waved through.
+        if (trunkId && !trunkCandidates.includes(phoneNumber.aplisayId)) {
           return res.status(400).send({
             error: `Trunk mismatch: call arrived on trunk ${trunkId} but number is assigned to trunk ${phoneNumber.aplisayId || 'none'}`
           });
@@ -316,7 +319,7 @@ phoneEndpointsList.apiDoc = {
       in: 'query',
       required: false,
       schema: { type: 'string' },
-      description: 'Trunk ID (aplisayId) for validation when looking up by number. If provided, validates that the call arrived on the same trunk that the number is assigned to. Returns 400 error if mismatch.'
+      description: 'Trunk ID (aplisayId) the call arrived on, when looking up by number. Several candidates may be separated by ";". When provided, the number must be assigned to one of them; a number assigned to a different trunk, or to no trunk, returns 400.'
     }
   ],
   responses: {
