@@ -56,6 +56,7 @@ const REQUIRED = [
   ['organisation', 'read', "read the org's rate-name timeline"],
   ['organisation', 'readAll', 'reach an org at all — this principal has no org of its own'],
   ['organisation', 'setRate', "write the org's rate-name timeline"],
+  ['phoneEndpoint', 'reserve', 'reserve a bought number before the org claims it (POST /number-reservations)'],
 ];
 
 const client = new pg.Client({

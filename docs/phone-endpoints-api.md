@@ -122,6 +122,17 @@ Creates a new phone endpoint. Supports E.164 DDI (number on a trunk) and phone-r
   limit returns `403 { "error": "…", "code": "chargeable_number_limit", "limit": n, "used": n }`.
   Numbers on the organisation's own (non-chargeable) trunks are never counted or limited.
   Current allowance is readable at [`GET /api/number-quota`](#get-apinumber-quota).
+- **Carrier reservation** (schema 63): a claim onto a chargeable trunk must also carry
+  `reservationRef`, the id of a reservation minted by
+  [`POST /api/number-reservations`](#post-apinumber-reservations) for the same number, trunk
+  and organisation. Chargeable numbers are ones the platform buys and pays for, so the claim
+  has to show that the seam which does the buying agreed to it. Missing returns
+  `403 { "code": "reservation_required" }`; expired, already used, or naming a different
+  number, trunk or organisation returns `403 { "code": "reservation_invalid" }`. The claim
+  consumes the reservation in its own transaction, so one reservation yields at most one
+  number. Callers holding `trunk:create` (platform operators) may claim without one, which is
+  how a number already routed at the carrier is attached by hand; a reference they do present
+  is still checked. Numbers on the organisation's own trunks never need one.
 - **Response (201)**: `{ "success": true, "number": "1234567890" }` (number without `+`).
 
 **Example:**
@@ -220,6 +231,24 @@ organisation membership.
 - The limit itself is `Organisation.chargeableNumberLimit` (default 3), editable via the
   organisations API under `organisation:setRate` (super admin billing policy — deliberately
   not orgAdmin's `setLimits`).
+
+---
+
+### POST /api/number-reservations
+
+Mint the reservation a claim onto a **chargeable** trunk must present. Requires
+`phoneEndpoint:reserve`, held by the platform's number-purchase seam (`billingService`) and
+super admins; organisation roles cannot mint one.
+
+- **Request body**: `number` (E.164), `trunkId` (must be a chargeable trunk), `organisationId`
+  (the organisation that will claim it), optionally `provider` and `carrierRef` (an object,
+  stored verbatim for audit).
+- **Response (201)**: `{ "id": "<uuid>", "number": "442079460100", "trunkId": "…",
+  "organisationId": "…", "expiresAt": "<ISO 8601>" }`. Pass `id` as `reservationRef` on the
+  claim within the expiry window (15 minutes).
+- A non-chargeable or unknown trunk returns `400`; an unknown organisation `404`.
+- Reservations are never deleted: a consumed one records when it was used and which number
+  row it produced.
 
 ---
 

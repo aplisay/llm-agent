@@ -1,4 +1,4 @@
-import { setupRealDatabase, teardownRealDatabase, PhoneNumber, Organisation, Trunk } from './setup/database-test-wrapper.js';
+import { setupRealDatabase, teardownRealDatabase, PhoneNumber, Organisation, Trunk, NumberReservation } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
 /**
@@ -49,10 +49,20 @@ describe('Chargeable number limit', () => {
   // Distinct E.164 numbers per test run (PhoneNumber PK is the number itself).
   const nextNumber = () => `+44${unique}${String(seq++).padStart(3, '0')}`;
 
+
+  // Claims onto a chargeable trunk must present a reservation minted by the
+  // carrier seam (schema 63); mint one per claim so these tests keep
+  // exercising the limit, not the gate.
+  const reserve = async (number, trunkId, organisationId) =>
+    NumberReservation.create({ number: number.replace(/^\+/, ''), trunkId, organisationId, expiresAt: new Date(Date.now() + 60000) });
+
   const claim = async (trunkId, { user, number } = {}) => {
-    const req = createMockRequest({ body: { type: 'e164-ddi', number: number || nextNumber(), trunkId } });
+    const n = number || nextNumber();
+    const u = user || { role: 'owner', organisationId: orgId };
+    const reservation = trunkId === chargeableTrunkId ? await reserve(n, trunkId, u.organisationId) : null;
+    const req = createMockRequest({ body: { type: 'e164-ddi', number: n, trunkId, ...(reservation ? { reservationRef: reservation.id } : {}) } });
     const res = createMockResponse();
-    res.locals.user = user || { role: 'owner', organisationId: orgId };
+    res.locals.user = u;
     await createPhoneEndpoint(req, res);
     return res;
   };
