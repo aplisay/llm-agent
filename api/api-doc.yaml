@@ -2000,7 +2000,9 @@ components:
           description: For a call, which way it went
         callId:
           type: string
-          description: For a call, its SIP Call-ID
+          description: |-
+            For a call, the SIP Call-ID of its customer-facing leg — the one to look for in the
+            PBX's or carrier's own logs.
         startedAt:
           type: string
           format: date-time
@@ -2019,10 +2021,17 @@ components:
             known-good exchange.
         messages:
           type: integer
-          description: How many messages fetching this entry would return
+          description: |-
+            How many messages fetching this entry would return. For a call, that is its
+            customer-facing leg, which the detail route serves by default.
         bytes:
           type: integer
           description: Approximate size of that detail, in bytes
+        internalMessages:
+          type: integer
+          description: |-
+            For a call, how many more messages its platform leg holds — the same call between the
+            b2bua node and the platform. The detail route adds them under `debug=1`.
     SipTraceIndex:
       type: object
       description: |-
@@ -2071,6 +2080,13 @@ components:
           type: string
           enum: [in, out]
           description: Direction relative to the b2bua node
+        leg:
+          type: string
+          enum: [external, internal]
+          description: |-
+            For a message in a call, which leg of the bridge it was on: `external` between the node
+            and the customer's PBX or carrier, `internal` between the node and the platform. Absent
+            on a REGISTER, which has only one side.
         transport:
           type: string
           enum: [udp, tcp, tls]
@@ -2137,7 +2153,11 @@ components:
             $ref: '#/components/schemas/SipTraceMessage'
     SipTraceDialog:
       type: object
-      description: The signalling of one call dialog involving this registration.
+      description: |-
+        The signalling of one bridged call involving this registration. The b2bua node sits between
+        the customer's PBX or carrier and the platform, so a call has two legs; by default `messages`
+        is the customer-facing leg, and with `debug=1` both legs, interleaved by timestamp and each
+        message marked with its `leg`.
       properties:
         id:
           type: string
@@ -2145,6 +2165,12 @@ components:
           example: call-2
         callId:
           type: string
+          description: |-
+            SIP Call-ID of the customer-facing leg. A call refused before the customer side was
+            dialled has only a platform leg, and this is then that leg's Call-ID.
+        internalCallId:
+          type: string
+          description: SIP Call-ID of the platform leg, when the call has one
         direction:
           type: string
           enum: [inbound, outbound]
@@ -2330,6 +2356,11 @@ components:
               type: string
             dialog:
               type: string
+              description: For a packet in a call, the call's customer-facing Call-ID whichever leg the packet was on
+            leg:
+              type: string
+              enum: [external, internal]
+              description: For a packet in a call, which leg of the bridge it was on
     RegistrationProbeRequest:
       type: object
       description: Options for a live registration probe.

@@ -7,6 +7,7 @@ import {
   describeNodeFailure,
   capabilityFromFailure,
   unsupportedNodeBody,
+  wantsDebugTrace,
   CAPABILITY_NONE
 } from '../../../../../lib/regclient.js';
 
@@ -34,7 +35,7 @@ const getRegistrationTraceTransaction = async (req, res) => {
 
   const user = res.locals.user;
   const { identifier, transactionId } = req.params;
-  const { format = 'json', since } = req.query;
+  const { format = 'json', since, debug } = req.query;
 
   try {
     if (!TRACE_FORMATS.includes(format)) {
@@ -46,7 +47,9 @@ const getRegistrationTraceTransaction = async (req, res) => {
     const { node, config } = resolved;
 
     const address = await nodeDialAddress(node, config, { log: req.log });
-    const url = buildTraceUrl({ node: address, registrationId: identifier, transactionId, format, since }, config);
+    const url = buildTraceUrl({
+      node: address, registrationId: identifier, transactionId, format, since, debug: wantsDebugTrace(debug)
+    }, config);
     const wantsBinary = format === 'pcap';
 
     let response;
@@ -124,6 +127,13 @@ getRegistrationTraceTransaction.apiDoc = {
                     route sets survive the decode.
                   * \`pcap\` — this exchange as a capture file for Wireshark or sngrep.
 
+                A call dialog is served as its customer-facing leg: the messages between the
+                b2bua node and the customer's PBX or carrier, which is what a customer can compare
+                with their own logs. The node bridges every call to the platform on a second leg,
+                and \`debug=1\` adds that leg too, interleaved by timestamp, with every message
+                marked \`leg: external\` or \`leg: internal\`. Both legs' Call-IDs are on the
+                dialog (\`callId\`, \`internalCallId\`) and either addresses it here.
+
                 Digest credentials are always redacted. Trace entries rotate as new activity
                 arrives, so an id listed a few minutes ago may since have aged out; that is a 404.`,
   operationId: 'getPhoneEndpointTraceTransaction',
@@ -156,6 +166,13 @@ getRegistrationTraceTransaction.apiDoc = {
       required: false,
       schema: { type: 'string', format: 'date-time' },
       description: 'Only return messages captured at or after this time'
+    },
+    {
+      name: 'debug',
+      in: 'query',
+      required: false,
+      schema: { type: 'boolean', default: false },
+      description: 'For a call, include the platform leg interleaved with the customer leg'
     }
   ],
   responses: {
