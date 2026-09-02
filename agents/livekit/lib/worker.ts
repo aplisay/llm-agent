@@ -17,7 +17,6 @@ import { invocationLogs } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
   getInstanceById,
-  getInstanceByNumber,
   createCall,
   createTransactionLog,
   type Instance,
@@ -27,7 +26,6 @@ import {
   type OutboundInfo,
   getPhoneEndpointById,
   getPhoneEndpointByNumber,
-  getPhoneNumberByNumber,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
@@ -1165,17 +1163,15 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                     "trunk info retrieved from phone endpoint",
                   );
                 }
-                // PhoneNumber has instanceId, so we can lookup the instance
+                // The number row names its instance. There is deliberately no
+                // lookup by bare number behind this: an inbound call is
+                // resolved by (number, trunk) or not at all, so a number that
+                // failed the trunk check above, or has no agent, is "no
+                // instance" rather than "try again without the trunk".
                 if (numInfo.instanceId) {
                   instance = await getInstanceById(numInfo.instanceId);
-                } else {
-                  // Fallback to old behavior
-                  instance = await getInstanceByNumber(calledId);
                 }
                 aplisayId = numInfo.aplisayId || aplisayId;
-              } else {
-                // Fallback: try direct instance lookup by number
-                instance = await getInstanceByNumber(calledId);
               }
             }
           }

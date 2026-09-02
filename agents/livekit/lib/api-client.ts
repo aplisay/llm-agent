@@ -635,11 +635,6 @@ export async function getInstanceById(instanceId: string): Promise<any> {
   return makeApiRequest(`/api/agent-db/instance?instanceId=${instanceId}`);
 }
 
-// Get instance by phone number from the API
-export async function getInstanceByNumber(number: string): Promise<any> {
-  return makeApiRequest(`/api/agent-db/instance?number=${encodeURIComponent(number)}`);
-}
-
 // Get phone numbers from the API
 export async function getPhoneNumbers(handler?: string): Promise<any[]> {
   const query = handler ? `?handler=${encodeURIComponent(handler)}` : '';
@@ -680,11 +675,6 @@ export async function getPhoneEndpointByNumber(
     logger.error({ number, trunkId, err: error }, 'Failed to get phone endpoint by number');
     return null;
   }
-}
-
-// Legacy function - kept for backward compatibility, now uses phone-endpoints endpoint
-export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
-  return getPhoneEndpointByNumber(number);
 }
 
 // Mark a phone number as provisioned (or not) in the platform after LiveKit sync

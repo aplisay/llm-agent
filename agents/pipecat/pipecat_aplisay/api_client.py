@@ -116,10 +116,6 @@ async def get_instance_by_id(instance_id: str) -> dict:
     return await _request("GET", "/api/agent-db/instance", params={"instanceId": instance_id})
 
 
-async def get_instance_by_number(number: str) -> dict:
-    return await _request("GET", "/api/agent-db/instance", params={"number": number})
-
-
 async def get_agent_by_id(agent_id: str) -> dict:
     return await _request("GET", f"/api/agents/{agent_id}")
 

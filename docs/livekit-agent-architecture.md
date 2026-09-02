@@ -384,7 +384,7 @@ On an inbound INVITE from the SBC, the contract is:
 - Request-URI — supplies the called number.
 - From header — supplies the caller number.
 
-Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7).
+Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7). The pair is the whole key: there is no lookup by bare number behind it, so a number the trunk check refuses, or one with no instance, is "no agent for this call" rather than a second attempt without the trunk.
 
 Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_X_HEADERS`); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
 
@@ -600,7 +600,7 @@ The header name (`x-shared-token`) and the env var names (`SHARED_API_TOKEN`, `S
 
 Called during call setup to resolve the agent and its phone-number context. All are GET, read-only, idempotent.
 
-- **`GET /api/agent-db/instance`** — resolve Instance (with embedded Agent) by `?instanceId=` or `?number=`.
+- **`GET /api/agent-db/instance`** — resolve Instance (with embedded Agent) by `?instanceId=`.
 - **`GET /api/agent-db/agent`** — resolve Agent by `?agentId=`. Used for fallback-agent loading (section 9).
 - **`GET /api/agent-db/phone-endpoints`** — resolve PhoneEndpoint by `?number=&trunkId=` (trunk-based) or `?id=` (registration endpoint).
 

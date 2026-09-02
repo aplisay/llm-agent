@@ -1,4 +1,4 @@
-import { Instance, Agent, PhoneNumber } from '../../../lib/database.js';
+import { Instance, Agent } from '../../../lib/database.js';
 
 let appParameters, log;
 
@@ -15,41 +15,26 @@ export default function (logger, voices, wsServer) {
 };
 
 const instanceGet = (async (req, res) => {
-  let { instanceId, number } = req.query;
+  let { instanceId } = req.query;
 
-  log.debug({ instanceId, number }, 'instanceGet');
+  log.debug({ instanceId }, 'instanceGet');
 
-  if (!instanceId && !number) {
-    return res.status(400).send({ error: 'Either instanceId or number query parameter is required' });
-  }
-
-  if (instanceId && number) {
-    return res.status(400).send({ error: 'Only one of instanceId or number should be provided' });
+  // By id only. The former `?number=` form resolved an instance from a bare
+  // number with no trunk, which is not a question an inbound call may ask:
+  // a number resolves through GET /api/agent-db/phone-endpoints?number=&trunkId=
+  // to its endpoint, and the endpoint names the instance.
+  if (!instanceId) {
+    return res.status(400).send({ error: 'instanceId query parameter is required' });
   }
 
   try {
-    let instance, agent, phoneNumber;
+    let instance, agent;
 
-    if (instanceId) {
-      // Get by instance ID
-      instance = await Instance.findByPk(instanceId, { include: Agent });
-      agent = instance?.Agent;
-    } else if (number) {
-      // Get by phone number
-      phoneNumber = await PhoneNumber.findByPk(number, {
-        include: [
-          {
-            model: Instance,
-            include: [Agent]
-          }
-        ]
-      });
-      instance = phoneNumber?.Instance;
-      agent = instance?.Agent;
-    }
-    
+    instance = await Instance.findByPk(instanceId, { include: Agent });
+    agent = instance?.Agent;
+
     if (!instance) {
-      log.error({ instanceId, number }, 'instance not found');
+      log.error({ instanceId }, 'instance not found');
       return res.status(404).send({ error: 'Instance not found' });
     }
 
@@ -73,7 +58,7 @@ const instanceGet = (async (req, res) => {
 });
 
 instanceGet.apiDoc = {
-  summary: 'Returns an instance by ID or phone number with its associated agent.',
+  summary: 'Returns an instance by ID with its associated agent.',
   operationId: 'getInstance',
   tags: ["Agent"],
   parameters: [
@@ -87,15 +72,6 @@ instanceGet.apiDoc = {
       },
       description: 'The ID of the instance to retrieve'
     },
-    {
-      name: 'number',
-      in: 'query',
-      required: false,
-      schema: {
-        type: 'string'
-      },
-      description: 'The phone number to look up the instance for'
-    }
   ],
   responses: {
     200: {

@@ -266,7 +266,10 @@ async def _lookup_instance_for_inbound(
 
     All three inbound paths (voiceblender VSI event, sipbridge WS headers,
     FreeSWITCH /inbound-dispatch) need the same lookup ladder:
-    phone_registration → trunk+number → bare number. Each step can return
+    phone_registration → trunk+number. There is deliberately no bare-number
+    rung after that: an inbound call resolves by (number, trunk) or not at
+    all, so a number that failed the trunk check, or has no agent, is "no
+    instance" rather than "try again without the trunk". Each step can return
     404 from the REST API; that's a "this step found nothing", not an
     error — we want to continue to the next step (and ultimately tell the
     SIP / gateway layer "no agent for this call"), not let an
@@ -314,8 +317,6 @@ async def _lookup_instance_for_inbound(
                     origin.force_refer_transfer = bool(flags.get("forceReferTransfer"))
                 elif flags.get("canRefer") is True:
                     origin.force_refer_transfer = True
-    if not instance and to_number:
-        instance = await _maybe(api_client.get_instance_by_number(to_number))
     return instance, origin
 
 
@@ -1283,8 +1284,6 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         )
         if endpoint and endpoint.get("instanceId"):
             instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and start.called_id:
-        instance = await api_client.get_instance_by_number(start.called_id)
     if not instance:
         logger.bind(start=start.raw).error("no instance for inbound freeswitch call")
         await websocket.close(code=1011)
