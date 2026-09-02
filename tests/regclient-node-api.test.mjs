@@ -9,7 +9,8 @@ import {
   describeNodeFailure,
   selectProbeNode,
   TRACE_FORMATS,
-  TRACE_INDEX_FORMATS
+  TRACE_INDEX_FORMATS,
+  wantsDebugTrace
 } from '../lib/regclient.js';
 
 // The regclient node API client: URL construction, the guard on which node
@@ -167,6 +168,17 @@ describe('URL construction', () => {
     const url = new URL(buildTraceUrl({ node: '203.0.113.10', registrationId, format: 'decode', since: '2026-08-30T10:00:00Z' }, config));
     expect(url.searchParams.get('format')).toBe('decode');
     expect(url.searchParams.get('since')).toBe('2026-08-30T10:00:00Z');
+    expect(url.searchParams.has('debug')).toBe(false);
+  });
+
+  // The node serves a call's customer leg unless asked for the platform leg
+  // too; the flag is only sent when it is wanted, so the default stays the
+  // node's default.
+  it('asks for the platform leg only when debug is set', () => {
+    const url = new URL(buildTraceUrl({ node: '203.0.113.10', registrationId, transactionId: 'call-3', debug: true }, config));
+    expect(url.searchParams.get('debug')).toBe('1');
+    for (const value of ['1', 'true', 'YES', true]) expect(wantsDebugTrace(value)).toBe(true);
+    for (const value of ['0', 'false', '', undefined, null]) expect(wantsDebugTrace(value)).toBe(false);
   });
 
   it('brackets an IPv6 node address', () => {

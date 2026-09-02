@@ -322,11 +322,37 @@ describe('GET /phone-endpoints/{identifier}/trace/{transactionId}', () => {
     expect(new URL(lastRequest.url).searchParams.get('format')).toBe('decode');
   });
 
+  // A call is two legs, and the node serves the customer's unless asked for
+  // the platform's as well. The flag passes through as the node spells it,
+  // and only when set — the default is the node's to choose.
+  it('passes debug through to the node for the platform leg', async () => {
+    makeReg();
+    nextResponse = { status: 200, data: { registrationId: REG, calls: [{ id: 'call-3', messages: [] }] } };
+    await callTraceTransaction({ transactionId: 'call-3', query: { debug: '1' } });
+    expect(new URL(lastRequest.url).searchParams.get('debug')).toBe('1');
+
+    await callTraceTransaction({ transactionId: 'call-3', query: { debug: 'false' } });
+    expect(new URL(lastRequest.url).searchParams.has('debug')).toBe(false);
+
+    await callTraceTransaction({ transactionId: 'call-3' });
+    expect(new URL(lastRequest.url).searchParams.has('debug')).toBe(false);
+  });
+
   it('names the exchange in the capture filename', async () => {
     makeReg();
     nextResponse = { status: 200, data: Buffer.from([0xd4, 0xc3, 0xb2, 0xa1]) };
     const res = await callTraceTransaction({ query: { format: 'pcap' } });
     expect(res._headers['Content-Disposition']).toContain(`${REG}-reg-8.pcap`);
+  });
+
+  // The whole-registration capture on the index route takes the same flag.
+  it('passes debug through on a whole-registration capture', async () => {
+    makeReg();
+    nextResponse = { status: 200, data: Buffer.from([0xd4, 0xc3, 0xb2, 0xa1]) };
+    await callTrace({ query: { format: 'pcap', debug: 'true' } });
+    const url = new URL(lastRequest.url);
+    expect(url.searchParams.get('format')).toBe('pcap');
+    expect(url.searchParams.get('debug')).toBe('1');
   });
 
   // Trace entries rotate. An id listed a few minutes ago may have aged out

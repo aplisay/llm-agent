@@ -7,6 +7,7 @@ import {
   describeNodeFailure,
   capabilityFromFailure,
   unsupportedNodeBody,
+  wantsDebugTrace,
   CAPABILITY_NONE
 } from '../../../../lib/regclient.js';
 
@@ -47,7 +48,7 @@ const getRegistrationTrace = async (req, res) => {
 
   const user = res.locals.user;
   const { identifier } = req.params;
-  const { format = 'json', since } = req.query;
+  const { format = 'json', since, debug } = req.query;
 
   try {
     if (!TRACE_INDEX_FORMATS.includes(format)) {
@@ -62,7 +63,9 @@ const getRegistrationTrace = async (req, res) => {
     const { node, config } = resolved;
 
     const address = await nodeDialAddress(node, config, { log: req.log });
-    const url = buildTraceUrl({ node: address, registrationId: identifier, format, since }, config);
+    const url = buildTraceUrl({
+      node: address, registrationId: identifier, format, since, debug: wantsDebugTrace(debug)
+    }, config);
     const wantsBinary = format === 'pcap';
 
     let response;
@@ -133,9 +136,16 @@ getRegistrationTrace.apiDoc = {
                 \`GET /phone-endpoints/{identifier}/trace/{transactionId}\`, which additionally
                 offers \`format=decode\` for parsed packets.
 
+                A bridged call is one entry. The node sits between the customer's PBX or carrier
+                and the platform, so every call has two legs; the entry describes the customer's
+                leg (\`messages\`, \`summary\`, \`callId\`) and says how many more messages the
+                platform leg holds (\`internalMessages\`), which the detail route adds under
+                \`debug=1\`.
+
                 \`format=pcap\` is available here and returns a capture of the **whole**
                 registration for Wireshark or sngrep — TLS legs included, exported decrypted, which
-                an on-wire capture can never show.
+                an on-wire capture can never show. It too is the customer's leg of each call
+                unless \`debug=1\` is given.
 
                 Traces live in a bounded in-memory buffer on the node, so they cover recent activity
                 rather than full history, and are lost if that node restarts. What has been
@@ -165,6 +175,13 @@ getRegistrationTrace.apiDoc = {
       required: false,
       schema: { type: 'string', format: 'date-time' },
       description: 'Only return messages captured at or after this time'
+    },
+    {
+      name: 'debug',
+      in: 'query',
+      required: false,
+      schema: { type: 'boolean', default: false },
+      description: 'With format=pcap, include the platform leg of each call as well as the customer leg'
     }
   ],
   responses: {
