@@ -8,6 +8,7 @@ import {
   nodeRequest,
   describeNodeFailure,
   selectProbeNode,
+  pickLeastLoadedNode,
   TRACE_FORMATS,
   TRACE_INDEX_FORMATS,
   wantsDebugTrace
@@ -258,5 +259,39 @@ describe('selectProbeNode', () => {
 
   it('returns null when nothing can run the probe', () => {
     expect(selectProbeNode({ registrationId: 'r1', claimedNode: '', env: {} })).toBeNull();
+  });
+});
+
+describe('pickLeastLoadedNode', () => {
+  const now = Date.parse('2026-09-02T12:00:00Z');
+  const fresh = new Date(now - 60_000).toISOString();
+  const stale = new Date(now - 10 * 60_000).toISOString();
+
+  it('prefers the least loaded live regclient node', () => {
+    expect(pickLeastLoadedNode([
+      { nodeId: '198.51.100.1', type: 'regclient', systemLoad: 0.9, registrations: 3, lastSeenAt: fresh },
+      { nodeId: '198.51.100.2', type: 'regclient', systemLoad: 0.2, registrations: 40, lastSeenAt: fresh },
+    ], { now })).toBe('198.51.100.2');
+  });
+
+  it('breaks a load tie on how many registrations the node already holds, then by address', () => {
+    expect(pickLeastLoadedNode([
+      { nodeId: '198.51.100.9', type: 'regclient', systemLoad: 0.5, registrations: 10, lastSeenAt: fresh },
+      { nodeId: '198.51.100.3', type: 'regclient', systemLoad: 0.5, registrations: 2, lastSeenAt: fresh },
+      { nodeId: '198.51.100.1', type: 'regclient', systemLoad: 0.5, registrations: 2, lastSeenAt: fresh },
+    ], { now })).toBe('198.51.100.1');
+  });
+
+  it('skips stale heartbeats and the FreeSWITCH stack, and treats an unknown load as worst', () => {
+    expect(pickLeastLoadedNode([
+      { nodeId: '198.51.100.1', type: 'regclient', systemLoad: 0.0, registrations: 0, lastSeenAt: stale },
+      { nodeId: '198.51.100.2', type: 'freeswitch', systemLoad: 0.0, registrations: 0, lastSeenAt: fresh },
+      { nodeId: '198.51.100.3', type: 'regclient', systemLoad: null, registrations: 0, lastSeenAt: fresh },
+      { nodeId: '198.51.100.4', type: 'regclient', systemLoad: 2.5, registrations: 0, lastSeenAt: fresh },
+    ], { now })).toBe('198.51.100.4');
+    expect(pickLeastLoadedNode([
+      { nodeId: '198.51.100.1', type: 'regclient', systemLoad: 0.0, registrations: 0, lastSeenAt: stale },
+    ], { now })).toBeNull();
+    expect(pickLeastLoadedNode([], { now })).toBeNull();
   });
 });

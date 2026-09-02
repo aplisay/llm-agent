@@ -192,6 +192,8 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # REGCLIENT_CAPABILITY_TTL_MS=600000    # how long "serves traces" is remembered
 # REGCLIENT_UNSUPPORTED_TTL_MS=60000    # how long "does not" is remembered
 # Nodes able to run a probe for a registration no node has claimed yet.
+# Optional override; by default an unclaimed registration is probed on the least loaded
+# regclient node that has heartbeated recently (b2bua_nodes).
 # REGCLIENT_PROBE_NODES=
 # Optional pin: only these node addresses may be contacted at all.
 # REGCLIENT_NODE_ALLOWLIST=
