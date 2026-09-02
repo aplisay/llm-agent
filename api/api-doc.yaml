@@ -1833,6 +1833,26 @@ components:
                   description: Password for phone-registration type
                 options:
                   $ref: '#/components/schemas/PhoneRegistrationOptions'
+                trunk:
+                  type: boolean
+                  default: false
+                  description: |-
+                    Create this registration as a registration trunk: it owns a trunk that numbers attach to
+                    (POST /phone-endpoints type e164-ddi with the returned trunkId), and inbound calls resolve
+                    by (dialled number, trunk) rather than to one agent attached to the registration.
+                trunkId:
+                  type: string
+                  description: |-
+                    Name the trunk instead of the default `reg-<registration id>`. Requires trunk:create (a super
+                    migrating an existing trunk keeps its id, and with it its numbers). Only with trunk: true.
+                didSource:
+                  type: string
+                  description: |-
+                    Where the dialled number is found on an inbound INVITE for a trunk: `request-uri` (default),
+                    `to`, `header:<Header-Name>` (e.g. header:P-Called-Party-ID) or `none` (single-line behaviour).
+                didCountry:
+                  type: string
+                  description: ISO 3166-1 alpha-2 country used to normalise a national-format dialled number to E.164. Null = platform default.
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
@@ -1867,6 +1887,17 @@ components:
           description: Registration password (for registrations)
         options:
           $ref: '#/components/schemas/PhoneRegistrationOptions'
+        trunk:
+          type: boolean
+          description: |-
+            Registrations only. `true` turns a line into a registration trunk (creates its trunk and detaches it
+            from any agent); `false` turns a trunk back into a line, refused with 409 while numbers sit on it.
+        didSource:
+          type: string
+          description: Registration trunks — where the dialled number is found (see PhoneEndpointCreateInput).
+        didCountry:
+          type: string
+          description: Registration trunks — ISO 3166-1 alpha-2 for national-format dialled numbers.
     B2buaNodeHeartbeat:
       type: object
       description: A b2bua node announcing itself, about once a minute.

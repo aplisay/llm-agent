@@ -181,6 +181,7 @@ const phoneEndpointsList = (async (req, res) => {
             id: registration.id,
             name: registration.name,
             handler: registration.handler,
+            trunkId: registration.trunkId || null,
             status: registration.status,
             state: registration.state,
             outbound: !!registration.outbound,

@@ -31,6 +31,12 @@ export interface PhoneRegistrationSchema {
   error: string | null;
   lastSeenAt: Date | null;
   organisationId: string | null;
+  /** Registration trunk: the `trunks.id` this registration owns, null for a single line. */
+  trunkId?: string | null;
+  /** Where the regclient finds the dialled number on a trunk INVITE: 'request-uri' | 'to' | 'header:<Name>' | 'none'. */
+  didSource?: string | null;
+  /** ISO 3166-1 alpha-2 for national-format dialled numbers; null = platform default. */
+  didCountry?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,5 +45,5 @@ export const PhoneRegistrationStatusValues: PhoneRegistrationStatus[] = ['active
 export const PhoneRegistrationStateValues: PhoneRegistrationState[] = ['initial', 'registering', 'registered', 'failed'];
 
 // Schema version for migration/validation tracking
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 

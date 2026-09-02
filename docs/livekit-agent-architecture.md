@@ -384,7 +384,9 @@ On an inbound INVITE from the SBC, the contract is:
 - Request-URI — supplies the called number.
 - From header — supplies the caller number.
 
-Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7). The pair is the whole key: there is no lookup by bare number behind it, so a number the trunk check refuses, or one with no instance, is "no agent for this call" rather than a second attempt without the trunk.
+Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7).
+
+**Registration trunks.** A phone-registration created with `trunk: true` owns a trunk (`phone_registrations.trunk_id`, `trunks.flags.provider = "registration"`). The B2BUA forwards its inbound calls with BOTH `X-Aplisay-PhoneRegistration` and `X-Aplisay-Trunk`, and carries the dialled number (normalised to E.164 per `did_source` / `did_country`) in `X-Aplisay-Called` as well as, on the Pipecat runtime, the Request-URI. The registration has no instance of its own, so the lookup ladder falls through from the registration to (called number, `aplisayId`) and the number's agent answers. `X-Aplisay-Called` wins over the Request-URI / `sip.trunkPhoneNumber` wherever both are present. The pair is the whole key: there is no lookup by bare number behind it, so a number the trunk check refuses, or one with no instance, is "no agent for this call" rather than a second attempt without the trunk.
 
 Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_X_HEADERS`); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
 

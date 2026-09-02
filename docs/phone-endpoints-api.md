@@ -256,6 +256,17 @@ Trunks are a curated platform resource. Ordinary callers get the org-scoped list
 - **Multiple numbers**: The API creates one number per request. To add a range or list, your client can loop over normalized E.164 values and POST each (with optional client-side limit, e.g. max 40 per batch) and surface errors per number if needed.
 - **Validation**: Numbers are validated as E.164 (7–15 digits, optional leading `+`). A number is unique per organisation and per trunk, not platform-wide: creating one your organisation already holds, or one already on the same trunk, returns 409. Another organisation holding the same number on its own trunk is not a conflict.
 
+### Registration trunks
+
+A phone-registration created with `"trunk": true` is a **registration trunk**: it owns a trunk
+(`trunkId` in the response, `reg-<id>` unless a super names it with `trunkId`), numbers attach to
+that trunk with `POST /api/phone-endpoints` `type: e164-ddi`, and each number is given its own
+agent. The registration itself is never attached to an agent. `didSource` says where the dialled
+number is found on an inbound INVITE (`request-uri` default, `to`, `header:<Name>`, `none`), and
+`didCountry` normalises a national-format number. `PUT` with `trunk: true` turns a line into a
+trunk (detaching it from any agent); `trunk: false` and `DELETE` are refused with 409 while numbers
+still sit on the trunk.
+
 ### Agent assignment (inUse, agentId, agentName)
 
 - Numbers are linked to agents via **listeners** (agent instances). The API does not assign numbers to agents; that is done through the listener/agent configuration. The GET response only reports the current assignment.
