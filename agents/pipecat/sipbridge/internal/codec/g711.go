@@ -124,53 +124,65 @@ func linearToPCMU(s int16) byte {
 	v += bias
 	// find segment
 	exp := byte(7)
-	for mask := 0x4000; (v & mask) == 0 && exp > 0; mask >>= 1 {
+	for mask := 0x4000; (v&mask) == 0 && exp > 0; mask >>= 1 {
 		exp--
 	}
 	mant := byte((v >> (int(exp) + 3)) & 0x0F)
 	return ^(sign | (exp << 4) | mant)
 }
 
+// -- A-law (ITU-T G.711 §A / RFC 3551 PCMA) -----------------------------
+//
+// A-law codes a 13-bit magnitude (s16 >> 3) in eight segments. Segment 0
+// is linear (mantissa is bits 4..1 of the 13-bit value), segments 1..7 are
+// 4-bit mantissas at successively coarser steps. The sign bit (0x80 after
+// the 0x55 mask) is SET for positive samples — the opposite of mu-law —
+// and every byte is XORed with 0x55 on the wire so runs of silence do not
+// look like an all-zeros/all-ones line. The step tables below are the
+// segment upper bounds of the 13-bit magnitude, as in the reference
+// implementation (Sun Microsystems g711.c, ITU-T G.711 Table 1a).
+var alawSegmentEnd = [8]int{0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF}
+
 func alawDecodeByte(b byte) int16 {
 	b ^= 0x55
-	sign := b & 0x80
-	exp := (b >> 4) & 0x07
-	mant := b & 0x0F
-	var sample int16
-	if exp == 0 {
-		sample = int16(int(mant)<<4) + 8
-	} else {
-		sample = int16(((int(mant) << 4) + 0x108) << (exp - 1))
+	t := int(b&0x0F) << 4
+	seg := (b & 0x70) >> 4
+	switch seg {
+	case 0:
+		t += 8
+	case 1:
+		t += 0x108
+	default:
+		t += 0x108
+		t <<= seg - 1
 	}
-	if sign != 0 {
-		sample = -sample
+	if b&0x80 != 0 {
+		return int16(t)
 	}
-	return sample
+	return int16(-t)
 }
 
 func linearToPCMA(s int16) byte {
-	sign := byte(0x55) ^ 0x80
-	v := int(s)
-	if v >= 0 {
-		sign = 0x55
-	} else {
+	// Work on the 13-bit magnitude the codec is defined over.
+	v := int(s) >> 3
+	mask := byte(0xD5) // positive: sign bit set, then the 0x55 line mask
+	if v < 0 {
+		mask = 0x55
 		v = -v - 1
 	}
-	if v > 32635 {
-		v = 32635
+	seg := 0
+	for seg < 8 && v > alawSegmentEnd[seg] {
+		seg++
 	}
-	var exp byte
-	var mant byte
-	if v < 256 {
-		exp = 0
-		mant = byte((v >> 4) & 0x0F)
+	if seg >= 8 {
+		// Beyond the top segment: saturate to the largest code.
+		return 0x7F ^ mask
+	}
+	var mant int
+	if seg < 2 {
+		mant = (v >> 1) & 0x0F
 	} else {
-		exp = 1
-		seg := v
-		for seg >>= 8; seg > 0 && exp < 7; seg >>= 1 {
-			exp++
-		}
-		mant = byte((v >> (int(exp) + 3)) & 0x0F)
+		mant = (v >> seg) & 0x0F
 	}
-	return (exp<<4 | mant) ^ sign
+	return byte(seg<<4|mant) ^ mask
 }
