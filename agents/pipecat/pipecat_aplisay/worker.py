@@ -336,7 +336,7 @@ async def _voiceblender_resolve_agent(
     ``_on_leg_ringing`` reads to build the ctx.
     """
     headers = event.get("sip_headers") or {}
-    to_number = event.get("to")
+    to_number = headers.get("X-Aplisay-Called") or event.get("to")
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
@@ -446,7 +446,9 @@ async def _sipbridge_resolve_agent_from_headers(
         return s
 
     from_number = _user_of(from_uri)
-    to_number = _user_of(to_uri)
+    # A registration trunk's B2BUA puts the dialled number in X-Aplisay-Called
+    # as well as the Request-URI; the header wins when present.
+    to_number = h.get("x-aplisay-called") or _user_of(to_uri)
 
     instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
@@ -673,6 +675,7 @@ async def daily_dialin(request: Request) -> dict:
     # SIP custom headers, if Daily surfaces them. The keys here mirror the
     # contract; degrade gracefully when missing.
     headers = body.get("sip_headers") or {}
+    to_number = headers.get("X-Aplisay-Called") or to_number
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 

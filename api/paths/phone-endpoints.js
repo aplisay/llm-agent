@@ -1,8 +1,8 @@
 import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
-import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
+import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi, validateRegistrationTrunkFields } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
-import { requirePermission } from '../../lib/auth/permissions.js';
+import { requirePermission, can } from '../../lib/auth/permissions.js';
 
 let appParameters, log;
 
@@ -147,7 +147,9 @@ const phoneEndpointList = (async (req, res) => {
         status: r.status,
         state: r.state,
         handler: r.handler,
-        outbound: !!r.outbound
+        outbound: !!r.outbound,
+        trunkId: r.trunkId || null,
+        trunk: !!r.trunkId
       }));
       const nextOffset = rows.length === size ? startOffset + size : null;
       return res.send({ items, nextOffset });
@@ -183,7 +185,7 @@ const phoneEndpointList = (async (req, res) => {
       regWhere
         ? PhoneRegistration.findAll({
             where: regWhere,
-            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
+            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt', 'trunkId'],
             limit: size,
             offset: startOffset
           })
@@ -212,6 +214,8 @@ const phoneEndpointList = (async (req, res) => {
       registrar: r.registrar,
       username: r.username,
       b2buaId: r.b2buaId || null,
+      trunkId: r.trunkId || null,
+      trunk: !!r.trunkId,
       status: r.status,
       state: r.state,
       handler: r.handler,
@@ -390,11 +394,29 @@ const createPhoneEndpoint = async (req, res) => {
       }
 
       const validation = validatePhoneRegistration(data);
-      if (!validation.isValid) {
+      const trunkErrors = validateRegistrationTrunkFields(data);
+      if (!validation.isValid || trunkErrors.length) {
         return res.status(400).send({
           error: 'Validation failed',
-          details: validation.errors
+          details: [...validation.errors, ...trunkErrors]
         });
+      }
+      // A registration trunk owns a trunks row. Its id defaults to reg-<uuid>;
+      // naming it is a super's privilege (an SBC trunk being migrated keeps its
+      // id, and with it its numbers).
+      const wantsTrunk = data.trunk === true;
+      const requestedTrunkId = typeof data.trunkId === 'string' ? data.trunkId.trim() : '';
+      if (requestedTrunkId && !wantsTrunk) {
+        return res.status(400).send({ error: 'trunkId is only meaningful with trunk: true' });
+      }
+      if (requestedTrunkId && !can(res.locals.user, 'trunk', 'create')) {
+        return res.status(403).send({ error: 'Naming the trunk requires trunk:create' });
+      }
+      if (requestedTrunkId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requestedTrunkId)) {
+        return res.status(400).send({ error: 'trunkId must be 1–128 chars, letters/digits/._- and start alphanumeric' });
+      }
+      if (requestedTrunkId && (await Trunk.findByPk(requestedTrunkId))) {
+        return res.status(409).send({ error: `Trunk ${requestedTrunkId} already exists` });
       }
 
       // Strip sip:/sips: prefix from registrar if present before saving
@@ -415,21 +437,30 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
-      const record = await PhoneRegistration.create({
-        name: data.name,
-        handler: data.handler ?? 'livekit',
-        outbound: data.outbound ?? false,
-        registrar: normalizedRegistrar,
-        username: data.username,
-        password: data.password,
-        b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
-        options: data.options || null,
-        organisationId,
-        status: 'disabled',
-        state: 'initial'
+      const record = await PhoneRegistration.sequelize.transaction(async (transaction) => {
+        const reg = await PhoneRegistration.create({
+          name: data.name,
+          handler: data.handler ?? 'livekit',
+          outbound: data.outbound ?? false,
+          registrar: normalizedRegistrar,
+          username: data.username,
+          password: data.password,
+          b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
+          options: data.options || null,
+          organisationId,
+          status: 'disabled',
+          state: 'initial',
+          didSource: data.didSource ?? null,
+          didCountry: data.didCountry ? String(data.didCountry).toUpperCase() : null,
+        }, { transaction });
+        if (wantsTrunk) {
+          const trunk = await createRegistrationTrunk(reg, requestedTrunkId || null, organisationId, transaction);
+          await reg.update({ trunkId: trunk.id }, { transaction });
+        }
+        return reg;
       });
 
-      return res.status(201).send({ success: true, id: record.id });
+      return res.status(201).send({ success: true, id: record.id, trunkId: record.trunkId || null });
     }
   } catch (err) {
     req.log.error(err, 'Error creating phone endpoint');
@@ -438,6 +469,25 @@ const createPhoneEndpoint = async (req, res) => {
     });
   }
 };
+
+/**
+ * The trunks row a registration trunk owns: id reg-<uuid> unless named, the
+ * registration's handler and outbound, never chargeable, flagged so the
+ * reverse lookup (number → trunk → registration) works, and assigned to the
+ * organisation so the e164-ddi create path accepts numbers on it.
+ */
+export async function createRegistrationTrunk(registration, trunkId, organisationId, transaction) {
+  const trunk = await Trunk.create({
+    id: trunkId || `reg-${registration.id}`,
+    name: registration.name || registration.registrar,
+    handler: registration.handler,
+    outbound: !!registration.outbound,
+    chargeable: false,
+    flags: { provider: 'registration', registrationId: registration.id },
+  }, { transaction });
+  await trunk.addOrganisation(organisationId, { transaction });
+  return trunk;
+}
 
 phoneEndpointList.apiDoc = {
   summary: 'Returns a list of all phone endpoints for the organisation of the requestor. Optionally filter to only certain endpoint types.',

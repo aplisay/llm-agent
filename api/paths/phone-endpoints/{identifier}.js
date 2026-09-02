@@ -1,5 +1,6 @@
-import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy } from '../../../lib/validation.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Op } from '../../../lib/database.js';
+import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy, validateRegistrationTrunkFields } from '../../../lib/validation.js';
+import { createRegistrationTrunk } from '../phone-endpoints.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
@@ -74,7 +75,11 @@ const getPhoneEndpoint = async (req, res) => {
         handler: registration.handler,
         outbound: !!registration.outbound,
         callReceived: registration.callReceived ? registration.callReceived.toISOString() : null,
-        options: registration.options || null
+        options: registration.options || null,
+        trunkId: registration.trunkId || null,
+        trunk: !!registration.trunkId,
+        didSource: registration.didSource || null,
+        didCountry: registration.didCountry || null
       });
     }
 
@@ -245,7 +250,7 @@ const updatePhoneEndpoint = async (req, res) => {
       }
 
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId', 'didSource', 'didCountry'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -267,6 +272,23 @@ const updatePhoneEndpoint = async (req, res) => {
       }
       if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
         return res.status(400).send({ error: 'options must be an object if provided' });
+      }
+      const trunkErrors = validateRegistrationTrunkFields(updateData);
+      if (trunkErrors.length) {
+        return res.status(400).send({ error: 'Validation failed', details: trunkErrors });
+      }
+      if (updateFields.didCountry) updateFields.didCountry = String(updateFields.didCountry).toUpperCase();
+      // Turning a line into a trunk creates its trunks row and detaches it
+      // from any single agent (a trunk's numbers are attached, not the trunk).
+      // Turning a trunk back into a line needs the trunk to be empty first.
+      let trunkChange = null;
+      if (updateData.trunk === true && !registration.trunkId) trunkChange = 'create';
+      if (updateData.trunk === false && registration.trunkId) {
+        const numbers = await PhoneNumber.count({ where: { aplisayId: registration.trunkId } });
+        if (numbers > 0) {
+          return res.status(409).send({ error: `This trunk still carries ${numbers} number${numbers === 1 ? '' : 's'}. Remove them before turning it back into a line.` });
+        }
+        trunkChange = 'remove';
       }
       if (updateFields.b2buaId !== undefined) {
         if (updateFields.b2buaId === null || updateFields.b2buaId === '') {
@@ -323,7 +345,43 @@ const updatePhoneEndpoint = async (req, res) => {
         updateFields.error = null;
       }
       
-      await registration.update(updateFields);
+      await PhoneRegistration.sequelize.transaction(async (transaction) => {
+      
+        if (trunkChange === 'create') {
+      
+          const trunk = await createRegistrationTrunk(registration, null, organisationId, transaction);
+      
+          updateFields.trunkId = trunk.id;
+      
+          updateFields.instanceId = null;
+      
+        }
+      
+        if (trunkChange === 'remove') {
+      
+          await Trunk.destroy({ where: { id: registration.trunkId }, transaction });
+      
+          updateFields.trunkId = null;
+      
+        }
+      
+        await registration.update(updateFields, { transaction });
+      
+        // The trunk mirrors the registration's handler and outbound.
+      
+        if (registration.trunkId && (updateFields.handler !== undefined || updateFields.outbound !== undefined)) {
+      
+          await Trunk.update(
+      
+            { ...(updateFields.handler !== undefined ? { handler: updateFields.handler } : {}), ...(updateFields.outbound !== undefined ? { outbound: updateFields.outbound } : {}) },
+      
+            { where: { id: registration.trunkId }, transaction },
+      
+          );
+      
+        }
+      
+      });
       
       // TODO: Emit worker signal for credential rotation if credentialsChanged
       
@@ -376,8 +434,19 @@ const deletePhoneEndpoint = async (req, res) => {
         return res.status(403).send({ error: 'Access denied' });
       }
 
-      // Hard delete the registration
-      await registration.destroy();
+      // A registration trunk goes with its registration, but not while
+      // numbers still sit on it: those would silently lose their trunk.
+      if (registration.trunkId) {
+        const numbers = await PhoneNumber.count({ where: { aplisayId: registration.trunkId } });
+        if (numbers > 0) {
+          return res.status(409).send({ error: `This trunk still carries ${numbers} number${numbers === 1 ? '' : 's'}. Remove them before deleting the connection.` });
+        }
+      }
+      // Hard delete the registration (and its trunk row)
+      await PhoneRegistration.sequelize.transaction(async (transaction) => {
+        if (registration.trunkId) await Trunk.destroy({ where: { id: registration.trunkId }, transaction });
+        await registration.destroy({ transaction });
+      });
       return res.send({
         success: true,
         message: 'Phone registration deleted successfully'

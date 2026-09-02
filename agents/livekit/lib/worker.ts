@@ -1037,6 +1037,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               );
 
               calledId = calledIdAttr;
+              // A registration trunk's INVITE reaches LiveKit on the trunk's
+              // fixed number; the dialled number rides in X-Aplisay-Called.
+              const aplisayCalledAttr = sipAttribute(attrs, "aplisayCalled");
+              if (aplisayCalledAttr) calledId = aplisayCalledAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
               phoneRegistration = phoneRegistrationAttr ?? null;
@@ -1139,7 +1143,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                   );
                 }
               }
-            } else if (calledId) {
+            }
+            // A registration with no agent attached is a registration TRUNK:
+            // the call resolves by (dialled number, trunk) like any other
+            // trunk call. Same ladder as pipecat's _lookup_instance_for_inbound.
+            if (!instance && calledId) {
               logger.info(
                 { callerId, calledId, aplisayId },
                 "new Livekit inbound telephone call, looking up phone endpoint by number",

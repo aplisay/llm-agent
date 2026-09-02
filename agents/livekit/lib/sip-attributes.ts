@@ -27,6 +27,10 @@ export const SIP_ATTRIBUTE_KEYS = {
   callerNumber: ["sip.phoneNumber", "sipPhoneNumber"],
   /** Aplisay trunk id stamped by the SBC. */
   aplisayTrunk: ["sip.h.x-aplisay-trunk", "sipHXAplisayTrunk"],
+  /** The number the caller dialled, when the B2BUA carries it in a header
+   *  rather than the Request-URI (a registration trunk: LiveKit admits the
+   *  call on the trunk's fixed number, so the DID rides here). */
+  aplisayCalled: ["sip.h.x-aplisay-called", "sipHXAplisayCalled"],
   /** Phone-registration endpoint id, when the leg came from a registration. */
   phoneRegistration: [
     "sip.h.x-aplisay-phoneregistration",
