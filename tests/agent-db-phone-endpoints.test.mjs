@@ -404,7 +404,7 @@ describe('Agent DB Phone Endpoints API', () => {
   describe('callReceived stamping', () => {
     test('should set callReceived on first single-number lookup and return it in the response', async () => {
       const number = testPhoneNumber.number;
-      const before = await PhoneNumber.findByPk(number);
+      const before = await PhoneNumber.findOne({ where: { number: number } });
       expect(before).toBeTruthy();
       expect(before.callReceived).toBeNull();
 
@@ -418,7 +418,7 @@ describe('Agent DB Phone Endpoints API', () => {
       expect(item).toHaveProperty('number', number);
       expect(item.callReceived).toBeTruthy();
 
-      const after = await PhoneNumber.findByPk(number);
+      const after = await PhoneNumber.findOne({ where: { number: number } });
       expect(after.callReceived).toBeTruthy();
     });
 

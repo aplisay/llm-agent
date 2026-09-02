@@ -1,3 +1,4 @@
+import { Op } from 'sequelize';
 import { Agent, PhoneNumber } from '../../../lib/database.js';
 import { authoriseOutboundDestination } from '../../../lib/outbound-authorisation.js';
 import { normalizeE164 } from '../../../lib/validation.js';
@@ -71,7 +72,16 @@ const authoriseOutbound = (async (req, res) => {
     // does not silently fall back to the platform default trunk.
     let egressAplisayId = aplisayId || null;
     if (!egressAplisayId && callerId && registrationOriginated !== true) {
-      const caller = await PhoneNumber.findByPk(normalizeE164(callerId), { attributes: ['aplisayId'] });
+      // Qualified by the owner's organisation when it is known (agentId or
+      // organisationId in the body), so another organisation's row for the
+      // same number cannot pick the egress trunk.
+      const caller = await PhoneNumber.findOne({
+        where: owner.organisationId
+          ? { number: normalizeE164(callerId), [Op.or]: [{ organisationId: owner.organisationId }, { organisationId: null }] }
+          : { number: normalizeE164(callerId) },
+        order: [[PhoneNumber.sequelize.literal('organisation_id IS NULL'), 'ASC']],
+        attributes: ['aplisayId'],
+      });
       egressAplisayId = caller?.aplisayId || null;
     }
 

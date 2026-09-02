@@ -185,7 +185,7 @@ The `options` object carries provider-specific and behavioural settings for the 
 
 Updates an existing phone endpoint.
 
-- **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration.
+- **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration. A number resolves to the caller's organisation's own row, else the unallocated pool's; a number another organisation holds is not visible.
 - **Body**: Only send fields you want to change. For E.164 DDI, `outbound`, `handler` and
   `provisioned` are updatable (`provisioned` marks carrier-side provisioning complete — the
   dashboard Buy-number flow sets it once the provider has activated the number and pointed it
@@ -254,7 +254,7 @@ Trunks are a curated platform resource. Ordinary callers get the org-scoped list
 
 - **Single number**: POST with `type`, `number`, `trunkId`, and `outbound`. Default `outbound` from the trunk when possible so the UI matches trunk capabilities.
 - **Multiple numbers**: The API creates one number per request. To add a range or list, your client can loop over normalized E.164 values and POST each (with optional client-side limit, e.g. max 40 per batch) and surface errors per number if needed.
-- **Validation**: Numbers are validated as E.164 (7–15 digits, optional leading `+`). Duplicate number returns 409.
+- **Validation**: Numbers are validated as E.164 (7–15 digits, optional leading `+`). A number is unique per organisation and per trunk, not platform-wide: creating one your organisation already holds, or one already on the same trunk, returns 409. Another organisation holding the same number on its own trunk is not a conflict.
 
 ### Agent assignment (inUse, agentId, agentName)
 

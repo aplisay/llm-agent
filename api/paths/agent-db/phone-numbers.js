@@ -27,7 +27,13 @@ const phoneNumbersList = (async (req, res) => {
       whereClause.number = String(number).replace(/^\+/, '');
     }
 
-    let phoneNumbers = await PhoneNumber.findAll({ where: whereClause });
+    // Several organisations may hold the same number (schema 61); an
+    // organisation's row sorts before the pool's so a caller taking the first
+    // result gets a deterministic answer.
+    let phoneNumbers = await PhoneNumber.findAll({
+      where: whereClause,
+      order: [[PhoneNumber.sequelize.literal('organisation_id IS NULL'), 'ASC'], ['number', 'ASC']],
+    });
     
     res.send(phoneNumbers);
   }

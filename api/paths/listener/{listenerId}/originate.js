@@ -1,3 +1,4 @@
+import { Op } from 'sequelize';
 import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
@@ -49,7 +50,14 @@ const originateCall = (async (req, res) => {
     }
 
     // Check if callerId is present in phoneNumbers table or phoneRegistrations table and belongs to the user/org.
-    let callerPhoneNumber = await PhoneNumber.findByPk(callerId, {
+    // The caller's own row for this number first, then the pool's; a row
+    // another organisation holds for the same number must never be picked.
+    let callerPhoneNumber = await PhoneNumber.findOne({
+      where: {
+        number: callerId,
+        [Op.or]: [{ organisationId: res.locals.user?.organisationId ?? null }, { organisationId: null }],
+      },
+      order: [[PhoneNumber.sequelize.literal('"PhoneNumber"."organisation_id" IS NULL'), 'ASC']],
       include: [{ model: Instance, attributes: ['id', 'userId', 'organisationId'] }]
     });
     let callerPhoneRegistration = null;

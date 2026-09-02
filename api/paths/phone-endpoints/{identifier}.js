@@ -4,6 +4,22 @@ import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
 
+/**
+ * A DDI addressed by number, as the caller sees it: their organisation's own
+ * row first, else the unallocated pool's (organisationId null). Identity is
+ * (number, organisation) since schema 61, so the same number held by another
+ * organisation is simply not found here.
+ */
+async function findOwnOrPoolNumber(number, organisationId) {
+  return PhoneNumber.findOne({
+    where: {
+      number,
+      [Op.or]: [{ organisationId: organisationId ?? null }, { organisationId: null }],
+    },
+    order: [[PhoneNumber.sequelize.literal('organisation_id IS NULL'), 'ASC']],
+  });
+}
+
 let log;
 
 export default function (logger) {
@@ -33,7 +49,10 @@ const getPhoneEndpoint = async (req, res) => {
       if (!normalizedNumber) {
         return res.status(400).send({ error: 'Invalid phone number format' });
       }
-      record = await PhoneNumber.findByPk(normalizedNumber);
+      // The caller's own row for this number, else the pool's (no
+      // organisation). Another organisation's row for the same number is not
+      // visible here at all.
+      record = await findOwnOrPoolNumber(normalizedNumber, organisationId);
     } else {
       // registration id lookup
       const registration = await PhoneRegistration.findByPk(identifier);
@@ -184,7 +203,7 @@ const updatePhoneEndpoint = async (req, res) => {
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      const phoneNumber = await findOwnOrPoolNumber(normalizedNumber, organisationId);
       
       if (!phoneNumber) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -333,7 +352,7 @@ const deletePhoneEndpoint = async (req, res) => {
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      const phoneNumber = await findOwnOrPoolNumber(normalizedNumber, organisationId);
       
       if (!phoneNumber) {
         return res.status(404).send({ error: 'Phone endpoint not found' });

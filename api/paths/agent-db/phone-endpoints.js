@@ -43,8 +43,13 @@ const phoneEndpointsList = (async (req, res) => {
         const normalizedNumber = String(number).replace(/^\+/, '');
         // Use a single query with LEFT JOINs to fetch phone number, trunk ownership
         // checks on pool numbers via userOwnsPhoneNumber.
+        // A trunk-qualified lookup SELECTS by (number, trunk) — since schema
+        // 61 the same number can legitimately exist on several trunks — and
+        // an unqualified one takes whichever row exists.
         const phoneNumber = await PhoneNumber.findOne({
-          where: { number: normalizedNumber },
+          where: trunkCandidates.length
+            ? { number: normalizedNumber, aplisayId: trunkCandidates }
+            : { number: normalizedNumber },
           include: [
             {
               model: Trunk,
@@ -60,6 +65,16 @@ const phoneEndpointsList = (async (req, res) => {
           ]
         });
         if (!phoneNumber) {
+          // Distinguish "no such number" from "not on that trunk", which is
+          // what a worker needs to refuse the call rather than search on.
+          if (trunkCandidates.length) {
+            const elsewhere = await PhoneNumber.findOne({ where: { number: normalizedNumber }, attributes: ['aplisayId'] });
+            if (elsewhere) {
+              return res.status(400).send({
+                error: `Trunk mismatch: call arrived on trunk ${trunkId} but number is assigned to trunk ${elsewhere.aplisayId || 'none'}`
+              });
+            }
+          }
           return res.status(404).send({ error: 'Phone endpoint not found' });
         }
         // Apply handler filter if provided
@@ -68,15 +83,6 @@ const phoneEndpointsList = (async (req, res) => {
         }
 
 
-        // A trunk-qualified lookup is an inbound call asking "is this number
-        // reachable through this trunk". A number with no trunk is not
-        // reachable through any trunk, so it fails the check like any other
-        // mismatch rather than being waved through.
-        if (trunkId && !trunkCandidates.includes(phoneNumber.aplisayId)) {
-          return res.status(400).send({
-            error: `Trunk mismatch: call arrived on trunk ${trunkId} but number is assigned to trunk ${phoneNumber.aplisayId || 'none'}`
-          });
-        }
 
         // Record the first inbound call time for this endpoint (best-effort, idempotent).
         // We only set it when returning a single endpoint lookup by number.
@@ -86,13 +92,15 @@ const phoneEndpointsList = (async (req, res) => {
           stampedCallReceived = new Date();
           await PhoneNumber.update(
             { callReceived: stampedCallReceived },
-            { where: { number: phoneNumber.number, callReceived: { [Op.is]: null } } }
+            { where: { id: phoneNumber.id, callReceived: { [Op.is]: null } } }
           );
         }
 
 
         // Build response object with trunk info if available
         const phoneNumberJson = phoneNumber.toJSON();
+        // The surrogate id is internal (schema 61); a DDI is addressed by number.
+        delete phoneNumberJson.id;
         phoneNumberJson.callReceived = stampedCallReceived;
         if (phoneNumber.Trunk) {
           phoneNumberJson.trunk = {
@@ -133,7 +141,10 @@ const phoneEndpointsList = (async (req, res) => {
         });
         const nextOffset = rows.length === size ? startOffset + size : null;
 
-        return res.send({ items: rows, nextOffset });
+        return res.send({
+          items: rows.map((r) => { const j = r.toJSON(); delete j.id; return j; }),
+          nextOffset,
+        });
       }
     }
 
@@ -242,17 +253,17 @@ export const updatePhoneEndpointProvisioning = async (req, res) => {
 
   try {
     const normalizedNumber = String(number).replace(/^\+/, '');
-    const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
-    if (!phoneNumber) {
+    // Provisioning is a fact about the number at the carrier, not about one
+    // organisation's row for it, so every row carrying the number is stamped.
+    const [updated] = await PhoneNumber.update({ provisioned }, { where: { number: normalizedNumber } });
+    if (!updated) {
       return res.status(404).send({ error: 'Phone endpoint not found' });
     }
 
-    await phoneNumber.update({ provisioned });
-
     return res.send({
       success: true,
-      number: phoneNumber.number,
-      provisioned: !!phoneNumber.provisioned
+      number: normalizedNumber,
+      provisioned,
     });
   } catch (err) {
     log.error(err, 'error updating phone endpoint provisioning');
