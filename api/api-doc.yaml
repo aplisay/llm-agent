@@ -494,6 +494,40 @@ components:
               description: |-
                 STT provider for pipeline models (e.g. deepgram, assemblyai, cartesia).
                 You may optionally scope the inference model (and suffix) using `vendor/model[:lang]`, e.g. `deepgram/nova-3:en`.
+            aux:
+              type: object
+              description: |-
+                Auxiliary ("second opinion") speech recognition. When set, the worker runs a second,
+                independent STT engine over the caller's audio alongside the agent's own recognition —
+                the pipeline STT, or a realtime model's built-in transcription — and logs each final
+                transcript it produces as a `user-aux` transaction-log entry next to the primary `user`
+                entry, so two recognitions of the same speech can be compared. The auxiliary engine
+                never feeds the model; it is observation only.
+
+                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the
+                platform's default STT engine; `language` defaults to `stt.language`, then `tts.language`.
+
+                Its consumption is metered separately as `stt-aux` usage — the audio streamed to the
+                auxiliary engine (milliseconds, silence included) and the transcript characters it
+                returned — and priced by that component's own rate lines. Supported on `livekit:` and
+                `pipecat:` models, in both realtime and pipeline modes; rejected on other models.
+                See docs/auxiliary-stt.md.
+              properties:
+                enabled:
+                  type: boolean
+                  default: true
+                  description: Set `false` to switch the auxiliary engine off without removing the object.
+                language:
+                  $ref: "#/components/schemas/Language"
+                vendor:
+                  type: string
+                  description: |-
+                    Auxiliary STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`,
+                    `assemblyai`, `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally
+                    scoped as `vendor/model[:lang]`.
+              example:
+                vendor: assemblyai
+                language: en-GB
         fallback:
           type: object
           description: |-

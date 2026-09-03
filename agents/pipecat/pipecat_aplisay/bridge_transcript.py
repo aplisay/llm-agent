@@ -126,13 +126,24 @@ class _TranscriptionCollector:
 
 
 class SttStream:
-    """A minimal STT-only Pipecat pipeline: feed mono 16 kHz PCM in, get
-    final transcription text out via ``on_final``. One instance per
-    bridged leg on the sipbridge topology."""
+    """A minimal STT-only Pipecat pipeline: feed PCM16 in, get final
+    transcription text out via ``on_final``. One instance per bridged leg on
+    the sipbridge topology (mono 16 kHz, the tap contract), and the side
+    pipeline behind the auxiliary STT tap (``aux_stt.py``), which starts it at
+    the call's own input format."""
 
-    def __init__(self, stt_service: Any, on_final: Callable[[str], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        stt_service: Any,
+        on_final: Callable[[str], Awaitable[None]],
+        *,
+        sample_rate: int = 16000,
+        num_channels: int = 1,
+    ) -> None:
         self._stt = stt_service
         self._collector = _TranscriptionCollector(on_final)
+        self._sample_rate = sample_rate
+        self._num_channels = num_channels
         self._task: Optional[Any] = None
         self._runner_task: Optional[asyncio.Task] = None
 
@@ -145,8 +156,8 @@ class SttStream:
         self._task = PipelineTask(
             pipeline,
             params=PipelineParams(
-                audio_in_sample_rate=16000,
-                audio_out_sample_rate=16000,
+                audio_in_sample_rate=self._sample_rate,
+                audio_out_sample_rate=self._sample_rate,
             ),
         )
         runner = PipelineRunner(handle_sigint=False)
@@ -158,7 +169,13 @@ class SttStream:
         from pipecat.frames.frames import InputAudioRawFrame
 
         await self._task.queue_frames(
-            [InputAudioRawFrame(audio=pcm16, sample_rate=16000, num_channels=1)]
+            [
+                InputAudioRawFrame(
+                    audio=pcm16,
+                    sample_rate=self._sample_rate,
+                    num_channels=self._num_channels,
+                )
+            ]
         )
 
     async def stop(self) -> None:

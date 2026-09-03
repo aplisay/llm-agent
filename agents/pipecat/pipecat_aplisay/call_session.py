@@ -523,6 +523,8 @@ class CallSession:
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
             on_inactivity_hangup=self._on_inactivity_hangup,
+            on_aux_transcript=self._on_aux_transcript,
+            on_aux_usage=self._on_aux_usage,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -979,6 +981,32 @@ class CallSession:
                 logger.warning(f"transaction log post failed: {e}")
         else:
             self.call.batched_transaction_logs.append(entry)
+
+    async def _on_aux_transcript(self, text: str) -> None:
+        """A final transcript from the auxiliary STT (``options.stt.aux``),
+        logged as ``user-aux`` next to the primary ``user`` entry through the
+        same transaction-log path (streamLog/batch convention included)."""
+        from .aux_stt import AUX_STT_LOG_TYPE
+
+        await self._send_message({AUX_STT_LOG_TYPE: text}, is_final=True)
+
+    def _on_aux_usage(self, unit: str, quantity: int, vendor: dict) -> None:
+        """Auxiliary STT usage (audio ms streamed / transcript chars) into the
+        call's usage observer as ``stt-aux`` rows, so it flushes with every
+        other meter at ``_end``. The engine runs in a side pipeline the
+        observer cannot see, hence the explicit hand-off."""
+        from .aux_stt import AUX_STT_TECHNOLOGY
+
+        observer = getattr(self, "_usage_observer", None)
+        if observer is None:
+            return
+        observer.add_meter(
+            AUX_STT_TECHNOLOGY,
+            unit,
+            quantity,
+            provider=vendor.get("vendor"),
+            detail=vendor.get("model"),
+        )
 
     async def _on_hangup(self) -> None:
         self._wants_hangup = True

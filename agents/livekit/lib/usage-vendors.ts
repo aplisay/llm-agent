@@ -27,7 +27,7 @@ export interface UsageVendors {
 }
 
 /** Split a "vendor/model:suffix" service string into {vendor, detail="vendor/model"}. */
-function fromServiceString(s: string | undefined): VendorDetail {
+export function fromServiceString(s: string | undefined): VendorDetail {
   if (!s) return {};
   const head = s.split(":")[0]!; // strip any :lang / :voice suffix
   const vendor = head.split("/")[0]!.trim().toLowerCase() || undefined;

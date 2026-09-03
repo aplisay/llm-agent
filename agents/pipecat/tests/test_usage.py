@@ -22,17 +22,34 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.llm_service import LLMService
+from pipecat.services.stt_service import STTService
 
 from pipecat_aplisay import api_client
 from pipecat_aplisay.usage import UsageMeteringObserver, usage_vendors
 
 
-def _push(observer: UsageMeteringObserver, *frames) -> None:
+class _FakeSTT(STTService):
+    """A concrete STTService so a frame can be attributed to an STT source."""
+
+    async def run_stt(self, audio: bytes):  # pragma: no cover - never driven
+        if False:
+            yield None
+
+
+class _FakeLLM(LLMService):
+    """A realtime-style LLM source (it transcribes internally)."""
+
+    def create_context_aggregator(self, *args, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _push(observer: UsageMeteringObserver, *frames, source=None) -> None:
     async def run():
         for fr in frames:
             await observer.on_push_frame(
                 FramePushed(
-                    source=None, destination=None, frame=fr,
+                    source=source, destination=None, frame=fr,
                     direction=FrameDirection.DOWNSTREAM, timestamp=0,
                 )
             )
@@ -107,16 +124,42 @@ def test_tts_milliseconds_from_audio_frame_duration():
 
 # --- STT characters + milliseconds (new) -------------------------------------
 
-def test_stt_characters_from_final_transcript_only():
+def test_stt_characters_from_every_stt_transcription_frame():
+    # A TranscriptionFrame is final by definition (interims are
+    # InterimTranscriptionFrame); the Deepgram service never sets `finalized`
+    # in normal streaming, so gating on it counted nothing. Both count.
     obs = UsageMeteringObserver(services={"stt": {"vendor": "deepgram", "model": None}})
     _push(
         obs,
-        TranscriptionFrame(user_id="u", text="ignored interim", timestamp="", finalized=False),
-        TranscriptionFrame(user_id="u", text="hello there", timestamp="", finalized=True),
+        TranscriptionFrame(user_id="u", text="hello", timestamp=""),
+        TranscriptionFrame(user_id="u", text="there", timestamp="", finalized=True),
+        source=_FakeSTT(),
     )
     chars = _meter(obs, "stt", "characters")
-    assert chars["quantity"] == len("hello there")
+    assert chars["quantity"] == len("hello") + len("there")
     assert chars["provider"] == "deepgram"
+
+
+def test_stt_characters_only_from_an_stt_service_source():
+    # A realtime model's own transcripts (source = the LLM service) are bundled
+    # into its charge; an unattributed frame is not STT usage either.
+    obs = UsageMeteringObserver(services={"stt": {"vendor": "deepgram", "model": None}})
+    _push(obs, TranscriptionFrame(user_id="u", text="from the model", timestamp=""), source=_FakeLLM())
+    _push(obs, TranscriptionFrame(user_id="u", text="from nowhere", timestamp=""), source=None)
+    assert _meter(obs, "stt", "characters") is None
+
+
+def test_add_meter_accumulates_external_usage_for_flush():
+    # The auxiliary STT runs in a side pipeline the observer never sees, so it
+    # hands its meters in through add_meter and they flush with the rest.
+    obs = UsageMeteringObserver(services={})
+    obs.add_meter("stt-aux", "milliseconds", 1200, provider="google", detail=None)
+    obs.add_meter("stt-aux", "milliseconds", 300, provider="google", detail=None)
+    obs.add_meter("stt-aux", "characters", 11, provider="google", detail=None)
+    obs.add_meter("stt-aux", "characters", 0, provider="google", detail=None)  # no-op
+    assert _meter(obs, "stt-aux", "milliseconds")["quantity"] == 1500
+    assert _meter(obs, "stt-aux", "milliseconds")["provider"] == "google"
+    assert _meter(obs, "stt-aux", "characters")["quantity"] == 11
 
 
 def test_stt_milliseconds_from_vad_window():

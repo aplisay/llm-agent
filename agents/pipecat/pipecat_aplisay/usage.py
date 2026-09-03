@@ -30,6 +30,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.services.stt_service import STTService
 
 from . import api_client
 from .voice_mode import model_id_from_name
@@ -103,6 +104,15 @@ class UsageMeteringObserver(BaseObserver):
             provider = model.split("/", 1)[0]
         return provider, detail
 
+    def add_meter(
+        self, technology: str, unit: str, qty: Any, *, provider: str | None = None, detail: str | None = None
+    ) -> None:
+        """Accumulate usage produced outside the observed pipeline — e.g. the
+        auxiliary STT tap (``aux_stt.py``), whose engine runs in a side
+        pipeline this observer never sees — so every meter for the call still
+        flushes through the one ledger writer."""
+        self._add(technology, unit, qty, provider=provider, detail=detail)
+
     def _add(self, technology: str, unit: str, qty: Any, *, provider: str | None, detail: str | None) -> None:
         try:
             quantity = int(qty or 0)
@@ -147,9 +157,15 @@ class UsageMeteringObserver(BaseObserver):
             return
 
         # STT characters — the final transcript text length (Pipecat has no
-        # STTUsageMetricsData). Gate on `finalized` so interims don't double-count.
+        # STTUsageMetricsData). A TranscriptionFrame is by definition final
+        # (interims are InterimTranscriptionFrame), so every one counts — its
+        # `finalized` flag only records a commit/finalize handshake, which the
+        # Deepgram service never sets in normal streaming (gating on it counted
+        # nothing). Count only frames an STT *service* originated: a realtime
+        # model's own transcripts (source = the LLM service) are bundled into
+        # its charge, and the auxiliary engine meters itself (``stt-aux``).
         if isinstance(frame, TranscriptionFrame):
-            if not getattr(frame, "finalized", True):
+            if not isinstance(data.source, STTService):
                 return
             if self._seen(frame_id):
                 return
