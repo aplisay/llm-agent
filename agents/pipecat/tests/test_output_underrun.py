@@ -98,7 +98,10 @@ class TestLatenessIsTheAnswer:
                 await t.recv()
             t.stop()
             assert t.underrun.never_refilled == 1
-            assert t.underrun.late_ms == [], "nothing arrived, so nothing can be late"
+            # A bounded deque now, not a list — compare contents.
+            assert list(t.underrun.late_ms) == [], (
+                "nothing arrived, so nothing can be late"
+            )
 
         asyncio.run(run())
 

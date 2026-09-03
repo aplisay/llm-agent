@@ -36,6 +36,14 @@ from .ogg_encoder import OggEncoder, OggEncoderError
 from .upload import UploadResult, upload_encrypted_ogg
 
 
+# How much PCM to accumulate before hopping to a thread to write it
+# (P4). 64 KiB is ~2 s of 16 kHz stereo — one hop every couple of
+# seconds per recording instead of fifty a second, at the cost of at
+# most that much audio sitting in memory. The file is buffered anyway,
+# so the write itself is cheap; the thread hop was the expense.
+_WRITE_CHUNK_BYTES = 64 * 1024
+
+
 @dataclass
 class _PcmSink:
     """Holds the in-flight PCM file and metadata picked up from the
@@ -65,6 +73,16 @@ class RecordingSession:
         self._sink: Optional[_PcmSink] = None
         self._lock = asyncio.Lock()
         self._stopped = False
+        # Write coalescing buffer (P4). The bridged-segment tap calls
+        # ``append_pcm`` once per 20 ms frame, and every call used to be
+        # its own ``asyncio.to_thread`` hop — 50 hops/s per bridged
+        # recording, each writing ~1.3 KB, onto the default executor.
+        # That executor is min(32, cpu+4) threads — six on a 2-vCPU node
+        # — and is shared with GCS uploads, DNS lookups and httpx, so a
+        # couple of bridged recordings plus one slow GCS call stalled
+        # name resolution for every REST request in the process.
+        # Accumulate instead and hop once per _WRITE_CHUNK_BYTES.
+        self._pending = bytearray()
 
     def attach_to(self, audio_processor) -> None:  # pragma: no cover (wiring)
         """Register the ``on_audio_data`` event handler.
@@ -120,9 +138,18 @@ class RecordingSession:
                 self._sink.sample_rate = int(sample_rate)
                 self._sink.num_channels = int(num_channels)
             self._sink.bytes_written += len(audio)
+            self._pending.extend(audio)
+            if len(self._pending) < _WRITE_CHUNK_BYTES:
+                # Not enough yet — the flush happens on a later append or
+                # at stop. ``bytes_written`` already counts it, so the
+                # "did we capture anything" check stays correct.
+                return
+            chunk = bytes(self._pending)
+            self._pending.clear()
+            sink = self._sink
 
         # Disk write outside the lock to keep the event loop snappy.
-        await asyncio.to_thread(self._sink.file.write, audio)
+        await asyncio.to_thread(sink.file.write, chunk)
 
     async def _open_sink_locked(self) -> None:
         fd, path = tempfile.mkstemp(
@@ -149,6 +176,17 @@ class RecordingSession:
             self._stopped = True
             sink = self._sink
             self._sink = None
+            tail = bytes(self._pending)
+            self._pending.clear()
+
+        if sink is not None and tail:
+            # Whatever hadn't reached the coalescing threshold yet.
+            try:
+                await asyncio.to_thread(sink.file.write, tail)
+            except Exception as e:  # noqa: BLE001
+                logger.bind(call_id=self._call_id).warning(
+                    f"recording: final PCM write failed: {e}"
+                )
 
         if sink is None:
             logger.bind(call_id=self._call_id).info(

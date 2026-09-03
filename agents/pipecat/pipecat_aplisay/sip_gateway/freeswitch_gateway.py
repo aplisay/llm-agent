@@ -178,6 +178,10 @@ class _FsGatewaySession(GatewaySession):
     async def shutdown(self) -> None:
         self._finished.set()
         await self.hangup("Session closed")
+        # P6: ``set_consult_call_id`` had no matching clear on this
+        # gateway (only sipbridge cleared it), so every warm transfer
+        # left its consult id behind for the life of the process.
+        self._gateway.clear_consult_call_id(self.session_id)
 
 
 class FreeswitchSipGateway(ConsultStateMixin, SipGateway):

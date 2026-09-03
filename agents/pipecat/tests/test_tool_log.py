@@ -23,16 +23,44 @@ from pipecat_aplisay import invocation_log, tool_log
 @pytest.fixture(autouse=True)
 def _clear_buffer():
     with invocation_log._LOCK:
-        invocation_log._BUFFER.clear()
+        invocation_log._BUFFERS.clear()
     yield
     with invocation_log._LOCK:
-        invocation_log._BUFFER.clear()
+        invocation_log._BUFFERS.clear()
+
+
+class _BufferView:
+    """Live flat view over the per-call capture buffers.
+
+    The sink keys entries by callId (one deque each) rather than
+    appending to one process-wide list, so tests that just want "what
+    was captured" read through this.
+    """
+
+    def __iter__(self):
+        return iter(self._entries())
+
+    def __len__(self):
+        return len(self._entries())
+
+    def __getitem__(self, index):
+        return self._entries()[index]
+
+    def __eq__(self, other):
+        return self._entries() == other
+
+    def __repr__(self):
+        return repr(self._entries())
+
+    @staticmethod
+    def _entries() -> list:
+        return [e for buf in invocation_log._BUFFERS.values() for e in buf]
 
 
 @pytest.fixture()
 def capture():
     """Install the real capture sink at INFO (as in production) for the duration
-    of the test, then remove it. Yields the shared buffer."""
+    of the test, then remove it. Yields a flat view over the buffers."""
     sink_id = logger.add(
         invocation_log._capture_sink,
         level="INFO",
@@ -41,7 +69,7 @@ def capture():
         diagnose=False,
     )
     try:
-        yield invocation_log._BUFFER
+        yield _BufferView()
     finally:
         logger.remove(sink_id)
 

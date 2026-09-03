@@ -305,6 +305,12 @@ class AuxSttTap(FrameProcessor):
     def _schedule_stop(self) -> None:
         """Tear the side pipeline down without holding up the main chain's own
         End/Cancel processing (its stop waits on the runner, bounded)."""
+        # P10: mark the tap finished as well as clearing the stream.
+        # ``_tap_audio`` rebuilds the side pipeline whenever ``_stream``
+        # is None, so a stray audio frame arriving after End/Cancel would
+        # start a fresh STT stream that nothing then stops. Frame
+        # ordering normally prevents that; this makes it impossible.
+        self._failed = True
         stream, self._stream = self._stream, None
         if stream is None:
             return

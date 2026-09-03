@@ -45,9 +45,16 @@ from __future__ import annotations
 
 import os
 import time
+from collections import deque
 from typing import Any, Optional
 
 from loguru import logger
+
+# How many recent samples the underrun percentiles are computed over
+# (P8). 2 000 events is far more than a healthy call produces and enough
+# for a stable p50/p90 on a bad one; whole-call maxima are tracked
+# separately so the window never hides the worst case.
+_SAMPLE_WINDOW = 2000
 
 # Depth buckets, sampled every recv(). The first two are the interesting ones:
 # time spent at 0 or 1 is time with no cushion.
@@ -69,7 +76,14 @@ class UnderrunStats:
         self.events = 0
         self.chunks_filled = 0            # 10 ms slots filled with zeroes
         self.max_gap_ms = 0.0
-        self.late_ms: list[float] = []    # one per event that was refilled
+        # One sample per refilled event, bounded (P8). These were plain
+        # lists that grew for the life of the call — small per entry, but
+        # unbounded in call length for a diagnostic that only ever
+        # reports percentiles. A rolling window gives the same answer;
+        # the true maxima are tracked separately below so nothing that
+        # matters is lost to eviction.
+        self.late_ms: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
+        self.max_late_ms = 0.0
         self.gap_hist: dict[str, int] = {}  # gap size distribution, for the summary
         self.never_refilled = 0           # starved and the track ended first
         self.depth = {label: 0 for _, label in _BUCKETS}
@@ -80,7 +94,12 @@ class UnderrunStats:
         #: audio EXISTED and we simply had not moved it — the starve is ours.
         #: Zero means nothing had arrived from upstream. Nothing else in the
         #: system distinguishes those two, and they call for opposite fixes.
-        self.inflight_at_starve: list[float] = []
+        self.inflight_at_starve: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
+        self.max_inflight_at_starve = 0.0
+        #: Total starves seen with audio already in flight — a running
+        #: count, so the ratio below stays whole-call even though the
+        #: samples behind the percentiles are windowed.
+        self.starves_with_audio_waiting = 0
 
     @property
     def silence_ms(self) -> float:
@@ -98,7 +117,8 @@ class UnderrunStats:
         late = sorted(self.late_ms)
         p50 = late[len(late) // 2] if late else float("nan")
         p90 = late[int(len(late) * 0.9)] if late else float("nan")
-        worst = late[-1] if late else float("nan")
+        # Percentiles over the recent window; the max is whole-call.
+        worst = self.max_late_ms
         depth = " ".join(
             f"{k}:{100.0 * v / max(1, self.recvs):.0f}%" for k, v in self.depth.items() if v
         )
@@ -107,9 +127,11 @@ class UnderrunStats:
         inflight = ""
         if self.inflight_at_starve:
             arr = sorted(self.inflight_at_starve)
-            waiting = sum(1 for x in arr if x > 5.0)
-            inflight = (f"; audio in flight at starve: p50 {arr[len(arr)//2]:.0f} ms, "
-                        f"max {arr[-1]:.0f} ms, {waiting}/{len(arr)} starved with audio waiting")
+            inflight = (
+                f"; audio in flight at starve: p50 {arr[len(arr)//2]:.0f} ms, "
+                f"max {self.max_inflight_at_starve:.0f} ms, "
+                f"{self.starves_with_audio_waiting}/{self.events} starved with audio waiting"
+            )
         return (
             f"output underruns: {self.events} events, {self.silence_ms:.0f} ms of inserted "
             f"silence over {self.recvs * self.chunk_ms / 1000:.0f} s, worst gap "
@@ -175,7 +197,13 @@ def instrumented(base: type) -> type:
                     probe = self.inflight_probe
                     if probe is not None:
                         try:
-                            st.inflight_at_starve.append(max(0.0, probe() - self.queued_ms))
+                            inflight = max(0.0, probe() - self.queued_ms)
+                            st.inflight_at_starve.append(inflight)
+                            st.max_inflight_at_starve = max(
+                                st.max_inflight_at_starve, inflight
+                            )
+                            if inflight > 5.0:
+                                st.starves_with_audio_waiting += 1
                         except Exception:  # noqa: BLE001
                             pass
                 self._starved_slots += 1
@@ -190,6 +218,7 @@ def instrumented(base: type) -> type:
             st.events += 1
             st.max_gap_ms = max(st.max_gap_ms, gap_ms)
             st.late_ms.append(late_ms)
+            st.max_late_ms = max(st.max_late_ms, late_ms)
             st.note_gap(gap_ms)
             if self._event_log_ms > 0 and gap_ms >= self._event_log_ms:
                 # The verdict this line exists to support: a lateness of a few

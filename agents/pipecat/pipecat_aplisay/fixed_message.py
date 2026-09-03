@@ -36,6 +36,7 @@ them at all; getting the lower latency for free is why this shape is kept.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -191,14 +192,29 @@ async def run_fixed_message(transport: Any, agent: dict) -> bool:
         vendor=resolved.vendor, voice=resolved.voice, chars=len(resolved.text)
     ).info("playing fixed fallback message")
 
-    try:
-        return await asyncio.wait_for(
-            _play(transport, agent, resolved), timeout=_PLAYOUT_TIMEOUT_SECS
-        )
-    except asyncio.TimeoutError:
+    # P10: run the playout as a task and judge it on the clock, rather
+    # than relying on ``wait_for`` to raise. Since Python 3.12 wait_for
+    # resumes the cancelled coroutine inline and returns ITS result if it
+    # completes — and ``WorkerRunner.run`` swallows the CancelledError,
+    # so it always did. The timeout branch below was therefore
+    # unreachable and a playout that overran was reported as a success,
+    # which in the fallback chain means "the caller heard the
+    # announcement" when they may not have.
+    task = asyncio.ensure_future(_play(transport, agent, resolved))
+    done, _pending = await asyncio.wait({task}, timeout=_PLAYOUT_TIMEOUT_SECS)
+    if not done:
         logger.warning(
             f"fixed fallback message timed out after {_PLAYOUT_TIMEOUT_SECS}s"
         )
+        task.cancel()
+        # Let the cancellation land, but never wait on it here — this
+        # runs on the caller's setup-failure path.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait({task}, timeout=1.0)
+        return False
+    try:
+        return task.result()
+    except asyncio.CancelledError:
         return False
     except Exception as e:  # noqa: BLE001
         logger.error(f"fixed fallback message failed: {e}")
@@ -238,7 +254,10 @@ async def _play(transport: Any, agent: dict, resolved: ResolvedFallbackMessage) 
         processors = [_build_message_tts(agent, resolved), tap, rate_guard, transport.output()]
         frames = [TTSSpeakFrame(resolved.text)]
 
-    task = PipelineTask(Pipeline(processors))
+    # F1: playout-only, no VAD and no bot frames. The announcement is far
+    # shorter than the 300 s default, but the watchdog has no business
+    # here either way.
+    task = PipelineTask(Pipeline(processors), idle_timeout_secs=None)
     # EndFrame is queued behind the audio, so it reaches the output transport
     # only after everything ahead of it has been rendered — the graceful
     # termination pattern, which is what stops the announcement being cut off.

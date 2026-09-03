@@ -1403,6 +1403,17 @@ async def _build_realtime(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        # F1: pipecat cancels any pipeline that goes 300 s without a
+        # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
+        # cancel_on_idle_timeout=True, cancel_runner_on_idle_timeout=True
+        # — all on by default). That is a second, undocumented hangup
+        # policy sitting underneath the platform's own: ``maxDuration``
+        # and ``options.inactivity`` are what operators configure, the
+        # LiveKit runtime has no equivalent, and the framework default
+        # fires hardest in the case where the silence is deliberate —
+        # a caller parked on hold while the agent runs a consult. Off,
+        # so inactivity behaviour is the configured behaviour.
+        idle_timeout_secs=None,
     )
     # Inactivity "kick": speak options.inactivity.message after a silent
     # window. Inert unless options.inactivity is configured (the user
@@ -1533,6 +1544,17 @@ async def _build_pipeline(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        # F1: pipecat cancels any pipeline that goes 300 s without a
+        # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
+        # cancel_on_idle_timeout=True, cancel_runner_on_idle_timeout=True
+        # — all on by default). That is a second, undocumented hangup
+        # policy sitting underneath the platform's own: ``maxDuration``
+        # and ``options.inactivity`` are what operators configure, the
+        # LiveKit runtime has no equivalent, and the framework default
+        # fires hardest in the case where the silence is deliberate —
+        # a caller parked on hold while the agent runs a consult. Off,
+        # so inactivity behaviour is the configured behaviour.
+        idle_timeout_secs=None,
     )
     # Inactivity "kick" — pipeline mode pushes the literal phrase straight to
     # TTS. Inert unless options.inactivity is configured.

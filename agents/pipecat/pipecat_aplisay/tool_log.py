@@ -43,6 +43,13 @@ def _truncate_for_log(value: Any) -> Any:
     if isinstance(value, str):
         s = value
     else:
+        # P9: cheap size screen first. Serialising the whole value just
+        # to measure it, twice per tool call, is pure overhead for the
+        # overwhelming majority that are nowhere near the cap — a
+        # container that small cannot serialise past the limit, so skip
+        # the dump entirely. Only the ambiguous ones are measured.
+        if _too_small_to_truncate(value):
+            return value
         try:
             s = json.dumps(value, default=str)
         except Exception:  # noqa: BLE001
@@ -50,6 +57,32 @@ def _truncate_for_log(value: Any) -> Any:
     if len(s) <= _MAX_LOG_VALUE_CHARS:
         return value
     return f"{s[:_MAX_LOG_VALUE_CHARS]}…[truncated {len(s) - _MAX_LOG_VALUE_CHARS} chars]"
+
+
+def _too_small_to_truncate(value: Any) -> bool:
+    """True when ``value`` provably serialises to under the cap.
+
+    A very cheap conservative screen: every JSON scalar is short, and a
+    container with few, short string leaves cannot exceed the limit.
+    Anything else falls through to the real measurement.
+    """
+    if isinstance(value, (int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, (list, tuple)):
+        items = enumerate(value)
+    else:
+        return False
+    budget = _MAX_LOG_VALUE_CHARS // 4
+    total = 0
+    for key, item in items:
+        if not isinstance(item, (str, int, float, bool, type(None))):
+            return False
+        total += len(str(key)) + (len(item) if isinstance(item, str) else 24)
+        if total > budget:
+            return False
+    return True
 
 
 def log_tool_call(*, tool: str, kind: str, arguments: Any) -> None:

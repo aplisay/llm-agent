@@ -226,6 +226,20 @@ def bridge(a: RelayEndpoint, b: RelayEndpoint) -> None:
     logger.info(f"media relay bridged: {a.name} <-> {b.name}")
 
 
+def unbridge(a: Optional[RelayEndpoint], b: Optional[RelayEndpoint]) -> None:
+    """Disengage both ends of a relay (P7).
+
+    ``disengage()`` had no caller anywhere in the package, so when one
+    bridged leg ended first the survivor's ``_RelayTap`` kept feeding the
+    dead leg's unbounded injector queue — ~96 KB/s from a 48 kHz browser
+    peer — until the survivor was itself hung up, which is best-effort.
+    Safe to call with either side already gone or never engaged.
+    """
+    for endpoint in (a, b):
+        if endpoint is not None and endpoint.engaged:
+            endpoint.disengage()
+
+
 def build_relay_only_task(transport, endpoint: RelayEndpoint):
     """Build a bot-less ``PipelineTask`` that relays a leg's media through its
     :class:`RelayEndpoint`.
@@ -253,4 +267,10 @@ def build_relay_only_task(transport, endpoint: RelayEndpoint):
             transport.output(),
         ]
     )
-    return PipelineTask(pipeline, params=PipelineParams())
+    # F1: a relay-only leg carries media between two humans — it has no
+    # VAD and no bot, so it emits neither BotSpeakingFrame nor
+    # UserSpeakingFrame and pipecat's idle watchdog (300 s, cancel on
+    # timeout, both on by default) cancelled it five minutes into every
+    # relayed conversation; ``_run_relay_leg`` then read that as the
+    # target hanging up and dropped the browser caller.
+    return PipelineTask(pipeline, params=PipelineParams(), idle_timeout_secs=None)

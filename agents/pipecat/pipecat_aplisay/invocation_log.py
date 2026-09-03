@@ -17,22 +17,41 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 from typing import Any
 
 from loguru import logger
 
 from . import api_client
 
-# Process-wide, callId-tagged. Guarded by a threading.Lock: the loguru sink runs
-# synchronously in whatever thread emitted the log (possibly a worker thread,
-# e.g. ``asyncio.to_thread``), while flush runs on the event loop.
-_BUFFER: list[dict[str, Any]] = []
+# Per-call buffers, keyed by callId. Guarded by a threading.Lock: the loguru
+# sink runs synchronously in whatever thread emitted the log (possibly a worker
+# thread, e.g. ``asyncio.to_thread``), while flush runs on the event loop.
+#
+# This used to be ONE process-wide list with a shared 20 000-entry cap and
+# oldest-first eviction across the whole process (P1). On a busy node — tens of
+# concurrent calls, a few hundred records a minute each, plus every pipecat line
+# emitted while a callId is bound — that saturated within minutes, and what got
+# evicted was the OLDEST entries of the still-running long calls: their setup and
+# connect lines, which are exactly the ones you need when diagnosing a silent
+# leg. Per-call deques give each call its own budget, make eviction a property of
+# that call's own verbosity, and turn the drain from an O(N) rebuild under the
+# lock (taken by every log call in every thread) into a dict pop.
+_BUFFERS: dict[str, deque] = {}
 _LOCK = threading.Lock()
 _installed = False
 
-# Soft cap so a pathologically long / verbose call can't grow the buffer without
-# bound; when exceeded we drop the oldest entry (the server prunes anyway).
-_MAX_ENTRIES = 20_000
+# Per-call cap. A call that talks for an hour at INFO produces a few thousand
+# records; 4 000 leaves headroom for a verbose one without letting any single
+# call dominate. deque(maxlen=...) evicts oldest-first on append, within that
+# call only.
+_MAX_ENTRIES_PER_CALL = 4_000
+
+# Ceiling on how many calls' buffers we hold. Every buffer is normally dropped
+# by its own call's flush; this only bounds the pathological case where a call
+# ends without one (a hard crash between segments). At the cap the
+# least-recently-written call is dropped whole.
+_MAX_CALLS = 500
 
 
 # loguru level name -> pino numeric level. The Calls UI (polite-ai
@@ -89,10 +108,22 @@ def _capture_sink(message) -> None:
         entry = _record_to_entry(record)
     except Exception:  # noqa: BLE001 — logging must never raise
         return
+    key = entry.get("callId") or "system"
     with _LOCK:
-        _BUFFER.append(entry)
-        if len(_BUFFER) > _MAX_ENTRIES:
-            del _BUFFER[0]
+        buf = _BUFFERS.get(key)
+        if buf is None:
+            if len(_BUFFERS) >= _MAX_CALLS:
+                # Insertion-ordered dict: the first key is the least
+                # recently created buffer. Only reachable if calls are
+                # ending without flushing.
+                oldest = next(iter(_BUFFERS))
+                del _BUFFERS[oldest]
+                logger.warning(
+                    "invocation log: dropped buffered records for "
+                    f"{oldest} — more than {_MAX_CALLS} unflushed calls"
+                )
+            buf = _BUFFERS[key] = deque(maxlen=_MAX_ENTRIES_PER_CALL)
+        buf.append(entry)
 
 
 def install_capture(level: str | None = None) -> None:
@@ -119,16 +150,13 @@ def _drain(call_id: str | None) -> list[dict[str, Any]]:
     """Remove and return buffered entries — one call's, or all when ``call_id`` is None."""
     with _LOCK:
         if call_id is None:
-            batch = list(_BUFFER)
-            _BUFFER.clear()
+            batch: list[dict[str, Any]] = []
+            for buf in _BUFFERS.values():
+                batch.extend(buf)
+            _BUFFERS.clear()
             return batch
-        keep: list[dict[str, Any]] = []
-        batch: list[dict[str, Any]] = []
-        for entry in _BUFFER:
-            (batch if (entry.get("callId") or "system") == call_id else keep).append(entry)
-        if batch:
-            _BUFFER[:] = keep
-        return batch
+        buf = _BUFFERS.pop(call_id, None)
+        return list(buf) if buf else []
 
 
 async def _post(
