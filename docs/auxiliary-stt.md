@@ -56,7 +56,7 @@ The auxiliary engine is a real cost on every voice mode — including realtime m
 
 | Row | `technology` | `provider` | `detail` | `unit` | What is counted |
 |---|---|---|---|---|---|
-| audio | `stt-aux` | the aux vendor (e.g. `assemblyai`) | `vendor/model` where known | `milliseconds` | Audio actually streamed to the auxiliary engine, silence included — the basis streaming STT vendors bill on. Measured by the worker at the point it hands audio to the engine. |
+| audio | `stt-aux` | the aux vendor (e.g. `assemblyai`) | `vendor/model` where known | `milliseconds` | Audio the auxiliary engine accepted, silence included — the basis streaming STT vendors bill on. On LiveKit this is the engine's own usage report (the same `metrics_collected` event the primary STT meter reads), which counts only audio actually sent to the vendor, so an engine that never connects meters nothing. On Pipecat, whose STT services report no such figure, it is the audio streamed to the engine, metered only once the engine has returned its first transcript in the call; an engine that never does meters nothing. |
 | text | `stt-aux` | as above | as above | `characters` | Characters in the final transcripts the engine returned. |
 
 Rows are attributed to the agent call (the session's own call record, like the model's token and TTS meters) and finalised when it ends; a handover carries the running totals onto the continuation call.

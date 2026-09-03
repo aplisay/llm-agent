@@ -105,6 +105,10 @@ function fakeRoom() {
 /** Minimal stand-in for stt.SpeechStream: emits a FINAL after N pushed frames. */
 class FakeSpeechStream {
   pushed: any[] = [];
+  flushes = 0;
+  flush() {
+    this.flushes += 1;
+  }
   private queue: any[] = [];
   private waiters: Array<(r: IteratorResult<any>) => void> = [];
   private ended = false;
@@ -140,8 +144,24 @@ class FakeSpeechStream {
   }
 }
 
-const fakeStt = (stream: FakeSpeechStream, closed: { n: number }) =>
-  ({ label: "fake.STT", stream: () => stream, close: async () => void closed.n++ }) as any;
+/** Fake stt.STT: an emitter (metrics_collected / error) around one stream. */
+function fakeStt(stream: FakeSpeechStream, closed: { n: number }) {
+  const handlers = new Map<string, Set<(ev: any) => void>>();
+  return {
+    label: "fake.STT",
+    stream: () => stream,
+    close: async () => void closed.n++,
+    on(evt: string, cb: (ev: any) => void) {
+      (handlers.get(evt) ?? handlers.set(evt, new Set()).get(evt)!).add(cb);
+    },
+    off(evt: string, cb: (ev: any) => void) {
+      handlers.get(evt)?.delete(cb);
+    },
+    emit(evt: string, ev: any) {
+      for (const cb of handlers.get(evt) ?? []) cb(ev);
+    },
+  } as any;
+}
 
 /** `n` 20 ms frames at 16 kHz (320 samples each). */
 async function* audioFrames(n: number) {
@@ -153,7 +173,7 @@ async function* audioFrames(n: number) {
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
-test("armAuxStt: pumps the caller track, logs finals, meters audio ms + characters", async () => {
+test("armAuxStt: pumps the caller track, logs finals, meters the engine's own audio report + characters", async () => {
   const room = fakeRoom();
   const stream = new FakeSpeechStream(3, "  hello there ");
   const closed = { n: 0 };
@@ -161,6 +181,7 @@ test("armAuxStt: pumps the caller track, logs finals, meters audio ms + characte
   const usage: Record<string, number> = { milliseconds: 0, characters: 0 };
   let cancelled = 0;
   const source = Object.assign(audioFrames(5), { cancel: async () => void cancelled++ });
+  const engine = fakeStt(stream, closed);
 
   const handle = armAuxStt({
     room,
@@ -171,7 +192,7 @@ test("armAuxStt: pumps the caller track, logs finals, meters audio ms + characte
     onTranscript: (text, at) => transcripts.push({ text, at }),
     onUsage: (unit, q) => (usage[unit] += q),
     deps: {
-      buildStt: () => fakeStt(stream, closed),
+      buildStt: () => engine,
       resolveTrack: async () => ({ sid: "track" }) as any,
       openAudioStream: () => source,
     },
@@ -188,16 +209,87 @@ test("armAuxStt: pumps the caller track, logs finals, meters audio ms + characte
   assert.equal(stream.pushed.length, 5, "every frame reached the engine");
   assert.equal(usage.characters, "hello there".length);
   assert.equal(handle.usage.characters, "hello there".length);
-  // 5 × 20 ms of audio streamed; reported in full once disposed.
-  handle.dispose();
-  assert.equal(usage.milliseconds, 100);
-  assert.equal(Math.round(handle.usage.milliseconds), 100);
+  // 5 × 20 ms were pumped (diagnostic), but the METER is what the engine reports.
+  assert.equal(Math.round(handle.usage.streamedMilliseconds), 100);
+  assert.equal(usage.milliseconds, 0, "nothing metered until the engine reports");
+  engine.emit("metrics_collected", { type: "stt_metrics", audioDurationMs: 4800 });
+  engine.emit("metrics_collected", { type: "stt_metrics", audioDurationMs: 0 }); // ignored
+  assert.equal(usage.milliseconds, 4800);
+  assert.equal(handle.usage.milliseconds, 4800);
+  await handle.dispose();
+  assert.equal(stream.flushes, 1, "dispose asks the engine to report its last interval");
+  assert.equal(usage.milliseconds, 4800, "streamed audio is never billed on its own");
   assert.equal(closed.n, 1, "engine closed on dispose");
   assert.equal(room.handlerCount(), 0, "room listeners removed");
-  // Idempotent: a second dispose reports nothing more.
-  handle.dispose();
-  assert.equal(usage.milliseconds, 100);
+  // Idempotent.
+  await handle.dispose();
   assert.equal(closed.n, 1);
+  assert.equal(stream.flushes, 1);
+});
+
+test("armAuxStt: an engine that accepts nothing (e.g. rejected credentials) meters nothing", async () => {
+  const room = fakeRoom();
+  const stream = new FakeSpeechStream(99, "never");
+  const closed = { n: 0 };
+  const usage: Record<string, number> = { milliseconds: 0, characters: 0 };
+  const engine = fakeStt(stream, closed);
+  const handle = armAuxStt({
+    room,
+    roomName: "r",
+    callerIdentity: "caller",
+    agent: { id: "a", options: {} } as any,
+    config: {},
+    onTranscript: () => assert.fail("no transcript expected"),
+    onUsage: (unit, q) => (usage[unit] += q),
+    deps: {
+      buildStt: () => engine,
+      resolveTrack: async () => ({}) as any,
+      openAudioStream: () => audioFrames(10),
+    },
+  });
+  await settle();
+  // The SDK reports a failing connection as recoverable error events while it retries.
+  engine.emit("error", { type: "stt_error", label: "deepgram.STT", recoverable: true, error: new Error("401") });
+  assert.equal(closed.n, 0, "a recoverable error keeps the stream up");
+  await handle.dispose();
+  assert.equal(Math.round(handle.usage.streamedMilliseconds), 200, "audio was pumped");
+  assert.equal(usage.milliseconds, 0, "none of it is metered");
+  assert.equal(handle.usage.milliseconds, 0);
+});
+
+test("armAuxStt: a non-recoverable engine error stops the auxiliary transcription", async () => {
+  const room = fakeRoom();
+  const stream = new FakeSpeechStream(99, "never");
+  const closed = { n: 0 };
+  const engine = fakeStt(stream, closed);
+  async function* endless() {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 5));
+      yield { sampleRate: 16000, samplesPerChannel: 160, channels: 1 } as any;
+    }
+  }
+  armAuxStt({
+    room,
+    roomName: "r",
+    callerIdentity: "caller",
+    agent: { id: "a", options: {} } as any,
+    config: {},
+    onTranscript: () => {},
+    onUsage: () => {},
+    deps: {
+      buildStt: () => engine,
+      resolveTrack: async () => ({}) as any,
+      openAudioStream: () => Object.assign(endless(), { cancel: async () => {} }),
+    },
+  });
+  await settle();
+  engine.emit("error", { type: "stt_error", label: "deepgram.STT", recoverable: false, error: new Error("gave up") });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(closed.n, 1, "engine closed");
+  const pushedAtStop = stream.pushed.length;
+  await settle();
+  assert.equal(stream.pushed.length, pushedAtStop, "pump stopped");
+  assert.equal(room.handlerCount(), 0);
 });
 
 test("armAuxStt: self-disposes when the caller leaves (not on another participant)", async () => {
@@ -231,8 +323,9 @@ test("armAuxStt: self-disposes when the caller leaves (not on another participan
   room.emit(RoomEvent.ParticipantDisconnected, { identity: "someone-else" });
   assert.equal(closed.n, 0, "another participant leaving does not stop it");
   room.emit(RoomEvent.ParticipantDisconnected, { info: { identity: "caller" } });
+  await new Promise((r) => setTimeout(r, 400)); // dispose gives the engine a grace period to report
   assert.equal(closed.n, 1, "caller leaving disposes");
-  assert.ok(usage.milliseconds > 0, "streamed audio reported on dispose");
+  assert.equal(usage.milliseconds, 0, "no engine report, nothing metered");
   const pushedAtDispose = stream.pushed.length;
   await settle();
   assert.equal(stream.pushed.length, pushedAtDispose, "pump stopped");
@@ -259,8 +352,8 @@ test("armAuxStt: an engine that fails to build is contained; dispose still safe"
   });
   await settle();
   assert.deepEqual(transcripts, []);
-  handle.dispose();
-  assert.deepEqual(handle.usage, { milliseconds: 0, characters: 0 });
+  await handle.dispose();
+  assert.deepEqual(handle.usage, { milliseconds: 0, characters: 0, streamedMilliseconds: 0 });
 });
 
 test("armAuxStt: disposing before the track resolves never starts the engine", async () => {
@@ -288,7 +381,7 @@ test("armAuxStt: disposing before the track resolves never starts the engine", a
       openAudioStream: () => audioFrames(1),
     },
   });
-  handle.dispose();
+  await handle.dispose();
   release();
   await settle();
   assert.equal(built, 0);

@@ -185,7 +185,10 @@ class TestAuxSttTap:
             assert finals == ["hello there"]
             assert ("characters", len("hello there")) in usage
             # Audio streamed = 50 ms, reported in whole milliseconds, no drift.
-            assert sum(q for u, q in usage if u == "milliseconds") == 50
+            # The fake returns its first transcript while the 2nd frame is being
+            # fed, so: frame 1 (20 ms) was held back and released with that
+            # transcript, then frames 2 and 3 (20 + 10 ms) reported directly.
+            assert [q for u, q in usage if u == "milliseconds"] == [20, 20, 10]
             assert tap.usage == {"milliseconds": 50, "characters": len("hello there")}
 
         asyncio.run(run())
@@ -201,6 +204,22 @@ class TestAuxSttTap:
             )
             await asyncio.sleep(0)  # let the scheduled stop run
             assert _FakeStream.instances[0].stopped
+
+        asyncio.run(run())
+
+    def test_engine_that_never_transcribes_is_not_metered(self):
+        async def run():
+            # e.g. rejected credentials: audio streams into the side pipeline, nothing comes back.
+            tap, finals, usage = _tap(stream_factory=lambda *a, **k: _FakeStream(*a, final_after=99, **k))
+            await run_test(
+                tap,
+                frames_to_send=[_audio(20), _audio(20), _audio(20)],
+                expected_down_frames=[InputAudioRawFrame] * 3,
+            )
+            await asyncio.sleep(0)
+            assert finals == []
+            assert usage == [], "streamed audio the engine never turned into a transcript is not billed"
+            assert tap.usage["milliseconds"] == 60, "…but it is still visible as streamed audio"
 
         asyncio.run(run())
 
