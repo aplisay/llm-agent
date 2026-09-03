@@ -19,6 +19,7 @@ documents which fields it cannot honour.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
@@ -80,6 +81,16 @@ class InboundCallContext:
     # (see ``call_session.setup_inbound_call``).
     sip_headers: Optional[dict] = None
 
+    # The display-name from the inbound INVITE's From header — the caller's
+    # freeform name as presented on the wire (``"Alice Smith" <sip:+44…>`` ->
+    # ``Alice Smith``), already unquoted/unescaped via
+    # ``normalise_display_name``. Only the sipbridge (``X-Sipbridge-From-Name``
+    # handshake header) and voiceblender (``leg.ringing`` ``from_display_name``)
+    # ingresses can carry it; ``None`` when the From had no display-name or the
+    # gateway doesn't surface one. Surfaced to the agent as
+    # ``metadata.aplisay.callerIdName`` (see ``call_session.setup_inbound_call``).
+    caller_id_name: Optional[str] = None
+
     # Free-form gateway-specific bag (e.g. Daily room metadata, raw SIP headers).
     raw: dict = field(default_factory=dict)
 
@@ -111,6 +122,43 @@ def collect_sip_headers(
             continue
         out[lname] = value
     return out
+
+
+_DISPLAY_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_DISPLAY_NAME_WS_RE = re.compile(r"\s+")
+
+
+def normalise_display_name(value) -> Optional[str]:
+    """Normalise a SIP ``display-name`` (RFC 3261 §20.10 / §25.1) for
+    ``metadata.aplisay.callerIdName``.
+
+    Gateways hand the name over in slightly different states: sipgo (sipbridge)
+    strips a quoted-string's surrounding quotes but keeps its backslash
+    quoted-pairs (``Alice \\"A\\" Smith``); other sources may pass the raw
+    ``"Alice Smith"`` form, or bare tokens. This accepts any of them: strips one
+    pair of surrounding double quotes, resolves each ``\\x`` quoted-pair to
+    ``x``, replaces control characters, collapses whitespace and trims.
+    Returns ``None`` for ``None`` / empty / whitespace-only input so the
+    metadata key is omitted rather than set to ``""``.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1]
+    out = []
+    escaped = False
+    for ch in s:
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        else:
+            out.append(ch)
+    s = _DISPLAY_NAME_CONTROL_RE.sub(" ", "".join(out))
+    s = _DISPLAY_NAME_WS_RE.sub(" ", s).strip()
+    return s or None
 
 
 @dataclass
