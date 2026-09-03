@@ -71,7 +71,7 @@ Supported shape:
 Notes:
 
 - If you omit `options.stt.vendor`, the default is at this time `deepgram` → `deepgram/nova-3:<derivedLang>`.
-- `options.stt.aux` (same shape: `vendor`, `language`, plus `enabled`) runs a *second* STT engine over the caller's audio purely for comparison — on realtime models too — logging `user-aux` transcript entries and `stt-aux` usage. See [`docs/auxiliary-stt.md`](./auxiliary-stt.md).
+- `options.stt.aux` (same shape: `vendor`, `language`, plus `enabled`) runs a *second* STT engine over the caller's audio purely for comparison — on realtime models too — logging `user-aux` transcript entries and `stt-aux` usage. `options.tts.output` does the same over the agent's own audio (`agent-speech`, `stt-output`). See [`docs/auxiliary-stt.md`](./auxiliary-stt.md).
 
 #### `options.tts`
 

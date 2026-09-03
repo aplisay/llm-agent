@@ -60,6 +60,22 @@ describe('rate-components catalogue', () => {
     });
   });
 
+  it('advertises the output audit STT (options.tts.output) as its own stt-output component per engine', () => {
+    const out = comps.filter((c) => c.key.startsWith('stt-output:'));
+    expect(out.map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+    expect(byKey('stt-output:deepgram')).toEqual({
+      dim: 'stt', key: 'stt-output:deepgram', label: 'Output audit STT · deepgram',
+      match: { technology: 'stt-output', provider: 'deepgram' }, units: ['minute', 'character'], available: true,
+    });
+    // …and it is priced only by its own line, never by the stt or stt-aux lines.
+    const line = (comp, unit, priceMicros) => ({ dim: comp.dim, match: comp.match, unit, priceMicros });
+    const row = { technology: 'stt-output', provider: 'deepgram', detail: 'deepgram/nova-3', unit: 'milliseconds', quantity: 60000 };
+    const others = { detail: { lines: [line(byKey('stt:deepgram'), 'minute', 100000), line(byKey('stt-aux:deepgram'), 'minute', 70000)] } };
+    expect(resolveRowCost(row, others).status).toBe('no_line');
+    const own = { detail: { lines: [...others.detail.lines, line(byKey('stt-output:deepgram'), 'minute', 50000)] } };
+    expect(resolveRowCost(row, own).costMicros).toBe(50000);
+  });
+
   it('an stt-aux row is priced only by an stt-aux line, never by the primary stt line', () => {
     const line = (comp, unit, priceMicros) => ({ dim: comp.dim, match: comp.match, unit, priceMicros });
     const auxRow = { technology: 'stt-aux', provider: 'deepgram', detail: 'deepgram/nova-3', unit: 'milliseconds', quantity: 60000 };

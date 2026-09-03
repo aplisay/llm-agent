@@ -123,6 +123,14 @@ components:
             LiveKit and Pipecat voice workers; the option is rejected on other models.
           type: boolean
           example: true
+        hasOutputStt:
+          description: |-
+            This model accepts `options.tts.output` — an output audit STT run over the agent's own audio,
+            logged as `agent-speech` transcript entries beside the `agent` turns the model produced and
+            metered as `stt-output` usage (see docs/auxiliary-stt.md). True for the LiveKit and Pipecat
+            voice workers; the option is rejected on other models.
+          type: boolean
+          example: true
       required:
         - name
         - description
@@ -492,6 +500,36 @@ components:
                 Must be a supported voice language as returned from a get on the `voices` api
               type: string
               example: en-GB-Wavenet-A
+            output:
+              type: object
+              description: |-
+                Output audit speech recognition. When set, the worker runs an independent STT engine over the
+                agent's OWN audio — what the caller actually hears, whether synthesised by the pipeline TTS
+                or produced by a realtime model — and logs each final transcript it produces as an
+                `agent-speech` transaction-log entry beside the `agent` entry, so what the agent said can be
+                compared with what the model thought it said. Observation only: it never affects the call.
+
+                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the platform's
+                default STT engine; `language` defaults to `tts.language`, then `stt.language`.
+
+                Its consumption is metered separately as `stt-output` usage (audio the engine accepted, and
+                transcript characters) and priced by that component's own rate lines. Supported on
+                `livekit:` and `pipecat:` models, in both realtime and pipeline modes; rejected on other models.
+                Nothing is installed on a call unless this option is set. See docs/auxiliary-stt.md.
+              properties:
+                enabled:
+                  type: boolean
+                  default: true
+                  description: Set `false` to switch the audit engine off without removing the object.
+                language:
+                  $ref: "#/components/schemas/Language"
+                vendor:
+                  type: string
+                  description: |-
+                    Audit STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`, `assemblyai`,
+                    `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally scoped as `vendor/model[:lang]`.
+              example:
+                vendor: deepgram
         stt:
           type: object
           properties:

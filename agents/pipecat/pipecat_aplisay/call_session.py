@@ -525,6 +525,8 @@ class CallSession:
             on_inactivity_hangup=self._on_inactivity_hangup,
             on_aux_transcript=self._on_aux_transcript,
             on_aux_usage=self._on_aux_usage,
+            on_output_transcript=self._on_output_transcript,
+            on_output_usage=self._on_output_usage,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -1002,6 +1004,30 @@ class CallSession:
             return
         observer.add_meter(
             AUX_STT_TECHNOLOGY,
+            unit,
+            quantity,
+            provider=vendor.get("vendor"),
+            detail=vendor.get("model"),
+        )
+
+    async def _on_output_transcript(self, text: str) -> None:
+        """A final transcript from the output audit STT (``options.tts.output``)
+        — what the agent's audio actually said — logged as ``agent-speech``
+        next to the ``agent`` turn the model produced."""
+        from .aux_stt import OUTPUT_STT_LOG_TYPE
+
+        await self._send_message({OUTPUT_STT_LOG_TYPE: text}, is_final=True)
+
+    def _on_output_usage(self, unit: str, quantity: int, vendor: dict) -> None:
+        """Output audit STT usage into the call's usage observer as
+        ``stt-output`` rows (see ``_on_aux_usage``)."""
+        from .aux_stt import OUTPUT_STT_TECHNOLOGY
+
+        observer = getattr(self, "_usage_observer", None)
+        if observer is None:
+            return
+        observer.add_meter(
+            OUTPUT_STT_TECHNOLOGY,
             unit,
             quantity,
             provider=vendor.get("vendor"),
