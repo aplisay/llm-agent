@@ -18,13 +18,17 @@
  * the direct Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS), so the
  * same vendor strings mean the same thing in both places.
  *
- * Metering: the audio streamed to the auxiliary engine is measured here in the
- * pump (milliseconds, silence included — the basis streaming STT vendors bill
- * on) and final transcripts are counted in characters. Both are reported through
- * `onUsage` and land as `stt-aux` usage rows attributed to the agent call — its
- * own technology, so the second engine's consumption is never merged with, or
- * gated like, the primary `stt` meter (realtime models bundle their own
- * recognition into the model charge; the auxiliary engine is a real extra cost).
+ * Metering: milliseconds come from the engine's own usage report
+ * (`metrics_collected` → `audioDurationMs`, the same event the primary STT
+ * meter reads as `stt_metrics`), which both the LiveKit Inference stream and the
+ * Deepgram plugin derive from the audio they actually SENT to the vendor — so
+ * an engine that never connects (bad credentials, say) meters nothing, however
+ * much audio we pumped at it. Final transcripts are counted in characters. Both
+ * are reported through `onUsage` and land as `stt-aux` usage rows attributed to
+ * the agent call — its own technology, so the second engine's consumption is
+ * never merged with, or gated like, the primary `stt` meter (realtime models
+ * bundle their own recognition into the model charge; the auxiliary engine is a
+ * real extra cost). The audio we streamed is kept separately for diagnostics.
  *
  * Everything here is best-effort: an auxiliary STT failure must never disturb
  * the call. The stream self-disposes when the caller leaves or the room
@@ -52,8 +56,13 @@ export const AUX_STT_TECHNOLOGY = "stt-aux";
 export const AUX_STT_LOG_TYPE = "user-aux";
 /** Sample rate the caller track is decoded at for the auxiliary stream. */
 const AUX_STT_SAMPLE_RATE = 16000;
-/** Report streamed-audio usage to the meter at least this often (ms of audio). */
-const AUDIO_USAGE_REPORT_INTERVAL_MS = 10_000;
+/**
+ * On dispose, how long to give the engine to report its last partial usage
+ * interval after we ask it to flush, before the stream is closed for good.
+ */
+const USAGE_FLUSH_GRACE_MS = 300;
+/** Streamed audio below which "the engine returned nothing" is not worth a warning. */
+const SILENT_ENGINE_WARN_MS = 3000;
 
 /** Normalised `options.stt.aux`: the same fields as `options.stt`. */
 export interface AuxSttConfig {
@@ -127,10 +136,19 @@ export function buildAuxStt(agent: Agent, config: AuxSttConfig): stt.STT {
 
 /** Live auxiliary transcription: usage so far + teardown. */
 export interface AuxSttHandle {
-  /** Stop the audio pump and STT stream, reporting any unreported usage. Idempotent. */
-  dispose(): void;
-  /** Audio milliseconds streamed to the engine and characters it returned. */
-  readonly usage: { milliseconds: number; characters: number };
+  /**
+   * Stop the audio pump, ask the engine to report its last usage interval, then
+   * close it. Resolves once that report had its chance to land (bounded by
+   * {@link USAGE_FLUSH_GRACE_MS}), so a caller that flushes meters right after
+   * can await it. Idempotent.
+   */
+  dispose(): Promise<void>;
+  /**
+   * `milliseconds` = audio the engine reported accepting (what is metered);
+   * `characters` = final transcript text; `streamedMilliseconds` = audio we
+   * pumped at it (diagnostic only — it is not billed).
+   */
+  readonly usage: { milliseconds: number; characters: number; streamedMilliseconds: number };
 }
 
 /** Anything the pump can iterate for caller audio (the rtc-node AudioStream, or a test fake). */
@@ -206,48 +224,58 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
   const resolveTrack = params.deps?.resolveTrack ?? defaultResolveTrack;
   const openAudioStream = params.deps?.openAudioStream ?? defaultOpenAudioStream;
 
-  const usage = { milliseconds: 0, characters: 0 };
-  let reportedMs = 0;
+  const usage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
   let disposed = false;
+  let disposing: Promise<void> | null = null;
   const cleanups: Array<() => void> = [];
+  /** Asks the live engine to report its last partial usage interval (set once the stream exists). */
+  let flushUsageReport: (() => Promise<void>) | null = null;
 
-  /** Report streamed audio not yet reported (whole milliseconds, no drift). */
-  const reportAudio = (): void => {
-    const delta = Math.floor(usage.milliseconds) - reportedMs;
-    if (delta <= 0) return;
-    reportedMs += delta;
-    try {
-      onUsage("milliseconds", delta);
-    } catch (e) {
-      logger.debug({ e, roomName }, "auxStt: usage report failed");
-    }
-  };
-
-  const dispose = (): void => {
-    if (disposed) return;
-    disposed = true;
-    room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
-    room.off(RoomEvent.Disconnected, onRoomDisconnected);
-    for (const fn of cleanups.splice(0)) {
-      try {
-        fn();
-      } catch (e) {
-        logger.debug({ e, roomName }, "auxStt: cleanup step failed");
+  const dispose = (): Promise<void> => {
+    if (disposing) return disposing;
+    disposing = (async () => {
+      disposed = true;
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+      room.off(RoomEvent.Disconnected, onRoomDisconnected);
+      if (flushUsageReport) {
+        try {
+          await flushUsageReport();
+        } catch {
+          /* engine already gone */
+        }
       }
-    }
-    reportAudio();
-    logger.info(
-      { roomName, callerIdentity, ...usage },
-      "auxStt: auxiliary transcription disposed",
-    );
+      for (const fn of cleanups.splice(0)) {
+        try {
+          fn();
+        } catch (e) {
+          logger.debug({ e, roomName }, "auxStt: cleanup step failed");
+        }
+      }
+      if (usage.streamedMilliseconds > 0 && usage.milliseconds === 0) {
+        logger.warn(
+          { roomName, callerIdentity, ...usage },
+          "auxStt: the engine accepted none of the streamed audio (connection or credentials failure?); nothing metered",
+        );
+      } else if (usage.streamedMilliseconds >= SILENT_ENGINE_WARN_MS && usage.characters === 0) {
+        logger.warn(
+          { roomName, callerIdentity, ...usage },
+          "auxStt: the engine returned no transcript for the streamed audio",
+        );
+      }
+      logger.info(
+        { roomName, callerIdentity, ...usage },
+        "auxStt: auxiliary transcription disposed",
+      );
+    })();
+    return disposing;
   };
 
   const onParticipantDisconnected = (p: RemoteParticipant): void => {
     const identity = p?.identity ?? (p as any)?.info?.identity;
-    if (identity === callerIdentity) dispose();
+    if (identity === callerIdentity) void dispose();
   };
   const onRoomDisconnected = (): void => {
-    dispose();
+    void dispose();
   };
   room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
   room.on(RoomEvent.Disconnected, onRoomDisconnected);
@@ -260,7 +288,48 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       const sttInstance = buildStt(agent, config);
       const sttStream = sttInstance.stream();
       const audio = openAudioStream(track);
+
+      // Meter what the ENGINE says it accepted, not what we pumped: both the
+      // Inference stream and the Deepgram plugin report audio they actually sent
+      // to the vendor (the plugin every 5 s, flushed on demand), and report
+      // nothing while a connection is failing — so a 401 from the vendor cannot
+      // become a bill for the caller.
+      const onMetrics = (m: any): void => {
+        const ms = Math.round(Number(m?.audioDurationMs) || 0);
+        if (ms <= 0) return;
+        usage.milliseconds += ms;
+        try {
+          onUsage("milliseconds", ms);
+        } catch (e) {
+          logger.debug({ e, roomName }, "auxStt: usage report failed");
+        }
+      };
+      // The SDK surfaces engine failures as events, not throws (a failing
+      // connection retries quietly for minutes): log them, and stop on a
+      // non-recoverable one rather than keep pumping into a dead stream.
+      const onEngineError = (ev: any): void => {
+        const recoverable = ev?.recoverable !== false;
+        logger.warn(
+          { roomName, callerIdentity, label: ev?.label, recoverable, err: ev?.error?.message ?? String(ev?.error) },
+          recoverable
+            ? "auxStt: engine error (recoverable)"
+            : "auxStt: engine failed (not recoverable); stopping the auxiliary transcription",
+        );
+        if (!recoverable) void dispose();
+      };
+      sttInstance.on("metrics_collected", onMetrics);
+      sttInstance.on("error", onEngineError);
+      flushUsageReport = async () => {
+        sttStream.flush(); // FLUSH_SENTINEL → the engine reports its last partial usage interval
+        await new Promise((resolve) => setTimeout(resolve, USAGE_FLUSH_GRACE_MS));
+      };
       const stop = () => {
+        try {
+          sttInstance.off("metrics_collected", onMetrics);
+          sttInstance.off("error", onEngineError);
+        } catch {
+          /* not an emitter (tests) */
+        }
         try {
           sttStream.endInput();
         } catch {
@@ -282,20 +351,18 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       }
 
       // Pump the caller's audio into the engine ourselves (rather than handing
-      // the stream over) so the audio actually streamed is what gets metered.
+      // the stream over) so we know how much we streamed — a diagnostic only;
+      // the meter is the engine's own report above.
       const pump = (async (): Promise<void> => {
         try {
           for await (const frame of frames(audio)) {
             if (disposed) break;
             const rate = frame.sampleRate || AUX_STT_SAMPLE_RATE;
-            usage.milliseconds += (frame.samplesPerChannel / rate) * 1000;
+            usage.streamedMilliseconds += (frame.samplesPerChannel / rate) * 1000;
             try {
               sttStream.pushFrame(frame);
             } catch {
               break; // input ended underneath us (dispose / stream closed)
-            }
-            if (usage.milliseconds - reportedMs >= AUDIO_USAGE_REPORT_INTERVAL_MS) {
-              reportAudio();
             }
           }
         } catch (e) {

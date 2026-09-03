@@ -22,7 +22,12 @@ the same vendor strings mean the same thing in both places.
 
 Metering: the audio streamed to the auxiliary engine is measured at the tap
 (milliseconds, silence included — the basis streaming STT vendors bill on) and
-final transcripts are counted in characters. Both are reported through
+final transcripts are counted in characters. Pipecat's STT services expose no
+"audio the vendor accepted" figure, so streamed audio is metered only once the
+engine has proved itself by returning a transcript in this call: until then the
+milliseconds are held back, and an engine that never produces one (rejected
+credentials, a dead connection) meters nothing rather than billing the caller
+for a service that delivered nothing. Both meters are reported through
 ``on_usage`` and land as ``stt-aux`` usage rows — their own technology, so the
 second engine's consumption is neither merged with nor gated like the primary
 ``stt`` meter (a realtime model bundles its own recognition into the model
@@ -151,6 +156,10 @@ class AuxSttTap(FrameProcessor):
         self._milliseconds: float = 0.0
         self._reported_ms = 0
         self._characters = 0
+        # Streamed milliseconds held back until the engine returns its first
+        # transcript (see module docstring); dropped if it never does.
+        self._pending_ms = 0
+        self._proven = False
         self._stop_task: Optional[asyncio.Task] = None
 
     @property
@@ -204,13 +213,21 @@ class AuxSttTap(FrameProcessor):
             self._schedule_stop()
 
     def _report_audio(self) -> None:
-        """Report streamed audio not yet reported (whole milliseconds, no drift)."""
+        """Account for streamed audio not yet accounted for (whole milliseconds, no
+        drift): metered straight away once the engine has proved itself, held
+        back until then."""
         delta = int(self._milliseconds) - self._reported_ms
         if delta <= 0:
             return
         self._reported_ms += delta
+        if not self._proven:
+            self._pending_ms += delta
+            return
+        self._emit_usage("milliseconds", delta)
+
+    def _emit_usage(self, unit: str, quantity: int) -> None:
         try:
-            self._on_usage("milliseconds", delta)
+            self._on_usage(unit, quantity)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"auxStt: usage report failed: {e}")
 
@@ -218,11 +235,14 @@ class AuxSttTap(FrameProcessor):
         text = (text or "").strip()
         if not text:
             return
+        if not self._proven:
+            # The engine works: meter what was streamed before this first transcript too.
+            self._proven = True
+            pending, self._pending_ms = self._pending_ms, 0
+            if pending:
+                self._emit_usage("milliseconds", pending)
         self._characters += len(text)
-        try:
-            self._on_usage("characters", len(text))
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"auxStt: usage report failed: {e}")
+        self._emit_usage("characters", len(text))
         try:
             await self._on_final(text)
         except Exception as e:  # noqa: BLE001
@@ -242,6 +262,11 @@ class AuxSttTap(FrameProcessor):
             await stream.stop()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"auxStt: side pipeline stop raised: {e}")
+        if not self._proven and self._pending_ms:
+            logger.warning(
+                f"auxStt: the engine returned no transcript for {self._pending_ms} ms of "
+                "streamed audio (connection or credentials failure?); nothing metered"
+            )
         logger.info(
             f"auxStt: auxiliary transcription stopped "
             f"({int(self._milliseconds)} ms streamed, {self._characters} chars)"

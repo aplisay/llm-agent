@@ -658,12 +658,15 @@ export async function runAgentWorker({
    */
   const armAuxSttFor = (agentDef: Agent): void => {
     if (auxStt) {
-      auxStt.dispose();
+      void auxStt.dispose();
       auxStt = null;
     }
     const config = parseAuxSttOption(agentDef?.options);
     if (!config) return;
-    const callerIdentity = participant?.identity;
+    // Inbound legs carry a ParticipantInfo (`identity`); an outbound leg's
+    // participant is the SipParticipant the worker dialled (`participantIdentity`).
+    const callerIdentity =
+      participant?.identity || (participant as unknown as { participantIdentity?: string })?.participantIdentity;
     if (!callerIdentity || !ctx.room) {
       logger.warn(
         { callId: call.id, hasParticipant: Boolean(participant), hasRoom: Boolean(ctx.room) },
@@ -685,10 +688,12 @@ export async function runAgentWorker({
       onUsage: (unit, quantity) => addAuxMeter(vendor, unit, quantity),
     });
   };
-  const disposeAuxStt = (): void => {
-    if (!auxStt) return;
-    auxStt.dispose();
+  /** Resolves once the engine's last usage report had its chance to land (see AuxSttHandle.dispose). */
+  const disposeAuxStt = (): Promise<void> => {
+    if (!auxStt) return Promise.resolve();
+    const handle = auxStt;
     auxStt = null;
+    return handle.dispose();
   };
 
   const cleanupAndClose = async (
@@ -769,9 +774,9 @@ export async function runAgentWorker({
       }
 
 
-      // Stop the auxiliary STT first so its final audio/character counts are
-      // in the meters the flush below writes.
-      disposeAuxStt();
+      // Stop the auxiliary STT first — and wait for the engine's last usage
+      // report — so its final counts are in the meters the flush below writes.
+      await disposeAuxStt();
 
       // Flush accumulated usage (tokens / characters / audio) to the ledger
       // before ending the call so it lands as the finalised session total.
@@ -1530,7 +1535,9 @@ export async function runAgentWorker({
     // The agent has left the conversation (bridged transfer): stop the
     // auxiliary STT rather than transcribe the human↔human segment onto the
     // agent call. A takeover re-arms it via restartWithAgent.
-    onPrimaryAgentDetached: disposeAuxStt,
+    onPrimaryAgentDetached: () => {
+      void disposeAuxStt();
+    },
   });
 
   try {
