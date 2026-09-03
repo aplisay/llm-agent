@@ -922,8 +922,15 @@ async def build_voice_session(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    on_aux_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_aux_usage: "Optional[Callable[[str, int, dict], None]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
+
+    ``on_aux_transcript`` / ``on_aux_usage`` receive the auxiliary STT's final
+    transcripts and usage deltas (``unit, quantity, {vendor, model}``) when the
+    agent sets ``options.stt.aux`` — see aux_stt.py. Without a transcript
+    callback the option is ignored.
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
     is appended to the pipeline (stereo, user-left/bot-right per
@@ -951,17 +958,49 @@ async def build_voice_session(
         # right" layout — matches LiveKit's RecorderIO output exactly.
         audio_buffer = AudioBufferProcessor(num_channels=2)
 
+    aux_tap = _aux_stt_tap_for(agent, on_aux_transcript, on_aux_usage)
+
     if mode == "realtime":
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, aux_tap=aux_tap,
         )
     else:
         task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, aux_tap=aux_tap,
         )
     return task, audio_buffer, context, llm
+
+
+def _aux_stt_tap_for(
+    agent: dict,
+    on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
+    on_usage: "Optional[Callable[[str, int, dict], None]]",
+) -> "Optional[Any]":
+    """The auxiliary STT tap for ``options.stt.aux`` (see aux_stt.py), or
+    ``None`` when the option is off. The engine is built lazily by the tap
+    through :func:`build_stt_service` with the aux block standing in for
+    ``options.stt`` — an unsupported vendor therefore costs only the second
+    opinion (logged), never the call."""
+    from .aux_stt import AuxSttTap, aux_stt_agent, aux_stt_vendor, parse_aux_stt_option
+
+    config = parse_aux_stt_option(agent.get("options"))
+    if config is None or on_transcript is None:
+        return None
+    effective_agent = aux_stt_agent(agent, config)
+    vendor = aux_stt_vendor(agent, config)
+    logger.bind(vendor=vendor).info("auxiliary STT configured (options.stt.aux)")
+
+    def _report(unit: str, quantity: int) -> None:
+        if on_usage is not None:
+            on_usage(unit, quantity, vendor)
+
+    return AuxSttTap(
+        stt_factory=lambda: build_stt_service(effective_agent),
+        on_final=on_transcript,
+        on_usage=_report,
+    )
 
 
 async def _build_realtime(
@@ -975,6 +1014,7 @@ async def _build_realtime(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    aux_tap: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1254,9 +1294,15 @@ async def _build_realtime(
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped.
     dtmf_aggregator = _dtmf_aggregator_for(agent)
+    # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
+    # engaged relay silences the caller's audio for the aux engine too, and the
+    # tap copies audio out to a side pipeline — nothing of the second engine
+    # enters this chain (see aux_stt.py).
+    aux = [aux_tap] if aux_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
+        *aux,
         dtmf_aggregator,
         user_aggregator,
         llm,
@@ -1304,6 +1350,7 @@ async def _build_pipeline(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    aux_tap: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1375,9 +1422,14 @@ async def _build_pipeline(
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
     # audio frames, so ordering relative to it is immaterial.
     dtmf_aggregator = _dtmf_aggregator_for(agent)
+    # Auxiliary STT tap (options.stt.aux) between the relay tap and the primary
+    # STT: the tap only copies audio out to a side pipeline, so the primary STT
+    # sees exactly the frames it always did (see aux_stt.py).
+    aux = [aux_tap] if aux_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
+        *aux,
         stt,
         dtmf_aggregator,
         user_aggregator,
