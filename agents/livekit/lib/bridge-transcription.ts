@@ -204,7 +204,7 @@ function findRemoteParticipant(
 }
 
 /** Resolve a room participant by identity, waiting for it to join if needed. */
-function waitForRemoteParticipant(
+export function waitForRemoteParticipant(
   room: Room,
   identity: string,
   timeoutMs: number = TRACK_WAIT_TIMEOUT_MS,
@@ -253,7 +253,7 @@ function subscribedAudioTrack(
  * normally arrive subscribed; ask explicitly (setSubscribed) and wait on
  * RoomEvent.TrackSubscribed otherwise.
  */
-function waitForAudioTrack(
+export function waitForAudioTrack(
   room: Room,
   participant: RemoteParticipant,
   timeoutMs: number = TRACK_WAIT_TIMEOUT_MS,

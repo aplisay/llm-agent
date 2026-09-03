@@ -27,7 +27,15 @@ import {
   INACTIVITY_PROMPT_COUNT,
 } from "./voice-session-factory.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
-import type { UsageVendors } from "./usage-vendors.js";
+import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
+import {
+  armAuxStt,
+  parseAuxSttOption,
+  resolveAuxSttVendor,
+  AUX_STT_LOG_TYPE,
+  AUX_STT_TECHNOLOGY,
+  type AuxSttHandle,
+} from "./aux-stt.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
 export async function runAgentWorker({
@@ -236,6 +244,13 @@ export async function runAgentWorker({
   );
 
   let session: voice.AgentSession | null = null;
+  /**
+   * Auxiliary ("second opinion") STT over the caller's track (options.stt.aux).
+   * Independent of the AgentSession: armed once the session is up, re-armed
+   * with the incoming agent's configuration on a full handover, stopped when
+   * the agent's media is detached after a bridged transfer and on teardown.
+   */
+  let auxStt: AuxSttHandle | null = null;
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
   let maxDuration: number = 305000; // Default value
@@ -540,6 +555,21 @@ export async function runAgentWorker({
     meter.units[unit] = (meter.units[unit] || 0) + quantity;
     usageMeters.set(key, meter);
   };
+  // Auxiliary STT (options.stt.aux) meters: its own technology (`stt-aux`), so
+  // the second engine's consumption is priced by its own rate lines and is
+  // neither merged with nor gated like the primary `stt` meter above — a
+  // realtime model bundles its own recognition into the model charge, but the
+  // auxiliary engine is a real, separate cost on every voice mode.
+  const addAuxMeter = (vendor: VendorDetail, unit: string, quantity: number): void => {
+    if (!quantity || quantity <= 0) return;
+    const detail = vendor.detail || vendor.vendor || "aux";
+    const key = `${AUX_STT_TECHNOLOGY}|${detail}`;
+    const meter =
+      usageMeters.get(key) ||
+      { technology: AUX_STT_TECHNOLOGY, provider: vendor.vendor, detail, units: {} };
+    meter.units[unit] = (meter.units[unit] || 0) + quantity;
+    usageMeters.set(key, meter);
+  };
   const onMetrics = (m: any): void => {
     try {
       switch (m?.type) {
@@ -616,6 +646,49 @@ export async function runAgentWorker({
     } catch (e) {
       logger.warn({ e }, "failed to flush usage to ledger");
     }
+  };
+
+  /**
+   * (Re)arm the auxiliary STT for `agentDef` on the caller's track: dispose any
+   * running instance (reporting its usage), then start one if the agent asks
+   * for it. Final transcripts are logged as `user-aux` through the same
+   * sendMessage path as the primary `user` entries (so they follow the active
+   * call record and the streamLog/batch convention), and are suppressed while
+   * a consultation has the caller on hold, exactly like the primary transcript.
+   */
+  const armAuxSttFor = (agentDef: Agent): void => {
+    if (auxStt) {
+      auxStt.dispose();
+      auxStt = null;
+    }
+    const config = parseAuxSttOption(agentDef?.options);
+    if (!config) return;
+    const callerIdentity = participant?.identity;
+    if (!callerIdentity || !ctx.room) {
+      logger.warn(
+        { callId: call.id, hasParticipant: Boolean(participant), hasRoom: Boolean(ctx.room) },
+        "auxStt: options.stt.aux set but no caller participant/room to tap; skipping",
+      );
+      return;
+    }
+    const vendor = resolveAuxSttVendor(agentDef, config);
+    auxStt = armAuxStt({
+      room: ctx.room,
+      roomName: room.name,
+      callerIdentity,
+      agent: agentDef,
+      config,
+      onTranscript: (text, at) => {
+        if (getConsultInProgress()) return;
+        sendMessage({ [AUX_STT_LOG_TYPE]: text }, at);
+      },
+      onUsage: (unit, quantity) => addAuxMeter(vendor, unit, quantity),
+    });
+  };
+  const disposeAuxStt = (): void => {
+    if (!auxStt) return;
+    auxStt.dispose();
+    auxStt = null;
   };
 
   const cleanupAndClose = async (
@@ -695,6 +768,10 @@ export async function runAgentWorker({
         }
       }
 
+
+      // Stop the auxiliary STT first so its final audio/character counts are
+      // in the meters the flush below writes.
+      disposeAuxStt();
 
       // Flush accumulated usage (tokens / characters / audio) to the ledger
       // before ending the call so it lands as the finalised session total.
@@ -1219,6 +1296,9 @@ export async function runAgentWorker({
         record: false,
         inputOptions: { closeOnDisconnect: true },
       });
+      // The incoming agent's own options.stt.aux applies from here (a takeover
+      // also re-arms it: the caller is talking to an agent again).
+      armAuxSttFor(newAgentDef);
 
       // The incoming agent speaks next. Ultravox realtime greets natively via
       // firstSpeakerSettings; other stacks need an explicit first turn.
@@ -1447,6 +1527,10 @@ export async function runAgentWorker({
           }`,
         },
       }),
+    // The agent has left the conversation (bridged transfer): stop the
+    // auxiliary STT rather than transcribe the human↔human segment onto the
+    // agent call. A takeover re-arms it via restartWithAgent.
+    onPrimaryAgentDetached: disposeAuxStt,
   });
 
   try {
@@ -1805,6 +1889,9 @@ export async function runAgentWorker({
           "timing: session.start done",
         );
         logger.info({ callId: call.id }, "session started");
+
+        // Auxiliary ("second opinion") STT on the caller's track, if configured.
+        armAuxSttFor(agent);
 
         // ---- Inactivity "kick" ----
         // When options.inactivity is configured, the session was built with

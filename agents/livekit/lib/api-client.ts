@@ -158,6 +158,17 @@ export interface Agent {
        * e.g. `deepgram/nova-3:en` (defaults to language derived from `stt.language`).
        */
       vendor?: string;
+      /**
+       * Auxiliary ("second opinion") STT: a second engine run over the caller's
+       * audio alongside the agent's own recognition, logged as `user-aux` and
+       * metered as `stt-aux`. Same shape as `stt`; `enabled: false` switches it
+       * off without removing the block. See lib/aux-stt.ts.
+       */
+      aux?: {
+        enabled?: boolean;
+        language?: string;
+        vendor?: string;
+      };
     };
     tts?: {
     

@@ -2223,6 +2223,15 @@ export async function handleTransfer(
   // Helper to finalize bridged call
   const finaliseBridgedCallFn = async (): Promise<Call | null> => {
     const session = sessionRef(null);
+    // The agent is leaving the conversation: let the runtime stop what it runs
+    // over the caller's audio alongside the agent (the auxiliary STT), so the
+    // human↔human segment is not transcribed onto the agent call —
+    // bridgedTransferTranscribe covers that segment on its own record.
+    try {
+      context.getBridgedTakeover?.()?.onPrimaryAgentDetached?.();
+    } catch (e) {
+      logger.debug({ e }, "onPrimaryAgentDetached hook failed");
+    }
     return finaliseBridgedCall(
       call,
       instance,
