@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 from loguru import logger
 
+from . import http_client
 from .current_datetime import current_datetime_string, is_datetime_metadata_key
 
 
@@ -405,8 +406,14 @@ async def _execute_rest(fn_def: dict, inputs: dict, keys: list[dict]) -> Any:
         params = [(k, str(v)) for k, v in (leftover or {}).items() if v is not None]
         params.extend(auth_params)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.request(method, url, headers=headers, params=params or None, json=body)
+    # Pooled per-host client (W4). Agent REST callouts hit arbitrary
+    # third-party hosts, so they get their own pool rather than sharing
+    # the agent-db one — a slow customer endpoint must not consume the
+    # connection budget the call's own control plane needs.
+    client = await http_client.get_client("rest-callout")
+    resp = await client.request(
+        method, url, headers=headers, params=params or None, json=body, timeout=15.0
+    )
     is_json = resp.headers.get("content-type", "").startswith("application/json")
     if resp.status_code >= 400:
         parsed = _try_parse_json(resp.text) if is_json else None

@@ -61,6 +61,7 @@ import websockets
 from loguru import logger
 from pipecat.transports.base_transport import BaseTransport
 
+from .. import http_client
 from .base import (
     ConsultStateMixin,
     GatewaySession,
@@ -1193,8 +1194,10 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.request(method, url, headers=headers, json=body)
+        client = await http_client.get_client("voiceblender")
+        resp = await client.request(
+            method, url, headers=headers, json=body, timeout=15.0
+        )
         if resp.status_code >= 400:
             msg = f"voiceblender {method} {path} -> {resp.status_code} {resp.text}"
             if raise_on_error:

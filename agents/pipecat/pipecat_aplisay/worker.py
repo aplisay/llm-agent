@@ -73,6 +73,7 @@ from .call_session import (
     setup_takeover_call,
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
+from . import http_client
 from .invocation_log import flush_invocation_logs, install_capture
 from .output_cushion import install as install_output_cushion
 from .output_underrun import install as install_underrun_stats
@@ -185,6 +186,12 @@ async def lifespan(app: FastAPI):
             await gw_obj.stop()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"sipbridge gateway stop failed: {e}")
+    # Close the shared HTTP pools last — everything above may still want
+    # to make a REST call on the way out.
+    try:
+        await http_client.aclose_all()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"http client shutdown failed: {e}")
 
 
 async def _ws_deny(websocket: WebSocket, status: int, body: bytes = b"") -> None:
@@ -1705,11 +1712,17 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         try:
             session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
         except Exception as e:  # noqa: BLE001
+            # W2: setup_takeover_call registers the gateway session
+            # (transport + WebSocket) before it can fail, so the failure
+            # path has to unregister it — clear_takeover_session alone
+            # left the session, its transport and the closed WebSocket
+            # in the gateway maps for the life of the process.
             logger.bind(session_id=session_id).error(
                 f"sipbridge takeover setup failed: {e}"
             )
             await websocket.close(code=1011)
             sip_gateway.clear_takeover_session(session_id)
+            sip_gateway.unregister_session(session_id)
             return
         sip_gateway.register_inbound_session(
             session_id=session_id,
@@ -1992,10 +2005,20 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             sip_gateway, ctx, instance=instance, agent=agent
         )
     except Exception as e:  # noqa: BLE001
+        # W2: ``setup_inbound_call`` registers the gateway session
+        # (transport + WebSocket) BEFORE it creates and starts the call,
+        # so every failure after that point leaked one _SbGatewaySession
+        # plus its transport and closed WebSocket. The commonest failure
+        # here is the entirely routine one — the agent is at its
+        # concurrency limit with no fallback message — which means this
+        # leaked hardest exactly when the node was busiest. Second
+        # commonest is an agent-db outage, which leaks one per inbound
+        # call for the duration.
         logger.bind(session_id=ctx.session_id).error(
             f"sipbridge setup_inbound_call failed: {e}"
         )
         await websocket.close(code=1011)
+        sip_gateway.unregister_session(ctx.session_id)
         return
 
     # Register the bridge_call_id → session mapping so REST hangup /

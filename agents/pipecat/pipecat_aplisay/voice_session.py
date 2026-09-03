@@ -43,6 +43,22 @@ from .output_rate_guard import OutputRateGuard
 from .tool_log import log_tool_call, log_tool_result
 
 
+# Recording capture rate. The sipbridge WS carries 16 kHz in both
+# directions, so anything higher just doubles the PCM we write and
+# upload for no extra fidelity. Pipecat's own default comes from the
+# StartFrame (24 kHz for the realtime services), which is why this has
+# to be stated explicitly.
+RECORDING_SAMPLE_RATE = 16000
+
+# How much audio the AudioBufferProcessor accumulates before handing it
+# to the recording sink: 5 s of one 16-bit channel. Pipecat's default of
+# 0 means "never flush until stop_recording()", i.e. hold the whole call
+# in memory. Small enough that a long recorded call is bounded, large
+# enough that the write path runs a few times a minute rather than per
+# frame.
+RECORDING_FLUSH_BYTES = RECORDING_SAMPLE_RATE * 2 * 5
+
+
 def _inactivity_timeout_secs(agent: dict) -> Optional[float]:
     """Return the configured inactivity (idle "kick") timeout in seconds, or
     ``None`` when ``options.inactivity`` is absent / malformed.
@@ -958,10 +974,31 @@ async def build_voice_session(
 
     audio_buffer: Optional[AudioBufferProcessor] = None
     if enable_recording:
-        # Stereo, sample rate inherits from whatever the source pipeline
-        # produces. ``num_channels=2`` is the documented "user left / bot
-        # right" layout — matches LiveKit's RecorderIO output exactly.
-        audio_buffer = AudioBufferProcessor(num_channels=2)
+        # Stereo, "user left / bot right" — matches LiveKit's RecorderIO
+        # output exactly.
+        #
+        # ``buffer_size`` and ``sample_rate`` are both load-bearing (W3).
+        # Pipecat's default buffer_size=0 means "only flush on
+        # stop_recording()": both channels accumulate in bytearrays for
+        # the WHOLE call, and the flush then copies them again (bytes()
+        # per track plus the interleaved merge) for a 3–4x transient at
+        # hangup. At the default 24 kHz that is ~96 KB/s per recorded
+        # call — roughly 345 MB for an hour, against a 1 GiB pod limit,
+        # and an OOM kill takes every other call on the node with it.
+        # RecordingSession._append is already written for incremental
+        # delivery (lazy sink open, running bytes_written, disk write off
+        # the loop), so periodic flushes just work.
+        #
+        # Pinning the rate to 16 kHz also matches what the sipbridge path
+        # actually carries, halving the PCM written for no loss of
+        # fidelity; pipecat resets its primary buffers after each flush,
+        # and the sink is append-only, so the encoded OGG stays
+        # contiguous.
+        audio_buffer = AudioBufferProcessor(
+            num_channels=2,
+            sample_rate=RECORDING_SAMPLE_RATE,
+            buffer_size=RECORDING_FLUSH_BYTES,
+        )
 
     aux_tap = _aux_stt_tap_for(agent, on_aux_transcript, on_aux_usage)
     output_tap = _output_stt_tap_for(agent, on_output_transcript, on_output_usage)

@@ -442,7 +442,47 @@ class CallSession:
         (missing API key, unsupported provider, etc.) propagate as a real
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
+
+        Failure handling (W5/P1): the MCP servers are connected part-way
+        through the build, but their closers are only awaited in
+        ``_run_prepared_once``'s finally — which never runs if the build
+        raises after that point. With a fallback configured, ``run()``
+        re-enters here and overwrites ``_mcp_closers``, orphaning the
+        previous connections; without one, the exception escapes and
+        nothing closes them at all. Trigger: any agent with MCP servers
+        whose model/voice config fails to build. So the whole build runs
+        under a guard that closes them and flushes the log records that
+        would otherwise be stranded (they were written under this call's
+        ``contextualize``, but the only per-call flush is in the runner's
+        finally).
         """
+        try:
+            return await self._prepare_run_inner(agent, model_name, system_prompt)
+        except BaseException:
+            closers, self._mcp_closers = self._mcp_closers, []
+            if closers:
+                try:
+                    await close_mcp_servers(closers)
+                except Exception as e:  # noqa: BLE001
+                    logger.bind(call_id=self.call.id).warning(
+                        f"closing MCP servers after failed build raised: {e}"
+                    )
+            try:
+                await invocation_log.flush_invocation_logs(
+                    call_id=self.call.id,
+                    user_id=self.call.userId,
+                    org_id=self.call.organisationId,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.bind(call_id=self.call.id).warning(
+                    f"invocation log flush after failed build raised: {e}"
+                )
+            raise
+
+    async def _prepare_run_inner(
+        self, agent: dict, model_name: str, system_prompt: str
+    ):
+        """The body of :meth:`prepare_run` — see its docstring."""
         # Handover paths pass their own agent dict; make sure listener-level
         # transfer overrides apply to it exactly as they did to the original
         # (idempotent when __post_init__ already merged this dict).
@@ -2633,6 +2673,20 @@ def _json_dumps_safe(value: Any) -> str:
 # ---- Constructors ----
 
 
+async def _end_unstarted_call(call, reason: str) -> None:
+    """Close a Call record that was created but never started.
+
+    Best-effort: the caller is already unwinding on an error, and a
+    failure to tidy the row must not mask it.
+    """
+    try:
+        await api_client.end_call(call, reason)
+    except Exception as e:  # noqa: BLE001
+        logger.bind(call_id=getattr(call, "id", None)).warning(
+            f"could not end unstarted call record: {e}"
+        )
+
+
 async def setup_inbound_call(
     sip_gateway: SipGateway,
     inbound: InboundCallContext,
@@ -2687,11 +2741,22 @@ async def setup_inbound_call(
         from .fixed_message import fixed_message_for
 
         if not fixed_message_for(agent):
+            # W2: the Call record above was created but will never be
+            # started, and nothing downstream reaches ``end_call`` on
+            # this path — so the busy case (the expected one, at exactly
+            # the moment the node is busiest) left an open call row per
+            # refusal. End it before the refusal propagates.
+            await _end_unstarted_call(call, "concurrency limit exceeded")
             raise
         logger.bind(call_id=call.id, agent_id=agent.get("id")).warning(
             "agent concurrency limit reached; playing fixed fallback message instead of busy"
         )
         fixed_message_only = True
+    except Exception:
+        # Any other start failure (agent-db 5xx or timeout) leaves the
+        # same orphaned row.
+        await _end_unstarted_call(call, "call start failed")
+        raise
 
     return CallSession(
         session_id=inbound.session_id,

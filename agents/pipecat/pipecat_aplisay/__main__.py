@@ -59,6 +59,15 @@ def main() -> None:
         [os.path.join(os.path.dirname(__file__))] if reload else None
     )
 
+    # Bound the graceful shutdown. On SIGTERM uvicorn sends close(1012)
+    # to every open WebSocket and then WAITS for every ASGI task to
+    # return; with no ceiling, one handler that doesn't return holds the
+    # process until the kubelet's SIGKILL at the end of the termination
+    # grace period, and the pod's exit looks like a hang rather than a
+    # roll. 15 s leaves room inside the default 30 s grace for the
+    # in-flight calls to unwind first.
+    graceful_shutdown = int(os.environ.get("GRACEFUL_SHUTDOWN_SECONDS", "15"))
+
     uvicorn.run(
         "pipecat_aplisay.worker:app",
         host=host,
@@ -66,6 +75,7 @@ def main() -> None:
         log_level=os.environ.get("LOGLEVEL", "info").lower(),
         reload=reload,
         reload_dirs=reload_dirs,
+        timeout_graceful_shutdown=graceful_shutdown,
     )
 
 
