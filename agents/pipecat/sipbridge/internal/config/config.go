@@ -53,9 +53,16 @@ type Config struct {
 	// worker WS) after this many seconds with no inbound RTP. Catches
 	// Twilio's Elastic SIP Trunk "silent hangup" behaviour (no BYE,
 	// media just stops) and any other peer that drops media without
-	// signalling. 0 disables. Default 10 — long enough to ride out
-	// brief network blips (typical packet-loss bursts are 1–3s) but
-	// short enough that the bot doesn't keep talking into the void.
+	// signalling. Default 10 — long enough to ride out brief network
+	// blips (typical packet-loss bursts are 1–3s) but short enough that
+	// the bot doesn't keep talking into the void.
+	//
+	// 0 does NOT disable the watchdog: call.New treats 0 as "unset" and
+	// substitutes the 10 s default, so there is no supported way to turn
+	// it off from config. That is deliberate — the watchdog is the last
+	// line of defence against a peer that stops media without a BYE, and
+	// several teardown paths depend on it. Set a large value if you want
+	// it effectively out of the way.
 	RTPTimeoutSeconds int
 	// RTPSilenceFill: transmit a frame of codec silence every 20 ms while
 	// the bot has nothing to say, rather than suppressing the packet and
@@ -128,10 +135,10 @@ type Config struct {
 // an error if a required value is missing.
 func Load() (*Config, error) {
 	cfg := &Config{
-		SIPSignalIP:    env("SIPBRIDGE_SIP_SIGNAL_IP", ""),
-		SIPSignalPort:  envInt("SIPBRIDGE_SIP_SIGNAL_PORT", 5060),
-		SIPBindIP:      env("SIPBRIDGE_SIP_BIND_IP", ""),
-		UDPDisabled:    envBool("SIPBRIDGE_SIP_UDP_DISABLED", false),
+		SIPSignalIP:       env("SIPBRIDGE_SIP_SIGNAL_IP", ""),
+		SIPSignalPort:     envInt("SIPBRIDGE_SIP_SIGNAL_PORT", 5060),
+		SIPBindIP:         env("SIPBRIDGE_SIP_BIND_IP", ""),
+		UDPDisabled:       envBool("SIPBRIDGE_SIP_UDP_DISABLED", false),
 		TLSSignalPort:     envInt("SIPBRIDGE_SIP_TLS_PORT", 5061),
 		TLSCertFile:       env("SIPBRIDGE_TLS_CERT_FILE", ""),
 		TLSKeyFile:        env("SIPBRIDGE_TLS_KEY_FILE", ""),
@@ -143,17 +150,17 @@ func Load() (*Config, error) {
 		SIPAuthUsername:   env("PIPECAT_SIP_USERNAME", ""),
 		SIPAuthPassword:   env("PIPECAT_SIP_PASSWORD", ""),
 		SIPFromDomain:     env("PIPECAT_SIP_FROM_DOMAIN", ""),
-		MediaIP:        env("SIPBRIDGE_MEDIA_IP", ""),
-		MediaBindIP:    env("SIPBRIDGE_MEDIA_BIND_IP", ""),
+		MediaIP:           env("SIPBRIDGE_MEDIA_IP", ""),
+		MediaBindIP:       env("SIPBRIDGE_MEDIA_BIND_IP", ""),
 		RTPPortMin:        envInt("SIPBRIDGE_RTP_PORT_MIN", 10000),
 		RTPPortMax:        envInt("SIPBRIDGE_RTP_PORT_MAX", 20000),
 		RTPTimeoutSeconds: envInt("SIPBRIDGE_RTP_TIMEOUT_SECONDS", 10),
 		RTPSilenceFill:    envBool("SIPBRIDGE_RTP_SILENCE_FILL", true),
-		WorkerWSBase:   env("SIPBRIDGE_WORKER_WS_BASE", "ws://pipecat-worker:8082"),
-		APIBindAddr:    env("SIPBRIDGE_API_BIND_ADDR", ":8090"),
-		APIBearerToken: env("SIPBRIDGE_API_TOKEN", ""),
-		LogLevel:        env("SIPBRIDGE_LOG_LEVEL", "info"),
-		SIPTraceEnabled: envBool("SIPBRIDGE_SIP_TRACE", false),
+		WorkerWSBase:      env("SIPBRIDGE_WORKER_WS_BASE", "ws://pipecat-worker:8082"),
+		APIBindAddr:       env("SIPBRIDGE_API_BIND_ADDR", ":8090"),
+		APIBearerToken:    env("SIPBRIDGE_API_TOKEN", ""),
+		LogLevel:          env("SIPBRIDGE_LOG_LEVEL", "info"),
+		SIPTraceEnabled:   envBool("SIPBRIDGE_SIP_TRACE", false),
 	}
 	// TLS is on if either a real cert pair is provided OR we're
 	// allowed to auto-generate a self-signed one. Disable both knobs
