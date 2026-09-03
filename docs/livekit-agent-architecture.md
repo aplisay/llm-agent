@@ -731,6 +731,7 @@ The catalog below covers every option that affects runtime behavior. The "Level"
 |---|---|---|---|
 | `voiceMode` | Agent | Override mode selection (pipeline / realtime) | 4.1 |
 | `stt` | Agent | STT configuration (vendor, language) | 4.3, 4.4 |
+| `stt.aux` | Agent | Auxiliary ("second opinion") STT over the caller's audio, logged as `user-aux` and metered as `stt-aux` (vendor, language, enabled) | [auxiliary-stt.md](auxiliary-stt.md) |
 | `tts` | Agent | TTS configuration (vendor, voice, language) | 4.3, 4.4 |
 | `vendorSpecific` | Agent | Free-form provider passthrough | 4.6 |
 | `greeting` | Agent | Uninterruptible opening greeting (text or instructions) | 4.5 |
