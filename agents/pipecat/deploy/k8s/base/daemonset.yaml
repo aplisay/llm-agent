@@ -46,7 +46,17 @@ spec:
       #   - key: aplisay.com/pipecat-sip
       #     operator: Exists
       #     effect: NoSchedule
-      terminationGracePeriodSeconds: 30
+      # Long enough for the drain below to let calls finish. A rolling
+      # update otherwise cuts every in-progress call on the node the
+      # instant SIGTERM lands: uvicorn sends close(1012) to every open
+      # WebSocket, and sipbridge abandons every dialog without a BYE. The
+      # preStop hook on the worker holds the pod open while calls drain,
+      # so this has to exceed the hook's own budget.
+      #
+      # 20 min is a deliberate ceiling on ONE node's roll: the hook exits
+      # as soon as the node is empty, so a quiet node still rolls in
+      # seconds. maxUnavailable: 1 means a fleet roll is node-by-node.
+      terminationGracePeriodSeconds: 1260
 
       initContainers:
         # 1. Discover the node's public IPv4 (advertised in SDP for RTP) and
@@ -147,6 +157,46 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
             timeoutSeconds: 3
+          # Drain before dying. The kubelet takes the pod out of the
+          # Service and runs this hook, and only sends SIGTERM when it
+          # returns (or the grace period runs out). We poll our own
+          # /healthz until it reports no live calls, so in-progress calls
+          # finish on their own terms rather than being cut mid-sentence.
+          #
+          # The ceiling (LIFECYCLE_DRAIN_SECONDS) must stay under
+          # terminationGracePeriodSeconds above, so the process still
+          # gets its own SIGTERM handling — uvicorn's bounded graceful
+          # shutdown — rather than being SIGKILLed straight from the hook.
+          #
+          # Python rather than curl: the worker image is python:slim and
+          # carries no HTTP client of its own.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - python
+                  - -c
+                  - |
+                    import json, os, sys, time, urllib.request
+                    deadline = time.monotonic() + float(os.environ.get("LIFECYCLE_DRAIN_SECONDS", "1200"))
+                    def live():
+                        with urllib.request.urlopen("http://127.0.0.1:8082/healthz", timeout=3) as r:
+                            return json.load(r)["live_calls"]
+                    print("preStop: draining; waiting for live calls to end", flush=True)
+                    while time.monotonic() < deadline:
+                        try:
+                            n = live()
+                        except Exception as e:
+                            # Cannot tell -> stop waiting, rather than burn
+                            # the whole grace period on a worker that has
+                            # already gone.
+                            print(f"preStop: no health reading ({e}); proceeding", flush=True)
+                            sys.exit(0)
+                        if n == 0:
+                            print("preStop: node empty", flush=True)
+                            sys.exit(0)
+                        time.sleep(5)
+                    print("preStop: drain deadline reached with calls still live", flush=True)
           resources:
             requests:
               cpu: 250m
