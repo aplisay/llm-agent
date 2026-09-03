@@ -94,7 +94,7 @@ Pipecat), and **ci** (build and release pipeline).
   and queue depth during agent speech.
 - **[pipecat] Output cushioning** adds configurable queue target/cushioning and
   pause stretching to reduce mid-speech starvation without changing voiced audio.
-- **[pipecat + sipbridge] Underrun logging** is summarized once per call, with
+- **[pipecat + sipbridge] Underrun logging** is summarised once per call, with
   optional per-event logging via `WEBRTC_UNDERRUN_LOG_MS`.
 - **[pipecat] Trickle ICE routing** forwards ICE PATCHes to the node that owns the
   peer connection when a load-balanced request lands elsewhere.
@@ -109,7 +109,7 @@ Pipecat), and **ci** (build and release pipeline).
 - **[sipbridge] G.711 A-law encoding** has been rewritten and checked against
   standard expansion tables, vectors, and round-trip monotonicity.
 - **[sipbridge] RTP silence fill** keeps media flowing through silent slots, with
-  `SIPBRIDGE_RTP_SILENCE_FILL=false` available to restore prior behavior.
+  `SIPBRIDGE_RTP_SILENCE_FILL=false` available to restore prior behaviour.
 - **[sipbridge] TLS outbound Contact** now advertises the correct TLS Contact for
   outbound legs.
 - **[sipbridge] Pacer starvation reporting** counts silence-fill runs that end
@@ -121,10 +121,10 @@ Pipecat), and **ci** (build and release pipeline).
 
 - **[core + livekit + pipecat] `options.fallback.message`** adds a fixed TTS
   fallback announcement after model fallback is exhausted and before number
-  fallback. The synthesized audio is cached in GCS by content, voice, vendor, and
+  fallback. The synthesised audio is cached in GCS by content, voice, vendor, and
   language.
 - **[pipecat] Confidence tone output** now uses the transport's sample rate, and a
-  final output-rate guard normalizes outbound frames before transport output.
+  final output-rate guard normalises outbound frames before transport output.
 - **[core + livekit + pipecat] Ultravox interruption defaults** now use
   `minimumInterruptionDuration: 0.48s` when no explicit
   `vendorSpecific.ultravox.vadSettings` block is supplied. Pipecat now honours
@@ -142,7 +142,7 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] `GET /api/me/rates`** returns the caller organisation's current rate
   card behind `usage:read`, including a `rated: false` state when no card applies.
 - **[core] Call cost totals**: `GET /calls`, `GET /agents/{agentId}/calls`, and
-  `GET /calls/{callId}` return finalized call cost in `costMicros`, or `null`
+  `GET /calls/{callId}` return finalised call cost in `costMicros`, or `null`
   when not yet costed.
 - **[core] `agentLimit`** is now editable through organisation billing controls.
 - **[core] `billingService`** can assign an organisation's rate card. New
@@ -208,7 +208,7 @@ Pipecat), and **ci** (build and release pipeline).
   properties from Pipecat.
 - **[core] `tools/purge-user`** now connects to the front-end database using the
   application's client-certificate mTLS env file.
-- **[livekit] COS runner** initialization added.
+- **[livekit] COS runner** initialisation added.
 
 ## Upgrade notes
 
