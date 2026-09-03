@@ -1,5 +1,5 @@
 import { setupRealDatabase, teardownRealDatabase, databaseStarted } from './setup/database-test-wrapper.js';
-import { buildRateComponents, TTS_ENGINES } from '../lib/rate-components.js';
+import { buildRateComponents, STT_ENGINES, TTS_ENGINES } from '../lib/rate-components.js';
 import { resolveRowCost } from '../lib/rates.js';
 
 // Phase-3 catalogue: the priceable-component roster /api/rate-components advertises,
@@ -47,6 +47,36 @@ describe('rate-components catalogue', () => {
     expect(comps.filter((c) => c.dim === 'tts').map((c) => c.match.provider).sort()).toEqual([...TTS_ENGINES].sort());
     expect(byKey('tts:elevenlabs').units).toEqual(['character', 'minute']);
     expect(byKey('stt:deepgram').units).toEqual(['minute', 'character']);
+    // Every STT engine either worker can be pointed at, primary or auxiliary.
+    expect(comps.filter((c) => c.key.startsWith('stt:')).map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+  });
+
+  it('advertises the auxiliary STT (options.stt.aux) as its own stt-aux component per engine', () => {
+    const aux = comps.filter((c) => c.key.startsWith('stt-aux:'));
+    expect(aux.map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+    expect(byKey('stt-aux:deepgram')).toEqual({
+      dim: 'stt', key: 'stt-aux:deepgram', label: 'Auxiliary STT · deepgram',
+      match: { technology: 'stt-aux', provider: 'deepgram' }, units: ['minute', 'character'], available: true,
+    });
+  });
+
+  it('an stt-aux row is priced only by an stt-aux line, never by the primary stt line', () => {
+    const line = (comp, unit, priceMicros) => ({ dim: comp.dim, match: comp.match, unit, priceMicros });
+    const auxRow = { technology: 'stt-aux', provider: 'deepgram', detail: 'deepgram/nova-3', unit: 'milliseconds', quantity: 60000 };
+    const primaryOnly = { detail: { lines: [line(byKey('stt:deepgram'), 'minute', 100000)] } };
+    expect(resolveRowCost(auxRow, primaryOnly)).toEqual({ costMicros: null, status: 'no_line', breakdown: [] });
+    const both = { detail: { lines: [
+      line(byKey('stt:deepgram'), 'minute', 100000),
+      line(byKey('stt-aux:deepgram'), 'minute', 70000),
+    ] } };
+    const { costMicros, status, breakdown } = resolveRowCost(auxRow, both);
+    expect(status).toBe('matched');
+    expect(costMicros).toBe(70000);
+    expect(breakdown).toHaveLength(1);
+    expect(breakdown[0].match).toEqual({ technology: 'stt-aux', provider: 'deepgram' });
+    // …and the primary row is untouched by the aux line.
+    const primaryRow = { ...auxRow, technology: 'stt' };
+    expect(resolveRowCost(primaryRow, both).costMicros).toBe(100000);
   });
 
   it('the catalogue match templates resolve a real Ultravox voice row on BOTH dimensions', () => {
