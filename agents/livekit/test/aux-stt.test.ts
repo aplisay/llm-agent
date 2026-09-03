@@ -43,6 +43,15 @@ test("parseAuxSttOption: true / {} / object normalise", () => {
   assert.deepEqual(parseAuxSttOption({ stt: { aux: { vendor: "  ", language: "" } } }), {});
 });
 
+test("parseOutputSttOption / parseAuxSttOption share one normaliser but read different blocks", async () => {
+  const { parseOutputSttOption } = await import("../lib/aux-stt.js");
+  const options = { stt: { aux: { vendor: "assemblyai" } }, tts: { output: { vendor: "deepgram" } } };
+  assert.deepEqual(parseAuxSttOption(options), { vendor: "assemblyai" });
+  assert.deepEqual(parseOutputSttOption(options), { vendor: "deepgram" });
+  assert.equal(parseOutputSttOption({ stt: { aux: {} } }), null);
+  assert.equal(parseAuxSttOption({ tts: { output: {} } }), null);
+});
+
 test("auxSttAgent: aux block stands in for stt; language inherits stt then tts; nested aux dropped", () => {
   const agent = {
     id: "a",

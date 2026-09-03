@@ -31,11 +31,19 @@ import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
 import {
   armAuxStt,
   parseAuxSttOption,
+  parseOutputSttOption,
   resolveAuxSttVendor,
+  resolveOutputSttVendor,
   AUX_STT_LOG_TYPE,
   AUX_STT_TECHNOLOGY,
   type AuxSttHandle,
 } from "./aux-stt.js";
+import {
+  armOutputStt,
+  OUTPUT_STT_LOG_TYPE,
+  OUTPUT_STT_TECHNOLOGY,
+  type OutputSttHandle,
+} from "./output-stt.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
 export async function runAgentWorker({
@@ -251,6 +259,11 @@ export async function runAgentWorker({
    * the agent's media is detached after a bridged transfer and on teardown.
    */
   let auxStt: AuxSttHandle | null = null;
+  /**
+   * Output audit STT over the agent's own audio (options.tts.output): a tee on
+   * the session's audio output, same lifecycle as the caller-side aux STT.
+   */
+  let outputStt: OutputSttHandle | null = null;
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
   let maxDuration: number = 305000; // Default value
@@ -560,13 +573,17 @@ export async function runAgentWorker({
   // neither merged with nor gated like the primary `stt` meter above — a
   // realtime model bundles its own recognition into the model charge, but the
   // auxiliary engine is a real, separate cost on every voice mode.
-  const addAuxMeter = (vendor: VendorDetail, unit: string, quantity: number): void => {
+  const addSideMeter = (
+    technology: string,
+    vendor: VendorDetail,
+    unit: string,
+    quantity: number,
+  ): void => {
     if (!quantity || quantity <= 0) return;
-    const detail = vendor.detail || vendor.vendor || "aux";
-    const key = `${AUX_STT_TECHNOLOGY}|${detail}`;
+    const detail = vendor.detail || vendor.vendor || technology;
+    const key = `${technology}|${detail}`;
     const meter =
-      usageMeters.get(key) ||
-      { technology: AUX_STT_TECHNOLOGY, provider: vendor.vendor, detail, units: {} };
+      usageMeters.get(key) || { technology, provider: vendor.vendor, detail, units: {} };
     meter.units[unit] = (meter.units[unit] || 0) + quantity;
     usageMeters.set(key, meter);
   };
@@ -685,7 +702,7 @@ export async function runAgentWorker({
         if (getConsultInProgress()) return;
         sendMessage({ [AUX_STT_LOG_TYPE]: text }, at);
       },
-      onUsage: (unit, quantity) => addAuxMeter(vendor, unit, quantity),
+      onUsage: (unit, quantity) => addSideMeter(AUX_STT_TECHNOLOGY, vendor, unit, quantity),
     });
   };
   /** Resolves once the engine's last usage report had its chance to land (see AuxSttHandle.dispose). */
@@ -693,6 +710,37 @@ export async function runAgentWorker({
     if (!auxStt) return Promise.resolve();
     const handle = auxStt;
     auxStt = null;
+    return handle.dispose();
+  };
+
+  /**
+   * (Re)arm the output audit for `agentDef` on a started session: a tee on the
+   * session's audio output (see output-stt.ts) — installed only when
+   * options.tts.output is set; the session is untouched otherwise. Finals are
+   * logged as `agent-speech` through sendMessage, like every other transcript
+   * entry, and metered as `stt-output`.
+   */
+  const armOutputSttFor = (agentDef: Agent, s: voice.AgentSession | null): void => {
+    if (outputStt) {
+      void outputStt.dispose();
+      outputStt = null;
+    }
+    const config = parseOutputSttOption(agentDef?.options);
+    if (!config || !s) return;
+    const vendor = resolveOutputSttVendor(agentDef, config);
+    outputStt = armOutputStt({
+      session: s as any,
+      roomName: room.name,
+      agent: agentDef,
+      config,
+      onTranscript: (text, at) => sendMessage({ [OUTPUT_STT_LOG_TYPE]: text }, at),
+      onUsage: (unit, quantity) => addSideMeter(OUTPUT_STT_TECHNOLOGY, vendor, unit, quantity),
+    });
+  };
+  const disposeOutputStt = (): Promise<void> => {
+    if (!outputStt) return Promise.resolve();
+    const handle = outputStt;
+    outputStt = null;
     return handle.dispose();
   };
 
@@ -774,9 +822,9 @@ export async function runAgentWorker({
       }
 
 
-      // Stop the auxiliary STT first — and wait for the engine's last usage
-      // report — so its final counts are in the meters the flush below writes.
-      await disposeAuxStt();
+      // Stop the side STTs first — and wait for each engine's last usage
+      // report — so their final counts are in the meters the flush below writes.
+      await Promise.all([disposeAuxStt(), disposeOutputStt()]);
 
       // Flush accumulated usage (tokens / characters / audio) to the ledger
       // before ending the call so it lands as the finalised session total.
@@ -1301,9 +1349,10 @@ export async function runAgentWorker({
         record: false,
         inputOptions: { closeOnDisconnect: true },
       });
-      // The incoming agent's own options.stt.aux applies from here (a takeover
-      // also re-arms it: the caller is talking to an agent again).
+      // The incoming agent's own side-STT options apply from here (a takeover
+      // also re-arms them: the caller is talking to an agent again).
       armAuxSttFor(newAgentDef);
+      armOutputSttFor(newAgentDef, newSession);
 
       // The incoming agent speaks next. Ultravox realtime greets natively via
       // firstSpeakerSettings; other stacks need an explicit first turn.
@@ -1537,6 +1586,7 @@ export async function runAgentWorker({
     // agent call. A takeover re-arms it via restartWithAgent.
     onPrimaryAgentDetached: () => {
       void disposeAuxStt();
+      void disposeOutputStt();
     },
   });
 
@@ -1897,8 +1947,10 @@ export async function runAgentWorker({
         );
         logger.info({ callId: call.id }, "session started");
 
-        // Auxiliary ("second opinion") STT on the caller's track, if configured.
+        // Side STTs, each only if configured: the auxiliary ("second opinion")
+        // STT on the caller's track, and the output audit on the session's output.
         armAuxSttFor(agent);
+        armOutputSttFor(agent, session);
 
         // ---- Inactivity "kick" ----
         // When options.inactivity is configured, the session was built with

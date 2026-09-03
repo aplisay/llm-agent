@@ -174,6 +174,16 @@ export interface Agent {
     
       language?: string;
       /**
+       * Output audit STT: an independent engine run over the agent's OWN audio,
+       * logged as `agent-speech` and metered as `stt-output`. Same shape as
+       * `stt`; `enabled: false` switches it off. See lib/output-stt.ts.
+       */
+      output?: {
+        enabled?: boolean;
+        language?: string;
+        vendor?: string;
+      };
+      /**
        * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
        * `google` uses Gemini TTS on Node (`@livekit/agents-plugin-google`), not Google Cloud
        * voice ids (`en-GB-Standard-O`). Map timbre with `LIVEKIT_PIPELINE_GEMINI_TTS_VOICE`

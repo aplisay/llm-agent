@@ -1,4 +1,6 @@
-"""Auxiliary ("second opinion") speech recognition — ``options.stt.aux``.
+"""Side STT taps: the auxiliary ("second opinion") recognition of the CALLER
+(``options.stt.aux``) and the output audit recognition of the AGENT
+(``options.tts.output``).
 
 Runs a second, independent STT engine over the caller's audio alongside the
 agent's own recognition (the pipeline STT, or a realtime model's built-in
@@ -33,8 +35,20 @@ second engine's consumption is neither merged with nor gated like the primary
 ``stt`` meter (a realtime model bundles its own recognition into the model
 charge; the auxiliary engine is a real extra cost on every voice mode).
 
-Everything here is best-effort: an auxiliary STT failure must never disturb
-the call. See docs/auxiliary-stt.md.
+Output audit (``options.tts.output``): the same tap class, pointed at the
+agent's own ``TTSAudioRawFrame``s immediately before ``transport.output()`` —
+the synthesised (pipeline) or model-produced (realtime) audio the caller
+actually hears. Its finals are logged as ``agent-speech`` beside the ``agent``
+turn the model produced, and metered as ``stt-output``. Only TTS audio is
+tapped: the confidence tone, a fixed fallback message and relayed peer audio are
+plain ``OutputAudioRawFrame``s and are ignored.
+
+Neither tap exists on a call unless its option is set: ``voice_session`` builds
+a tap only for a configured option, and the engine is built lazily on the first
+audio frame inside it.
+
+Everything here is best-effort: a side STT failure must never disturb the call.
+See docs/auxiliary-stt.md.
 """
 
 from __future__ import annotations
@@ -43,7 +57,7 @@ import asyncio
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
-from pipecat.frames.frames import CancelFrame, EndFrame, InputAudioRawFrame
+from pipecat.frames.frames import CancelFrame, EndFrame, InputAudioRawFrame, TTSAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from .bridge_transcript import SttStream
@@ -52,19 +66,19 @@ from .bridge_transcript import SttStream
 AUX_STT_TECHNOLOGY = "stt-aux"
 #: Transaction-log type for auxiliary transcripts (next to the primary ``user``).
 AUX_STT_LOG_TYPE = "user-aux"
-#: Default engine when ``options.stt.aux.vendor`` is unset — the pipeline default.
+#: Ledger technology for the output audit's usage rows.
+OUTPUT_STT_TECHNOLOGY = "stt-output"
+#: Transaction-log type for the output audit's transcripts (next to ``agent``).
+OUTPUT_STT_LOG_TYPE = "agent-speech"
+#: Default engine when a side option's ``vendor`` is unset — the pipeline default.
 DEFAULT_AUX_STT_VENDOR = "deepgram"
 
 
-def parse_aux_stt_option(options: Optional[dict]) -> Optional[dict]:
-    """Normalise ``options.stt.aux`` to ``None`` (off) or
+def _parse_side_stt_block(raw: Any) -> Optional[dict]:
+    """Normalise one side-STT block to ``None`` (off) or
     ``{"vendor": Optional[str], "language": Optional[str]}``. Lenient — the
     server validated the shape at save time: absent / ``False`` /
     ``enabled: False`` / malformed → off; ``True`` or ``{}`` → defaults."""
-    stt_opts = (options or {}).get("stt")
-    if not isinstance(stt_opts, dict):
-        return None
-    raw = stt_opts.get("aux")
     if raw is None or raw is False:
         return None
     if raw is True:
@@ -79,20 +93,34 @@ def parse_aux_stt_option(options: Optional[dict]) -> Optional[dict]:
     }
 
 
-def aux_stt_agent(agent: dict, config: dict) -> dict:
-    """The agent with ``options.stt.aux`` standing in for ``options.stt``, so
-    ``build_stt_service`` constructs the auxiliary engine exactly as it would
-    the primary one. Language falls back to the agent's own ``stt.language``,
-    then ``tts.language`` (the platform's declare-once convention); the nested
-    ``aux`` block itself is dropped."""
+def parse_aux_stt_option(options: Optional[dict]) -> Optional[dict]:
+    """``options.stt.aux`` → side-STT config or ``None`` (off)."""
+    stt_opts = (options or {}).get("stt")
+    if not isinstance(stt_opts, dict):
+        return None
+    return _parse_side_stt_block(stt_opts.get("aux"))
+
+
+def parse_output_stt_option(options: Optional[dict]) -> Optional[dict]:
+    """``options.tts.output`` → side-STT config or ``None`` (off)."""
+    tts_opts = (options or {}).get("tts")
+    if not isinstance(tts_opts, dict):
+        return None
+    return _parse_side_stt_block(tts_opts.get("output"))
+
+
+def _side_stt_agent(agent: dict, config: dict, language_order: tuple[str, ...]) -> dict:
+    """The agent with the side block standing in for ``options.stt``, so
+    ``build_stt_service`` constructs the side engine exactly as it would the
+    primary one. Language falls back through ``language_order`` (the
+    platform's declare-once convention); nested side blocks are dropped."""
     options = dict(agent.get("options") or {})
-    stt_opts = options.get("stt") or {}
-    tts_opts = options.get("tts") or {}
-    language = (
-        config.get("language")
-        or (stt_opts.get("language") if isinstance(stt_opts, dict) else None)
-        or (tts_opts.get("language") if isinstance(tts_opts, dict) else None)
-    )
+    language = config.get("language")
+    for key in language_order:
+        if language:
+            break
+        block = options.get(key)
+        language = block.get("language") if isinstance(block, dict) else None
     block: dict = {}
     if config.get("vendor"):
         block["vendor"] = config["vendor"]
@@ -102,12 +130,22 @@ def aux_stt_agent(agent: dict, config: dict) -> dict:
     return {**agent, "options": options}
 
 
-def aux_stt_vendor(agent: dict, config: dict) -> dict:
-    """Canonical ``{vendor, model}`` for the auxiliary engine's usage rows:
-    ``vendor`` is the bare engine name (what the rate lines match on);
-    ``model`` is ``vendor/model`` when the vendor string was scoped
-    (``deepgram/nova-3``), else ``None``."""
-    stt_opts = (aux_stt_agent(agent, config).get("options") or {}).get("stt") or {}
+def aux_stt_agent(agent: dict, config: dict) -> dict:
+    """Caller side: language falls back to ``stt.language`` then ``tts.language``."""
+    return _side_stt_agent(agent, config, ("stt", "tts"))
+
+
+def output_stt_agent(agent: dict, config: dict) -> dict:
+    """Agent side: the agent speaks in its TTS language, so ``tts.language`` first."""
+    return _side_stt_agent(agent, config, ("tts", "stt"))
+
+
+def _side_stt_vendor(effective_agent: dict) -> dict:
+    """Canonical ``{vendor, model}`` for a side engine's usage rows: ``vendor``
+    is the bare engine name (what the rate lines match on); ``model`` is
+    ``vendor/model`` when the vendor string was scoped (``deepgram/nova-3``),
+    else ``None``."""
+    stt_opts = (effective_agent.get("options") or {}).get("stt") or {}
     raw = str(stt_opts.get("vendor") or DEFAULT_AUX_STT_VENDOR)
     head = raw.split(":", 1)[0]
     vendor = head.split("/", 1)[0].strip().lower()
@@ -115,21 +153,33 @@ def aux_stt_vendor(agent: dict, config: dict) -> dict:
     return {"vendor": vendor, "model": f"{vendor}/{model}" if model else None}
 
 
+def aux_stt_vendor(agent: dict, config: dict) -> dict:
+    return _side_stt_vendor(aux_stt_agent(agent, config))
+
+
+def output_stt_vendor(agent: dict, config: dict) -> dict:
+    return _side_stt_vendor(output_stt_agent(agent, config))
+
+
 OnFinal = Callable[[str], Awaitable[None]]
 OnUsage = Callable[[str, int], None]
 
 
 class AuxSttTap(FrameProcessor):
-    """Pass-through processor that copies caller audio into a side STT-only
-    pipeline and forwards its final transcripts + usage.
+    """Pass-through processor that copies one class of audio frame into a side
+    STT-only pipeline and forwards its final transcripts + usage. Instantiated
+    twice over: on the caller's ``InputAudioRawFrame``s (the auxiliary STT) and
+    on the agent's ``TTSAudioRawFrame``s (the output audit).
 
     Args:
-        stt_factory: builds the auxiliary STT service (called once, lazily, on
-            the first audio frame so a build failure only costs the second
-            opinion, never the call).
+        stt_factory: builds the side STT service (called once, lazily, on the
+            first audio frame so a build failure only costs the side transcript,
+            never the call).
         on_final: awaited with each non-empty final transcript.
         on_usage: called with ``("milliseconds", n)`` as audio is streamed to
             the engine and ``("characters", n)`` per final transcript.
+        frame_cls: the audio frame class to tap (default: the caller's input).
+        label: log prefix (``auxStt`` / ``outputStt``).
         stream_factory: test seam — builds the side pipeline; defaults to
             :class:`SttStream`.
     """
@@ -140,10 +190,14 @@ class AuxSttTap(FrameProcessor):
         stt_factory: Callable[[], Any],
         on_final: OnFinal,
         on_usage: Optional[OnUsage] = None,
+        frame_cls: type = InputAudioRawFrame,
+        label: str = "auxStt",
         stream_factory: Optional[Callable[..., Any]] = None,
         name: Optional[str] = None,
     ) -> None:
-        super().__init__(name=name or "AuxSttTap")
+        super().__init__(name=name or f"{label}Tap")
+        self._frame_cls = frame_cls
+        self._label = label
         self._stt_factory = stt_factory
         self._on_final = on_final
         self._on_usage: OnUsage = on_usage or (lambda _unit, _qty: None)
@@ -169,7 +223,7 @@ class AuxSttTap(FrameProcessor):
 
     async def process_frame(self, frame, direction: FrameDirection):  # noqa: ANN001
         await super().process_frame(frame, direction)
-        if isinstance(frame, InputAudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
+        if isinstance(frame, self._frame_cls) and direction == FrameDirection.DOWNSTREAM:
             await self._tap_audio(frame)
         elif isinstance(frame, (EndFrame, CancelFrame)):
             self._schedule_stop()
@@ -190,7 +244,7 @@ class AuxSttTap(FrameProcessor):
                 )
                 await self._stream.start()
                 logger.info(
-                    f"auxStt: auxiliary transcription armed "
+                    f"{self._label}: side transcription armed "
                     f"({frame.sample_rate} Hz, {frame.num_channels} ch)"
                 )
             if frame.sample_rate != self._sample_rate or frame.num_channels != self._num_channels:
@@ -200,7 +254,7 @@ class AuxSttTap(FrameProcessor):
                 if not self._rate_warned:
                     self._rate_warned = True
                     logger.warning(
-                        "auxStt: input audio format changed mid-call; dropping mismatched frames"
+                        f"{self._label}: audio format changed mid-call; dropping mismatched frames"
                     )
                 return
             await self._stream.feed(frame.audio)
@@ -209,7 +263,7 @@ class AuxSttTap(FrameProcessor):
         except Exception as e:  # noqa: BLE001
             # Best-effort: the call carries on without the second opinion.
             self._failed = True
-            logger.warning(f"auxStt: auxiliary transcription failed (continuing without it): {e}")
+            logger.warning(f"{self._label}: side transcription failed (continuing without it): {e}")
             self._schedule_stop()
 
     def _report_audio(self) -> None:
@@ -229,7 +283,7 @@ class AuxSttTap(FrameProcessor):
         try:
             self._on_usage(unit, quantity)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"auxStt: usage report failed: {e}")
+            logger.debug(f"{self._label}: usage report failed: {e}")
 
     async def _collect_final(self, text: str) -> None:
         text = (text or "").strip()
@@ -246,7 +300,7 @@ class AuxSttTap(FrameProcessor):
         try:
             await self._on_final(text)
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"auxStt: transcript handler failed: {e}")
+            logger.warning(f"{self._label}: transcript handler failed: {e}")
 
     def _schedule_stop(self) -> None:
         """Tear the side pipeline down without holding up the main chain's own
@@ -261,13 +315,13 @@ class AuxSttTap(FrameProcessor):
         try:
             await stream.stop()
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"auxStt: side pipeline stop raised: {e}")
+            logger.debug(f"{self._label}: side pipeline stop raised: {e}")
         if not self._proven and self._pending_ms:
             logger.warning(
-                f"auxStt: the engine returned no transcript for {self._pending_ms} ms of "
+                f"{self._label}: the engine returned no transcript for {self._pending_ms} ms of "
                 "streamed audio (connection or credentials failure?); nothing metered"
             )
         logger.info(
-            f"auxStt: auxiliary transcription stopped "
+            f"{self._label}: side transcription stopped "
             f"({int(self._milliseconds)} ms streamed, {self._characters} chars)"
         )

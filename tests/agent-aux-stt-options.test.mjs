@@ -3,7 +3,7 @@ import {
   Agent, TransactionLog, User, Organisation,
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
-import { validateAuxSttShape } from '../lib/database.js';
+import { validateAuxSttShape, validateOutputSttShape } from '../lib/database.js';
 
 /**
  * options.stt.aux — the auxiliary ("second opinion") STT: shape validation at
@@ -134,6 +134,55 @@ describe('options.stt.aux (auxiliary STT)', () => {
         WHERE t.typname = 'enum_transaction_logs_type' ORDER BY e.enumsortorder`,
     );
     expect(labels.map((l) => l.enumlabel)).toEqual(expect.arrayContaining(['user', 'user-aux', 'agent']));
+  });
+
+  test('options.tts.output (output audit STT): same contract, its own gate and log type', async () => {
+    for (const [modelName, output] of [
+      [LIVEKIT_MODEL, {}],
+      [LIVEKIT_MODEL, { vendor: 'deepgram', language: 'en-GB' }],
+      [LIVEKIT_MODEL, { enabled: false }],
+      [PIPECAT_MODEL, { vendor: 'google' }],
+    ]) {
+      const res = await create({ modelName, prompt: 'front desk', options: { tts: { output } } });
+      expect([res.statusCode, JSON.stringify(res.body)]).toEqual([200, expect.any(String)]);
+    }
+    // Round-trips beside the agent's own tts settings, and beside stt.aux.
+    const options = {
+      tts: { vendor: 'ultravox', voice: 'Ciara', output: { vendor: 'deepgram' } },
+      stt: { aux: { vendor: 'assemblyai' } },
+    };
+    const created = await create({ modelName: LIVEKIT_MODEL, prompt: 'front desk', options });
+    expect(created.statusCode).toBe(200);
+    const got = makeRes(user);
+    await getAgent(makeReq({}, { agentId: created.body.id }), got);
+    expect(got.body.options.tts.output).toEqual({ vendor: 'deepgram' });
+    expect(got.body.options.stt.aux).toEqual({ vendor: 'assemblyai' });
+
+    for (const [output, pattern] of [
+      [true, /same shape as options\.stt/],
+      [{ provider: 'deepgram' }, /unknown field/],
+      [{ output: {} }, /unknown field/],
+      [{ enabled: 'on' }, /enabled must be a boolean/],
+      [{ language: 'English!' }, /BCP-47/],
+    ]) {
+      const res = await create({ modelName: LIVEKIT_MODEL, prompt: 'front desk', options: { tts: { output } } });
+      expect([res.statusCode, JSON.stringify(res.body)]).toEqual([400, expect.stringMatching(pattern)]);
+    }
+    const text = await create({ modelName: TEXT_MODEL, type: 'text', prompt: 'writer', options: { tts: { output: {} } } });
+    expect([text.statusCode, JSON.stringify(text.body)]).toEqual([400, expect.stringMatching(/does not support output audit STT/)]);
+
+    expect(TransactionLog.rawAttributes.type.values).toContain('agent-speech');
+    const [labels] = await TransactionLog.sequelize.query(
+      `SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid
+        WHERE t.typname = 'enum_transaction_logs_type'`,
+    );
+    expect(labels.map((l) => l.enumlabel)).toEqual(expect.arrayContaining(['agent', 'agent-speech']));
+
+    let err;
+    try { validateOutputSttShape({}, { hasOutputStt: false, modelName: 'm' }); } catch (e) { err = e; }
+    expect(err?.status).toBe(400);
+    expect(err?.message).toMatch(/Model m does not support output audit STT, but options\.tts\.output is set/);
+    expect(() => validateOutputSttShape({ vendor: 'deepgram/nova-3:en', enabled: true }, { hasOutputStt: true, modelName: 'm' })).not.toThrow();
   });
 
   test('validateAuxSttShape: pure validator contract', () => {

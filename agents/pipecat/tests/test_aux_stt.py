@@ -15,17 +15,24 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     InputAudioRawFrame,
+    OutputAudioRawFrame,
     TextFrame,
+    TTSAudioRawFrame,
 )
 from pipecat.tests.utils import run_test
 
 from pipecat_aplisay.aux_stt import (
     AUX_STT_LOG_TYPE,
     AUX_STT_TECHNOLOGY,
+    OUTPUT_STT_LOG_TYPE,
+    OUTPUT_STT_TECHNOLOGY,
     AuxSttTap,
     aux_stt_agent,
     aux_stt_vendor,
+    output_stt_agent,
+    output_stt_vendor,
     parse_aux_stt_option,
+    parse_output_stt_option,
 )
 
 
@@ -342,3 +349,102 @@ class TestCallSessionHandoff:
         session._send_message = _send_message
         asyncio.run(CallSession._on_aux_transcript(session, "hello there"))
         assert sent == [({"user-aux": "hello there"}, True)]
+
+
+# ---- the output audit (options.tts.output) -----------------------------------
+
+
+def test_output_constants_match_platform_contract():
+    assert OUTPUT_STT_LOG_TYPE == "agent-speech"
+    assert OUTPUT_STT_TECHNOLOGY == "stt-output"
+
+
+class TestParseOutputSttOption:
+    def test_shapes(self):
+        assert parse_output_stt_option(None) is None
+        assert parse_output_stt_option({"tts": {"voice": "Ciara"}}) is None
+        assert parse_output_stt_option({"tts": {"output": False}}) is None
+        assert parse_output_stt_option({"tts": {"output": {"enabled": False}}}) is None
+        assert parse_output_stt_option({"tts": "cartesia"}) is None
+        assert parse_output_stt_option({"tts": {"output": True}}) == {"vendor": None, "language": None}
+        assert parse_output_stt_option({"tts": {"output": {"vendor": " deepgram ", "language": "en-GB"}}}) == {
+            "vendor": "deepgram",
+            "language": "en-GB",
+        }
+
+    def test_agent_stand_in_prefers_the_tts_language(self):
+        agent = {"options": {"tts": {"voice": "Ciara", "language": "en-GB", "output": {}}, "stt": {"language": "fr"}}}
+        out = output_stt_agent(agent, {"vendor": "deepgram", "language": None})
+        assert out["options"]["stt"] == {"vendor": "deepgram", "language": "en-GB"}
+        assert out["options"]["tts"] == agent["options"]["tts"]  # untouched
+        assert output_stt_agent({"options": {"stt": {"language": "fr"}}}, {"vendor": None, "language": None})["options"]["stt"] == {"language": "fr"}
+        assert output_stt_vendor({}, {"vendor": "deepgram/nova-3:en", "language": None}) == {
+            "vendor": "deepgram",
+            "model": "deepgram/nova-3",
+        }
+
+
+def _tts(ms: int, rate: int = 16000) -> TTSAudioRawFrame:
+    return TTSAudioRawFrame(audio=b"\x00\x00" * (rate * ms // 1000), sample_rate=rate, num_channels=1)
+
+
+class TestOutputTap:
+    def setup_method(self):
+        _FakeStream.instances.clear()
+
+    def test_taps_only_the_agents_tts_audio(self):
+        async def run():
+            tap, finals, usage = _tap(frame_cls=TTSAudioRawFrame, label="outputStt")
+            tts1, tts2 = _tts(20), _tts(20)
+            tone = OutputAudioRawFrame(audio=b"\x00\x00" * 320, sample_rate=16000, num_channels=1)
+            caller = _audio(20, 16000)
+            down, _ = await run_test(
+                tap,
+                frames_to_send=[caller, tts1, tone, tts2],
+                expected_down_frames=[InputAudioRawFrame, TTSAudioRawFrame, OutputAudioRawFrame, TTSAudioRawFrame],
+            )
+            # Everything passed through untouched…
+            assert [type(d).__name__ for d in down] == [
+                "InputAudioRawFrame", "TTSAudioRawFrame", "OutputAudioRawFrame", "TTSAudioRawFrame",
+            ]
+            # …but only the two TTS frames reached the engine: not the caller's audio,
+            # not a plain OutputAudioRawFrame (tone / fixed message / relayed peer).
+            side = _FakeStream.instances[0]
+            assert side.fed == [tts1.audio, tts2.audio]
+            assert finals == ["hello there"]
+            assert sum(q for u, q in usage if u == "milliseconds") == 40
+
+        asyncio.run(run())
+
+
+class TestOutputWiring:
+    def test_tap_built_only_when_configured(self):
+        from pipecat_aplisay.voice_session import _output_stt_tap_for
+
+        async def on_transcript(_text):
+            pass
+
+        assert _output_stt_tap_for({"options": {}}, on_transcript, None) is None
+        assert _output_stt_tap_for({"options": {"tts": {"output": {}}}}, None, None) is None
+        tap = _output_stt_tap_for({"options": {"tts": {"output": {"vendor": "deepgram"}}}}, on_transcript, None)
+        assert isinstance(tap, AuxSttTap)
+        assert tap._frame_cls is TTSAudioRawFrame
+
+    def test_usage_lands_as_stt_output_and_transcript_as_agent_speech(self):
+        from pipecat_aplisay.call_session import CallSession
+        from pipecat_aplisay.usage import UsageMeteringObserver
+
+        session = CallSession.__new__(CallSession)
+        session._usage_observer = UsageMeteringObserver(services={})
+        CallSession._on_output_usage(session, "milliseconds", 900, {"vendor": "deepgram", "model": None})
+        rows = {(m["technology"], m["unit"]): m for m in session._usage_observer._meters.values()}
+        assert rows[("stt-output", "milliseconds")]["quantity"] == 900
+
+        sent = []
+
+        async def _send_message(message, *, is_final=True):
+            sent.append((message, is_final))
+
+        session._send_message = _send_message
+        asyncio.run(CallSession._on_output_transcript(session, "thank you for calling"))
+        assert sent == [({"agent-speech": "thank you for calling"}, True)]

@@ -1,5 +1,7 @@
 /**
- * Auxiliary ("second opinion") speech recognition — `options.stt.aux`.
+ * Side STT engines: the auxiliary ("second opinion") recognition of the CALLER
+ * (`options.stt.aux`, armed here) and the shared engine machinery the output
+ * audit of the AGENT (`options.tts.output`, see output-stt.ts) also runs on.
  *
  * Runs a second, independent STT engine over the caller's audio alongside the
  * agent's own recognition (the pipeline STT, or a realtime model's built-in
@@ -64,91 +66,303 @@ const USAGE_FLUSH_GRACE_MS = 300;
 /** Streamed audio below which "the engine returned nothing" is not worth a warning. */
 const SILENT_ENGINE_WARN_MS = 3000;
 
-/** Normalised `options.stt.aux`: the same fields as `options.stt`. */
-export interface AuxSttConfig {
+/** Normalised side-STT block: the same fields as `options.stt`. */
+export interface SideSttConfig {
   vendor?: string;
   language?: string;
 }
+/** @deprecated alias — the caller-side name. */
+export type AuxSttConfig = SideSttConfig;
+
+/** Which of the agent's own language declarations a side engine inherits, in order. */
+export type LanguageSource = "stt" | "tts";
+/** The caller side speaks the language the agent listens for. */
+const AUX_LANGUAGE_ORDER: LanguageSource[] = ["stt", "tts"];
+/** The agent side speaks in its TTS language. */
+const OUTPUT_LANGUAGE_ORDER: LanguageSource[] = ["tts", "stt"];
 
 /**
- * Normalise `options.stt.aux` to null (off) or `{vendor?, language?}`.
+ * Normalise one side-STT block to null (off) or `{vendor?, language?}`.
  * Lenient — the server validated the shape at save time. Absent / `false` /
  * `enabled: false` / malformed → off; `true` or `{}` → platform defaults.
  */
-export function parseAuxSttOption(options: any): AuxSttConfig | null {
-  const raw = options?.stt?.aux;
+export function parseSideSttBlock(raw: unknown): SideSttConfig | null {
   if (raw === undefined || raw === null || raw === false) return null;
   if (raw === true) return {};
-  if (typeof raw !== "object" || Array.isArray(raw) || raw.enabled === false) {
+  if (typeof raw !== "object" || Array.isArray(raw) || (raw as any).enabled === false) {
     return null;
   }
+  const block = raw as Record<string, unknown>;
   const vendor =
-    typeof raw.vendor === "string" && raw.vendor.trim() ? raw.vendor.trim() : undefined;
+    typeof block.vendor === "string" && block.vendor.trim() ? block.vendor.trim() : undefined;
   const language =
-    typeof raw.language === "string" && raw.language.trim()
-      ? raw.language.trim()
+    typeof block.language === "string" && block.language.trim()
+      ? block.language.trim()
       : undefined;
   return { ...(vendor ? { vendor } : {}), ...(language ? { language } : {}) };
 }
 
+/** `options.stt.aux` → config or null (off). */
+export function parseAuxSttOption(options: any): SideSttConfig | null {
+  return parseSideSttBlock(options?.stt?.aux);
+}
+
+/** `options.tts.output` → config or null (off). */
+export function parseOutputSttOption(options: any): SideSttConfig | null {
+  return parseSideSttBlock(options?.tts?.output);
+}
+
 /**
- * The agent with `options.stt.aux` standing in for `options.stt`, so the
- * pipeline STT resolvers build the auxiliary engine exactly as they would the
- * primary one. Language falls back to the agent's own `stt.language`, then
- * `tts.language` (the platform's declare-once convention); the nested `aux`
- * block itself is dropped.
+ * The agent with a side block standing in for `options.stt`, so the pipeline
+ * STT resolvers build the side engine exactly as they would the primary one.
+ * Language falls back through `order` (the platform's declare-once
+ * convention); the nested side blocks themselves are dropped.
  */
-export function auxSttAgent(agent: Agent, config: AuxSttConfig): Agent {
+export function sideSttAgent(agent: Agent, config: SideSttConfig, order: LanguageSource[]): Agent {
   const options: any = agent?.options || {};
-  const inherited =
-    (typeof options.stt?.language === "string" && options.stt.language.trim()) ||
-    (typeof options.tts?.language === "string" && options.tts.language.trim()) ||
-    undefined;
-  const language = config.language ?? inherited;
+  let language = config.language;
+  for (const source of order) {
+    if (language) break;
+    const declared = options[source]?.language;
+    language = typeof declared === "string" && declared.trim() ? declared.trim() : undefined;
+  }
   const sttBlock: Record<string, string> = {};
   if (config.vendor) sttBlock.vendor = config.vendor;
   if (language) sttBlock.language = language;
   return { ...agent, options: { ...options, stt: sttBlock } } as Agent;
 }
 
-/** Canonical billing `{vendor, detail}` for the auxiliary engine. */
-export function resolveAuxSttVendor(agent: Agent, config: AuxSttConfig): VendorDetail {
+export function auxSttAgent(agent: Agent, config: SideSttConfig): Agent {
+  return sideSttAgent(agent, config, AUX_LANGUAGE_ORDER);
+}
+
+export function outputSttAgent(agent: Agent, config: SideSttConfig): Agent {
+  return sideSttAgent(agent, config, OUTPUT_LANGUAGE_ORDER);
+}
+
+/** Canonical billing `{vendor, detail}` for a side engine. */
+export function resolveSideSttVendor(
+  agent: Agent,
+  config: SideSttConfig,
+  order: LanguageSource[],
+): VendorDetail {
   try {
-    return fromServiceString(resolvePipelineStt(auxSttAgent(agent, config)));
+    return fromServiceString(resolvePipelineStt(sideSttAgent(agent, config, order)));
   } catch {
     const vendor = config.vendor?.split("/")[0]?.split(":")[0]?.trim().toLowerCase();
     return vendor ? { vendor } : {};
   }
 }
 
+export function resolveAuxSttVendor(agent: Agent, config: SideSttConfig): VendorDetail {
+  return resolveSideSttVendor(agent, config, AUX_LANGUAGE_ORDER);
+}
+
+export function resolveOutputSttVendor(agent: Agent, config: SideSttConfig): VendorDetail {
+  return resolveSideSttVendor(agent, config, OUTPUT_LANGUAGE_ORDER);
+}
+
 /**
- * A fresh STT instance for the auxiliary engine — the pipeline's own
- * resolution applied to `options.stt.aux`: LiveKit Inference by default, or
- * the direct Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS.
+ * A fresh STT instance for a side engine — the pipeline's own resolution
+ * applied to the side block: LiveKit Inference by default, or the direct
+ * Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS.
  */
-export function buildAuxStt(agent: Agent, config: AuxSttConfig): stt.STT {
-  const effective = auxSttAgent(agent, config);
+export function buildSideStt(agent: Agent, config: SideSttConfig, order: LanguageSource[]): stt.STT {
+  const effective = sideSttAgent(agent, config, order);
   if (pipelineUsesProviderApiKeys()) {
     return buildProviderPipelineStt(effective);
   }
   return inference.STT.fromModelString(resolvePipelineStt(effective));
 }
 
-/** Live auxiliary transcription: usage so far + teardown. */
-export interface AuxSttHandle {
+export function buildAuxStt(agent: Agent, config: SideSttConfig): stt.STT {
+  return buildSideStt(agent, config, AUX_LANGUAGE_ORDER);
+}
+
+export function buildOutputStt(agent: Agent, config: SideSttConfig): stt.STT {
+  return buildSideStt(agent, config, OUTPUT_LANGUAGE_ORDER);
+}
+
+/** Usage counters shared by both sides. */
+export interface SideSttUsage {
+  /** Audio the engine reported accepting — what is metered. */
+  milliseconds: number;
+  /** Final transcript text the engine returned. */
+  characters: number;
+  /** Audio we handed to the engine (diagnostic only — never billed). */
+  streamedMilliseconds: number;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A running side STT engine fed frame by frame. */
+export interface SideSttEngine {
+  /** Feed one audio frame; a no-op once the engine is disposed or has failed. */
+  push(frame: AudioFrame): void;
   /**
-   * Stop the audio pump, ask the engine to report its last usage interval, then
-   * close it. Resolves once that report had its chance to land (bounded by
-   * {@link USAGE_FLUSH_GRACE_MS}), so a caller that flushes meters right after
-   * can await it. Idempotent.
+   * Ask the engine to report its last usage interval, then close it. Resolves
+   * once that report had its chance to land (bounded by
+   * {@link USAGE_FLUSH_GRACE_MS}). Idempotent.
    */
   dispose(): Promise<void>;
-  /**
-   * `milliseconds` = audio the engine reported accepting (what is metered);
-   * `characters` = final transcript text; `streamedMilliseconds` = audio we
-   * pumped at it (diagnostic only — it is not billed).
-   */
-  readonly usage: { milliseconds: number; characters: number; streamedMilliseconds: number };
+  readonly usage: SideSttUsage;
+}
+
+export interface StartSideSttEngineParams {
+  /** Log prefix: `auxStt` (caller side) or `outputStt` (agent side). */
+  label: string;
+  roomName: string;
+  /** What is being transcribed, for logs (a caller identity, "agent output"). */
+  subject: string;
+  /** The engine, already built (so a build failure is the caller's to handle). */
+  stt: stt.STT;
+  /** A final transcript, with the time it arrived. */
+  onTranscript: (text: string, at: Date) => void;
+  /** A usage delta for the side meter. */
+  onUsage: (unit: "milliseconds" | "characters", quantity: number) => void;
+  /** Invoked when the engine stops itself on a non-recoverable error. */
+  onEngineStopped?: () => void;
+}
+
+/**
+ * Run a side STT engine: consume its stream (finals → `onTranscript`, the
+ * engine's own audio-usage reports → `onUsage`, errors → logged; a
+ * non-recoverable one stops the engine), and expose `push` for whoever holds
+ * the audio — the caller-track pump below, or the output tee. Both sides meter
+ * what the ENGINE says it accepted, never what was pushed: the Inference
+ * stream and the Deepgram plugin report audio they actually sent to the vendor
+ * (the plugin every 5 s, flushed on demand) and nothing while a connection is
+ * failing, so a rejected credential cannot become a bill.
+ */
+export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEngine {
+  const { label, roomName, subject, stt: sttInstance, onTranscript, onUsage, onEngineStopped } = params;
+  const usage: SideSttUsage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
+  let disposed = false;
+  let disposing: Promise<void> | null = null;
+  const sttStream = sttInstance.stream();
+
+  const onMetrics = (m: any): void => {
+    const ms = Math.round(Number(m?.audioDurationMs) || 0);
+    if (ms <= 0) return;
+    usage.milliseconds += ms;
+    try {
+      onUsage("milliseconds", ms);
+    } catch (e) {
+      logger.debug({ e, roomName }, `${label}: usage report failed`);
+    }
+  };
+  const onEngineError = (ev: any): void => {
+    const recoverable = ev?.recoverable !== false;
+    logger.warn(
+      { roomName, subject, label: ev?.label, recoverable, err: ev?.error?.message ?? String(ev?.error) },
+      recoverable
+        ? `${label}: engine error (recoverable)`
+        : `${label}: engine failed (not recoverable); stopping the side transcription`,
+    );
+    if (!recoverable) {
+      void dispose();
+      try {
+        onEngineStopped?.();
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+  sttInstance.on("metrics_collected", onMetrics);
+  sttInstance.on("error", onEngineError);
+
+  const consumer = (async (): Promise<void> => {
+    try {
+      for await (const ev of sttStream) {
+        if (disposed) break;
+        if (ev.type !== stt.SpeechEventType.FINAL_TRANSCRIPT) continue;
+        const text = (ev.alternatives?.[0]?.text ?? "").trim();
+        if (!text) continue;
+        usage.characters += text.length;
+        try {
+          onUsage("characters", text.length);
+        } catch (e) {
+          logger.debug({ e, roomName }, `${label}: usage report failed`);
+        }
+        try {
+          onTranscript(text, new Date());
+        } catch (e) {
+          logger.warn({ e, roomName, subject }, `${label}: transcript handler failed`);
+        }
+      }
+    } catch (e) {
+      if (!disposed) {
+        logger.warn({ e, roomName, subject }, `${label}: side transcription failed (continuing without it)`);
+      }
+    }
+  })();
+
+  const push = (frame: AudioFrame): void => {
+    if (disposed) return;
+    const rate = frame.sampleRate || AUX_STT_SAMPLE_RATE;
+    usage.streamedMilliseconds += (frame.samplesPerChannel / rate) * 1000;
+    try {
+      sttStream.pushFrame(frame);
+    } catch {
+      /* input ended underneath us (dispose / stream closed) */
+    }
+  };
+
+  const dispose = (): Promise<void> => {
+    if (disposing) return disposing;
+    disposing = (async () => {
+      disposed = true;
+      try {
+        sttStream.flush(); // FLUSH_SENTINEL → the engine reports its last partial usage interval
+        await sleep(USAGE_FLUSH_GRACE_MS);
+      } catch {
+        /* engine already gone */
+      }
+      try {
+        sttInstance.off("metrics_collected", onMetrics);
+        sttInstance.off("error", onEngineError);
+      } catch {
+        /* not an emitter (tests) */
+      }
+      try {
+        sttStream.endInput();
+      } catch {
+        /* already ended */
+      }
+      try {
+        sttStream.close();
+      } catch {
+        /* already closed */
+      }
+      void sttInstance.close().catch(() => {});
+      await consumer.catch(() => {});
+      if (usage.streamedMilliseconds > 0 && usage.milliseconds === 0) {
+        logger.warn(
+          { roomName, subject, ...usage },
+          `${label}: the engine accepted none of the streamed audio (connection or credentials failure?); nothing metered`,
+        );
+      } else if (usage.streamedMilliseconds >= SILENT_ENGINE_WARN_MS && usage.characters === 0) {
+        logger.warn({ roomName, subject, ...usage }, `${label}: the engine returned no transcript for the streamed audio`);
+      }
+      logger.info({ roomName, subject, ...usage }, `${label}: side transcription disposed`);
+    })();
+    return disposing;
+  };
+
+  return {
+    push,
+    dispose,
+    get usage() {
+      return usage;
+    },
+  };
+}
+
+/** Live auxiliary (caller-side) transcription: usage so far + teardown. */
+export interface AuxSttHandle {
+  /** Stop the pump, let the engine report its last usage interval, close it. Idempotent. */
+  dispose(): Promise<void>;
+  readonly usage: SideSttUsage;
 }
 
 /** Anything the pump can iterate for caller audio (the rtc-node AudioStream, or a test fake). */
@@ -165,14 +379,14 @@ export interface ArmAuxSttParams {
   callerIdentity: string;
   /** The agent whose `options.stt.aux` (and language defaults) apply. */
   agent: Agent;
-  config: AuxSttConfig;
+  config: SideSttConfig;
   /** A final transcript from the auxiliary engine, with the time it arrived. */
   onTranscript: (text: string, at: Date) => void;
   /** A usage delta for the aux meter. */
   onUsage: (unit: "milliseconds" | "characters", quantity: number) => void;
   /** Injection points (tests): engine construction, track resolution, audio source. */
   deps?: {
-    buildStt?: (agent: Agent, config: AuxSttConfig) => stt.STT;
+    buildStt?: (agent: Agent, config: SideSttConfig) => stt.STT;
     resolveTrack?: (room: Room, identity: string) => Promise<Track>;
     openAudioStream?: (track: Track) => AuxAudioSource;
   };
@@ -212,11 +426,14 @@ async function* frames(source: AuxAudioSource): AsyncGenerator<AudioFrame> {
   }
 }
 
+const NO_USAGE: SideSttUsage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
+
 /**
  * Arm the auxiliary STT on the caller's audio track. Resolves the participant
- * and track (waiting for them if needed), builds the engine, then pumps the
- * decoded audio into its stream while forwarding final transcripts and usage.
- * Never throws — transcription is best-effort.
+ * and track (waiting for them if needed), opens one more in-process sink on
+ * the track the session already receives (an rtc-node AudioStream — at the
+ * FFI layer a sink on the one decoded WebRTC track, not a new subscription),
+ * builds the engine and pumps the decoded audio into it. Never throws.
  */
 export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
   const { room, roomName, callerIdentity, agent, config, onTranscript, onUsage } = params;
@@ -224,12 +441,10 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
   const resolveTrack = params.deps?.resolveTrack ?? defaultResolveTrack;
   const openAudioStream = params.deps?.openAudioStream ?? defaultOpenAudioStream;
 
-  const usage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
+  let engine: SideSttEngine | null = null;
   let disposed = false;
   let disposing: Promise<void> | null = null;
   const cleanups: Array<() => void> = [];
-  /** Asks the live engine to report its last partial usage interval (set once the stream exists). */
-  let flushUsageReport: (() => Promise<void>) | null = null;
 
   const dispose = (): Promise<void> => {
     if (disposing) return disposing;
@@ -237,13 +452,6 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       disposed = true;
       room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
       room.off(RoomEvent.Disconnected, onRoomDisconnected);
-      if (flushUsageReport) {
-        try {
-          await flushUsageReport();
-        } catch {
-          /* engine already gone */
-        }
-      }
       for (const fn of cleanups.splice(0)) {
         try {
           fn();
@@ -251,21 +459,8 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
           logger.debug({ e, roomName }, "auxStt: cleanup step failed");
         }
       }
-      if (usage.streamedMilliseconds > 0 && usage.milliseconds === 0) {
-        logger.warn(
-          { roomName, callerIdentity, ...usage },
-          "auxStt: the engine accepted none of the streamed audio (connection or credentials failure?); nothing metered",
-        );
-      } else if (usage.streamedMilliseconds >= SILENT_ENGINE_WARN_MS && usage.characters === 0) {
-        logger.warn(
-          { roomName, callerIdentity, ...usage },
-          "auxStt: the engine returned no transcript for the streamed audio",
-        );
-      }
-      logger.info(
-        { roomName, callerIdentity, ...usage },
-        "auxStt: auxiliary transcription disposed",
-      );
+      if (engine) await engine.dispose();
+      logger.info({ roomName, callerIdentity, ...(engine?.usage ?? NO_USAGE) }, "auxStt: auxiliary transcription disposed");
     })();
     return disposing;
   };
@@ -284,123 +479,35 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
     try {
       const track = await resolveTrack(room, callerIdentity);
       if (disposed) return;
-
       const sttInstance = buildStt(agent, config);
-      const sttStream = sttInstance.stream();
+      engine = startSideSttEngine({
+        label: "auxStt",
+        roomName,
+        subject: callerIdentity,
+        stt: sttInstance,
+        onTranscript,
+        onUsage,
+        onEngineStopped: () => void dispose(),
+      });
       const audio = openAudioStream(track);
-
-      // Meter what the ENGINE says it accepted, not what we pumped: both the
-      // Inference stream and the Deepgram plugin report audio they actually sent
-      // to the vendor (the plugin every 5 s, flushed on demand), and report
-      // nothing while a connection is failing — so a 401 from the vendor cannot
-      // become a bill for the caller.
-      const onMetrics = (m: any): void => {
-        const ms = Math.round(Number(m?.audioDurationMs) || 0);
-        if (ms <= 0) return;
-        usage.milliseconds += ms;
-        try {
-          onUsage("milliseconds", ms);
-        } catch (e) {
-          logger.debug({ e, roomName }, "auxStt: usage report failed");
-        }
-      };
-      // The SDK surfaces engine failures as events, not throws (a failing
-      // connection retries quietly for minutes): log them, and stop on a
-      // non-recoverable one rather than keep pumping into a dead stream.
-      const onEngineError = (ev: any): void => {
-        const recoverable = ev?.recoverable !== false;
-        logger.warn(
-          { roomName, callerIdentity, label: ev?.label, recoverable, err: ev?.error?.message ?? String(ev?.error) },
-          recoverable
-            ? "auxStt: engine error (recoverable)"
-            : "auxStt: engine failed (not recoverable); stopping the auxiliary transcription",
-        );
-        if (!recoverable) void dispose();
-      };
-      sttInstance.on("metrics_collected", onMetrics);
-      sttInstance.on("error", onEngineError);
-      flushUsageReport = async () => {
-        sttStream.flush(); // FLUSH_SENTINEL → the engine reports its last partial usage interval
-        await new Promise((resolve) => setTimeout(resolve, USAGE_FLUSH_GRACE_MS));
-      };
-      const stop = () => {
-        try {
-          sttInstance.off("metrics_collected", onMetrics);
-          sttInstance.off("error", onEngineError);
-        } catch {
-          /* not an emitter (tests) */
-        }
-        try {
-          sttStream.endInput();
-        } catch {
-          /* already ended */
-        }
-        try {
-          sttStream.close();
-        } catch {
-          /* already closed */
-        }
-        void sttInstance.close().catch(() => {});
+      cleanups.push(() => {
         void audio.cancel?.().catch?.(() => {});
-      };
-      cleanups.push(stop);
+      });
       if (disposed) {
         // dispose() ran between the awaits above and the push — unwind now.
-        stop();
+        await engine.dispose();
         return;
       }
-
-      // Pump the caller's audio into the engine ourselves (rather than handing
-      // the stream over) so we know how much we streamed — a diagnostic only;
-      // the meter is the engine's own report above.
-      const pump = (async (): Promise<void> => {
-        try {
-          for await (const frame of frames(audio)) {
-            if (disposed) break;
-            const rate = frame.sampleRate || AUX_STT_SAMPLE_RATE;
-            usage.streamedMilliseconds += (frame.samplesPerChannel / rate) * 1000;
-            try {
-              sttStream.pushFrame(frame);
-            } catch {
-              break; // input ended underneath us (dispose / stream closed)
-            }
-          }
-        } catch (e) {
-          if (!disposed) {
-            logger.warn({ e, roomName, callerIdentity }, "auxStt: audio pump failed");
-          }
-        } finally {
-          try {
-            sttStream.endInput();
-          } catch {
-            /* already ended */
-          }
-        }
-      })();
-
       logger.info(
         { roomName, callerIdentity, label: sttInstance.label, config },
         "auxStt: auxiliary transcription armed on the caller track",
       );
-
-      for await (const ev of sttStream) {
+      // Pump the caller's audio into the engine ourselves (rather than handing
+      // the stream over) so we know how much we streamed — a diagnostic only.
+      for await (const frame of frames(audio)) {
         if (disposed) break;
-        if (ev.type !== stt.SpeechEventType.FINAL_TRANSCRIPT) continue;
-        const text = (ev.alternatives?.[0]?.text ?? "").trim();
-        if (!text) continue;
-        usage.characters += text.length;
-        try {
-          onUsage("characters", text.length);
-        } catch (e) {
-          logger.debug({ e, roomName }, "auxStt: usage report failed");
-        }
-        try {
-          onTranscript(text, new Date());
-        } catch (e) {
-          logger.warn({ e, roomName, callerIdentity }, "auxStt: transcript handler failed");
-        }
+        engine.push(frame);
       }
-      await pump.catch(() => {});
     } catch (e) {
       // Best-effort: the call carries on without the second opinion.
       if (!disposed) {
@@ -416,7 +523,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
   return {
     dispose,
     get usage() {
-      return usage;
+      return engine?.usage ?? NO_USAGE;
     },
   };
 }

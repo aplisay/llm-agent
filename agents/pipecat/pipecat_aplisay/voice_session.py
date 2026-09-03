@@ -924,13 +924,18 @@ async def build_voice_session(
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     on_aux_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
     on_aux_usage: "Optional[Callable[[str, int, dict], None]]" = None,
+    on_output_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_output_usage: "Optional[Callable[[str, int, dict], None]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
     ``on_aux_transcript`` / ``on_aux_usage`` receive the auxiliary STT's final
     transcripts and usage deltas (``unit, quantity, {vendor, model}``) when the
-    agent sets ``options.stt.aux`` — see aux_stt.py. Without a transcript
-    callback the option is ignored.
+    agent sets ``options.stt.aux``; ``on_output_transcript`` /
+    ``on_output_usage`` likewise for the output audit STT when the agent sets
+    ``options.tts.output`` — see aux_stt.py. Neither tap exists on a call
+    unless its option is set; without a transcript callback an option is
+    ignored.
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
     is appended to the pipeline (stereo, user-left/bot-right per
@@ -959,16 +964,17 @@ async def build_voice_session(
         audio_buffer = AudioBufferProcessor(num_channels=2)
 
     aux_tap = _aux_stt_tap_for(agent, on_aux_transcript, on_aux_usage)
+    output_tap = _output_stt_tap_for(agent, on_output_transcript, on_output_usage)
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup, aux_tap=aux_tap,
+            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap,
         )
     else:
         task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup, aux_tap=aux_tap,
+            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap,
         )
     return task, audio_buffer, context, llm
 
@@ -1003,6 +1009,38 @@ def _aux_stt_tap_for(
     )
 
 
+def _output_stt_tap_for(
+    agent: dict,
+    on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
+    on_usage: "Optional[Callable[[str, int, dict], None]]",
+) -> "Optional[Any]":
+    """The output audit tap for ``options.tts.output`` (see aux_stt.py), or
+    ``None`` when the option is off — in which case nothing is inserted into
+    the chain. Taps the agent's ``TTSAudioRawFrame``s only."""
+    from pipecat.frames.frames import TTSAudioRawFrame
+
+    from .aux_stt import AuxSttTap, output_stt_agent, output_stt_vendor, parse_output_stt_option
+
+    config = parse_output_stt_option(agent.get("options"))
+    if config is None or on_transcript is None:
+        return None
+    effective_agent = output_stt_agent(agent, config)
+    vendor = output_stt_vendor(agent, config)
+    logger.bind(vendor=vendor).info("output audit STT configured (options.tts.output)")
+
+    def _report(unit: str, quantity: int) -> None:
+        if on_usage is not None:
+            on_usage(unit, quantity, vendor)
+
+    return AuxSttTap(
+        stt_factory=lambda: build_stt_service(effective_agent),
+        on_final=on_transcript,
+        on_usage=_report,
+        frame_cls=TTSAudioRawFrame,
+        label="outputStt",
+    )
+
+
 async def _build_realtime(
     transport: BaseTransport,
     model_name: str,
@@ -1015,6 +1053,7 @@ async def _build_realtime(
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     aux_tap: "Optional[Any]" = None,
+    output_tap: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1299,6 +1338,10 @@ async def _build_realtime(
     # tap copies audio out to a side pipeline — nothing of the second engine
     # enters this chain (see aux_stt.py).
     aux = [aux_tap] if aux_tap is not None else []
+    # Output audit tap (options.tts.output) immediately before transport.output():
+    # after the rate guard, so it sees the agent's TTS audio at the transport's
+    # own rate; TTS frames only, so the tone and relayed audio never reach it.
+    output = [output_tap] if output_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
@@ -1310,6 +1353,7 @@ async def _build_realtime(
         *relay_inject,
         rate_guard,
         cushion_interrupt,
+        *output,
         transport.output(),
     ]
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
@@ -1351,6 +1395,7 @@ async def _build_pipeline(
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     aux_tap: "Optional[Any]" = None,
+    output_tap: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1426,6 +1471,9 @@ async def _build_pipeline(
     # STT: the tap only copies audio out to a side pipeline, so the primary STT
     # sees exactly the frames it always did (see aux_stt.py).
     aux = [aux_tap] if aux_tap is not None else []
+    # Output audit tap (options.tts.output) immediately before transport.output()
+    # — see _build_realtime.
+    output = [output_tap] if output_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
@@ -1438,6 +1486,7 @@ async def _build_pipeline(
         *tone,
         *relay_inject,
         rate_guard,
+        *output,
         transport.output(),
     ]
     if audio_buffer is not None:
