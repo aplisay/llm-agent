@@ -53,6 +53,12 @@ import contextlib
 import json
 import os
 import uuid
+
+# Pending-attach expiry (P6). Legs answer within seconds; 120 s is well
+# past any real ring-to-WebSocket delay, and the sweep interval keeps the
+# check cheap.
+_PENDING_SWEEP_INTERVAL_SECS = 60.0
+_PENDING_MAX_AGE_SECS = 120.0
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -61,6 +67,7 @@ import websockets
 from loguru import logger
 from pipecat.transports.base_transport import BaseTransport
 
+from .. import http_client
 from .base import (
     ConsultStateMixin,
     GatewaySession,
@@ -429,6 +436,9 @@ class _VbGatewaySession(GatewaySession):
         # try to clean up; both paths are idempotent (``DELETE`` is a no-op
         # if the leg has already gone).
         await self.hangup("Session closed")
+        # P6: ``set_consult_call_id`` had no matching clear on this
+        # gateway either — one id per completed warm transfer, forever.
+        self._gateway.clear_consult_call_id(self.session_id)
 
 
 class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
@@ -480,6 +490,11 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         self.sip_from_domain = os.environ.get("PIPECAT_SIP_FROM_DOMAIN")
 
         self.pending_attaches: dict[str, PendingAttach] = {}
+        self._sweeper_task: Optional[asyncio.Task] = None
+        # Strong references to in-flight VSI event handlers, and the
+        # per-leg tail of each serial handler chain (P6).
+        self._event_tasks: set = set()
+        self._leg_chains: dict[str, asyncio.Task] = {}
         # session_id → leg_id; the WS handler stores this when the WS opens
         # so the VSI subscriber can map leg-level events (transfer, hangup)
         # to the right call session.
@@ -608,13 +623,68 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"voiceblender health check failed at boot: {e}")
         self._vsi_task = asyncio.create_task(self._vsi_loop(), name="vsi-subscriber")
+        self._sweeper_task = asyncio.create_task(
+            self._sweep_loop(), name="vb-pending-sweeper"
+        )
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._vsi_task and not self._vsi_task.done():
-            self._vsi_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._vsi_task
+        for task in (self._vsi_task, self._sweeper_task):
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        for task in list(self._event_tasks):
+            task.cancel()
+        if self._event_tasks:
+            await asyncio.gather(*self._event_tasks, return_exceptions=True)
+        self._event_tasks.clear()
+        self._leg_chains.clear()
+
+    async def _sweep_loop(self) -> None:
+        """Expire abandoned pending-attach and consult state (P6).
+
+        ``pending_attaches`` entries hold the full resolved agent dict and
+        are removed only when the leg's WebSocket arrives or a
+        ``leg.disconnected`` VSI event lands. A VSI reconnect between
+        ``leg.ringing`` and ``leg.disconnected`` loses the disconnect, and
+        the entry becomes permanent; likewise a consult whose third party
+        never answers leaves both its entry and its ConsultPayload (which
+        carries the parent transcript) behind. ``created_at`` was written
+        in three places and read in none — this is what reads it.
+        """
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=_PENDING_SWEEP_INTERVAL_SECS
+                )
+                return  # stop() was set
+            except asyncio.TimeoutError:
+                pass
+            try:
+                self._sweep_pending_once()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"voiceblender pending sweep failed: {e}")
+
+    def _sweep_pending_once(self) -> None:
+        """One sweep pass — separated out so it is testable directly."""
+        # Same clock ``created_at`` was written with.
+        cutoff = asyncio.get_running_loop().time() - _PENDING_MAX_AGE_SECS
+        stale = [
+            sid
+            for sid, pending in self.pending_attaches.items()
+            if pending.created_at < cutoff
+        ]
+        for sid in stale:
+            self.pending_attaches.pop(sid, None)
+            # A stale pending attach is by definition a leg whose WS never
+            # arrived, so any consult state keyed to it is stale too.
+            self.clear_consult_session(sid)
+            self.clear_consult_call_id(sid)
+            logger.bind(session_id=sid).warning(
+                "voiceblender: expired pending attach — the leg's WebSocket "
+                f"never arrived within {_PENDING_MAX_AGE_SECS:g}s"
+            )
 
     # ---- SipGateway protocol --------------------------------------------
 
@@ -783,6 +853,16 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             logger.bind(leg_id=leg_id, session_id=session_id).warning(
                 f"voiceblender consult: connect+attach failed: {e}"
             )
+            # P6: the consult never came up, so nothing will ever consume
+            # its pending attach or its ConsultPayload (which holds the
+            # parent transcript). The sweeper would get there eventually;
+            # this is the deterministic path.
+            self.pending_attaches.pop(session_id, None)
+            self.clear_consult_session(session_id)
+            with contextlib.suppress(Exception):
+                await self._call_api(
+                    "DELETE", f"/v1/legs/{leg_id}", None, raise_on_error=False
+                )
 
     def _sip_auth(self) -> Optional[dict[str, str]]:
         """Digest credentials for the outbound INVITE (401/407 challenge from
@@ -852,7 +932,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                         except Exception as e:  # noqa: BLE001
                             logger.warning(f"VSI: bad JSON: {e}; raw={raw[:200]!r}")
                             continue
-                        await self._handle_vsi_event(event)
+                        self._queue_vsi_event(event)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -863,6 +943,52 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             except asyncio.TimeoutError:
                 pass
             backoff = min(backoff * 2, 30.0)
+
+    def _queue_vsi_event(self, event: dict) -> None:
+        """Hand one VSI event to its leg's serial chain (P6).
+
+        The read loop used to ``await`` each handler inline, so the whole
+        event stream queued behind every handler — and a ``leg.ringing``
+        handler does two REST calls, so one slow agent resolution delayed
+        every OTHER leg's disconnect, DTMF and transfer events by up to
+        its full timeout.
+
+        Handlers still run strictly in order **per leg** — they drive a
+        state machine (ringing → connected → transfer → disconnected) and
+        reordering those would be worse than the blocking. Different legs
+        simply no longer wait on each other.
+        """
+        key = str(event.get("leg_id") or event.get("id") or "")
+        previous = self._leg_chains.get(key)
+
+        async def _chained() -> None:
+            if previous is not None:
+                # Order within a leg. Never propagate the predecessor's
+                # failure — it has already logged for itself.
+                with contextlib.suppress(Exception):
+                    await previous
+            try:
+                await self._handle_vsi_event(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.bind(event_type=event.get("type"), leg_id=key).warning(
+                    f"VSI event handler failed: {e}"
+                )
+
+        task = asyncio.create_task(_chained(), name=f"vsi-event-{key or 'global'}")
+        self._leg_chains[key] = task
+        self._event_tasks.add(task)
+
+        def _done(finished: "asyncio.Task") -> None:
+            self._event_tasks.discard(finished)
+            # Only clear the chain if we are still its tail, so a
+            # follow-up event already queued behind us keeps its ordering.
+            if self._leg_chains.get(key) is finished:
+                self._leg_chains.pop(key, None)
+
+        task.add_done_callback(_done)
+
 
     async def _handle_vsi_event(self, event: dict) -> None:
         """Dispatch one VSI event.
@@ -1193,8 +1319,10 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.request(method, url, headers=headers, json=body)
+        client = await http_client.get_client("voiceblender")
+        resp = await client.request(
+            method, url, headers=headers, json=body, timeout=15.0
+        )
         if resp.status_code >= 400:
             msg = f"voiceblender {method} {path} -> {resp.status_code} {resp.text}"
             if raise_on_error:

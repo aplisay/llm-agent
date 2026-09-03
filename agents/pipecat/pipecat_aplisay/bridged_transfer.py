@@ -161,7 +161,7 @@ class DtmfSequenceMatcher:
             loop = asyncio.get_running_loop()
             self._timer = loop.call_later(
                 self._timeout_s,
-                lambda: asyncio.ensure_future(self._on_timeout(exact)),
+                lambda: _detach(self._on_timeout(exact)),
             )
 
     async def _on_timeout(self, exact: bool) -> None:
@@ -463,6 +463,19 @@ def compose_takeover_prompt(new_agent: dict, ctx: BtaContext, target: BtaTarget)
 # ones); discarded on completion.
 _summary_tasks: set = set()
 
+# Strong references for detached one-shot coroutines (P10). asyncio holds
+# only weak references to tasks, so a bare ``ensure_future`` whose result
+# nobody awaits can be collected before it runs.
+_detached_tasks: set = set()
+
+
+def _detach(coro) -> "asyncio.Task":
+    """Fire-and-forget a coroutine, holding a reference until it finishes."""
+    task = asyncio.ensure_future(coro)
+    _detached_tasks.add(task)
+    task.add_done_callback(_detached_tasks.discard)
+    return task
+
 
 def prefire_summary(
     target: BtaTarget, transfer_block: dict, call_metadata: dict, call: api_client.CallRecord
@@ -656,7 +669,7 @@ async def arm_voiceblender_bta_watch(
         gateway.clear_bta_watcher(target_leg, caller_leg)
         # End the bridged-segment record from a detached task (this
         # callback runs synchronously inside the VSI event loop).
-        asyncio.ensure_future(end_bridged_record(ctx, "Bridged call ended"))
+        _detach(end_bridged_record(ctx, "Bridged call ended"))
 
     async def _drop_digit(_digit: str) -> None:
         return

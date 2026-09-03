@@ -10,6 +10,7 @@
 package rtp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ const (
 	PayloadPCMA PayloadType = 8
 
 	// 8 kHz, 20 ms framing — 160 samples per packet.
-	sampleRate8k     = 8000
+	sampleRate8k      = 8000
 	packetSamples20ms = 160
 
 	// RTP timestamp increment per packet at 8 kHz / 20 ms.
@@ -116,14 +117,37 @@ type Session struct {
 	// Held under srtpMu — DTLS-SRTP installs them asynchronously after
 	// the SIP 200 OK, so a packet may arrive before the contexts land;
 	// readLoop holds the lock briefly to read the current pair.
-	srtpMu      sync.RWMutex
+	srtpMu       sync.RWMutex
 	srtpInbound  *srtpv3.Context
 	srtpOutbound *srtpv3.Context
 
 	mu     sync.Mutex
 	closed bool
 	cancel context.CancelFunc
+
+	// srtpFailures / rtpFailures count consecutive decrypt and parse
+	// failures on the read loop. Both are per-packet events: a carrier
+	// that negotiates RTP/SAVP and then sends plaintext (see the
+	// srtpAvoid comment in the call manager) produces 50 of them a
+	// second for the whole call, so the log lines are rate-limited and
+	// the leg is torn down once the failures are clearly permanent
+	// rather than a transient key/replay hiccup. Read-loop-local, no
+	// lock needed.
+	srtpFailures int
+	rtpFailures  int
 }
+
+// maxConsecutiveSRTPFailures is how many back-to-back undecryptable
+// packets (~2 s at 20 ms ptime) we accept before concluding the media
+// key is simply wrong and stopping the read loop. Anything transient —
+// a replayed packet, one bad auth tag — resets the count on the next
+// good packet.
+const maxConsecutiveSRTPFailures = 100
+
+// mediaFailureLogEvery rate-limits the per-packet failure warnings to
+// the 1st, then every 250th (~5 s of audio), mirroring the pacer's
+// dropped-audio logging.
+const mediaFailureLogEvery = 250
 
 // NewSession binds a UDP socket for RTP. The OS picks a free port from
 // the configured range (caller passes bindIP + 0); the call manager
@@ -133,14 +157,9 @@ type Session struct {
 // firewall rules can be static. Pass (0, 0) to let the OS choose any
 // free port — handy for tests, but in production we want a fixed range.
 func NewSession(bindIP string, portMin, portMax int) (*Session, error) {
-	port, err := pickPort(bindIP, portMin, portMax)
+	conn, err := pickPort(bindIP, portMin, portMax)
 	if err != nil {
 		return nil, fmt.Errorf("rtp: pick port: %w", err)
-	}
-	local := &net.UDPAddr{IP: net.ParseIP(bindIP), Port: port}
-	conn, err := net.ListenUDP("udp", local)
-	if err != nil {
-		return nil, fmt.Errorf("rtp: listen on %s: %w", local, err)
 	}
 	s := &Session{
 		conn:      conn,
@@ -189,7 +208,17 @@ func (s *Session) SetPayloadHandler(fn func(pt PayloadType, seq uint16, payload 
 // signal to exit cleanly; the socket is also closed by Close().
 func (s *Session) Start(ctx context.Context) {
 	rctx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	closed := s.closed
 	s.cancel = cancel
+	s.mu.Unlock()
+	if closed {
+		// Close ran before Start (the DTLS handshake path starts the
+		// loop asynchronously, and a failed call can be torn down
+		// first). Don't spawn a read loop on a dead socket.
+		cancel()
+		return
+	}
 	go s.readLoop(rctx)
 }
 
@@ -300,16 +329,20 @@ func (s *Session) CanFill() bool {
 // expected to transmit every 20 ms for the life of the call whether or not
 // anyone is talking; peers with a media watchdog read a gap as a dead call.
 func (s *Session) SilencePayload() []byte {
-	fill := byte(0xFF)
 	if PayloadType(s.payloadType.Load()) == PayloadPCMA {
-		fill = 0xD5
+		return silencePCMA
 	}
-	buf := make([]byte, packetSamples20ms)
-	for i := range buf {
-		buf[i] = fill
-	}
-	return buf
+	return silencePCMU
 }
+
+// Pre-built silence frames. The pacer asks for one every 20 ms for
+// every idle call; building it each time was 160 bytes of garbage per
+// call per frame for no reason. Callers only hand these to the
+// encrypt/send path, which does not retain or mutate them.
+var (
+	silencePCMU = bytes.Repeat([]byte{0xFF}, packetSamples20ms)
+	silencePCMA = bytes.Repeat([]byte{0xD5}, packetSamples20ms)
+)
 
 // SetDTMFPayloadType overrides the payload type used for outbound RFC 4733
 // telephone-event packets (default PayloadDTMF / 101). A caller that has
@@ -409,9 +442,10 @@ func (s *Session) Close() {
 		return
 	}
 	s.closed = true
+	cancel := s.cancel
 	s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
+	if cancel != nil {
+		cancel()
 	}
 	_ = s.conn.Close()
 }
@@ -449,35 +483,63 @@ func (s *Session) readLoop(ctx context.Context) {
 		if in != nil {
 			pt, err := in.DecryptRTP(nil, raw, nil)
 			if err != nil {
-				log.Warn().Err(err).Int("len", n).Msg("rtp: SRTP decrypt failed (auth tag / replay / wrong key?)")
+				s.srtpFailures++
+				if s.srtpFailures == 1 || s.srtpFailures%mediaFailureLogEvery == 0 {
+					log.Warn().Err(err).
+						Int("len", n).
+						Int("consecutive", s.srtpFailures).
+						Msg("rtp: SRTP decrypt failed (auth tag / replay / wrong key?)")
+				}
+				if s.srtpFailures >= maxConsecutiveSRTPFailures {
+					// Every packet since the key was installed has
+					// failed: this is not jitter, the key is wrong (or
+					// the peer is sending plaintext into an SAVP
+					// session). Stop; the media watchdog then tears the
+					// call down as a silent leg rather than us burning
+					// a core on decrypt failures for its whole life.
+					log.Error().
+						Int("consecutive", s.srtpFailures).
+						Msg("rtp: too many consecutive SRTP failures — stopping read loop")
+					return
+				}
 				continue
 			}
+			s.srtpFailures = 0
 			raw = pt
 		}
 		pkt := &pionrtp.Packet{}
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Warn().Err(err).Int("len", len(raw)).Msg("rtp: malformed packet")
+			s.rtpFailures++
+			if s.rtpFailures == 1 || s.rtpFailures%mediaFailureLogEvery == 0 {
+				log.Warn().Err(err).
+					Int("len", len(raw)).
+					Int("consecutive", s.rtpFailures).
+					Msg("rtp: malformed packet")
+			}
 			continue
 		}
+		s.rtpFailures = 0
 		if s.onPayload != nil {
 			s.onPayload(PayloadType(pkt.PayloadType), pkt.SequenceNumber, pkt.Payload, pkt.Marker)
 		}
 	}
 }
 
-// pickPort returns an even free UDP port in [portMin, portMax]. RTP
-// convention is even-numbered ports (RTCP uses port+1 if we ever add
-// it); we don't need RTCP yet but we keep the even-port convention so
-// adding it later doesn't break the SDP we've published. If portMin ==
-// 0 the OS picks any free port (test-only path).
-func pickPort(bindIP string, portMin, portMax int) (int, error) {
+// pickPort binds and returns a socket on an even free port in
+// [portMin, portMax]. RTP convention is even-numbered ports (RTCP uses
+// port+1 if we ever add it); we don't need RTCP yet but we keep the
+// even-port convention so adding it later doesn't break the SDP we've
+// published. If portMin == 0 the OS picks any free port (test-only path).
+//
+// It returns the BOUND socket rather than the port number: probing,
+// closing and rebinding in the caller was a time-of-check/time-of-use
+// race where under any concurrency a second call could take the port in
+// between, failing the INVITE with a 500. Keeping the socket also
+// removes up to (max-min)/2 bind/close syscalls per call when the range
+// is nearly full.
+func pickPort(bindIP string, portMin, portMax int) (*net.UDPConn, error) {
 	if portMin == 0 && portMax == 0 {
-		l, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(bindIP)})
-		if err != nil {
-			return 0, err
-		}
-		defer l.Close()
-		return l.LocalAddr().(*net.UDPAddr).Port, nil
+		return net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(bindIP)})
 	}
 	// Start at an odd offset within the range so concurrent calls don't
 	// keep colliding on the same first-attempt port.
@@ -489,9 +551,8 @@ func pickPort(bindIP string, portMin, portMax int) (int, error) {
 		}
 		l, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(bindIP), Port: p})
 		if err == nil {
-			_ = l.Close()
-			return p, nil
+			return l, nil
 		}
 	}
-	return 0, fmt.Errorf("rtp: no free even port in %d-%d", portMin, portMax)
+	return nil, fmt.Errorf("rtp: no free even port in %d-%d", portMin, portMax)
 }

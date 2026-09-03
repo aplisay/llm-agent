@@ -44,7 +44,14 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    """Stands in for httpx.AsyncClient; records the single request it serves."""
+    """Stands in for the pooled httpx.AsyncClient; records the single
+    request it serves.
+
+    REST callouts go through the process-wide pool now
+    (``http_client.get_client``) rather than constructing a client per
+    request, so the fake is handed back from there. It keeps the
+    ``async with`` methods so it also stands in for a bare client.
+    """
 
     last: Optional[dict] = None
     response: _FakeResponse = _FakeResponse()
@@ -58,13 +65,16 @@ class _FakeClient:
     async def __aexit__(self, *_exc) -> None:
         return None
 
-    async def request(self, method: str, url: str, headers=None, params=None, json=None):
+    async def request(
+        self, method: str, url: str, headers=None, params=None, json=None, timeout=None
+    ):
         _FakeClient.last = {
             "method": method,
             "url": url,
             "headers": dict(headers or {}),
             "params": list(params) if params else None,
             "json": json,
+            "timeout": timeout,
         }
         return _FakeClient.response
 
@@ -73,7 +83,12 @@ class _FakeClient:
 def _fake_httpx(monkeypatch):
     _FakeClient.last = None
     _FakeClient.response = _FakeResponse()
-    monkeypatch.setattr(fh.httpx, "AsyncClient", _FakeClient)
+    client = _FakeClient()
+
+    async def _get_client(*_a, **_k):
+        return client
+
+    monkeypatch.setattr(fh.http_client, "get_client", _get_client)
     yield
 
 

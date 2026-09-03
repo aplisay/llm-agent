@@ -46,8 +46,9 @@ class _FakeSession:
         self._raises = raises
         self.calls = []
 
-    async def call_tool(self, name, arguments=None):
+    async def call_tool(self, name, arguments=None, read_timeout_seconds=None):
         self.calls.append((name, arguments))
+        self.last_read_timeout = read_timeout_seconds
         if self._raises:
             raise self._raises
         return self._result

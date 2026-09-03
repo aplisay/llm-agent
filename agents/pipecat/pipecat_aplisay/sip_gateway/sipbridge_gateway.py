@@ -54,6 +54,7 @@ import httpx
 from loguru import logger
 from pipecat.transports.base_transport import BaseTransport
 
+from .. import http_client
 from .base import (
     ConsultStateMixin,
     GatewaySession,
@@ -403,6 +404,19 @@ class _SbGatewaySession(GatewaySession):
 
     async def shutdown(self) -> None:
         await self.hangup("Session closed")
+        # Drop the gateway's registrations for this leg (W1). On the
+        # OUTBOUND path the dispatch task owns the CallSession and
+        # runner, and this is the only teardown that runs: the WS
+        # handler parks on the leg-done event, which nothing but
+        # ``unregister_session`` (or ``signal_bta_armed``) ever sets.
+        # Without this the handler task, its transport, its Starlette
+        # WebSocket and three map entries were retained for the life of
+        # the process, per outbound call — and uvicorn's graceful
+        # shutdown waits on those tasks, so a single leaked one turned
+        # every SIGTERM into a SIGKILL at the 30 s grace deadline.
+        # Idempotent, so the inbound path (whose handler ``finally``
+        # already calls it) is unaffected.
+        self._gateway.unregister_session(self.session_id)
 
 
 class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
@@ -534,6 +548,11 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         """
         self._session_to_bridge_call.pop(session_id, None)
         self._sessions.pop(session_id, None)
+        # W6: ``hangup`` returns early once the leg is bridged, so a
+        # successfully completed warm transfer never cleared its consult
+        # id. One small string per transfer, forever — drop it here,
+        # which covers every exit path.
+        self.clear_consult_call_id(session_id)
         ev = self._leg_done_events.get(session_id)
         if ev is not None:
             ev.set()
@@ -651,8 +670,12 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.api_token:
             headers["authorization"] = f"Bearer {self.api_token}"
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, headers=headers, json=body)
+        # Shared pooled client (W4) — the per-request deadline stays on
+        # the request so the 65 s originate can't stretch a 15 s hangup.
+        client = await http_client.get_client("sipbridge")
+        resp = await client.request(
+            method, url, headers=headers, json=body, timeout=timeout
+        )
         if resp.status_code >= 400:
             msg = f"sipbridge {method} {path} -> {resp.status_code} {resp.text}"
             if raise_on_error:

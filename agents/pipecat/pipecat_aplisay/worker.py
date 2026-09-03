@@ -73,6 +73,7 @@ from .call_session import (
     setup_takeover_call,
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
+from . import http_client
 from .invocation_log import flush_invocation_logs, install_capture
 from .output_cushion import install as install_output_cushion
 from .output_underrun import install as install_underrun_stats
@@ -162,6 +163,11 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
     app.state.calls_by_channel: dict[str, str] = {}
+    # W10: asyncio keeps only WEAK references to tasks, so a
+    # fire-and-forget ``create_task`` can be collected mid-flight if
+    # nothing else happens to be awaiting it. Hold them here (and drop
+    # them on completion), which also gives /healthz a real task count.
+    app.state.tasks: set[asyncio.Task] = set()
     # Live browser WebRTC peers keyed by pc_id, so trickle-ICE PATCHes and
     # renegotiation can find the connection a prior /webrtc/offer created.
     app.state.webrtc_connections: dict[str, SmallWebRTCConnection] = {}
@@ -185,6 +191,12 @@ async def lifespan(app: FastAPI):
             await gw_obj.stop()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"sipbridge gateway stop failed: {e}")
+    # Close the shared HTTP pools last — everything above may still want
+    # to make a REST call on the way out.
+    try:
+        await http_client.aclose_all()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"http client shutdown failed: {e}")
 
 
 async def _ws_deny(websocket: WebSocket, status: int, body: bytes = b"") -> None:
@@ -524,6 +536,13 @@ app.add_middleware(
 # healthy baseline on a SIP node is ~1-2 concurrent sessions and ~25 threads).
 HEALTHZ_MAX_SESSIONS = int(os.environ.get("HEALTHZ_MAX_SESSIONS", "64"))
 HEALTHZ_MAX_THREADS = int(os.environ.get("HEALTHZ_MAX_THREADS", "400"))
+# Per-call gateway map entries, summed across the maps below. A healthy
+# node holds a handful per live call; a few hundred means state is being
+# registered and never released.
+HEALTHZ_MAX_GATEWAY_ENTRIES = int(os.environ.get("HEALTHZ_MAX_GATEWAY_ENTRIES", "512"))
+# Tracked background tasks (call runners and their helpers). Comfortably
+# above any real concurrency; a climb here is a task that never returns.
+HEALTHZ_MAX_TASKS = int(os.environ.get("HEALTHZ_MAX_TASKS", "256"))
 
 
 @app.get("/healthz")
@@ -558,22 +577,70 @@ async def healthz(request: Request) -> JSONResponse:
         threads = len(os.listdir("/proc/self/task"))
     except OSError:  # non-Linux dev hosts
         threads = threading.active_count()
+    # Accumulation this endpoint could not previously see. The two worst
+    # leaks in the audit (a parked WS handler per outbound call, and a
+    # gateway session per concurrency-refused inbound call) were both
+    # invisible here: neither touches live_calls, and neither spawns a
+    # thread. Tasks and the gateway's own maps are where they showed.
+    tasks = len(getattr(request.app.state, "tasks", ()) or ())
+    gateway_maps = _gateway_map_sizes(getattr(request.app.state, "sip_gateway", None))
+    gateway_total = sum(gateway_maps.values())
     if live_calls > HEALTHZ_MAX_SESSIONS:
         problems.append(f"live_calls={live_calls} above {HEALTHZ_MAX_SESSIONS}")
     if peers > HEALTHZ_MAX_SESSIONS:
         problems.append(f"webrtc_connections={peers} above {HEALTHZ_MAX_SESSIONS}")
     if threads > HEALTHZ_MAX_THREADS:
         problems.append(f"threads={threads} above {HEALTHZ_MAX_THREADS}")
+    if gateway_total > HEALTHZ_MAX_GATEWAY_ENTRIES:
+        problems.append(
+            f"gateway map entries={gateway_total} above "
+            f"{HEALTHZ_MAX_GATEWAY_ENTRIES} ({gateway_maps})"
+        )
+    if tasks > HEALTHZ_MAX_TASKS:
+        problems.append(f"asyncio tasks={tasks} above {HEALTHZ_MAX_TASKS}")
     return JSONResponse(
         {
             "ok": not problems,
             "live_calls": live_calls,
             "webrtc_connections": peers,
             "threads": threads,
+            "tasks": tasks,
+            "all_tasks": len(asyncio.all_tasks()),
+            "gateway_maps": gateway_maps,
             "problems": problems,
         },
         status_code=200 if not problems else 503,
     )
+
+
+#: Gateway attributes that hold per-call state. Reported individually on
+#: /healthz so a leak is attributable to the path that caused it rather
+#: than showing up as an unexplained memory climb.
+_GATEWAY_MAP_ATTRS = (
+    "_sessions",
+    "_session_to_bridge_call",
+    "_leg_done_events",
+    "_consult_payloads",
+    "_consult_call_ids",
+    "_takeover_payloads",
+    "_pending_outbound",
+    "pending_attaches",
+)
+
+
+def _gateway_map_sizes(gateway: Any) -> dict[str, int]:
+    """Sizes of the active gateway's per-call maps, for /healthz."""
+    sizes: dict[str, int] = {}
+    if gateway is None:
+        return sizes
+    for attr in _GATEWAY_MAP_ATTRS:
+        container = getattr(gateway, attr, None)
+        if container is not None:
+            try:
+                sizes[attr.lstrip("_")] = len(container)
+            except TypeError:
+                continue
+    return sizes
 
 
 @app.post("/dispatch")
@@ -636,8 +703,24 @@ async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:
     if channel_uuid:
         app.state.calls_by_channel[channel_uuid] = payload["callId"]
 
-    asyncio.create_task(_run_session(app, session, payload["callId"]))
+    _spawn(app, _run_session(app, session, payload["callId"]), name=f"call-{payload['callId']}")
     return {"ok": True, "callId": payload["callId"]}
+
+
+def _spawn(app: FastAPI, coro, *, name: str) -> asyncio.Task:
+    """Start a background task and hold a strong reference to it (W10).
+
+    ``asyncio`` keeps only weak references to tasks: a plain
+    ``create_task`` whose result nobody awaits can be garbage-collected
+    mid-flight, and today these survive only because of whatever they
+    happen to be awaiting. The set also gives ``/healthz`` an honest
+    count of the work the worker has in flight.
+    """
+    task = asyncio.create_task(coro, name=name)
+    tasks: set = app.state.tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return task
 
 
 async def _run_session(app: FastAPI, session: CallSession, key: str) -> None:
@@ -651,8 +734,26 @@ async def _run_session(app: FastAPI, session: CallSession, key: str) -> None:
             await api_client.end_call(session.call, reason=DISCONNECT_REASONS["UNCAUGHT_ERROR_RUNNING_AGENT"])
         except Exception as inner:  # noqa: BLE001
             logger.error(f"end_call after failure failed: {inner}")
+        # A setup failure means the pipeline runner never ran, so its
+        # finally never flushed this call's captured logs — and those are
+        # precisely the records that explain the failure. Harmless when
+        # the runner did flush: the drain is a pop, so this finds nothing.
+        try:
+            await flush_invocation_logs(
+                call_id=session.call.id,
+                user_id=session.call.userId,
+                org_id=session.call.organisationId,
+            )
+        except Exception as inner:  # noqa: BLE001
+            logger.warning(f"invocation log flush after failure failed: {inner}")
     finally:
         app.state.live_calls.pop(key, None)
+        # W7: calls_by_channel (FreeSWITCH only) was inserted into on
+        # three paths and popped on none — one uuid → call-id pair per
+        # call, for the life of the process.
+        channel_uuid = getattr(session.gateway_session, "channel_uuid", None)
+        if channel_uuid:
+            app.state.calls_by_channel.pop(channel_uuid, None)
         try:
             await session.gateway_session.shutdown()
         except Exception as e:  # noqa: BLE001
@@ -725,7 +826,11 @@ async def daily_dialin(request: Request) -> dict:
     )
     request.app.state.live_calls[session.call.id] = session
 
-    asyncio.create_task(_run_session(request.app, session, session.call.id))
+    _spawn(
+        request.app,
+        _run_session(request.app, session, session.call.id),
+        name=f"call-{session.call.id}",
+    )
 
     # Respond with the Daily room so Daily can pinlessCallUpdate the caller in.
     return {"room_url": room_url, "sip_endpoint": dialin.get("sip_endpoint")}
@@ -998,7 +1103,7 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         startup_error["exception"] = getattr(error_frame, "exception", None)
         error_event.set()
 
-    session_task = asyncio.create_task(_run_browser_session())
+    session_task = _spawn(request.app, _run_browser_session(), name=f"webrtc-{call.id}")
 
     started_waiter = asyncio.create_task(started_event.wait())
     error_waiter = asyncio.create_task(error_event.wait())
@@ -1039,14 +1144,29 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         # gets a chance to run (end_call + gateway shutdown). Bound the
         # wait so a misbehaving runner can't stall the HTTP response.
         session_task.cancel()
+        cancelled = True
         try:
             await asyncio.wait_for(session_task, timeout=2.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            # W9: the pipeline is STILL RUNNING. pipecat's own cancel
+            # budget is longer than this 2 s wait, so popping live_calls
+            # here would hide a live pipeline from /healthz and from
+            # every operator tool — the runner's own finally does the
+            # pop when it finally unwinds. Leave it in place; the task
+            # is held in app.state.tasks either way.
+            cancelled = False
+            logger.bind(call_id=call.id).warning(
+                "webrtc session still cancelling after 2s; leaving it "
+                "registered so it stays visible until its own teardown runs"
+            )
+        except asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001
             pass
-        # Defensive cleanup in case the runner's finally didn't fire.
-        request.app.state.live_calls.pop(call.id, None)
+        # Defensive cleanup in case the runner's finally didn't fire —
+        # only once we know it has actually stopped.
+        if cancelled:
+            request.app.state.live_calls.pop(call.id, None)
         try:
             await api_client.end_call(call, reason=f"startup failed: {detail}")
         except Exception:  # noqa: BLE001
@@ -1705,11 +1825,17 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         try:
             session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
         except Exception as e:  # noqa: BLE001
+            # W2: setup_takeover_call registers the gateway session
+            # (transport + WebSocket) before it can fail, so the failure
+            # path has to unregister it — clear_takeover_session alone
+            # left the session, its transport and the closed WebSocket
+            # in the gateway maps for the life of the process.
             logger.bind(session_id=session_id).error(
                 f"sipbridge takeover setup failed: {e}"
             )
             await websocket.close(code=1011)
             sip_gateway.clear_takeover_session(session_id)
+            sip_gateway.unregister_session(session_id)
             return
         sip_gateway.register_inbound_session(
             session_id=session_id,
@@ -1992,10 +2118,20 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             sip_gateway, ctx, instance=instance, agent=agent
         )
     except Exception as e:  # noqa: BLE001
+        # W2: ``setup_inbound_call`` registers the gateway session
+        # (transport + WebSocket) BEFORE it creates and starts the call,
+        # so every failure after that point leaked one _SbGatewaySession
+        # plus its transport and closed WebSocket. The commonest failure
+        # here is the entirely routine one — the agent is at its
+        # concurrency limit with no fallback message — which means this
+        # leaked hardest exactly when the node was busiest. Second
+        # commonest is an agent-db outage, which leaks one per inbound
+        # call for the duration.
         logger.bind(session_id=ctx.session_id).error(
             f"sipbridge setup_inbound_call failed: {e}"
         )
         await websocket.close(code=1011)
+        sip_gateway.unregister_session(ctx.session_id)
         return
 
     # Register the bridge_call_id → session mapping so REST hangup /

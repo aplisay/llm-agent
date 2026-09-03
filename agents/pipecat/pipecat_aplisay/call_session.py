@@ -282,6 +282,9 @@ class CallSession:
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
+    # Strong references to fire-and-forget background tasks (W10) — see
+    # ``_hold_task``.
+    _background_tasks: set = field(default_factory=set)
     # Hand-back take-over sessions only: future resolving to the pre-fired
     # summaryAgent result, collected by the ``transfer_summary`` builtin
     # (bridged_transfer.prefire_summary). None everywhere else.
@@ -321,6 +324,14 @@ class CallSession:
         active_prompt = system_prompt
         used_fallback_model = False
         used_fallback_agent = False
+        # W8: the retry arms below re-enter prepare_run on the SAME
+        # transport, and pipecat's add_event_handler appends. Snapshot
+        # the handler registry once, and roll back to it before each
+        # retry so a failed attempt's closures don't fire alongside the
+        # replacement's.
+        transport_handlers = self._snapshot_transport_handlers(
+            getattr(self.gateway_session, "transport", None)
+        )
 
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
@@ -358,6 +369,9 @@ class CallSession:
                         active_model = next_agent["modelName"]
                         used_fallback_agent = True
                         used_fallback_model = False
+                        self._restore_transport_handlers(
+                            self.gateway_session.transport, transport_handlers
+                        )
                         continue
                     except Exception as inner:  # noqa: BLE001
                         logger.warning(f"fallback agent failed: {inner}")
@@ -370,6 +384,9 @@ class CallSession:
                 ):
                     used_fallback_model = True
                     active_model = fallback_cfg["model"]
+                    self._restore_transport_handlers(
+                        self.gateway_session.transport, transport_handlers
+                    )
                     continue
 
                 # 3. Fixed-message fallback: play the operator's announcement.
@@ -430,6 +447,58 @@ class CallSession:
 
                 raise
 
+    @staticmethod
+    def _snapshot_transport_handlers(transport: Any) -> Optional[dict]:
+        """Capture the transport's currently-registered event handlers (W8).
+
+        ``prepare_run`` registers ``on_client_connected`` /
+        ``on_client_disconnected`` closures on the gateway's transport —
+        greeting, recorder start, task cancel — and pipecat's
+        ``add_event_handler`` APPENDS. The fallback loop in ``run()``
+        re-enters ``prepare_run`` on the SAME transport object, so a
+        failed attempt's closures stayed registered and fired again on
+        the retry's StartFrame, still holding the dead task and its
+        audio buffer: a duplicate greeting, and ``start_recording()``
+        called on the wrong buffer. Bounded by the fallback chain rather
+        than unbounded, but wrong either way.
+
+        Returns None when the transport doesn't expose the registry, in
+        which case the restore is a no-op and behaviour is unchanged.
+        """
+        registry = getattr(transport, "_event_handlers", None)
+        if not isinstance(registry, dict):
+            return None
+        return {
+            name: list(entry.handlers)
+            for name, entry in registry.items()
+            if hasattr(entry, "handlers")
+        }
+
+    @staticmethod
+    def _restore_transport_handlers(transport: Any, snapshot: Optional[dict]) -> None:
+        """Roll the transport's handlers back to a snapshot — see above."""
+        if not snapshot:
+            return
+        registry = getattr(transport, "_event_handlers", None)
+        if not isinstance(registry, dict):
+            return
+        for name, saved in snapshot.items():
+            entry = registry.get(name)
+            if entry is not None and hasattr(entry, "handlers"):
+                entry.handlers[:] = saved
+
+    def _hold_task(self, task: "asyncio.Task") -> "asyncio.Task":
+        """Keep a strong reference to a background task (W10).
+
+        asyncio holds only weak references to tasks, so a bare
+        ``create_task`` whose result nobody awaits can be collected
+        mid-flight; these survive today only by virtue of whatever they
+        happen to be awaiting. Mirrors ``bridged_transfer._summary_tasks``.
+        """
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def prepare_run(
         self, agent: dict, model_name: str, system_prompt: str
     ):
@@ -442,7 +511,42 @@ class CallSession:
         (missing API key, unsupported provider, etc.) propagate as a real
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
+
+        Failure handling (W5): the MCP servers are connected part-way
+        through the build, but their closers are only awaited in
+        ``_run_prepared_once``'s finally — which never runs if the build
+        raises after that point. With a fallback configured, ``run()``
+        re-enters here and overwrites ``_mcp_closers``, orphaning the
+        previous connections; without one, the exception escapes and
+        nothing closes them at all. Trigger: any agent with MCP servers
+        whose model/voice config fails to build. So the whole build runs
+        under a guard that closes them.
+
+        The guard deliberately does NOT flush the invocation log: a
+        failed attempt may be followed by a fallback retry that succeeds,
+        and the agent-db endpoint creates a ROW PER POST, so flushing
+        here would split one call's log in two. The records stay in that
+        call's own buffer (they are keyed by callId) until either the
+        runner's finally or — for a terminal setup failure, where the
+        runner never runs — ``worker._run_session``.
         """
+        try:
+            return await self._prepare_run_inner(agent, model_name, system_prompt)
+        except BaseException:
+            closers, self._mcp_closers = self._mcp_closers, []
+            if closers:
+                try:
+                    await close_mcp_servers(closers)
+                except Exception as e:  # noqa: BLE001
+                    logger.bind(call_id=self.call.id).warning(
+                        f"closing MCP servers after failed build raised: {e}"
+                    )
+            raise
+
+    async def _prepare_run_inner(
+        self, agent: dict, model_name: str, system_prompt: str
+    ):
+        """The body of :meth:`prepare_run` — see its docstring."""
         # Handover paths pass their own agent dict; make sure listener-level
         # transfer overrides apply to it exactly as they did to the original
         # (idempotent when __post_init__ already merged this dict).
@@ -894,6 +998,13 @@ class CallSession:
         leg = self._relay_leg
         if leg is not None:
             self._relay_leg = None
+            from . import media_relay
+
+            # P7: disengage BOTH ends first. Otherwise the surviving
+            # leg's tap keeps feeding the dead leg's unbounded injector
+            # queue (~96 KB/s from a 48 kHz browser peer) until the
+            # survivor is itself hung up — which is best-effort.
+            media_relay.unbridge(self.relay_endpoint, getattr(leg, "endpoint", None))
             try:
                 await leg.task.cancel()
             except Exception as e:  # noqa: BLE001
@@ -906,6 +1017,9 @@ class CallSession:
         consult = self._consult_session
         if consult is not None:
             self._consult_session = None
+            from . import media_relay
+
+            media_relay.unbridge(self.relay_endpoint, consult.relay_endpoint)
             try:
                 await consult.gateway_session.shutdown()
             except Exception as e:  # noqa: BLE001
@@ -2197,7 +2311,7 @@ class CallSession:
         )
         # Run the relay leg, then engage the bridge. The browser bot pipeline is
         # already running; engaging mutes it and starts the media relay.
-        asyncio.create_task(self._run_relay_leg())
+        self._hold_task(asyncio.create_task(self._run_relay_leg()))
         media_relay.bridge(self.relay_endpoint, leg_endpoint)
         self.transfer_state = TransferState("talking", "Transfer connected")
         logger.bind(call_id=self.call.id, leg_call_id=leg_call.id).info(
@@ -2324,7 +2438,7 @@ class CallSession:
         self._consult_session = consult_session
         # Run the TransferAgent bot on the consult leg. accept/reject tools on it
         # drive our transfer_state and, on accept, bridge the relay endpoints.
-        asyncio.create_task(self._run_consult_session(consult_session))
+        self._hold_task(asyncio.create_task(self._run_consult_session(consult_session)))
         self.transfer_state = TransferState("talking", "Speaking with transfer target...")
 
     async def _run_consult_session(self, consult_session: "CallSession") -> None:
@@ -2633,6 +2747,20 @@ def _json_dumps_safe(value: Any) -> str:
 # ---- Constructors ----
 
 
+async def _end_unstarted_call(call, reason: str) -> None:
+    """Close a Call record that was created but never started.
+
+    Best-effort: the caller is already unwinding on an error, and a
+    failure to tidy the row must not mask it.
+    """
+    try:
+        await api_client.end_call(call, reason)
+    except Exception as e:  # noqa: BLE001
+        logger.bind(call_id=getattr(call, "id", None)).warning(
+            f"could not end unstarted call record: {e}"
+        )
+
+
 async def setup_inbound_call(
     sip_gateway: SipGateway,
     inbound: InboundCallContext,
@@ -2687,11 +2815,22 @@ async def setup_inbound_call(
         from .fixed_message import fixed_message_for
 
         if not fixed_message_for(agent):
+            # W2: the Call record above was created but will never be
+            # started, and nothing downstream reaches ``end_call`` on
+            # this path — so the busy case (the expected one, at exactly
+            # the moment the node is busiest) left an open call row per
+            # refusal. End it before the refusal propagates.
+            await _end_unstarted_call(call, "concurrency limit exceeded")
             raise
         logger.bind(call_id=call.id, agent_id=agent.get("id")).warning(
             "agent concurrency limit reached; playing fixed fallback message instead of busy"
         )
         fixed_message_only = True
+    except Exception:
+        # Any other start failure (agent-db 5xx or timeout) leaves the
+        # same orphaned row.
+        await _end_unstarted_call(call, "call start failed")
+        raise
 
     return CallSession(
         session_id=inbound.session_id,

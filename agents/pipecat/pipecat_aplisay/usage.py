@@ -18,6 +18,7 @@ priced per vendor on either basis.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from loguru import logger
@@ -33,6 +34,12 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.services.stt_service import STTService
 
 from . import api_client
+
+# How many recently-seen frame ids the dedupe window remembers (P8).
+# A frame is re-observed on each push hop within the same pipeline pass,
+# so a few thousand is orders of magnitude more than needed; the cap only
+# exists to stop the set growing with call length.
+_SEEN_FRAME_WINDOW = 4096
 from .voice_mode import model_id_from_name
 
 
@@ -80,7 +87,15 @@ class UsageMeteringObserver(BaseObserver):
         self._meters: dict[str, dict[str, Any]] = {}
         # Observers fire on every push hop, so a frame is seen multiple times;
         # dedupe by frame id to count each frame once.
+        #
+        # Bounded (P8). An unbounded set held one int per frame for the
+        # whole call — ~6-7 MB per hour of bot speech, freed only at
+        # hangup. Duplicate sightings of a frame all happen within a few
+        # push hops of each other, so a short ring of recent ids is as
+        # good as remembering every frame ever seen: the deque evicts
+        # oldest-first and the set mirrors it for O(1) lookup.
         self._seen_frame_ids: set[int] = set()
+        self._seen_frame_order: deque[int] = deque()
         # Open VAD user-speech window start timestamp (seconds), for stt/ms.
         self._vad_start_ts: float | None = None
 
@@ -91,6 +106,9 @@ class UsageMeteringObserver(BaseObserver):
         if frame_id in self._seen_frame_ids:
             return True
         self._seen_frame_ids.add(frame_id)
+        self._seen_frame_order.append(frame_id)
+        if len(self._seen_frame_order) > _SEEN_FRAME_WINDOW:
+            self._seen_frame_ids.discard(self._seen_frame_order.popleft())
         return False
 
     def _resolve(self, technology: str, model: str | None) -> tuple[str | None, str | None]:

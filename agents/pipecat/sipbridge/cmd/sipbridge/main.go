@@ -25,6 +25,12 @@ import (
 	sipx "github.com/aplisay/llm-agent/agents/pipecat/sipbridge/internal/sip"
 )
 
+// drainTimeout bounds the whole SIGTERM shutdown: BYE every live call,
+// then drain the API server. Keep it comfortably under the pod's
+// terminationGracePeriodSeconds (default 30 s) so the process exits on
+// its own rather than being SIGKILLed mid-drain.
+const drainTimeout = 20 * time.Second
+
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
@@ -175,7 +181,7 @@ func main() {
 
 	select {
 	case <-ctx.Done():
-		log.Info().Msg("sipbridge: signal received, shutting down")
+		log.Info().Msg("sipbridge: signal received, draining")
 	case err := <-errCh:
 		if err != nil {
 			log.Error().Err(err).Msg("sipbridge: component failed, shutting down")
@@ -185,8 +191,18 @@ func main() {
 
 	// Graceful shutdown — bound it so a stuck connection doesn't pin
 	// the process forever.
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancelShutdown()
+	// Drain before anything else: stop answering new INVITEs (503 +
+	// Retry-After, so the upstream re-routes) and then BYE every live
+	// dialog. Without this a rolling update abandons every call on the
+	// node without signalling — the carrier holds its channels until
+	// its own timers expire, and the worker only finds out when its
+	// WebSocket dies.
+	sipSrv.Drain()
+	if n := mgr.HangupAll(shutdownCtx); n > 0 {
+		log.Info().Int("calls", n).Msg("sipbridge: drained active calls")
+	}
 	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
 		log.Warn().Err(err).Msg("api: shutdown")
 	}

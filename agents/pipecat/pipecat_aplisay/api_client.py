@@ -15,6 +15,8 @@ import httpx
 from loguru import logger
 from pydantic import BaseModel
 
+from . import http_client
+
 
 class ApiRequestError(Exception):
     def __init__(self, status: int, body: Any, message: str) -> None:
@@ -69,8 +71,13 @@ async def _request(
         headers["x-shared-token"] = token
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, params=params, json=body, headers=headers)
+        # Shared, pooled, keep-alive client (W4). The deadline goes on
+        # the request, not the client, so one caller's timeout can never
+        # apply to another's.
+        client = await http_client.get_client("agent-db")
+        resp = await client.request(
+            method, url, params=params, json=body, headers=headers, timeout=timeout
+        )
     except httpx.ConnectError as e:
         # DNS / TCP failure reaching the llm-agent REST server. Most common
         # cause in dev is SERVICE_BASE_URI unset, pointed at an unresolvable

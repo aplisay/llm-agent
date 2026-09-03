@@ -29,10 +29,15 @@ def _msg(call_id, message="hi", level="INFO"):
 @pytest.fixture(autouse=True)
 def _clear_buffer():
     with invocation_log._LOCK:
-        invocation_log._BUFFER.clear()
+        invocation_log._BUFFERS.clear()
     yield
     with invocation_log._LOCK:
-        invocation_log._BUFFER.clear()
+        invocation_log._BUFFERS.clear()
+
+
+def _buffered() -> list:
+    """Every buffered entry, in per-call insertion order."""
+    return [e for buf in invocation_log._BUFFERS.values() for e in buf]
 
 
 def test_sink_buffers_only_call_scoped():
@@ -40,12 +45,12 @@ def test_sink_buffers_only_call_scoped():
     invocation_log._capture_sink(_msg(None, "orphan"))  # no callId -> dropped
     invocation_log._capture_sink(_msg("call-A", "a2"))
     invocation_log._capture_sink(_msg("call-B", "b1"))
-    assert [e["callId"] for e in invocation_log._BUFFER] == ["call-A", "call-A", "call-B"]
+    assert [e["callId"] for e in _buffered()] == ["call-A", "call-A", "call-B"]
 
 
 def test_entries_are_pino_shaped():
     invocation_log._capture_sink(_msg("call-A", "hello", level="WARNING"))
-    e = invocation_log._BUFFER[0]
+    e = _buffered()[0]
     assert isinstance(e["time"], int)  # epoch ms, for the UI timeline/playhead
     assert e["level"] == 40  # pino numeric: WARNING -> 40 (>=40 = notable)
     assert e["msg"] == "hello"
@@ -73,7 +78,7 @@ def test_flush_drains_only_that_call(monkeypatch):
     assert p["subsystem"] == "pipecat-agent"
     assert [e["msg"] for e in p["log"]] == ["a1", "a2"]
     # call-B's entry survives for its own flush
-    assert [e["callId"] for e in invocation_log._BUFFER] == ["call-B"]
+    assert [e["callId"] for e in _buffered()] == ["call-B"]
 
 
 def test_flush_noop_when_no_entries_for_call(monkeypatch):
@@ -107,12 +112,88 @@ def test_shutdown_flush_groups_by_call(monkeypatch):
     assert set(by_call) == {"call-A", "call-B"}
     assert by_call["call-A"]["userId"] == "envU"
     assert [e["msg"] for e in by_call["call-A"]["log"]] == ["a1", "a2"]
-    assert invocation_log._BUFFER == []
+    assert _buffered() == []
 
 
 def test_max_entries_cap(monkeypatch):
-    monkeypatch.setattr(invocation_log, "_MAX_ENTRIES", 3)
+    monkeypatch.setattr(invocation_log, "_MAX_ENTRIES_PER_CALL", 3)
     for i in range(5):
         invocation_log._capture_sink(_msg("call-A", f"m{i}"))
     # oldest dropped, newest kept
-    assert [e["msg"] for e in invocation_log._BUFFER] == ["m2", "m3", "m4"]
+    assert [e["msg"] for e in _buffered()] == ["m2", "m3", "m4"]
+
+
+def test_one_calls_verbosity_cannot_evict_another_calls_records():
+    """The cap is per call, not process-wide.
+
+    With one shared buffer, a busy node's chatty calls evicted the OLDEST
+    entries across the whole process — which were the setup and connect
+    lines of the still-running long calls, exactly the records needed to
+    diagnose a silent leg.
+    """
+    invocation_log._MAX_ENTRIES_PER_CALL  # documents the knob under test
+    invocation_log._capture_sink(_msg("quiet-call", "the-line-that-matters"))
+    for i in range(invocation_log._MAX_ENTRIES_PER_CALL + 50):
+        invocation_log._capture_sink(_msg("chatty-call", f"noise{i}"))
+
+    quiet = list(invocation_log._BUFFERS["quiet-call"])
+    assert [e["msg"] for e in quiet] == ["the-line-that-matters"]
+    # and the chatty call is capped on its own budget
+    assert (
+        len(invocation_log._BUFFERS["chatty-call"])
+        == invocation_log._MAX_ENTRIES_PER_CALL
+    )
+
+
+def test_unflushed_call_buffers_are_bounded(monkeypatch):
+    """Buffers are normally dropped by their own call's flush; the call
+    ceiling only bounds calls that end without one."""
+    monkeypatch.setattr(invocation_log, "_MAX_CALLS", 3)
+    for i in range(6):
+        invocation_log._capture_sink(_msg(f"call-{i}", "x"))
+    assert len(invocation_log._BUFFERS) <= 3
+    # the most recent calls are the ones kept
+    assert "call-5" in invocation_log._BUFFERS
+
+
+def test_drain_removes_only_that_calls_buffer():
+    invocation_log._capture_sink(_msg("call-A", "a1"))
+    invocation_log._capture_sink(_msg("call-B", "b1"))
+    assert [e["msg"] for e in invocation_log._drain("call-A")] == ["a1"]
+    assert "call-A" not in invocation_log._BUFFERS
+    assert [e["msg"] for e in invocation_log._BUFFERS["call-B"]] == ["b1"]
+
+
+def test_sink_reports_evictions_without_re_entering_loguru(monkeypatch, capsys):
+    """The eviction path must not use ``logger``.
+
+    loguru calls this sink inline (enqueue=False) and is not re-entrant:
+    a log emitted from inside the sink trips its "deadlock avoided"
+    guard, which raises out of the sink — losing the message and turning
+    every eviction into a handler error. The eviction is reported with a
+    counter and a direct stderr write instead. Driving a real eviction
+    through the real logger is the only way to check this.
+    """
+    from loguru import logger
+
+    monkeypatch.setattr(invocation_log, "_MAX_CALLS", 2)
+    monkeypatch.setattr(invocation_log, "_dropped_call_buffers", 0)
+    sink_id = logger.add(
+        invocation_log._capture_sink, level="INFO", enqueue=False,
+        backtrace=False, diagnose=False,
+    )
+    try:
+        for i in range(4):
+            with logger.contextualize(callId=f"call-{i}"):
+                logger.info("hello")
+    finally:
+        logger.remove(sink_id)
+
+    assert len(invocation_log._BUFFERS) <= 2
+    assert invocation_log.dropped_call_buffers() == 2
+    err = capsys.readouterr().err
+    assert "dropped buffered records" in err
+    # The tell-tale of re-entering loguru from the sink.
+    assert "deadlock avoided" not in err, (
+        "the eviction path re-entered loguru from inside the sink"
+    )

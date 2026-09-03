@@ -68,6 +68,11 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # 20 ms chunks — matches typical transport frame sizing.
 _CHUNK_SECS = 0.02
+# Poll interval while the injector is disarmed (``_mode is None``), which is
+# almost all of every call. Arming is still noticed within this window, which
+# is well inside the gap a transfer opens up; the alternative was a 20 ms
+# ticker per call for the whole call, doing nothing.
+_IDLE_POLL_SECS = 0.25
 # Backstop for handover mode: a full-stack agent handover normally completes
 # (incoming agent's first BotStartedSpeakingFrame) within a few seconds. If
 # the new agent never speaks — a stuck/failed continuation — cap the comfort
@@ -408,6 +413,18 @@ class ConfidenceToneInjector(FrameProcessor):
         accumulate into audio backlog at the transport."""
         next_deadline = time.monotonic()
         while True:
+            # Idle poll (P3). The tone is armed only during a transfer,
+            # which is a few seconds out of a call that may run for an
+            # hour: for ~99% of the call ``_mode`` is None and the 20 ms
+            # pacing loop was waking 50 times a second per call to do
+            # nothing — 5 000 wakeups/s across a hundred calls. Poll
+            # slowly while disarmed and re-anchor the deadline on the
+            # way in, so arming is still picked up within 250 ms and the
+            # first tone chunk is still pushed on an exact boundary.
+            if self._mode is None:
+                await asyncio.sleep(_IDLE_POLL_SECS)
+                next_deadline = time.monotonic()
+                continue
             next_deadline += _CHUNK_SECS
             delay = next_deadline - time.monotonic()
             if delay > 0:

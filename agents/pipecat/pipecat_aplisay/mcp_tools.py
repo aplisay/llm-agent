@@ -27,10 +27,23 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+from datetime import timedelta
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from loguru import logger as _logger
+
+# How long the worker waits for an MCP server to complete its handshake
+# and list its tools. Servers are connected serially during call setup,
+# with the caller already answered and holding a concurrency slot, so
+# this is a call-quality budget rather than a connectivity one — a
+# server that needs longer is one the call is better off without.
+MCP_CONNECT_TIMEOUT = 10.0
+
+# Per-tool-call read deadline. The mcp client's own default is 300 s;
+# nothing conversational survives a five-minute pause, and a hung tool
+# call otherwise pins the bot mid-turn.
+MCP_TOOL_TIMEOUT = 30.0
 
 
 def _namespace_tool_name(server_name: str, tool_name: str) -> str:
@@ -102,7 +115,11 @@ def _make_descriptor(
             "proxying MCP tool call"
         )
         try:
-            results = await _session.call_tool(_name, arguments=args or {})
+            results = await _session.call_tool(
+                _name,
+                arguments=args or {},
+                read_timeout_seconds=timedelta(seconds=MCP_TOOL_TIMEOUT),
+            )
         except Exception as e:  # noqa: BLE001
             detail = _error_summary(e)
             log.bind(server=server_name, tool=_name, error=detail).warning(
@@ -265,11 +282,29 @@ async def _connect_one(
 
     task = asyncio.create_task(_run(), name=f"mcp-{name or url}")
     try:
-        descriptors = await ready
-    except Exception as e:  # noqa: BLE001
+        # P2: a worker-side deadline. Without it the only limits are the
+        # mcp client's own (30 s connect, 300 s read), and servers are
+        # connected serially — so one configured server that accepts the
+        # POST and then never answers stalls call setup for minutes with
+        # the caller answered, silent, and holding a concurrency slot
+        # (on the WebRTC path it hangs /webrtc/offer outright). A server
+        # that cannot complete a handshake in MCP_CONNECT_TIMEOUT is not
+        # going to be useful on this call.
+        descriptors = await asyncio.wait_for(ready, timeout=MCP_CONNECT_TIMEOUT)
+    except BaseException as e:
+        # BaseException, not Exception: a CancelledError here (call torn
+        # down mid-connect, or worker shutdown) otherwise left ``_run``
+        # parked on ``close_event.wait()`` holding its httpx client and
+        # MCP session open for the life of the process.
         close_event.set()
         await asyncio.gather(task, return_exceptions=True)
-        detail = _error_summary(e)
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        detail = (
+            f"timed out after {MCP_CONNECT_TIMEOUT:g}s"
+            if isinstance(e, asyncio.TimeoutError)
+            else _error_summary(e)
+        )
         log.bind(server=name, url=url, error=detail).warning(
             f"failed to connect MCP server '{name}' at {url}: {detail}; "
             "skipping — its tools will be unavailable for this call"

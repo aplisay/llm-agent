@@ -69,6 +69,39 @@ spec:
               port: 8090
             initialDelaySeconds: 3
             periodSeconds: 10
+          # Drain in step with the worker. Kubernetes runs preStop
+          # PER CONTAINER and sends each its SIGTERM as soon as ITS OWN
+          # hook returns — so without this, sipbridge would take SIGTERM
+          # (and BYE every live dialog) while the worker was still
+          # waiting for those very calls to finish.
+          #
+          # Polls its own /health until active_calls hits zero, using the
+          # busybox shim: the image is distroless and has no shell or
+          # HTTP client of its own. The ceiling is a little under the
+          # worker's so the worker is still the one that decides when the
+          # node is empty; sipbridge's own SIGTERM handler then does the
+          # real drain (refuse new INVITEs with 503 + Retry-After, BYE
+          # anything still up).
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /etc/node-meta/busybox
+                  - sh
+                  - -c
+                  - |
+                    i=0
+                    max="${LIFECYCLE_DRAIN_SECONDS:-1200}"
+                    max=$((max / 5))
+                    while [ "$i" -lt "$max" ]; do
+                      body=$(/etc/node-meta/busybox wget -q -T 3 -O - \
+                        http://127.0.0.1:8090/health 2>/dev/null) || break
+                      case "$body" in
+                        *'"active_calls":0'*) break ;;
+                      esac
+                      /etc/node-meta/busybox sleep 5
+                      i=$((i + 1))
+                    done
           volumeMounts:
             - name: node-meta
               mountPath: /etc/node-meta

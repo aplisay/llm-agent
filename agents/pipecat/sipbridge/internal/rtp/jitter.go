@@ -37,10 +37,34 @@ import (
 //     received either the packet that arrived in time or the silence
 //     stub.
 //
+//   - Discontinuity: a stream that jumps its sequence numbers (an SSRC
+//     change after a transfer or music-on-hold, RTCP-mux junk parsed as
+//     RTP) would otherwise leave the release cursor thousands of slots
+//     behind the arriving packets — silence out, unbounded map growth
+//     in, and no recovery. Push resyncs (Reset + re-prime) when the
+//     distance from the cursor leaves ``resyncWindow`` or the map
+//     exceeds ``maxDepth``. A backward jump past 32 767 aliases to
+//     "late" and would otherwise drop every packet for good; the same
+//     window catches it.
+//
 // The buffer is not used in relay mode (Phase C bridged transfer) —
 // the relay forwards packets immediately without ordering, since both
 // legs see whatever jitter the bridge sees and there's no benefit to
 // reordering twice.
+// resyncWindow is how far (in packets, either direction) an arriving
+// sequence number may be from the release cursor before we treat the
+// stream as discontinuous rather than merely jittery. 3 000 packets is
+// a minute of 20 ms audio — far beyond any real reordering or loss
+// burst, and well clear of the ±32 767 point where the signed-16-bit
+// comparison aliases.
+const resyncWindow = 3000
+
+// maxDepth caps the number of buffered packets. At the 3-packet target
+// depth the release loop keeps this near zero; reaching 250 (5 s) means
+// the consumer has stalled or the stream is discontinuous, and holding
+// more just adds latency that never drains.
+const maxDepth = 250
+
 type JitterBuffer struct {
 	// Depth is the target queue length in packets. Filled at
 	// construction; consumed each Tick.
@@ -77,7 +101,20 @@ func (j *JitterBuffer) Push(seq uint16, payload []byte) {
 	if !j.primed {
 		j.next = seq
 		j.primed = true
-	} else if int16(seq-j.next) < 0 {
+	} else if d := int16(seq - j.next); d > resyncWindow || d < -resyncWindow || len(j.packets) >= maxDepth {
+		// Discontinuity: the stream has jumped (new SSRC, non-RTP junk)
+		// or the consumer has stalled. Either way the cursor can never
+		// catch up on its own — one slot per 20 ms tick — so start
+		// over from this packet. Dropping what we hold costs at most
+		// the buffered audio; not resyncing costs the rest of the call.
+		log.Warn().
+			Uint16("seq", seq).
+			Uint16("next", j.next).
+			Int("depth", len(j.packets)).
+			Msg("rtp: jitter buffer discontinuity — resyncing")
+		j.packets = map[uint16][]byte{}
+		j.next = seq
+	} else if d < 0 {
 		// Already-released slot — drop. Logging at debug because over
 		// a reordered network this is normal.
 		log.Debug().
@@ -112,6 +149,17 @@ func (j *JitterBuffer) Pop() ([]byte, bool) {
 	// Gap: synthesise silence and advance.
 	j.next++
 	return make([]byte, j.PayloadSize), true
+}
+
+// Len returns the number of packets currently buffered (the field
+// ``Depth`` is the *target*, not the current occupancy). Used by the
+// release loop to detect a buffer that has run above target (a stalled
+// consumer or a burst) so it can drain the excess rather than carry it
+// as permanent added latency.
+func (j *JitterBuffer) Len() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.packets)
 }
 
 // Flush drains the buffer in sequence order, returning everything

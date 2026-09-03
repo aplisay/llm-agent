@@ -21,9 +21,11 @@ from pipecat_aplisay import worker
 
 
 class _State:
-    def __init__(self, live=None, peers=None):
+    def __init__(self, live=None, peers=None, tasks=None, gateway=None):
         self.live_calls = live or {}
         self.webrtc_connections = peers or {}
+        self.tasks = tasks or set()
+        self.sip_gateway = gateway
 
 
 class _App:
@@ -88,3 +90,51 @@ def test_thread_spawn_failure_is_a_hard_503(loop, monkeypatch):
     status, body = _run(_State())
     assert status == 503
     assert any("cannot start threads" in p for p in body["problems"])
+
+
+# ---- Gateway-map and task visibility -------------------------------------
+#
+# The two worst leaks in the 2026-09-03 audit were both invisible to this
+# probe: a WebSocket handler parked forever per outbound call (W1), and a
+# gateway session retained per concurrency-refused inbound call (W2).
+# Neither touches live_calls and neither spawns a thread, so the counts
+# below are what would have caught them.
+
+
+class _FakeGateway:
+    def __init__(self, sessions=0, legs=0):
+        self._sessions = {f"s{i}": object() for i in range(sessions)}
+        self._session_to_bridge_call = {f"s{i}": "c" for i in range(sessions)}
+        self._leg_done_events = {f"s{i}": object() for i in range(legs)}
+
+
+def test_gateway_map_sizes_are_reported(loop):
+    status, body = _run(_State(gateway=_FakeGateway(sessions=3, legs=2)))
+    assert status == 200
+    assert body["gateway_maps"]["sessions"] == 3
+    assert body["gateway_maps"]["session_to_bridge_call"] == 3
+    assert body["gateway_maps"]["leg_done_events"] == 2
+
+
+def test_gateway_map_runaway_trips_the_watermark(loop):
+    # W1/W2 shape: sessions registered and never released, while
+    # live_calls stays at zero because the calls themselves ended.
+    gateway = _FakeGateway(sessions=worker.HEALTHZ_MAX_GATEWAY_ENTRIES, legs=0)
+    status, body = _run(_State(gateway=gateway))
+    assert status == 503
+    assert any("gateway map entries" in p for p in body["problems"])
+
+
+def test_no_gateway_reports_empty_maps(loop):
+    status, body = _run(_State())
+    assert status == 200
+    assert body["gateway_maps"] == {}
+
+
+def test_task_runaway_trips_the_watermark(loop):
+    # W1 shape: one parked handler task per outbound call, forever.
+    tasks = {object() for _ in range(worker.HEALTHZ_MAX_TASKS + 1)}
+    status, body = _run(_State(tasks=tasks))
+    assert status == 503
+    assert any("asyncio tasks" in p for p in body["problems"])
+    assert body["tasks"] == worker.HEALTHZ_MAX_TASKS + 1

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -92,10 +93,14 @@ type Server struct {
 	srv *sipgo.Server
 	ub  *sipgo.DialogUA
 
-	mu      sync.Mutex
-	calls   map[string]*activeCall // sip CallID → state for ACK/BYE matching
-	invite  InviteHandler
-	bye     ByeHandler
+	mu     sync.Mutex
+	calls  map[string]*activeCall // sip CallID → state for ACK/BYE matching
+	invite InviteHandler
+	bye    ByeHandler
+	// draining is set by Drain() on SIGTERM: new INVITEs get a 503
+	// with a Retry-After so the upstream B2BUA re-routes them to
+	// another node, while calls already up are hung up cleanly.
+	draining atomic.Bool
 	// signalIP is the IP we advertise (Via/Contact); bindIP is the
 	// address we actually listen on. They differ on any non-trivial
 	// deployment — see Config docs and docker-compose for the rationale.
@@ -339,6 +344,15 @@ func (s *Server) SetInviteHandler(h InviteHandler) { s.invite = h }
 // SetByeHandler registers the per-call teardown handler.
 func (s *Server) SetByeHandler(h ByeHandler) { s.bye = h }
 
+// Drain stops the server accepting new calls: from here on INVITEs are
+// answered 503 Service Unavailable + Retry-After so the upstream
+// re-routes them, while in-dialog traffic (ACK, BYE, REFER) for calls
+// already up keeps working so they can be torn down cleanly.
+func (s *Server) Drain() { s.draining.Store(true) }
+
+// Draining reports whether Drain has been called.
+func (s *Server) Draining() bool { return s.draining.Load() }
+
 // Listen binds the UDP socket and starts the SIP transaction loop.
 // Returns when the context is cancelled or the listener errors fatally.
 //
@@ -396,10 +410,24 @@ func (s *Server) registerHandlers() {
 	// registered handlers (OPTIONS, INFO, REFER, MESSAGE, etc). We
 	// don't have business logic for these but we want them in the
 	// trace when tracing is on, so we can see e.g. carrier OPTIONS
-	// keepalives or unexpected REFERs. Respond 501 Not Implemented so
-	// the peer doesn't retransmit.
+	// keepalives or unexpected REFERs. Respond so the peer doesn't
+	// retransmit.
+	//
+	// OPTIONS is the exception to the blanket 501: dispatchers and SBCs
+	// use it as a liveness poll and expect a 2xx — a 501 reads as "this
+	// node is unhealthy" and takes the bridge out of rotation. Answer
+	// 200 while we are up, 503 once draining (which is exactly the
+	// signal we want the dispatcher to act on).
 	s.srv.OnNoRoute(func(req *sip.Request, tx sip.ServerTransaction) {
 		s.traceSIP("<", "no-route ("+string(req.Method)+")", req)
+		if req.Method == sip.OPTIONS {
+			if s.draining.Load() {
+				s.respond(req, tx, 503, "Service Unavailable", nil)
+				return
+			}
+			s.respond(req, tx, 200, "OK", nil)
+			return
+		}
 		s.respond(req, tx, 501, "Not Implemented", nil)
 	})
 }
@@ -422,6 +450,52 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		Msg("sip: INVITE received")
 	if s.invite == nil {
 		s.respond(req, tx, 500, "No handler", nil)
+		return
+	}
+
+	// Draining (SIGTERM): refuse new work but keep serving the calls
+	// already up. 503 + Retry-After is the standard "try another node"
+	// signal; an upstream B2BUA re-routes on it rather than failing
+	// the call.
+	if s.draining.Load() {
+		log.Info().Str("call_id", callID).Msg("sip: INVITE refused — draining")
+		resp := sip.NewResponseFromRequest(req, 503, "Service Unavailable", nil)
+		resp.AppendHeader(sip.NewHeader("Retry-After", "30"))
+		s.traceSIP(">", "503 Service Unavailable for INVITE (draining)", resp)
+		if err := tx.Respond(resp); err != nil {
+			log.Warn().Err(err).Msg("sip: respond failed")
+		}
+		return
+	}
+
+	// Re-INVITE guard. sipgo hands in-dialog INVITEs (hold/unhold, an
+	// RFC 4028 session-timer refresh, codec renegotiation) to this same
+	// handler. We have no re-INVITE support: running one through the
+	// setup path below would allocate a second RTP port, dial a second
+	// worker WS for the same session and overwrite both registries by
+	// Call-ID — the original Call becomes unreachable and never closed,
+	// the peer's media moves to the new port, and the orphan's media
+	// watchdog then fires 10 s later and hangs up the *new* call by the
+	// same id. So: a To-tag (in-dialog) or an already-live Call-ID gets
+	// a 488. RFC 3261 §14.1 — a non-2xx to a re-INVITE leaves the
+	// existing session unchanged, so hold "fails" but the call lives.
+	if to := req.To(); to != nil {
+		if _, hasTag := to.Params.Get("tag"); hasTag {
+			log.Warn().
+				Str("call_id", callID).
+				Msg("sip: in-dialog INVITE (re-INVITE) rejected — not supported")
+			s.respond(req, tx, 488, "Not Acceptable Here", nil)
+			return
+		}
+	}
+	s.mu.Lock()
+	_, live := s.calls[callID]
+	s.mu.Unlock()
+	if live {
+		log.Warn().
+			Str("call_id", callID).
+			Msg("sip: INVITE for a Call-ID that is already live — rejected")
+		s.respond(req, tx, 488, "Not Acceptable Here", nil)
 		return
 	}
 
@@ -467,8 +541,14 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// session for ACK / BYE matching.
 	dlg, err := s.ub.ReadInvite(req, tx)
 	if err != nil {
+		// The invite handler above already built the Call (RTP port,
+		// worker WS, bot session). The commonest cause of getting
+		// here is a remote CANCEL while we were dialling the worker;
+		// without the teardown the Call sits in the manager until the
+		// media watchdog reaps it 10 s later.
 		log.Warn().Err(err).Str("call_id", callID).Msg("sip: ReadInvite failed")
 		s.respond(req, tx, 500, "Server Error", nil)
+		s.abandonCall(callID)
 		return
 	}
 	s.mu.Lock()
@@ -518,8 +598,12 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// (including the ACK itself, which our OnAck handler then forwards
 	// to dlg.ReadAck — that's what unblocks us).
 	if err := dlg.WriteResponse(resp); err != nil {
+		// 32 s of 2xx retransmits with no ACK (typically a
+		// NAT-misrouted ACK — see contactForDialog). cleanupCall
+		// alone dropped only ``s.calls``, so the worker's later
+		// DELETE could no longer BYE and the manager kept the call.
 		log.Warn().Err(err).Str("call_id", callID).Msg("sip: WriteResponse (200 OK) failed")
-		s.cleanupCall(callID)
+		s.abandonCall(callID)
 		return
 	}
 	log.Info().
@@ -624,10 +708,18 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		// Unknown dialog — respond 200 anyway so the far end stops
 		// retransmitting (some carriers re-send BYE after a missed
 		// ACK).
+		// The dialog can be missing while the manager still holds a
+		// live Call — WriteResponse failing after a lost ACK drops
+		// ``s.calls`` only. Tell the manager anyway (Hangup on an
+		// unknown id is a harmless no-op) so the media, WS and
+		// registry entry go rather than waiting on the watchdog.
 		log.Warn().
 			Str("call_id", callID).
-			Msg("sip: BYE for unknown dialog — call manager won't tear down (was the INVITE answered on this bridge?)")
+			Msg("sip: BYE for unknown dialog — tearing down any call-manager state under this id")
 		s.respond(req, tx, 200, "OK", nil)
+		if s.bye != nil {
+			s.bye(callID)
+		}
 		return
 	}
 	// ReadBye sends the 200 OK itself; we don't double-respond. The
@@ -652,6 +744,19 @@ func (s *Server) cleanupCall(callID string) {
 	s.mu.Lock()
 	delete(s.calls, callID)
 	s.mu.Unlock()
+}
+
+// abandonCall is cleanupCall plus the manager-level teardown. Used on
+// the setup paths that give up after the invite handler has already
+// wired a Call (RTP session, worker WS, bot session) but before the
+// dialog is established: dropping only ``s.calls`` there leaves that
+// Call in the manager's registry until the media watchdog reaps it
+// 10 s later — and for the unknown-dialog BYE, never.
+func (s *Server) abandonCall(callID string) {
+	s.cleanupCall(callID)
+	if s.bye != nil {
+		s.bye(callID)
+	}
 }
 
 // respond is the inline error-reply helper. Used when we don't want to
@@ -1143,6 +1248,19 @@ func (s *Server) sendByeAndTraceResponse(
 			Str("call_id", callID).
 			Msg("sip: BYE acknowledged with 200 OK")
 		return nil
+	case <-tx.Done():
+		// sipgo never closes ``Responses()`` — ``ClientTx.delete`` closes
+		// only ``done``. Without this arm the select parks forever once
+		// Timer B fires (32 s after a peer ignores our BYE), which is
+		// exactly the silent-carrier-hangup case the media watchdog
+		// exists to catch, and every internal caller passes
+		// ``context.Background()``.
+		err := tx.Err()
+		log.Warn().
+			Err(err).
+			Str("call_id", callID).
+			Msg("sip: BYE transaction ended without a final response")
+		return fmt.Errorf("sip: BYE transaction ended without a final response: %w", err)
 	case <-ctx.Done():
 		log.Warn().
 			Err(ctx.Err()).
