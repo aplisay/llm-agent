@@ -75,6 +75,13 @@ type ByeHandler func(callID string)
 type IncomingHeaders struct {
 	From string
 	To   string
+	// FromDisplayName is the From header's display-name — the caller's
+	// freeform name as presented on the wire (`"Alice Smith" <sip:+44…>` →
+	// `Alice Smith`) — as sipgo parsed it: surrounding quotes stripped,
+	// backslash quoted-pairs left in place. Empty when the From carried no
+	// display-name. Forwarded to the worker on the WS handshake as
+	// X-Sipbridge-From-Name → metadata.aplisay.callerIdName.
+	FromDisplayName string
 	// Custom headers we expect from the upstream B2BUA. Anything not
 	// listed here that arrives is preserved in Extra so debug tooling
 	// can inspect it.
@@ -669,6 +676,7 @@ func extractHeaders(req *sip.Request) IncomingHeaders {
 	h := IncomingHeaders{Extra: map[string]string{}}
 	if f := req.From(); f != nil {
 		h.From = f.Address.String()
+		h.FromDisplayName = f.DisplayName
 	}
 	if t := req.To(); t != nil {
 		h.To = t.Address.String()

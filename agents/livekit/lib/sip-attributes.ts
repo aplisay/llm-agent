@@ -2,11 +2,12 @@
  * Reading LiveKit SIP participant attributes.
  *
  * LiveKit surfaces SIP participant attributes in **dotted** form —
- * `sip.phoneNumber`, `sip.trunkPhoneNumber`, `sip.hostname`, and (for INVITE
- * X- headers, when the trunk is created with `includeHeaders=SIP_X_HEADERS`,
- * see initialise.ts) `sip.h.x-<name>` with the header name lowercased. That is
- * the authoritative, lossless form, and it is what the deployed workers
- * actually receive.
+ * `sip.phoneNumber`, `sip.trunkPhoneNumber`, `sip.hostname`, and (for the
+ * INVITE headers, when the trunk is created with
+ * `includeHeaders=SIP_ALL_HEADERS`, see initialise.ts) `sip.h.<name>` with the
+ * header name lowercased — `sip.h.x-<name>` for the X- headers, `sip.h.from`
+ * for the From header, and so on. That is the authoritative, lossless form,
+ * and it is what the deployed workers actually receive.
  *
  * Some SDK/deploy paths have historically surfaced the same values under
  * camelCased keys instead (`sipPhoneNumber`, `sipHXAplisayTrunk`, …), which is
@@ -44,6 +45,10 @@ export const SIP_ATTRIBUTE_KEYS = {
   lkTransport: ["sip.h.x-lk-transport", "sipHXLkTransport"],
   /** A-leg media encryption hint; drives B-leg trunk media policy. */
   lkMediaEncryption: ["sip.h.x-lk-media-encryption", "sipHXLkMediaEncryption"],
+  /** The inbound INVITE's From header, verbatim (mapped because the trunk
+   *  includes ALL headers). Its display-name becomes
+   *  metadata.aplisay.callerIdName — see sipFromDisplayName. */
+  fromHeader: ["sip.h.from", "sipHFrom"],
 } as const satisfies Record<string, readonly [string, string]>;
 
 export type SipAttributeName = keyof typeof SIP_ATTRIBUTE_KEYS;
@@ -80,4 +85,72 @@ export function sipAttribute(
 ): string | undefined {
   const [dottedKey, camelKey] = SIP_ATTRIBUTE_KEYS[name];
   return readSipAttribute(attributes, dottedKey, camelKey);
+}
+
+/**
+ * Extract the display-name from a SIP `From` (or any name-addr) header value.
+ *
+ * RFC 3261: `From = ( name-addr / addr-spec ) *( SEMI from-param )`, with
+ * `name-addr = [ display-name ] LAQUOT addr-spec RAQUOT` and
+ * `display-name = *(token LWS) / quoted-string`. So a display-name exists only
+ * in the angle-bracket form, either as bare tokens (`Alice Smith <sip:…>`) or
+ * as a quoted-string (`"Smith, Alice" <sip:…>`) in which a backslash
+ * quoted-pair (`\"`, `\\`) escapes the next character. The addr-spec form
+ * (`sip:+44…@host;tag=x`) has no display-name at all.
+ *
+ * Returns the unquoted, unescaped name with control characters removed and
+ * whitespace collapsed, or `undefined` when there is none: empty or
+ * whitespace-only, `<sip:…>` with nothing in front, an addr-spec form, or a
+ * malformed quoted-string (unterminated / not followed by `<addr-spec>`).
+ */
+export function parseSipDisplayName(
+  value: string | undefined | null,
+): string | undefined {
+  if (!value) return undefined;
+  const s = value.trim();
+  let name: string;
+  if (s.startsWith('"')) {
+    let out = "";
+    let i = 1;
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if (c === "\\" && i + 1 < s.length) {
+        out += s[++i];
+        continue;
+      }
+      if (c === '"') break;
+      out += c;
+    }
+    if (i >= s.length || !s.slice(i + 1).trimStart().startsWith("<")) {
+      return undefined;
+    }
+    name = out;
+  } else {
+    const lt = s.indexOf("<");
+    if (lt <= 0) return undefined;
+    name = s.slice(0, lt);
+  }
+  // Replace C0 controls / DEL with a space, then collapse LWS runs.
+  const cleaned = Array.from(name)
+    .map((ch) => {
+      const code = ch.charCodeAt(0);
+      return code < 0x20 || code === 0x7f ? " " : ch;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || undefined;
+}
+
+/**
+ * The caller's display-name from the inbound INVITE's From header, read from
+ * the SIP participant's `sip.h.from` attribute (present when the inbound trunk
+ * maps all headers — see initialise.ts). `undefined` when the From carried no
+ * display-name or the attribute is absent (outbound / WebRTC, or a trunk still
+ * on `SIP_X_HEADERS`). Surfaced as metadata.aplisay.callerIdName.
+ */
+export function sipFromDisplayName(
+  attributes: Record<string, string> | undefined | null,
+): string | undefined {
+  return parseSipDisplayName(sipAttribute(attributes, "fromHeader"));
 }

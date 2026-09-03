@@ -70,6 +70,7 @@ from .base import (
     SipGateway,
     TransferRequest,
     collect_sip_headers,
+    normalise_display_name,
 )
 
 
@@ -1048,6 +1049,11 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 called_id=event.get("to"),
                 caller_id=event.get("from"),
                 sip_headers=sip_headers,
+                # The From header's display-name, if voiceblender's SIP ingress
+                # surfaces it on the ringing event as ``from_display_name``
+                # (``from`` is the bare user part). Absent on voiceblender
+                # builds that don't emit it -> None -> no callerIdName.
+                caller_id_name=normalise_display_name(event.get("from_display_name")),
                 aplisay_id=raw_sip_headers.get("X-Aplisay-Trunk"),
                 phone_registration=raw_sip_headers.get("X-Aplisay-PhoneRegistration"),
                 b2bua_gateway_ip=raw_sip_headers.get("X-Lk-RealIp"),
