@@ -1400,20 +1400,19 @@ async def _build_realtime(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
+    # F1: the framework's idle watchdog is left ON here deliberately.
+    # pipecat cancels any pipeline that goes 300 s without a
+    # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
+    # cancel_on_idle_timeout and cancel_runner_on_idle_timeout, all on by
+    # default). On a MAIN pipeline that is the backstop we want: 300 s is
+    # comfortably longer than any consult hold, and a pipeline with no
+    # speech in either direction for five minutes is not a call anyone is
+    # still on. Do NOT "fix" this to match the side pipelines, which do
+    # opt out (bridge_transcript, media_relay, fixed_message) because they
+    # emit neither frame by design and were being cancelled mid-use.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
-        # F1: pipecat cancels any pipeline that goes 300 s without a
-        # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
-        # cancel_on_idle_timeout=True, cancel_runner_on_idle_timeout=True
-        # — all on by default). That is a second, undocumented hangup
-        # policy sitting underneath the platform's own: ``maxDuration``
-        # and ``options.inactivity`` are what operators configure, the
-        # LiveKit runtime has no equivalent, and the framework default
-        # fires hardest in the case where the silence is deliberate —
-        # a caller parked on hold while the agent runs a consult. Off,
-        # so inactivity behaviour is the configured behaviour.
-        idle_timeout_secs=None,
     )
     # Inactivity "kick": speak options.inactivity.message after a silent
     # window. Inert unless options.inactivity is configured (the user
@@ -1541,20 +1540,19 @@ async def _build_pipeline(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
+    # F1: the framework's idle watchdog is left ON here deliberately.
+    # pipecat cancels any pipeline that goes 300 s without a
+    # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
+    # cancel_on_idle_timeout and cancel_runner_on_idle_timeout, all on by
+    # default). On a MAIN pipeline that is the backstop we want: 300 s is
+    # comfortably longer than any consult hold, and a pipeline with no
+    # speech in either direction for five minutes is not a call anyone is
+    # still on. Do NOT "fix" this to match the side pipelines, which do
+    # opt out (bridge_transcript, media_relay, fixed_message) because they
+    # emit neither frame by design and were being cancelled mid-use.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
-        # F1: pipecat cancels any pipeline that goes 300 s without a
-        # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
-        # cancel_on_idle_timeout=True, cancel_runner_on_idle_timeout=True
-        # — all on by default). That is a second, undocumented hangup
-        # policy sitting underneath the platform's own: ``maxDuration``
-        # and ``options.inactivity`` are what operators configure, the
-        # LiveKit runtime has no equivalent, and the framework default
-        # fires hardest in the case where the silence is deliberate —
-        # a caller parked on hold while the agent runs a consult. Off,
-        # so inactivity behaviour is the configured behaviour.
-        idle_timeout_secs=None,
     )
     # Inactivity "kick" — pipeline mode pushes the literal phrase straight to
     # TTS. Inert unless options.inactivity is configured.

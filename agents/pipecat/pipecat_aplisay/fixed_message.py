@@ -254,10 +254,11 @@ async def _play(transport: Any, agent: dict, resolved: ResolvedFallbackMessage) 
         processors = [_build_message_tts(agent, resolved), tap, rate_guard, transport.output()]
         frames = [TTSSpeakFrame(resolved.text)]
 
-    # F1: playout-only, no VAD and no bot frames. The announcement is far
-    # shorter than the 300 s default, but the watchdog has no business
-    # here either way.
-    task = PipelineTask(Pipeline(processors), idle_timeout_secs=None)
+    # F1: the framework's 300 s idle watchdog stays on. This playout is
+    # bounded far more tightly by run_fixed_message's own ceiling, and it
+    # was never one of the cases the watchdog broke — only the STT-only
+    # and relay-only side pipelines opt out.
+    task = PipelineTask(Pipeline(processors))
     # EndFrame is queued behind the audio, so it reaches the output transport
     # only after everything ahead of it has been rendered — the graceful
     # termination pattern, which is what stops the announcement being cut off.
