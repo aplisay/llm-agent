@@ -734,6 +734,18 @@ async def _run_session(app: FastAPI, session: CallSession, key: str) -> None:
             await api_client.end_call(session.call, reason=DISCONNECT_REASONS["UNCAUGHT_ERROR_RUNNING_AGENT"])
         except Exception as inner:  # noqa: BLE001
             logger.error(f"end_call after failure failed: {inner}")
+        # A setup failure means the pipeline runner never ran, so its
+        # finally never flushed this call's captured logs — and those are
+        # precisely the records that explain the failure. Harmless when
+        # the runner did flush: the drain is a pop, so this finds nothing.
+        try:
+            await flush_invocation_logs(
+                call_id=session.call.id,
+                user_id=session.call.userId,
+                org_id=session.call.organisationId,
+            )
+        except Exception as inner:  # noqa: BLE001
+            logger.warning(f"invocation log flush after failure failed: {inner}")
     finally:
         app.state.live_calls.pop(key, None)
         # W7: calls_by_channel (FreeSWITCH only) was inserted into on

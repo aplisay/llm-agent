@@ -16,6 +16,7 @@ rather than accumulated forever.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections import deque
 from typing import Any
@@ -52,6 +53,16 @@ _MAX_ENTRIES_PER_CALL = 4_000
 # ends without one (a hard crash between segments). At the cap the
 # least-recently-written call is dropped whole.
 _MAX_CALLS = 500
+
+# How many call buffers have been dropped un-flushed. Non-zero means
+# calls are ending without their invocation log being persisted, which is
+# worth knowing about; the sink cannot log it itself (see _capture_sink).
+_dropped_call_buffers = 0
+
+
+def dropped_call_buffers() -> int:
+    """Count of call buffers evicted before they were ever flushed."""
+    return _dropped_call_buffers
 
 
 # loguru level name -> pino numeric level. The Calls UI (polite-ai
@@ -109,6 +120,7 @@ def _capture_sink(message) -> None:
     except Exception:  # noqa: BLE001 — logging must never raise
         return
     key = entry.get("callId") or "system"
+    evicted: str | None = None
     with _LOCK:
         buf = _BUFFERS.get(key)
         if buf is None:
@@ -116,14 +128,28 @@ def _capture_sink(message) -> None:
                 # Insertion-ordered dict: the first key is the least
                 # recently created buffer. Only reachable if calls are
                 # ending without flushing.
-                oldest = next(iter(_BUFFERS))
-                del _BUFFERS[oldest]
-                logger.warning(
-                    "invocation log: dropped buffered records for "
-                    f"{oldest} — more than {_MAX_CALLS} unflushed calls"
-                )
+                evicted = next(iter(_BUFFERS))
+                del _BUFFERS[evicted]
             buf = _BUFFERS[key] = deque(maxlen=_MAX_ENTRIES_PER_CALL)
         buf.append(entry)
+    # NOT ``logger`` — we are inside a loguru sink, and loguru is not
+    # re-entrant: any log emitted from here trips its "deadlock avoided"
+    # guard, which raises out of the sink, loses the message and turns
+    # every eviction into a handler error on stderr. Moving it out of
+    # the lock does not help; the guard is on the loguru handler, not on
+    # our buffer. So: a counter (reported by ``dropped_call_buffers``)
+    # plus a direct stderr line, neither of which re-enters logging.
+    if evicted is not None:
+        global _dropped_call_buffers
+        _dropped_call_buffers += 1
+        try:
+            print(
+                f"invocation log: dropped buffered records for {evicted} — "
+                f"more than {_MAX_CALLS} unflushed calls",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001 — logging must never raise
+            pass
 
 
 def install_capture(level: str | None = None) -> None:

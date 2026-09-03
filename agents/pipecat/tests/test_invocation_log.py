@@ -162,3 +162,38 @@ def test_drain_removes_only_that_calls_buffer():
     assert [e["msg"] for e in invocation_log._drain("call-A")] == ["a1"]
     assert "call-A" not in invocation_log._BUFFERS
     assert [e["msg"] for e in invocation_log._BUFFERS["call-B"]] == ["b1"]
+
+
+def test_sink_reports_evictions_without_re_entering_loguru(monkeypatch, capsys):
+    """The eviction path must not use ``logger``.
+
+    loguru calls this sink inline (enqueue=False) and is not re-entrant:
+    a log emitted from inside the sink trips its "deadlock avoided"
+    guard, which raises out of the sink — losing the message and turning
+    every eviction into a handler error. The eviction is reported with a
+    counter and a direct stderr write instead. Driving a real eviction
+    through the real logger is the only way to check this.
+    """
+    from loguru import logger
+
+    monkeypatch.setattr(invocation_log, "_MAX_CALLS", 2)
+    monkeypatch.setattr(invocation_log, "_dropped_call_buffers", 0)
+    sink_id = logger.add(
+        invocation_log._capture_sink, level="INFO", enqueue=False,
+        backtrace=False, diagnose=False,
+    )
+    try:
+        for i in range(4):
+            with logger.contextualize(callId=f"call-{i}"):
+                logger.info("hello")
+    finally:
+        logger.remove(sink_id)
+
+    assert len(invocation_log._BUFFERS) <= 2
+    assert invocation_log.dropped_call_buffers() == 2
+    err = capsys.readouterr().err
+    assert "dropped buffered records" in err
+    # The tell-tale of re-entering loguru from the sink.
+    assert "deadlock avoided" not in err, (
+        "the eviction path re-entered loguru from inside the sink"
+    )

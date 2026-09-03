@@ -525,18 +525,18 @@ func (s *Session) readLoop(ctx context.Context) {
 	}
 }
 
-// pickPort returns an even free UDP port in [portMin, portMax]. RTP
-// convention is even-numbered ports (RTCP uses port+1 if we ever add
-// it); we don't need RTCP yet but we keep the even-port convention so
-// adding it later doesn't break the SDP we've published. If portMin ==
-// 0 the OS picks any free port (test-only path).
-// pickPort returns a bound socket on an even free port, not just the
-// number. Returning the number and rebinding in the caller was a
-// time-of-check/time-of-use race: under any concurrency a second call
-// could take the port between the probe's Close and the caller's
-// ListenUDP, failing the INVITE with a 500. Keeping the socket also
-// removes up to (max-min)/2 bind/close syscalls per call when the
-// range is nearly full.
+// pickPort binds and returns a socket on an even free port in
+// [portMin, portMax]. RTP convention is even-numbered ports (RTCP uses
+// port+1 if we ever add it); we don't need RTCP yet but we keep the
+// even-port convention so adding it later doesn't break the SDP we've
+// published. If portMin == 0 the OS picks any free port (test-only path).
+//
+// It returns the BOUND socket rather than the port number: probing,
+// closing and rebinding in the caller was a time-of-check/time-of-use
+// race where under any concurrency a second call could take the port in
+// between, failing the INVITE with a 500. Keeping the socket also
+// removes up to (max-min)/2 bind/close syscalls per call when the range
+// is nearly full.
 func pickPort(bindIP string, portMin, portMax int) (*net.UDPConn, error) {
 	if portMin == 0 && portMax == 0 {
 		return net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(bindIP)})

@@ -512,7 +512,7 @@ class CallSession:
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
 
-        Failure handling (W5/P1): the MCP servers are connected part-way
+        Failure handling (W5): the MCP servers are connected part-way
         through the build, but their closers are only awaited in
         ``_run_prepared_once``'s finally — which never runs if the build
         raises after that point. With a fallback configured, ``run()``
@@ -520,10 +520,15 @@ class CallSession:
         previous connections; without one, the exception escapes and
         nothing closes them at all. Trigger: any agent with MCP servers
         whose model/voice config fails to build. So the whole build runs
-        under a guard that closes them and flushes the log records that
-        would otherwise be stranded (they were written under this call's
-        ``contextualize``, but the only per-call flush is in the runner's
-        finally).
+        under a guard that closes them.
+
+        The guard deliberately does NOT flush the invocation log: a
+        failed attempt may be followed by a fallback retry that succeeds,
+        and the agent-db endpoint creates a ROW PER POST, so flushing
+        here would split one call's log in two. The records stay in that
+        call's own buffer (they are keyed by callId) until either the
+        runner's finally or — for a terminal setup failure, where the
+        runner never runs — ``worker._run_session``.
         """
         try:
             return await self._prepare_run_inner(agent, model_name, system_prompt)
@@ -536,16 +541,6 @@ class CallSession:
                     logger.bind(call_id=self.call.id).warning(
                         f"closing MCP servers after failed build raised: {e}"
                     )
-            try:
-                await invocation_log.flush_invocation_logs(
-                    call_id=self.call.id,
-                    user_id=self.call.userId,
-                    org_id=self.call.organisationId,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.bind(call_id=self.call.id).warning(
-                    f"invocation log flush after failed build raised: {e}"
-                )
             raise
 
     async def _prepare_run_inner(
