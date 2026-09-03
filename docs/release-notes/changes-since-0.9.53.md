@@ -1,7 +1,7 @@
-# Release 0.9.54 (draft) - SIP registration observability, registration trunks, auxiliary transcription, media quality
+# Release 0.9.54 (draft) - SIP registration observability, registration trunks, auxiliary transcription, media quality and worker hardening
 
 > Draft. Covers changes merged to `next` since the 0.9.53 release point
-> (69 pull requests, 9 August - 3 September 2026). The version number is
+> (70 pull requests, 9 August - 3 September 2026). The version number is
 > provisional.
 
 Each item is tagged by subsystem: **core** (API server, REST API, database,
@@ -114,8 +114,67 @@ Pipecat), and **ci** (build and release pipeline).
   outbound legs.
 - **[sipbridge] Pacer starvation reporting** counts silence-fill runs that end
   when real audio resumes and buckets queue depth.
+- **[sipbridge] Re-INVITEs** are now rejected with `488` rather than re-running
+  the full setup path, which allocated a second RTP port and worker WebSocket,
+  overwrote both registries, and left the original call unreachable.
+- **[sipbridge] Jitter buffer** gains a depth cap and discontinuity resync, so an
+  SSRC change or non-RTP traffic no longer leaves the release cursor permanently
+  behind with silence on the wire.
+- **[sipbridge] Bridged legs** are now torn down together, so hanging up one side
+  no longer leaves the peer with dead air until its own media timeout.
 - **[pipecat + sipbridge] Image pulls** now use `imagePullPolicy: Always` for the
   mutable sipbridge image tag.
+
+## Worker stability and resource use - pipecat + sipbridge
+
+- **[pipecat + sipbridge] Production-readiness pass**: a full audit of the worker
+  and the SIP gateway closed the leak, hang, and hot-path findings below. All sit
+  on failure, teardown, or mid-call-change paths rather than the happy path.
+- **[pipecat] Outbound call handlers** are now released when the session shuts
+  down, instead of parking for the life of the process holding their transport,
+  WebSocket, and gateway registrations.
+- **[pipecat] Inbound setup failures** now unregister the gateway session and end
+  a Call record that was created but never started. Concurrency-limit rejections
+  previously leaked one session per refused call.
+- **[pipecat] Call recording** streams incrementally at 16 kHz instead of holding
+  the whole call in memory, over a shared storage client with explicit upload and
+  encode timeouts.
+- **[pipecat] Pooled HTTP clients** replace per-request clients for agent-db,
+  sipbridge, voiceblender, esl-poller, and REST callouts. Deadlines moved onto
+  the request, so a shared client never imposes one call's timeout on another.
+- **[pipecat] MCP connections** are closed when a pipeline build fails, and now
+  carry a 10 s connect deadline and a 30 s per-tool-call read deadline.
+- **[pipecat] Per-call state** is bounded and cleared on every exit path, covering
+  consult call ids, gateway channel maps, transport event handlers across fallback
+  retries, background task references, and consult and pending-attach entries.
+- **[pipecat] Invocation log buffering** moves from one process-wide queue to a
+  buffer per call, so a busy node no longer evicts the setup records of calls that
+  are still running.
+- **[pipecat] Hot-path costs** reduced in the confidence-tone injector, bridged
+  recording writes, stereo channel splitting, and tool-call logging.
+- **[pipecat] Pipeline idle watchdog** is disabled on the STT-only side pipelines
+  and the relay leg, which emit no speaking frames by design and were cancelled
+  after five minutes. Main pipelines keep it as a backstop under `maxDuration` and
+  `options.inactivity`.
+- **[pipecat] Relay teardown** disengages both ends, so a surviving leg stops
+  feeding the queue of a peer that has already gone.
+- **[sipbridge] Hangup and teardown paths** release media before signalling, bound
+  the BYE, and route every failure path through the manager, so a dialog, its
+  registry entries, and its goroutines are freed rather than the RTP session
+  alone.
+- **[sipbridge] Decrypt and parse failure logging** is rate-limited, and the read
+  loop gives up after 100 consecutive decrypt failures instead of logging per
+  packet for the life of the call.
+- **[sipbridge] Port allocation** returns the bound socket rather than probing,
+  closing, and rebinding, removing a race that failed INVITEs with `500` under
+  concurrency. Request bodies are capped and the API server has full timeouts.
+- **[pipecat + sipbridge] SIGTERM drain**: both containers wait for their own live
+  call count to reach zero before exiting, and the gateway refuses new INVITEs
+  with `503` and `Retry-After` while draining. A rolling update no longer drops
+  calls in progress.
+- **[pipecat + sipbridge] Health reporting** adds tracked task counts and gateway
+  per-call map sizes to `/healthz`, and draining state and goroutine count to the
+  gateway's `/health`.
 
 ## Failover, agents and models - core + workers
 
@@ -231,7 +290,9 @@ Pipecat), and **ci** (build and release pipeline).
   `B2BUA_HEARTBEAT_TOKEN`, `EMAIL_BRANDS`, and `EMAIL_BRANDS_FILE`.
 - **[pipecat] New optional environment**: `WEBRTC_OUTPUT_CUSHION_MS`,
   `WEBRTC_OUTPUT_TARGET_MS`, `WEBRTC_STRETCH_EVERY`, `WEBRTC_UNDERRUN_STATS`,
-  `WEBRTC_UNDERRUN_LOG_MS`, and `WEBRTC_PEER_HOST`.
+  `WEBRTC_UNDERRUN_LOG_MS`, `WEBRTC_PEER_HOST`, `GRACEFUL_SHUTDOWN_SECONDS`,
+  `LIFECYCLE_DRAIN_SECONDS`, `HEALTHZ_MAX_TASKS`, and
+  `HEALTHZ_MAX_GATEWAY_ENTRIES`.
 - **[sipbridge] New optional environment**: `SIPBRIDGE_RTP_SILENCE_FILL`.
 - **[core] `AUTH_PROXY_SECRET`** is required for
   `POST /api/auth/sign-up/email`; deploy the paired front-end header change
@@ -246,5 +307,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Cross-tenant status updates** are stricter for users and
   organisations.
 - **[pipecat/ops] SIP worker probes** now use `GET /healthz`.
+- **[pipecat/ops] Pod termination** requires the updated DaemonSet manifests: both
+  containers carry a preStop drain hook and `terminationGracePeriodSeconds` is
+  raised to cover it. Without them a rolling update still cuts live calls.
+- **[pipecat] Call recordings** are now written at 16 kHz rather than 24 kHz.
 - **[ops] SIP capacity labels** should be applied to the node pool, not
   individual nodes.
