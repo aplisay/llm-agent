@@ -115,6 +115,14 @@ components:
           description: This model supports audio input via WebRTC
           type: boolean
           example: true
+        hasAuxStt:
+          description: |-
+            This model accepts `options.stt.aux` — an auxiliary ("second opinion") STT run over the
+            caller's audio alongside the model's own recognition, logged as `user-aux` transcript
+            entries and metered as `stt-aux` usage (see docs/auxiliary-stt.md). True for the
+            LiveKit and Pipecat voice workers; the option is rejected on other models.
+          type: boolean
+          example: true
       required:
         - name
         - description

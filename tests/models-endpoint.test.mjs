@@ -132,7 +132,7 @@ describe('Models Endpoint Test', () => {
     
     // All models should have the same structure
     for (const [modelName, modelInfo] of modelEntries) {
-      const requiredKeys = ['description', 'supportsFunctions', 'audioModel', 'hasTelephony', 'hasWebRTC'];
+      const requiredKeys = ['description', 'supportsFunctions', 'audioModel', 'hasTelephony', 'hasWebRTC', 'hasAuxStt'];
       
       for (const key of requiredKeys) {
         expect(modelInfo).toHaveProperty(key);
