@@ -202,6 +202,13 @@ Updates an existing phone endpoint.
   dashboard Buy-number flow sets it once the provider has activated the number and pointed it
   at the platform); for phone-registration, `name`, `outbound`, `handler`, `registrar`,
   `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
+- **Moving a number** (`phoneEndpoint:assign`, platform operators): send `organisationId` (the
+  target organisation, or `null` for the unallocated pool), and `fromOrganisationId` when the
+  number is held by an organisation other than the caller's. The move is exclusive of the other
+  fields. It is **refused with `409 { "code": "number_in_use" }` while the number is attached to
+  an agent**: detach it first, then move it. Also `409` when the target already holds the number
+  or the number's customer trunk is not assigned to the target; `404` for an unknown source row
+  or organisation.
 - **Response (200)**: `{ "success": true }`.
 
 ---
