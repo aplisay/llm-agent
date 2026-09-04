@@ -2797,6 +2797,16 @@ async def setup_inbound_call(
                     # prompts/tools via metadata paths like
                     # `aplisay.sipHeaders.x-my-header`.
                     **({"sipHeaders": inbound.sip_headers} if inbound.sip_headers else {}),
+                    # The caller's display-name from the INVITE's From header
+                    # (sipbridge / voiceblender ingress only; see
+                    # InboundCallContext.caller_id_name). Omitted when the From
+                    # carried none, matching the LiveKit runtime, so
+                    # `aplisay.callerIdName` reads as "not present" rather than "".
+                    **(
+                        {"callerIdName": inbound.caller_id_name}
+                        if inbound.caller_id_name
+                        else {}
+                    ),
                 },
             },
         }

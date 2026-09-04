@@ -1141,6 +1141,9 @@ func (m *Manager) onInvite(
 	if headers.From != "" {
 		hdr.Set("X-Sipbridge-From", headers.From)
 	}
+	if v := fromNameHeaderValue(headers.FromDisplayName); v != "" {
+		hdr.Set("X-Sipbridge-From-Name", v)
+	}
 	if headers.To != "" {
 		hdr.Set("X-Sipbridge-To", headers.To)
 	}
@@ -2385,4 +2388,20 @@ func (c *Call) isClosed() bool {
 	default:
 		return false
 	}
+}
+
+// fromNameHeaderValue encodes the INVITE From header's display-name for the
+// X-Sipbridge-From-Name WS handshake header (→ metadata.aplisay.callerIdName
+// in the worker). A display-name is free text and may be non-ASCII (UTF-8 per
+// RFC 3261), but an HTTP header value is effectively latin-1 on the receiving
+// side (Starlette decodes header bytes as ISO-8859-1), so the name travels
+// percent-encoded — RFC 3986 path-segment escaping: space → %20, "ë" →
+// %C3%AB, the quoted-pair backslash → %5C — and the worker unquotes it.
+// Returns "" for an empty / whitespace-only name so the header is omitted.
+func fromNameHeaderValue(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return url.PathEscape(name)
 }

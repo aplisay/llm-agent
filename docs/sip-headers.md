@@ -131,10 +131,12 @@ The headers reach the same `metadata.aplisay.sipHeaders` shape by different
 routes per runtime:
 
 - **LiveKit.** The inbound SIP trunk is created with
-  `includeHeaders = SIP_X_HEADERS` (see `lib/initialise.ts`), which maps every
-  `X-` INVITE header onto a `sip.h.x-*` **participant attribute** (the header
-  name lowercased). The worker harvests those attributes when it sets up the
-  inbound call and stamps them onto the call's `aplisay` metadata. (For
+  `includeHeaders = SIP_ALL_HEADERS` (see `lib/initialise.ts`), which maps every
+  INVITE header onto a `sip.h.*` **participant attribute** (the header name
+  lowercased), the `X-` headers as `sip.h.x-*`. The worker harvests the
+  `sip.h.x-*` attributes when it sets up the inbound call and stamps them onto
+  the call's `aplisay` metadata; the `From` header, mapped by the same option,
+  feeds [`aplisay.callerIdName`](./caller-id-name.md) instead. (For
   resilience the harvester also folds in any camelCased `sipHX*` attribute keys
   as a best-effort fallback, preferring the authoritative dotted form.)
 
@@ -158,6 +160,8 @@ arrived on.
 
 ## See also
 
+- [`caller-id-name.md`](./caller-id-name.md) — the caller's `From`
+  display-name, surfaced from the same INVITE as `aplisay.callerIdName`.
 - [`tool-call-chaining-metadata-priming.md`](./tool-call-chaining-metadata-priming.md)
   — the `source: "metadata"` mechanism, dot-path references, and the `redact`
   confidentiality option.

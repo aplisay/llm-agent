@@ -27,7 +27,11 @@ export async function setupSIPClients(): Promise<any> {
       "Aplisay",
       phoneNumbers,
       {
-        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS,
+        // ALL headers (not just X-*) so the From header lands in the
+        // `sip.h.from` participant attribute: its display-name is surfaced as
+        // metadata.aplisay.callerIdName (lib/sip-attributes.ts). The X- header
+        // collection for aplisay.sipHeaders still picks only sip.h.x-*.
+        includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
         mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
       },
     );
@@ -35,12 +39,15 @@ export async function setupSIPClients(): Promise<any> {
   }
   else {
     logger.info({ inboundSipTrunk }, 'SIP trunk found');
-    // sync phone numbers from our database to livekit
-    if (inboundSipTrunk.numbers.length !== phoneNumbers.length || inboundSipTrunk.numbers.some((n: string) => !phoneNumbers.includes(n))) {
+    // sync phone numbers from our database to livekit, and bring a trunk
+    // created before the switch to SIP_ALL_HEADERS up to the current option
+    if (inboundSipTrunk.numbers.length !== phoneNumbers.length
+      || inboundSipTrunk.numbers.some((n: string) => !phoneNumbers.includes(n))
+      || inboundSipTrunk.includeHeaders !== SIPHeaderOptions.SIP_ALL_HEADERS) {
       inboundSipTrunk = await sipClient.updateSipInboundTrunk(inboundSipTrunk.sipTrunkId, {
         name: 'Aplisay',
         numbers: phoneNumbers,
-        includeHeaders: SIPHeaderOptions.SIP_X_HEADERS,
+        includeHeaders: SIPHeaderOptions.SIP_ALL_HEADERS,
         krispEnabled: true,
         mediaEncryption: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
       } as any);

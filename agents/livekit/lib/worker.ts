@@ -39,7 +39,7 @@ import {
 } from "./transfer-handler.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import { withTimeout } from "./utils.js";
-import { sipAttribute } from "./sip-attributes.js";
+import { sipAttribute, sipFromDisplayName } from "./sip-attributes.js";
 import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
@@ -235,6 +235,7 @@ export default defineAgent({
         aLegEncrypted = true,
         forceBridged,
         sipHeaders = {},
+        callerIdName,
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -318,6 +319,7 @@ export default defineAgent({
         aLegEncrypted,
         forceBridged,
         sipHeaders,
+        callerIdName,
         requestHangup: () => {},
         participant: participant,
       });
@@ -758,11 +760,13 @@ export default defineAgent({
  * `{ "x-header-name": value }` map (keys lowercased) for
  * `metadata.aplisay.sipHeaders`.
  *
- * LiveKit's inbound trunk is created with `includeHeaders=SIP_X_HEADERS` (see
- * initialise.ts), which maps every `X-*` INVITE header to a `sip.h.x-*`
+ * LiveKit's inbound trunk is created with `includeHeaders=SIP_ALL_HEADERS` (see
+ * initialise.ts), which maps every INVITE header to a `sip.h.<name>`
  * participant attribute — the header name lowercased — per the LiveKit SIP
- * participant reference. That dotted form is the authoritative source and is
- * lossless (strip the `sip.h.` prefix to recover the exact `x-header-name`).
+ * participant reference; only the `sip.h.x-*` subset is collected here (the
+ * From header is read separately, see sipFromDisplayName). That dotted form is
+ * the authoritative source and is lossless (strip the `sip.h.` prefix to
+ * recover the exact `x-header-name`).
  *
  * Some SDK/deploy paths have historically surfaced the same headers as
  * camelCased attribute keys instead (e.g. `sipHXAplisayTrunk` for
@@ -857,6 +861,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   // participant attributes (see collectSipInviteHeaders). Surfaced to the agent
   // as metadata.aplisay.sipHeaders. Stays {} for outbound / WebRTC.
   let sipHeaders: Record<string, string> = {};
+  // The display-name from the inbound INVITE's From header (the caller's
+  // freeform name as presented on the wire), read from the `sip.h.from`
+  // participant attribute. Surfaced as metadata.aplisay.callerIdName; stays
+  // undefined for outbound / WebRTC and when the From has no display-name.
+  let callerIdName: string | undefined;
   // Whether the inbound A-leg media is encrypted (SRTP). Drives the
   // media-encryption policy of the B-leg registration trunk used for transfers:
   // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
@@ -1074,6 +1083,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               // upstream SBC — sipbridge/voiceblender/etc. — stamps the X- headers,
               // which LiveKit maps to sip.h.x-* participant attributes).
               sipHeaders = collectSipInviteHeaders(participant.attributes);
+              // ...and the caller's display-name from the From header itself
+              // (`sip.h.from`, present because the trunk maps ALL headers).
+              callerIdName = sipFromDisplayName(participant.attributes);
 
               // Determine A-leg media encryption from the B2BUA-stamped header
               // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
@@ -1252,6 +1264,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     aLegEncrypted,
     forceBridged,
     sipHeaders,
+    callerIdName,
   };
 }
 
@@ -1374,6 +1387,7 @@ async function setupCallAndUtilities({
   aLegEncrypted = true,
   forceBridged,
   sipHeaders = {},
+  callerIdName,
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -1494,6 +1508,9 @@ async function setupCallAndUtilities({
         // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
         // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
         ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
+        // The caller's From display-name; omitted when the INVITE carried none
+        // (so `aplisay.callerIdName` reads as "not present", never "").
+        ...(callerIdName ? { callerIdName } : {}),
       },
     },
   });

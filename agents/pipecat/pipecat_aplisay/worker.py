@@ -29,6 +29,7 @@ import logging
 import os
 import threading
 import uuid
+from urllib.parse import unquote
 
 # The ``websockets`` library logs every frame it sends/receives as a hex dump
 # (``> BINARY …`` / ``< BINARY …``) via its per-connection logger at DEBUG. With
@@ -87,6 +88,7 @@ from .sip_gateway import (
     SipBridgeSipGateway,
     VoiceblenderSipGateway,
     collect_sip_headers,
+    normalise_display_name,
 )
 from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
@@ -401,8 +403,29 @@ def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
 # routing contract plus any arbitrary carrier X- headers, which the sipbridge Go
 # layer forwards verbatim (see sipbridge internal/call/manager.go).
 _SIPBRIDGE_NON_INVITE_HEADERS = frozenset(
-    {"x-sipbridge-call-id", "x-sipbridge-from", "x-sipbridge-to"}
+    {
+        "x-sipbridge-call-id",
+        "x-sipbridge-from",
+        "x-sipbridge-from-name",
+        "x-sipbridge-to",
+    }
 )
+
+
+def _sipbridge_from_name(headers) -> Optional[str]:
+    """The From header's display-name from the sipbridge WS handshake.
+
+    sipbridge forwards it as ``X-Sipbridge-From-Name``, percent-encoded (RFC
+    3986) so a non-ASCII name survives the HTTP header — Starlette decodes
+    header bytes as latin-1, which would otherwise mangle UTF-8. Unquoted here
+    and normalised (quotes / backslash quoted-pairs / whitespace) for
+    ``metadata.aplisay.callerIdName``; ``None`` when the INVITE's From carried
+    no display-name (sipbridge omits the header).
+    """
+    raw = headers.get("x-sipbridge-from-name")
+    if not raw:
+        return None
+    return normalise_display_name(unquote(raw))
 
 
 async def _sipbridge_resolve_agent_from_headers(
@@ -458,6 +481,7 @@ async def _sipbridge_resolve_agent_from_headers(
         return s
 
     from_number = _user_of(from_uri)
+    from_name = _sipbridge_from_name(h)
     # A registration trunk's B2BUA puts the dialled number in X-Aplisay-Called
     # as well as the Request-URI; the header wins when present.
     to_number = h.get("x-aplisay-called") or _user_of(to_uri)
@@ -497,6 +521,7 @@ async def _sipbridge_resolve_agent_from_headers(
         registration_username=origin.registration_username,
         call_id=aplisay_call_id,
         sip_headers=sip_headers,
+        caller_id_name=from_name,
         raw={"bridge_call_id": bridge_call_id},
     )
     return instance, agent, ctx
