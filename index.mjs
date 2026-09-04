@@ -18,6 +18,18 @@ logger.info('starting up');
 logger.info(buildInfo(), `build version: ${describeBuild()}`);
 dotenv.config();
 
+// Node's default kills the process on an unhandled rejection — and this
+// server holds live sessions (voice calls, builder chats) whose entire state
+// is in memory, so the blast radius of dying is strictly worse than that of
+// logging and continuing (the same reasoning ws-handler.js applies to its
+// upgrade listener). The 2026-08-28 beta incident: a ~25s DB restart raised
+// rejections on the LISTEN/NOTIFY path and took every live builder session
+// down. Crash-on-unhandled stays available for test rigs via
+// EXIT_ON_UNHANDLED_REJECTION=true.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection (continuing)');
+  if (process.env.EXIT_ON_UNHANDLED_REJECTION === 'true') process.exit(1);
+});
 
 const server = express();
 const httpServer = createServer(server);

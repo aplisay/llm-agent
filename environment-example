@@ -169,6 +169,9 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # ANTHROPIC_REQUEST_TIMEOUT_MS=   # Anthropic request timeout
 # TEXT_CHAT_MAX_TOOL_HOPS=        # text-chat tool-call recursion cap
 # TEXT_CHAT_PENDING_TTL_MS=       # pending text-chat session TTL
+# DB_BOOT_RETRY_INTERVAL_MS=3000  # boot-time DB connect retry interval
+# DB_BOOT_RETRY_WINDOW_MS=300000  # give up (exit 1) after this long without a DB
+# EXIT_ON_UNHANDLED_REJECTION=    # true = die on unhandled rejections (test rigs)
 # SUBAGENT_TIMEOUT=60000          # agent-invoke/subagent timeout (ms)
 
 # ── b2bua node API (SIP traces and registration probes) ─────────────────────
