@@ -73,6 +73,9 @@ const listChatSessions = async (req, res) => {
     const offset = Math.max(0, parseInt(req.query.offset) || 0);
     const where = {
       ...scopeWhereForUser(res.locals.user),
+      // A tenant text agent's own conversation has a row only while it is
+      // live (so it can move between server processes); it is not history.
+      ephemeral: false,
       ...(setId ? { setId } : {}),
       ...(agentId ? { agentId } : {}),
     };

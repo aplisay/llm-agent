@@ -38,7 +38,7 @@ afterAll(async () => {
 });
 
 describe('sanitizeHistory', () => {
-  test('keeps user/agent/system entries and drops everything else', () => {
+  test('keeps user/agent/system entries and drops everything else', async () => {
     const out = sanitizeHistory([
       { role: 'user', text: 'hello' },
       { role: 'agent', text: 'hi' },
@@ -55,13 +55,13 @@ describe('sanitizeHistory', () => {
     ]);
   });
 
-  test('returns null for non-arrays and for arrays with nothing usable', () => {
+  test('returns null for non-arrays and for arrays with nothing usable', async () => {
     expect(sanitizeHistory(undefined)).toBeNull();
     expect(sanitizeHistory('hello')).toBeNull();
     expect(sanitizeHistory([{ role: 'user', text: '' }])).toBeNull();
   });
 
-  test('caps entry count keeping the newest, with an elision marker', () => {
+  test('caps entry count keeping the newest, with an elision marker', async () => {
     const many = Array.from({ length: 250 }, (_, i) => ({ role: 'user', text: `m${i}` }));
     const out = sanitizeHistory(many);
     // 200 kept + 1 marker.
@@ -71,7 +71,7 @@ describe('sanitizeHistory', () => {
     expect(out[out.length - 1].text).toBe('m249');
   });
 
-  test('caps total characters by dropping the oldest entries', () => {
+  test('caps total characters by dropping the oldest entries', async () => {
     const big = 'x'.repeat(4000);
     const entries = Array.from({ length: 20 }, () => ({ role: 'agent', text: big }));
     const out = sanitizeHistory(entries);
@@ -80,7 +80,7 @@ describe('sanitizeHistory', () => {
     expect(out[0]).toEqual({ role: 'system', text: '[… earlier conversation trimmed …]' });
   });
 
-  test('truncates a single oversized entry', () => {
+  test('truncates a single oversized entry', async () => {
     const out = sanitizeHistory([{ role: 'user', text: 'y'.repeat(9000) }]);
     expect(out).toHaveLength(1);
     expect(out[0].text).toHaveLength(4000);
@@ -94,8 +94,8 @@ describe('resume seeding', () => {
     { role: 'agent', text: 'Should I build this Article Guide? (options: Yes — build as proposed / Change it)' },
   ];
 
-  test('a session seeded with history opens with the resume prompt', () => {
-    const session = createChatSession({
+  test('a session seeded with history opens with the resume prompt', async () => {
+    const session = await createChatSession({
       agent,
       set: { id: 'set-1', name: 'Article Summary Line', agents: [] },
       history,
@@ -116,13 +116,13 @@ describe('resume seeding', () => {
     expect(prompt).toContain('NEVER call create_agent_set');
   });
 
-  test('a non-uuid resumedFrom is dropped (the column is UUID-typed)', () => {
-    const session = createChatSession({ agent, history, resumedFrom: 'not-a-uuid', logger });
+  test('a non-uuid resumedFrom is dropped (the column is UUID-typed)', async () => {
+    const session = await createChatSession({ agent, history, resumedFrom: 'not-a-uuid', logger });
     expect(session.resumedFrom).toBeNull();
   });
 
-  test('a set with members resumes with patch-style save rules', () => {
-    const session = createChatSession({
+  test('a set with members resumes with patch-style save rules', async () => {
+    const session = await createChatSession({
       agent,
       set: { id: 'set-1', name: 'Team', agents: [{ label: 'reception', name: 'Reception' }] },
       history,
@@ -133,8 +133,8 @@ describe('resume seeding', () => {
     expect(prompt).not.toContain('NEVER call create_agent_set');
   });
 
-  test('a troubleshoot resume re-embeds the test result', () => {
-    const session = createChatSession({
+  test('a troubleshoot resume re-embeds the test result', async () => {
+    const session = await createChatSession({
       agent,
       testResult: { legs: [{ agentLabel: 'reception', transcript: [] }] },
       history,
@@ -147,8 +147,8 @@ describe('resume seeding', () => {
 });
 
 describe('named-placeholder opening prompt (no resume)', () => {
-  test('an already-named empty set keeps its name instead of the name dance', () => {
-    const session = createChatSession({
+  test('an already-named empty set keeps its name instead of the name dance', async () => {
+    const session = await createChatSession({
       agent,
       set: { id: 'set-1', name: 'Article Summary Line', agents: [] },
       logger,
@@ -158,8 +158,8 @@ describe('named-placeholder opening prompt (no resume)', () => {
     expect(prompt).not.toContain('propose a real name');
   });
 
-  test('an Untitled placeholder still gets the name proposal instruction', () => {
-    const session = createChatSession({
+  test('an Untitled placeholder still gets the name proposal instruction', async () => {
+    const session = await createChatSession({
       agent,
       set: { id: 'set-1', name: 'Untitled team', agents: [] },
       logger,

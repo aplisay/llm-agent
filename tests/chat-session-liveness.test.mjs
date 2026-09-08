@@ -69,22 +69,22 @@ describe('chat session liveness', () => {
   });
 
   describe('isChatSessionLive', () => {
-    it('is live while a process is still beating for it', () => {
+    it('is live while a process is still beating for it', async () => {
       expect(isChatSessionLive({ endedAt: null, lastSeenAt: new Date() })).toBe(true);
       expect(isChatSessionLive({ endedAt: null, lastSeenAt: ago(60 * 1000) })).toBe(true);
     });
 
-    it('goes stale once the grace lapses, with no boot and no sweep', () => {
+    it('goes stale once the grace lapses, with no boot and no sweep', async () => {
       expect(isChatSessionLive({ endedAt: null, lastSeenAt: ago(GRACE_MS + 1000) })).toBe(false);
     });
 
-    it('an ended session is never live, however recent the beat', () => {
+    it('an ended session is never live, however recent the beat', async () => {
       expect(isChatSessionLive({ endedAt: new Date(), lastSeenAt: new Date() })).toBe(false);
     });
 
     // Rows written before the column existed. Reporting them live would put a
     // LIVE badge on every historical session the moment this ships.
-    it('a row with no heartbeat at all is history, not a live session', () => {
+    it('a row with no heartbeat at all is history, not a live session', async () => {
       expect(isChatSessionLive({ endedAt: null, lastSeenAt: null })).toBe(false);
     });
   });
@@ -206,7 +206,7 @@ describe('chat session liveness', () => {
       // startHeartbeat/stopHeartbeat live on the session prototype; exercising
       // them directly keeps this a unit test of the timer contract, with no
       // LLM and no websocket.
-      const session = mod.createChatSession({
+      const session = await mod.createChatSession({
         agent: {
           id: 'agent-hb', organisationId: orgId, userId,
           modelName: 'text:anthropic/claude-sonnet-5',
@@ -218,13 +218,13 @@ describe('chat session liveness', () => {
       session.teardown();
     });
 
-    it('does not beat for a session with no durable row', () => {
+    it('does not beat for a session with no durable row', async () => {
       const s = mkFake({ persisted: false });
       s.startHeartbeat();
       expect(s.heartbeat).toBeNull();
     });
 
-    it('beats once started, and starting twice does not stack timers', () => {
+    it('beats once started, and starting twice does not stack timers', async () => {
       const s = mkFake();
       s.startHeartbeat();
       const first = s.heartbeat;

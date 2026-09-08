@@ -53,8 +53,8 @@ function makeWs() {
   return ws;
 }
 
-function makeSession() {
-  const session = createChatSession({ agent, logger });
+async function makeSession() {
+  const session = await createChatSession({ agent, logger });
   const turns = [];
   session.buildLlm = async () => {}; // no LLM in these tests
   session.runTurn = (text, send, hidden = false, claimed = null) => {
@@ -66,7 +66,7 @@ function makeSession() {
 
 describe('text-chat session re-attach', () => {
   test('first attach announces itself and runs the opening turn once', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     const ws = makeWs();
     await session.handleChat(ws);
     expect(ws.sent[0]).toEqual({ type: 'attached', resumed: false, busy: false });
@@ -75,7 +75,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('re-attach after a drop rebinds without a new opening turn and flushes the outbox', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     const ws1 = makeWs();
     await session.handleChat(ws1);
     expect(turns).toHaveLength(1);
@@ -96,7 +96,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('re-attach re-emits a pending interactive ask', async () => {
-    const { session } = makeSession();
+    const { session } = await makeSession();
     const ws1 = makeWs();
     await session.handleChat(ws1);
     const frame = { type: 'question', id: 'toolu_q', question: 'Which channel?', options: [], multiSelect: false };
@@ -110,7 +110,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('a second concurrent socket TAKES OVER (newest wins; half-open old sockets must not block)', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     const ws1 = makeWs();
     await session.handleChat(ws1);
     const ws2 = makeWs();
@@ -124,7 +124,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('a pause reached while detached is delivered exactly once on re-attach', async () => {
-    const { session } = makeSession();
+    const { session } = await makeSession();
     const ws1 = makeWs();
     await session.handleChat(ws1);
     ws1.readyState = 3;
@@ -140,7 +140,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('buildLlm failure tears the session down instead of leaving a zombie', async () => {
-    const { session } = makeSession();
+    const { session } = await makeSession();
     session.buildLlm = async () => { throw new Error('no such model'); };
     const ws = makeWs();
     await session.handleChat(ws);
@@ -148,7 +148,7 @@ describe('text-chat session re-attach', () => {
   });
 
   test('teardown finalises and removes the session', async () => {
-    const { session } = makeSession();
+    const { session } = await makeSession();
     const ws = makeWs();
     await session.handleChat(ws);
     session.teardown();
@@ -157,7 +157,7 @@ describe('text-chat session re-attach', () => {
 });
 
 describe('list_voices payload bound', () => {
-  test('long descriptions are capped and oversized vendor lists truncated with a note', () => {
+  test('long descriptions are capped and oversized vendor lists truncated with a note', async () => {
     const voices = Array.from({ length: 70 }, (_, i) => ({
       name: `voice-${i}`,
       gender: 'female',
@@ -171,14 +171,14 @@ describe('list_voices payload bound', () => {
     expect(out.voiceStack).toBe('pipeline');
   });
 
-  test('locale-list results (no vendors) pass through untouched', () => {
+  test('locale-list results (no vendors) pass through untouched', async () => {
     const result = { locales: ['en-GB', 'any'], voiceStack: 'realtime' };
     expect(trimVoicesResult(result)).toBe(result);
   });
 });
 
 describe('list_voices search (ranked word-start union)', () => {
-  test('normalizeSearchTerms tokenises arrays and strings, lowercases and de-dupes', () => {
+  test('normalizeSearchTerms tokenises arrays and strings, lowercases and de-dupes', async () => {
     expect(normalizeSearchTerms(['British', 'english'])).toEqual(['british', 'english']);
     expect(normalizeSearchTerms('British English robotic')).toEqual(['british', 'english', 'robotic']);
     expect(normalizeSearchTerms(['british english', 'robotic'])).toEqual(['british', 'english', 'robotic']);
@@ -187,7 +187,7 @@ describe('list_voices search (ranked word-start union)', () => {
     expect(normalizeSearchTerms(['', '  '])).toEqual([]);
   });
 
-  test('returns the UNION of matches across vendors, tagging non-"any" locales and matched terms', () => {
+  test('returns the UNION of matches across vendors, tagging non-"any" locales and matched terms', async () => {
     const tree = {
       ultravox: {
         any: [
@@ -209,7 +209,7 @@ describe('list_voices search (ranked word-start union)', () => {
     expect(termMatches).toEqual({ british: 1, robotic: 1 });
   });
 
-  test('terms match at word starts only — "male" never matches "female", prefixes still work', () => {
+  test('terms match at word starts only — "male" never matches "female", prefixes still work', async () => {
     const tree = {
       ultravox: {
         any: [
@@ -233,7 +233,7 @@ describe('list_voices search (ranked word-start union)', () => {
     expect(accent.vendors.ultravox).toHaveLength(1);
   });
 
-  test('ranks multi-term matches first — the Irish female surfaces at the top, misses are explicit', () => {
+  test('ranks multi-term matches first — the Irish female surfaces at the top, misses are explicit', async () => {
     // The 2026-07-23 staging failure: Louisamay sat at ~position 53 of 152
     // anywhere-substring matches and the builder model never saw it.
     const tree = {
@@ -255,20 +255,20 @@ describe('list_voices search (ranked word-start union)', () => {
     expect(termMatches).toEqual({ irish: 2, female: 4, dynamic: 0, male: 2 });
   });
 
-  test('matches on the locale key too, and tags the voice with that locale', () => {
+  test('matches on the locale key too, and tags the voice with that locale', async () => {
     const tree = { google: { 'en-GB': [{ name: 'en-GB-Neural2-A', description: 'en-GB-Neural2-A', gender: 'female' }] } };
     const { vendors } = filterVoiceTreeBySearch(tree, ['en-gb']);
     expect(vendors.google).toHaveLength(1);
     expect(vendors.google[0].locale).toBe('en-GB');
   });
 
-  test('empty terms match nothing — never dumps the whole catalogue', () => {
+  test('empty terms match nothing — never dumps the whole catalogue', async () => {
     const tree = { ultravox: { any: [{ name: 'X', description: 'y', gender: 'unknown' }] } };
     expect(filterVoiceTreeBySearch(tree, []).vendors).toEqual({});
     expect(filterVoiceTreeBySearch(tree, normalizeSearchTerms('   ')).vendors).toEqual({});
   });
 
-  test('trimSearchVoicesResult caps ranked matches per vendor and spells out unmatched terms', () => {
+  test('trimSearchVoicesResult caps ranked matches per vendor and spells out unmatched terms', async () => {
     const voices = Array.from({ length: 70 }, (_, i) => ({
       name: `voice-${i}`,
       description: 'd'.repeat(300),
