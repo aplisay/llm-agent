@@ -12,7 +12,10 @@ export default {
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',
   testTimeout: 60000,
-  maxWorkers: 1, // Run tests sequentially to avoid database conflicts
+  // One database per worker (see tests/setup/test-db-config.js), so the suite
+  // no longer has to serialise. Override with JEST_WORKERS; global-setup.js
+  // reads the resolved value and creates exactly that many databases.
+  maxWorkers: Number(process.env.JEST_WORKERS) || 4,
   verbose: true,
   collectCoverage: true,
   coverageDirectory: 'coverage/db',
