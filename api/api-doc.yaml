@@ -1995,7 +1995,7 @@ components:
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
         `mode` cannot change after creation (400 code mode_immutable). On a registrar account `registrar`,
         `username`, `password` and `b2buaId` are the platform's and are refused (400 code
-        registrar_identity_immutable); POST /phone-endpoints/{id}/credentials/rotate issues a new password.
+        registrar_identity_immutable); POST /phone-endpoints/{id}/credentials issues a new password.
       type: object
       properties:
         name:

@@ -2,9 +2,6 @@
 .env*
 #Credentials
 credentials
-# `credentials` above is for secret files, but it also matches the route directory
-# api/paths/phone-endpoints/{identifier}/credentials/, whose files are code, not secrets.
-!api/paths/**/credentials/
 # Logs
 logs
 *.log
