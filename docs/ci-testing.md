@@ -13,7 +13,7 @@ The CI testing setup uses Docker Compose to create an isolated test environment 
 ## Files
 
 - `docker-compose.ci.yml` - Docker Compose configuration for CI testing
-- `Dockerfile.test` - Docker image for the test runner
+- `Dockerfile` (`test` target) - Docker image for the test runner
 - `scripts/test-ci.sh` - Convenience script to run CI tests
 - `.dockerignore` - Files to exclude from Docker build context
 

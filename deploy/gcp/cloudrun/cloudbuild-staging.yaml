@@ -1,5 +1,27 @@
+# Staging build for llm-agent: run the DB test suite, build the image, deploy.
+#
+# Step layout. `Test` and `Build` both start immediately and run in parallel;
+# `Push` waits for both, so nothing reaches the registry or Cloud Run unless
+# the suite passed. Build no longer sits idle behind the test run.
+#
+# Caching. Both steps build from the same Dockerfile, whose `deps` stage holds
+# the whole dependency tree and reads no build arg. `--cache-from` points at
+# the last pushed staging image, which carries inline cache metadata
+# (BUILDKIT_INLINE_CACHE=1 below), so `yarn install` is a cache hit whenever
+# package.json and yarn.lock are unchanged, and Push re-uses the node_modules
+# layer already in the registry instead of uploading it again. A lockfile
+# change is part of the cache key, so it still forces a real install.
+#
+# The first build after this config lands is a full miss: the current :staging
+# image was built with --no-cache and carries no cache metadata. It seeds the
+# cache for the next one.
 steps:
   - name: gcr.io/cloud-builders/docker
+    id: Test
+    waitFor: ['-']
+    env:
+      - >-
+        CACHE_IMAGE=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
     args:
       - compose
       - '-f'
@@ -8,22 +30,31 @@ steps:
       - '--abort-on-container-exit'
       - '--exit-code-from'
       - 'test-runner'
-    id: Test
     secretEnv:
       - SECRETENV_BUNDLE
       - SECRETENV_KEY
   - name: gcr.io/cloud-builders/docker
+    id: Test-Cleanup
+    waitFor: ['Test']
     args:
       - compose
       - '-f'
       - 'docker-compose.ci.yml'
       - 'down'
       - '-v'
-    id: Test-Cleanup
   - name: gcr.io/cloud-builders/docker
+    id: Build
+    waitFor: ['-']
+    env:
+      - DOCKER_BUILDKIT=1
     args:
       - build
-      - '--no-cache'
+      - '--target=runtime'
+      - '--cache-from'
+      - >-
+        $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
+      - '--build-arg'
+      - BUILDKIT_INLINE_CACHE=1
       - '--build-arg'
       - SECRETENV_BUNDLE
       - '--build-arg'
@@ -43,18 +74,22 @@ steps:
       - .
       - '-f'
       - Dockerfile
-    id: Build
     secretEnv:
       - SECRETENV_BUNDLE
       - SECRETENV_KEY
   - name: gcr.io/cloud-builders/docker
+    id: Push
+    waitFor: ['Test', 'Build']
     args:
       - push
       - '--all-tags'
       - >-
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME
-    id: Push
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+  # gcr.io/cloud-builders/gcloud is cached on the build worker; the cloud-sdk
+  # images are not, and pulling one cost this step about 30 seconds a build.
+  - name: gcr.io/cloud-builders/gcloud
+    id: Deploy
+    waitFor: ['Push']
     args:
       - run
       - services
@@ -67,7 +102,6 @@ steps:
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       - '--region=$_DEPLOY_REGION'
       - '--quiet'
-    id: Deploy
     entrypoint: gcloud
 images:
   - >-
