@@ -54,7 +54,40 @@ for (const org of orgs) {
   // The earliest instant this organisation could owe anything. `billedAt` is
   // null until a row is costed, so fall back to createdAt exactly as the
   // costing path's own anchor resolution does.
-  const earliest = await UsageRecord.min('createdAt', { where: { organisationId: org.id } });
+  // The floor is the earliest instant this organisation could owe anything, and
+  // two things make that earlier than it looks.
+  //
+  // Rows the sweep is ABOUT to attribute count towards it. A row written with a
+  // user but no organisation (lib/set-builder-agent.js takes
+  // `user.organisationId ?? null`) is recovered from its user by
+  // `attributeOrphanRow`, but that happens during the sweep, after this floor
+  // is fixed.
+  //
+  // And a row is billed at its BILLING instant, not at the moment it was
+  // written: `resolveBilledAt` prefers billed_at, then the call's start, then
+  // the `metadata.startedAt` anchor a text session carries. That anchor is the
+  // session start, so it precedes created_at — by nine seconds on the rows this
+  // was measured against, which was enough to leave them just before a floor
+  // taken from created_at, resolving no rate for ever.
+  //
+  // Erring early is free: no usage exists before the earliest row, so a floor
+  // set earlier than necessary rates nothing extra.
+  const [[earliestRow]] = await UsageRecord.sequelize.query(
+    `SELECT MIN(LEAST(
+              COALESCE(u.billed_at, u.created_at),
+              COALESCE(c.started_at, u.created_at),
+              CASE WHEN u.metadata->>'startedAt' ~ '^[0-9]{4}-'
+                   THEN (u.metadata->>'startedAt')::timestamptz
+                   ELSE u.created_at END,
+              u.created_at)) AS earliest
+       FROM usage_records u
+       LEFT JOIN calls c ON c.id = u.call_id
+      WHERE u.organisation_id = :orgId
+         OR (u.organisation_id IS NULL
+             AND u.user_id IN (SELECT id FROM users WHERE organisation_id = :orgId))`,
+    { replacements: { orgId: org.id } },
+  );
+  const earliest = earliestRow?.earliest;
   if (!earliest) continue;
 
   const floor = new Date(Math.min(new Date(earliest).getTime(), new Date(org.createdAt).getTime()));
