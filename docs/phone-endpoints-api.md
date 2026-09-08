@@ -190,6 +190,35 @@ The `options` object carries provider-specific and behavioural settings for the 
 
 > **Trunk counterpart:** SIP trunks default to **bridging** for transfers. To make a trunk default to **SIP REFER** instead, set `forceReferTransfer: true` in the trunk's `flags` (trunk configuration, not this endpoint API). The same per-transfer `forceRefer` / `forceBridged` parameters override either default. See [call-transfers.md](./call-transfers.md#transfer-mode-selection).
 
+#### Registrar accounts (`mode: registrar`)
+
+A phone registration normally has the platform register *out* to the customer's registrar (`mode: client`, the default). A **registrar account** inverts it: the customer's PBX registers *to* the platform, at the deployment's registrar name, with a username and password the platform mints. This is what a PBX whose trunk model is "register to your provider" (3CX, Yeastar and Grandstream register trunks, Avaya IP Office SIP Line, and most NATted PBXes) needs. Accounts are served by the `regserver` binary of aplisay-b2bua, never by regclient.
+
+- **Request body**: `type: "phone-registration"`, `mode: "registrar"`, optionally `kind: "pbx"` (the only kind; `device` is reserved), and any of `name`, `outbound`, `handler`, `options`, `trunk`, `trunkId`, `didSource`, `didCountry` exactly as for a client-mode registration. `registrar`, `username`, `password` and `b2buaId` must **not** be supplied (400).
+- **Response (201)**: the credentials, shown here once:
+
+```json
+{
+  "success": true,
+  "id": "<registration-uuid>",
+  "trunkId": null,
+  "mode": "registrar",
+  "registrar": "sip.polite.ai",
+  "port": 5061,
+  "transport": "tls",
+  "username": "pbx-k7m2x9q4wz",
+  "password": "…24 characters…"
+}
+```
+
+- `registrar` is `REGSERVER_REGISTRAR` on the deployment (503 code `registrar_unavailable` when it is unset), and is also the digest realm. `username` is unique across every organisation, since one realm serves them all.
+- `GET /api/phone-endpoints/{id}` returns `mode`, `kind`, and for a registrar account `bindings` (the PBX sockets the owning node last mirrored onto the row: `contact`, `received`, `transport`, `userAgent`, `registeredAt`, `expiresAt`, `node`) and `bindingsUpdatedAt`. Never the password.
+- `PUT` refuses `registrar`, `username`, `password` and `b2buaId` on a registrar account (400 code `registrar_identity_immutable`) and refuses a change of `mode` on any registration (400 code `mode_immutable`).
+- `GET /api/phone-endpoints/{id}/credentials` reveals the credentials again (`phoneEndpoint:update`; every call is audit-logged). `POST /api/phone-endpoints/{id}/credentials/rotate` mints a new password, returns the credentials once and resets the state to `initial`; the PBX's next REGISTER with the old password is refused. Both answer 404 for a client-mode registration.
+- `GET /api/phone-endpoints/{id}/bindings` returns the mirror; `?live=1` asks the owning node through the node API (same proxying and status codes as the trace routes).
+
+Design record: `aplisay-strategy/implementation/regserver-tactical-spec.md`.
+
 ---
 
 ### PUT /api/phone-endpoints/{identifier}

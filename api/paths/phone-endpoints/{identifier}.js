@@ -146,7 +146,16 @@ const getPhoneEndpoint = async (req, res) => {
         trunkId: registration.trunkId || null,
         trunk: !!registration.trunkId,
         didSource: registration.didSource || null,
-        didCountry: registration.didCountry || null
+        didCountry: registration.didCountry || null,
+        mode: registration.mode || 'client',
+        kind: registration.kind || null,
+        // The bindings the owning regserver node last mirrored onto the row:
+        // who is registered to this account, from where, until when. Client
+        // rows have none, and the password is never here for either.
+        ...(registration.mode === 'registrar' ? {
+          bindings: Array.isArray(registration.bindings) ? registration.bindings : [],
+          bindingsUpdatedAt: registration.bindingsUpdatedAt ? new Date(registration.bindingsUpdatedAt).toISOString() : null
+        } : {})
       });
     }
 
@@ -317,6 +326,24 @@ const updatePhoneEndpoint = async (req, res) => {
       }
       if (registration.organisationId !== organisationId) {
         return res.status(403).send({ error: 'Access denied' });
+      }
+
+      // Mode is fixed at creation, and a registrar account's identity is the
+      // platform's: the realm is the deployment's, the username and password
+      // are minted (a new password comes from /credentials/rotate), and
+      // b2buaId is written by the node that accepts the REGISTER — ownership
+      // follows the socket, never this route.
+      if (updateData.mode !== undefined && updateData.mode !== (registration.mode || 'client')) {
+        return res.status(400).send({ error: 'mode cannot be changed after creation', code: 'mode_immutable' });
+      }
+      if (registration.mode === 'registrar') {
+        const refused = ['registrar', 'username', 'password', 'b2buaId'].filter((field) => updateData[field] !== undefined);
+        if (refused.length) {
+          return res.status(400).send({
+            error: `${refused.join(', ')} cannot be set on a registrar account; POST /phone-endpoints/{id}/credentials/rotate issues a new password`,
+            code: 'registrar_identity_immutable'
+          });
+        }
       }
 
       // Update allowed fields for registrations

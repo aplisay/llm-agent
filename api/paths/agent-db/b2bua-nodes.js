@@ -1,5 +1,5 @@
 import { B2buaNode, B2BUA_NODE_TYPES } from '../../../lib/database.js';
-import { rememberNodeCapability, CAPABILITY_TRACE, CAPABILITY_NONE } from '../../../lib/regclient.js';
+import { rememberNodeCapability, nodeServesTraceApi, CAPABILITY_TRACE, CAPABILITY_NONE } from '../../../lib/regclient.js';
 
 let log;
 
@@ -37,7 +37,7 @@ const heartbeat = async (req, res) => {
     return res.status(403).send({ message: 'b2bua node heartbeats are accepted only from internal callers' });
   }
 
-  const { nodeId, privateAddress, type = 'regclient', version, registrations, failedRegistrations, systemLoad } = req.body || {};
+  const { nodeId, privateAddress, type = 'regclient', version, registrations, failedRegistrations, bindings, systemLoad } = req.body || {};
 
   if (!nodeId || typeof nodeId !== 'string' || !nodeId.trim()) {
     return res.status(400).send({ message: 'nodeId is required' });
@@ -61,13 +61,16 @@ const heartbeat = async (req, res) => {
       // zero the fleet view by accident.
       registrations: Number.isFinite(registrations) ? registrations : 0,
       failedRegistrations: Number.isFinite(failedRegistrations) ? failedRegistrations : 0,
+      // PBXes currently registered to a regserver node; a regclient node
+      // reports none.
+      bindings: Number.isFinite(bindings) ? bindings : 0,
       systemLoad: Number.isFinite(systemLoad) ? systemLoad : null,
       lastSeenAt: now
     }, { returning: true });
 
     // Prime the in-process capability cache from the same fact, so the very
     // next trace request on this replica skips even the database read.
-    rememberNodeCapability(nodeId.trim(), type === 'regclient' ? CAPABILITY_TRACE : CAPABILITY_NONE);
+    rememberNodeCapability(nodeId.trim(), nodeServesTraceApi(type) ? CAPABILITY_TRACE : CAPABILITY_NONE);
 
     return res.status(200).send({
       nodeId: record?.nodeId ?? nodeId.trim(),
@@ -117,6 +120,7 @@ const listNodes = async (req, res) => {
           version: node.version,
           registrations: node.registrations,
           failedRegistrations: node.failedRegistrations,
+          bindings: node.bindings ?? 0,
           systemLoad: node.systemLoad,
           lastSeenAt: lastSeenAt ? lastSeenAt.toISOString() : null,
           // A node that has stopped heartbeating is reported as stale rather

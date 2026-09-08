@@ -14,6 +14,24 @@
 
 export type PhoneRegistrationStatus = 'active' | 'failed' | 'disabled';
 export type PhoneRegistrationState = 'initial' | 'registering' | 'registered' | 'failed';
+/** Direction of service: we register out ('client', the default) or the customer's PBX registers to us ('registrar'). */
+export type PhoneRegistrationMode = 'client' | 'registrar';
+/** Registrar rows only. 'device' is reserved for the cell and not accepted yet. */
+export type PhoneRegistrationKind = 'pbx';
+
+/** One binding the owning regserver node holds for a registrar account, as mirrored onto the row. */
+export interface RegistrationBinding {
+  /** The Contact URI as the PBX sent it (often a private address). */
+  contact: string;
+  /** The socket's remote address, host:port — where the node actually sends. */
+  received: string;
+  transport: string;
+  userAgent?: string | null;
+  registeredAt: string; // ISO 8601
+  expiresAt: string; // ISO 8601
+  /** The node holding the socket; the same value as b2buaId. */
+  node: string;
+}
 
 export interface PhoneRegistrationSchema {
   id: string; // UUID
@@ -37,13 +55,22 @@ export interface PhoneRegistrationSchema {
   didSource?: string | null;
   /** ISO 3166-1 alpha-2 for national-format dialled numbers; null = platform default. */
   didCountry?: string | null;
+  /** Direction of service; 'client' for every row created before schema 66. */
+  mode: PhoneRegistrationMode;
+  /** Registrar rows only: 'pbx'. Null for client rows. */
+  kind?: PhoneRegistrationKind | null;
+  /** Registrar rows only: bindings mirrored by the owning node; null or empty when nothing is registered. */
+  bindings?: RegistrationBinding[] | null;
+  bindingsUpdatedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export const PhoneRegistrationStatusValues: PhoneRegistrationStatus[] = ['active', 'failed', 'disabled'];
 export const PhoneRegistrationStateValues: PhoneRegistrationState[] = ['initial', 'registering', 'registered', 'failed'];
+export const PhoneRegistrationModeValues: PhoneRegistrationMode[] = ['client', 'registrar'];
+export const PhoneRegistrationKindValues: PhoneRegistrationKind[] = ['pbx'];
 
 // Schema version for migration/validation tracking
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 

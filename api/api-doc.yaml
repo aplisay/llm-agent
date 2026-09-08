@@ -1844,7 +1844,10 @@ components:
       description: |-
         Schema for creating a new phone endpoint. Supports two types of endpoints:
         DDI endpoints are created using an E.164 phone number with trunk configuration.
-        Phone registration endpoints are created using a SIP contact URI, username, and password.
+        Phone registration endpoints are created using a SIP contact URI, username, and password
+        (client mode, the default: we register out to the customer's registrar), or with
+        `mode: registrar` and no credentials at all (a registrar account: the customer's PBX
+        registers to us with a username and password the platform mints and returns once).
         Both kinds of endpoints can be created with a user-defined descriptive name and optionally set to support outbound calling
         (if supported by the handler and trunk/registration account).
       allOf:
@@ -1901,7 +1904,7 @@ components:
                     number, trunk and organisation; it is consumed by the claim. Missing gives
                     403 code reservation_required; expired, used or mismatched gives 403 code
                     reservation_invalid.
-            - description: Phone registration endpoint
+            - description: Phone registration endpoint, client mode — we register out to the customer's registrar with the credentials given here
               type: object
               required:
                 - registrar
@@ -1912,6 +1915,11 @@ components:
                   type: string
                   description: User-defined descriptive name
                   nullable: true
+                mode:
+                  type: string
+                  enum: [client]
+                  default: client
+                  description: Direction of service. Omit, or `client`, for a line we register out with. See the registrar-account branch for `registrar`.
                 registrar:
                   $ref: '#/components/schemas/Registrar'
                 username:
@@ -1942,6 +1950,41 @@ components:
                 didCountry:
                   type: string
                   description: ISO 3166-1 alpha-2 country used to normalise a national-format dialled number to E.164. Null = platform default.
+            - description: |-
+                Registrar account (`mode: registrar`): the customer's PBX registers to us. The platform
+                mints the account's identity — `registrar` (the deployment's balancer name, also the
+                digest realm), `username` and `password` — and returns it once in the 201 response;
+                supplying any of the three, or `b2buaId`, is refused with 400. Everything else
+                (`trunk`, `trunkId`, `didSource`, `didCountry`, `options`, `handler`, `outbound`,
+                `name`) behaves as for a client-mode registration. Served by regserver; 503 with code
+                `registrar_unavailable` on a deployment with no registrar configured.
+              type: object
+              required:
+                - mode
+              properties:
+                mode:
+                  type: string
+                  enum: [registrar]
+                kind:
+                  type: string
+                  enum: [pbx]
+                  default: pbx
+                  description: What registers to us. Only `pbx` exists; `device` is reserved and refused.
+                options:
+                  $ref: '#/components/schemas/PhoneRegistrationOptions'
+                trunk:
+                  type: boolean
+                  default: false
+                  description: Create the account as a registration trunk that numbers attach to, exactly as for a client-mode registration.
+                trunkId:
+                  type: string
+                  description: "Name the trunk instead of the default `reg-<registration id>`; requires trunk:create, and only with trunk set to true."
+                didSource:
+                  type: string
+                  description: Where the dialled number is found on an INVITE from the PBX (`request-uri` default, `to`, `header:<Name>`, `none`).
+                didCountry:
+                  type: string
+                  description: ISO 3166-1 alpha-2 country used to normalise a national-format dialled number to E.164.
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
@@ -1950,6 +1993,9 @@ components:
         or the unallocated pool and is refused with 409 code number_in_use while it is attached to an agent.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
+        `mode` cannot change after creation (400 code mode_immutable). On a registrar account `registrar`,
+        `username`, `password` and `b2buaId` are the platform's and are refused (400 code
+        registrar_identity_immutable); POST /phone-endpoints/{id}/credentials/rotate issues a new password.
       type: object
       properties:
         name:
@@ -2025,9 +2071,11 @@ components:
           example: 10.154.0.62
         type:
           type: string
-          enum: [regclient, freeswitch]
+          enum: [regclient, regserver, freeswitch]
           default: regclient
-          description: Which stack this node is running. Only regclient serves the trace and probe API.
+          description: |-
+            Which stack this node is running. regclient and regserver both serve the trace API;
+            only regclient runs probes; the FreeSWITCH stack serves neither.
         version:
           type: string
           description: Build version, for telling a fleet mid-rollout apart
@@ -2038,6 +2086,9 @@ components:
         failedRegistrations:
           type: integer
           description: How many of those are currently failing
+        bindings:
+          type: integer
+          description: regserver only — PBXes currently registered to this node. Zero from regclient.
         systemLoad:
           type: number
           description: One-minute load average as the node sees it
@@ -2053,7 +2104,7 @@ components:
           description: Where the node answers from inside its own network, or null if it reported none.
         type:
           type: string
-          enum: [regclient, freeswitch]
+          enum: [regclient, regserver, freeswitch]
         version:
           type: string
           nullable: true
@@ -2061,6 +2112,9 @@ components:
           type: integer
         failedRegistrations:
           type: integer
+        bindings:
+          type: integer
+          description: PBXes currently registered to a regserver node; zero for the others.
         systemLoad:
           type: number
           nullable: true
@@ -2169,6 +2223,84 @@ components:
           description: |-
             For a call, how many more messages its platform leg holds — the same call between the
             b2bua node and the platform. The detail route adds them under `debug=1`.
+    RegistrarAccountCredentials:
+      type: object
+      description: |-
+        What a customer enters into their PBX for a registrar account. Revealed only for
+        registrar-mode registrations, only to callers holding phoneEndpoint:update, and every
+        reveal is written to the audit log.
+      required: [id, registrar, port, transport, username, password]
+      properties:
+        id:
+          type: string
+          description: The registration endpoint ID
+        registrar:
+          type: string
+          description: The name the PBX registers to (the deployment's balancer name), which is also the digest realm.
+          example: sip.polite.ai
+        port:
+          type: integer
+          example: 5061
+        transport:
+          type: string
+          enum: [tls]
+        username:
+          type: string
+          example: pbx-k7m2x9q4wz
+        password:
+          type: string
+    RegistrationBinding:
+      type: object
+      description: One PBX socket currently registered to the owning regserver node for this account.
+      properties:
+        contact:
+          type: string
+          description: The Contact URI as the PBX sent it, often a private address.
+        received:
+          type: string
+          description: The socket's remote address, host:port — where the node actually sends.
+        transport:
+          type: string
+        userAgent:
+          type: string
+          nullable: true
+        registeredAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        node:
+          type: string
+          description: The node holding the socket; the same value as the registration's b2buaId.
+    RegistrationBindings:
+      type: object
+      description: |-
+        The bindings held for a registrar account. By default the mirror the owning node last wrote
+        onto the row; with `live=1` the node's own view, fetched through the node API.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          nullable: true
+          description: The owning node, or null when nothing has registered yet.
+        live:
+          type: boolean
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegistrationBinding'
+        bindingsUpdatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the owning node last mirrored the bindings onto the row.
+        fetchedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: With `live=1`, when the node answered; null for the mirror.
     SipTraceIndex:
       type: object
       description: |-
