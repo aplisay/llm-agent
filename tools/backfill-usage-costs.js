@@ -41,13 +41,6 @@ const options = commandLineArgs([
 ]);
 dotenv.config(options.path ? { path: dir.resolve(process.cwd(), options.path) } : undefined);
 
-// Importing lib/database.js runs the API server's boot housekeeping, which
-// includes closing every chat session the database has open — correct for a
-// server that has just restarted and holds none of them, catastrophic for a CLI
-// pointed at a live environment, and doubly wrong for a run that has not even
-// been given --apply. Opt out before the import, not after.
-process.env.DB_NO_SESSION_SWEEP = 'true';
-
 const { Organisation, UsageRecord, RateCard, Op, databaseStarted } = await import('../lib/database.js');
 const { resolveRateCard } = await import('../lib/rates.js');
 
