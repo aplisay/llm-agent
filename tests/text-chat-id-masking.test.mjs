@@ -42,8 +42,8 @@ afterAll(async () => {
 });
 
 /** A session whose function list names the set tools, so platformOf resolves. */
-function makeSession() {
-  const session = createChatSession({ agent, logger });
+async function makeSession() {
+  const session = await createChatSession({ agent, logger });
   session.functions = [
     { name: 'patch_agent_set', platform: 'patch_agent_set' },
     { name: 'notify_email_team', platform: 'notify' },
@@ -52,8 +52,8 @@ function makeSession() {
 }
 
 describe('slimResults keeps internal ids out of the conversation', () => {
-  test('a failed save reaches the model without the id', () => {
-    const session = makeSession();
+  test('a failed save reaches the model without the id', async () => {
+    const session = await makeSession();
     const [out] = session.slimResults([
       { name: 'patch_agent_set', result: JSON.stringify({ error: `Agent set ${ID} not found` }) },
     ]);
@@ -62,9 +62,9 @@ describe('slimResults keeps internal ids out of the conversation', () => {
     expect(JSON.parse(out.result).error).toBe('Agent set not found');
   });
 
-  test('a successful save keeps the ids label resolution produced', () => {
+  test('a successful save keeps the ids label resolution produced', async () => {
     // test_agent resolves a label to an agent id from exactly this stub.
-    const session = makeSession();
+    const session = await makeSession();
     const [out] = session.slimResults([
       {
         name: 'patch_agent_set',
@@ -80,19 +80,19 @@ describe('slimResults keeps internal ids out of the conversation', () => {
     expect(parsed.members[0]).toMatchObject({ label: 'front', id: '00000000-0000-4000-8000-000000000002' });
   });
 
-  test('a failure from a NON-set tool is masked too', () => {
+  test('a failure from a NON-set tool is masked too', async () => {
     // The leak is not specific to set saves: any tool error the model reads is
     // one it can relay. Masking runs before the set-platform branch.
-    const session = makeSession();
+    const session = await makeSession();
     const [out] = session.slimResults([
       { name: 'notify_email_team', result: JSON.stringify({ error: `agent ${ID} has no verified members` }) },
     ]);
     expect(out.result).not.toMatch(ID_SHAPE);
   });
 
-  test('results with nothing to mask are passed through by identity', () => {
+  test('results with nothing to mask are passed through by identity', async () => {
     // Rebuilding every result would churn the array for no reason.
-    const session = makeSession();
+    const session = await makeSession();
     const input = [{ name: 'notify_email_team', result: JSON.stringify({ ok: true }) }];
     expect(session.slimResults(input)[0]).toBe(input[0]);
   });

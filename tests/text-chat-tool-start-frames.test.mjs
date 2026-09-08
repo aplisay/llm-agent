@@ -38,15 +38,15 @@ afterAll(async () => {
   await teardownRealDatabase();
 });
 
-function sessionWithLlm(rawCompletion) {
-  const session = createChatSession({ agent, logger });
+async function sessionWithLlm(rawCompletion) {
+  const session = await createChatSession({ agent, logger });
   session.llm = { rawCompletion };
   return session;
 }
 
 describe('streaming tool_use_start → early tool_call frame', () => {
   test('a driver tool_use_start emits {type:tool_call, streaming:true} before the reply', async () => {
-    const session = sessionWithLlm(async (text, cb) => {
+    const session = await sessionWithLlm(async (text, cb) => {
       cb({ tool_use_start: { name: 'update_agent_set' } });
       return { text: 'Saved the team.', calls: [] };
     });
@@ -66,7 +66,7 @@ describe('streaming tool_use_start → early tool_call frame', () => {
   });
 
   test('a nameless tool_use_start and the final-result callback emit no frame', async () => {
-    const session = sessionWithLlm(async (text, cb) => {
+    const session = await sessionWithLlm(async (text, cb) => {
       cb({ tool_use_start: {} }); // malformed — no name
       const round = { text: 'ok', calls: [] };
       cb(round); // drivers echo the final round through the same callback
@@ -78,7 +78,7 @@ describe('streaming tool_use_start → early tool_call frame', () => {
   });
 
   test('mcp_tool_use events keep their existing frame shape alongside', async () => {
-    const session = sessionWithLlm(async (text, cb) => {
+    const session = await sessionWithLlm(async (text, cb) => {
       cb({ mcp_tool_use: { name: 'read_doc', server: 'aplisay' } });
       cb({ tool_use_start: { name: 'patch_agent_set' } });
       return { text: 'done', calls: [] };

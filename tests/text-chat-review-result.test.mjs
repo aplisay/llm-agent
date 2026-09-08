@@ -36,8 +36,8 @@ afterAll(async () => {
   await teardownRealDatabase();
 });
 
-function makeSession() {
-  const session = createChatSession({ agent, logger });
+async function makeSession() {
+  const session = await createChatSession({ agent, logger });
   const turns = [];
   session.runTurn = (text, send, hidden = false, claimed = null) => {
     turns.push({ text, hidden, claimed });
@@ -50,7 +50,7 @@ const findings = '{"overall":"Solid, but no transfers.","findings":[{"severity":
 
 describe('text-chat review_result frame', () => {
   test('matching id claims the pending at enqueue and resumes as a hidden turn', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'request_review' };
     await session.reviewResult({ type: 'review_result', id: 'toolu_1', result: findings }, () => {});
     expect(turns).toEqual([
@@ -65,7 +65,7 @@ describe('text-chat review_result frame', () => {
   });
 
   test('mismatched id is ignored (a stale frame cannot hijack another turn)', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'request_review' };
     await session.reviewResult({ type: 'review_result', id: 'toolu_2', result: findings }, () => {});
     expect(turns).toEqual([]);
@@ -73,20 +73,20 @@ describe('text-chat review_result frame', () => {
   });
 
   test('missing id is ignored (no id-less form for reviews)', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'request_review' };
     await session.reviewResult({ type: 'review_result', result: findings }, () => {});
     expect(turns).toEqual([]);
   });
 
   test('no pending tool call is a no-op', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     await session.reviewResult({ type: 'review_result', id: 'toolu_1', result: findings }, () => {});
     expect(turns).toEqual([]);
   });
 
   test('duplicate frame after the claim is ignored', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'request_review' };
     await session.reviewResult({ type: 'review_result', id: 'toolu_1', result: findings }, () => {});
     await session.reviewResult({ type: 'review_result', id: 'toolu_1', result: findings }, () => {});

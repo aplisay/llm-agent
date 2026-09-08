@@ -23,6 +23,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [auxiliary-stt.md](auxiliary-stt.md) | Side STT engines: a second opinion on the caller (`options.stt.aux` → `user-aux`, `stt-aux`) and an audit of what the agent actually said (`options.tts.output` → `agent-speech`, `stt-output`) |
 | [ultravox-vendor-specific-options.md](ultravox-vendor-specific-options.md) | Ultravox model variants and tuning options |
 | [agent-concurrency-limits.md](agent-concurrency-limits.md) | Per-agent/user/organisation concurrency caps |
+| [chat-session-ownership.md](chat-session-ownership.md) | How an interactive chat session is held by one server process and moves to another on reconnect or shutdown |
 | [agent-failover.md](agent-failover.md) | Automatic fallback agents and numbers |
 | [voices-deprecation.md](voices-deprecation.md) | Deprecation notes for the legacy voices surface |
 
