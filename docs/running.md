@@ -38,7 +38,7 @@ The essentials, by group:
 | Group | Variables | Notes |
 |---|---|---|
 | Core | `WS_PORT`, `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; pino level |
-| Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there |
+| Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there. The schema work every process runs at start is serialised across processes by a Postgres advisory lock (`lib/boot-lock.js`), so replicas starting together take turns rather than racing |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
 | Auth | `AUTHENTICATE_USERS=NO` for a local instance | Real deployments use Firebase (legacy) or better-auth (`BETTER_AUTH_*`), plus org-scoped API keys |
 | LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
