@@ -1,5 +1,5 @@
 import { setupRealDatabase, teardownRealDatabase, databaseStarted } from './setup/database-test-wrapper.js';
-import { buildRateComponents, STT_ENGINES, TTS_ENGINES } from '../lib/rate-components.js';
+import { buildRateComponents, STT_ENGINES, TTS_ENGINES, BUNDLED_TTS_PROVIDERS } from '../lib/rate-components.js';
 import { resolveRowCost } from '../lib/rates.js';
 
 // Phase-3 catalogue: the priceable-component roster /api/rate-components advertises,
@@ -44,11 +44,33 @@ describe('rate-components catalogue', () => {
   });
 
   it('advertises tts/stt engines with their billing units', () => {
-    expect(comps.filter((c) => c.dim === 'tts').map((c) => c.match.provider).sort()).toEqual([...TTS_ENGINES].sort());
+    expect(comps.filter((c) => c.dim === 'tts' && !c.bundled).map((c) => c.match.provider).sort())
+      .toEqual([...TTS_ENGINES].sort());
     expect(byKey('tts:elevenlabs').units).toEqual(['character', 'minute']);
     expect(byKey('stt:deepgram').units).toEqual(['minute', 'character']);
     // Every STT engine either worker can be pointed at, primary or auxiliary.
     expect(comps.filter((c) => c.key.startsWith('stt:')).map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+  });
+
+  // A managed realtime bundle still meters the speech it synthesises, but that
+  // audio is already paid for by the model's per-minute line. Advertising the
+  // component is what lets a card carry an explicit ZERO for it — without one
+  // the rows match nothing and sit on the customer's usage screen as minutes of
+  // TTS marked "not priced", beside the call that already charged for them.
+  it('advertises bundled realtime speech as a zero-priceable tts component', () => {
+    expect(BUNDLED_TTS_PROVIDERS).toContain('ultravox');
+    for (const provider of BUNDLED_TTS_PROVIDERS) {
+      const c = byKey(`tts:${provider}`);
+      expect(c.dim).toBe('tts');
+      expect(c.bundled).toBe(true);
+      expect(c.match).toEqual({ technology: 'tts', provider });
+      // milliseconds is the unit the realtime workers actually emit (audio
+      // duration, not characters), so it must be offered first.
+      expect(c.units[0]).toBe('minute');
+    }
+    // A bundled provider is NOT one of the billable engines — listing it there
+    // would invite a card that charges twice for the same audio.
+    expect(TTS_ENGINES).not.toContain('ultravox');
   });
 
   it('advertises the auxiliary STT (options.stt.aux) as its own stt-aux component per engine', () => {

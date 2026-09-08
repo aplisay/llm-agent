@@ -118,4 +118,62 @@ describe('Tenant usage API (GET /api/usage)', () => {
 
     await UsageRecord.destroy({ where: { detail: 'cost-test' } });
   });
+
+  // The defect this fixes: `quantity` summed EVERY row in the bucket while
+  // `costMicros` summed only the costed ones, so a line read "238,897 input
+  // tokens · £0.05" when 21,451 of those tokens had never been valued. The
+  // number and the price on the same line disagreed, with nothing on screen
+  // saying so.
+  it('reports the quantity the cost is actually the price of', async () => {
+    const rows = [
+      { sessionId: `${orgA}-q1`, organisationId: orgA, userId: userA, technology: 'llm', provider: 'openai', detail: 'split-test', unit: 'input_tokens', quantity: 1000, costMicros: 2000, costStatus: 'matched', finalised: true },
+      { sessionId: `${orgA}-q2`, organisationId: orgA, userId: userA, technology: 'llm', provider: 'openai', detail: 'split-test', unit: 'input_tokens', quantity: 250, finalised: false },
+    ].map((r) => ({ ...r, meterKey: UsageRecord.meterKey(r) }));
+    await UsageRecord.bulkCreate(rows);
+
+    const { req, res } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'detail' });
+    await GET(req, res);
+    const b = res.body.usage.find((u) => u.detail === 'split-test');
+    expect(b.quantity).toBe(1250);          // everything metered
+    expect(b.costedQuantity).toBe(1000);    // …of which this much is priced
+    expect(b.costMicros).toBe(2000);
+    // Still-metering rows are a DIFFERENT fact from unpriced ones.
+    expect(b.provisionalMeters).toBe(1);
+    expect(b.provisionalQuantity).toBe(250);
+
+    // `finalised=true` narrows to the settled ledger, where the two agree.
+    const { req: r2, res: s2 } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'detail', finalised: 'true' });
+    await GET(r2, s2);
+    const settled = s2.body.usage.find((u) => u.detail === 'split-test');
+    expect(settled.quantity).toBe(1000);
+    expect(settled.costedQuantity).toBe(1000);
+    expect(settled.provisionalMeters).toBe(0);
+
+    await UsageRecord.destroy({ where: { detail: 'split-test' } });
+  });
+
+  // A deliberately zero-priced meter (realtime speech already charged by the
+  // model minute) is INCLUDED, not unpriced — presenting the two the same way
+  // is what put "4.4 minutes of TTS · not priced" on a customer's screen beside
+  // the call that had already paid for that exact audio.
+  it('counts zero-rated (bundled) meters apart from unpriced ones', async () => {
+    const rows = [
+      { sessionId: `${orgA}-z1`, organisationId: orgA, userId: userA, technology: 'tts', provider: 'ultravox', detail: 'Wendy', unit: 'milliseconds', quantity: 156572, costMicros: 0, costStatus: 'matched', finalised: true },
+      { sessionId: `${orgA}-z2`, organisationId: orgA, userId: userA, technology: 'tts', provider: 'ultravox', detail: 'Wendy', unit: 'milliseconds', quantity: 108360, costStatus: 'no_line', finalised: true },
+    ].map((r) => ({ ...r, meterKey: UsageRecord.meterKey(r) }));
+    await UsageRecord.bulkCreate(rows);
+
+    const { req, res } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'detail' });
+    await GET(req, res);
+    const b = res.body.usage.find((u) => u.detail === 'Wendy');
+    expect(b.zeroRatedMeters).toBe(1);  // priced, at zero, on purpose
+    expect(b.uncostedMeters).toBe(1);   // genuinely has no price
+
+    // costStatus is groupable, so a consumer can say WHY rather than guessing.
+    const { req: r2, res: s2 } = mockReqRes({ id: userA, organisationId: orgA }, { groupBy: 'detail,costStatus' });
+    await GET(r2, s2);
+    expect(s2.body.usage.some((u) => u.detail === 'Wendy' && u.costStatus === 'no_line')).toBe(true);
+
+    await UsageRecord.destroy({ where: { detail: 'Wendy' } });
+  });
 });
