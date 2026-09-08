@@ -14,9 +14,8 @@ process.env.OPENROUTER_KEY ||= 'test-key';
 const chatModule = (await import('../api/paths/agents/{agentId}/chat.js')).default;
 const invokeModule = (await import('../api/paths/agents/{agentId}/invoke.js')).default;
 const subagentModule = (await import('../api/paths/agent-db/subagent.js')).default;
-const { getChatSession } = await import('../lib/text-chat.js');
 const { runSubagentById, SubagentError } = await import('../lib/subagent.js');
-const { Agent, Organisation } = await import('../lib/database.js');
+const { Agent, Organisation, ChatSession } = await import('../lib/database.js');
 
 const mockLogger = {
   info() {}, warn() {}, error() {}, debug() {},
@@ -96,7 +95,7 @@ describe('chat endpoint model entitlement', () => {
     const res = createMockResponse(unrestrictedUser());
     await agentChat(createMockRequest({ params: { agentId: agentRow.id }, body: {} }), res);
     expect(res._body.id).toBeDefined();
-    getChatSession(res._body.id).teardown();
+    await ChatSession.destroy({ where: { id: res._body.id } });
   });
 
   test('builtins stay gated by their builtin: id, not their model', async () => {
@@ -105,7 +104,7 @@ describe('chat endpoint model entitlement', () => {
     const res = createMockResponse(restrictedUser());
     await agentChat(createMockRequest({ params: { agentId: 'builtin:set-builder' }, body: {} }), res);
     expect(res._body.id).toBeDefined();
-    getChatSession(res._body.id).teardown();
+    await ChatSession.destroy({ where: { id: res._body.id } });
   });
 
   test('the org-pushed builder row is NOT exempt: its description marker is tenant-forgeable, so it is gated like any stored agent', async () => {

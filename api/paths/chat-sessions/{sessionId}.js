@@ -59,7 +59,9 @@ const getChatSession = async (req, res) => {
       usage.costMicros += Number(r.costMicros) || 0;
       usage.currency = usage.currency || r.currency || null;
     }
-    const { lastSeenAt, ...row } = session.get({ plain: true });
+    // `owner` and `state` are how the session moves between server
+    // processes; neither is part of the contract.
+    const { lastSeenAt, owner, state, ...row } = session.get({ plain: true });
     res.send({ ...row, live: isChatSessionLive(session), usage });
   } catch (error) {
     req.log.error(error);

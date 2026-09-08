@@ -1,4 +1,4 @@
-import { createChatSession } from '../../../../lib/text-chat.js';
+import { openChatSession } from '../../../../lib/text-chat.js';
 import { resolveAgentForUser } from '../../../../lib/builtin-agents.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { isModelAllowed } from '../../../../lib/auth/model-access.js';
@@ -74,11 +74,15 @@ const agentChat = async (req, res) => {
       }
       agent.modelName = model;
     }
-    const session = createChatSession({ agent, set, testResult, subjectAgent, knowledge, history, resumedFrom, headless, logger: req.log });
+    // The session is a row from here on: whichever server process receives
+    // the websocket upgrade for `/chat/<id>` claims it and builds the
+    // conversation there (lib/text-chat.js), so this request and the socket
+    // need not land on the same process.
+    const { id } = await openChatSession({ agent, set, testResult, subjectAgent, knowledge, history, resumedFrom, headless, logger: req.log });
     log.info(
-      { agentId, sessionId: session.id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, headless: !!headless, model: model || undefined, resume: Array.isArray(history) ? history.length : undefined, resumedFrom: resumedFrom || undefined },
+      { agentId, sessionId: id, edit: !!set, diagnose: !!testResult, subjectAgent: !!subjectAgent, knowledge: !!knowledge, headless: !!headless, model: model || undefined, resume: Array.isArray(history) ? history.length : undefined, resumedFrom: resumedFrom || undefined },
       'agent chat session started');
-    res.send({ id: session.id, socket: `/chat/${session.id}` });
+    res.send({ id, socket: `/chat/${id}` });
   }
   catch (err) {
     req.log.error(err, 'starting agent chat');
