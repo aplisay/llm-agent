@@ -198,7 +198,11 @@ export default {
     'ts-jest': {
       useESM: true,
     },
-    crypto: import('crypto')
+    crypto: import('crypto'),
+    // Opt in to the per-worker databases created by
+    // tests/setup/global-setup.js. That file is shared with the jambonz image
+    // build, which runs its own jest config and has no database.
+    provisionWorkerDatabases: true,
 
   },
   transform: {

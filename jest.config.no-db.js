@@ -13,6 +13,9 @@ export default {
   ],
   setupFilesAfterEnv: [],
   globalSetup: './tests/setup/global-setup.js',
+  // Opt in to the per-worker databases created by tests/setup/global-setup.js.
+  // That file is shared with the jambonz image build, which has no database.
+  globals: { provisionWorkerDatabases: true },
   testTimeout: 30000,
   // One database per worker (see tests/setup/test-db-config.js), so the suite
   // no longer has to serialise. Override with JEST_WORKERS; global-setup.js
