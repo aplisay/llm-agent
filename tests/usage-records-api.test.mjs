@@ -77,12 +77,16 @@ describe('Itemised usage API (GET /api/usage/records)', () => {
     return res.body;
   };
 
-  it('returns the caller’s own rows only, newest first', async () => {
+  it('returns the caller’s own rows only, newest first BY BILLING INSTANT', async () => {
     const { records } = await list();
     expect(records.length).toBe(5);
     expect(records.every((r) => r.quantity !== 999)).toBe(true); // org B never leaks
-    const ids = records.map((r) => Number(r.id));
-    expect([...ids].sort((a, b) => b - a)).toEqual(ids);
+    // Not insertion order: the July no_rate row was inserted LAST but is the
+    // oldest, and a ledger read under a column headed "When" has to be in that
+    // order or it is unreadable.
+    const at = records.map((r) => new Date(r.billedAt || r.createdAt).getTime());
+    expect([...at].sort((a, b) => b - a)).toEqual(at);
+    expect(records[records.length - 1].detail).toBe('pipecat:ultravox/ultravox-v0.7');
   });
 
   // The whole point of the endpoint: say WHY, in a vocabulary the screen can

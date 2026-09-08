@@ -83,15 +83,39 @@ export default function (logger) {
       if (priced === true || priced === 'true') where.costMicros = { [Op.gt]: 0 };
       if (priced === false || priced === 'false') where.costMicros = null;
 
-      // Descending id: usage_records.id is monotonic per insert, so it is a
-      // stable newest-first cursor that never repeats or skips a row when new
-      // meters land mid-page (an offset would).
-      if (before) and.push({ id: { [Op.lt]: Number(before) } });
+      // Newest first BY THE BILLING INSTANT, which is the only order a ledger
+      // can be read in — and not the same as insertion order, because a row
+      // costed later can be anchored earlier (a backfill, a call whose meters
+      // land after a session's). Ordering by id alone put a July row between two
+      // September ones under a column headed "When".
+      //
+      // `id` breaks ties and makes the cursor total: two rows can share a
+      // billing instant to the millisecond, so a cursor on the timestamp alone
+      // would either repeat or skip them. The cursor is therefore composite,
+      // `<iso>,<id>`, and the predicate is the lexicographic "strictly before"
+      // that matches the sort exactly.
+      if (before) {
+        const [ts, id] = String(before).split(',');
+        const at = new Date(ts);
+        if (!Number.isNaN(at.getTime())) {
+          and.push({
+            [Op.or]: [
+              UsageRecord.sequelize.where(anchor, { [Op.lt]: at }),
+              {
+                [Op.and]: [
+                  UsageRecord.sequelize.where(anchor, { [Op.eq]: at }),
+                  { id: { [Op.lt]: Number(id) || 0 } },
+                ],
+              },
+            ],
+          });
+        }
+      }
 
       const pageSize = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
       const rows = await UsageRecord.findAll({
         where: { [Op.and]: [...and, where] },
-        order: [['id', 'DESC']],
+        order: [[anchor, 'DESC'], ['id', 'DESC']],
         limit: pageSize + 1, // one extra row: presence of it IS "there is a next page"
       });
 
@@ -123,7 +147,11 @@ export default function (logger) {
         costBreakdown: r.metadata?.costBreakdown || null,
       }));
 
-      res.send({ records, next: rows.length > pageSize ? String(page[page.length - 1].id) : false });
+      const tail = page[page.length - 1];
+      const cursor = tail
+        ? `${new Date(tail.billedAt || tail.createdAt).toISOString()},${tail.id}`
+        : false;
+      res.send({ records, next: rows.length > pageSize ? cursor : false });
     } catch (error) {
       req.log.error(error, 'error listing usage records');
       res.status(500).send({ error: error.message });
@@ -156,7 +184,7 @@ export default function (logger) {
       },
       { name: 'finalised', in: 'query', schema: { type: 'boolean' }, description: 'true = settled meters only; false = still-metering rows only.' },
       { name: 'priced', in: 'query', schema: { type: 'boolean' }, description: 'true = rows carrying a non-zero charge; false = rows with no price at all.' },
-      { name: 'before', in: 'query', schema: { type: 'string' }, description: 'Cursor: pass the previous page\'s `next` to fetch older rows.' },
+      { name: 'before', in: 'query', schema: { type: 'string' }, description: 'Cursor: pass the previous page\'s `next` verbatim to fetch older rows. Composite (`<iso>,<id>`) because rows can share a billing instant.' },
       { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
     ],
     responses: {
