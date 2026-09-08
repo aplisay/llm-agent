@@ -11,7 +11,6 @@ import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
 import { buildInfo, describeBuild } from './lib/build-info.js';
-import { startChatSessionReaper } from './lib/text-chat.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
@@ -160,6 +159,16 @@ httpServer.listen(port, () => {
 // environment ended that environment's sessions as a side effect — including
 // tools that only read. Safe to run from every replica at once; the cutoff
 // decides what is stale, not the fact that this process just started.
+//
+// Imported DYNAMICALLY, and that is load-bearing: lib/text-chat.js pulls in
+// lib/database.js, which builds its Sequelize instance and pg-listen
+// connection string from process.env.POSTGRES_* at module evaluation. Static
+// imports are all evaluated before this module's body runs, so a static import
+// here would reach the database layer before `dotenv.config()` above has
+// decoded SECRETENV_BUNDLE into the environment — and the process would exit
+// with `TypeError: Invalid URL` before it could listen. lib/ws-handler.js
+// avoids the same trap the same way, and says so.
+const { startChatSessionReaper } = await import('./lib/text-chat.js');
 startChatSessionReaper({ log: logger });
 
 process.on('SIGINT', cleanupAndExit);
