@@ -53,13 +53,36 @@ docker-compose -f docker-compose.ci.yml down -v
    - `1` = Tests failed or setup failed
 5. **Cleanup**: Containers are automatically stopped and removed
 
+## One database per jest worker
+
+The suite runs in parallel (`maxWorkers` in `jest.config.db.js`, overridable
+with `JEST_WORKERS`). Every DB-backed suite boots `lib/database.js` under
+`DB_FORCE_SYNC`, which runs the whole schema upgrade chain, so the workers
+cannot share one schema.
+
+`tests/setup/global-setup.js` therefore drops and recreates one database per
+worker, `llmvoicetest_1` upwards, before any worker starts, and
+`tests/setup/database-test-wrapper.js` points `lib/database.js` at the one
+belonging to its own worker. Connection details live in
+`tests/setup/test-db-config.js`.
+
+Two consequences worth knowing:
+
+- Every suite that reaches Postgres must go through `database-test-wrapper.js`.
+  A suite that imports `lib/database.js` on its own gets no database name and
+  will not connect. The wrapper is the only place that assigns one.
+- The databases are recreated on every run, so a rerun no longer inherits rows
+  from the last one. Starting from a clean volume is no longer needed to avoid
+  phantom failures.
+
 ## Environment Variables
 
 The test runner container uses these environment variables:
 
 - `POSTGRES_HOST=postgres` (internal Docker network)
 - `POSTGRES_PORT=5432`
-- `POSTGRES_DB=llmvoicetest`
+- `POSTGRES_DB=llmvoicetest` (the bootstrap database only, see below: suites run
+  against `llmvoicetest_<worker>`)
 - `POSTGRES_USER=testuser`
 - `POSTGRES_PASSWORD=testpass`
 - `CREDENTIALS_KEY=test-secret-key-for-comprehensive-tests`
