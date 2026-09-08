@@ -203,6 +203,15 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # Dev only: skip TLS verification (and, with REGCLIENT_API_SCHEME=http, TLS).
 # REGCLIENT_API_INSECURE=0
 
+# ── Registrar accounts (regserver) ──────────────────────────────────────────
+# The name customers' PBXes register to, which is also the digest realm on every
+# registrar-mode phone registration this deployment issues (a bare hostname; the
+# port is always 5061, TLS). Unset, registrar accounts cannot be created (503,
+# code registrar_unavailable). Permanent once the first account exists: the
+# realm is what every PBX hashes its password against. Design:
+# aplisay-strategy implementation/regserver-tactical-spec.md.
+# REGSERVER_REGISTRAR=sip.polite.ai
+
 # ── Number administration (tools/number.js — manual admin script only) ──────
 # Magrathea carrier credentials + SIP ingress hosts for bulk/manual number
 # maintenance. NOT read by the API service itself; the self-service Buy-number

@@ -3,6 +3,8 @@ import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../
 import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi, validateRegistrationTrunkFields } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
 import { requirePermission, can } from '../../lib/auth/permissions.js';
+import { mintRegistrarUsername, mintRegistrarPassword } from '../../lib/utils/credentials.js';
+import { registrarRealm, REGISTRAR_PORT, REGISTRAR_TRANSPORT } from '../../lib/registrar-accounts.js';
 
 let appParameters, log;
 
@@ -149,7 +151,9 @@ const phoneEndpointList = (async (req, res) => {
         handler: r.handler,
         outbound: !!r.outbound,
         trunkId: r.trunkId || null,
-        trunk: !!r.trunkId
+        trunk: !!r.trunkId,
+        mode: r.mode || 'client',
+        kind: r.kind || null
       }));
       const nextOffset = rows.length === size ? startOffset + size : null;
       return res.send({ items, nextOffset });
@@ -185,7 +189,7 @@ const phoneEndpointList = (async (req, res) => {
       regWhere
         ? PhoneRegistration.findAll({
             where: regWhere,
-            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt', 'trunkId'],
+            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt', 'trunkId', 'mode', 'kind'],
             limit: size,
             offset: startOffset
           })
@@ -216,6 +220,8 @@ const phoneEndpointList = (async (req, res) => {
       b2buaId: r.b2buaId || null,
       trunkId: r.trunkId || null,
       trunk: !!r.trunkId,
+      mode: r.mode || 'client',
+      kind: r.kind || null,
       status: r.status,
       state: r.state,
       handler: r.handler,
@@ -447,6 +453,10 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // Direction of service. A client row registers out to the customer's
+      // registrar; a registrar row is an account the customer's PBX registers
+      // to us with, served by regserver. Fixed at creation.
+      const mode = data.mode === 'registrar' ? 'registrar' : 'client';
       const validation = validatePhoneRegistration(data);
       const trunkErrors = validateRegistrationTrunkFields(data);
       if (!validation.isValid || trunkErrors.length) {
@@ -473,33 +483,60 @@ const createPhoneEndpoint = async (req, res) => {
         return res.status(409).send({ error: `Trunk ${requestedTrunkId} already exists` });
       }
 
-      // Strip sip:/sips: prefix from registrar if present before saving
-      const normalizedRegistrar = data.registrar?.replace(/^sips?:/i, '') || data.registrar;
-
-      // Check for duplicate registration (same registrar and username)
-      const existingRegistration = await PhoneRegistration.findOne({
-        where: {
-          registrar: normalizedRegistrar,
-          username: data.username,
-          organisationId: organisationId
+      // The account's identity. A client row carries the credentials the
+      // customer gave us for their registrar. A registrar row is an identity we
+      // issue: the deployment's balancer name as realm, and a minted username
+      // and password the customer copies into their PBX. The password is
+      // returned once, here; after that only the audited credentials routes
+      // reveal or rotate it.
+      let normalizedRegistrar;
+      let username;
+      let password;
+      if (mode === 'registrar') {
+        normalizedRegistrar = registrarRealm();
+        if (!normalizedRegistrar) {
+          return res.status(503).send({
+            error: 'Registrar accounts are not available on this deployment (REGSERVER_REGISTRAR is not configured)',
+            code: 'registrar_unavailable'
+          });
         }
-      });
+        username = mintRegistrarUsername();
+        password = mintRegistrarPassword();
+      } else {
+        // Strip sip:/sips: prefix from registrar if present before saving
+        normalizedRegistrar = data.registrar?.replace(/^sips?:/i, '') || data.registrar;
+        username = data.username;
+        password = data.password;
 
-      if (existingRegistration) {
-        return res.status(409).send({
-          error: 'Phone registration with the same registrar and username already exists'
+        // Check for duplicate registration (same registrar and username)
+        const existingRegistration = await PhoneRegistration.findOne({
+          where: {
+            registrar: normalizedRegistrar,
+            username,
+            organisationId: organisationId
+          }
         });
+
+        if (existingRegistration) {
+          return res.status(409).send({
+            error: 'Phone registration with the same registrar and username already exists'
+          });
+        }
       }
 
-      const record = await PhoneRegistration.sequelize.transaction(async (transaction) => {
+      const createRow = (usernameToUse) => PhoneRegistration.sequelize.transaction(async (transaction) => {
         const reg = await PhoneRegistration.create({
           name: data.name,
           handler: data.handler ?? 'livekit',
           outbound: data.outbound ?? false,
           registrar: normalizedRegistrar,
-          username: data.username,
-          password: data.password,
-          b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
+          username: usernameToUse,
+          password,
+          mode,
+          kind: mode === 'registrar' ? 'pbx' : null,
+          // A registrar row's owner is whichever node accepts its REGISTER;
+          // validation has already refused a supplied b2buaId for one.
+          b2buaId: mode === 'client' && data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
           options: data.options || null,
           organisationId,
           status: 'disabled',
@@ -513,6 +550,41 @@ const createPhoneEndpoint = async (req, res) => {
         }
         return reg;
       });
+
+      let record;
+      if (mode === 'registrar') {
+        // A minted username carries 50 bits of randomness, so a collision on
+        // the partial unique index is a retry with a fresh one — never a 409
+        // to a caller who chose nothing.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            record = await createRow(username);
+            break;
+          } catch (err) {
+            if (err.name !== 'SequelizeUniqueConstraintError' || attempt >= 2) throw err;
+            username = mintRegistrarUsername();
+          }
+        }
+        req.log?.info({
+          audit: 'registrar-account-created',
+          registrationId: record.id,
+          organisationId,
+          userId: res.locals.user?.id,
+          username
+        }, 'registrar account created; credentials issued once');
+        return res.status(201).send({
+          success: true,
+          id: record.id,
+          trunkId: record.trunkId || null,
+          mode,
+          registrar: normalizedRegistrar,
+          port: REGISTRAR_PORT,
+          transport: REGISTRAR_TRANSPORT,
+          username,
+          password
+        });
+      }
+      record = await createRow(username);
 
       return res.status(201).send({ success: true, id: record.id, trunkId: record.trunkId || null });
     }
@@ -734,7 +806,14 @@ createPhoneEndpoint.apiDoc = {
                     description: 'Response when type is phone-registration',
                     required: ['id'],
                     properties: {
-                      id: { type: 'string', description: 'Registration id for the created phone registration' }
+                      id: { type: 'string', description: 'Registration id for the created phone registration' },
+                      trunkId: { type: 'string', nullable: true, description: 'The trunk created for a registration trunk, else null' },
+                      mode: { type: 'string', enum: ['registrar'], description: 'Present for a registrar account only' },
+                      registrar: { type: 'string', description: 'Registrar accounts only: the name the PBX registers to, also the digest realm' },
+                      port: { type: 'integer', description: 'Registrar accounts only: always 5061' },
+                      transport: { type: 'string', enum: ['tls'], description: 'Registrar accounts only' },
+                      username: { type: 'string', description: 'Registrar accounts only: the minted account username' },
+                      password: { type: 'string', description: 'Registrar accounts only: the minted password, shown here once; GET /phone-endpoints/{id}/credentials reveals it again, audited' }
                     }
                   }
                 ]
