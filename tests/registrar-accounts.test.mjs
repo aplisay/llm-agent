@@ -33,7 +33,6 @@ describe('registrar accounts', () => {
     const phoneEndpointsModule = await import('../api/paths/phone-endpoints.js');
     const identifierModule = await import('../api/paths/phone-endpoints/{identifier}.js');
     const credentialsModule = await import('../api/paths/phone-endpoints/{identifier}/credentials.js');
-    const rotateModule = await import('../api/paths/phone-endpoints/{identifier}/credentials/rotate.js');
     const bindingsModule = await import('../api/paths/phone-endpoints/{identifier}/bindings.js');
 
     const phoneEndpoints = phoneEndpointsModule.default(mockLogger, {}, {});
@@ -43,7 +42,7 @@ describe('registrar accounts', () => {
     getPhoneEndpoint = identifier.GET;
     updatePhoneEndpoint = identifier.PUT;
     revealCredentials = credentialsModule.default(mockLogger).GET;
-    rotateCredentials = rotateModule.default(mockLogger).POST;
+    rotateCredentials = credentialsModule.default(mockLogger).POST;
     getBindings = bindingsModule.default(mockLogger).GET;
   }, 30000);
 

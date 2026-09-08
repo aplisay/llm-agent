@@ -330,7 +330,7 @@ const updatePhoneEndpoint = async (req, res) => {
 
       // Mode is fixed at creation, and a registrar account's identity is the
       // platform's: the realm is the deployment's, the username and password
-      // are minted (a new password comes from /credentials/rotate), and
+      // are minted (a new password comes from /credentials), and
       // b2buaId is written by the node that accepts the REGISTER — ownership
       // follows the socket, never this route.
       if (updateData.mode !== undefined && updateData.mode !== (registration.mode || 'client')) {
@@ -340,7 +340,7 @@ const updatePhoneEndpoint = async (req, res) => {
         const refused = ['registrar', 'username', 'password', 'b2buaId'].filter((field) => updateData[field] !== undefined);
         if (refused.length) {
           return res.status(400).send({
-            error: `${refused.join(', ')} cannot be set on a registrar account; POST /phone-endpoints/{id}/credentials/rotate issues a new password`,
+            error: `${refused.join(', ')} cannot be set on a registrar account; POST /phone-endpoints/{id}/credentials issues a new password`,
             code: 'registrar_identity_immutable'
           });
         }
