@@ -1,5 +1,6 @@
 import { fn, col } from 'sequelize';
 import { ChatSession, UsageRecord } from '../../../lib/database.js';
+import { isChatSessionLive } from '../../../lib/text-chat.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
 
@@ -58,7 +59,8 @@ const getChatSession = async (req, res) => {
       usage.costMicros += Number(r.costMicros) || 0;
       usage.currency = usage.currency || r.currency || null;
     }
-    res.send({ ...session.get({ plain: true }), usage });
+    const { lastSeenAt, ...row } = session.get({ plain: true });
+    res.send({ ...row, live: isChatSessionLive(session), usage });
   } catch (error) {
     req.log.error(error);
     res.status(500).send({ error: error.message });
@@ -91,6 +93,14 @@ getChatSession.apiDoc = {
               modelName: { type: 'string', nullable: true },
               startedAt: { type: 'string', format: 'date-time' },
               endedAt: { type: 'string', format: 'date-time', nullable: true },
+              live: {
+                type: 'boolean',
+                description:
+                  'True while a server process still holds this session in memory. Derived from a '
+                  + 'heartbeat, not from endedAt being null: with more than one process running, no '
+                  + 'boot-time guess can tell one process\'s orphans from another\'s live sessions. '
+                  + 'Returned rather than left to the client so the staleness window has one definition.',
+              },
               turns: { type: 'integer' },
               transcript: {
                 type: 'array',

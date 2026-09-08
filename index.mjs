@@ -11,6 +11,7 @@ import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
 import { buildInfo, describeBuild } from './lib/build-info.js';
+import { startChatSessionReaper } from './lib/text-chat.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
@@ -152,6 +153,14 @@ openapi.initialize({
 httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
 });
+
+// Close chat sessions no process still holds. Started HERE, in the server
+// entry point, and not on import of a library: the boot sweep this replaces
+// ran when lib/database.js was imported, so every CLI tool pointed at a live
+// environment ended that environment's sessions as a side effect — including
+// tools that only read. Safe to run from every replica at once; the cutoff
+// decides what is stale, not the fact that this process just started.
+startChatSessionReaper({ log: logger });
 
 process.on('SIGINT', cleanupAndExit);
 process.once('SIGTERM', cleanupAndExit);

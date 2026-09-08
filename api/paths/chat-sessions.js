@@ -1,5 +1,6 @@
 import { fn, col, Op } from 'sequelize';
 import { ChatSession, UsageRecord } from '../../lib/database.js';
+import { isChatSessionLive } from '../../lib/text-chat.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 
@@ -76,7 +77,7 @@ const listChatSessions = async (req, res) => {
       ...(agentId ? { agentId } : {}),
     };
     const { count, rows } = await ChatSession.findAndCountAll({
-      attributes: ['id', 'agentId', 'setId', 'mode', 'title', 'modelName', 'startedAt', 'endedAt', 'turns', 'resumedFrom'],
+      attributes: ['id', 'agentId', 'setId', 'mode', 'title', 'modelName', 'startedAt', 'endedAt', 'lastSeenAt', 'turns', 'resumedFrom'],
       where,
       order: [['startedAt', 'DESC']],
       limit,
@@ -84,7 +85,13 @@ const listChatSessions = async (req, res) => {
     });
     const usage = await usageBySession(rows.map((r) => r.id));
     res.send({
-      sessions: rows.map((r) => ({ ...r.get({ plain: true }), usage: usage[r.id] || null })),
+      // `lastSeenAt` is the input to `live`, not part of the contract: exposing
+      // it would invite each client to re-derive liveness with its own idea of
+      // the grace, and they would disagree.
+      sessions: rows.map((r) => {
+        const { lastSeenAt, ...row } = r.get({ plain: true });
+        return { ...row, live: isChatSessionLive(r), usage: usage[r.id] || null };
+      }),
       total: count,
     });
   } catch (error) {
@@ -129,6 +136,14 @@ listChatSessions.apiDoc = {
                     modelName: { type: 'string', nullable: true },
                     startedAt: { type: 'string', format: 'date-time' },
                     endedAt: { type: 'string', format: 'date-time', nullable: true },
+                    live: {
+                      type: 'boolean',
+                      description:
+                        'True while a server process still holds this session in memory. Derived from a '
+                        + 'heartbeat, not from endedAt being null: with more than one process running, no '
+                        + 'boot-time guess can tell one process\'s orphans from another\'s live sessions. '
+                        + 'Returned rather than left to the client so the staleness window has one definition.',
+                    },
                     turns: { type: 'integer' },
                     usage: {
                       type: 'object',
