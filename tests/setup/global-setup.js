@@ -61,7 +61,7 @@ async function createWorkerDatabases(workers) {
   }
 }
 
-export default async (globalConfig) => {
+export default async (globalConfig, projectConfig) => {
   // The livekit registry is only needed by suites that import it. In single-agent
   // container builds (e.g. the jambonz image) the agents/livekit source tree isn't
   // present, so attempting `yarn build` there fails with a bogus spawn ENOENT
@@ -81,8 +81,16 @@ export default async (globalConfig) => {
     }
   });
 
+  // Opt-in, because this file is shared. agents/jambonz/Dockerfile copies this
+  // directory into the jambonz image and runs `yarn test` during the image
+  // build, against agents/jambonz/jest.config.js and with no database anywhere:
+  // its suite needs none. Provisioning unconditionally broke that build. Only a
+  // config whose suites actually reach Postgres sets the flag.
+  //
   // After the env is cleaned, so the connection details come from
   // test-db-config.js and never from a stray .env in the checkout.
-  await createWorkerDatabases(globalConfig?.maxWorkers ?? 1);
+  if (projectConfig?.globals?.provisionWorkerDatabases) {
+    await createWorkerDatabases(globalConfig?.maxWorkers ?? 1);
+  }
 };
 
