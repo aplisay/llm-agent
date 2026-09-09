@@ -87,6 +87,11 @@ export interface CallScenario {
   // (keys lowercased). Surfaced to the agent via metadata.aplisay.sipHeaders.
   // Only populated for inbound SIP calls (empty {} for outbound / WebRTC).
   sipHeaders?: Record<string, string>;
+  // The display-name from the inbound INVITE's From header (the caller's
+  // freeform name as presented on the wire). Surfaced to the agent via
+  // metadata.aplisay.callerIdName; undefined for outbound / WebRTC and when
+  // the From header carried no display-name.
+  callerIdName?: string;
 }
 
 export interface JobMetadata {
@@ -144,6 +149,8 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   forceBridged?: boolean;
   // Inbound SIP INVITE X- headers, surfaced as metadata.aplisay.sipHeaders. See CallScenario.sipHeaders.
   sipHeaders?: Record<string, string>;
+  // Inbound From display-name, surfaced as metadata.aplisay.callerIdName. See CallScenario.callerIdName.
+  callerIdName?: string;
 }
 
 export interface RunAgentWorkerParams<TContext = any, TRoom = any> {

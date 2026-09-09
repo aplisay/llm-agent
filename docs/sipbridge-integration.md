@@ -189,6 +189,7 @@ worker's agent-lookup chain might need:
 |---|---|
 | `X-Sipbridge-Call-ID` | SIP Call-ID (or X-Aplisay-Call-Id if present) |
 | `X-Sipbridge-From` | full URI from the INVITE's From header |
+| `X-Sipbridge-From-Name` | the From header's display-name (the caller's freeform name), percent-encoded; omitted when the From has none — becomes `metadata.aplisay.callerIdName` ([caller-id-name.md](caller-id-name.md)) |
 | `X-Sipbridge-To` | full URI from the INVITE's To header |
 | `X-Aplisay-Trunk` | passthrough from the upstream B2BUA |
 | `X-Aplisay-PhoneRegistration` | passthrough from the upstream B2BUA |
@@ -207,7 +208,11 @@ now stamps alongside the table above). The worker collects all `x-*`
 handshake headers — minus its own `X-Sipbridge-*` transport metadata —
 into `metadata.aplisay.sipHeaders` (lowercased), so agents can read
 per-call context the carrier/SBC attached. See
-[`sip-headers.md`](sip-headers.md).
+[`sip-headers.md`](sip-headers.md). The From header's display-name travels
+separately as `X-Sipbridge-From-Name` (percent-encoded so a non-ASCII name
+survives the worker's latin-1 header decoding) and becomes
+`metadata.aplisay.callerIdName` — see
+[`caller-id-name.md`](caller-id-name.md).
 
 **Call control.** Worker → bridge via REST:
 

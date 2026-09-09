@@ -111,6 +111,13 @@ them into `metadata.aplisay.sipHeaders` (lowercased) when it builds the
 inbound call context, so agents can read per-call context the carrier/SBC
 attached. See [`sip-headers.md`](sip-headers.md).
 
+The gateway also reads an optional `from_display_name` field from the same
+event into `metadata.aplisay.callerIdName` (the caller's From display-name,
+see [`caller-id-name.md`](caller-id-name.md)). Voiceblender's SIP ingress
+currently reduces the From header to its bare user part (`from`), so the
+field — and therefore `callerIdName` on voiceblender calls — is absent until
+voiceblender emits it.
+
 > **Field name note.** The event field is `sip_headers`
 > (`LegRingingData.SIPHeaders` in the voiceblender source), *not*
 > `custom_headers` — the latter is voiceblender's separate agent-WS request

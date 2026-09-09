@@ -17,6 +17,7 @@ from .base import (
     GatewaySession,
     GatewaySessionParams,
     collect_sip_headers,
+    normalise_display_name,
 )
 try:
     from .daily_gateway import DailySipGateway
@@ -58,4 +59,5 @@ __all__ = [
     "SipBridgeSipGateway",
     "VoiceblenderSipGateway",
     "collect_sip_headers",
+    "normalise_display_name",
 ]
