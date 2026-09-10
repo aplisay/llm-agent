@@ -62,6 +62,9 @@ export interface PhoneRegistrationSchema {
   /** Registrar rows only: bindings mirrored by the owning node; null or empty when nothing is registered. */
   bindings?: RegistrationBinding[] | null;
   bindingsUpdatedAt?: Date | null;
+  /** Registrar rows only: digest HA1 of user:realm:password and of user@realm:realm:password. Never returned by the API. */
+  ha1?: string | null;
+  ha1b?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,5 +75,5 @@ export const PhoneRegistrationModeValues: PhoneRegistrationMode[] = ['client', '
 export const PhoneRegistrationKindValues: PhoneRegistrationKind[] = ['pbx'];
 
 // Schema version for migration/validation tracking
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
