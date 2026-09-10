@@ -15,6 +15,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | Doc | What it covers |
 |---|---|
 | [agent-sets-and-subagents.md](agent-sets-and-subagents.md) | Teams of agents: sets, label references, in-call subagents, handover |
+| [gpt-live-agent-sets.md](gpt-live-agent-sets.md) | Build GPT-Live teams with familiar sets: native delegation, existing text specialists and the wider model catalogue, with worked API examples |
 | [multi-agent-api.md](multi-agent-api.md) | The multi-agent REST surface and agent-to-agent transfer |
 | [gpt-live.md](gpt-live.md) | OpenAI GPT-Live: a voice model with a backend text agent (`delegate`), and how it relates to text subagents |
 | [mcp-servers.md](mcp-servers.md) | Attaching remote MCP tool servers to agents |
