@@ -24,18 +24,19 @@ const ULTRAVOX = 'pipecat:ultravox/ultravox-v0.7';
 
 describe('external TTS on realtime models', () => {
   describe('roster flag', () => {
-    test('Ultravox realtime rows carry externalTts; other rows do not', () => {
+    test('Ultravox and OpenAI realtime rows carry externalTts; Gemini and pipeline rows do not', () => {
       expect(pipecatModelSupportsExternalTts('ultravox/ultravox-v0.7')).toBe(true);
       expect(pipecatModelSupportsExternalTts('ultravox/ultravox-v0.6')).toBe(true);
       expect(pipecatModelSupportsExternalTts('ultravox/ultravox-v0.6-gemma3-27b')).toBe(true);
-      expect(pipecatModelSupportsExternalTts('openai/gpt-realtime')).toBe(false);
+      expect(pipecatModelSupportsExternalTts('openai/gpt-realtime')).toBe(true);
+      // No Gemini Live model the API still serves accepts a TEXT modality.
       expect(pipecatModelSupportsExternalTts('google/gemini-2.0-flash-exp')).toBe(false);
       expect(pipecatModelSupportsExternalTts('openai/gpt-4o-mini')).toBe(false);
       expect(pipecatModelIdFlags['ultravox/ultravox-v0.7']).toMatchObject({
         voiceStack: 'realtime',
         externalTts: true,
       });
-      expect(pipecatModelIdFlags['openai/gpt-realtime'].externalTts).toBeUndefined();
+      expect(pipecatModelIdFlags['google/gemini-2.0-flash-exp'].externalTts).toBeUndefined();
     });
 
     test('the allModels rows carry the flag the handler exposes as hasExternalTts', () => {
@@ -43,6 +44,7 @@ describe('external TTS on realtime models', () => {
         .filter(([, , flags]) => flags.externalTts === true)
         .map(([id]) => id);
       expect(flagged.sort()).toEqual([
+        'openai/gpt-realtime',
         'ultravox/ultravox-v0.6',
         'ultravox/ultravox-v0.6-gemma3-27b',
         'ultravox/ultravox-v0.7',
@@ -51,9 +53,12 @@ describe('external TTS on realtime models', () => {
 
     test('modelSupportsExternalTts resolves by handler and row', () => {
       expect(modelSupportsExternalTts(ULTRAVOX)).toBe(true);
-      expect(modelSupportsExternalTts('pipecat:openai/gpt-realtime')).toBe(false);
-      // The LiveKit rows are not wired yet.
-      expect(modelSupportsExternalTts('livekit:ultravox/ultravox-v0.7')).toBe(false);
+      expect(modelSupportsExternalTts('pipecat:openai/gpt-realtime')).toBe(true);
+      expect(modelSupportsExternalTts('pipecat:google/gemini-2.0-flash-exp')).toBe(false);
+      expect(modelSupportsExternalTts('livekit:ultravox/ultravox-v0.7')).toBe(true);
+      expect(modelSupportsExternalTts('livekit:openai/gpt-realtime')).toBe(true);
+      expect(modelSupportsExternalTts('livekit:google/gemini-2.0-flash-exp')).toBe(false);
+      expect(modelSupportsExternalTts('livekit:openai/gpt-4o-mini')).toBe(false);
       // The native handler has no worker in the media path to host a TTS.
       expect(modelSupportsExternalTts('ultravox:ultravox/ultravox-v0.7')).toBe(false);
       expect(modelSupportsExternalTts('nonsense')).toBe(false);

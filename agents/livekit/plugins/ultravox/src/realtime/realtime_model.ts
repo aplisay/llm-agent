@@ -296,6 +296,35 @@ export function foldTranscriptFrame(
   return buffer;
 }
 
+/**
+ * The part of a text-medium agent transcript frame that has not been streamed
+ * yet, plus the updated streamed total.
+ *
+ * In text-output mode the agent's text is what the TTS speaks, so every character
+ * must reach the generation stream exactly once. Measured 2026-09-10: a turn is a
+ * first `text` snapshot holding the first token, then `delta` frames, then a final
+ * `text` snapshot of the whole turn; a `firstSpeakerSettings` greeting is ONE
+ * final frame with no deltas. A snapshot therefore contributes only what extends
+ * the streamed total (nothing after a fully streamed turn, everything for the
+ * greeting), and a snapshot that does not extend it (Ultravox truncated the turn
+ * on a barge-in) contributes nothing.
+ */
+export function agentTextChunk(
+  streamed: string,
+  frame: { text?: string | null; delta?: string | null }
+): { chunk: string; streamed: string } {
+  if (frame.text) {
+    if (frame.text.startsWith(streamed)) {
+      return { chunk: frame.text.slice(streamed.length), streamed: frame.text };
+    }
+    return { chunk: "", streamed };
+  }
+  if (frame.delta) {
+    return { chunk: frame.delta, streamed: streamed + frame.delta };
+  }
+  return { chunk: "", streamed };
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -370,7 +399,9 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: false,
       userTranscription: true,
       autoToolReplyGeneration: false,
-      audioOutput: true,
+      // Text-only modalities = text-output mode: Ultravox sends no audio and the
+      // AgentSession's TTS speaks the text stream (docs/realtime-external-tts.md).
+      audioOutput: modalities.includes("audio"),
     });
     if (apiKey === "") {
       throw new Error(
@@ -569,6 +600,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   public instructions?: string;
   // Agent transcript buffer for accumulating deltas
   #agentTranscriptBuffer: string = "";
+  // Text-output mode: the agent text streamed into the current generation so
+  // far, so Ultravox's `text` snapshots contribute only what is new.
+  #agentTextStreamed: string = "";
   // User transcript buffer for accumulating deltas. Ultravox does not guarantee a
   // `text` property on the final frame of a turn (see #handleAgentTranscript, which
   // has buffered deltas for that reason since inception); without the same buffer on
@@ -1096,6 +1130,10 @@ export class RealtimeSession extends llm.RealtimeSession {
 
         // Create Ultravox call
         const uv = this.#opts.vendorSpecific?.ultravox;
+        // Text-output mode: no Ultravox voice (options.tts.voice names the
+        // session's TTS voice now) and the text output medium, so Ultravox
+        // streams the agent's turns as text transcripts and sends no audio.
+        const textOnly = !this.#opts.modalities.includes("audio");
         const modelData: api_proto.UltravoxModelData = {
           model: this.#opts.model,
           maxDuration: this.#opts.maxDuration,
@@ -1103,7 +1141,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           systemPrompt: this.instructions || this.#opts.instructions || "",
           selectedTools,
           temperature: this.#opts.temperature,
-          voice: this.#opts.voice,
+          voice: textOnly ? undefined : this.#opts.voice,
+          ...(textOnly ? { initialOutputMedium: "MESSAGE_MEDIUM_TEXT" as const } : {}),
           transcriptOptional: this.#opts.transcriptOptional,
           medium: {
             serverWebSocket: {
@@ -1472,9 +1511,30 @@ export class RealtimeSession extends llm.RealtimeSession {
       case "call_started":
         this.#logger.info({ event }, "Call started");
         break;
+      case "playback_clear_buffer":
+        this.#handlePlaybackClearBuffer();
+        break;
       default:
         this.#logger.debug({ event }, `Unknown message type: ${event.type}`);
     }
+  }
+
+  /** Text-output mode: Ultravox sends no audio, so its streams are text-only. */
+  get #textOnly(): boolean {
+    return !this.#opts.modalities.includes("audio");
+  }
+
+  /**
+   * The caller interrupted the agent mid-turn (Ultravox stops generating and
+   * the final transcript that follows holds the truncated turn). In text-output
+   * mode the audio the caller hears is the session's TTS, which only the SDK
+   * can stop: tell it the user started speaking so it interrupts the current
+   * speech. Voice mode is left as it was, where Ultravox clears its own audio.
+   */
+  #handlePlaybackClearBuffer(): void {
+    if (!this.#textOnly) return;
+    this.#logger.debug("playback_clear_buffer in text-output mode; interrupting the TTS");
+    this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
   }
 
   #handleStatus(event: api_proto.UltravoxStatusMessage): void {
@@ -1675,6 +1735,15 @@ export class RealtimeSession extends llm.RealtimeSession {
           itemId: "ultravox-user-input",
         } as InputSpeechStarted);
         this.userSpeechStartedEmitted = true;
+      }
+
+      // Text-output mode: once the agent's text turn is complete Ultravox gives
+      // no earlier sign of the caller speaking than this transcript (measured
+      // 2026-09-10: no playback_clear_buffer, no interim frames), while the TTS
+      // may still be reading the turn out. Interrupt it now; Ultravox's reply
+      // to what the caller said follows as its own generation.
+      if (this.#textOnly && event.final && transcript.trim().length > 0) {
+        this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
       }
 
       // Only emit transcription events when there's actual text content
@@ -1992,6 +2061,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    if (event.medium === "text") {
+      this.#handleAgentTextTranscript(event);
+      return;
+    }
     // We don't bother passing up non-final transcripts to the agent generation stream
     //  as it buffers anyway. It isn't 100% clear that Ultravox will always send a
     //  final transcript with a "text" property, so we buffer deltas just in case,
@@ -2032,6 +2105,28 @@ export class RealtimeSession extends llm.RealtimeSession {
     
     // Reset buffer
     this.#agentTranscriptBuffer = "";
+  }
+
+  /**
+   * Text-output mode: the agent's text IS the response, so stream it into the
+   * generation as it arrives (the TTS starts on the first sentence rather than
+   * after the whole turn), exactly once per character (see `agentTextChunk`).
+   * Ultravox reports `thinking`, never `speaking`, while it generates text, so
+   * the generation is opened here on the first chunk when the state message has
+   * not opened one; `listening` closes it as usual.
+   */
+  #handleAgentTextTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    const { chunk, streamed } = agentTextChunk(this.#agentTextStreamed, event);
+    this.#agentTextStreamed = event.final ? "" : streamed;
+    if (!chunk) return;
+    if (!this.currentGeneration || this.currentGeneration._done) {
+      this.#startNewGeneration();
+    }
+    const generation = this.currentGeneration!;
+    if (!generation._firstTokenTimestamp) {
+      generation._firstTokenTimestamp = Date.now();
+    }
+    generation.textChannel.write(chunk);
   }
 
   #executeFunctionFromEvent(

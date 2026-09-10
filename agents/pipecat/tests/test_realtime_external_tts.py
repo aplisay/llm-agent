@@ -40,11 +40,13 @@ from pipecat.services.tts_service import TTSService
 from pipecat_aplisay import voice_session
 from pipecat_aplisay.realtime_tts import (
     external_tts_vendor,
+    local_vad_required,
     text_output_enabled,
     tts_vendor,
 )
 from pipecat_aplisay.transcript_observer import TranscriptForwardingObserver
 from pipecat_aplisay.voice_session import (
+    _openai_realtime_session_properties,
     _ultravox_one_shot_params,
     _user_aggregator_params_for,
 )
@@ -91,10 +93,21 @@ def test_text_output_only_where_this_worker_supports_it():
     ext = _agent(tts={"vendor": "deepgram", "voice": "aura-asteria-en"})
     assert text_output_enabled(ext, "ultravox/ultravox-v0.7") is True
     assert text_output_enabled(ext, "ultravox/ultravox-v0.6-gemma3-27b") is True
-    # Phase 1 is Ultravox only: the same request on the other providers stays native.
-    assert text_output_enabled(ext, "openai/gpt-realtime") is False
+    assert text_output_enabled(ext, "openai/gpt-realtime") is True
+    # No Gemini Live model the API still serves accepts a TEXT modality, so the
+    # same request on a Gemini row stays native (and the server rejects it).
     assert text_output_enabled(ext, "google/gemini-2.0-flash-exp") is False
     assert text_output_enabled(_agent(tts={"vendor": "ultravox"}), "ultravox/ultravox-v0.7") is False
+    # A pipeline row's TTS is always discrete; the rule never applies there.
+    assert text_output_enabled(ext, "openai/gpt-4o-mini") is False
+
+
+def test_local_vad_only_where_the_service_emits_no_turn_frames():
+    ext = _agent(tts={"vendor": "deepgram", "voice": "aura-asteria-en"})
+    assert local_vad_required(ext, "ultravox/ultravox-v0.7") is True
+    # OpenAI Realtime's server VAD broadcasts the interruption itself.
+    assert local_vad_required(ext, "openai/gpt-realtime") is False
+    assert local_vad_required(_agent(tts={"voice": "Mark"}), "ultravox/ultravox-v0.7") is False
 
 
 # --- Ultravox /calls params -----------------------------------------------------
@@ -123,6 +136,24 @@ def test_native_params_keep_the_voice_and_the_default_medium(monkeypatch):
     assert params.output_medium is None
     assert params.voice == "Mark"
     assert params.extra["firstSpeakerSettings"] == {"agent": {}}
+
+
+# --- OpenAI Realtime session properties ---------------------------------------
+
+
+def test_openai_text_output_session_has_text_modality_and_no_output_voice():
+    props = _openai_realtime_session_properties(_agent(tts={"vendor": "elevenlabs", "voice": "Rachel"}), text_output=True)
+    assert props.output_modalities == ["text"]
+    assert props.audio.output is None
+    # The caller's transcription stays on: it is how user rows reach the transaction log.
+    assert props.audio.input.transcription is not None
+
+
+def test_openai_native_session_keeps_the_voice_and_audio_output():
+    props = _openai_realtime_session_properties(_agent(tts={"voice": "coral"}), text_output=False)
+    assert props.output_modalities is None
+    assert props.audio.output.voice == "coral"
+    assert _openai_realtime_session_properties(_agent(), text_output=False).audio.output.voice == "alloy"
 
 
 # --- user aggregator params -----------------------------------------------------

@@ -188,9 +188,10 @@ Pipecat), and **ci** (build and release pipeline).
   `minimumInterruptionDuration: 0.48s` when no explicit
   `vendorSpecific.ultravox.vadSettings` block is supplied. Pipecat now honours
   this vendor-specific option.
-- **[core + pipecat] External TTS on Ultravox realtime models**: on rows
-  flagged `hasExternalTts` in `GET /models`, `options.tts.vendor` set to a
-  pipeline TTS vendor (`elevenlabs`, `deepgram`, `cartesia`) runs the model in
+- **[core + livekit + pipecat] External TTS on realtime models**: on rows
+  flagged `hasExternalTts` in `GET /models` (Ultravox and OpenAI Realtime on
+  both voice workers), `options.tts.vendor` set to a pipeline TTS vendor
+  (`elevenlabs`, `deepgram`, `cartesia`, `google` on LiveKit) runs the model in
   text-output mode and that TTS speaks its text; `voice` and `language` then
   apply to the TTS. The voices endpoints list both catalogues for such rows.
   See `docs/realtime-external-tts.md`.

@@ -34,7 +34,11 @@ function makeRes(user) {
 }
 
 const FLAGGED = 'pipecat:ultravox/ultravox-v0.7';
-const UNFLAGGED_REALTIME = 'pipecat:openai/gpt-realtime';
+const FLAGGED_LIVEKIT = 'livekit:ultravox/ultravox-v0.7';
+const FLAGGED_OPENAI = 'livekit:openai/gpt-realtime';
+// No Gemini Live model the API still serves accepts a TEXT modality, so its rows
+// keep their own voice only.
+const UNFLAGGED_REALTIME = 'pipecat:google/gemini-2.0-flash-exp';
 
 describe('options.tts.vendor on realtime models (external TTS)', () => {
   let createAgent, getAgent;
@@ -109,8 +113,17 @@ describe('options.tts.vendor on realtime models (external TTS)', () => {
     expect([res.statusCode, JSON.stringify(res.body)]).toEqual([
       400,
       // The body is JSON-encoded, so the quotes around the vendor are escaped.
-      expect.stringMatching(/speaks with its own voice[\s\S]*set it to \\"openai\\"/),
+      expect.stringMatching(/speaks with its own voice[\s\S]*set it to \\"google\\"/),
     ]);
+  }, 60000);
+
+  test('the LiveKit Ultravox and OpenAI rows accept an external vendor too', async () => {
+    for (const modelName of [FLAGGED_LIVEKIT, FLAGGED_OPENAI]) {
+      const res = await create({
+        modelName, prompt: 'front desk', options: { tts: { vendor: 'deepgram', voice: 'aura-athena-en' } },
+      });
+      expect([modelName, res.statusCode, JSON.stringify(res.body)]).toEqual([modelName, 200, expect.stringMatching(/"id"/)]);
+    }
   }, 60000);
 
   test('a vendor the pipecat worker cannot build is rejected even on a flagged row', async () => {

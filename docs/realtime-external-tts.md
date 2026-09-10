@@ -26,10 +26,15 @@ audit transcripts all work as before.
 ## Which models
 
 `GET /models` marks the rows that support it with `hasExternalTts: true`.
-Today that is the Ultravox rows on the Pipecat handler
-(`pipecat:ultravox/...`). A realtime row without the flag accepts only its
-own provider as `tts.vendor`; the API rejects anything else when the agent is
-saved, with the fix in the message.
+Today that is the Ultravox rows and the OpenAI Realtime row on both voice
+workers (`pipecat:ultravox/...`, `pipecat:openai/gpt-realtime`,
+`livekit:ultravox/...`, `livekit:openai/gpt-realtime`). A realtime row
+without the flag accepts only its own provider as `tts.vendor`; the API
+rejects anything else when the agent is saved, with the fix in the message.
+
+The Gemini Live rows do not carry the flag. No Live model Google still serves
+accepts a text response modality: the half-cascade models have been
+withdrawn and the native-audio model rejects it.
 
 `GET /models/{modelName}/voices/{locale}` lists, for a flagged row, the
 model's own voices and the discrete TTS catalogue side by side, keyed by
@@ -61,11 +66,16 @@ produced by the model. They arrive as text and the TTS speaks them.
 - **Latency.** The TTS adds its own time to first byte on every turn, on top
   of the model's. Expect the agent to start speaking later than it does with
   the model's own voice.
-- **Barge-in.** The worker runs its own voice activity detection on the
-  caller's audio while the TTS is speaking. Deliberate speech stops the TTS at
-  once; the model then hears the caller and replies as usual. Ultravox's own
-  interruption threshold and the worker's are set close together, so a cough
-  or a short backchannel does not cut the agent off.
+- **Barge-in.** OpenAI Realtime reports the caller's speech itself, and that
+  stops the TTS at once on both workers. Ultravox gives no such signal once
+  its text turn is complete, so the two workers differ. The Pipecat worker
+  runs its own voice activity detection on the caller's audio: deliberate
+  speech stops the TTS at once, and its threshold sits close to Ultravox's
+  own, so a cough or a short backchannel does not cut the agent off. The
+  LiveKit worker has no local detector and stops the TTS when Ultravox
+  delivers the caller's transcript, which arrives about a second after the
+  caller stops speaking; a caller who interrupts while the model is still
+  producing text is stopped at once on both workers.
 - **What the model believes was said.** The model produces its whole reply as
   text in a second or two, long before the TTS has finished reading it. If the
   caller interrupts, the model's own history still holds the full reply, so it
@@ -79,5 +89,4 @@ produced by the model. They arrive as text and the TTS speaks them.
 
 - The native `ultravox:` handler (browser or Jambonz straight to Ultravox)
   has no worker in the media path, so it cannot host a TTS.
-- OpenAI Realtime and Gemini Live rows, and the LiveKit handler, do not carry
-  the flag yet.
+- The Gemini Live rows, for the reason above.

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .pipeline_model_ids import is_pipeline_model_id
+
 #: The vendor name that means "the model's own voice" for each realtime
 #: provider segment of a model id (``ultravox/ultravox-v0.7`` -> ``ultravox``).
 #: ``google`` is both a realtime provider (Gemini Live) and a TTS vendor, so on
@@ -26,11 +28,17 @@ REALTIME_NATIVE_TTS_VENDORS: dict[str, str] = {
     "google": "google",
 }
 
-#: Realtime providers this worker can run in text-output mode. Phase 1 is
-#: Ultravox only; OpenAI Realtime and Gemini Live follow (see the plan in the
-#: strategy repo). Must match the rows flagged ``externalTts`` in
-#: lib/models/pipecat.js.
-TEXT_OUTPUT_PROVIDERS: frozenset[str] = frozenset({"ultravox"})
+#: Realtime providers this worker can run in text-output mode. Gemini Live is
+#: absent on purpose: no Live model the API still serves accepts a TEXT
+#: response modality (checked 2026-09-10; the half-cascade models are gone and
+#: the native-audio model rejects it). Must match the rows flagged
+#: ``externalTts`` in lib/models/pipecat.js.
+TEXT_OUTPUT_PROVIDERS: frozenset[str] = frozenset({"ultravox", "openai"})
+
+#: Text-output providers whose Pipecat service emits no user-turn frames, so the
+#: worker must run its own VAD for the caller to interrupt the external TTS.
+#: OpenAI Realtime's server VAD already broadcasts the interruption.
+LOCAL_VAD_PROVIDERS: frozenset[str] = frozenset({"ultravox"})
 
 
 def realtime_provider(model_id: str) -> str:
@@ -73,6 +81,15 @@ def text_output_enabled(agent: dict, model_id: str) -> bool:
     """True when this session must run the realtime model in text-output mode
     with an external TTS: the agent asks for one AND the provider supports it
     on this worker."""
+    # A pipeline row's TTS is always a discrete stage; the rule is for realtime rows.
+    if is_pipeline_model_id(model_id):
+        return False
     if realtime_provider(model_id) not in TEXT_OUTPUT_PROVIDERS:
         return False
     return external_tts_vendor(agent, model_id) is not None
+
+
+def local_vad_required(agent: dict, model_id: str) -> bool:
+    """True when a text-output session needs the worker's own VAD to raise
+    barge-in interruptions (see :data:`LOCAL_VAD_PROVIDERS`)."""
+    return text_output_enabled(agent, model_id) and realtime_provider(model_id) in LOCAL_VAD_PROVIDERS

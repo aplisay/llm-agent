@@ -42,7 +42,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
-from .realtime_tts import external_tts_vendor, text_output_enabled
+from .realtime_tts import external_tts_vendor, local_vad_required, text_output_enabled
 from .tool_log import log_tool_call, log_tool_result
 
 
@@ -1126,6 +1126,38 @@ def _output_stt_tap_for(
     )
 
 
+def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> Any:
+    """The OpenAI Realtime ``SessionProperties`` for one session.
+
+    Native: the caller's transcription on, and ``options.tts.voice`` (default
+    ``alloy``) as the output voice. Text-output mode: ``output_modalities``
+    ``["text"]`` and no output audio block at all, so the service streams
+    ``response.text.delta`` as LLMTextFrames for the external TTS and the voice
+    (which now names the TTS voice) is never sent to OpenAI. The server VAD is
+    unchanged either way: its ``speech_started`` event is what the service turns
+    into the interruption that clears the TTS.
+    """
+    from pipecat.services.openai.realtime.events import (
+        AudioConfiguration,
+        AudioInput,
+        AudioOutput,
+        InputAudioTranscription,
+        SessionProperties,
+    )
+
+    options = agent.get("options") or {}
+    audio_input = AudioInput(transcription=InputAudioTranscription())
+    if text_output:
+        return SessionProperties(
+            output_modalities=["text"],
+            audio=AudioConfiguration(input=audio_input),
+        )
+    voice = (options.get("tts") or {}).get("voice") or "alloy"
+    return SessionProperties(
+        audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+    )
+
+
 def _ultravox_one_shot_params(
     agent: dict, system_prompt: str, ultravox_model: str, *, text_output: bool
 ) -> Any:
@@ -1310,26 +1342,15 @@ async def _build_realtime(
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
         from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
-        from pipecat.services.openai.realtime.events import (
-            AudioConfiguration,
-            AudioInput,
-            AudioOutput,
-            InputAudioTranscription,
-            SessionProperties,
-        )
 
         _, openai_model = model_id.split("/", 1)
-        voice = (options.get("tts") or {}).get("voice") or "alloy"
         llm = OpenAIRealtimeLLMService(
             api_key=_require_env("OPENAI_API_KEY"),
             settings=OpenAIRealtimeLLMService.Settings(
                 model=openai_model,
                 system_instruction=system_prompt,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(transcription=InputAudioTranscription()),
-                        output=AudioOutput(voice=voice),
-                    ),
+                session_properties=_openai_realtime_session_properties(
+                    agent, text_output=text_output
                 ),
             ),
         )
@@ -1436,9 +1457,13 @@ async def _build_realtime(
         [{"role": "developer", "content": system_prompt}],
         tools=schemas,
     )
-    # A text-output session also gets a local VAD so the caller can interrupt
-    # the external TTS (see _local_vad_analyzer).
-    user_params = _user_aggregator_params_for(agent, local_vad=text_output)
+    # A text-output session on a provider that emits no user-turn frames also
+    # gets a local VAD so the caller can interrupt the external TTS (see
+    # _local_vad_analyzer). OpenAI Realtime's server VAD raises the
+    # interruption itself.
+    user_params = _user_aggregator_params_for(
+        agent, local_vad=local_vad_required(agent, model_id)
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context, user_params=user_params
     )

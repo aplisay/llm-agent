@@ -20,6 +20,7 @@ import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
+import { textOutputEnabled } from "./realtime-tts.js";
 import {
   createVoiceModelAndSession,
   inactivityAwayTimeoutSecs,
@@ -244,6 +245,12 @@ export async function runAgentWorker({
   let timerId: NodeJS.Timeout | null = null;
   let operation: string | null = null;
   let resolvedVoiceMode: "realtime" | "pipeline" | null = null;
+  /**
+   * Text-output mode (realtime-tts.ts): a realtime model whose text an external
+   * TTS speaks. Its TTS meters are real, separately billed usage, unlike the
+   * bundled voice of a native realtime session.
+   */
+  let resolvedTextOutput = false;
 
   // Marker log to verify worker logger capture is included in InvocationLog
   logger.info(
@@ -556,7 +563,12 @@ export async function runAgentWorker({
     // fires for realtime agents too, so without this gate it tags the user's
     // transcript characters with the *pipeline-default* STT vendor (deepgram) —
     // a phantom row that double-charges. LLM token rows still flow (gpt-realtime).
-    if (resolvedVoiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
+    // The one exception is the TTS of a text-output session: that is a real
+    // external engine, attributed to the vendor in options.tts by usageVendors.
+    if (
+      resolvedVoiceMode === "realtime" &&
+      (technology === "stt" || (technology === "tts" && !resolvedTextOutput))
+    ) return;
     // Prefer the configured vendor/model; fall back to the SDK label
     // ("vendor.Component" / "vendor/model") then the bare modelName.
     const resolved = usageVendors[technology as keyof UsageVendors];
@@ -1320,6 +1332,7 @@ export async function runAgentWorker({
       activeAgentDef = newAgentDef;
       activeModelName = targetModelName;
       resolvedVoiceMode = voiceMode;
+      resolvedTextOutput = voiceMode === "realtime" && textOutputEnabled(newAgentDef, targetModelName);
       setActiveAgentCall?.(newCall);
 
       if (takeover) {
@@ -1618,6 +1631,7 @@ export async function runAgentWorker({
 
         const voiceMode = resolveVoiceMode(modelName, agent.options);
         resolvedVoiceMode = voiceMode;
+        resolvedTextOutput = voiceMode === "realtime" && textOutputEnabled(agent, modelName);
         const vad =
           voiceMode === "pipeline"
             ? (ctx.proc.userData as { vad?: VAD }).vad

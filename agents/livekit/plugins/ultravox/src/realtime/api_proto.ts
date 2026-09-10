@@ -115,6 +115,12 @@ export interface UltravoxModelData {
     };
   };
   firstSpeaker?: string;
+  /**
+   * Output medium at call start. `MESSAGE_MEDIUM_TEXT` makes Ultravox send no
+   * audio and stream the agent's turns as `medium: 'text'` transcripts, for a
+   * session whose TTS is external (docs/realtime-external-tts.md).
+   */
+  initialOutputMedium?: 'MESSAGE_MEDIUM_VOICE' | 'MESSAGE_MEDIUM_TEXT';
   vadSettings?: UltravoxVadSettings;
   firstSpeakerSettings?: UltravoxFirstSpeakerSettings;
   inactivityMessages?: UltravoxInactivityMessage[];
@@ -132,7 +138,13 @@ export type UltravoxMessageType =
   | 'audio'
   | 'client_tool_invocation'
   | 'client_tool_result'
-  | 'call_started';
+  | 'call_started'
+  | 'playback_clear_buffer';
+
+/** The caller interrupted the agent: drop any buffered agent output. */
+export interface UltravoxPlaybackClearBufferMessage {
+  type: 'playback_clear_buffer';
+}
 
 export interface UltravoxStatusMessage {
   type: 'state';
@@ -191,7 +203,8 @@ export type UltravoxMessage =
   | UltravoxAudioMessage
   | UltravoxFunctionCallMessage
   | UltravoxFunctionResultMessage
-  | UltravoxCallStartedMessage;
+  | UltravoxCallStartedMessage
+  | UltravoxPlaybackClearBufferMessage;
 
 // Ultravox API response types
 export interface UltravoxCallResponse {

@@ -21,7 +21,11 @@ test("basic shape: model, voice, instructions, callId and defaults", () => {
   assert.equal(opts.callId, "call-1");
   assert.equal(opts.maxDuration, "305s");
   assert.equal(opts.timeExceededMessage, undefined);
-  assert.equal(opts.vendorSpecific, undefined);
+  // The platform's default interruption threshold is the only vendorSpecific
+  // content when the agent supplies none (see ultravox-vad-default.test.ts).
+  assert.deepEqual(opts.vendorSpecific, {
+    ultravox: { vadSettings: { minimumInterruptionDuration: "0.48s" } },
+  });
 });
 
 test("custom maxDuration and timeExceededMessage pass through to the plugin", () => {
@@ -181,4 +185,48 @@ test("non-specific language sentinels do not produce a languageHint", () => {
 test("non-ultravox realtime gets no languageHint", () => {
   const opts = buildRealtimeLlmOptions(OPENAI, makeAgent({ tts: { language: "en-GB" } }), "call-1");
   assert.equal(opts.languageHint, undefined);
+});
+
+
+// --- text-output mode (external TTS) -------------------------------------------
+// docs/realtime-external-tts.md: a TTS vendor other than the model's own makes the
+// model emit text only; options.tts.voice then names the TTS voice, never the
+// model's, so it must not reach the plugin.
+
+test("ultravox: an external TTS vendor switches the model to text-only output with no voice", () => {
+  const opts = buildRealtimeLlmOptions(
+    ULTRAVOX,
+    makeAgent({ tts: { vendor: "deepgram", voice: "aura-athena-en", language: "en-GB" } }),
+    "call-1",
+  ) as any;
+  assert.deepEqual(opts.modalities, ["text"]);
+  assert.equal(opts.voice, undefined);
+  // The language still guides Ultravox's own recognition.
+  assert.equal(opts.languageHint, "en-GB");
+});
+
+test("ultravox: the model's own vendor keeps its voice and its audio", () => {
+  const opts = buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ tts: { vendor: "ultravox", voice: "Mark" } }), "call-1") as any;
+  assert.equal(opts.modalities, undefined);
+  assert.equal(opts.voice, "Mark");
+});
+
+test("openai realtime: an external TTS vendor switches the model to text-only output", () => {
+  const opts = buildRealtimeLlmOptions(
+    "livekit:openai/gpt-realtime",
+    makeAgent({ tts: { vendor: "elevenlabs", voice: "Rachel" } }),
+    "call-1",
+  ) as any;
+  assert.deepEqual(opts.modalities, ["text"]);
+  assert.equal(opts.voice, undefined);
+});
+
+test("gemini: an external vendor is not honoured (no text-capable Live model), voice passes through", () => {
+  const opts = buildRealtimeLlmOptions(
+    "livekit:google/gemini-2.0-flash-exp",
+    makeAgent({ tts: { vendor: "elevenlabs", voice: "Kore" } }),
+    "call-1",
+  ) as any;
+  assert.equal(opts.modalities, undefined);
+  assert.equal(opts.voice, "Kore");
 });
