@@ -54,9 +54,9 @@ tags:
   - name: Agent Sets
     description: |-
       Agent Sets group a number of agents which are created, updated and deleted together from a single JSON document.
-      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent` and
-      `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
-      on creation or update.
+      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent`,
+      `subagent` and `delegate` builtin functions using `label:<label>` references, which the platform fixes up to
+      real agent IDs on creation or update.
 
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
@@ -141,6 +141,15 @@ components:
             `vendor`. See docs/realtime-external-tts.md.
           type: boolean
           example: false
+        hasDelegation:
+          description: |-
+            This realtime model is a two-layer voice model (OpenAI GPT-Live): the voice model holds the
+            conversation and delegates reasoning and tool use to a backend `text` agent. Name that agent
+            with one builtin `delegate` function; without one the platform runs the agent's own prompt,
+            functions and MCP servers as the backend on `openai/gpt-5.6-luna`. Only rows with this flag
+            accept a `delegate` function. See docs/gpt-live.md.
+          type: boolean
+          example: false
       required:
         - name
         - description
@@ -208,10 +217,12 @@ components:
     AgentSetInput:
       type: object
       description: |-
-        Document describing a complete agent set. Within member `functions`, `transfer_agent` and `subagent`
-        builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference other
-        members; these are resolved to real agent IDs when the set is created or updated (the original label is
+        Document describing a complete agent set. Within member `functions`, `transfer_agent`, `subagent` and
+        `delegate` builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference
+        other members; these are resolved to real agent IDs when the set is created or updated (the original label is
         retained in a `fromLabel` annotation so the stored document still round-trips through GET and PUT).
+        A GPT-Live member whose `delegate` targets another member is rejected when the two declare a function of
+        the same name (the backend tool set is the union of both, see docs/gpt-live.md).
       required:
         - agents
       properties:
@@ -451,7 +462,9 @@ components:
       type: object
       properties:
         temperature:
-          description: Agent LLM temperature
+          description: |-
+            Agent LLM temperature. Ignored on GPT-Live rows (`hasDelegation`): the Live API does not
+            accept a temperature for the voice model or for a delegated backend model.
           type: number
           example: 0.2
         callHook:
@@ -786,6 +799,10 @@ components:
             indefinitely. Set `hangup` to end the call once the prompt has gone unanswered three
             times.
 
+            On GPT-Live (`pipecat:openai/gpt-live-1`) the prompt is delivered to the voice model as
+            spoken context, so it is paraphrased rather than read verbatim; timing, repeat count and
+            `hangup` are unchanged.
+
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
             which is handled entirely server-side by Ultravox and is not portable across workers; when
             both are set on an Ultravox-backed path, the vendor-specific block wins.
@@ -1073,6 +1090,15 @@ components:
               }
               ```
             
+            `openai.live`: on a GPT-Live row (`pipecat:openai/gpt-live-1`) a free-form object merged into the
+            Live API `session.start` configuration after the platform's own mapping, so an explicit value here
+            wins. Use it for fields the portable options do not cover, for example `store`, a custom voice id
+            under `audio.output.voice`, `delegation.responses.model`, `service_tier`, `parallel_tool_calls`,
+            `max_output_tokens` or `text.verbosity`:
+              ```json
+              { "openai": { "live": { "delegation": { "responses": { "service_tier": "priority" } } } } }
+              ```
+
             The structure and allowed values are vendor-specific and should be documented by each vendor.
           type: object
           additionalProperties: true
@@ -1109,6 +1135,12 @@ components:
 
         Note for LiveKit OpenAI realtime (`livekit:openai/...`):
           - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
+
+        Note for GPT-Live (`pipecat:openai/gpt-live-1`):
+          - The greeting is an opening instruction appended to the live session after it starts; the model
+            paraphrases rather than reads, so `text` is best-effort wording. Caller audio is still dropped
+            until the model's first turn completes. Without a greeting the platform asks the model to greet
+            the caller and ask how it can help, so the agent still speaks first.
       oneOf:
         - type: object
           additionalProperties: false
@@ -1260,9 +1292,27 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
+            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "delegate", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
+                  * `delegate` names the backend of a two-layer voice model (models flagged `hasDelegation` in
+                    GET /models, today `pipecat:openai/gpt-live-1`). The voice model holds the conversation; the
+                    named `text` agent is the backend that reasons and calls tools while the voice model keeps
+                    talking. The text agent's prompt becomes the backend instructions, its `modelName` the backend
+                    model, its `functions`, `mcpServers` and `keys` the backend tools, `options.effort` the
+                    reasoning effort and `options.maxTokens` the output cap. The voice agent's own prompt is the
+                    voice persona. Declared exactly like `subagent`: one parameter, `agent`, `static` (a UUID, or a
+                    `label:<label>` reference inside an agent-set document) or `metadata` sourced, never
+                    `generated`; the target must be a `text` agent in the same organisation. No other parameters:
+                    the voice model never calls it. At most one per agent, and only on models flagged
+                    `hasDelegation`. Backend tools are the union of the delegate's tools and the voice agent's
+                    functions, MCP servers and builtins (`hangup`, `transfer`, `transfer_status`, `transfer_agent`,
+                    `subagent`, `send_dtmf`, `metadata`); on a name clash the delegate's wins. An OpenAI text
+                    model (`text:openai/...`) runs as OpenAI-hosted delegation; any other text model runs as client
+                    delegation, where each delegation is a synthetic subagent call and the answer is spoken as
+                    commentary, and the voice agent's call-control builtins are unavailable to it. Without a
+                    `delegate` function the platform synthesises the backend from the voice agent itself on
+                    `openai/gpt-5.6-luna`. See docs/gpt-live.md.
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
                     - `agent` (string, required): the target agent ID. Must be `static` or `metadata` sourced (never `generated`).
                       Within an agent-set document a `static` value may be a `label:<label>` reference to another member of the set.
@@ -1285,7 +1335,9 @@ components:
                       `label:<label>` references are supported within agent-set documents.
                     - any further `generated` parameters are forwarded to the text agent as its task input.
                     The platform runs the text agent headlessly until it calls its `result` platform function; those result
-                    arguments are returned to the calling LLM as this function's result.
+                    arguments are returned to the calling LLM as this function's result. Distinct from `delegate`: a
+                    `subagent` is a tool the (voice or backend) model chooses to call with generated inputs; a `delegate`
+                    is the backend the voice model hands the whole conversation to.
                   * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
                     (generated) arguments the agent passes become the result returned to the invoker. Define its
                     `input_schema` to describe the output you require from the agent.

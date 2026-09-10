@@ -200,6 +200,49 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] OpenAI hosted-MCP replay** now retains completed MCP results by
   rewriting them as function-call/output pairs on stateless replay.
 
+## GPT-Live - core + pipecat
+
+- **[core + pipecat] Availability**: GPT-Live runs on the Pipecat worker only
+  (`pipecat:openai/gpt-live-1`). The LiveKit row follows when the upstream
+  LiveKit plugin ships.
+- **[core + pipecat] `pipecat:openai/gpt-live-1`** adds OpenAI's full-duplex
+  voice model as a realtime row. The model listens and speaks at the same time
+  and hands reasoning and tool use to a backend text model while it keeps
+  talking. See `docs/gpt-live.md`.
+- **[core] `delegate` builtin** names the backend: a `text` agent in the same
+  organisation, declared like `subagent` (`agent` parameter, `static` UUID or
+  `label:` inside a set, or `metadata`). One per agent, only on rows flagged
+  `hasDelegation` in `GET /models`. The text agent's prompt, model, functions,
+  MCP servers and keys become the backend; the voice agent's prompt is the
+  persona; backend tools are the union of both.
+- **[core + pipecat] Synthetic backend**: a GPT-Live agent with no `delegate`
+  runs its own prompt, functions and MCP servers as the backend on
+  `openai/gpt-5.6-luna`, so existing agents run on the model unchanged.
+- **[pipecat] Delegation modes**: an OpenAI text model runs as OpenAI-hosted
+  delegation with the worker executing the function calls; any other text model
+  runs as client delegation through the internal subagent endpoint, with the
+  answer spoken as commentary and the voice agent's call-control builtins
+  unavailable to it.
+- **[core] `hasDelegation`** on `GET /models` marks rows that accept a
+  `delegate` function.
+- **[core] GPT-Live voices**: the voices endpoints list the GPT-Live voice set
+  under `OpenAI` for the row (default `marin`); `options.tts.vendor` must be
+  unset or `openai`.
+- **[core] Agent sets** resolve `label:` references in `delegate` functions and
+  reject a voice member and its in-set delegate declaring a function of the same
+  name.
+- **[core] Billing**: session minutes are priced on the row's `voice` line;
+  backend tokens on the delegate model's `llm` lines.
+- **[pipecat] Greeting, inactivity prompt and DTMF** on GPT-Live use the Live
+  API's context and typed-input events; the greeting and inactivity wording are
+  best-effort. `temperature` is ignored. `vendorSpecific.openai.live` merges into
+  the session configuration.
+- **[pipecat] Agent handover** (`transfer_agent`) on GPT-Live is always a full
+  restart.
+- **[pipecat] Pipecat upgrade**: the worker moves from pipecat-ai 1.6.0 to a
+  pinned git commit of upstream main that carries the OpenAI Live service.
+- **[core] Documentation**: new [gpt-live.md](../gpt-live.md).
+
 ## Billing and rates - core
 
 - **[core] Rate-card period-overlap constraint removed** (schema v59). Rate-card
@@ -301,6 +344,10 @@ Pipecat), and **ci** (build and release pipeline).
   `LIFECYCLE_DRAIN_SECONDS`, `HEALTHZ_MAX_TASKS`, and
   `HEALTHZ_MAX_GATEWAY_ENTRIES`.
 - **[sipbridge] New optional environment**: `SIPBRIDGE_RTP_SILENCE_FILL`.
+- **[pipecat] `OPENAI_API_KEY`** on the Pipecat worker must belong to an OpenAI
+  project with GPT-Live access for `pipecat:openai/gpt-live-1` calls to start.
+- **[pipecat] Worker image** installs pipecat-ai from a git commit pin; the
+  Dockerfile already carries git. Rebuild the image with the updated `uv.lock`.
 - **[core] `AUTH_PROXY_SECRET`** is required for
   `POST /api/auth/sign-up/email`; deploy the paired front-end header change
   before enabling this server change.
