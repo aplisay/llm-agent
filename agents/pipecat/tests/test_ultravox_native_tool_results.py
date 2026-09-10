@@ -89,6 +89,8 @@ def _new_ultravox_service():
     llm._started_placeholder_sent = set()
     # pipecat-ai >= 1.6.0: register_function() clears the name from this set.
     llm._explicitly_unregistered_function_names = set()
+    # pipecat-ai >= 1.8: register_function() checks the cancel-tool names.
+    llm._cancel_tool_names = set()
     return llm
 
 

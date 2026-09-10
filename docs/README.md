@@ -16,6 +16,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 |---|---|
 | [agent-sets-and-subagents.md](agent-sets-and-subagents.md) | Teams of agents: sets, label references, in-call subagents, handover |
 | [multi-agent-api.md](multi-agent-api.md) | The multi-agent REST surface and agent-to-agent transfer |
+| [gpt-live.md](gpt-live.md) | OpenAI GPT-Live: a voice model with a backend text agent (`delegate`), and how it relates to text subagents |
 | [mcp-servers.md](mcp-servers.md) | Attaching remote MCP tool servers to agents |
 | [tool-call-chaining-metadata-priming.md](tool-call-chaining-metadata-priming.md) | Static/metadata parameter sourcing and chained tool calls |
 | [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .gpt_live import is_gpt_live_model_id
 from .pipeline_model_ids import is_pipeline_model_id
 
 #: The vendor name that means "the model's own voice" for each realtime
@@ -31,9 +32,19 @@ REALTIME_NATIVE_TTS_VENDORS: dict[str, str] = {
 #: Realtime providers this worker can run in text-output mode. Gemini Live is
 #: absent on purpose: no Live model the API still serves accepts a TEXT
 #: response modality (checked 2026-09-10; the half-cascade models are gone and
-#: the native-audio model rejects it). Must match the rows flagged
+#: the native-audio model rejects it). The check is per model id: GPT-Live
+#: shares the ``openai`` segment but has no text-only modality
+#: (:func:`text_output_supported`). Must match the rows flagged
 #: ``externalTts`` in lib/models/pipecat.js.
 TEXT_OUTPUT_PROVIDERS: frozenset[str] = frozenset({"ultravox", "openai"})
+
+
+def text_output_supported(model_id: str) -> bool:
+    """Whether this worker can run ``model_id`` in text-output mode: a
+    provider in :data:`TEXT_OUTPUT_PROVIDERS`, except the GPT-Live rows."""
+    if is_gpt_live_model_id(model_id):
+        return False
+    return realtime_provider(model_id) in TEXT_OUTPUT_PROVIDERS
 
 #: Text-output providers whose Pipecat service emits no user-turn frames, so the
 #: worker must run its own VAD for the caller to interrupt the external TTS.
@@ -84,7 +95,7 @@ def text_output_enabled(agent: dict, model_id: str) -> bool:
     # A pipeline row's TTS is always a discrete stage; the rule is for realtime rows.
     if is_pipeline_model_id(model_id):
         return False
-    if realtime_provider(model_id) not in TEXT_OUTPUT_PROVIDERS:
+    if not text_output_supported(model_id):
         return False
     return external_tts_vendor(agent, model_id) is not None
 

@@ -5,6 +5,7 @@ import {
   validateSetLabels,
   fixupLabelReferences,
   validateAgentTargets,
+  validateDelegateToolCollisions,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
 import { mergeMemberFunctions } from '../../lib/agent-set-functions.js';
@@ -144,6 +145,19 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
       await validateAgentTargets(agent.functions || [], { membersById, lookupAgent, owningLabel: label, options: agent.options });
     }
   }
+  // A GPT-Live member's `delegate` target inside the set must not declare a
+  // function the voice member also declares (docs/gpt-live.md). Untouched
+  // members of a patched set take part too: either side of the pair may be
+  // the one left alone.
+  const resulting = members.map(({ label, agent }) => ({ label, id: agent.id, functions: agent.functions }));
+  if (patch) {
+    const written = new Set(members.map(({ agent }) => agent.id));
+    for (const agent of existing) {
+      if (removedIds.has(agent.id) || written.has(agent.id)) continue;
+      resulting.push({ label: agent.label, id: agent.id, functions: agent.functions });
+    }
+  }
+  validateDelegateToolCollisions(resulting);
   for (const { agent } of members) {
     await agent.save({ transaction });
   }

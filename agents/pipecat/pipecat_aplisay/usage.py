@@ -43,16 +43,26 @@ _SEEN_FRAME_WINDOW = 4096
 from .voice_mode import model_id_from_name
 
 
-def usage_vendors(agent: dict, model_name: str) -> dict[str, dict[str, str | None]]:
+def usage_vendors(
+    agent: dict, model_name: str, backend: dict[str, str | None] | None = None
+) -> dict[str, dict[str, str | None]]:
     """Canonical ``{vendor, model}`` per priced technology, mirroring the service
     selection in ``voice_session.build_voice_session``'s pipeline build so metered
     rows carry the real vendor rather than a bare metric label. Keep the vendor
     defaults aligned with that build (stt=deepgram, tts=cartesia). Realtime mode
     has no separate STT/TTS stage, so only ``llm`` is meaningful there.
+
+    ``backend`` (GPT-Live) names the delegate model the LLM tokens belong to:
+    the live service labels its token metrics ``gpt-live-1`` although the
+    backend text model billed them, so the configured backend is authoritative
+    over the metric label (``_resolve``) and the rows land on the delegate
+    model's own rate line (docs/gpt-live.md).
     """
     options = agent.get("options") or {}
     model_id = model_id_from_name(model_name)
-    if "/" in model_id:
+    if backend and backend.get("model"):
+        llm_vendor, llm_model = backend.get("vendor"), backend.get("model")
+    elif "/" in model_id:
         llm_vendor, llm_model = model_id.split("/", 1)
     else:
         llm_vendor, llm_model = None, model_id
@@ -61,7 +71,7 @@ def usage_vendors(agent: dict, model_name: str) -> dict[str, dict[str, str | Non
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
     return {
-        "llm": {"vendor": llm_vendor, "model": llm_model},
+        "llm": {"vendor": llm_vendor, "model": llm_model, **({"authoritative": True} if backend else {})},
         "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
         "tts": {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")},
     }
@@ -117,7 +127,9 @@ class UsageMeteringObserver(BaseObserver):
         Falls back to the old label-split only when the technology is unmapped."""
         svc = self._services.get(technology) or {}
         provider = svc.get("vendor")
-        detail = model or svc.get("model")
+        # An authoritative service (a GPT-Live backend) names the model billed
+        # regardless of what the metric says.
+        detail = svc.get("model") if svc.get("authoritative") else (model or svc.get("model"))
         if provider is None and model and "/" in model:
             provider = model.split("/", 1)[0]
         return provider, detail
@@ -234,22 +246,25 @@ class UsageMeteringObserver(BaseObserver):
         for meter in self._meters.values():
             if not meter["quantity"]:
                 continue
-            records.append(
-                {
-                    "sessionId": getattr(call, "id", None),
-                    "callId": getattr(call, "id", None),
-                    "organisationId": getattr(call, "organisationId", None),
-                    "userId": getattr(call, "userId", None),
-                    "agentId": getattr(call, "agentId", None),
-                    "technology": meter["technology"],
-                    "provider": meter["provider"],
-                    "detail": meter["detail"],
-                    "unit": meter["unit"],
-                    "quantity": meter["quantity"],
-                    "mode": "set",
-                    "finalised": finalised,
-                }
-            )
+            record = {
+                "sessionId": getattr(call, "id", None),
+                "callId": getattr(call, "id", None),
+                "organisationId": getattr(call, "organisationId", None),
+                "userId": getattr(call, "userId", None),
+                "agentId": getattr(call, "agentId", None),
+                "technology": meter["technology"],
+                "provider": meter["provider"],
+                "detail": meter["detail"],
+                "unit": meter["unit"],
+                "quantity": meter["quantity"],
+                "mode": "set",
+                "finalised": finalised,
+            }
+            # The ledger schema types provider and detail as strings; an
+            # unknown one (a side STT engine with no scoped model) is omitted
+            # rather than sent as null, which fails validation and takes every
+            # other record in the batch down with it.
+            records.append({k: v for k, v in record.items() if not (k in ("provider", "detail") and v is None)})
         if not records:
             return
         try:
