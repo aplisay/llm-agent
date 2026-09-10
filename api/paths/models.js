@@ -30,6 +30,7 @@ const modelList = async (req, res) => {
         hasWebRTC,
         hasAuxStt,
         hasOutputStt,
+        hasExternalTts,
         audioModel,
         voiceStack,
         requiresSttTts,
@@ -44,6 +45,7 @@ const modelList = async (req, res) => {
           hasWebRTC,
           hasAuxStt: hasAuxStt === true,
           hasOutputStt: hasOutputStt === true,
+          hasExternalTts: hasExternalTts === true,
           ...(voiceStack != null ? { voiceStack } : {}),
           ...(requiresSttTts != null ? { requiresSttTts } : {}),
         }

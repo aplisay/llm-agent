@@ -675,10 +675,23 @@ class CallSession:
         # Observer needs to know the voice mode so it picks the right
         # source for bot text. Pipeline emits via TTSTextFrame; realtime
         # via LLMTextFrame. Listening to both produces duplicated content
-        # because LLM and TTS carry the same words.
+        # because LLM and TTS carry the same words. A text-output realtime
+        # session (realtime_tts.py) has both, and logs the TTS side: that is
+        # what the caller heard, and a barge-in truncates it honestly.
+        from .realtime_tts import text_output_enabled
+        from .voice_mode import model_id_from_name
+
         mode = resolve_voice_mode(model_name, agent.get("options"))
+        bot_text_from = (
+            "tts"
+            if mode == "realtime"
+            and text_output_enabled(agent, model_id_from_name(model_name))
+            else None
+        )
         task.add_observer(
-            TranscriptForwardingObserver(self._send_message, mode=mode)
+            TranscriptForwardingObserver(
+                self._send_message, mode=mode, bot_text_from=bot_text_from
+            )
         )
 
         # Meter LLM token + TTS character usage into the platform usage ledger.
