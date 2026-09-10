@@ -36,6 +36,7 @@ from .gpt_live import (
     compose_backend_instructions,
     compose_voice_instructions,
     greeting_opening_instruction,
+    has_greeting,
     history_from_messages,
     is_gpt_live_model_id,
     language_line,
@@ -1828,6 +1829,7 @@ class CallSession:
             client_delegate=self._gpt_live_client_delegate(spec) if spec.mode == "client" else None,
             on_session_ended=self._on_provider_session_ended,
             on_dtmf=self._on_gpt_live_dtmf,
+            deaf_during_greeting=has_greeting(agent),
         )
         logger.bind(
             event="delegation_config",

@@ -313,11 +313,18 @@ def _local_vad_analyzer() -> Any:
 
 
 def _user_aggregator_params_for(
-    agent: dict, *, local_vad: bool = False
+    agent: dict, *, local_vad: bool = False, mute_for_greeting: bool = True
 ) -> Optional[LLMUserAggregatorParams]:
     """Build the user-aggregator params, applying ``MuteUntilFirstBotComplete``
     when the agent configures an opening greeting, and ``user_idle_timeout``
     when ``options.inactivity`` is configured.
+
+    ``mute_for_greeting=False`` (GPT-Live) leaves the greeting mute off: that
+    strategy drops the caller's audio frames before the LLM service, and the
+    Live API's session timeline only advances on input audio, so a muted
+    session never speaks its opening instruction and never unmutes. The
+    GPT-Live service keeps the caller inaudible during the greeting by sending
+    silence instead (gpt_live_service.AplisayOpenAILiveLLMService).
 
     ``local_vad`` (text-output realtime sessions) adds a Silero VAD plus
     VAD-driven turn strategies so the caller's speech interrupts the external
@@ -364,7 +371,7 @@ def _user_aggregator_params_for(
         return None
 
     params = LLMUserAggregatorParams()
-    if has_greeting:
+    if has_greeting and mute_for_greeting:
         params.user_mute_strategies = [MuteUntilFirstBotCompleteUserMuteStrategy()]
     if idle_timeout is not None:
         params.user_idle_timeout = idle_timeout
@@ -1537,7 +1544,7 @@ async def _build_realtime(
     # _local_vad_analyzer). OpenAI Realtime's server VAD raises the
     # interruption itself.
     user_params = _user_aggregator_params_for(
-        agent, local_vad=local_vad_required(agent, model_id)
+        agent, local_vad=local_vad_required(agent, model_id), mute_for_greeting=not gpt_live_model
     )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context, user_params=user_params

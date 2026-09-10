@@ -597,3 +597,63 @@ def test_client_delegate_calls_the_subagent_endpoint(monkeypatch):
     assert (agent_id, organisation_id, call_id) == (DELEGATE_ID, "org-1", "call-9")
     assert "USER: Any slots tomorrow?" in input_args["task"]
     assert input_args["task"].startswith("Voice conversation so far:")
+
+
+# --- greeting guard ---------------------------------------------------------
+
+
+def test_gpt_live_does_not_use_the_first_bot_mute_strategy():
+    from pipecat_aplisay.voice_session import _user_aggregator_params_for
+
+    agent = {"options": {"greeting": {"text": "Hello"}, "inactivity": {"timeout": 8, "message": "Still there?"}}}
+    default = _user_aggregator_params_for(agent)
+    assert len(default.user_mute_strategies) == 1
+    live = _user_aggregator_params_for(agent, mute_for_greeting=False)
+    assert live.user_mute_strategies == []
+    assert live.user_idle_timeout == 8.0
+
+
+def test_greeting_guard_sends_silence_until_the_first_assistant_turn_ends():
+    from pipecat.frames.frames import InputAudioRawFrame
+    from pipecat.services.openai.live.events import SessionResource, SessionStartedEvent
+
+    llm, sent = _build(_session(deaf_during_greeting=True))
+    forwarded: list[bytes] = []
+
+    async def capture(self, frame):
+        forwarded.append(frame.audio)
+
+    async def run():
+        # session start with an opening instruction arms the guard
+        llm._opening_instruction = "Immediately say the following exactly and in full, then listen: Hello."
+        # Upstream's sender (the websocket write) is replaced; the subclass override under test stays.
+        monkeypatched = live_service.OpenAILiveLLMService._send_user_audio
+        live_service.OpenAILiveLLMService._send_user_audio = capture  # type: ignore[assignment]
+        try:
+            await llm._handle_evt_session_started(SessionStartedEvent(type="session.started", session=SessionResource(id="s")))
+            assert llm.greeting_guard_active is True
+            await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01\x02" * 4, sample_rate=16000, num_channels=1))
+            assert forwarded == [b"\x00" * 8]
+            await llm._end_turn("user")
+            assert llm.greeting_guard_active is True
+            await llm._end_turn("assistant")
+            assert llm.greeting_guard_active is False
+            await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01\x02" * 4, sample_rate=16000, num_channels=1))
+            assert forwarded[-1] == b"\x01\x02" * 4
+        finally:
+            live_service.OpenAILiveLLMService._send_user_audio = monkeypatched  # type: ignore[assignment]
+
+    asyncio.run(run())
+
+
+def test_greeting_guard_is_off_without_a_configured_greeting():
+    from pipecat.services.openai.live.events import SessionResource, SessionStartedEvent
+
+    llm, sent = _build(_session(deaf_during_greeting=False))
+
+    async def run():
+        llm._opening_instruction = gpt_live.OPENING_INSTRUCTION
+        await llm._handle_evt_session_started(SessionStartedEvent(type="session.started", session=SessionResource(id="s")))
+        assert llm.greeting_guard_active is False
+
+    asyncio.run(run())

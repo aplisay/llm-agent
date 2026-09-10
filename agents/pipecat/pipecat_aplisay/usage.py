@@ -246,22 +246,25 @@ class UsageMeteringObserver(BaseObserver):
         for meter in self._meters.values():
             if not meter["quantity"]:
                 continue
-            records.append(
-                {
-                    "sessionId": getattr(call, "id", None),
-                    "callId": getattr(call, "id", None),
-                    "organisationId": getattr(call, "organisationId", None),
-                    "userId": getattr(call, "userId", None),
-                    "agentId": getattr(call, "agentId", None),
-                    "technology": meter["technology"],
-                    "provider": meter["provider"],
-                    "detail": meter["detail"],
-                    "unit": meter["unit"],
-                    "quantity": meter["quantity"],
-                    "mode": "set",
-                    "finalised": finalised,
-                }
-            )
+            record = {
+                "sessionId": getattr(call, "id", None),
+                "callId": getattr(call, "id", None),
+                "organisationId": getattr(call, "organisationId", None),
+                "userId": getattr(call, "userId", None),
+                "agentId": getattr(call, "agentId", None),
+                "technology": meter["technology"],
+                "provider": meter["provider"],
+                "detail": meter["detail"],
+                "unit": meter["unit"],
+                "quantity": meter["quantity"],
+                "mode": "set",
+                "finalised": finalised,
+            }
+            # The ledger schema types provider and detail as strings; an
+            # unknown one (a side STT engine with no scoped model) is omitted
+            # rather than sent as null, which fails validation and takes every
+            # other record in the batch down with it.
+            records.append({k: v for k, v in record.items() if not (k in ("provider", "detail") and v is None)})
         if not records:
             return
         try:

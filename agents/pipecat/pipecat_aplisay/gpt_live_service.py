@@ -27,7 +27,9 @@ import asyncio
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
+from pipecat.frames.frames import InputAudioRawFrame
 from pipecat.processors.aggregators.dtmf_aggregator import DTMFAggregator
+from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.services.openai.live import events
 from pipecat.services.openai.live.llm import (
     MAX_CONTEXT_APPEND_TOKENS,
@@ -52,6 +54,10 @@ PROVIDER_ENDED_REASONS = frozenset({"expired", "content", "connection_lost"})
 #: What the voice model says when a client delegation fails.
 DELEGATION_FAILED_COMMENTARY = "Apologise briefly: you could not complete that request just now."
 
+#: Longest the greeting guard keeps the caller inaudible when the model never
+#: closes its opening turn (it should within a few seconds).
+GREETING_GUARD_MAX_SECS = 20.0
+
 ClientDelegate = Callable[[list[dict], bool], Awaitable[str]]
 
 
@@ -65,6 +71,7 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
         on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
         client_delegate: Optional[ClientDelegate] = None,
         client_delegate_timeout_secs: float = 90.0,
+        deaf_during_greeting: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -72,6 +79,13 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
         self._on_session_ended = on_session_ended
         self._client_delegate = client_delegate
         self._client_delegate_timeout_secs = client_delegate_timeout_secs
+        # The greeting contract: caller audio is dropped until the opening
+        # line completes. The pipeline's mute strategy cannot do that here (a
+        # muted session sends no audio and the Live API's timeline stands
+        # still), so the guard sends silence in place of the caller's audio
+        # until the first assistant turn closes, or GREETING_GUARD_MAX_SECS.
+        self._deaf_during_greeting = deaf_during_greeting
+        self._greeting_guard_until: float | None = None
         # Typed input that arrived while no delegation was running (client
         # mode): prepended to the next delegation's transcript.
         self._pending_typed_inputs: list[str] = []
@@ -143,9 +157,39 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
             return
         await self.append_commentary(gpt_live.inactivity_commentary(message))
 
+    # ---- greeting guard ----------------------------------------------------
+
+    @property
+    def greeting_guard_active(self) -> bool:
+        until = self._greeting_guard_until
+        if until is None:
+            return False
+        if asyncio.get_running_loop().time() >= until:
+            self._greeting_guard_until = None
+            logger.debug(f"{self}: greeting guard expired")
+            return False
+        return True
+
+    async def _send_user_audio(self, frame) -> None:  # type: ignore[override]
+        if self.greeting_guard_active:
+            frame = InputAudioRawFrame(
+                audio=b"\x00" * len(frame.audio),
+                sample_rate=frame.sample_rate,
+                num_channels=frame.num_channels,
+            )
+        await super()._send_user_audio(frame)
+
+    async def _end_turn(self, role: str) -> None:  # type: ignore[override]
+        await super()._end_turn(role)
+        if role == "assistant" and self._greeting_guard_until is not None:
+            self._greeting_guard_until = None
+            logger.debug(f"{self}: greeting complete; caller audio passes through")
+
     # ---- inbound events --------------------------------------------------
 
     async def _handle_evt_session_started(self, evt: events.SessionStartedEvent) -> None:
+        if self._deaf_during_greeting and self._opening_instruction:
+            self._greeting_guard_until = asyncio.get_running_loop().time() + GREETING_GUARD_MAX_SECS
         await super()._handle_evt_session_started(evt)
         mode = "responses" if self.responses_mode else "client"
         logger.bind(event="delegation_mode", mode=mode, session=getattr(evt.session, "id", None)).info(
@@ -174,6 +218,36 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
                 await self._on_session_ended(reason)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"{self}: on_session_ended raised: {e}")
+
+    async def _report_usage(self, usage: events.Usage) -> None:
+        """Log the session's cumulative seconds at INFO (the API reports them
+        every 15 s and on close). Not metered in this phase: the call's own
+        ``voice`` row carries the minutes."""
+        seconds = getattr(usage, "seconds", None)
+        if seconds is not None:
+            logger.bind(event="live_usage", seconds=seconds).info(
+                f"GPT-Live session usage: {seconds:.0f}s (cumulative)"
+            )
+
+    async def _report_backend_usage(self, response: dict[str, Any]) -> None:
+        """Upstream's backend token report, plus the cache write tokens the
+        Responses usage object carries (``input_tokens_details.cache_write_tokens``,
+        seen in the P0 spike) so the ledger's cache-write meter is fed too."""
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            return
+        details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        tokens = LLMTokenUsage(
+            prompt_tokens=usage.get("input_tokens") or 0,
+            completion_tokens=usage.get("output_tokens") or 0,
+            total_tokens=usage.get("total_tokens") or 0,
+            cache_read_input_tokens=details.get("cached_tokens") or 0,
+            cache_creation_input_tokens=details.get("cache_write_tokens") or 0,
+            reasoning_tokens=output_details.get("reasoning_tokens") or 0,
+        )
+        if tokens.total_tokens > 0:
+            await self.start_llm_usage_metrics(tokens)
 
     # ---- client delegation through the platform ---------------------------
 
@@ -287,6 +361,7 @@ def build_gpt_live_service(
         live_overrides=session.overrides,
         on_session_ended=session.on_session_ended,
         client_delegate=client_delegate,
+        deaf_during_greeting=session.deaf_during_greeting,
     )
     llm.aplisay_backend = delegate.usage_backend
     return llm

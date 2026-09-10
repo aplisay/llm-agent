@@ -352,15 +352,14 @@ def greeting_opening_instruction(agent: dict) -> str:
     instructions = greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
     text = (text or "").strip()
     instructions = (instructions or "").strip()
+    # The wording the P0 spike measured as verbatim in four of four runs
+    # (audible about 850 ms after the commentary append).
     if text:
-        return (
-            "Open the conversation now by saying the following exactly and in full, "
-            f"then listen for the caller: {text}"
-        )
+        return f"Immediately say the following exactly and in full, then listen: {text}"
     if instructions:
         return (
-            "Open the conversation now. For your opening line only, follow these instructions: "
-            f"{instructions} Then listen for the caller."
+            "Immediately open the conversation. For your opening line only, follow these "
+            f"instructions, then listen: {instructions}"
         )
     return OPENING_INSTRUCTION
 
@@ -387,3 +386,13 @@ class GptLiveSession:
     on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None
     #: Called with the digit string when the caller presses keypad digits.
     on_dtmf: Optional[Callable[[str], Awaitable[None]]] = None
+    #: A greeting is configured: the caller stays inaudible until it completes.
+    deaf_during_greeting: bool = False
+
+
+def has_greeting(agent: dict) -> bool:
+    """``options.greeting.text`` or ``options.greeting.instructions`` is set."""
+    greeting = ((agent or {}).get("options") or {}).get("greeting") or {}
+    text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
+    instructions = greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
+    return bool((text or "").strip()) or bool((instructions or "").strip())
