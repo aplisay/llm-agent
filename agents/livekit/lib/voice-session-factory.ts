@@ -22,6 +22,7 @@ import {
   buildProviderPipelineTts,
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
+import { textOutputEnabled } from "./realtime-tts.js";
 
 /**
  * How many times the inactivity prompt is spoken before the call is considered
@@ -217,8 +218,13 @@ export function buildRealtimeLlmOptions(
 ): Record<string, unknown> {
   const providerModelName = parseProviderModelName(modelName);
   const maxDurationString: string = agent?.options?.maxDuration || "305s";
+  // Text-output mode (realtime-tts.ts): the agent names a TTS vendor other than
+  // the model's own, so the model emits text only and the session's TTS speaks
+  // it. `options.tts.voice` then names the TTS voice, never the model's.
+  const textOutput = textOutputEnabled(agent, modelName);
   const llmOptions: Record<string, unknown> = {
-    voice: agent?.options?.tts?.voice,
+    voice: textOutput ? undefined : agent?.options?.tts?.voice,
+    ...(textOutput ? { modalities: ["text"] } : {}),
     maxDuration: maxDurationString,
     // Only the Ultravox plugin consumes timeExceededMessage — its native
     // wind-down line at maxDuration (empty ⇒ plugin default, matching the
@@ -455,8 +461,16 @@ export function createVoiceModelAndSession(
     ? {}
     : inactivityVoiceOptions;
 
+  // Text-output mode: the same TTS the pipeline path uses, built from
+  // `options.tts`. The SDK tees a text-only realtime generation into it
+  // (AgentActivity: "text response received from realtime API, falling back to
+  // use a TTS model") and the realtime session's `input_speech_started` events
+  // interrupt its playout.
+  const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
+
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),
+    ...externalTts,
     // Drop early user audio while agent speech is uninterruptible (greeting mode).
     turnHandling: {
       interruption: {

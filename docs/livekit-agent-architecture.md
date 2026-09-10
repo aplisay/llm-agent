@@ -219,7 +219,7 @@ The LiveKit handler currently wires three realtime providers — OpenAI Realtime
 
 Realtime output is customisable: when `agent.options.tts.vendor` is set to a vendor different from the realtime provider's own (for example an Ultravox model paired with a Deepgram TTS), the realtime model runs in text-output mode and a separate TTS handles audio out. STT and LLM remain a single stage inside the provider; only the TTS stage is decomposed. The session is architecturally still realtime — this is a customisation of realtime output, not a separate mode.
 
-This customisation is slated for imminent development in the LiveKit implementation and is not yet wired. A re-implementer's runtime should be structured to allow it.
+Which rows can do this is a per-model capability, surfaced as `hasExternalTts` on `GET /models` (the `externalTts` row flag in the handler's model registry). The API server rejects an external vendor on a realtime row without the flag, and validates `tts.voice` and `tts.vendor` against the discrete-TTS catalogue when the flag applies. Both handlers wire it for Ultravox and OpenAI Realtime today; see [docs/realtime-external-tts.md](realtime-external-tts.md) for the rule, the caveats of the pattern (the provider believes its whole text was delivered even when the caller cut the TTS short) and what a worker must add for a provider that gives no early barge-in signal once its text turn is complete (Pipecat runs a local VAD; LiveKit stops the TTS on the caller's transcript). Gemini Live carries no flag because no Live model Google still serves accepts a text modality. A re-implementer's runtime should be structured to allow it.
 
 ### 4.4 The pipeline path
 

@@ -131,6 +131,16 @@ components:
             voice workers; the option is rejected on other models.
           type: boolean
           example: true
+        hasExternalTts:
+          description: |-
+            This realtime model can run in text-output mode with an external TTS. Set `options.tts.vendor`
+            to a pipeline TTS vendor (for example `elevenlabs`, `deepgram` or `cartesia`) and the model
+            emits text that the named TTS speaks; `options.tts.voice` and `options.tts.language` then
+            apply to that TTS. Leave `vendor` unset, or set it to the model's own provider, to keep the
+            model's own voice. Realtime models without this flag accept only their own provider as
+            `vendor`. See docs/realtime-external-tts.md.
+          type: boolean
+          example: false
       required:
         - name
         - description
@@ -492,7 +502,11 @@ components:
             vendor:
               type: string
               description: |-
-                TTS provider for pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
+                TTS provider (e.g. cartesia, google, elevenlabs, deepgram). On pipeline models it selects the
+                TTS stage. On a realtime model flagged `hasExternalTts` in GET /models, a vendor other than the
+                model's own provider switches the model to text output and the named TTS speaks its text, with
+                `voice` and `language` applying to that TTS (see docs/realtime-external-tts.md). Other realtime
+                models accept only their own provider here.
                 You may optionally scope the inference model via `vendor/model` (e.g. `deepgram/aura-2`, `cartesia/sonic-3`).
             voice:
               description: |-

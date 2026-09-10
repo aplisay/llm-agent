@@ -59,18 +59,35 @@ const realtimeFlag = {
 };
 
 /**
+ * Realtime plugins the worker can run in text-output mode with an external TTS:
+ * `options.tts.vendor` set to a vendor other than the plugin's own makes the model
+ * emit text and a discrete TTS speak it (docs/realtime-external-tts.md). Surfaced
+ * per row as the `externalTts` flag (`hasExternalTts` on GET /models). Must match
+ * TEXT_OUTPUT_PLUGINS in lib/realtime-tts.ts. Gemini is absent: no Live model the
+ * API still serves accepts a TEXT response modality.
+ */
+const EXTERNAL_TTS_PLUGINS: ReadonlySet<string> = new Set(["ultravox", "openai"]);
+const realtimeFlagsFor = (vendor: string) =>
+  EXTERNAL_TTS_PLUGINS.has(vendor) ? { ...realtimeFlag, externalTts: true as const } : realtimeFlag;
+
+/**
  * Map of `provider/modelId` (segment after `livekit:`) -> flags for routing (realtime vs pipeline).
  */
 export const livekitModelIdFlags: Record<
   string,
-  { voiceStack: "pipeline" | "realtime"; audioModel: boolean; pipeline: boolean }
+  { voiceStack: "pipeline" | "realtime"; audioModel: boolean; pipeline: boolean; externalTts?: boolean }
 > = Object.fromEntries([
-  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, realtimeFlag]),
+  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, realtimeFlagsFor(a)]),
   ...LIVEKIT_PIPELINE_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, pipelineFlag]),
 ]);
 
 export function isLivekitPipelineModelId(modelId: string): boolean {
   return livekitModelIdFlags[modelId]?.voiceStack === "pipeline";
+}
+
+/** The row may pair the realtime model with an external TTS (text-output mode). */
+export function livekitModelSupportsExternalTts(modelId: string): boolean {
+  return livekitModelIdFlags[modelId]?.externalTts === true;
 }
 
 /**
@@ -81,7 +98,7 @@ export function buildLivekitHandlerAllModels() {
   const rows = [
     ...LIVEKIT_REALTIME_MODEL_ROWS.map((r) => {
       const [vendor, name, description] = r;
-      return [`${vendor}/${name}`, description, realtimeFlag] as const;
+      return [`${vendor}/${name}`, description, realtimeFlagsFor(vendor)] as const;
     }),
     ...LIVEKIT_PIPELINE_MODEL_ROWS.map((r) => {
       const [vendor, name, description] = r;

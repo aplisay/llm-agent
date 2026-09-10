@@ -1,6 +1,6 @@
 """Compatibility shims for Pipecat's upstream ``UltravoxRealtimeLLMService``.
 
-Three fixes live here today:
+Four fixes live here today:
 
 1. ``_receive_messages`` teardown race (original): upstream wraps its
    ``try/except`` around the loop *body* rather than the iteration itself, so
@@ -33,6 +33,21 @@ Three fixes live here today:
    agent told the caller a slot they had just secured was taken). We stamp an
    explicit per-tool timeout on every definition.
 
+4. Text-medium agent transcripts (see ``_handle_agent_transcript``): in
+   text-output mode (realtime_tts.py) the agent's text is what a downstream TTS
+   speaks. Ultravox streams a turn as a first ``text`` snapshot, then
+   ``delta`` frames, then a final ``text`` snapshot of the whole turn; a
+   ``firstSpeakerSettings`` greeting arrives as ONE final frame with no deltas
+   (measured 2026-09-10, plan section 9). Upstream pushes ``text or delta`` for
+   non-final frames and nothing for a final one, so a mid-turn snapshot would
+   be spoken twice and the greeting never. We track what has been streamed and
+   push exactly the unspoken remainder.
+
+The ``_receive_messages`` override also carries upstream's own
+``playback_clear_buffer`` case (broadcast an interruption): it was added
+upstream after this copy was taken, and a text-output session depends on it
+to stop the external TTS when Ultravox cuts a turn short.
+
 This file is intended to shrink as upstream fixes land.
 """
 
@@ -43,6 +58,7 @@ from typing import Any
 
 from loguru import logger
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.frames.frames import LLMFullResponseEndFrame, LLMFullResponseStartFrame, LLMTextFrame
 from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
 
@@ -56,7 +72,54 @@ ULTRAVOX_TOOL_TIMEOUT = "10s"
 
 class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
     """Drop-in replacement: teardown-race fix + native tool-result delivery +
-    explicit tool timeouts."""
+    explicit tool timeouts + exact text-medium transcript streaming."""
+
+    #: Text already pushed as LLMTextFrames for the agent turn in progress
+    #: (text medium only). Compared against Ultravox's ``text`` snapshots so a
+    #: snapshot is never spoken twice and a snapshot-only turn is spoken once.
+    _text_turn_streamed: str = ""
+
+    async def _handle_agent_transcript(
+        self, medium: str, text: str | None, delta: str | None, final: bool
+    ) -> None:
+        """Voice medium: upstream's behaviour. Text medium: push exactly the
+        text that has not been pushed yet for this turn, then upstream's
+        end-of-turn handling on ``final``.
+
+        A non-final frame carries either a ``delta`` (push it) or a ``text``
+        snapshot of the turn so far (push the part beyond what was streamed).
+        A final frame carries the whole turn as ``text``: push whatever of it
+        is still unspoken (the whole greeting, or nothing after a fully
+        streamed turn), then close the response. A snapshot that does not
+        extend what was streamed (Ultravox truncated the turn on a barge-in)
+        pushes nothing.
+        """
+        if medium != "text":
+            await super()._handle_agent_transcript(medium, text, delta, final)
+            return
+
+        chunk = ""
+        if text is not None:
+            if text.startswith(self._text_turn_streamed):
+                chunk = text[len(self._text_turn_streamed):]
+        elif delta:
+            chunk = delta
+
+        if chunk:
+            if not self._bot_responding:
+                await self.start_processing_metrics()
+                await self.stop_ttfb_metrics()
+                await self.push_frame(LLMFullResponseStartFrame())
+                self._bot_responding = "text"
+            self._text_turn_streamed += chunk
+            await self.push_frame(LLMTextFrame(text=chunk))
+
+        if final:
+            self._text_turn_streamed = ""
+            if self._bot_responding:
+                await self.stop_processing_metrics()
+                await self.push_frame(LLMFullResponseEndFrame())
+                self._bot_responding = None
 
     def _to_selected_tools(self, tool: ToolsSchema) -> list[dict[str, Any]]:
         """Upstream's mapping, plus an explicit ``timeout`` on every
@@ -129,6 +192,13 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
                     case "state":
                         if self._bot_responding and data.get("state") != "speaking":
                             await self._handle_response_end()
+                    case "playback_clear_buffer":
+                        # The caller interrupted the agent. Same as upstream:
+                        # broadcast an InterruptionFrame so the assistant
+                        # aggregator marks the turn interrupted (upstream) and
+                        # the output transport, plus any external TTS stage,
+                        # clears what it holds (downstream).
+                        await self.broadcast_interruption()
                     case "client_tool_invocation":
                         await self._handle_tool_invocation(
                             data.get("toolName"),

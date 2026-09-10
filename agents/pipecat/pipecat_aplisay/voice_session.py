@@ -4,7 +4,9 @@ Builds a Pipecat ``PipelineTask`` for a given agent / model / transport. Two
 modes:
 
 - ``realtime``: a single speech-to-speech LLM service (OpenAI Realtime / Gemini
-  Live) handles audio in / audio out.
+  Live / Ultravox) handles audio in / audio out. When ``agent.options.tts.vendor``
+  names a TTS vendor other than the model's own (realtime_tts.py), the model
+  runs in text-output mode and a discrete TTS stage speaks its text.
 - ``pipeline``: STT → LLM → TTS, plus a turn detector. Vendor + voice picked
   from ``agent.options.stt`` / ``agent.options.tts``.
 
@@ -40,6 +42,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
+from .realtime_tts import external_tts_vendor, local_vad_required, text_output_enabled
 from .tool_log import log_tool_call, log_tool_result
 
 
@@ -282,10 +285,45 @@ def _ultravox_inactivity_extra(agent: dict) -> dict:
     return {"inactivityMessages": messages}
 
 
-def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams]:
+#: Onset the local VAD needs before it declares a user turn on a text-output
+#: realtime session (see ``_local_vad_analyzer``). Close to Ultravox's own
+#: ``minimumInterruptionDuration`` (ULTRAVOX_DEFAULT_VAD_SETTINGS, 0.48s) so a
+#: cough or a backchannel does not clear the TTS unless Ultravox would also
+#: have treated it as a turn. Pipecat's stock 0.2s is tuned for a pipeline
+#: whose own STT decides the turn; here the provider does.
+LOCAL_VAD_START_SECS = 0.4
+
+
+def _local_vad_analyzer() -> Any:
+    """A fresh Silero VAD for one text-output realtime session.
+
+    Ultravox's Pipecat service emits no user-turn frames and our transports run
+    no VAD, so on a text-output session nothing would clear queued TTS audio
+    when the caller talks over it. The spike (plan section 9) showed Ultravox
+    itself gives no early signal once its text turn is complete, which is the
+    common case because text finishes long before its playout does. A VAD on
+    the user aggregator makes Pipecat's normal turn machinery broadcast the
+    interruption that clears the TTS and the output transport.
+    """
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
+
+    return SileroVADAnalyzer(params=VADParams(start_secs=LOCAL_VAD_START_SECS))
+
+
+def _user_aggregator_params_for(
+    agent: dict, *, local_vad: bool = False
+) -> Optional[LLMUserAggregatorParams]:
     """Build the user-aggregator params, applying ``MuteUntilFirstBotComplete``
     when the agent configures an opening greeting, and ``user_idle_timeout``
     when ``options.inactivity`` is configured.
+
+    ``local_vad`` (text-output realtime sessions) adds a Silero VAD plus
+    VAD-driven turn strategies so the caller's speech interrupts the external
+    TTS: see :func:`_local_vad_analyzer`. The stop strategy is the plain
+    speech-timeout one rather than Pipecat's default smart-turn model, because
+    the provider still owns the real end-of-turn decision; the local turn only
+    exists to fire the interruption.
 
     The architecture doc says greetings are uninterruptible — VAD-detected
     user speech should be dropped while the greeting plays. We do that with
@@ -321,7 +359,7 @@ def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams
 
     idle_timeout = _inactivity_timeout_secs(agent)
 
-    if not has_greeting and idle_timeout is None:
+    if not has_greeting and idle_timeout is None and not local_vad:
         return None
 
     params = LLMUserAggregatorParams()
@@ -329,6 +367,16 @@ def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams
         params.user_mute_strategies = [MuteUntilFirstBotCompleteUserMuteStrategy()]
     if idle_timeout is not None:
         params.user_idle_timeout = idle_timeout
+    if local_vad:
+        from pipecat.turns.user_start import VADUserTurnStartStrategy
+        from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+        from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+        params.vad_analyzer = _local_vad_analyzer()
+        params.user_turn_strategies = UserTurnStrategies(
+            start=[VADUserTurnStartStrategy()],
+            stop=[SpeechTimeoutUserTurnStopStrategy()],
+        )
     return params
 
 
@@ -1078,6 +1126,177 @@ def _output_stt_tap_for(
     )
 
 
+def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> Any:
+    """The OpenAI Realtime ``SessionProperties`` for one session.
+
+    Native: the caller's transcription on, and ``options.tts.voice`` (default
+    ``alloy``) as the output voice. Text-output mode: ``output_modalities``
+    ``["text"]`` and no output audio block at all, so the service streams
+    ``response.text.delta`` as LLMTextFrames for the external TTS and the voice
+    (which now names the TTS voice) is never sent to OpenAI. The server VAD is
+    unchanged either way: its ``speech_started`` event is what the service turns
+    into the interruption that clears the TTS.
+    """
+    from pipecat.services.openai.realtime.events import (
+        AudioConfiguration,
+        AudioInput,
+        AudioOutput,
+        InputAudioTranscription,
+        SessionProperties,
+    )
+
+    options = agent.get("options") or {}
+    audio_input = AudioInput(transcription=InputAudioTranscription())
+    if text_output:
+        return SessionProperties(
+            output_modalities=["text"],
+            audio=AudioConfiguration(input=audio_input),
+        )
+    voice = (options.get("tts") or {}).get("voice") or "alloy"
+    return SessionProperties(
+        audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+    )
+
+
+def _ultravox_one_shot_params(
+    agent: dict, system_prompt: str, ultravox_model: str, *, text_output: bool
+) -> Any:
+    """The ``OneShotInputParams`` for one Ultravox /calls request.
+
+    Split out of ``_build_realtime`` so the mapping from agent options to the
+    request body (greeting, inactivity, language hint, VAD settings, voice, and
+    the text-output medium) is testable without a transport. ``text_output``
+    is :func:`realtime_tts.text_output_enabled` for this session.
+    """
+    import uuid as _uuid
+
+    from pipecat.services.ultravox.llm import OneShotInputParams
+
+    options = agent.get("options") or {}
+    # In text-output mode ``options.tts.voice`` names the external TTS voice,
+    # not an Ultravox one, so the Ultravox call gets no voice at all.
+    voice = None if text_output else (options.get("tts") or {}).get("voice")
+
+    # ----- Greeting wiring (Ultravox-specific) -----
+    # Ultravox's ``process_frame`` only handles ``LLMContextFrame``,
+    # ``InterruptionFrame``, ``InputTextRawFrame``,
+    # ``InputAudioRawFrame``, and ``VADUserStoppedSpeakingFrame`` — the
+    # model-agnostic greeting frames we use for OpenAI Realtime / Gemini
+    # Live (``LLMMessagesAppendFrame`` + ``LLMRunFrame``, or
+    # ``TTSSpeakFrame``) pass through untouched. So we wire greetings
+    # via the Ultravox API instead, using ``firstSpeakerSettings.agent``
+    # (https://docs.ultravox.ai/api-reference/calls/calls-post#body-first-speaker-settings):
+    #
+    # - ``greeting.text`` → ``firstSpeakerSettings.agent.text`` — the
+    #   exact text is spoken verbatim, uninterruptible.
+    # - ``greeting.instructions`` → ``firstSpeakerSettings.agent.prompt``
+    #   — Ultravox uses the instructions as an LLM prompt to generate
+    #   the opening line. Uninterruptible. We deliberately *do not*
+    #   touch the agent's system prompt: ``prompt`` here is scoped to
+    #   the first turn only, which preserves the contract that the
+    #   greeting doesn't bleed into the rest of the conversation.
+    # - No greeting configured → ``firstSpeakerSettings.agent`` with
+    #   no overrides — agent speaks first (interruptible) using its
+    #   system prompt, matching the model-agnostic default in
+    #   ``call_session._wire_greeting``.
+    #
+    # ``call_session._wire_greeting`` short-circuits for Ultravox so
+    # those no-op frames are never queued; this branch is the sole
+    # owner of the greeting behaviour on Ultravox.
+    greeting = (options.get("greeting") or {})
+    greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
+    greeting_text = (greeting_text or "").strip()
+    greeting_instructions = (
+        greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
+    )
+    greeting_instructions = (greeting_instructions or "").strip()
+
+    ultravox_first_speaker: dict[str, Any]
+    if greeting_text:
+        ultravox_first_speaker = {
+            "agent": {
+                "text": greeting_text,
+                "uninterruptible": True,
+            }
+        }
+    elif greeting_instructions:
+        ultravox_first_speaker = {
+            "agent": {
+                "prompt": greeting_instructions,
+                "uninterruptible": True,
+            }
+        }
+    else:
+        # Agent speaks first (interruptible) using its system prompt.
+        ultravox_first_speaker = {"agent": {}}
+
+    # Pipecat's ``OneShotInputParams.voice`` is typed ``uuid.UUID | None``
+    # via pydantic, so a plain ``voice="Louisamay"`` raises
+    # ``ValidationError: Input should be a valid UUID``. But the
+    # underlying Ultravox /calls API accepts BOTH the voiceId UUID and
+    # the human-readable voice name (the docs at
+    # https://docs.ultravox.ai/api-reference/calls/calls-post describe
+    # ``voice`` as "voice id or name"). Pipecat itself only does
+    # ``str(params.voice)`` when building the request body
+    # (services/ultravox/llm.py:_start_one_shot_call), so the wire
+    # representation is identical for either form. The Aplisay
+    # platform stores voices by their name (see lib/handlers/ultravox.js
+    # which fetches the /voices catalogue and exposes the ``name``
+    # field), so we want to support names here.
+    #
+    # Strategy: construct with ``voice=None`` to satisfy the validator,
+    # then route around it via ``object.__setattr__`` to plant the
+    # raw string (or parsed UUID) directly into the model dict. This
+    # is safe because pydantic v2 BaseModel uses ``__dict__`` for
+    # field storage and Pipecat's downstream code only stringifies the
+    # value.
+    params = OneShotInputParams(
+        api_key=_require_env("ULTRAVOX_API_KEY"),
+        system_prompt=system_prompt,
+        # ``model`` on the request body maps to the Ultravox catalogue
+        # id (``ultravox-v0.6`` etc.). The default in the library is
+        # ``fixie-ai/ultravox`` which is the public alias — pass our
+        # explicit id through verbatim.
+        model=ultravox_model,
+        voice=None,
+        # Text-output mode: ``initialOutputMedium: MESSAGE_MEDIUM_TEXT`` on the
+        # /calls body. Ultravox then sends no audio and streams the agent's
+        # text as ``medium: "text"`` transcripts, which ultravox_compat turns
+        # into LLMTextFrames for the external TTS stage.
+        output_medium="text" if text_output else None,
+        # ``OneShotInputParams.extra`` is merged into the /calls request
+        # body (see ``_start_one_shot_call`` in Pipecat's Ultravox
+        # service: ``request_body = request_body | params.extra``), so
+        # this is the canonical place to surface API parameters that
+        # the OneShotInputParams class doesn't model directly —
+        # ``firstSpeakerSettings`` being the headline case here.
+        extra={
+            "firstSpeakerSettings": ultravox_first_speaker,
+            # Native Ultravox idle handling (speech-to-speech has no
+            # separate TTS, so the generic kick is unreliable here).
+            **_ultravox_inactivity_extra(agent),
+            # Portable ``options.tts.language`` → native ``languageHint``.
+            # Same reason: no separate TTS stage to carry the language, so
+            # this single hint drives both recognition and synthesis.
+            **_ultravox_language_extra(agent),
+            # Interruption sensitivity: platform default unless the agent
+            # carries an explicit vendorSpecific override.
+            **_ultravox_vad_extra(agent),
+        },
+    )
+    if voice:
+        # Accept either a UUID string or a human-readable voice name.
+        # Stringify a UUID where possible so any future strict
+        # validator further down would still pass; otherwise plant the
+        # raw name and rely on str(params.voice) at request time.
+        try:
+            resolved_voice: object = _uuid.UUID(str(voice))
+        except (ValueError, AttributeError, TypeError):
+            resolved_voice = str(voice)
+        object.__setattr__(params, "voice", resolved_voice)
+    return params
+
+
 async def _build_realtime(
     transport: BaseTransport,
     model_name: str,
@@ -1095,6 +1314,24 @@ async def _build_realtime(
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
 
+    # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
+    # than the model's own, so the model emits text and a discrete TTS stage
+    # speaks it. The API server only accepts such a vendor on rows flagged
+    # ``externalTts``, so a provider this worker cannot run in text mode is a
+    # misconfiguration worth a warning, not a dead call: fall back to native
+    # audio.
+    text_output = text_output_enabled(agent, model_id)
+    requested_tts_vendor = external_tts_vendor(agent, model_id)
+    if requested_tts_vendor and not text_output:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
+            "options.tts.vendor names an external TTS but this realtime provider "
+            "has no text-output mode on this worker; using the model's own voice"
+        )
+    elif text_output:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).info(
+            "realtime text-output mode: external TTS speaks the model's text"
+        )
+
     if model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
         # output, not directly on Settings. The Settings class only accepts
@@ -1105,26 +1342,15 @@ async def _build_realtime(
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
         from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
-        from pipecat.services.openai.realtime.events import (
-            AudioConfiguration,
-            AudioInput,
-            AudioOutput,
-            InputAudioTranscription,
-            SessionProperties,
-        )
 
         _, openai_model = model_id.split("/", 1)
-        voice = (options.get("tts") or {}).get("voice") or "alloy"
         llm = OpenAIRealtimeLLMService(
             api_key=_require_env("OPENAI_API_KEY"),
             settings=OpenAIRealtimeLLMService.Settings(
                 model=openai_model,
                 system_instruction=system_prompt,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(transcription=InputAudioTranscription()),
-                        output=AudioOutput(voice=voice),
-                    ),
+                session_properties=_openai_realtime_session_properties(
+                    agent, text_output=text_output
                 ),
             ),
         )
@@ -1147,10 +1373,6 @@ async def _build_realtime(
         # ``transcript_observer.py`` already accepts TranscriptionFrame from
         # LLMService originators, so user transcripts flow without extra
         # configuration.
-        import uuid as _uuid
-
-        from pipecat.services.ultravox.llm import OneShotInputParams
-
         # Local subclass overrides ``_receive_messages`` to silence a benign
         # ERROR line on client-driven teardown. See ultravox_compat.py.
         from .ultravox_compat import AplisayUltravoxRealtimeLLMService as UltravoxRealtimeLLMService
@@ -1167,120 +1389,9 @@ async def _build_realtime(
         # the last ``/`` before sending — mirroring the native handler
         # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
         ultravox_model = model_id.rsplit("/", 1)[-1]
-        voice = (options.get("tts") or {}).get("voice")
-
-        # ----- Greeting wiring (Ultravox-specific) -----
-        # Ultravox's ``process_frame`` only handles ``LLMContextFrame``,
-        # ``InterruptionFrame``, ``InputTextRawFrame``,
-        # ``InputAudioRawFrame``, and ``VADUserStoppedSpeakingFrame`` — the
-        # model-agnostic greeting frames we use for OpenAI Realtime / Gemini
-        # Live (``LLMMessagesAppendFrame`` + ``LLMRunFrame``, or
-        # ``TTSSpeakFrame``) pass through untouched. So we wire greetings
-        # via the Ultravox API instead, using ``firstSpeakerSettings.agent``
-        # (https://docs.ultravox.ai/api-reference/calls/calls-post#body-first-speaker-settings):
-        #
-        # - ``greeting.text`` → ``firstSpeakerSettings.agent.text`` — the
-        #   exact text is spoken verbatim, uninterruptible.
-        # - ``greeting.instructions`` → ``firstSpeakerSettings.agent.prompt``
-        #   — Ultravox uses the instructions as an LLM prompt to generate
-        #   the opening line. Uninterruptible. We deliberately *do not*
-        #   touch the agent's system prompt: ``prompt`` here is scoped to
-        #   the first turn only, which preserves the contract that the
-        #   greeting doesn't bleed into the rest of the conversation.
-        # - No greeting configured → ``firstSpeakerSettings.agent`` with
-        #   no overrides — agent speaks first (interruptible) using its
-        #   system prompt, matching the model-agnostic default in
-        #   ``call_session._wire_greeting``.
-        #
-        # ``call_session._wire_greeting`` short-circuits for Ultravox so
-        # those no-op frames are never queued; this branch is the sole
-        # owner of the greeting behaviour on Ultravox.
-        greeting = (options.get("greeting") or {})
-        greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
-        greeting_text = (greeting_text or "").strip()
-        greeting_instructions = (
-            greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
+        params = _ultravox_one_shot_params(
+            agent, system_prompt, ultravox_model, text_output=text_output
         )
-        greeting_instructions = (greeting_instructions or "").strip()
-
-        ultravox_first_speaker: dict[str, Any]
-        if greeting_text:
-            ultravox_first_speaker = {
-                "agent": {
-                    "text": greeting_text,
-                    "uninterruptible": True,
-                }
-            }
-        elif greeting_instructions:
-            ultravox_first_speaker = {
-                "agent": {
-                    "prompt": greeting_instructions,
-                    "uninterruptible": True,
-                }
-            }
-        else:
-            # Agent speaks first (interruptible) using its system prompt.
-            ultravox_first_speaker = {"agent": {}}
-
-        # Pipecat's ``OneShotInputParams.voice`` is typed ``uuid.UUID | None``
-        # via pydantic, so a plain ``voice="Louisamay"`` raises
-        # ``ValidationError: Input should be a valid UUID``. But the
-        # underlying Ultravox /calls API accepts BOTH the voiceId UUID and
-        # the human-readable voice name (the docs at
-        # https://docs.ultravox.ai/api-reference/calls/calls-post describe
-        # ``voice`` as "voice id or name"). Pipecat itself only does
-        # ``str(params.voice)`` when building the request body
-        # (services/ultravox/llm.py:_start_one_shot_call), so the wire
-        # representation is identical for either form. The Aplisay
-        # platform stores voices by their name (see lib/handlers/ultravox.js
-        # which fetches the /voices catalogue and exposes the ``name``
-        # field), so we want to support names here.
-        #
-        # Strategy: construct with ``voice=None`` to satisfy the validator,
-        # then route around it via ``object.__setattr__`` to plant the
-        # raw string (or parsed UUID) directly into the model dict. This
-        # is safe because pydantic v2 BaseModel uses ``__dict__`` for
-        # field storage and Pipecat's downstream code only stringifies the
-        # value.
-        params = OneShotInputParams(
-            api_key=_require_env("ULTRAVOX_API_KEY"),
-            system_prompt=system_prompt,
-            # ``model`` on the request body maps to the Ultravox catalogue
-            # id (``ultravox-v0.6`` etc.). The default in the library is
-            # ``fixie-ai/ultravox`` which is the public alias — pass our
-            # explicit id through verbatim.
-            model=ultravox_model,
-            voice=None,
-            # ``OneShotInputParams.extra`` is merged into the /calls request
-            # body (see ``_start_one_shot_call`` in Pipecat's Ultravox
-            # service: ``request_body = request_body | params.extra``), so
-            # this is the canonical place to surface API parameters that
-            # the OneShotInputParams class doesn't model directly —
-            # ``firstSpeakerSettings`` being the headline case here.
-            extra={
-                "firstSpeakerSettings": ultravox_first_speaker,
-                # Native Ultravox idle handling (speech-to-speech has no
-                # separate TTS, so the generic kick is unreliable here).
-                **_ultravox_inactivity_extra(agent),
-                # Portable ``options.tts.language`` → native ``languageHint``.
-                # Same reason: no separate TTS stage to carry the language, so
-                # this single hint drives both recognition and synthesis.
-                **_ultravox_language_extra(agent),
-                # Interruption sensitivity: platform default unless the agent
-                # carries an explicit vendorSpecific override.
-                **_ultravox_vad_extra(agent),
-            },
-        )
-        if voice:
-            # Accept either a UUID string or a human-readable voice name.
-            # Stringify a UUID where possible so any future strict
-            # validator further down would still pass; otherwise plant the
-            # raw name and rely on str(params.voice) at request time.
-            try:
-                resolved_voice: object = _uuid.UUID(str(voice))
-            except (ValueError, AttributeError, TypeError):
-                resolved_voice = str(voice)
-            object.__setattr__(params, "voice", resolved_voice)
 
         # Ultravox needs the function schemas at construction time:
         # ``UltravoxRealtimeLLMService`` only forwards ``selectedTools`` to
@@ -1335,11 +1446,24 @@ async def _build_realtime(
 
     schemas = _register_tools_on_llm(llm, tools)
 
+    # Text-output mode: the same TTS the pipeline path uses, built from
+    # ``options.tts`` (vendor, voice, language), placed straight after the
+    # model so its LLMTextFrames are spoken. The stages downstream (tone,
+    # relay, rate guard, output audit tap, transport) already handle TTS audio
+    # at the transport's rate, exactly as in pipeline mode.
+    external_tts = [build_tts_service(agent)] if text_output else []
+
     context = LLMContext(
         [{"role": "developer", "content": system_prompt}],
         tools=schemas,
     )
-    user_params = _user_aggregator_params_for(agent)
+    # A text-output session on a provider that emits no user-turn frames also
+    # gets a local VAD so the caller can interrupt the external TTS (see
+    # _local_vad_analyzer). OpenAI Realtime's server VAD raises the
+    # interruption itself.
+    user_params = _user_aggregator_params_for(
+        agent, local_vad=local_vad_required(agent, model_id)
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context, user_params=user_params
     )
@@ -1386,6 +1510,7 @@ async def _build_realtime(
         dtmf_aggregator,
         user_aggregator,
         llm,
+        *external_tts,
         *tone,
         *relay_inject,
         rate_guard,
