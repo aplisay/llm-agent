@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Aplisay voice agent worker built on Pipecat. Daily as a pure SIP gateway, SmallWebRTCTransport for browsers."
 requires-python = ">=3.11"
 dependencies = [
-    "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,openai,silero,ultravox,webrtc]>=1.0.0",
+    "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,openai,silero,ultravox,webrtc] @ git+https://github.com/pipecat-ai/pipecat@555e34a2c2722e301b08246a68cd3039e8357c74",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
@@ -18,6 +18,11 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# The worker pins pipecat-ai to a git commit (a direct reference) until the
+# first release that contains the OpenAI Live service ships on PyPI.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["pipecat_aplisay"]
