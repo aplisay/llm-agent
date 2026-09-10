@@ -30,6 +30,19 @@ from pipecat.pipeline.runner import PipelineRunner
 from . import api_client
 from . import invocation_log
 from .agent_tools import build_agent_tools
+from .gpt_live import (
+    GptLiveSession,
+    backend_settings,
+    compose_backend_instructions,
+    compose_voice_instructions,
+    greeting_opening_instruction,
+    history_from_messages,
+    is_gpt_live_model_id,
+    language_line,
+    live_overrides,
+    merge_tools,
+    resolve_delegate,
+)
 from .mcp_tools import close_mcp_servers, connect_mcp_servers
 from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
@@ -500,11 +513,15 @@ class CallSession:
         return task
 
     async def prepare_run(
-        self, agent: dict, model_name: str, system_prompt: str
+        self, agent: dict, model_name: str, system_prompt: str, *, history: Optional[list] = None
     ):
         """Build the voice session synchronously up to (but not including)
         ``runner.run(task)``. Returns the configured PipelineTask + the
         ``maxDuration`` window so ``run_prepared`` knows what to enforce.
+
+        ``history`` seeds the new session's context with prior ``user`` /
+        ``assistant`` turns (a full handover onto GPT-Live carries the
+        transcript this way, see ``_on_agent_transfer``).
 
         Splitting `_run_once` this way lets the ``/webrtc/offer`` handler
         do the failable build *before* answering the SDP, so config errors
@@ -531,7 +548,7 @@ class CallSession:
         runner never runs — ``worker._run_session``.
         """
         try:
-            return await self._prepare_run_inner(agent, model_name, system_prompt)
+            return await self._prepare_run_inner(agent, model_name, system_prompt, history=history)
         except BaseException:
             closers, self._mcp_closers = self._mcp_closers, []
             if closers:
@@ -544,7 +561,7 @@ class CallSession:
             raise
 
     async def _prepare_run_inner(
-        self, agent: dict, model_name: str, system_prompt: str
+        self, agent: dict, model_name: str, system_prompt: str, *, history: Optional[list] = None
     ):
         """The body of :meth:`prepare_run` — see its docstring."""
         # Handover paths pass their own agent dict; make sure listener-level
@@ -590,6 +607,17 @@ class CallSession:
         if mcp_descriptors:
             tools.extend(mcp_descriptors)
 
+        # GPT-Live (docs/gpt-live.md): resolve the backend text agent, build its
+        # tools with its own keys, merge them with this agent's, and compose the
+        # two instruction sets. ``tools`` becomes the backend's tool set.
+        gpt_live_session: Optional[GptLiveSession] = None
+        from .voice_mode import model_id_from_name as _model_id_from_name
+
+        if is_gpt_live_model_id(_model_id_from_name(model_name)):
+            gpt_live_session, tools = await self._compose_gpt_live(
+                agent, system_prompt, tools, metadata
+            )
+
         # WebRTC-origin sessions (and consult-leg TransferAgents whose parent is
         # a browser session) get a relay endpoint spliced into their pipeline so
         # a transfer can bridge the browser peer to a telephony leg in-worker.
@@ -631,6 +659,8 @@ class CallSession:
             on_aux_usage=self._on_aux_usage,
             on_output_transcript=self._on_output_transcript,
             on_output_usage=self._on_output_usage,
+            gpt_live=gpt_live_session,
+            history=history,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -699,8 +729,13 @@ class CallSession:
         # to be enabled (see voice_session.py PipelineParams).
         from .usage import UsageMeteringObserver, usage_vendors
 
+        # On GPT-Live the LLM tokens belong to the backend model (the service
+        # labels its metrics ``gpt-live-1``): the factory pins the backend on
+        # the service so the rows land on the delegate model's rate line.
         self._usage_observer = UsageMeteringObserver(
-            services=usage_vendors(agent, model_name)
+            services=usage_vendors(
+                agent, model_name, backend=getattr(llm_service, "aplisay_backend", None)
+            )
         )
         task.add_observer(self._usage_observer)
 
@@ -765,6 +800,32 @@ class CallSession:
         from .voice_mode import model_id_from_name
 
         if model_id_from_name(model_name).startswith("ultravox/"):
+            return
+        from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
+        from pipecat.frames.frames import LLMRunFrame as _RunFrame
+
+        if is_gpt_live_model_id(model_id_from_name(model_name)):
+            # GPT-Live: the ``LLMRunFrame`` starts the session from the context,
+            # and the service lifts a TRAILING developer message out of the
+            # startup history into the opening instruction it appends once the
+            # session has started (the API's way of making the model speak
+            # first). The wording is best-effort: the model paraphrases. With
+            # no greeting configured the platform instruction keeps the
+            # "agent speaks first" contract.
+            opening = greeting_opening_instruction(agent)
+
+            @transport.event_handler("on_client_connected")
+            async def _on_client_connected_gpt_live(*_args, **_kwargs) -> None:
+                try:
+                    await task.queue_frames(
+                        [
+                            _AppendFrame([{"role": "developer", "content": opening}], run_llm=False),
+                            _RunFrame(),
+                        ]
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"GPT-Live greeting handler failed: {e}")
+
             return
         greeting = (agent.get("options") or {}).get("greeting") or {}
         greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
@@ -887,7 +948,10 @@ class CallSession:
             ).info("agent handover: starting new agent stack on the live transport")
             self._is_handover_generation = True
             task, max_duration_secs = await self.prepare_run(
-                self.agent, self.agent["modelName"], pending["system_prompt"]
+                self.agent,
+                self.agent["modelName"],
+                pending["system_prompt"],
+                history=pending.get("history"),
             )
             # Cover the dead-air gap until the incoming agent first speaks. The
             # injector is spliced into the new pipeline's caller leg; arm it in
@@ -1341,7 +1405,10 @@ class CallSession:
         target_model = new_agent.get("modelName") or current_model
         if target_model != current_model:
             return True
-        return model_id_from_name(current_model).startswith("ultravox/")
+        current_id = model_id_from_name(current_model)
+        # GPT-Live fixes instructions, voice and delegation mode at session
+        # start, so a handover is always a restart (docs/gpt-live.md).
+        return current_id.startswith("ultravox/") or is_gpt_live_model_id(current_id)
 
     async def _on_agent_transfer(self, args: dict) -> dict:
         """Builtin ``transfer_agent`` platform function: hand the live call
@@ -1390,13 +1457,21 @@ class CallSession:
         )
         if isinstance(summary, str) and summary.strip():
             prompt += f"\n\n# Handover summary from the previous agent\n{summary.strip()}"
-        if include_history:
+        # A GPT-Live target takes the transcript as the session's startup
+        # history (its own budget) rather than inside the instructions.
+        from .voice_mode import model_id_from_name as _model_id_from_name
+
+        history: Optional[list] = None
+        target_is_gpt_live = is_gpt_live_model_id(_model_id_from_name(new_agent.get("modelName") or ""))
+        if include_history and target_is_gpt_live:
+            history = self._history_for_handover()
+        elif include_history:
             transcript = self.get_parent_transcript()
             if transcript:
                 prompt += f"\n\n# Conversation so far\n{transcript}"
 
         if self._needs_full_handover(new_agent):
-            result = await self._begin_agent_handover(new_agent, prompt)
+            result = await self._begin_agent_handover(new_agent, prompt, history=history)
             if result.get("status") == "OK":
                 await self._send_message(
                     {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
@@ -1481,7 +1556,9 @@ class CallSession:
 
         client.disconnect = _noop_disconnect
 
-    async def _begin_agent_handover(self, new_agent: dict, system_prompt: str) -> dict:
+    async def _begin_agent_handover(
+        self, new_agent: dict, system_prompt: str, history: Optional[list] = None
+    ) -> dict:
         """Start a FULL agent-stack handover to ``new_agent``.
 
         Creates the child call record (``parentId`` = current call) and
@@ -1550,6 +1627,7 @@ class CallSession:
             "system_prompt": system_prompt,
             "call": child,
             "transport": new_transport,
+            "history": history,
         }
         self._suppress_transport_disconnect(old_transport)
         try:
@@ -1694,6 +1772,149 @@ class CallSession:
             )
         except Exception as e:  # noqa: BLE001
             logger.bind(error=str(e)).error("agent transfer: swap failed")
+
+    def _history_for_handover(self) -> list[dict]:
+        """The session's ``user`` / ``assistant`` turns as startup history for a
+        GPT-Live continuation (most recent 128 kept)."""
+        if self._llm_context is None:
+            return []
+        try:
+            messages = list(self._llm_context.get_messages())
+        except Exception as e:  # noqa: BLE001
+            logger.bind(error=str(e)).debug("history_for_handover: get_messages() failed")
+            return []
+        return history_from_messages(messages)
+
+    # ---- GPT-Live (docs/gpt-live.md) ----
+
+    async def _compose_gpt_live(
+        self, agent: dict, system_prompt: str, voice_tools: list[dict], metadata: dict
+    ) -> tuple[GptLiveSession, list[dict]]:
+        """Resolve the backend of a GPT-Live session and compose both layers.
+
+        Steps 1 to 4 of plan section 5.3: fetch the declared delegate (or
+        synthesise one from this agent), build the delegate's tools with the
+        delegate's keys and connect its MCP servers, merge them with the voice
+        agent's tools (delegate wins a name clash), and compose the voice and
+        backend instructions. Returns the composition and the merged tool
+        list, which is what the pipeline registers.
+        """
+        spec = await resolve_delegate(
+            agent,
+            metadata,
+            self.call.organisationId,
+            fetch_agent=api_client.get_internal_agent_by_id,
+        )
+        delegate_tools: list[dict] = []
+        backend_prompt = system_prompt
+        if not spec.synthetic:
+            delegate_tools = self._build_tools_for(spec.agent)
+            with logger.contextualize(callId=self.call.id):
+                delegate_mcp, delegate_closers = await connect_mcp_servers(spec.agent, log=logger)
+            self._mcp_closers.extend(delegate_closers)
+            delegate_tools.extend(delegate_mcp)
+            backend_prompt = prompt_with_metadata(
+                spec.agent.get("prompt") or "", spec.agent.get("promptMetadata"), metadata
+            )
+        merged = merge_tools(voice_tools, delegate_tools, log=logger)
+        tool_names = [t["schema"]["name"] for t in merged]
+        session = GptLiveSession(
+            delegate=spec,
+            voice_instructions=compose_voice_instructions(system_prompt, language=language_line(agent)),
+            backend_instructions=compose_backend_instructions(backend_prompt, tool_names=tool_names),
+            tools=merged,
+            settings=backend_settings(spec.agent),
+            overrides=live_overrides(agent),
+            client_delegate=self._gpt_live_client_delegate(spec) if spec.mode == "client" else None,
+            on_session_ended=self._on_provider_session_ended,
+            on_dtmf=self._on_gpt_live_dtmf,
+        )
+        logger.bind(
+            event="delegation_config",
+            mode=spec.mode,
+            synthetic=spec.synthetic,
+            delegate=spec.agent.get("id"),
+            backend_model=spec.model_name,
+            tools=tool_names,
+            settings=session.settings,
+            overrides=sorted(session.overrides),
+        ).info(
+            f"GPT-Live backend: {spec.model_name} ({spec.mode} delegation, "
+            f"{'synthetic' if spec.synthetic else 'delegate ' + str(spec.agent.get('id'))}), "
+            f"{len(tool_names)} tools"
+        )
+        return session, merged
+
+    def _gpt_live_client_delegate(self, spec) -> Callable[[list[dict], bool], Awaitable[str]]:
+        """The client-mode backend: each delegation becomes a synthetic
+        subagent call through the internal subagent endpoint, the transcript
+        since the previous delegation as its task, and the answer text comes
+        back for the voice model to speak as commentary."""
+        import json as _json
+
+        from pipecat.workers.llm.backend_llm_worker import _render_transcript_request
+
+        from .tool_log import log_tool_call, log_tool_result
+
+        delegate_id = str(spec.agent.get("id"))
+        delegate_name = spec.agent.get("name") or delegate_id
+
+        async def delegate(messages: list[dict], first: bool) -> str:
+            request = _render_transcript_request(messages, first=first)
+            started = asyncio.get_running_loop().time()
+            log_tool_call(tool=delegate_name, kind="delegate", arguments={"task": request})
+            try:
+                result = await api_client.invoke_subagent(
+                    delegate_id,
+                    {"task": request},
+                    self.call.metadata,
+                    organisation_id=self.call.organisationId,
+                    call_id=self.call.id,
+                )
+            except Exception as e:  # noqa: BLE001
+                log_tool_result(
+                    tool=delegate_name,
+                    kind="delegate",
+                    ok=False,
+                    duration_ms=int((asyncio.get_running_loop().time() - started) * 1000),
+                    error=str(e),
+                )
+                raise
+            log_tool_result(
+                tool=delegate_name,
+                kind="delegate",
+                ok=True,
+                duration_ms=int((asyncio.get_running_loop().time() - started) * 1000),
+                result=result,
+            )
+            if isinstance(result, dict):
+                for key in ("text", "answer", "result", "summary"):
+                    if isinstance(result.get(key), str) and result[key].strip():
+                        return result[key]
+                return _json.dumps(result, ensure_ascii=False, default=str)
+            return "" if result is None else str(result)
+
+        return delegate
+
+    async def _on_gpt_live_dtmf(self, digits: str) -> None:
+        """Aggregated keypad digits on a GPT-Live session: a ``user`` transcript
+        row (as the DTMF aggregator's TranscriptionFrame would have produced)
+        and the injection shim (typed input for the backend, context for the
+        voice model)."""
+        await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
+        llm = self._llm_service
+        inject = getattr(llm, "inject_dtmf", None)
+        if inject is None:
+            return
+        await inject(digits)
+
+    async def _on_provider_session_ended(self, reason: str) -> None:
+        """The provider closed the GPT-Live session (expiry, a content policy
+        close, a lost connection): end the call cleanly with that reason."""
+        logger.bind(reason=reason).warning("GPT-Live session ended by the provider; ending the call")
+        self._wants_hangup = True
+        await self._end(f"{DISCONNECT_REASONS['SESSION_CLOSED']}: provider {reason}")
+        await self.gateway_session.shutdown()
 
     def get_parent_transcript(self) -> str:
         """Render this session's chat history in the LiveKit-parity

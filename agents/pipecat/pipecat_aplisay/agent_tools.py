@@ -155,6 +155,10 @@ def build_agent_tools(
 
     descriptors: list[dict] = []
     for fn_def in functions:
+        if fn_def.get("implementation") == "builtin" and fn_def.get("platform") == "delegate":
+            # A GPT-Live agent's ``delegate`` names its backend text agent
+            # (gpt_live.py); no model ever calls it, so it is never a tool.
+            continue
         properties = (fn_def.get("input_schema") or {}).get("properties") or {}
         visible = _filter_llm_visible_schema(properties)
         required = [k for k, v in properties.items() if v.get("required")]

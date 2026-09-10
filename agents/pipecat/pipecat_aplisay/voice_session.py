@@ -40,6 +40,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .gpt_live import GptLiveSession, is_gpt_live_model_id
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
 from .realtime_tts import external_tts_vendor, local_vad_required, text_output_enabled
@@ -387,10 +388,16 @@ def _user_aggregator_params_for(
 _DEFAULT_DTMF_TIMEOUT_MS = 1500
 
 
-def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
+def _dtmf_aggregator_for(
+    agent: dict, *, on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None
+) -> DTMFAggregator:
     """Build the DTMF aggregator that buffers keypad digits into a single user
     turn, honouring per-agent ``options.dtmfTimeout`` and
     ``options.dtmfTerminator``.
+
+    ``on_digits`` (GPT-Live) swaps the ``TranscriptionFrame`` delivery for a
+    callback: the live session ignores context frames after it has started,
+    so the digits go to the injection shim instead (see gpt_live_service.py).
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -440,6 +447,14 @@ def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
     )
     # termination_digit may be None to disable the terminator (see above); the
     # base class type-hints KeypadEntry but only does an equality comparison.
+    if on_digits is not None:
+        from .gpt_live_service import GptLiveDtmfAggregator
+
+        return GptLiveDtmfAggregator(
+            timeout=timeout_s,
+            termination_digit=termination_digit,  # type: ignore[arg-type]
+            on_digits=on_digits,
+        )
     return DTMFAggregator(
         timeout=timeout_s,
         termination_digit=termination_digit,  # type: ignore[arg-type]
@@ -609,8 +624,14 @@ def _wire_inactivity_kick(
     is_ultravox: bool,
     relay_endpoint: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    inject: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> None:
     """Register the inactivity "kick" handler on the user aggregator.
+
+    ``inject`` replaces the frame-based delivery for a service that ignores
+    context frames after it has started (GPT-Live): it is awaited with the
+    configured message and speaks it through the service's own channel
+    (``gpt_live_service.AplisayOpenAILiveLLMService.inject_inactivity_prompt``).
 
     Fires the configured ``options.inactivity.message`` as deterministic
     spoken audio after ``options.inactivity.timeout`` seconds of silence,
@@ -701,7 +722,9 @@ def _wire_inactivity_kick(
         if task is None:
             return
         try:
-            if mode == "pipeline" and TTSSpeakFrame is not None:
+            if inject is not None:
+                await inject(message)
+            elif mode == "pipeline" and TTSSpeakFrame is not None:
                 await task.queue_frames([TTSSpeakFrame(message)])
             else:
                 await task.queue_frames(
@@ -990,8 +1013,16 @@ async def build_voice_session(
     on_aux_usage: "Optional[Callable[[str, int, dict], None]]" = None,
     on_output_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
     on_output_usage: "Optional[Callable[[str, int, dict], None]]" = None,
+    gpt_live: "Optional[GptLiveSession]" = None,
+    history: "Optional[list[dict]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
+
+    ``gpt_live`` is the resolved two-layer composition for a GPT-Live model
+    (``call_session._compose_gpt_live``): required on such a model, ignored on
+    every other. ``history`` seeds the context with prior ``user`` /
+    ``assistant`` turns (an agent handover onto GPT-Live carries the transcript
+    as the session's startup history rather than inside the prompt).
 
     ``on_aux_transcript`` / ``on_aux_usage`` receive the auxiliary STT's final
     transcripts and usage deltas (``unit, quantity, {vendor, model}``) when the
@@ -1049,12 +1080,22 @@ async def build_voice_session(
         )
 
     aux_tap = _aux_stt_tap_for(agent, on_aux_transcript, on_aux_usage)
-    output_tap = _output_stt_tap_for(agent, on_output_transcript, on_output_usage)
+    # GPT-Live streams speech as ``SpeechOutputAudioRawFrame`` (a sibling of
+    # ``TTSAudioRawFrame`` under ``OutputAudioRawFrame``), so the audit tap keys
+    # on the parent class there.
+    output_frame_cls = None
+    if is_gpt_live_model_id(model_id_from_name(model_name)):
+        from pipecat.frames.frames import OutputAudioRawFrame
+
+        output_frame_cls = OutputAudioRawFrame
+    output_tap = _output_stt_tap_for(
+        agent, on_output_transcript, on_output_usage, frame_cls=output_frame_cls
+    )
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap,
+            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, gpt_live=gpt_live, history=history,
         )
     else:
         task, context, llm = await _build_pipeline(
@@ -1098,10 +1139,13 @@ def _output_stt_tap_for(
     agent: dict,
     on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
     on_usage: "Optional[Callable[[str, int, dict], None]]",
+    *,
+    frame_cls: "Optional[type]" = None,
 ) -> "Optional[Any]":
     """The output audit tap for ``options.tts.output`` (see aux_stt.py), or
     ``None`` when the option is off — in which case nothing is inserted into
-    the chain. Taps the agent's ``TTSAudioRawFrame``s only."""
+    the chain. Taps the agent's ``TTSAudioRawFrame``s only, unless ``frame_cls``
+    names another output audio class (GPT-Live's speech frames)."""
     from pipecat.frames.frames import TTSAudioRawFrame
 
     from .aux_stt import AuxSttTap, output_stt_agent, output_stt_vendor, parse_output_stt_option
@@ -1121,7 +1165,7 @@ def _output_stt_tap_for(
         stt_factory=lambda: build_stt_service(effective_agent),
         on_final=on_transcript,
         on_usage=_report,
-        frame_cls=TTSAudioRawFrame,
+        frame_cls=frame_cls or TTSAudioRawFrame,
         label="outputStt",
     )
 
@@ -1310,9 +1354,12 @@ async def _build_realtime(
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     aux_tap: "Optional[Any]" = None,
     output_tap: "Optional[Any]" = None,
+    gpt_live: "Optional[GptLiveSession]" = None,
+    history: "Optional[list[dict]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
+    gpt_live_model = is_gpt_live_model_id(model_id)
 
     # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
     # than the model's own, so the model emits text and a discrete TTS stage
@@ -1332,7 +1379,27 @@ async def _build_realtime(
             "realtime text-output mode: external TTS speaks the model's text"
         )
 
-    if model_id.startswith("openai/"):
+    if gpt_live_model:
+        # OpenAI GPT-Live (docs/gpt-live.md): a full-duplex voice model that
+        # delegates reasoning and tool use to a backend text model. The call
+        # session resolved the composition (``gpt_live``): the voice
+        # instructions, the backend model, instructions and effort, the merged
+        # tool set (already in ``tools``) and the client-mode delegate. The
+        # service subclass carries the injection shim, the vendorSpecific merge
+        # and the provider-close callback (gpt_live_service.py).
+        if gpt_live is None:
+            raise RuntimeError(
+                f"{model_id} needs a resolved GPT-Live composition; build it with "
+                "call_session._compose_gpt_live before build_voice_session"
+            )
+        from .gpt_live_service import build_gpt_live_service
+
+        llm = build_gpt_live_service(
+            api_key=_require_env("OPENAI_API_KEY"),
+            voice=(options.get("tts") or {}).get("voice"),
+            session=gpt_live,
+        )
+    elif model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
         # output, not directly on Settings. The Settings class only accepts
         # `session_properties` (plus inherited `model` / `system_instruction`).
@@ -1453,10 +1520,18 @@ async def _build_realtime(
     # at the transport's rate, exactly as in pipeline mode.
     external_tts = [build_tts_service(agent)] if text_output else []
 
-    context = LLMContext(
-        [{"role": "developer", "content": system_prompt}],
-        tools=schemas,
-    )
+    if gpt_live_model:
+        # No prompt developer message: the service's adapter would send it as
+        # startup history (8,192-token cap) instead of instructions, which the
+        # service carries in Settings.system_instruction. Prior turns from a
+        # handover seed the session; the greeting's trailing developer message
+        # (call_session._wire_greeting) becomes the opening instruction.
+        context = LLMContext(list(history or []), tools=schemas)
+    else:
+        context = LLMContext(
+            [{"role": "developer", "content": system_prompt}],
+            tools=schemas,
+        )
     # A text-output session on a provider that emits no user-turn frames also
     # gets a local VAD so the caller can interrupt the external TTS (see
     # _local_vad_analyzer). OpenAI Realtime's server VAD raises the
@@ -1492,8 +1567,11 @@ async def _build_realtime(
     cushion_interrupt = OutputCushionInterrupt(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
-    # never consumed and digits are dropped.
-    dtmf_aggregator = _dtmf_aggregator_for(agent)
+    # never consumed and digits are dropped. GPT-Live routes the digits through
+    # the injection shim instead of a TranscriptionFrame.
+    dtmf_aggregator = _dtmf_aggregator_for(
+        agent, on_digits=gpt_live.on_dtmf if (gpt_live_model and gpt_live is not None) else None
+    )
     # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
     # engaged relay silences the caller's audio for the aux engine too, and the
     # tap copies audio out to a side pipeline — nothing of the second engine
@@ -1551,6 +1629,9 @@ async def _build_realtime(
         is_ultravox=model_id.startswith("ultravox/"),
         relay_endpoint=relay_endpoint,
         on_inactivity_hangup=on_inactivity_hangup,
+        # GPT-Live ignores context frames once started: the kick is spoken
+        # context sent through the service (gpt_live_service.py).
+        inject=llm.inject_inactivity_prompt if gpt_live_model else None,
     )
     return task, context, llm
 
