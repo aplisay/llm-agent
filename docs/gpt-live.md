@@ -7,8 +7,10 @@ The platform offers it as the realtime row `pipecat:openai/gpt-live-1`.
 
 This page covers how to configure an agent on it, how the backend is
 expressed, and how that relates to the text subagents the platform already
-has. The LiveKit row (`livekit:openai/gpt-live-1`) follows when the upstream
-LiveKit plugin ships.
+has. A worked guide that builds a complete set step by step, keeps specialist
+subagents and switches the backend between providers is
+[gpt-live-agent-sets.md](gpt-live-agent-sets.md). The LiveKit row
+(`livekit:openai/gpt-live-1`) follows when the upstream LiveKit plugin ships.
 
 ## Two layers, two agents
 
@@ -185,7 +187,7 @@ differs from OpenAI Realtime's, and a Realtime-only name is rejected.
 
 | Option | On GPT-Live |
 |---|---|
-| `greeting.text`, `greeting.instructions` | An opening instruction appended after the session starts. The model paraphrases rather than reads, so the wording is best-effort. Caller audio is dropped until the first turn completes. |
+| `greeting.text`, `greeting.instructions` | An opening instruction appended after the session starts, audible about a second later. The model reads `text` closely but not guaranteed verbatim. The caller is inaudible to the model until the opening line completes. |
 | no greeting | The platform asks the model to greet the caller and ask how it can help, so the agent still speaks first. |
 | `inactivity` | Idle detection unchanged. The prompt is delivered as spoken context, so it is paraphrased. Repeat count and `hangup` unchanged. |
 | `maxDuration` | Unchanged. |
