@@ -289,6 +289,7 @@ class CallSession:
     # True while building/running the continuation pipeline of a full-stack
     # agent handover, so errors on that generation are reported as handover
     # failures — the case where dead air is most likely and least visible.
+    # It also gives that generation the handover opening (``_platform_opening``).
     _is_handover_generation: bool = False
     # Escalates this generation's ErrorFrames (see pipeline_error_alarm).
     _error_alarm: Optional[Any] = None
@@ -303,6 +304,11 @@ class CallSession:
     # summaryAgent result, collected by the ``transfer_summary`` builtin
     # (bridged_transfer.prefire_summary). None everywhere else.
     _pending_summary: Optional[Any] = None
+    # Hand-back take-over sessions only (``setup_takeover_call``): a person
+    # handed the caller back after a bridged transfer, so the leg opens with
+    # TAKEOVER_OPENING_INSTRUCTION rather than the agent's greeting (see
+    # ``_platform_opening``).
+    _is_takeover: bool = False
 
     def __post_init__(self):
         # Listener-level transfer overrides (instance columns) wholesale-replace
@@ -662,7 +668,7 @@ class CallSession:
             on_output_usage=self._on_output_usage,
             gpt_live=gpt_live_session,
             history=history,
-            handover=self._is_handover_generation,
+            opening=self._platform_opening(),
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -787,16 +793,39 @@ class CallSession:
         max_duration_secs = _parse_duration((agent.get("options") or {}).get("maxDuration"))
         return task, max_duration_secs
 
+    def _platform_opening(self) -> Optional[str]:
+        """The platform's opening instruction for this generation, or None.
+
+        A generation that continues a call already in progress does not use
+        the agent's greeting, because the caller was greeted when the call
+        started. It opens with an instruction instead:
+        ``HANDOVER_OPENING_INSTRUCTION`` on the first generation after a
+        ``transfer_agent`` full-stack handover, and
+        ``TAKEOVER_OPENING_INSTRUCTION`` on a human-to-agent takeover leg
+        (``_is_takeover``). A handover from a takeover leg opens as a handover.
+        None means a new call, where the agent's greeting applies.
+        """
+        from .transfer_prompts import (
+            HANDOVER_OPENING_INSTRUCTION,
+            TAKEOVER_OPENING_INSTRUCTION,
+        )
+
+        if self._is_handover_generation:
+            return HANDOVER_OPENING_INSTRUCTION
+        if self._is_takeover:
+            return TAKEOVER_OPENING_INSTRUCTION
+        return None
+
     async def _wire_greeting(
         self, transport, task, agent: dict, mode: str, model_name: str
     ) -> None:
         """Register ``on_client_connected`` to emit the opening greeting.
 
-        On the first generation after a ``transfer_agent`` full-stack handover
-        (``_is_handover_generation``) the incoming agent's greeting is not
+        When the generation continues a call already in progress (an agent
+        handover or a human-to-agent takeover) the agent's greeting is not
         used, because the caller was greeted when the call started. The agent
-        opens with ``HANDOVER_OPENING_INSTRUCTION`` instead, which tells it to
-        introduce itself and continue the call.
+        opens with the platform's instruction from ``_platform_opening``
+        instead, which tells it to introduce itself and continue the call.
         """
         # Ultravox handles greetings natively via the /calls API's
         # ``firstSpeakerSettings.agent`` parameter — see the Ultravox
@@ -805,9 +834,8 @@ class CallSession:
         # ``LLMRunFrame`` / ``TTSSpeakFrame``, none of which Ultravox's
         # ``process_frame`` consumes (they'd just pass through as
         # no-ops). Skip wiring on Ultravox so we don't queue dead frames
-        # at connect time. The handover opening is native there too
+        # at connect time. The platform opening is native there too
         # (``voice_session._ultravox_one_shot_params``).
-        from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
         from .voice_mode import model_id_from_name
 
         if model_id_from_name(model_name).startswith("ultravox/"):
@@ -815,7 +843,7 @@ class CallSession:
         from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
         from pipecat.frames.frames import LLMRunFrame as _RunFrame
 
-        handover = self._is_handover_generation
+        platform_opening = self._platform_opening()
 
         if is_gpt_live_model_id(model_id_from_name(model_name)):
             # GPT-Live: the ``LLMRunFrame`` starts the session from the context,
@@ -825,11 +853,7 @@ class CallSession:
             # first). The wording is best-effort: the model paraphrases. With
             # no greeting configured the platform instruction keeps the
             # "agent speaks first" contract.
-            opening = (
-                HANDOVER_OPENING_INSTRUCTION
-                if handover
-                else greeting_opening_instruction(agent)
-            )
+            opening = platform_opening or greeting_opening_instruction(agent)
 
             @transport.event_handler("on_client_connected")
             async def _on_client_connected_gpt_live(*_args, **_kwargs) -> None:
@@ -865,14 +889,14 @@ class CallSession:
         @transport.event_handler("on_client_connected")
         async def _on_client_connected(*_args, **_kwargs) -> None:
             try:
-                if handover:
-                    # A handover: the caller was already greeted. Run the
-                    # incoming agent's first turn from the handover
+                if platform_opening:
+                    # A handover or a takeover: the caller was already
+                    # greeted. Run the agent's first turn from the platform's
                     # instruction; its greeting is for a new call.
                     await task.queue_frames(
                         [
                             LLMMessagesAppendFrame(
-                                [{"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION}],
+                                [{"role": "developer", "content": platform_opening}],
                                 run_llm=False,
                             ),
                             LLMRunFrame(),
@@ -1864,7 +1888,9 @@ class CallSession:
             client_delegate=self._gpt_live_client_delegate(spec) if spec.mode == "client" else None,
             on_session_ended=self._on_provider_session_ended,
             on_dtmf=self._on_gpt_live_dtmf,
-            deaf_during_greeting=has_greeting(agent),
+            # When the platform opens the call (a handover or a takeover), the
+            # greeting does not play, so the caller is not made inaudible.
+            deaf_during_greeting=has_greeting(agent) and self._platform_opening() is None,
         )
         logger.bind(
             event="delegation_config",
@@ -3305,7 +3331,9 @@ async def setup_takeover_call(
     ``payload.call`` is a started child call record (parentId = the
     original call). Here we just wire the freshly re-attached media leg
     to a standard CallSession — the incoming agent gets its own full
-    tool surface, unlike a consult-side TransferAgent.
+    tool surface, unlike a consult-side TransferAgent. The session is
+    marked as a takeover, so the agent opens with
+    ``TAKEOVER_OPENING_INSTRUCTION`` rather than its greeting.
     """
     session_params = GatewaySessionParams(session_id=inbound.session_id)
     gw_session = await sip_gateway.setup_inbound(inbound, session_params)
@@ -3317,6 +3345,7 @@ async def setup_takeover_call(
         gateway_session=gw_session,
         call=payload.call,
         _pending_summary=payload.summary_future,
+        _is_takeover=True,
     )
 
 

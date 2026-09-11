@@ -14,8 +14,10 @@ The default template below is byte-for-byte identical to the LiveKit
 default at ``agents/livekit/lib/transfer-handler.ts:615``. Keep the two
 in sync if either side changes.
 
-It also holds :data:`HANDOVER_OPENING_INSTRUCTION`, the first turn of an
-agent that takes over a live call through the ``transfer_agent`` builtin.
+It also holds the first turn of an agent that takes over a live call:
+:data:`HANDOVER_OPENING_INSTRUCTION` after the ``transfer_agent`` builtin, and
+:data:`TAKEOVER_OPENING_INSTRUCTION` after a person hands the call back
+(``options.bridgedTransferToAgent``).
 """
 
 from __future__ import annotations
@@ -40,6 +42,24 @@ HANDOVER_OPENING_INSTRUCTION = (
     "a handover summary or the conversation so far, say briefly what you "
     "understand the caller needs and continue from there. Otherwise ask how "
     "you can help."
+)
+
+
+# The opening turn of an agent that takes over a call from a person: after a
+# bridged transfer, the transfer target handed the caller back by DTMF
+# (``options.bridgedTransferToAgent``, see bridged_transfer.py). It is used in
+# place of that agent's greeting and reaches the model on the same paths as
+# HANDOVER_OPENING_INSTRUCTION. The caller was greeted when the call started
+# and has since been talking with the person, so the agent introduces itself
+# and continues from what they discussed.
+TAKEOVER_OPENING_INSTRUCTION = (
+    "This is your first message after a person handed this call back to you. "
+    "The caller was greeted when the call started and has been talking with "
+    "that person, so do not greet them as if this were a new call. Introduce "
+    "yourself in one short sentence. If you have a summary or the "
+    "conversation so far, say briefly what you understand the caller needs "
+    "or what they agreed with that person, and continue from there. "
+    "Otherwise ask how you can help."
 )
 
 
