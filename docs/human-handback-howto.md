@@ -217,13 +217,11 @@ bridgeTranscript, consultTranscript, key, targetNumber}`, where **tools** can
 reach them out-of-band (next section).
 
 **Its first turn.** The follow-up agent's own greeting is not used for a
-hand-back, because the caller was greeted when the call started. On the
-Pipecat worker the platform starts the call for it with an instruction:
-introduce yourself in one sentence, say briefly what you understand the caller
-needs or agreed with the person, and continue from there (or ask how you can
-help, when there is no history). The caller can interrupt that turn. The
-LiveKit worker instead asks the agent to greet the caller according to its
-instructions, so there the prompt should say how to open.
+hand-back, because the caller was greeted when the call started. The platform
+starts the call for it with an instruction: introduce yourself in one
+sentence, say briefly what you understand the caller needs or agreed with the
+person, and continue from there (or ask how you can help, when there is no
+history). The caller can interrupt that turn.
 
 ## Step 3½ — add a summariser to the set
 
