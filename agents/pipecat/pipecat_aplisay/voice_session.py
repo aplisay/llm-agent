@@ -713,8 +713,10 @@ def _wire_inactivity_kick(
     hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
     idle_prompts = 0
 
+    # Pipecat calls this with (aggregator, strategy). If the signature does not
+    # accept both, the call raises and pipecat only logs it, so no reset happens.
     @user_aggregator.event_handler("on_user_turn_started")
-    async def _on_user_turn_started(_aggregator) -> None:  # noqa: ANN001
+    async def _on_user_turn_started(_aggregator, _strategy=None) -> None:  # noqa: ANN001
         nonlocal idle_prompts
         idle_prompts = 0
 
