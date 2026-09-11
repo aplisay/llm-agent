@@ -1,7 +1,7 @@
-# Release 0.9.54 (draft) - SIP registration observability, registration trunks, auxiliary transcription, media quality and worker hardening
+# Release 0.9.54 (draft) - GPT-Live, SIP registrar accounts and observability, auxiliary transcription, worker hardening
 
 > Draft. Covers changes merged to `next` since the 0.9.53 release point
-> (70 pull requests, 9 August - 3 September 2026). The version number is
+> (93 pull requests, 9 August - 11 September 2026). The version number is
 > provisional.
 
 Each item is tagged by subsystem: **core** (API server, REST API, database,
@@ -45,6 +45,31 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Documentation**: new
   [registration-trace-and-probe-api.md](../registration-trace-and-probe-api.md),
   and the phone-registration `options` union is documented in OpenAPI.
+
+## Registrar accounts - core
+
+- **[core] Availability**: registrar accounts are served by `regserver` B2BUA
+  nodes and need `REGSERVER_REGISTRAR` set on the deployment. Without it,
+  creating one answers `503 registrar_unavailable`.
+- **[core] Registrar accounts** (schema v66): `POST /phone-endpoints` with
+  `mode: "registrar"` creates a registration that the customer's PBX registers
+  to, instead of one the platform registers out with. The platform mints the
+  username and password and returns them once.
+- **[core] Account credentials**: `GET /api/phone-endpoints/{id}/credentials`
+  shows them again (`phoneEndpoint:update`, audit-logged), and `POST` on the
+  same route rotates the password.
+- **[core] PBX bindings**: `GET /api/phone-endpoints/{id}` returns `mode` and
+  `kind`, plus `bindings` and `bindingsUpdatedAt` on a registrar account.
+  `GET .../bindings` returns the stored bindings, or asks the owning node with
+  `?live=1`.
+- **[core] Immutable identity**: `PUT` refuses `registrar`, `username`,
+  `password`, and `b2buaId` on a registrar account
+  (`registrar_identity_immutable`), and a change of `mode` on any registration
+  (`mode_immutable`).
+- **[core] Regserver nodes** heartbeat as their own node type and serve traces,
+  but are never chosen to run a registration probe.
+- **[core] Documentation**: registrar accounts are documented in
+  [phone-endpoints-api.md](../phone-endpoints-api.md).
 
 ## Numbers, trunks and registrations - core + workers
 
@@ -94,14 +119,10 @@ Pipecat), and **ci** (build and release pipeline).
   and queue depth during agent speech.
 - **[pipecat] Output cushioning** adds configurable queue target/cushioning and
   pause stretching to reduce mid-speech starvation without changing voiced audio.
-- **[pipecat] Output backlog ceiling**: the pause stretcher stops once the whole
-  output backlog (the track's queue plus audio still in the transport's queue)
-  reaches `WEBRTC_OUTPUT_TARGET_MS`. It used to compare the target with the
-  track's queue alone, so on a source that never stops sending (GPT-Live) the
-  added delay grew for the whole call. On a continuous speech stream, a backlog
-  above `WEBRTC_OUTPUT_MAX_MS` is trimmed back to the target by dropping one
-  quiet chunk in `WEBRTC_TRIM_EVERY`. The per-call `track finished` line reports
-  trimmed chunks and the peak output backlog.
+- **[pipecat] Output backlog ceiling**: pause stretching stops once the whole
+  output backlog reaches `WEBRTC_OUTPUT_TARGET_MS`. On continuous speech, a
+  backlog above `WEBRTC_OUTPUT_MAX_MS` is cut back to the target by dropping
+  quiet chunks (`WEBRTC_TRIM_EVERY`), and the call summary logs how many.
 - **[pipecat + sipbridge] Underrun logging** is summarised once per call, with
   optional per-event logging via `WEBRTC_UNDERRUN_LOG_MS`.
 - **[pipecat] Trickle ICE routing** forwards ICE PATCHes to the node that owns the
@@ -184,6 +205,18 @@ Pipecat), and **ci** (build and release pipeline).
   per-call map sizes to `/healthz`, and draining state and goroutine count to the
   gateway's `/health`.
 
+## Multiple API server processes - core
+
+- **[core] Multi-process operation**: live call progress, start-up schema work,
+  call numbering, and chat sessions no longer assume a single API server
+  process.
+- **[core] Live call progress** reaches listeners when a call's log writes land
+  on a different process from the one that created the call.
+- **[core] Start-up schema work** runs under a Postgres advisory lock, so
+  processes that start together take turns.
+- **[core] Call numbering**: concurrent calls for one organisation get distinct
+  `index` values, and a failed call create rolls back in full.
+
 ## Failover, agents and models - core + workers
 
 - **[core + livekit + pipecat] `options.fallback.message`** adds a fixed TTS
@@ -196,13 +229,19 @@ Pipecat), and **ci** (build and release pipeline).
   `minimumInterruptionDuration: 0.48s` when no explicit
   `vendorSpecific.ultravox.vadSettings` block is supplied. Pipecat now honours
   this vendor-specific option.
+- **[pipecat] Inactivity hangup** (`options.inactivity.hangup`) now resets its
+  count of unanswered prompts when the caller speaks, so prompts on either side
+  of a caller turn no longer add up to a hangup.
 - **[core + livekit + pipecat] External TTS on realtime models**: on rows
-  flagged `hasExternalTts` in `GET /models` (Ultravox and OpenAI Realtime on
-  both voice workers), `options.tts.vendor` set to a pipeline TTS vendor
-  (`elevenlabs`, `deepgram`, `cartesia`, `google` on LiveKit) runs the model in
-  text-output mode and that TTS speaks its text; `voice` and `language` then
-  apply to the TTS. The voices endpoints list both catalogues for such rows.
-  See `docs/realtime-external-tts.md`.
+  flagged `hasExternalTts` in `GET /models`, setting `options.tts.vendor` to a
+  pipeline TTS vendor runs the model in text-output mode, and that TTS speaks
+  its text with the agent's `voice` and `language`.
+- **[core] `hasExternalTts`** is set on the Ultravox and OpenAI Realtime rows of
+  both voice workers. Pipeline vendors are `elevenlabs`, `deepgram`, and
+  `cartesia`, plus `google` on LiveKit. The voices endpoints list both
+  catalogues for these rows.
+- **[core] Documentation**: new
+  [realtime-external-tts.md](../realtime-external-tts.md).
 - **[core] Model aliases** whose targets are no longer offered are removed from
   the advertised roster.
 - **[core] OpenAI hosted-MCP replay** now retains completed MCP results by
@@ -235,36 +274,35 @@ Pipecat), and **ci** (build and release pipeline).
   (`pipecat:openai/gpt-live-1`). The LiveKit row follows when the upstream
   LiveKit plugin ships.
 - **[core + pipecat] `pipecat:openai/gpt-live-1`** adds OpenAI's full-duplex
-  voice model as a realtime row. The model listens and speaks at the same time
+  voice model as a realtime row. The model listens and speaks at the same time,
   and hands reasoning and tool use to a backend text model while it keeps
-  talking. See `docs/gpt-live.md`.
+  talking.
 - **[core] `delegate` builtin** names the backend: a `text` agent in the same
   organisation, declared like `subagent` (`agent` parameter, `static` UUID or
-  `label:` inside a set, or `metadata`). One per agent, only on rows flagged
-  `hasDelegation` in `GET /models`. The text agent's prompt, model, functions,
-  MCP servers and keys become the backend; the voice agent's prompt is the
-  persona; backend tools are the union of both.
+  `label:` inside a set, or `metadata`). One per agent, on rows flagged
+  `hasDelegation` only.
+- **[core] Delegated backend**: the text agent's prompt, model, functions, MCP
+  servers, and keys become the backend, and the voice agent's prompt is the
+  persona. Backend tools are the union of both agents' tools.
 - **[core + pipecat] Synthetic backend**: a GPT-Live agent with no `delegate`
-  runs its own prompt, functions and MCP servers as the backend on
+  runs its own prompt, functions, and MCP servers as the backend on
   `openai/gpt-5.6-luna`, so existing agents run on the model unchanged.
 - **[pipecat] Delegation modes**: an OpenAI text model runs as OpenAI-hosted
-  delegation with the worker executing the function calls; any other text model
-  runs as client delegation through the internal subagent endpoint, with the
-  answer spoken as commentary and the voice agent's call-control builtins
-  unavailable to it.
+  delegation, and the worker runs its function calls. Any other text model runs
+  as client delegation through the internal subagent endpoint, without the
+  voice agent's call-control builtins, and its answer is spoken as commentary.
 - **[core] `hasDelegation`** on `GET /models` marks rows that accept a
   `delegate` function.
-- **[core] GPT-Live voices**: the voices endpoints list the GPT-Live voice set
-  under `OpenAI` for the row (default `marin`); `options.tts.vendor` must be
-  unset or `openai`. Each voice carries a `gender` and a `description` naming
-  its accent, so a `list_voices` search for `british`, `brit` or `uk` finds
-  vesper (British English) and the Irish English voices stone and willow.
+- **[core] GPT-Live voices** are listed under `OpenAI` for the row (default
+  `marin`), and `options.tts.vendor` must be unset or `openai`. Each voice has a
+  `gender` and a `description` naming its accent, so `list_voices` can search
+  by accent.
 - **[core] Agent sets** resolve `label:` references in `delegate` functions and
   reject a voice member and its in-set delegate declaring a function of the same
   name.
 - **[core] Billing**: session minutes are priced on the row's `voice` line;
   backend tokens on the delegate model's `llm` lines.
-- **[pipecat] Greeting, inactivity prompt and DTMF** on GPT-Live use the Live
+- **[pipecat] Greeting, inactivity prompt, and DTMF** on GPT-Live use the Live
   API's context and typed-input events; the greeting and inactivity wording are
   best-effort. `temperature` is ignored. `vendorSpecific.openai.live` merges into
   the session configuration.
@@ -272,7 +310,8 @@ Pipecat), and **ci** (build and release pipeline).
   restart.
 - **[pipecat] Pipecat upgrade**: the worker moves from pipecat-ai 1.6.0 to a
   pinned git commit of upstream main that carries the OpenAI Live service.
-- **[core] Documentation**: new [gpt-live.md](../gpt-live.md).
+- **[core] Documentation**: new [gpt-live.md](../gpt-live.md) and
+  [gpt-live-agent-sets.md](../gpt-live-agent-sets.md).
 
 ## Billing and rates - core
 
@@ -287,6 +326,26 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] `agentLimit`** is now editable through organisation billing controls.
 - **[core] `billingService`** can assign an organisation's rate card. New
   `scripts/verify-billing-service.mjs` checks deployed billing credentials.
+- **[core] Itemised usage ledger**: new `GET /api/usage/records` returns each
+  usage row with its frozen cost breakdown, newest billing instant first, with
+  filters on every dimension and cursor paging.
+- **[core] `priceState`** on each ledger row is one of `priced`, `included`,
+  `provisional`, `no_rate`, `no_line`, `errored`, or `uncosted`.
+- **[core] `GET /api/usage`** adds `costedQuantity`, `provisionalMeters`,
+  `provisionalQuantity`, and `zeroRatedMeters`. It also accepts `costStatus` as
+  a `groupBy` dimension and a `finalised` filter. The default response shape is
+  unchanged.
+- **[core] Usage costing coverage**: meters with no update for
+  `USAGE_STALE_SESSION_HOURS` are finalised so the sweep can cost them, and rows
+  with no organisation are attributed to their user's organisation.
+- **[core] Bundled realtime speech**: `/api/rate-components` lists `tts:ultravox`
+  with `bundled: true`, so a rate card can price speech already charged in the
+  model minute at zero.
+- **[core] Costing sweep**: `POST /api/agent-db/sweep` accepts `dryRun` and
+  reports finalised, attributed, and per-status counts.
+- **[core] `tools/backfill-usage-costs.js`** backdates each organisation's
+  earliest rate-history entry to its first billable instant. It reports by
+  default and writes only with `--apply`.
 
 ## Security and authorisation - core + workers
 
@@ -326,6 +385,16 @@ Pipecat), and **ci** (build and release pipeline).
   agent, and draft ids.
 - **[core] Tool-call rate limiting** has been reworked, with transfer-status
   polling exempted.
+- **[core] Chat session ownership**: an interactive chat session is held by one
+  API server process at a time. A reconnect that reaches another process takes
+  the session over and continues the conversation where it stopped.
+- **[core] Chat session liveness** is decided by a heartbeat. Starting a server
+  process no longer closes sessions that other processes hold, and
+  `GET /chat-sessions` and `GET /chat-sessions/{id}` now return `live`.
+- **[core] Text agent sessions** outside the builder now have a chat-session row
+  while live. The row is marked ephemeral, never listed, and deleted at the end.
+- **[core] Documentation**: new
+  [chat-session-ownership.md](../chat-session-ownership.md).
 
 ## Ops, deployment and dependencies
 
@@ -349,10 +418,16 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] `tools/purge-user`** now connects to the front-end database using the
   application's client-certificate mTLS env file.
 - **[livekit] COS runner** initialisation added.
+- **[ci] Cloud Build** installs dependencies once, in a cached stage shared by
+  the test and runtime images. `Dockerfile.test` is replaced by the `test`
+  target, so the suite runs on the same base as the deployed image.
+- **[ci] Test databases**: each jest worker gets its own database, named per
+  checkout, so suites run in parallel (`JEST_WORKERS`, default 4) and runs in
+  different checkouts do not collide.
 
 ## Upgrade notes
 
-- **[core] Database schema migrates from v57 to v65** on first boot:
+- **[core] Database schema migrates from v57 to v66** on first boot:
   - v58 `trunks.outbound_call_filter`.
   - v59 drops the `rate_cards` period-overlap EXCLUDE constraint.
   - v60 `b2bua_nodes.private_address`.
@@ -361,6 +436,8 @@ Pipecat), and **ci** (build and release pipeline).
   - v63 adds `number_reservations`.
   - v64 adds transaction-log type `user-aux`.
   - v65 adds transaction-log type `agent-speech`.
+  - v66 adds registrar-account fields to `phone_registrations` and
+    `b2bua_nodes`.
   - The v64/v65 enum additions require `DB_FORCE_SYNC`.
 - **[core] New optional environment**: `REGCLIENT_API_TOKEN`,
   `REGCLIENT_API_TOKEN_PREVIOUS`, `REGCLIENT_API_PORT`, `REGCLIENT_CA_CERT`,
@@ -368,7 +445,10 @@ Pipecat), and **ci** (build and release pipeline).
   `REGCLIENT_ALLOW_PRIVATE_NODES`, `REGCLIENT_USE_PRIVATE_NODE_ADDRESS`,
   `REGCLIENT_DISCOVERY_TIMEOUT_MS`, `REGCLIENT_CAPABILITY_TTL_MS`,
   `REGCLIENT_UNSUPPORTED_TTL_MS`, `TRACE_PROXY_TIMEOUT_MS`,
-  `B2BUA_HEARTBEAT_TOKEN`, `EMAIL_BRANDS`, and `EMAIL_BRANDS_FILE`.
+  `B2BUA_HEARTBEAT_TOKEN`, `EMAIL_BRANDS`, `EMAIL_BRANDS_FILE`,
+  `REGSERVER_REGISTRAR`, `USAGE_STALE_SESSION_HOURS`,
+  `TEXT_CHAT_HANDOFF_WAIT_MS`, `TEXT_CHAT_HANDOFF_BUSY_WAIT_MS`,
+  `TEXT_CHAT_LIVENESS_GRACE_MS`, `TEXT_CHAT_STATE_MAX_BYTES`, and `POD_NAME`.
 - **[pipecat] New optional environment**: `WEBRTC_OUTPUT_CUSHION_MS`,
   `WEBRTC_OUTPUT_TARGET_MS`, `WEBRTC_OUTPUT_MAX_MS`, `WEBRTC_STRETCH_EVERY`,
   `WEBRTC_TRIM_EVERY`, `WEBRTC_UNDERRUN_STATS`, `WEBRTC_UNDERRUN_LOG_MS`,
@@ -385,6 +465,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] `APLISAY_OUTBOUND_TRUNK_ID`** now affects outbound destination
   authorisation as well as billing attribution. Configure the same value on the
   API service and both voice workers.
+- **[core] `REGSERVER_REGISTRAR`** cannot change once the first registrar
+  account exists, because it is the digest realm every PBX hashes its password
+  against. Set it before creating accounts.
 - **[core] Rate cards** may now overlap by period; duplicate `(name, start_date)`
   remains invalid.
 - **[core] Chargeable-trunk number claims** require a reservation unless the
