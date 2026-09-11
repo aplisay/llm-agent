@@ -180,6 +180,45 @@ coral, delta, echo, gleam, marin, meridian, quartz, ripple, sage, shimmer,
 stone, tempo, verse, vesper and willow. The default is `marin`. The list
 differs from OpenAI Realtime's, and a Realtime-only name is rejected.
 
+Every voice sits under `any`, so the locale says nothing about accent. Each
+row carries a `gender`, and a `description` that names the accent. The
+`list_voices` builtin's `search` matches both. A search for `british`, `brit`
+or `uk` finds vesper (British English) and the two Irish English voices,
+stone and willow, whose descriptions say "more British (UK)".
+
+The two Southern US voices, cinder and delta, say "US (American, USA)", so a
+search for `us`, `usa` or `american` finds them. `american` also finds the two
+North American voices, gleam and meridian.
+
+| Voice | Gender | Accent |
+|---|---|---|
+| alloy | female | none given |
+| ash | male | none given |
+| ballad | male | none given |
+| beacon | male | Filipino English |
+| bossa | female | Brazilian Portuguese |
+| cedar | male | none given |
+| cinder | male | Southern US English |
+| coral | female | none given |
+| delta | female | Southern US English |
+| echo | male | none given |
+| gleam | female | North American English |
+| marin (default) | female | none given |
+| meridian | male | North American English |
+| quartz | female | Australian English |
+| ripple | male | Australian English |
+| sage | female | none given |
+| shimmer | female | none given |
+| stone | male | Irish English |
+| tempo | male | Brazilian Portuguese |
+| verse | male | none given |
+| vesper | male | British English |
+| willow | female | Irish English |
+
+The accents of the twelve voices added with GPT-Live follow OpenAI's
+descriptions. OpenAI gives no accent for the other ten, and their gender is
+Aplisay's label.
+
 `options.tts.vendor` must be unset or `openai`. There is no text-output mode
 (`hasExternalTts` is false), so an external TTS vendor is rejected.
 
