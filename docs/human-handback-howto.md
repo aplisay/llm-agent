@@ -216,6 +216,15 @@ takeover call's metadata as `aplisay.transfer.{parentTranscript,
 bridgeTranscript, consultTranscript, key, targetNumber}`, where **tools** can
 reach them out-of-band (next section).
 
+**Its first turn.** The follow-up agent's own greeting is not used for a
+hand-back, because the caller was greeted when the call started. On the
+Pipecat worker the platform starts the call for it with an instruction:
+introduce yourself in one sentence, say briefly what you understand the caller
+needs or agreed with the person, and continue from there (or ask how you can
+help, when there is no history). The caller can interrupt that turn. The
+LiveKit worker instead asks the agent to greet the caller according to its
+instructions, so there the prompt should say how to open.
+
 ## Step 3½ — add a summariser to the set
 
 Raw transcripts make the follow-up agent read a lot before its first useful
@@ -290,10 +299,10 @@ run the follow-up agent on the summary alone — smaller prompt, faster first
 token, and the raw human conversation never enters its context.
 
 **Masking the latency conversationally:** whichever mode you use, prompt the
-follow-up agent to greet first and fetch second — "Give me one moment while I
-catch up on what you agreed with Sam" — so the tool round-trip hides behind
-natural speech. With `summaryAgent` pre-firing, the result is usually already
-`ready` by the time the greeting finishes.
+follow-up agent to introduce itself first and fetch second ("Give me one moment
+while I catch up on what you agreed with Sam"), so the caller hears speech
+while the tool call runs. With `summaryAgent` pre-firing, the result is usually
+already `ready` by the time that first sentence ends.
 
 ## Step 4 — the booking call
 
@@ -322,8 +331,9 @@ written to the calendar.
    (`GET /calls?parentId=…`) and — with `bridgedTransferTranscribe` on — its
    transcript fill in as you speak.
 4. Press `1` **from the engineer's phone** and confirm the follow-up agent
-   answers with awareness of what was said. Press digits from the caller's
-   phone first to confirm they do nothing.
+   answers with awareness of what was said, and does not greet the caller as
+   if the call were new. Press digits from the caller's phone first to confirm
+   they do nothing.
 5. Check the follow-up agent's booking call hits your API with the agreed
    slot, and that the final call-record chain is
    `original → bridged segment → follow-up`.

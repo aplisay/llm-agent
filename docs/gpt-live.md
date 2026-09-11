@@ -231,7 +231,7 @@ Aplisay's label.
 | `inactivity` | Idle detection unchanged. The prompt is delivered as spoken context, so it is paraphrased. Repeat count and `hangup` unchanged. |
 | `maxDuration` | Unchanged. |
 | `dtmfTimeout`, `dtmfTerminator` | Digits go to the backend as typed input and to the voice model as context. In client delegation they are prepended to the next delegation's input. |
-| `transfer_agent` | Always a full restart of the agent stack with the transcript carried into the new agent. The incoming agent's greeting is not used: it opens with an instruction to introduce itself and continue the call. |
+| `transfer_agent` | Always a full restart of the agent stack with the transcript carried into the new agent. The incoming agent's greeting is not used: it opens with an instruction to introduce itself and continue the call. The caller is not made inaudible for that opening. |
 | `transfer`, bridged transfers, `recording`, `stt.aux`, `tts.output` | Unchanged. |
 | `tts.language`, `stt.language` | Appended to the voice instructions as the language to speak. |
 | `temperature` | Ignored. The Live API takes no temperature for either layer. |

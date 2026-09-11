@@ -213,6 +213,15 @@ Pipecat), and **ci** (build and release pipeline).
   itself and continue from the handover summary and conversation so far. On
   Ultravox this replaces the default first turn, which told the model to answer
   as a new call.
+- **[pipecat] Hand-back opening**: after a person hands a call back to an agent
+  (`bridgedTransferToAgent`), the incoming agent no longer greets the caller as
+  if the call were new. Its greeting is not used; it opens with an instruction
+  to introduce itself and continue from what the caller discussed. On Ultravox
+  this replaces the default first turn.
+- **[pipecat] Interruptible openings**: after an agent handover or a hand-back,
+  the caller can interrupt the incoming agent's first turn. The greeting mute,
+  and GPT-Live's caller silence during a greeting, now apply only when a
+  greeting plays.
 
 ## GPT-Live - core + pipecat
 
