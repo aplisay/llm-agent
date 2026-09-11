@@ -9,16 +9,30 @@ consultative-transfer target, which has no other party left to hang up on it.
 Two enforcement paths, mirroring the LiveKit worker: Ultravox-backed sessions get a
 provider-side ``endBehavior`` on the last ``inactivityMessages`` entry; everything
 else is counted by the generic kick and torn down by ``CallSession``. These tests
-cover the option gate and the Ultravox mapping.
+cover the option gate, the Ultravox mapping and the generic kick's prompt counter.
 """
 
 from __future__ import annotations
+
+import asyncio
+
+import pytest
+from loguru import logger
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMUserAggregator,
+    LLMUserAggregatorParams,
+)
+from pipecat.turns.user_start import UserTurnStartedParams, VADUserTurnStartStrategy
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from pipecat_aplisay.constants import DISCONNECT_REASONS
 from pipecat_aplisay.voice_session import (
     INACTIVITY_PROMPT_COUNT,
     _inactivity_hangup_enabled,
     _ultravox_inactivity_extra,
+    _wire_inactivity_kick,
 )
 
 
@@ -96,6 +110,120 @@ def test_entries_are_independent_objects():
 def test_unset_inactivity_yields_no_extra():
     assert _ultravox_inactivity_extra({"options": {}}) == {}
     assert _ultravox_inactivity_extra(_agent(hangup=True)) == {}
+
+
+# --- the generic kick's prompt counter ---------------------------------------
+#
+# Driven through a real LLMUserAggregator from the pinned pipecat, so the
+# handlers get exactly the arguments pipecat passes. Pipecat's dispatcher
+# catches an exception raised by a handler and only logs it, so a signature
+# mismatch shows up as a logged error and a count that never resets.
+
+
+@pytest.fixture()
+def handler_errors():
+    """ERROR log lines written during the test. Pipecat logs a handler's
+    exception here instead of raising it."""
+    lines: list[str] = []
+    sink = logger.add(lines.append, format="{message}", level="ERROR")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink)
+
+
+class _Task:
+    """Stands in for the PipelineTask: records the frames the kick queues."""
+
+    def __init__(self) -> None:
+        self.frames: list = []
+
+    async def queue_frames(self, frames: list) -> None:
+        self.frames.extend(frames)
+
+
+def _wired() -> tuple[LLMUserAggregator, list[int]]:
+    """A user aggregator with the kick wired on it, as in pipeline mode with
+    ``hangup`` set. Also returns a list that gets the number of prompts spoken
+    so far each time the kick ends the call."""
+    # Light strategies: the default stop strategy loads the smart-turn model.
+    aggregator = LLMUserAggregator(
+        LLMContext(),
+        params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[VADUserTurnStartStrategy()],
+                stop=[SpeechTimeoutUserTurnStopStrategy()],
+            )
+        ),
+    )
+    task = _Task()
+    hangups: list[int] = []
+
+    async def hang_up() -> None:
+        hangups.append(len(task.frames))
+
+    _wire_inactivity_kick(
+        user_aggregator=aggregator,
+        task_ref_getter=lambda: task,
+        agent=_configured(hangup=True),
+        mode="pipeline",
+        is_ultravox=False,
+        on_inactivity_hangup=hang_up,
+    )
+    return aggregator, hangups
+
+
+async def _settle() -> None:
+    # The aggregator runs these handlers as tasks. Wait for them to finish.
+    current = asyncio.current_task()
+    await asyncio.gather(*(t for t in asyncio.all_tasks() if t is not current))
+
+
+async def _user_turn_started(aggregator: LLMUserAggregator) -> None:
+    # The aggregator's own emitter, so pipecat picks the handler's arguments
+    # (today: aggregator, strategy). There is no pipeline to push frames into,
+    # so the speaking frames and the interruption are turned off.
+    await aggregator._on_user_turn_started(
+        aggregator._user_turn_controller,
+        VADUserTurnStartStrategy(),
+        UserTurnStartedParams(enable_interruptions=False, enable_user_speaking_frames=False),
+    )
+    await _settle()
+
+
+async def _user_idle(aggregator: LLMUserAggregator) -> None:
+    await aggregator._on_user_turn_idle(aggregator._user_idle_controller)
+    await _settle()
+
+
+def test_unanswered_prompts_in_a_row_end_the_call(handler_errors):
+    async def scenario() -> list[int]:
+        aggregator, hangups = _wired()
+        for _ in range(INACTIVITY_PROMPT_COUNT):
+            await _user_idle(aggregator)
+        return hangups
+
+    hangups = asyncio.run(scenario())
+    assert handler_errors == []
+    assert hangups == [INACTIVITY_PROMPT_COUNT]
+
+
+def test_user_speech_between_prompts_resets_the_count(handler_errors):
+    async def scenario() -> tuple[list[int], list[int]]:
+        aggregator, hangups = _wired()
+        for _ in range(INACTIVITY_PROMPT_COUNT - 1):
+            await _user_idle(aggregator)
+        await _user_turn_started(aggregator)
+        for _ in range(INACTIVITY_PROMPT_COUNT - 1):
+            await _user_idle(aggregator)
+        before = list(hangups)
+        await _user_idle(aggregator)
+        return before, hangups
+
+    before, after = asyncio.run(scenario())
+    assert handler_errors == [], "an event handler raised inside pipecat's dispatcher"
+    assert before == [], "prompts either side of the caller speaking must not add up to a hangup"
+    assert after == [2 * INACTIVITY_PROMPT_COUNT - 1], "the count starts again from zero"
 
 
 # --- disconnect taxonomy -----------------------------------------------------
