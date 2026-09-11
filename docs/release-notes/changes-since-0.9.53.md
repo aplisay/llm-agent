@@ -94,6 +94,14 @@ Pipecat), and **ci** (build and release pipeline).
   and queue depth during agent speech.
 - **[pipecat] Output cushioning** adds configurable queue target/cushioning and
   pause stretching to reduce mid-speech starvation without changing voiced audio.
+- **[pipecat] Output backlog ceiling**: the pause stretcher stops once the whole
+  output backlog (the track's queue plus audio still in the transport's queue)
+  reaches `WEBRTC_OUTPUT_TARGET_MS`. It used to compare the target with the
+  track's queue alone, so on a source that never stops sending (GPT-Live) the
+  added delay grew for the whole call. On a continuous speech stream, a backlog
+  above `WEBRTC_OUTPUT_MAX_MS` is trimmed back to the target by dropping one
+  quiet chunk in `WEBRTC_TRIM_EVERY`. The per-call `track finished` line reports
+  trimmed chunks and the peak output backlog.
 - **[pipecat + sipbridge] Underrun logging** is summarised once per call, with
   optional per-event logging via `WEBRTC_UNDERRUN_LOG_MS`.
 - **[pipecat] Trickle ICE routing** forwards ICE PATCHes to the node that owns the
@@ -339,10 +347,10 @@ Pipecat), and **ci** (build and release pipeline).
   `REGCLIENT_UNSUPPORTED_TTL_MS`, `TRACE_PROXY_TIMEOUT_MS`,
   `B2BUA_HEARTBEAT_TOKEN`, `EMAIL_BRANDS`, and `EMAIL_BRANDS_FILE`.
 - **[pipecat] New optional environment**: `WEBRTC_OUTPUT_CUSHION_MS`,
-  `WEBRTC_OUTPUT_TARGET_MS`, `WEBRTC_STRETCH_EVERY`, `WEBRTC_UNDERRUN_STATS`,
-  `WEBRTC_UNDERRUN_LOG_MS`, `WEBRTC_PEER_HOST`, `GRACEFUL_SHUTDOWN_SECONDS`,
-  `LIFECYCLE_DRAIN_SECONDS`, `HEALTHZ_MAX_TASKS`, and
-  `HEALTHZ_MAX_GATEWAY_ENTRIES`.
+  `WEBRTC_OUTPUT_TARGET_MS`, `WEBRTC_OUTPUT_MAX_MS`, `WEBRTC_STRETCH_EVERY`,
+  `WEBRTC_TRIM_EVERY`, `WEBRTC_UNDERRUN_STATS`, `WEBRTC_UNDERRUN_LOG_MS`,
+  `WEBRTC_PEER_HOST`, `GRACEFUL_SHUTDOWN_SECONDS`, `LIFECYCLE_DRAIN_SECONDS`,
+  `HEALTHZ_MAX_TASKS`, and `HEALTHZ_MAX_GATEWAY_ENTRIES`.
 - **[sipbridge] New optional environment**: `SIPBRIDGE_RTP_SILENCE_FILL`.
 - **[pipecat] `OPENAI_API_KEY`** on the Pipecat worker must belong to an OpenAI
   project with GPT-Live access for `pipecat:openai/gpt-live-1` calls to start.
