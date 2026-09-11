@@ -662,6 +662,7 @@ class CallSession:
             on_output_usage=self._on_output_usage,
             gpt_live=gpt_live_session,
             history=history,
+            handover=self._is_handover_generation,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -789,7 +790,14 @@ class CallSession:
     async def _wire_greeting(
         self, transport, task, agent: dict, mode: str, model_name: str
     ) -> None:
-        """Register ``on_client_connected`` to emit the opening greeting."""
+        """Register ``on_client_connected`` to emit the opening greeting.
+
+        On the first generation after a ``transfer_agent`` full-stack handover
+        (``_is_handover_generation``) the incoming agent's greeting is not
+        used, because the caller was greeted when the call started. The agent
+        opens with ``HANDOVER_OPENING_INSTRUCTION`` instead, which tells it to
+        introduce itself and continue the call.
+        """
         # Ultravox handles greetings natively via the /calls API's
         # ``firstSpeakerSettings.agent`` parameter — see the Ultravox
         # branch of ``voice_session._build_realtime``. The model-agnostic
@@ -797,13 +805,17 @@ class CallSession:
         # ``LLMRunFrame`` / ``TTSSpeakFrame``, none of which Ultravox's
         # ``process_frame`` consumes (they'd just pass through as
         # no-ops). Skip wiring on Ultravox so we don't queue dead frames
-        # at connect time.
+        # at connect time. The handover opening is native there too
+        # (``voice_session._ultravox_one_shot_params``).
+        from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
         from .voice_mode import model_id_from_name
 
         if model_id_from_name(model_name).startswith("ultravox/"):
             return
         from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
         from pipecat.frames.frames import LLMRunFrame as _RunFrame
+
+        handover = self._is_handover_generation
 
         if is_gpt_live_model_id(model_id_from_name(model_name)):
             # GPT-Live: the ``LLMRunFrame`` starts the session from the context,
@@ -813,7 +825,11 @@ class CallSession:
             # first). The wording is best-effort: the model paraphrases. With
             # no greeting configured the platform instruction keeps the
             # "agent speaks first" contract.
-            opening = greeting_opening_instruction(agent)
+            opening = (
+                HANDOVER_OPENING_INSTRUCTION
+                if handover
+                else greeting_opening_instruction(agent)
+            )
 
             @transport.event_handler("on_client_connected")
             async def _on_client_connected_gpt_live(*_args, **_kwargs) -> None:
@@ -849,7 +865,20 @@ class CallSession:
         @transport.event_handler("on_client_connected")
         async def _on_client_connected(*_args, **_kwargs) -> None:
             try:
-                if greeting_text:
+                if handover:
+                    # A handover: the caller was already greeted. Run the
+                    # incoming agent's first turn from the handover
+                    # instruction; its greeting is for a new call.
+                    await task.queue_frames(
+                        [
+                            LLMMessagesAppendFrame(
+                                [{"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION}],
+                                run_llm=False,
+                            ),
+                            LLMRunFrame(),
+                        ]
+                    )
+                elif greeting_text:
                     if mode == "pipeline" and TTSSpeakFrame is not None:
                         # Pipeline: push the text to TTS directly so the
                         # exact words are spoken — no LLM in the loop.
@@ -1731,6 +1760,7 @@ class CallSession:
             )
             from pipecat.services.settings import LLMSettings
 
+            from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
             from .voice_session import _register_tools_on_llm
 
             tools = self._build_tools_for(new_agent)
@@ -1755,9 +1785,14 @@ class CallSession:
                     ),
                     # Replace the context wholesale: history is carried (when
                     # requested) inside the prompt itself, so the incoming
-                    # agent starts from a clean message list either way.
+                    # agent starts from a clean message list either way. The
+                    # second message makes its first turn a handover opening
+                    # rather than a greeting.
                     LLMMessagesUpdateFrame(
-                        [{"role": "developer", "content": system_prompt}],
+                        [
+                            {"role": "developer", "content": system_prompt},
+                            {"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION},
+                        ],
                         run_llm=False,
                     ),
                     # New tool surface on the context (and forwarded to

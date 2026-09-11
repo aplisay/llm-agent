@@ -45,6 +45,7 @@ from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
 from .realtime_tts import external_tts_vendor, local_vad_required, text_output_enabled
 from .tool_log import log_tool_call, log_tool_result
+from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
 
 
 # Recording capture rate. The sipbridge WS carries 16 kHz in both
@@ -1024,6 +1025,7 @@ async def build_voice_session(
     on_output_usage: "Optional[Callable[[str, int, dict], None]]" = None,
     gpt_live: "Optional[GptLiveSession]" = None,
     history: "Optional[list[dict]]" = None,
+    handover: bool = False,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
@@ -1032,6 +1034,13 @@ async def build_voice_session(
     every other. ``history`` seeds the context with prior ``user`` /
     ``assistant`` turns (an agent handover onto GPT-Live carries the transcript
     as the session's startup history rather than inside the prompt).
+
+    ``handover`` marks the first generation after a ``transfer_agent``
+    full-stack handover. The incoming agent then opens with
+    :data:`~pipecat_aplisay.transfer_prompts.HANDOVER_OPENING_INSTRUCTION`
+    instead of its greeting. Only Ultravox needs it here, because it takes its
+    first turn at call creation; ``call_session._wire_greeting`` handles the
+    other models.
 
     ``on_aux_transcript`` / ``on_aux_usage`` receive the auxiliary STT's final
     transcripts and usage deltas (``unit, quantity, {vendor, model}``) when the
@@ -1105,6 +1114,7 @@ async def build_voice_session(
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
             on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, gpt_live=gpt_live, history=history,
+            handover=handover,
         )
     else:
         task, context, llm = await _build_pipeline(
@@ -1212,7 +1222,12 @@ def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> An
 
 
 def _ultravox_one_shot_params(
-    agent: dict, system_prompt: str, ultravox_model: str, *, text_output: bool
+    agent: dict,
+    system_prompt: str,
+    ultravox_model: str,
+    *,
+    text_output: bool,
+    handover: bool = False,
 ) -> Any:
     """The ``OneShotInputParams`` for one Ultravox /calls request.
 
@@ -1220,6 +1235,9 @@ def _ultravox_one_shot_params(
     request body (greeting, inactivity, language hint, VAD settings, voice, and
     the text-output medium) is testable without a transport. ``text_output``
     is :func:`realtime_tts.text_output_enabled` for this session.
+    ``handover`` is true on the first generation after a ``transfer_agent``
+    full-stack handover; the opening turn is then the handover instruction,
+    not the agent's greeting.
     """
     import uuid as _uuid
 
@@ -1252,6 +1270,14 @@ def _ultravox_one_shot_params(
     #   no overrides — agent speaks first (interruptible) using its
     #   system prompt, matching the model-agnostic default in
     #   ``call_session._wire_greeting``.
+    # - A handover leg (``handover``: the first generation after a
+    #   ``transfer_agent`` full-stack handover) → ``firstSpeakerSettings.agent.prompt``
+    #   set to ``HANDOVER_OPENING_INSTRUCTION``, interruptible. The target's
+    #   greeting is not used, because the caller was greeted when the call
+    #   started. Without a prompt, Ultravox writes the first turn from its
+    #   own "(New Call) Respond as if you are answering the phone." message,
+    #   which overrides the handover context in the system prompt, and the
+    #   agent greets the caller as if the call were new.
     #
     # ``call_session._wire_greeting`` short-circuits for Ultravox so
     # those no-op frames are never queued; this branch is the sole
@@ -1265,7 +1291,9 @@ def _ultravox_one_shot_params(
     greeting_instructions = (greeting_instructions or "").strip()
 
     ultravox_first_speaker: dict[str, Any]
-    if greeting_text:
+    if handover:
+        ultravox_first_speaker = {"agent": {"prompt": HANDOVER_OPENING_INSTRUCTION}}
+    elif greeting_text:
         ultravox_first_speaker = {
             "agent": {
                 "text": greeting_text,
@@ -1365,6 +1393,7 @@ async def _build_realtime(
     output_tap: "Optional[Any]" = None,
     gpt_live: "Optional[GptLiveSession]" = None,
     history: "Optional[list[dict]]" = None,
+    handover: bool = False,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1466,7 +1495,7 @@ async def _build_realtime(
         # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
         ultravox_model = model_id.rsplit("/", 1)[-1]
         params = _ultravox_one_shot_params(
-            agent, system_prompt, ultravox_model, text_output=text_output
+            agent, system_prompt, ultravox_model, text_output=text_output, handover=handover
         )
 
         # Ultravox needs the function schemas at construction time:
