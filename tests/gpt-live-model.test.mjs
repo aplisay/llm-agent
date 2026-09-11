@@ -5,10 +5,12 @@ import PipecatModel, {
   pipecatModelSupportsExternalTts,
 } from '../lib/models/pipecat.js';
 import {
+  filterVoiceTreeBySearch,
   getTtsVendorsForAgentValidation,
   getVoiceNamesForAgentValidation,
   modelSupportsDelegation,
   modelSupportsExternalTts,
+  normalizeSearchTerms,
 } from '../lib/model-voices.js';
 import { OPENAI_LIVE_DEFAULT_VOICE, OPENAI_LIVE_VOICES, openaiLiveVoiceTree } from '../lib/voices/openai-live.js';
 import { buildRateComponents, isMinuteBilledModel } from '../lib/rate-components.js';
@@ -127,6 +129,39 @@ describe('GPT-Live voices', () => {
   test('the only TTS vendor a GPT-Live row accepts is openai', async () => {
     const vendors = await getTtsVendorsForAgentValidation({ modelName: GPT_LIVE, Handler, voicesInstance });
     expect([...vendors]).toEqual(['openai']);
+  });
+
+  // The list_voices search over the GPT-Live block, ranked as the builtin returns it.
+  const searchNames = (terms) =>
+    (filterVoiceTreeBySearch(openaiLiveVoiceTree(), normalizeSearchTerms(terms)).vendors.OpenAI ?? []).map((v) => v.name);
+
+  test('every voice has a gender and a description beyond its name', () => {
+    for (const v of OPENAI_LIVE_VOICES) {
+      expect(['male', 'female']).toContain(v.gender);
+      expect(v.description.length).toBeGreaterThan(v.name.length);
+    }
+  });
+
+  test('a British search finds vesper and the two Irish voices, and nothing else', () => {
+    for (const term of ['british', 'brit', 'uk']) {
+      expect(searchNames([term])).toEqual(['stone', 'vesper', 'willow']);
+    }
+    expect(searchNames(['irish'])).toEqual(['stone', 'willow']);
+  });
+
+  test('a US search finds the Southern US voices by "us", "usa" or "american", and never the Irish voices', () => {
+    // No description names another accent to compare with, so "us" stays on the US voices.
+    expect(searchNames(['us'])).toEqual(['cinder', 'delta']);
+    expect(searchNames(['usa'])).toEqual(['cinder', 'delta']);
+    // "North American" also matches "american".
+    expect(searchNames(['american'])).toEqual(['cinder', 'delta', 'gleam', 'meridian']);
+  });
+
+  test('a British search with a gender puts the British voices of that gender first', () => {
+    expect(searchNames(['british', 'female'])[0]).toBe('willow');
+    expect(searchNames(['british', 'english', 'female'])[0]).toBe('willow');
+    expect(searchNames(['british', 'male']).slice(0, 2)).toEqual(['stone', 'vesper']);
+    expect(searchNames(['uk', 'english', 'male']).slice(0, 2)).toEqual(['stone', 'vesper']);
   });
 });
 

@@ -235,7 +235,9 @@ Pipecat), and **ci** (build and release pipeline).
   `delegate` function.
 - **[core] GPT-Live voices**: the voices endpoints list the GPT-Live voice set
   under `OpenAI` for the row (default `marin`); `options.tts.vendor` must be
-  unset or `openai`.
+  unset or `openai`. Each voice carries a `gender` and a `description` naming
+  its accent, so a `list_voices` search for `british`, `brit` or `uk` finds
+  vesper (British English) and the Irish English voices stone and willow.
 - **[core] Agent sets** resolve `label:` references in `delegate` functions and
   reject a voice member and its in-set delegate declaring a function of the same
   name.
