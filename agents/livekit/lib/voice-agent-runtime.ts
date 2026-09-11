@@ -27,6 +27,12 @@ import {
   inactivityHangupEnabled,
   INACTIVITY_PROMPT_COUNT,
 } from "./voice-session-factory.js";
+import {
+  armHandoverFirstSpeaker,
+  HANDOVER_OPENING_INSTRUCTION,
+  HandoverAgent,
+  handoverOpeningReply,
+} from "./handover-opening.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
 import {
@@ -1108,7 +1114,9 @@ export async function runAgentWorker({
         if (isStaleSession(s)) return;
         if (type === "message" && getConsultInProgress() === false) {
           const text = content.join("");
-          if (role !== "user" || text !== skipText) {
+          // A pipeline stack's handover opening arrives as user input
+          // (handoverOpeningReply): a platform instruction, not the caller.
+          if (role !== "user" || (text !== skipText && text !== HANDOVER_OPENING_INSTRUCTION)) {
             conversationHistory.push({
               role: role === "user" ? "user" : "agent",
               text,
@@ -1266,8 +1274,8 @@ export async function runAgentWorker({
       }
     } else {
       // Slot reserved and the continuation call accepted: the handover will
-      // proceed. Announce it now — before the outgoing session is torn down and
-      // the incoming agent greets — so the transcript marker precedes the new
+      // proceed. Announce it now, before the outgoing session is torn down and
+      // the incoming agent speaks, so the transcript marker precedes the new
       // agent's first turn. A busy rejection throws at newCall.start() above,
       // before this point, so a failed transfer leaves no marker. (Takeover
       // mode announces later, onto the NEW call record — the outgoing records
@@ -1323,6 +1331,10 @@ export async function runAgentWorker({
           call: newCall,
           tools,
           vad,
+          // A transfer_agent handover opens with the handover instruction, not
+          // the target's greeting (on Ultravox, through the new call's
+          // firstSpeakerSettings). A human hand-back keeps the greeting.
+          handover: !takeover,
         });
       wireHandoverSession(newSession, newAgentDef);
 
@@ -1367,21 +1379,19 @@ export async function runAgentWorker({
       armAuxSttFor(newAgentDef);
       armOutputSttFor(newAgentDef, newSession);
 
-      // The incoming agent speaks next. Ultravox realtime greets natively via
-      // firstSpeakerSettings; other stacks need an explicit first turn.
+      // The incoming agent speaks next. Ultravox realtime opens natively via
+      // firstSpeakerSettings: the handover instruction, or on a human hand-back
+      // the target's greeting. Other stacks need an explicit first turn.
       if (!targetModelName.includes(":ultravox/")) {
+        const takeoverKick =
+          "You have just taken over this live call. Greet the caller now according to your instructions.";
+        const firstTurn = takeover
+          ? voiceMode === "pipeline"
+            ? { userInput: takeoverKick }
+            : { instructions: takeoverKick }
+          : handoverOpeningReply(voiceMode);
         try {
-          await (newSession as any).generateReply(
-            voiceMode === "pipeline"
-              ? {
-                  userInput:
-                    "You have just taken over this live call. Greet the caller now according to your instructions.",
-                }
-              : {
-                  instructions:
-                    "You have just taken over this live call. Greet the caller now according to your instructions.",
-                },
-          );
+          await (newSession as any).generateReply(firstTurn);
         } catch (e) {
           logger.warn({ e }, "agent handover: first-turn kick failed");
         }
@@ -1456,12 +1466,31 @@ export async function runAgentWorker({
     );
 
     if (canSwapAgentInPlace(newAgentDef)) {
+      // The swap keeps the running session, so its voice mode and model apply.
+      const voiceMode =
+        resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options);
+      const onUltravox =
+        voiceMode === "realtime" && activeModelName.includes(":ultravox/");
       activeAgentDef = { ...newAgentDef, modelName: activeModelName };
-      const handoffAgent = new voice.Agent({
-        instructions,
-        tools: buildTools(newAgentDef),
-        ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
-      });
+      // The incoming agent opens with the handover instruction, not its
+      // greeting. The SDK starts it in a new activity on the running session.
+      // On Ultravox that activity opens a new Ultravox call from the running
+      // model, which opens from the one-shot firstSpeakerSettings armed here.
+      // On other stacks the handoff agent asks for its first turn in onEnter.
+      if (onUltravox && !armHandoverFirstSpeaker(session?.llm)) {
+        logger.warn(
+          { agentId: newAgentDef.id },
+          "agent handover: could not arm the Ultravox handover opening",
+        );
+      }
+      const handoffAgent = new HandoverAgent(
+        {
+          instructions,
+          tools: buildTools(newAgentDef),
+          ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
+        },
+        onUltravox ? undefined : handoverOpeningReply(voiceMode),
+      );
       // In-place swaps create no new call record, so they cannot hit the
       // concurrency limit — the handover is committed here. Announce it only
       // now: a failed transfer (e.g. agent not found above) must leave no
@@ -1683,7 +1712,13 @@ export async function runAgentWorker({
             if (isStaleSession(setupSession)) return;
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
-              if (role !== "user" || text !== initialUserTranscriptToSkip) {
+              // An in-place handover's opening on a pipeline stack arrives as
+              // user input (handoverOpeningReply): a platform instruction, not
+              // the caller.
+              if (
+                role !== "user" ||
+                (text !== initialUserTranscriptToSkip && text !== HANDOVER_OPENING_INSTRUCTION)
+              ) {
                 conversationHistory.push({
                   role: role === "user" ? "user" : "agent",
                   text,

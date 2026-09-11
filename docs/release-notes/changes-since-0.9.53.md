@@ -207,12 +207,15 @@ Pipecat), and **ci** (build and release pipeline).
   the advertised roster.
 - **[core] OpenAI hosted-MCP replay** now retains completed MCP results by
   rewriting them as function-call/output pairs on stateless replay.
-- **[pipecat] Agent handover opening**: after a `transfer_agent` handover, in
-  place or full-stack, the incoming agent no longer greets the caller as if the
-  call were new. Its greeting is not used; it opens with an instruction to introduce
-  itself and continue from the handover summary and conversation so far. On
-  Ultravox this replaces the default first turn, which told the model to answer
-  as a new call.
+- **[livekit + pipecat] Agent handover opening**: after a `transfer_agent`
+  handover, in place or full-stack, the incoming agent no longer greets the
+  caller as if the call were new. Its greeting is not used; it opens with an
+  instruction to introduce itself and continue from the handover summary and
+  conversation so far. On Ultravox this replaces the default first turn, which
+  told the model to answer as a new call. On LiveKit, after an in-place handover
+  on a non-Ultravox stack the incoming agent used to wait for the caller to
+  speak; it now speaks first. On LiveKit pipeline stacks the first-turn request
+  is no longer logged in the transcript as the caller's words.
 - **[pipecat] Hand-back opening**: after a person hands a call back to an agent
   (`bridgedTransferToAgent`), the incoming agent no longer greets the caller as
   if the call were new. Its greeting is not used; it opens with an instruction
