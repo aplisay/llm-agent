@@ -6,18 +6,21 @@ import {
   armHandoverFirstSpeaker,
   HANDOVER_OPENING_INSTRUCTION,
   HandoverAgent,
-  handoverFirstSpeakerSettings,
-  handoverOpeningReply,
+  isOpeningInstruction,
+  openingFirstSpeakerSettings,
+  openingReply,
+  TAKEOVER_OPENING_INSTRUCTION,
 } from "../lib/handover-opening.js";
 import { buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
 import { RealtimeModel } from "../plugins/ultravox/src/realtime/realtime_model.js";
 import { UltravoxClient } from "../plugins/ultravox/src/realtime/ultravox_client.js";
 
-// Covers the first turn of an agent that takes over a live call through
-// transfer_agent. The caller was greeted when the call started, so the incoming
-// agent opens from HANDOVER_OPENING_INSTRUCTION, not from its greeting: on
-// Ultravox through firstSpeakerSettings.agent.prompt on the new Ultravox call
-// (full-stack and in place), on other stacks as its first generateReply.
+// Covers the first turn of an agent that takes over a live call: through
+// transfer_agent, or when a person hands the call back (bridgedTransferToAgent).
+// The caller was greeted when the call started, so the incoming agent opens from
+// HANDOVER_OPENING_INSTRUCTION or TAKEOVER_OPENING_INSTRUCTION, not from its
+// greeting: on Ultravox through firstSpeakerSettings.agent.prompt on the new
+// Ultravox call, on other stacks as its first generateReply.
 // run: npx tsx --test test/handover-opening.test.ts
 
 // The SDK's RealtimeSession base class resolves the logger at construction.
@@ -26,6 +29,7 @@ initializeLogger({ pretty: false, level: "fatal" });
 const ULTRAVOX = "livekit:ultravox/ultravox-v0.7";
 const GREETING = "Thanks for calling support, how can I help?";
 const greeter = { prompt: "You are support.", options: { greeting: { text: GREETING } } } as any;
+const OPENINGS = [HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION];
 
 // One tool: an Ultravox session creates its call once it has tools.
 const TOOLS = {
@@ -48,37 +52,70 @@ function captureCallBodies(t: TestContext): any[] {
 const ultravoxModel = (options: Record<string, unknown>) =>
   new RealtimeModel({ ...options, apiKey: "test-key" } as any);
 
-test("the instruction is byte-identical to the Pipecat worker's", () => {
+/** A string constant in the Pipecat worker's transfer_prompts.py, joined from its literal parts. */
+function pipecatConstant(name: string): string {
   const source = readFileSync(
     new URL("../../pipecat/pipecat_aplisay/transfer_prompts.py", import.meta.url),
     "utf8",
   );
-  const block = source.match(/^HANDOVER_OPENING_INSTRUCTION = \(\n([\s\S]*?)\n\)/m);
-  assert.ok(block, "HANDOVER_OPENING_INSTRUCTION not found in transfer_prompts.py");
-  const pipecat = [...block[1].matchAll(/"([^"\\]*)"/g)].map((m) => m[1]).join("");
-  assert.equal(HANDOVER_OPENING_INSTRUCTION, pipecat);
+  const block = source.match(new RegExp(`^${name} = \\(\\n([\\s\\S]*?)\\n\\)`, "m"));
+  assert.ok(block, `${name} not found in transfer_prompts.py`);
+  return [...block[1].matchAll(/"([^"\\]*)"/g)].map((m) => m[1]).join("");
+}
+
+test("the instructions are byte-identical to the Pipecat worker's", () => {
+  assert.equal(HANDOVER_OPENING_INSTRUCTION, pipecatConstant("HANDOVER_OPENING_INSTRUCTION"));
+  assert.equal(TAKEOVER_OPENING_INSTRUCTION, pipecatConstant("TAKEOVER_OPENING_INSTRUCTION"));
 });
 
 test("Ultravox opening: agent first, from the instruction, no text, interruptible", () => {
-  assert.deepEqual(handoverFirstSpeakerSettings(), {
-    agent: { prompt: HANDOVER_OPENING_INSTRUCTION },
-  });
-  assert.notEqual(handoverFirstSpeakerSettings(), handoverFirstSpeakerSettings());
+  for (const opening of OPENINGS) {
+    assert.deepEqual(openingFirstSpeakerSettings(opening), { agent: { prompt: opening } });
+  }
+  assert.notEqual(
+    openingFirstSpeakerSettings(HANDOVER_OPENING_INSTRUCTION),
+    openingFirstSpeakerSettings(HANDOVER_OPENING_INSTRUCTION),
+  );
 });
 
 test("other stacks: pipeline takes the instruction as user input, realtime as instructions", () => {
-  assert.deepEqual(handoverOpeningReply("pipeline"), { userInput: HANDOVER_OPENING_INSTRUCTION });
-  assert.deepEqual(handoverOpeningReply("realtime"), { instructions: HANDOVER_OPENING_INSTRUCTION });
+  for (const opening of OPENINGS) {
+    assert.deepEqual(openingReply("pipeline", opening), { userInput: opening });
+    assert.deepEqual(openingReply("realtime", opening), { instructions: opening });
+  }
+});
+
+test("transcript: only a whole opening instruction counts as a platform turn", () => {
+  for (const opening of OPENINGS) {
+    assert.equal(isOpeningInstruction(opening), true);
+    assert.equal(isOpeningInstruction(`${opening} `), false);
+    assert.equal(isOpeningInstruction(opening.slice(0, 40)), false);
+  }
+  for (const text of ["", "Hello?", GREETING]) {
+    assert.equal(isOpeningInstruction(text), false);
+  }
 });
 
 // --- the Ultravox /calls body --------------------------------------------------
 
 test("full-stack on Ultravox: the handover leg's call opens from the instruction, not the greeting", async (t) => {
   const bodies = captureCallBodies(t);
-  const model = ultravoxModel(buildRealtimeLlmOptions(ULTRAVOX, greeter, "call-2", { handover: true }));
+  const model = ultravoxModel(
+    buildRealtimeLlmOptions(ULTRAVOX, greeter, "call-2", { opening: HANDOVER_OPENING_INSTRUCTION }),
+  );
   await model.session().updateTools(TOOLS);
   assert.equal(bodies.length, 1);
   assert.deepEqual(bodies[0].firstSpeakerSettings, { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } });
+});
+
+test("hand-back on Ultravox: the takeover leg's call opens from the hand-back instruction, not the greeting", async (t) => {
+  const bodies = captureCallBodies(t);
+  const model = ultravoxModel(
+    buildRealtimeLlmOptions(ULTRAVOX, greeter, "call-3", { opening: TAKEOVER_OPENING_INSTRUCTION }),
+  );
+  await model.session().updateTools(TOOLS);
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0].firstSpeakerSettings, { agent: { prompt: TAKEOVER_OPENING_INSTRUCTION } });
 });
 
 test("in place on Ultravox: the incoming agent's call opens from the instruction, not the model's greeting", async (t) => {
@@ -95,6 +132,18 @@ test("in place on Ultravox: the incoming agent's call opens from the instruction
   assert.deepEqual(bodies[1].firstSpeakerSettings, { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } });
   // One-shot: a later session (a consult leg, say) is not affected.
   assert.equal(model.pendingFirstSpeakerOverride, undefined);
+});
+
+test("in place on Ultravox after a hand-back: a later handover opens as a handover", async (t) => {
+  const bodies = captureCallBodies(t);
+  // The running model was built for a hand-back leg.
+  const model = ultravoxModel(
+    buildRealtimeLlmOptions(ULTRAVOX, greeter, "call-3", { opening: TAKEOVER_OPENING_INSTRUCTION }),
+  );
+  await model.session().updateTools(TOOLS);
+  assert.equal(armHandoverFirstSpeaker(model), true);
+  await model.session().updateTools(TOOLS);
+  assert.deepEqual(bodies[1].firstSpeakerSettings, { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } });
 });
 
 test("arming is a no-op for a model without the one-shot override", () => {
@@ -116,10 +165,11 @@ function recordReplies(agent: HandoverAgent): unknown[] {
 
 test("in place on other stacks: the handoff agent's first turn is the handover opening", async () => {
   for (const voiceMode of ["pipeline", "realtime"] as const) {
-    const agent = new HandoverAgent({ instructions: "You are support." }, handoverOpeningReply(voiceMode));
+    const opening = openingReply(voiceMode, HANDOVER_OPENING_INSTRUCTION);
+    const agent = new HandoverAgent({ instructions: "You are support." }, opening);
     const replies = recordReplies(agent);
     await agent.onEnter();
-    assert.deepEqual(replies, [handoverOpeningReply(voiceMode)]);
+    assert.deepEqual(replies, [opening]);
   }
 });
 
@@ -131,7 +181,10 @@ test("in place on Ultravox: the handoff agent leaves the opening to Ultravox", a
 });
 
 test("a failed first-turn request does not reject onEnter", async () => {
-  const agent = new HandoverAgent({ instructions: "You are support." }, handoverOpeningReply("realtime"));
+  const agent = new HandoverAgent(
+    { instructions: "You are support." },
+    openingReply("realtime", HANDOVER_OPENING_INSTRUCTION),
+  );
   (agent as any)._agentActivity = {
     agentSession: {
       generateReply: () => {

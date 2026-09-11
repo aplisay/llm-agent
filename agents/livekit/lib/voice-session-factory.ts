@@ -23,7 +23,7 @@ import {
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
-import { handoverFirstSpeakerSettings } from "./handover-opening.js";
+import { openingFirstSpeakerSettings } from "./handover-opening.js";
 
 /**
  * How many times the inactivity prompt is spoken before the call is considered
@@ -212,15 +212,18 @@ class PipelineVoiceAgent extends voice.Agent {
  * maxDuration / timeExceededMessage), so the mapping and its precedence rules
  * are testable without constructing plugin models or an AgentSession.
  *
- * `handover` marks the first session after a `transfer_agent` full-stack
- * handover. On Ultravox that session then opens from the handover instruction,
- * not from the agent's greeting (see handover-opening.ts).
+ * `opening` is set on the first session of a call already in progress, where
+ * the caller has been greeted. It is the platform's first-turn instruction,
+ * used in place of the agent's greeting: HANDOVER_OPENING_INSTRUCTION after a
+ * `transfer_agent` full-stack handover, TAKEOVER_OPENING_INSTRUCTION after a
+ * human hand-back (see handover-opening.ts). On Ultravox that session then
+ * opens from it.
  */
 export function buildRealtimeLlmOptions(
   modelName: string,
   agent: Agent,
   callId: string,
-  { handover = false }: { handover?: boolean } = {},
+  { opening }: { opening?: string } = {},
 ): Record<string, unknown> {
   const providerModelName = parseProviderModelName(modelName);
   const maxDurationString: string = agent?.options?.maxDuration || "305s";
@@ -259,16 +262,16 @@ export function buildRealtimeLlmOptions(
       vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.prompt ||
       vendorSpecific?.ultravox?.firstSpeakerSettings?.user;
 
-    if (handover) {
-      // A handover leg: the caller was greeted when the call started, so the
-      // opening is the handover instruction. It replaces the portable greeting
-      // and any caller-supplied firstSpeakerSettings (a native greeting, or a
-      // user-first opening that waits for the caller).
+    if (opening) {
+      // A handover or hand-back leg: the caller was greeted when the call
+      // started, so the leg opens from the platform's instruction. It replaces
+      // the portable greeting and any caller-supplied firstSpeakerSettings (a
+      // native greeting, or a user-first opening that waits for the caller).
       llmOptions.vendorSpecific = {
         ...(vendorSpecific || {}),
         ultravox: {
           ...(vendorSpecific?.ultravox || {}),
-          firstSpeakerSettings: handoverFirstSpeakerSettings(),
+          firstSpeakerSettings: openingFirstSpeakerSettings(opening),
         },
       };
     } else if (hasGreeting && !existingFirstSpeaker) {
@@ -392,17 +395,18 @@ export interface CreateVoiceModelAndSessionParams {
   /** Required for pipeline mode (Silero VAD from prewarm). */
   vad?: VAD;
   /**
-   * The session follows a `transfer_agent` full-stack handover. On Ultravox it
-   * then opens from the handover instruction (see buildRealtimeLlmOptions); on
-   * other stacks the runtime asks for the opening.
+   * The platform's first-turn instruction when the session continues a call in
+   * progress: after a `transfer_agent` full-stack handover or a human
+   * hand-back. On Ultravox the session opens from it (see
+   * buildRealtimeLlmOptions); on other stacks the runtime asks for the opening.
    */
-  handover?: boolean;
+  opening?: string;
 }
 
 export function createVoiceModelAndSession(
   params: CreateVoiceModelAndSessionParams,
 ): { session: voice.AgentSession; model: voice.Agent } {
-  const { voiceMode, modelName, agent: agentDef, call, tools, vad, handover = false } = params;
+  const { voiceMode, modelName, agent: agentDef, call, tools, vad, opening } = params;
 
   // Resolve the agent's `promptMetadata` declaration ONCE, here: every session
   // passes through this factory — the initial run and each transfer_agent
@@ -476,7 +480,7 @@ export function createVoiceModelAndSession(
     );
   }
 
-  const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id, { handover });
+  const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id, { opening });
 
   // Ultravox does idle natively (mapped to provider inactivityMessages in
   // buildRealtimeLlmOptions); only NON-ultravox realtime uses the SDK

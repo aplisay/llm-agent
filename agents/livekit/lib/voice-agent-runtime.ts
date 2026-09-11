@@ -31,7 +31,9 @@ import {
   armHandoverFirstSpeaker,
   HANDOVER_OPENING_INSTRUCTION,
   HandoverAgent,
-  handoverOpeningReply,
+  isOpeningInstruction,
+  openingReply,
+  TAKEOVER_OPENING_INSTRUCTION,
 } from "./handover-opening.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
@@ -1114,9 +1116,10 @@ export async function runAgentWorker({
         if (isStaleSession(s)) return;
         if (type === "message" && getConsultInProgress() === false) {
           const text = content.join("");
-          // A pipeline stack's handover opening arrives as user input
-          // (handoverOpeningReply): a platform instruction, not the caller.
-          if (role !== "user" || (text !== skipText && text !== HANDOVER_OPENING_INSTRUCTION)) {
+          // A pipeline stack's opening after a handover or hand-back arrives
+          // as user input (openingReply): a platform instruction, not the
+          // caller.
+          if (role !== "user" || (text !== skipText && !isOpeningInstruction(text))) {
             conversationHistory.push({
               role: role === "user" ? "user" : "agent",
               text,
@@ -1209,7 +1212,8 @@ export async function runAgentWorker({
    * still throws before anything is touched, leaving the humans talking),
    * and the parent record is NOT ended here — the hook already ended the
    * bridged record with its own reason, and the original agent call ended at
-   * bridge time.
+   * bridge time. The incoming agent then opens from the hand-back instruction
+   * (TAKEOVER_OPENING_INSTRUCTION), not the handover one.
    */
   const restartWithAgent = async (
     newAgentDef: Agent,
@@ -1323,6 +1327,10 @@ export async function runAgentWorker({
       // hand it the composed handover prompt in place of the raw one.
       const agentForSession: Agent = { ...newAgentDef, prompt: instructions };
       const tools = buildTools(newAgentDef);
+      // The caller was greeted when the call started, so the incoming agent
+      // opens from a platform instruction, not its greeting: the hand-back
+      // instruction after a human hand-back, else the handover instruction.
+      const opening = takeover ? TAKEOVER_OPENING_INSTRUCTION : HANDOVER_OPENING_INSTRUCTION;
       const { session: newSession, model: newModel } =
         createVoiceModelAndSession({
           voiceMode,
@@ -1331,10 +1339,8 @@ export async function runAgentWorker({
           call: newCall,
           tools,
           vad,
-          // A transfer_agent handover opens with the handover instruction, not
-          // the target's greeting (on Ultravox, through the new call's
-          // firstSpeakerSettings). A human hand-back keeps the greeting.
-          handover: !takeover,
+          // On Ultravox the new call opens from it (firstSpeakerSettings).
+          opening,
         });
       wireHandoverSession(newSession, newAgentDef);
 
@@ -1380,18 +1386,10 @@ export async function runAgentWorker({
       armOutputSttFor(newAgentDef, newSession);
 
       // The incoming agent speaks next. Ultravox realtime opens natively via
-      // firstSpeakerSettings: the handover instruction, or on a human hand-back
-      // the target's greeting. Other stacks need an explicit first turn.
-      if (!targetModelName.includes(":ultravox/")) {
-        const takeoverKick =
-          "You have just taken over this live call. Greet the caller now according to your instructions.";
-        const firstTurn = takeover
-          ? voiceMode === "pipeline"
-            ? { userInput: takeoverKick }
-            : { instructions: takeoverKick }
-          : handoverOpeningReply(voiceMode);
+      // firstSpeakerSettings. Other stacks need an explicit first turn.
+      if (!(voiceMode === "realtime" && targetModelName.includes(":ultravox/"))) {
         try {
-          await (newSession as any).generateReply(firstTurn);
+          await (newSession as any).generateReply(openingReply(voiceMode, opening));
         } catch (e) {
           logger.warn({ e }, "agent handover: first-turn kick failed");
         }
@@ -1489,7 +1487,7 @@ export async function runAgentWorker({
           tools: buildTools(newAgentDef),
           ...(includeHistory ? {} : { chatCtx: new llm.ChatContext() }),
         },
-        onUltravox ? undefined : handoverOpeningReply(voiceMode),
+        onUltravox ? undefined : openingReply(voiceMode, HANDOVER_OPENING_INSTRUCTION),
       );
       // In-place swaps create no new call record, so they cannot hit the
       // concurrency limit — the handover is committed here. Announce it only
@@ -1713,11 +1711,11 @@ export async function runAgentWorker({
             if (type === "message" && getConsultInProgress() === false) {
               const text = content.join("");
               // An in-place handover's opening on a pipeline stack arrives as
-              // user input (handoverOpeningReply): a platform instruction, not
-              // the caller.
+              // user input (openingReply): a platform instruction, not the
+              // caller.
               if (
                 role !== "user" ||
-                (text !== initialUserTranscriptToSkip && text !== HANDOVER_OPENING_INSTRUCTION)
+                (text !== initialUserTranscriptToSkip && !isOpeningInstruction(text))
               ) {
                 conversationHistory.push({
                   role: role === "user" ? "user" : "agent",

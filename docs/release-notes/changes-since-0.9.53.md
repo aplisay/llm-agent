@@ -216,15 +216,18 @@ Pipecat), and **ci** (build and release pipeline).
   on a non-Ultravox stack the incoming agent used to wait for the caller to
   speak; it now speaks first. On LiveKit pipeline stacks the first-turn request
   is no longer logged in the transcript as the caller's words.
-- **[pipecat] Hand-back opening**: after a person hands a call back to an agent
-  (`bridgedTransferToAgent`), the incoming agent no longer greets the caller as
-  if the call were new. Its greeting is not used; it opens with an instruction
-  to introduce itself and continue from what the caller discussed. On Ultravox
-  this replaces the default first turn.
-- **[pipecat] Interruptible openings**: after an agent handover or a hand-back,
-  the caller can interrupt the incoming agent's first turn. The greeting mute,
-  and GPT-Live's caller silence during a greeting, now apply only when a
-  greeting plays.
+- **[livekit + pipecat] Hand-back opening**: after a person hands a call back
+  to an agent (`bridgedTransferToAgent`), the incoming agent no longer greets
+  the caller as if the call were new. Its greeting is not used; it opens with an
+  instruction to introduce itself and continue from what the caller discussed.
+  On Ultravox this replaces the default first turn. On LiveKit pipeline stacks
+  the first-turn request is no longer logged in the transcript as the caller's
+  words.
+- **[livekit + pipecat] Interruptible openings**: after an agent handover or a
+  hand-back, the caller can interrupt the incoming agent's first turn. On
+  Pipecat the greeting mute, and GPT-Live's caller silence during a greeting,
+  now apply only when a greeting plays. On LiveKit with Ultravox a greeting
+  used to play at that point, and the caller could not interrupt it.
 
 ## GPT-Live - core + pipecat
 

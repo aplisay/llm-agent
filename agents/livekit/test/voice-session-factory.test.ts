@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
-import { HANDOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
+import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
 // maxDuration/timeExceededMessage passthrough and the Ultravox-specific
@@ -232,20 +232,22 @@ test("gemini: an external vendor is not honoured (no text-capable Live model), v
   assert.equal(opts.voice, "Kore");
 });
 
-// --- handover legs ---------------------------------------------------------------
-// The first session after a transfer_agent full-stack handover. The caller was
-// greeted when the call started, so on Ultravox the opening is the handover
-// instruction, never the incoming agent's greeting (lib/handover-opening.ts).
+// --- handover and hand-back legs -------------------------------------------------
+// The first session after a transfer_agent full-stack handover or a human
+// hand-back. The caller was greeted when the call started, so on Ultravox the
+// opening is the platform's instruction, never the incoming agent's greeting
+// (lib/handover-opening.ts).
 
 const HANDOVER_OPENING = { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } };
+const HAND_BACK_OPENING = { agent: { prompt: TAKEOVER_OPENING_INSTRUCTION } };
 
-const handoverLeg = (modelName: string, agent: any) =>
-  buildRealtimeLlmOptions(modelName, agent, "call-2", { handover: true }) as any;
+const handoverLeg = (modelName: string, agent: any, opening = HANDOVER_OPENING_INSTRUCTION) =>
+  buildRealtimeLlmOptions(modelName, agent, "call-2", { opening }) as any;
 
-test("first legs are unchanged: handover defaults to false", () => {
+test("first legs are unchanged: no opening by default", () => {
   const agent = makeAgent({ greeting: { text: "Hello!" } });
   assert.deepEqual(
-    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1", { handover: false }),
+    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1", { opening: undefined }),
     buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1"),
   );
 });
@@ -302,7 +304,28 @@ test("ultravox handover leg: the other Ultravox mappings still apply", () => {
   assert.equal(opts.languageHint, "en-GB");
 });
 
-test("non-ultravox realtime: the options are the same on a handover leg (the runtime asks for the opening)", () => {
+test("ultravox hand-back leg: opens from the hand-back instruction, never the greeting or native settings", () => {
+  const agents = [
+    makeAgent(),
+    makeAgent({ greeting: { text: "Hello, how can I help?" } }),
+    makeAgent({ greeting: { instructions: "Greet the caller briefly." } }),
+    ...[
+      { agent: { text: "Native greeting", uninterruptible: true } },
+      { user: { fallback: { delay: "3s", prompt: "Say hello." } } },
+    ].map((native) => makeAgent({ vendorSpecific: { ultravox: { firstSpeakerSettings: native } } })),
+  ];
+  for (const agent of agents) {
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, agent, TAKEOVER_OPENING_INSTRUCTION).vendorSpecific.ultravox.firstSpeakerSettings,
+      HAND_BACK_OPENING,
+      `options ${JSON.stringify(agent.options)} must not change a hand-back leg's opening`,
+    );
+  }
+});
+
+test("non-ultravox realtime: the options are the same on a handover or hand-back leg (the runtime asks for the opening)", () => {
   const agent = makeAgent({ greeting: { text: "Hello!" }, vendorSpecific: { openai: { something: true } } });
-  assert.deepEqual(handoverLeg(OPENAI, agent), buildRealtimeLlmOptions(OPENAI, agent, "call-2"));
+  for (const opening of [HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION]) {
+    assert.deepEqual(handoverLeg(OPENAI, agent, opening), buildRealtimeLlmOptions(OPENAI, agent, "call-2"));
+  }
 });
