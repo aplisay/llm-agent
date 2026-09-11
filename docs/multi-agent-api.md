@@ -116,8 +116,8 @@ Common to both modes:
 - The audio connection is uninterrupted — the caller stays on the same call throughout.
 - The new agent speaks next, so write its prompt to introduce itself on taking over.
   On Pipecat the new agent's greeting is not used, because the caller has already been
-  greeted. After a full-stack handover the agent is told to introduce itself briefly and
-  continue from the handover summary and the conversation so far.
+  greeted. The platform tells the agent to introduce itself briefly and continue from the
+  handover summary and the conversation so far.
 - The progress log (websocket / transaction log) records an `inject` entry of the form
   `Call transferred to agent <name>` so monitoring UIs can show the handover.
 - Transfers chain: the incoming agent's own `transfer_agent` functions work, so a caller

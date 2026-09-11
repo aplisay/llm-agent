@@ -1760,6 +1760,7 @@ class CallSession:
             )
             from pipecat.services.settings import LLMSettings
 
+            from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
             from .voice_session import _register_tools_on_llm
 
             tools = self._build_tools_for(new_agent)
@@ -1784,9 +1785,14 @@ class CallSession:
                     ),
                     # Replace the context wholesale: history is carried (when
                     # requested) inside the prompt itself, so the incoming
-                    # agent starts from a clean message list either way.
+                    # agent starts from a clean message list either way. The
+                    # second message makes its first turn a handover opening
+                    # rather than a greeting.
                     LLMMessagesUpdateFrame(
-                        [{"role": "developer", "content": system_prompt}],
+                        [
+                            {"role": "developer", "content": system_prompt},
+                            {"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION},
+                        ],
                         run_llm=False,
                     ),
                     # New tool surface on the context (and forwarded to

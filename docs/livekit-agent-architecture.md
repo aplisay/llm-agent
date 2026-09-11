@@ -257,7 +257,7 @@ The two keys are mutually exclusive; exactly one of `text` or `instructions` may
 
 The greeting contract is mode-independent. Implementations may differ in how the behavior lands per provider — for example Ultravox realtime drives uninterruptible greetings via its native `firstSpeakerSettings`, while other realtime providers and pipeline mode use TTS `say()` or LLM `generateReply` with explicit interruption suppression — but the contract is the behavior, not the mechanism.
 
-After a `transfer_agent` full-stack handover the caller has already been greeted, so the Pipecat worker does not use the incoming agent's greeting. Its first turn is a platform instruction to introduce itself and continue from the handover summary and the conversation so far (on Ultravox, sent as `firstSpeakerSettings.agent.prompt`). The LiveKit worker still asks the incoming agent to greet the caller according to its instructions.
+After a `transfer_agent` handover, in place or full-stack, the caller has already been greeted, so the Pipecat worker does not use the incoming agent's greeting. Its first turn is a platform instruction to introduce itself and continue from the handover summary and the conversation so far (on Ultravox, sent as `firstSpeakerSettings.agent.prompt`). The LiveKit worker still asks the incoming agent to greet the caller according to its instructions.
 
 ### 4.6 Vendor-specific passthrough
 

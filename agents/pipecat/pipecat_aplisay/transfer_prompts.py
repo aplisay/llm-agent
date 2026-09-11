@@ -23,20 +23,23 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 
-# The opening turn of the incoming agent after a ``transfer_agent`` full-stack
-# handover, used in place of that agent's greeting. The caller was greeted
-# when the call started, so the new agent introduces itself and continues
-# rather than answering as if the call were new. Ultravox takes it as
-# ``firstSpeakerSettings.agent.prompt`` (voice_session); the other model paths
-# get it as a developer message before the first run
-# (call_session._wire_greeting).
+# The opening turn of the incoming agent after a ``transfer_agent`` handover,
+# used in place of that agent's greeting. The caller was greeted when the call
+# started, so the new agent introduces itself and continues rather than
+# answering as if the call were new. It is worded as the first message because
+# on most paths it stays in the context for the rest of the call. Ultravox
+# takes it as ``firstSpeakerSettings.agent.prompt`` (voice_session); the other
+# model paths get it as a developer message before the first run
+# (call_session._wire_greeting, and _apply_agent_transfer for an in-place
+# handover).
 HANDOVER_OPENING_INSTRUCTION = (
-    "You have just taken over this call from another agent. The caller has "
-    "already been greeted, so do not greet them as if this were a new call, "
-    "and do not repeat anything the previous agent already told them. "
-    "Introduce yourself in one short sentence. If you have a handover summary "
-    "or the conversation so far, say briefly what you understand the caller "
-    "needs and continue from there. Otherwise ask how you can help."
+    "This is your first message after taking over this call from another "
+    "agent. The caller has already been greeted, so do not greet them as if "
+    "this were a new call, and do not repeat anything the previous agent "
+    "already told them. Introduce yourself in one short sentence. If you have "
+    "a handover summary or the conversation so far, say briefly what you "
+    "understand the caller needs and continue from there. Otherwise ask how "
+    "you can help."
 )
 
 

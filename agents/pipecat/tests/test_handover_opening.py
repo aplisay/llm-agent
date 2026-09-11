@@ -195,3 +195,106 @@ def test_ultravox_wires_no_frames(handover):
     # Ultravox takes its first turn natively at call creation (tests above).
     frames = _opening_frames(_agent(), "realtime", "pipecat:ultravox/ultravox-v0.7", handover=handover)
     assert frames is None
+
+
+# --- CallSession wiring: the flag reaches the build of a handover generation ----
+
+
+def _call_record(call_id: str, agent_id: str):
+    from pipecat_aplisay import api_client
+
+    return api_client.CallRecord(
+        id=call_id,
+        userId="user-1",
+        organisationId="org-1",
+        instanceId="inst-1",
+        agentId=agent_id,
+        persisted=False,
+    )
+
+
+def _session(model_name: str = "pipecat:openai/gpt-4o-mini") -> CallSession:
+    class _StubGatewaySession:
+        transport = None
+
+        async def shutdown(self) -> None:  # pragma: no cover
+            return None
+
+    return CallSession(
+        session_id="s1",
+        agent={"id": "agent-1", "modelName": model_name, "prompt": "old", "options": {}},
+        instance={"streamLog": False},
+        sip_gateway=None,  # type: ignore[arg-type]
+        gateway_session=_StubGatewaySession(),  # type: ignore[arg-type]
+        call=_call_record("call-1", "agent-1"),
+    )
+
+
+def _record_builds(monkeypatch) -> list:
+    """Stub build_voice_session: record each build's ``handover`` and stop there."""
+    from pipecat_aplisay import call_session as cs
+
+    seen: list = []
+
+    async def fake_build(**kwargs):
+        seen.append(kwargs.get("handover"))
+        raise _Stop
+
+    monkeypatch.setattr(cs, "build_voice_session", fake_build)
+    return seen
+
+
+def test_first_build_is_not_a_handover(monkeypatch):
+    seen = _record_builds(monkeypatch)
+    session = _session()
+    with pytest.raises(_Stop):
+        asyncio.run(session.prepare_run(session.agent, session.agent["modelName"], "sys"))
+    assert seen == [False]
+
+
+def test_run_prepared_builds_the_handover_generation_with_the_flag(monkeypatch):
+    seen = _record_builds(monkeypatch)
+    session = _session()
+    runs: list = []
+
+    async def fake_run_once(task, max_duration_secs):
+        # The outgoing agent's pipeline ends with a full handover pending, as
+        # _begin_agent_handover leaves it.
+        runs.append(task)
+        if len(runs) == 1:
+            session._pending_agent_handover = {
+                "agent": {"id": "agent-2", "modelName": "pipecat:openai/gpt-4o-mini", "prompt": "new", "options": {}},
+                "system_prompt": "You are agent two.",
+                "call": _call_record("call-2", "agent-2"),
+                "transport": object(),
+                "history": None,
+            }
+
+    session._run_prepared_once = fake_run_once
+    with pytest.raises(_Stop):
+        asyncio.run(session.run_prepared(object(), None))
+    assert seen == [True]
+    assert session._is_handover_generation is True
+
+
+def test_in_place_handover_adds_the_opening_after_the_new_prompt():
+    from pipecat.frames.frames import LLMMessagesUpdateFrame
+
+    session = _session()
+    task = _Task()
+    session._task = task
+    session._llm_service = SimpleNamespace(
+        register_function=lambda *a, **k: None, unregister_function=lambda *a, **k: None
+    )
+    session._registered_tool_names = set()
+    session._build_tools_for = lambda agent, extra_builtins=None: []
+
+    new_agent = {"id": "agent-2", "modelName": "pipecat:openai/gpt-4o-mini", "prompt": "two"}
+    asyncio.run(session._apply_agent_transfer(new_agent, "You are agent two."))
+
+    [update] = [f for f in task.frames if isinstance(f, LLMMessagesUpdateFrame)]
+    assert update.messages == [
+        {"role": "developer", "content": "You are agent two."},
+        {"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION},
+    ]
+    assert isinstance(task.frames[-1], LLMRunFrame)
