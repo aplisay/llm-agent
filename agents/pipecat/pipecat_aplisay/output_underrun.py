@@ -197,7 +197,14 @@ def instrumented(base: type) -> type:
                     probe = self.inflight_probe
                     if probe is not None:
                         try:
-                            inflight = max(0.0, probe() - self.queued_ms)
+                            # The cushion anchors this count across track changes
+                            # and interruptions; use its figure when it is there,
+                            # so this line reports what the stretcher steered by.
+                            upstream = getattr(self, "upstream_ms", None)
+                            if callable(upstream):
+                                inflight = upstream()
+                            else:
+                                inflight = max(0.0, probe() - self.queued_ms)
                             st.inflight_at_starve.append(inflight)
                             st.max_inflight_at_starve = max(
                                 st.max_inflight_at_starve, inflight
@@ -240,11 +247,21 @@ def instrumented(base: type) -> type:
                 # report them; ride the one per-call line rather than add a
                 # second. Without this there is no way to tell the stretcher
                 # fired at all, short of inferring it from the depth histogram.
+                # The trims and the peak backlog ride the same line: the peak is
+                # the number that shows whether the output fell behind at all.
+                chunk_ms = self.underrun.chunk_ms
                 banked = getattr(self, "stretched_chunks", 0)
+                trimmed = getattr(self, "trimmed_chunks", 0)
+                peak = getattr(self, "peak_backlog_ms", 0.0)
                 extra = ""
                 if banked:
-                    extra = (f"; stretched {banked} chunks "
-                             f"({banked * self.underrun.chunk_ms:.0f} ms banked from pauses)")
+                    extra += (f"; stretched {banked} chunks "
+                              f"({banked * chunk_ms:.0f} ms banked from pauses)")
+                if trimmed:
+                    extra += (f"; trimmed {trimmed} quiet chunks "
+                              f"({trimmed * chunk_ms:.0f} ms of backlog recovered)")
+                if peak:
+                    extra += f"; peak output backlog {peak:.0f} ms"
                 logger.info(f"track finished — {self.underrun.summary()}{extra}")
             return super().stop()
 
