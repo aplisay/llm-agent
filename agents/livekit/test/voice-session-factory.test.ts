@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
+import { HANDOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
 // maxDuration/timeExceededMessage passthrough and the Ultravox-specific
@@ -229,4 +230,79 @@ test("gemini: an external vendor is not honoured (no text-capable Live model), v
   ) as any;
   assert.equal(opts.modalities, undefined);
   assert.equal(opts.voice, "Kore");
+});
+
+// --- handover legs ---------------------------------------------------------------
+// The first session after a transfer_agent full-stack handover. The caller was
+// greeted when the call started, so on Ultravox the opening is the handover
+// instruction, never the incoming agent's greeting (lib/handover-opening.ts).
+
+const HANDOVER_OPENING = { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } };
+
+const handoverLeg = (modelName: string, agent: any) =>
+  buildRealtimeLlmOptions(modelName, agent, "call-2", { handover: true }) as any;
+
+test("first legs are unchanged: handover defaults to false", () => {
+  const agent = makeAgent({ greeting: { text: "Hello!" } });
+  assert.deepEqual(
+    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1", { handover: false }),
+    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1"),
+  );
+});
+
+test("ultravox handover leg: opens from the handover instruction when the agent has no greeting", () => {
+  assert.deepEqual(
+    handoverLeg(ULTRAVOX, makeAgent()).vendorSpecific.ultravox.firstSpeakerSettings,
+    HANDOVER_OPENING,
+  );
+});
+
+test("ultravox handover leg: the portable greeting is not used", () => {
+  for (const greeting of [{ text: "Hello, how can I help?" }, { instructions: "Greet the caller briefly." }]) {
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, makeAgent({ greeting })).vendorSpecific.ultravox.firstSpeakerSettings,
+      HANDOVER_OPENING,
+      `greeting ${JSON.stringify(greeting)} must not open a handover leg`,
+    );
+  }
+});
+
+test("ultravox handover leg: caller-supplied firstSpeakerSettings are replaced, not merged", () => {
+  const natives = [
+    { agent: { text: "Native greeting", uninterruptible: true } },
+    { user: { fallback: { delay: "3s", prompt: "Say hello." } } },
+  ];
+  for (const native of natives) {
+    const agent = makeAgent({ vendorSpecific: { ultravox: { firstSpeakerSettings: native } } });
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, agent).vendorSpecific.ultravox.firstSpeakerSettings,
+      HANDOVER_OPENING,
+    );
+    // The agent's own options are left as they were.
+    assert.deepEqual(agent.options.vendorSpecific.ultravox.firstSpeakerSettings, native);
+  }
+});
+
+test("ultravox handover leg: the other Ultravox mappings still apply", () => {
+  const opts = handoverLeg(
+    ULTRAVOX,
+    makeAgent({
+      greeting: { text: "Hello!" },
+      inactivity: { timeout: "20s", message: "Hello?" },
+      tts: { voice: "Mark", language: "en-GB" },
+      vendorSpecific: { ultravox: { experimentalSettings: { transcriptionProvider: "deepgram-nova-3" } } },
+    }),
+  );
+  const ultravox = opts.vendorSpecific.ultravox;
+  assert.deepEqual(ultravox.firstSpeakerSettings, HANDOVER_OPENING);
+  assert.equal(ultravox.inactivityMessages.length, 3);
+  assert.deepEqual(ultravox.vadSettings, { minimumInterruptionDuration: "0.48s" });
+  assert.deepEqual(ultravox.experimentalSettings, { transcriptionProvider: "deepgram-nova-3" });
+  assert.equal(opts.voice, "Mark");
+  assert.equal(opts.languageHint, "en-GB");
+});
+
+test("non-ultravox realtime: the options are the same on a handover leg (the runtime asks for the opening)", () => {
+  const agent = makeAgent({ greeting: { text: "Hello!" }, vendorSpecific: { openai: { something: true } } });
+  assert.deepEqual(handoverLeg(OPENAI, agent), buildRealtimeLlmOptions(OPENAI, agent, "call-2"));
 });
