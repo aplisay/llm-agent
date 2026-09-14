@@ -308,8 +308,8 @@ Pipecat), and **ci** (build and release pipeline).
   the session configuration.
 - **[pipecat] Agent handover** (`transfer_agent`) on GPT-Live is always a full
   restart.
-- **[pipecat] Pipecat upgrade**: the worker moves from pipecat-ai 1.6.0 to a
-  pinned git commit of upstream main that carries the OpenAI Live service.
+- **[pipecat] Pipecat upgrade**: the worker moves from pipecat-ai 1.6.0 to
+  1.9.0, the first release that carries the OpenAI Live service.
 - **[core] Documentation**: new [gpt-live.md](../gpt-live.md) and
   [gpt-live-agent-sets.md](../gpt-live-agent-sets.md).
 
@@ -457,8 +457,8 @@ Pipecat), and **ci** (build and release pipeline).
 - **[sipbridge] New optional environment**: `SIPBRIDGE_RTP_SILENCE_FILL`.
 - **[pipecat] `OPENAI_API_KEY`** on the Pipecat worker must belong to an OpenAI
   project with GPT-Live access for `pipecat:openai/gpt-live-1` calls to start.
-- **[pipecat] Worker image** installs pipecat-ai from a git commit pin; the
-  Dockerfile already carries git. Rebuild the image with the updated `uv.lock`.
+- **[pipecat] Worker image** installs pipecat-ai 1.9.0 from PyPI. Rebuild the
+  image with the updated `uv.lock`.
 - **[core] `AUTH_PROXY_SECRET`** is required for
   `POST /api/auth/sign-up/email`; deploy the paired front-end header change
   before enabling this server change.
