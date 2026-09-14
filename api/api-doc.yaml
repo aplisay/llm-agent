@@ -510,6 +510,15 @@ components:
         tts:
           type: object
           properties:
+            experimentalTranscript:
+              type: boolean
+              default: false
+              description: |-
+                Experimental Pipecat GPT-Live only: with an external `vendor`, discard the model's
+                native audio and synthesize its output transcript through that TTS. The Live API
+                still generates audio and retains its own speech timeline. Adds synthesis latency;
+                interruption timing and model history may differ from what the caller heard.
+                Does not enable a text-only API modality or change the model's `hasExternalTts` flag.
             language:
               $ref: "#/components/schemas/Language"
             vendor:
@@ -519,7 +528,8 @@ components:
                 TTS stage. On a realtime model flagged `hasExternalTts` in GET /models, a vendor other than the
                 model's own provider switches the model to text output and the named TTS speaks its text, with
                 `voice` and `language` applying to that TTS (see docs/realtime-external-tts.md). Other realtime
-                models accept only their own provider here.
+                models accept only their own provider here, except Pipecat GPT-Live with the explicit
+                `experimentalTranscript: true` prototype option.
                 You may optionally scope the inference model via `vendor/model` (e.g. `deepgram/aura-2`, `cartesia/sonic-3`).
             voice:
               description: |-

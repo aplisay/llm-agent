@@ -43,7 +43,13 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
-from .realtime_tts import external_tts_vendor, local_vad_required, text_output_enabled
+from .realtime_tts import (
+    external_tts_enabled,
+    external_tts_vendor,
+    local_vad_required,
+    text_output_enabled,
+    transcript_tts_enabled,
+)
 from .tool_log import log_tool_call, log_tool_result
 
 
@@ -1108,7 +1114,10 @@ async def build_voice_session(
     # ``TTSAudioRawFrame`` under ``OutputAudioRawFrame``), so the audit tap keys
     # on the parent class there.
     output_frame_cls = None
-    if is_gpt_live_model_id(model_id_from_name(model_name)):
+    if (
+        is_gpt_live_model_id(model_id_from_name(model_name))
+        and not transcript_tts_enabled(agent, model_id_from_name(model_name))
+    ):
         from pipecat.frames.frames import OutputAudioRawFrame
 
         output_frame_cls = OutputAudioRawFrame
@@ -1413,8 +1422,14 @@ async def _build_realtime(
     # misconfiguration worth a warning, not a dead call: fall back to native
     # audio.
     text_output = text_output_enabled(agent, model_id)
+    transcript_tts = transcript_tts_enabled(agent, model_id)
     requested_tts_vendor = external_tts_vendor(agent, model_id)
-    if requested_tts_vendor and not text_output:
+    if transcript_tts:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
+            "experimental GPT-Live transcript TTS: native audio is generated but discarded; "
+            "external speech timing may diverge from the Live session"
+        )
+    elif requested_tts_vendor and not text_output:
         logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
             "options.tts.vendor names an external TTS but this realtime provider "
             "has no text-output mode on this worker; using the model's own voice"
@@ -1443,6 +1458,7 @@ async def _build_realtime(
             api_key=_require_env("OPENAI_API_KEY"),
             voice=(options.get("tts") or {}).get("voice"),
             session=gpt_live,
+            transcript_tts=transcript_tts,
         )
     elif model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
@@ -1558,12 +1574,12 @@ async def _build_realtime(
 
     schemas = _register_tools_on_llm(llm, tools)
 
-    # Text-output mode: the same TTS the pipeline path uses, built from
-    # ``options.tts`` (vendor, voice, language), placed straight after the
+    # Text-output mode and experimental GPT-Live transcript synthesis reuse
+    # the pipeline TTS, built from ``options.tts`` and placed after the
     # model so its LLMTextFrames are spoken. The stages downstream (tone,
     # relay, rate guard, output audit tap, transport) already handle TTS audio
     # at the transport's rate, exactly as in pipeline mode.
-    external_tts = [build_tts_service(agent)] if text_output else []
+    external_tts = [build_tts_service(agent)] if external_tts_enabled(agent, model_id) else []
 
     if gpt_live_model:
         # No prompt developer message: the service's adapter would send it as
