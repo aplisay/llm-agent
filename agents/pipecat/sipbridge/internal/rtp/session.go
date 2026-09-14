@@ -322,12 +322,8 @@ func (s *Session) CanFill() bool {
 	return s.HasRemote() && !s.dtmfSending.Load()
 }
 
-// SilencePayload returns one 20 ms frame of digital silence in whatever codec
-// is currently selected for egress: 0xFF for PCMU, 0xD5 for PCMA — the G.711
-// encodings of zero amplitude. Used to keep the outbound stream continuous
-// while the bot has nothing to say (see the pacer's fill mode). A SIP UA is
-// expected to transmit every 20 ms for the life of the call whether or not
-// anyone is talking; peers with a media watchdog read a gap as a dead call.
+// SilencePayload keeps RTP flowing while the bot is silent, preventing media timeouts. See
+// docs/sipbridge-integration.md.
 func (s *Session) SilencePayload() []byte {
 	if PayloadType(s.payloadType.Load()) == PayloadPCMA {
 		return silencePCMA

@@ -1,12 +1,6 @@
 /**
- * Speaking a fixed line on a LiveKit voice session: the opening greeting
- * (`options.greeting.text`) and the inactivity prompt
- * (`options.inactivity.message`).
- *
- * `AgentSession.say()` needs a TTS. In @livekit/agents 1.0.46 it throws "trying
- * to generate speech from text without a TTS model" when the session has none,
- * so a realtime model that makes its own audio is asked to say the line through
- * `generateReply` instead.
+ * say() requires a TTS; use generateReply for fixed lines on realtime sessions that produce their own audio.
+ * See PR #336 and docs/realtime-external-tts.md.
  */
 import type { VoiceMode } from "./voice-mode.js";
 
@@ -63,15 +57,13 @@ export function speakGreetingText(
   text: string,
   stack: SpeechStack & { modelName: string },
 ): SpeechHandleLike {
-  // OpenAI asks the model even in text-output mode, where a TTS exists, so the
-  // greeting is in the model's own conversation. A say() line never reaches a
-  // realtime model. See docs/realtime-external-tts.md.
+  // Use generateReply for OpenAI even with external TTS: say() never reaches the model's conversation.
+  // See docs/realtime-external-tts.md.
   if (sessionHasTts(stack) && !isOpenAIRealtime(stack.voiceMode, stack.modelName)) {
     return session.say(text, { allowInterruptions: false });
   }
-  // No allowInterruptions: with server-side turn detection the SDK turns an
-  // explicit false into true. The OpenAI greeting hardening lowers the session
-  // default instead.
+  // Omit allowInterruptions: server-side turn detection forces an explicit false to true.
+  // Lower the session default for the greeting instead; see PR #336.
   return session.generateReply({ instructions: verbatimInstructions(text, "greeting") });
 }
 

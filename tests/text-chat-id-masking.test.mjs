@@ -5,14 +5,8 @@ import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-w
 
 const { createChatSession } = await import('../lib/text-chat.js');
 
-// slimResults is the ONE seam every tool result crosses to reach the LLM
-// conversation, and therefore where an internal id stops being something the
-// model can quote at a user. lib/mask-ids.js owns the rewriting and is pinned
-// on its own in mask-ids.test.mjs; these pin the WIRING — that a failed save is
-// masked in place, and that a successful one keeps the ids the builder needs.
-//
-// The regression: a builder session whose placeholder set had been deleted
-// mid-conversation told the user "Agent set <uuid> not found."
+// Verify failed tool results are masked at slimResults while successful saves retain ids needed by later tools. See
+// PR #257.
 
 const ID = '00000000-0000-4000-8000-000000000001';
 const ID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -81,10 +75,8 @@ describe('slimResults keeps internal ids out of the conversation', () => {
   });
 
   test('the stub names each member\'s resulting functions, options and mcpServers', async () => {
-    // The model cannot re-read the set, and a member's functions, options and
-    // mcpServers are whole-field replaces on save — so the names are its only way
-    // to see that a save it just made kept the transfer wiring, the kit and the
-    // tool servers. Both function storage shapes appear.
+    // Report replaced field names so the model can detect lost functions, options or MCP servers after a save.
+    // Exercise both function storage shapes; see PRs #332, #333 and #334.
     const session = await makeSession();
     const [out] = session.slimResults([
       {
@@ -123,9 +115,7 @@ describe('slimResults keeps internal ids out of the conversation', () => {
   });
 
   test('an option or mcpServers VALUE never reaches the conversation', async () => {
-    // Stored options can hold an encrypted recording key and the org's failover
-    // number, and an mcpServers entry an inline authorization header; the stub is
-    // a fingerprint, so only names travel.
+    // Return names only: option values, MCP URLs and headers may contain credentials or phone numbers. See PR #334.
     const session = await makeSession();
     const [out] = session.slimResults([
       {

@@ -140,10 +140,8 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
                 if self._bot_speaking:
                     await self._interrupt_external_speech()
             if state == VADState.SPEAKING and not self._speech_interrupts:
-                # Count audio duration, not network packet arrival intervals.
-                # Before playback, tolerate brief acknowledgments. Sustained
-                # speech (600 ms after VAD confirms speech) cancels the queue.
-                # Keep the grace period if playback starts during the ack.
+                # Measure audio duration, allowing brief acknowledgments before playback; retain that grace if playback starts.
+                # Sustained speech cancels the queue; see PR #328.
                 self._preplay_speech_secs += len(audio) / (16000 * 2)
                 if self._preplay_speech_secs >= 0.6:
                     await self._interrupt_external_speech()

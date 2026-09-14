@@ -92,13 +92,8 @@ def test_thread_spawn_failure_is_a_hard_503(loop, monkeypatch):
     assert any("cannot start threads" in p for p in body["problems"])
 
 
-# ---- Gateway-map and task visibility -------------------------------------
-#
-# The two worst leaks in the 2026-09-03 audit were both invisible to this
-# probe: a WebSocket handler parked forever per outbound call (W1), and a
-# gateway session retained per concurrency-refused inbound call (W2).
-# Neither touches live_calls and neither spawns a thread, so the counts
-# below are what would have caught them.
+# Include gateway maps and tasks in health counts: leaked sessions can be absent from live_calls and thread counts.
+# See PR #285.
 
 
 class _FakeGateway:

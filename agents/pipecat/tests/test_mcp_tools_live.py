@@ -2,24 +2,10 @@
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 
-"""``mcp_tools`` against a real MCP server over the real transport.
+"""Use a local MCP server to verify auth headers, schemas and error propagation through the real mcp 2 transport.
+Mocked transports cannot catch client/SDK contract drift; see PR #327."""
 
-Every other MCP test replaces the transport with a fake, so none of them can
-see whether a request actually carries the agent's auth. That is the part of
-the client most likely to break silently on an SDK change: mcp 2's
-``streamable_http_client`` takes no ``headers``, so they now ride on an HTTP
-client we build and own, and a mistake there loses the credential rather than
-raising. Same for the model attributes it reads back — an ``input_schema`` that
-resolves to nothing publishes the tool with no parameters, and an ``is_error``
-that resolves to nothing reports every failure as a success.
-
-So this drives the whole path once against a server on localhost and checks
-what arrived at the far end.
-"""
-
-# No `from __future__ import annotations` here: the MCP server resolves a
-# tool's type hints at registration, and a stringised `Context` annotation on a
-# function nested in the fixture is not resolvable from its scope.
+# Do not postpone annotations here: MCP cannot resolve a string Context type inside the nested fixture. See PR #327.
 import asyncio
 import contextlib
 import socket

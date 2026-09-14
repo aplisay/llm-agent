@@ -1,14 +1,7 @@
 import { askOptions } from '../lib/ask-options.js';
 
 /**
- * `ask_user` declares `options: { items: { type: 'string' } }`, but the frame
- * builder used to forward the model's raw tool input on nothing more than an
- * Array.isArray check. Models routinely answer a choice tool with rich options
- * — `[{ label, description }, …]` — and clients got objects where the schema
- * promised strings: polite.ai's composer handed one to React and the whole
- * builder page died (2026-09-15), and this session's own transcript recorded
- * the ask as "(options: [object Object])", which is what the model reads back
- * on resume.
+ * Normalise rich model choices to the strings ask_user promises before emitting or storing them. See PR #331.
  */
 
 describe('askOptions', () => {

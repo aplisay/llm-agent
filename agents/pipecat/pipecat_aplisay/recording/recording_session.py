@@ -73,15 +73,7 @@ class RecordingSession:
         self._sink: Optional[_PcmSink] = None
         self._lock = asyncio.Lock()
         self._stopped = False
-        # Write coalescing buffer (P4). The bridged-segment tap calls
-        # ``append_pcm`` once per 20 ms frame, and every call used to be
-        # its own ``asyncio.to_thread`` hop — 50 hops/s per bridged
-        # recording, each writing ~1.3 KB, onto the default executor.
-        # That executor is min(32, cpu+4) threads — six on a 2-vCPU node
-        # — and is shared with GCS uploads, DNS lookups and httpx, so a
-        # couple of bridged recordings plus one slow GCS call stalled
-        # name resolution for every REST request in the process.
-        # Accumulate instead and hop once per _WRITE_CHUNK_BYTES.
+        # Coalesce PCM writes so per-frame thread hops cannot starve the executor shared by DNS and uploads. See PR #285.
         self._pending = bytearray()
 
     def attach_to(self, audio_processor) -> None:  # pragma: no cover (wiring)

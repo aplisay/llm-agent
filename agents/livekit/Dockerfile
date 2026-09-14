@@ -1,9 +1,6 @@
 FROM node:24-slim
-# No SECRETENV_* build args: this image contains no secrets. The pair is read
-# from Secret Manager at container start (entrypoint.sh -> load-secretenv.js),
-# which is also where credentials/google.json now comes from — it used to be
-# decrypted here at build time, putting a live service-account private key in a
-# registry layer for anyone with pull access.
+# Load credentials at container start via entrypoint.sh; build-time decryption puts private keys in image layers.
+# See agents/livekit/deploy/gcp/README.md.
 EXPOSE $PORT
 WORKDIR /usr/src/app
 RUN apt-get -y update 
@@ -11,10 +8,7 @@ RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
 COPY lib/* ./agent-lib/
 RUN npm install -g pnpm@latest-10
-# --frozen-lockfile: the whole-directory COPY above does bring yarn.lock in, but
-# without this yarn would still silently re-resolve on any package.json/yarn.lock
-# drift and the image would float off the committed tree (see the main image's
-# better-auth 1.6.25 -> 1.7.1 incident). Drift should fail the build instead.
+# Fail on lockfile drift so image builds cannot silently change dependency versions. See PR #229.
 RUN yarn install --development --frozen-lockfile
 RUN yarn build
 ENV NODE_ENV production

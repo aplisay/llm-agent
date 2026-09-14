@@ -114,16 +114,8 @@ describe('validatePhoneRegistration — registrar OR options.register_proxy must
   });
 });
 
-// Regression guard for the OpenAPI request-validation layer.
-//
-// POST /phone-endpoints bodies are checked against the `Registrar` schema pattern in
-// api/api-doc.yaml by express-openapi-validator BEFORE the handler (and thus before
-// validatePhoneRegistration) ever runs. That coarse syntactic pattern must stay in lockstep
-// with isPlausibleSipHost(). When it drifted — its host character class omitted `_` — a
-// legitimate non-FQDN registrar such as "pbx_company:5060" (sent alongside a routable
-// options.register_proxy) was rejected at the schema layer, surfacing as a misleading
-// `oneOf` error instead of reaching the handler. These tests read the live pattern out of
-// the spec so the two layers can't silently diverge again.
+// Keep the OpenAPI registrar pattern aligned with isPlausibleSipHost; schema validation runs before the handler. See
+// PR #205.
 const apiDoc = yaml.load(readFileSync(path.resolve(process.cwd(), 'api/api-doc.yaml'), 'utf8'));
 const OPENAPI_REGISTRAR_PATTERN = apiDoc?.components?.schemas?.Registrar?.pattern;
 const openapiRegistrar = new RegExp(OPENAPI_REGISTRAR_PATTERN);

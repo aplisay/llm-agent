@@ -2172,11 +2172,8 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         expect(reg.status).toBe('active');
         expect(reg.state).toBe('initial');
 
-        // Poll for a final state rather than sampling once after a fixed sleep.
-        // The simulator schedules its 'registering' and final transitions from the
-        // same instant (3-60s and 3-10s), so 'registering' frequently lands AFTER
-        // the final state: a single late sample can legitimately observe
-        // 'registering' and fail. Real (unscaled) sleeps keep the budget honest.
+        // Poll transitions: the simulator may emit registering after its final state, so a single late sample is unreliable.
+        // See PR #205.
         const deadline = Date.now() + 15000;
         while (!['registered', 'failed'].includes(reg.state) && Date.now() < deadline) {
           await new Promise(resolve => originalSetTimeout(resolve, 50));

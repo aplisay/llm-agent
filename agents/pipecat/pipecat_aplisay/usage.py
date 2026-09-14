@@ -73,13 +73,8 @@ def usage_vendors(
     tts: dict[str, Any] = {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")}
     bundled = bundled_speech_vendor(agent, model_id)
     if bundled is not None:
-        # A realtime model speaking with its own voice: its speech is paid for
-        # by the model's own rows (a minute line, or audio tokens), so the
-        # metered TTS audio is attributed to the model's vendor, which a card
-        # zero-prices (BUNDLED_TTS_PROVIDERS in lib/rate-components.js), never
-        # to the pipeline default above. The first Grok live call showed the
-        # default in action: tts|cartesia rows a Cartesia line would have
-        # priced on top of the minute.
+        # Attribute native realtime speech to its model vendor's zero-priced TTS rows to avoid double billing.
+        # Keep aligned with BUNDLED_TTS_PROVIDERS; see PR #338 and docs/realtime-external-tts.md.
         tts["vendor"] = bundled
     elif bundled is None and _bundled_speech_is_unmeterable(agent, model_id):
         # Gemini Live: its vendor, google, is also a discrete TTS engine, so a
@@ -118,9 +113,8 @@ def bundled_speech_vendor(agent: dict, model_id: str) -> str | None:
     return None if vendor in UNMETERED_BUNDLED_SPEECH_VENDORS else vendor
 
 
-#: Realtime providers whose name is also a discrete TTS engine's, so their own
-#: speech cannot carry a bundled row: a `tts|google` row would be priced by the
-#: Google TTS line. Their speech is not metered as tts at all.
+#: Do not meter native speech as TTS when the vendor also sells discrete TTS: its paid rate would match.
+#: See docs/realtime-external-tts.md.
 UNMETERED_BUNDLED_SPEECH_VENDORS: frozenset[str] = frozenset({"google"})
 
 
@@ -151,15 +145,8 @@ class UsageMeteringObserver(BaseObserver):
         self._services = services or {}
         # key "technology|provider|detail|unit" -> meter dict with a running qty.
         self._meters: dict[str, dict[str, Any]] = {}
-        # Observers fire on every push hop, so a frame is seen multiple times;
-        # dedupe by frame id to count each frame once.
-        #
-        # Bounded (P8). An unbounded set held one int per frame for the
-        # whole call — ~6-7 MB per hour of bot speech, freed only at
-        # hangup. Duplicate sightings of a frame all happen within a few
-        # push hops of each other, so a short ring of recent ids is as
-        # good as remembering every frame ever seen: the deque evicts
-        # oldest-first and the set mirrors it for O(1) lookup.
+        # Deduplicate repeated push-hop sightings by frame id; a bounded recent window avoids retaining every frame for the
+        # call. See PR #285.
         self._seen_frame_ids: set[int] = set()
         self._seen_frame_order: deque[int] = deque()
         # Open VAD user-speech window start timestamp (seconds), for stt/ms.

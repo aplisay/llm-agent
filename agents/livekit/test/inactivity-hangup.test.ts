@@ -7,13 +7,8 @@ import {
   INACTIVITY_PROMPT_COUNT,
 } from "../lib/voice-session-factory.js";
 
-// Covers `options.inactivity.hangup`: end the call once the inactivity prompt has gone
-// unanswered INACTIVITY_PROMPT_COUNT times, instead of prompting forever. Without it a
-// leg nobody hangs up is only reclaimed by the model's maxDuration long-stop, which can
-// leave a caller (or an abandoned transfer target) on silence for minutes.
-// This file covers the option gate and the Ultravox native mapping; the generic
-// (non-Ultravox) counter lives in inactivity-kick.ts (test/inactivity-kick.test.ts).
-// run: npx tsx --test test/inactivity-hangup.test.ts
+// Verify the inactivity hangup gate and native Ultravox mapping; see PR #340 for the generic kick.
+// Run: npx tsx --test test/inactivity-hangup.test.ts
 
 const ULTRAVOX = "livekit:ultravox/ultravox-v0.7";
 const OPENAI = "livekit:openai/gpt-4o-realtime";

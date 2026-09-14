@@ -1,21 +1,5 @@
-"""Tests for the ``rest`` implementation of the pipecat function handler.
-
-Regression coverage for the 2026-07-25 beta incident: keyed rest functions
-(booking_get_slots / booking_book / notify_email_team) were dispatched with NO
-credentials because the Python port of ``lib/function-handler.js`` accepted the
-agent ``keys`` but never resolved a function's ``key`` reference into an
-Authorization header — every call 401'd at the integrations tool plane even
-though the key was armed on the agent.
-
-Covers:
-- bearer / basic / custom-header / query key resolution (JS-handler parity
-  plus the ``query`` type ``mcp_tools`` already supports);
-- unknown key name → request still goes out, keyless (server decides);
-- >= 400 responses surface the response BODY as the tool result alongside the
-  error (previously the model saw ``result: None`` and couldn't tell why);
-- unconsumed inputs become the query string on GET (URLSearchParams parity);
-- the ``rest_callout`` telemetry emission before the request.
-"""
+"""Exercise REST key resolution and error-body delivery through the Python handler, matching the JS contract. See PR
+#175."""
 
 from __future__ import annotations
 
@@ -207,12 +191,8 @@ class TestTelemetry:
 
 
 class TestUnsuppliedParamsOmitted:
-    """Params the model didn't supply are OMITTED, never fabricated as null.
-
-    Beta 2026-07-27: {"from": null, "days": null} reached booking.get_slots
-    for every no-preference call; Number(null) === 0 server-side coerced the
-    scan to one day and afternoon callers were told nothing was available.
-    """
+    """Omit unsupplied parameters rather than serialising them as null, which downstream services can coerce to zero. See
+    PR #177."""
 
     def test_unsupplied_generated_param_is_absent_from_the_body(self) -> None:
         _run(_rest_fn(), [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {})
@@ -241,10 +221,7 @@ class TestUnsuppliedParamsOmitted:
 
 
 class TestResultCap:
-    """A REST function calls a customer endpoint, which can return a whole
-    page. Left unbounded one call spends a model's tool-input budget, and on a
-    responses delegation that budget is per session — exhausting it strands
-    the delegation and leaves a live call silent (tool_result.py)."""
+    """Cap REST results against the model's session budget while preserving full metadata for tool chaining. See PR #322."""
 
     def test_a_small_result_is_untouched_and_keeps_its_type(self) -> None:
         _FakeClient.response = _FakeResponse(body={"slots": ["09:30", "11:00"]})

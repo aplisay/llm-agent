@@ -346,13 +346,8 @@ class ConfidenceToneInjector(FrameProcessor):
         if self._handover:
             # Handover backstop: the incoming agent never signalled speaking.
             if (time.monotonic() - self._handover_started_at) > _HANDOVER_MAX_SECS:
-                # This is a FAILED HANDOVER, not a tidy timeout: we covered the
-                # gap for the full backstop and the incoming agent never once
-                # spoke, so the caller is about to be dropped into dead air with
-                # the call still up. It is the earliest unambiguous signal of
-                # the 2026-08-21 silent-leg class of fault, so say so loudly —
-                # the tone then stops and the caller hears silence, which is
-                # exactly what nobody noticed for 55 seconds last time.
+                # Log a handover failure when the tone backstop expires without agent speech; the call can remain up and silent. See
+                # PR #235.
                 logger.error(
                     f"agent handover FAILED: the incoming agent produced no audio in "
                     f"{_HANDOVER_MAX_SECS:.0f}s; comfort tone exhausted, caller now in silence"
@@ -413,14 +408,8 @@ class ConfidenceToneInjector(FrameProcessor):
         accumulate into audio backlog at the transport."""
         next_deadline = time.monotonic()
         while True:
-            # Idle poll (P3). The tone is armed only during a transfer,
-            # which is a few seconds out of a call that may run for an
-            # hour: for ~99% of the call ``_mode`` is None and the 20 ms
-            # pacing loop was waking 50 times a second per call to do
-            # nothing — 5 000 wakeups/s across a hundred calls. Poll
-            # slowly while disarmed and re-anchor the deadline on the
-            # way in, so arming is still picked up within 250 ms and the
-            # first tone chunk is still pushed on an exact boundary.
+            # Poll slowly while disarmed, then re-anchor pacing on activation to avoid per-frame wakeups throughout idle calls.
+            # See PR #285.
             if self._mode is None:
                 await asyncio.sleep(_IDLE_POLL_SECS)
                 next_deadline = time.monotonic()

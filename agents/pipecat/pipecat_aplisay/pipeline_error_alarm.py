@@ -1,26 +1,4 @@
-"""Escalate pipeline ``ErrorFrame``s into something a human will actually see.
-
-WHY THIS EXISTS (beta incident, 2026-08-21)
-------------------------------------------
-An agent handover left the caller in dead air for 55 seconds. The pipeline knew:
-1283 ``ErrorFrame``s went past, one per dropped audio frame. But pipecat treats
-a non-fatal ErrorFrame as a WARNING on the worker's own logger
-(``pipeline/worker.py:_source_push_frame``), the call completed, and the Call
-row was written "ended normally". Nothing distinguished it from a good call.
-
-``PipelineTask`` already fires an ``on_pipeline_error`` event for every
-ErrorFrame (``pipeline/worker.py:1109``); nobody was listening. This listens,
-and turns the flood into: one ERROR the first time each distinct fault appears,
-a periodic count while it persists, and one summary line when the pipeline
-ends. Everything is emitted inside the run's ``logger.contextualize(callId=…)``
-scope, so it lands in the call's InvocationLog and is visible in the call
-inspector rather than only in pod logs.
-
-It deliberately does NOT end the call. A pipeline error is not always fatal to
-the conversation, and hanging up on a caller because of a transient decode
-error would be a worse failure than the one it is reporting. The job here is to
-make silence loud in the logs, not to make policy.
-"""
+"""Report non-fatal pipeline errors in call-scoped logs, deduplicating repeats without ending the call. See PR #235."""
 
 from __future__ import annotations
 
@@ -43,13 +21,7 @@ def _error_text(frame: Any) -> str:
 
 
 def _fingerprint(text: str) -> str:
-    """Collapse a family of near-identical errors to one key.
-
-    The incident produced 1283 messages differing only in nothing at all, but
-    in general the tail of an exception (ids, offsets) varies while the head
-    identifies the fault. First line, first 160 chars is plenty to tell two
-    real faults apart without letting one fault log a thousand times.
-    """
+    """Group errors by a bounded prefix so varying ids or offsets cannot flood the log. See PR #235."""
     return text.strip().splitlines()[0][:160] if text.strip() else text
 
 

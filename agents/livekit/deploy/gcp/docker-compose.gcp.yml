@@ -20,11 +20,7 @@ services:
     container_name: livekit-agent
     restart: always
 
-    # No entrypoint/command override: the image's own entrypoint.sh loads the
-    # SECRETENV pair and execs `node dist/realtime.js start`. That means this
-    # compose file needs an image built from agents/livekit/Dockerfile at or
-    # after that change — older tags still carry the broken
-    # `node dist/realtime.mjs` ENTRYPOINT and will fail immediately.
+    # Use the image entrypoint so secrets load before the agent starts. See agents/livekit/deploy/gcp/README.md.
 
     env_file:
       # Non-secret deploy config (image coordinates, log level, tuning). There
@@ -83,17 +79,8 @@ services:
       #   NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js
       NODE_OPTIONS: ${NODE_OPTIONS:-}
 
-      # V8 compile cache (Node >= 22.1; the image is node:24). The pool runs
-      # one-shot job processes — one fork, one call, exit — so the same module
-      # graph is re-parsed and re-compiled once per call. Profiling attributed
-      # 27% of a job process's CPU to its first 10 seconds, most of it module
-      # resolution and compilation. This caches the compiled bytecode in the
-      # container filesystem, so only the first process after a container start
-      # pays full price.
-      #
-      # Deliberately inside the container rather than a volume: the cache is
-      # keyed on Node version and source, so it must not outlive an image
-      # change. Set NODE_COMPILE_CACHE= (empty) to A/B it back off.
+      # Cache compiled bytecode across one-shot job processes; keep the cache container-local to reset with each image. See
+      # PR #205.
       NODE_COMPILE_CACHE: ${NODE_COMPILE_CACHE:-/tmp/node-compile-cache}
 
     volumes:

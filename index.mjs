@@ -153,21 +153,7 @@ httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
 });
 
-// Close chat sessions no process still holds. Started HERE, in the server
-// entry point, and not on import of a library: the boot sweep this replaces
-// ran when lib/database.js was imported, so every CLI tool pointed at a live
-// environment ended that environment's sessions as a side effect — including
-// tools that only read. Safe to run from every replica at once; the cutoff
-// decides what is stale, not the fact that this process just started.
-//
-// Imported DYNAMICALLY, and that is load-bearing: lib/text-chat.js pulls in
-// lib/database.js, which builds its Sequelize instance and pg-listen
-// connection string from process.env.POSTGRES_* at module evaluation. Static
-// imports are all evaluated before this module's body runs, so a static import
-// here would reach the database layer before `dotenv.config()` above has
-// decoded SECRETENV_BUNDLE into the environment — and the process would exit
-// with `TypeError: Invalid URL` before it could listen. lib/ws-handler.js
-// avoids the same trap the same way, and says so.
+// Start the reaper only in the server: importing database code from a CLI must not alter chat liveness. See PR #291.
 const { startChatSessionReaper, startChatOwnershipListener, releaseAllChatSessions } = await import('./lib/text-chat.js');
 startChatSessionReaper({ log: logger });
 // Answer other processes asking for a chat session this one holds (a client

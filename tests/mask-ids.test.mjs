@@ -1,17 +1,7 @@
 import { maskInternalIds, maskToolResultIds } from '../lib/mask-ids.js';
 
-// Internal ids are platform plumbing and must never reach a user. The prompt
-// has said so since 0146c4e, but a prompt is guidance and a tool result is
-// evidence: a builder session whose placeholder set had been deleted
-// mid-conversation relayed the tool error word for word —
-//
-//   I couldn't save the name because the supplied placeholder set could not be
-//   found: "Agent set <uuid> not found." Please reopen or refresh the team,
-//   and I'll continue building into that same set.
-//
-// These pin the invariant that closes it at the source: the model never
-// RECEIVES the id, so it has nothing to quote. What it must still receive is
-// the failure itself, and a successful save's ids, which it needs to build.
+// Keep failure details but remove internal ids before the model receives them; successful saves still need their ids.
+// See PR #257.
 
 const ID = '00000000-0000-4000-8000-000000000001';
 const OTHER = '00000000-0000-4000-8000-000000000002';

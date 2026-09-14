@@ -5,13 +5,8 @@ import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-w
 
 const { createChatSession, sanitizeHistory } = await import('../lib/text-chat.js');
 
-// RESUME seeding (2026-08-28 beta session s_85a0afe1): a session that replaces
-// one lost to a server restart is started with the prior conversation as
-// `history`, and its hidden opening turn becomes a resume — continue the
-// embedded transcript, don't re-greet, don't re-ask answered questions, agreed
-// names stand. These tests pin the sanitiser's caps, the resume prompt's
-// contract, and the named-placeholder rule that stops a restarted build
-// re-proposing names for a team the predecessor already named.
+// Seed replacement chats from prior history and continue the conversation without greeting again or renaming an
+// existing team. See PR #260.
 
 const logger = {
   info() {}, warn() {}, error() {}, debug() {},

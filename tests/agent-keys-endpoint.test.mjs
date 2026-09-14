@@ -1,10 +1,7 @@
 import { setupRealDatabase, teardownRealDatabase, Organisation, User } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
-// GET /agents/{agentId}/keys must expose only key NAMES (never values), so a
-// trusted BFF can confirm a write-only key it pushed is actually armed on the
-// agent — the fix for the silent "MCP server dropped because its key is
-// missing" wedge. PUT /keys must still merge (never clobber a sibling key).
+// Expose key names only so clients can confirm credentials are armed without reading their values. See PR #145.
 describe('Agent keys endpoint (names-only visibility + merge)', () => {
   let createAgent;
   let listKeys;

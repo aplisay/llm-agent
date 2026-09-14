@@ -1,14 +1,4 @@
-"""Unit tests for the worker-as-MCP-client tool adapter (``mcp_tools.py``).
-
-These exercise the pure adapter logic — name namespacing, result-text
-extraction, descriptor shape, and the ``execute`` proxy — against a fake MCP
-``ClientSession``, so no network or real MCP server is needed. The
-network-bearing ``connect_mcp_servers`` is covered for its misconfiguration /
-empty-list short-circuits and, with faked transports, for its connect-failure
-and success paths (including the diagnostic content of the logs — see the
-2026-07-18 emf-bar incident, where a bare "failed to connect" line hid a 404
-from a url missing its ``/mcp`` path).
-"""
+"""Exercise MCP adapter wiring and retain connection error details for diagnosis. See docs/mcp-servers.md."""
 
 from __future__ import annotations
 
@@ -339,12 +329,7 @@ def test_connect_success_logs_server_and_tool_names(monkeypatch):
     assert "emf_bar_order_drink" in info
 
 
-# --- result size cap ------------------------------------------------------------
-#
-# An MCP server is a third party and can return whatever it likes. On the
-# 2026-09-14 beta call four results totalling 92 KB arrived in one turn and
-# exhausted the responses delegation's 32768-byte per-session tool budget,
-# which stranded the delegation and left the caller in silence.
+# Cap third-party results before they can exhaust a delegation's session-wide tool budget. See PR #321.
 
 
 def _capped(text, max_bytes, name="reader"):
@@ -401,8 +386,7 @@ def test_the_delegated_cap_leaves_room_for_a_conversation():
     budget = 32768
     calls_that_fit = budget // (mcp_tools.MCP_MAX_RESULT_BYTES_DELEGATED + 400)
     assert calls_that_fit >= 11, f"only {calls_that_fit} tool calls would fit"
-    # The incident's four results were 92699 bytes; capped they are far less
-    # than the budget rather than three times it.
+    # Several results in one turn must still leave session budget for later calls. See PR #321.
     assert 4 * mcp_tools.MCP_MAX_RESULT_BYTES_DELEGATED < budget
 
 
@@ -452,12 +436,7 @@ def test_truncation_is_logged_loudly_with_the_numbers():
 
 
 def test_the_cap_reaches_a_real_descriptor_through_connect(monkeypatch):
-    """The wiring is the part that actually protects a call.
-
-    A cap the connect path drops on the floor would pass every unit test
-    above, so this drives the whole path with faked transports and checks the
-    result a tool call actually returns.
-    """
+    """Exercise the connection path too: descriptor-only tests cannot catch a dropped cap. See PR #321."""
     import mcp
     import mcp.client.streamable_http as shttp
 

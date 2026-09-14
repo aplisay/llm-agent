@@ -404,18 +404,8 @@ class _SbGatewaySession(GatewaySession):
 
     async def shutdown(self) -> None:
         await self.hangup("Session closed")
-        # Drop the gateway's registrations for this leg (W1). On the
-        # OUTBOUND path the dispatch task owns the CallSession and
-        # runner, and this is the only teardown that runs: the WS
-        # handler parks on the leg-done event, which nothing but
-        # ``unregister_session`` (or ``signal_bta_armed``) ever sets.
-        # Without this the handler task, its transport, its Starlette
-        # WebSocket and three map entries were retained for the life of
-        # the process, per outbound call — and uvicorn's graceful
-        # shutdown waits on those tasks, so a single leaked one turned
-        # every SIGTERM into a SIGKILL at the 30 s grace deadline.
-        # Idempotent, so the inbound path (whose handler ``finally``
-        # already calls it) is unaffected.
+        # Unregister outbound sessions here to release the parked WebSocket handler; peer close alone does not wake it.
+        # Repeated unregister is safe on inbound teardown; see PR #285.
         self._gateway.unregister_session(self.session_id)
 
 

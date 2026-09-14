@@ -642,17 +642,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         self._leg_chains.clear()
 
     async def _sweep_loop(self) -> None:
-        """Expire abandoned pending-attach and consult state (P6).
-
-        ``pending_attaches`` entries hold the full resolved agent dict and
-        are removed only when the leg's WebSocket arrives or a
-        ``leg.disconnected`` VSI event lands. A VSI reconnect between
-        ``leg.ringing`` and ``leg.disconnected`` loses the disconnect, and
-        the entry becomes permanent; likewise a consult whose third party
-        never answers leaves both its entry and its ConsultPayload (which
-        carries the parent transcript) behind. ``created_at`` was written
-        in three places and read in none — this is what reads it.
-        """
+        """Expire pending attaches and consults whose disconnect event or WebSocket may never arrive after a VSI reconnect.
+        See PR #285."""
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(
@@ -945,19 +936,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             backoff = min(backoff * 2, 30.0)
 
     def _queue_vsi_event(self, event: dict) -> None:
-        """Hand one VSI event to its leg's serial chain (P6).
-
-        The read loop used to ``await`` each handler inline, so the whole
-        event stream queued behind every handler — and a ``leg.ringing``
-        handler does two REST calls, so one slow agent resolution delayed
-        every OTHER leg's disconnect, DTMF and transfer events by up to
-        its full timeout.
-
-        Handlers still run strictly in order **per leg** — they drive a
-        state machine (ringing → connected → transfer → disconnected) and
-        reordering those would be worse than the blocking. Different legs
-        simply no longer wait on each other.
-        """
+        """Serialise events per leg to preserve state transitions without blocking unrelated calls on REST lookups. See PR
+        #285."""
         key = str(event.get("leg_id") or event.get("id") or "")
         previous = self._leg_chains.get(key)
 

@@ -1,31 +1,6 @@
 /**
- * Fixed-message failover for LiveKit — `options.fallback.message`.
- *
- * Sits between `fallback.model` and `fallback.number` in the failover chain
- * (see `docs/agent-failover.md`): when the agent could not be brought up, play
- * the operator's announcement at the caller rather than dropping them into
- * dead air or straight onto a transfer.
- *
- * Two properties shape everything here.
- *
- * **The audio is cached, so playout makes no vendor call.** The announcement
- * cannot vary for a given configuration, so it is synthesised once, stored in
- * GCS keyed by a digest of its own content, and replayed from then on. That is
- * not just a latency win: because a cache hit calls no TTS vendor, it meters
- * no usage, so it needs no `Call` record, so it never reserves an agent
- * concurrency slot. Which matters enormously, because the single most useful
- * moment to play a fixed message is when the concurrency limiter is what
- * rejected the call — a playout that took a slot would defeat the feature it
- * implements. See `lib/fallback-message/CONTRACT.md`.
- *
- * **This path runs when things are already broken**, and often when the host is
- * loaded — load being one of the likelier reasons a session failed to start.
- * So it stays cheap and it never throws: every failure here degrades to
- * "caller does not get the announcement", handing control back to the fallback
- * chain to try `fallback.number`, rather than turning one failure into two.
- *
- * Mirrors `agents/pipecat/pipecat_aplisay/fallback_message.py` — keep the
- * resolution rules and playout semantics in step across stacks.
+ * Fallback announcements must work without a Call record or concurrency slot, and failures must allow number
+ * fallback. Keep both workers aligned with lib/fallback-message/CONTRACT.md.
  */
 
 import {

@@ -1,13 +1,6 @@
 /**
- * The LiveKit worker reaches shared `lib/` code through `agents/livekit/agent-lib/`. Single files
- * there may be symlinks: the image build (`agents/livekit/Dockerfile`) does `COPY lib/* ./agent-lib/`,
- * which lands a real file over each of them. A shared DIRECTORY cannot be a symlink, though: that COPY
- * flattens a directory's contents into `agent-lib/` and leaves the directory symlink dangling, GNU
- * `cp -rp` in the tsup `onSuccess` step copies it into `dist/` still dangling, and the worker then
- * crash-loops at module load (`ERR_MODULE_NOT_FOUND …/dist/agent-lib/<dir>/index.js`) — exactly what
- * took out the staging runner on 2026-09-03 with `agent-lib/fallback-message`. macOS `cp` follows the
- * link, so a local build never shows it. Shared directories are therefore committed as real copies
- * (the `recording/` precedent) and this test keeps them byte-identical to their `lib/` source.
+ * Keep shared directories as real, byte-identical copies: Docker COPY and GNU cp leave directory symlinks dangling.
+ * A macOS build can hide this failure; see PR #281.
  */
 import { describe, expect, test } from '@jest/globals';
 import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';

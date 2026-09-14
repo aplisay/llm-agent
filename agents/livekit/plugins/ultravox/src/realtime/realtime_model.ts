@@ -275,11 +275,8 @@ export function withFirstSpeakerOverride(
 }
 
 /**
- * Return `base` with `inactivityMessages` REPLACED by `override.messages`, or
- * `base` shallow-copied when there is no override. An override without
- * messages removes them, so the call is created with none. Like
- * {@link withFirstSpeakerOverride}, it rebuilds the `vendorSpecific` containers
- * and leaves the model's defaults untouched.
+ * Replace inactivityMessages without changing model defaults; an override with no messages clears them.
+ * See PR #342.
  */
 export function withInactivityMessagesOverride(
   base: ModelOptions,
@@ -482,18 +479,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Shape the opening turn of the NEXT session created from this model, and only
-   * that one.
-   *
-   * Used by the consultative-transfer consult leg: it shares the primary call's
-   * model instance but has the opposite conversational posture — it DIALS its peer,
-   * so the peer answers and greets first. Without this the model's default
-   * `FIRST_SPEAKER_AGENT` makes the TransferAgent open its own turn immediately and
-   * talk over the target's greeting, which Ultravox then discards as barge-in.
-   *
-   * Consumed and cleared by the next `session()` call. Call
-   * `clearNextSessionFirstSpeaker()` if the session is never started, so the
-   * override cannot leak onto an unrelated session (e.g. an agent handover).
+   * The consult target must greet first; consume this override once and clear it if setup fails. See PR #182.
    */
   setNextSessionFirstSpeaker(
     firstSpeakerSettings: api_proto.UltravoxFirstSpeakerSettings
@@ -507,14 +493,8 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Use `messages` as the `inactivityMessages` of the NEXT session created from
-   * this model, and only that session. `undefined` means that call is created
-   * with none.
-   *
-   * Used by an in-place agent handover. The SDK opens the incoming agent's
-   * session from the running model, whose `inactivityMessages` were built for
-   * the agent the model was created for. Consumed and cleared by the next
-   * `session()` call, together with any first-speaker override.
+   * Override inactivity for the next handover session only; undefined clears the outgoing agent's prompts.
+   * Consume with the first-speaker override in session(); see PR #342.
    */
   setNextSessionInactivityMessages(
     messages: api_proto.UltravoxInactivityMessage[] | undefined
@@ -523,21 +503,8 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Called when Ultravox ends a session we did not ask it to end — its own
-   * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
-   *
-   * Exists because the SDK's `AgentSession.Error` event is lossy: `agent_activity`'s
-   * `onError` forwards `createErrorEvent(ev.error, …)`, i.e. the INNER `Error`, so the
-   * `RealtimeModelError` wrapper's `type` and `recoverable` never reach a listener.
-   * A subscriber therefore cannot distinguish a terminal provider hangup from a
-   * routine recoverable reconnect, and guessing in either direction is harmful —
-   * treating reconnects as fatal hangs up live calls, treating hangups as transient
-   * leaves the caller on a dead line until an unrelated long-stop fires.
-   *
-   * Fires for the PRIMARY session only: the first session this model creates, or
-   * the one {@link setNextSessionPrimary} put in its place. A consult
-   * TransferAgent session shares the model instance, but its end must never tear
-   * down the call.
+   * Report terminal provider closes out of band: SDK errors lose their recoverable flag. See PR #342.
+   * Only the primary session may end the call; a consult shares its model but must not trigger this hook.
    */
   setProviderEndedCallback(
     cb: (info: { code?: number; reason?: string }) => void
@@ -557,14 +524,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Make the NEXT session created from this model the primary session, in place
-   * of the current one, so its provider-side end is the one reported.
-   *
-   * Used by an in-place agent handover. The SDK starts the incoming agent on a
-   * new session from this model, and the caller hears that session from then on.
-   * Consumed by the next `session()` call. A consult leg calls
-   * `clearNextSessionPrimary()` before it starts its session, so a mark left by a
-   * handover the SDK never started cannot make the consult session primary.
+   * Make the next handover session primary; clear unused marks before a consult can consume them. See PR #342.
    */
   setNextSessionPrimary(): void {
     this.#nextSessionPrimary = true;
@@ -1510,14 +1470,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         });
 
         this.#ws.onclose = (event?: { code?: number; reason?: string }) => {
-          // NB no #expiresAt short-circuit here. It used to set #closing = true once
-          // Date.now() passed a HARDCODED start+5min (see #expiresAt assignment), which
-          // silently swallowed every provider-side close after that point — no error,
-          // no signal, and the SIP leg left up with a dead agent. Deriving it from
-          // maxDuration would be worse still: it would suppress exactly the provider
-          // hangups we now need to act on (Ultravox maxDuration, and the
-          // inactivityMessages endBehavior hangup). #expiresAt remains for the session
-          // -update payloads that report it; it is not a close classifier.
+          // Do not classify provider closes by #expiresAt: duration and inactivity hangups must reach call teardown. See PR
+          // #186.
           const code = event?.code;
           const reason = event?.reason || undefined;
           if (!this.#closing) {
@@ -1809,10 +1763,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#userTranscriptOrdinal = event.ordinal;
       }
 
-      // Accumulate the turn the same way the agent side does: `text` is an
-      // authoritative snapshot when present, otherwise fold in the delta. A final
-      // frame carrying only `delta` used to fall through to "Skipping empty
-      // transcript event" and the whole user turn was lost silently.
+      // Treat text as a snapshot and delta as incremental, including on final frames. See PR #182.
       this.#userTranscriptBuffer = foldTranscriptFrame(
         this.#userTranscriptBuffer,
         event

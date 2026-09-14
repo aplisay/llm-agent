@@ -1,37 +1,5 @@
-"""Fixed-message failover for Pipecat — ``options.fallback.message``.
-
-Sits between ``fallback.model`` and ``fallback.number`` in the failover chain
-(see ``docs/agent-failover.md``): when the agent could not be brought up, play
-the operator's announcement at the caller rather than leaving them in dead air
-or sending them straight to a transfer.
-
-Two properties shape everything here.
-
-**The audio is cached, so playout makes no vendor call.** The announcement
-cannot vary for a given configuration, so it is synthesised once, stored in GCS
-keyed by a digest of its own content, and replayed from then on. That is not
-just a latency win: a cache hit calls no TTS vendor, so it meters no usage, so
-it needs no ``Call`` record, so it never reserves an agent concurrency slot.
-Which matters enormously, because the single most useful moment to play a fixed
-message is when the concurrency limiter is what rejected the call — a playout
-that took a slot would defeat the feature it implements. See
-``lib/fallback-message/CONTRACT.md``.
-
-**This path runs when things are already broken**, and often when the host is
-loaded — load being one of the likelier reasons a session failed to start. So
-it stays cheap and it never raises: every failure degrades to "the caller does
-not get the announcement", leaving the chain free to try ``fallback.number``,
-rather than turning one failure into two.
-
-Mirrors ``agents/livekit/lib/fallback-message.ts`` — keep the resolution rules
-and playout semantics in step across stacks. The one deliberate difference is
-on a cache miss: LiveKit collects the whole utterance and then plays it, while
-here the TTS is spliced into the playout pipeline and the caller hears it as it
-renders, with a tap capturing the audio for the write-back. Pipecat's streaming
-TTS services deliver audio out of band (``run_tts`` yields ``None`` and the
-frames arrive on a separate receive loop), so a pipeline is required to capture
-them at all; getting the lower latency for free is why this shape is kept.
-"""
+"""Fallback playout must not reserve a Call slot; failures must allow number fallback. See lib/fallback-message/CONTRACT.md. Keep a
+pipeline on cache misses: streaming TTS emits audio asynchronously, outside run_tts."""
 
 from __future__ import annotations
 
@@ -254,10 +222,7 @@ async def _play(transport: Any, agent: dict, resolved: ResolvedFallbackMessage) 
         processors = [_build_message_tts(agent, resolved), tap, rate_guard, transport.output()]
         frames = [TTSSpeakFrame(resolved.text)]
 
-    # F1: the framework's 300 s idle watchdog stays on. This playout is
-    # bounded far more tightly by run_fixed_message's own ceiling, and it
-    # was never one of the cases the watchdog broke — only the STT-only
-    # and relay-only side pipelines opt out.
+    # Keep the idle watchdog on for fallback playout; only STT-only and relay-only pipelines opt out. See PR #285.
     task = PipelineTask(Pipeline(processors))
     # EndFrame is queued behind the audio, so it reaches the output transport
     # only after everything ahead of it has been rendered — the graceful

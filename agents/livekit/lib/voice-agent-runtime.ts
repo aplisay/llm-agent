@@ -1111,11 +1111,8 @@ export async function runAgentWorker({
   };
 
   /**
-   * Wire the handlers a freshly-started handover session needs: transcript
-   * capture, agent-initiated hangup, error logging, the inactivity kick, and
-   * close-driven teardown (suppressed while a further handover is in flight).
-   * Mirrors the inline wiring in the setup path; the startup-error watcher and
-   * watchdog are call-scoped and already running.
+   * Mirror setup handlers on replacement sessions; the startup watcher and watchdog already serve the whole call.
+   * See PR #340.
    */
   const wireHandoverSession = (s: voice.AgentSession, forAgent: Agent): void => {
     const skipText =
@@ -1524,9 +1521,7 @@ export async function runAgentWorker({
       sendMessage({
         inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
       });
-      // From here the caller hears the Ultravox session the SDK opens for the
-      // incoming agent, so a provider end on that session must end the call.
-      // Armed last, so a throw above leaves no mark behind.
+      // Arm the incoming session last so a failed handover cannot leave a primary mark on the shared model. See PR #342.
       if (onUltravox && !markNextSessionPrimary(session?.llm)) {
         logger.warn(
           { agentId: newAgentDef.id },
@@ -1557,13 +1552,8 @@ export async function runAgentWorker({
     digits: string;
   }): Promise<{ status: string; detail?: string; error?: string }> => {
     const cleaned = (digits ?? "").trim();
-    // Reject browser/WebRTC sessions — there is no telephone leg to relay tones
-    // to. The worker stamps the "WebRTC" sentinel on BOTH callerId and calledId
-    // for browser calls (worker.ts); any SIP call — inbound OR outbound — has
-    // real numbers. Do NOT gate on the inbound caller participant's SIP
-    // attributes: outbound calls have a null `participant` (the SIP leg is the
-    // "sip-outbound-call" participant), which previously mis-flagged every
-    // outbound call as WebRTC and blocked DTMF to IVRs.
+    // Outbound SIP calls have no inbound participant; use the WebRTC sentinel to distinguish browser calls.
+    // See docs/send-dtmf.md.
     if (callerId === "WebRTC" && calledId === "WebRTC") {
       return {
         status: "FAILED",
@@ -1799,9 +1789,7 @@ export async function runAgentWorker({
           },
         );
 
-        // End the call when the realtime provider ends the session
-        // (provider-ended.ts). restartWithAgent arms each later model, and an
-        // in-place handover moves the hook in onAgentTransfer.
+        // Re-arm provider-end handling after each handover; the active model belongs to the session. See PR #342.
         providerEnded.arm(setupSession, { callId: call.id, modelName });
 
         // Watch for any non-recoverable model/STT/TTS errors that occur while
@@ -2042,15 +2030,8 @@ export async function runAgentWorker({
 
     logger.debug({ room }, "connected got room");
 
-    // ---- Opening greeting (uninterruptible, drop early user audio) ----
-    // First pass:
-    // - OpenAI and Gemini realtime: `generateReply({ instructions: <speak the greeting verbatim> })` and wait for playout.
-    // - Pipeline: fixed greeting uses `say(<text>, { allowInterruptions:false })`; LLM greeting uses `generateReply(...)`.
-    // - Ultravox realtime: always handled provider-side — caller-supplied
-    //   vendorSpecific.ultravox.firstSpeakerSettings pass through, and a portable
-    //   options.greeting is mapped to firstSpeakerSettings by the session factory.
-    //   The say()/generateReply fallback below is inert for Ultravox (no TTS, and the
-    //   plugin never sends response.create), so skip it entirely.
+    // Ultravox greetings run provider-side; other realtime models need generateReply when no TTS is present.
+    // See PRs #166 and #336.
     try {
       const greeting = agent?.options?.greeting;
 

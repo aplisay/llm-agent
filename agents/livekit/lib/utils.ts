@@ -35,13 +35,7 @@ export async function withTimeout<T>(
 }
 
 /**
- * Close a session-like object without ever throwing or blocking indefinitely.
- *
- * Teardown paths run where there is no one left to handle a failure and often no
- * time left to wait: an `AgentSession.close()` can hang forever (its drain awaits a
- * speech task that awaits a provider future which may never settle), and these calls
- * sit in front of call-record teardown and process exit. Both failure modes are
- * reported through `onFailure` and then swallowed so the caller proceeds.
+ * Bound session.close() and absorb failures so a stalled provider cannot prevent call-record teardown. See PR #183.
  *
  * @param session - Anything with a `close()`; `null`/`undefined` is a no-op.
  * @param timeoutMs - Upper bound on the close.

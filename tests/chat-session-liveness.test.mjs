@@ -1,18 +1,8 @@
 import { setupRealDatabase, teardownRealDatabase, Organisation, User } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 
-// Liveness of a persisted chat session.
-//
-// `ended_at IS NULL` used to mean "live", and a boot sweep closed every open
-// row on startup to clear the rows a dead process left behind. That only held
-// with exactly one server process: nothing recorded WHICH process owned a row,
-// so a second one starting (a scale-up, a rolling deploy, a Cloud Run cold
-// start) closed the first one's live sessions, and stamped them at the time of
-// their last turn so the damage looked plausible. llm-agent runs on autoscaling
-// k8s and on Cloud Run, so more than one process is the normal case.
-//
-// Liveness is now a heartbeat plus a clock, which every process reads the same
-// way and which needs no boot-time guess.
+// Use heartbeats to establish liveness; another process starting must not close sessions it does not own. See PR
+// #291.
 describe('chat session liveness', () => {
   let ChatSession;
   let isChatSessionLive;

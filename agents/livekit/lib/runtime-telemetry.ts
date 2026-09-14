@@ -1,28 +1,6 @@
 /**
- * Periodic runtime sampling: event-loop delay, CPU and memory, per process.
- *
- * This exists to answer the one question a CPU graph cannot. When a node
- * thread sits at 100%, either:
- *
- *   - the JS main thread is genuinely saturated, in which case event-loop
- *     delay climbs in step with CPU — the cause is our code, or something we
- *     call synchronously; or
- *   - the busy thread is not the JS main thread at all (a libuv threadpool
- *     thread doing sync fs/crypto/zlib/dns, a V8 GC or JIT helper, or one of
- *     rtc-node's Rust/tokio threads), in which case CPU is high while
- *     `loopP99Ms` stays flat.
- *
- * Those two need completely different investigations, and telling them apart
- * from the outside needs a profiler attached at the right moment. This tells
- * them apart from a log line, on any call, with nothing attached.
- *
- * Off unless RUNTIME_STATS_MS is set to a positive number of milliseconds.
- * 30000 is a sensible always-on value: one line per process per 30s, which is
- * ~22 lines/minute at NUM_IDLE_PROCESSES=10.
- *
- * realtime.ts is evaluated in the supervisor AND in every spawned job process,
- * so this runs in both. Each line carries role/pid/ppid so it can be lined up
- * with `docker exec <c> ps -ef --forest`.
+ * Sample event-loop delay alongside CPU to distinguish main-thread stalls from native-thread activity.
+ * See agents/livekit/deploy/gcp/README.md for RUNTIME_STATS_MS.
  */
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import logger from "./logger.js";
@@ -103,18 +81,8 @@ export function startRuntimeTelemetry(): void {
             cpuSysMs: Math.round(cpu.system / 1000),
             rssMb: Math.round(mem.rss / 1e6),
             heapUsedMb: Math.round(mem.heapUsed / 1e6),
-            // What is keeping this process's event loop alive, by handle type.
-            //
-            // Roughly a third of job processes finish their call and then never
-            // exit (120 `new call` vs 83 `job exiting` over one container's
-            // life, 15 alive under a pool configured for 3, oldest 16 hours).
-            // The pool still counts them as busy, so drain() waits on join()
-            // for them and never sends a SIGTERM — which is why every stop runs
-            // out the 300s grace period and gets force-killed.
-            //
-            // A leaked process reports this every interval, so whatever handle
-            // is holding it open shows up without having to catch one live.
-            // Counted by type rather than listed, to keep the line bounded.
+            // Count active resources by type to identify handles preventing job-process exit without unbounded log output. See PR
+            // #205.
             activeResources: activeResourceCounts(),
           },
           "runtime stats",

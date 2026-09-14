@@ -13,12 +13,8 @@ import {
 } from "../plugins/ultravox/src/realtime/realtime_model.js";
 import { UltravoxClient } from "../plugins/ultravox/src/realtime/ultravox_client.js";
 
-// Covers options.inactivity across an in-place transfer_agent handover on Ultravox
-// realtime. The SDK opens the incoming agent's session from the running
-// RealtimeModel, and on Ultravox that session is a new Ultravox call. Its
-// inactivityMessages must come from the incoming agent, as they do after a
-// full-stack handover, and not from the agent the model was built for.
-// run: npx tsx --test test/ultravox-handover-inactivity.test.ts
+// An in-place handover must use the incoming agent's inactivity settings on the shared model. See PR #342.
+// Run: npx tsx --test test/ultravox-handover-inactivity.test.ts
 
 // The SDK's RealtimeSession base class resolves the logger at construction.
 initializeLogger({ pretty: false, level: "fatal" });

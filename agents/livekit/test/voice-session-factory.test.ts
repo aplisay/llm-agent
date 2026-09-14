@@ -334,9 +334,7 @@ test("non-ultravox realtime: the options are the same on a handover or hand-back
   }
 });
 
-// --- realtime plugin lookup -------------------------------------------------------
-// A realtime row that GET /models advertises but no plugin resolves fails every
-// call at session start with "Unsupported realtime model".
+// Every advertised realtime row must resolve a plugin before call setup. See PR #335.
 
 test("google: the Gemini Live row resolves to the plugin's RealtimeModel", () => {
   const { plugin, realtime } = getRealtimePlugin("livekit:google/gemini-2.0-flash-exp");

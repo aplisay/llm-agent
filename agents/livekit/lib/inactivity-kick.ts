@@ -1,15 +1,6 @@
 /**
- * The inactivity kick (`options.inactivity`) on every stack except Ultravox
- * realtime, which prompts natively (see buildRealtimeLlmOptions).
- *
- * The session factory sets `voiceOptions.userAwayTimeout`, so the SDK emits
- * `user_state_changed` "away" after that much silence. It emits it once per
- * silence, so the kick keeps its own timer to repeat the prompt every
- * `timeout` until the caller is active again.
- *
- * One kick serves the whole call. The runtime attaches every session the call
- * runs, and the message, timeout and hangup rule come from the agent that is
- * active when the kick fires, so they follow both kinds of handover.
+ * The SDK emits away once per silence, so repeat prompts with a call-scoped timer. See PR #340.
+ * Attach every replacement session and read the active agent's options; Ultravox prompts natively.
  */
 import { voice } from "@livekit/agents";
 import type { Agent } from "./api-client.js";
@@ -55,9 +46,7 @@ export interface InactivityKick {
   /** Listen on a session the call runs. */
   attach(session: KickSession): void;
   /**
-   * After an in-place handover: the session keeps the away timeout it was
-   * built with, so give it the incoming agent's. The SDK reads it the next
-   * time it arms the timer.
+   * In-place handovers retain the session: update its away timeout before the SDK next arms the timer. See PR #340.
    */
   applyAwayTimeout(): void;
   /** Stop prompting and forget the count. */

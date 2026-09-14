@@ -15,14 +15,8 @@ import {
 // Agent.create validates the model against the roster, which needs the key.
 process.env.ANTHROPIC_API_KEY ||= 'test-key';
 
-// A call's per-organisation number (`calls.index`) is MAX + 1 at create time.
-// Two calls starting at once, in one process or in several, used to compute
-// the same number: nothing ordered the creates, and the column has no unique
-// constraint to refuse the second. The hook now takes a per-organisation
-// advisory lock for the transaction, so concurrent creates queue behind each
-// other's commit. This test creates calls for one organisation from THIS
-// process and from two other real processes at the same time, and expects the
-// numbers to come out unique and gap-free.
+// Exercise concurrent creates across processes: per-organisation MAX + 1 numbering needs a transaction-scoped lock.
+// See PR #299.
 describe('call index under concurrent creates', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const writer = join(here, 'fixtures', 'call-index-writer.mjs');

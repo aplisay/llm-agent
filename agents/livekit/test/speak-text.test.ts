@@ -11,12 +11,8 @@ import {
 import { resolveVoiceMode } from "../lib/voice-mode.js";
 import { createVoiceModelAndSession } from "../lib/voice-session-factory.js";
 
-// Covers how the runtime speaks a fixed line: options.greeting.text and
-// options.inactivity.message. AgentSession.say() needs a TTS, and a realtime
-// session has one only in text-output mode, so Gemini Live and OpenAI Realtime
-// in its own voice are asked through generateReply instead. Ultravox speaks both
-// lines natively and never reaches these helpers.
-// run: npx tsx --test test/speak-text.test.ts
+// Check fixed speech with and without a TTS; Ultravox uses its native greeting/inactivity path. See PR #336.
+// Run: npx tsx --test test/speak-text.test.ts
 
 // The SDK's logger must exist before a model or activity is built.
 initializeLogger({ pretty: false, level: "fatal" });

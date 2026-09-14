@@ -154,19 +154,8 @@ HARDWIRED_BUILTINS["metadata"] = _builtin_metadata
 def _resolve_inputs(
     fn: dict, llm_args: dict, metadata: dict, options: dict
 ) -> dict:
-    """Resolve a function's parameters by source. Mirrors the JS dispatcher.
-
-    A parameter that resolves to ``None`` is OMITTED, never sent as ``null``:
-    in the JS handler an absent argument resolves to ``undefined``, which
-    ``JSON.stringify`` drops from the request body — but Python's ``None``
-    survives serialisation as a REAL ``null`` the server must interpret. Beta
-    2026-07-27: every no-preference booking_get_slots went out as
-    ``{"from": null, "days": null}``; the server's ``Number(null) === 0``
-    coerced that to a one-day scan, so afternoon callers were told no slots
-    existed anywhere. (For metadata sources the JS handler throws when the
-    path is missing; omitting is deliberately softer — absent optional
-    metadata degrades to \"parameter not sent\" instead of failing the call.)
-    """
+    """Omit parameters resolving to None: unlike JS undefined, Python None becomes a meaningful JSON null. See PR #177.
+    Missing metadata is also omitted rather than failing the call."""
     properties = (fn.get("input_schema") or {}).get("properties") or {}
     resolved: dict[str, Any] = {}
     allow_tools_calls = bool(options.get("allowToolsCallsMetadataPaths"))
@@ -326,14 +315,8 @@ async def function_handler(
         if options.get("allowRedactedFunctionResults") and fn_def.get("redact"):
             visible_result = "OK"
 
-        # Bound what the model is shown. This belongs beside redaction, and
-        # after the metadata write, for the same reason redaction does: the
-        # full value stays available to later tools through
-        # ``metadata.toolsCalls``, so chaining is unaffected by the cap. A
-        # customer endpoint returning a large page would otherwise spend a
-        # model's whole tool-input budget in one call, and on a responses
-        # delegation that budget is per session, so exhausting it strands the
-        # delegation rather than failing the turn (see tool_result.py).
+        # Cap only the model-visible result after storing full metadata, so later tool calls can still chain it.
+        # See PR #322.
         visible_result, dropped = clip_any_result(
             visible_result, options.get("maxResultBytes", MAX_RESULT_BYTES), tool=name
         )

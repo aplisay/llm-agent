@@ -93,10 +93,7 @@ const DEFAULTS: ToneConfig = {
   graceMs: 1200,
 };
 
-// Telephony-standard rate; LiveKit resamples per-subscriber as needed. (48 kHz
-// was tried to "fix" SIP delivery and made it worse — total silence on the
-// telephony leg vs the partial tone at 16 kHz — so keep ONE generator for both
-// WebRTC and SIP. The suppression is downstream of the track, not the rate.)
+// Keep the shared SIP/WebRTC tone at 16 kHz; LiveKit resamples for each subscriber. See PR #205.
 const SAMPLE_RATE = 16000;
 const CHUNK_SAMPLES = (SAMPLE_RATE * 20) / 1000; // 20 ms
 // Small internal AudioSource queue so a stop decision reaches the caller's

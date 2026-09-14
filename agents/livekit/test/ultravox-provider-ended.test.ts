@@ -42,9 +42,7 @@ test("primary session: the callback fires with the close info", () => {
 });
 
 test("a consult session on the same model must NOT fire it", () => {
-  // The consult TransferAgent session shares the primary's model instance. Its
-  // ending is routine; tearing down the call would be a catastrophic false positive.
-  // (A full-stack handover builds a new model, so it never shares one.)
+  // Consult sessions share the primary model but their termination must not end the caller's call. See PR #342.
   const model = makeModel();
   let calls = 0;
   model.setProviderEndedCallback(() => {
@@ -73,10 +71,7 @@ test("without a mark, primary stays the FIRST session even after later sessions 
   assert.deepEqual(seen, [{ code: 1006 }]);
 });
 
-// --- in-place handover -------------------------------------------------------
-// llm.handoff() makes the SDK close the outgoing agent's session and start the
-// incoming agent on a new session from the SAME model. The caller hears that
-// session from then on, so it must take over as primary.
+// An in-place handover creates a new session on the same model; that session must become primary. See PR #342.
 
 test("in place: the marked session becomes primary and the one it replaced stops firing", () => {
   const model = makeModel();
@@ -175,13 +170,8 @@ test("callback is replaceable and only the latest fires", () => {
   assert.equal(second.length, 1);
 });
 
-// --- the wiring contract ---------------------------------------------------
-// This is the test that was missing. The hook shipped once bound to the wrong
-// object: createVoiceModelAndSession returns `model` as the voice.Agent (behaviour),
-// while the RealtimeModel is constructed inline and reachable ONLY via session.llm.
-// The runtime called setProviderEndedCallback on the Agent through an optional call,
-// so it silently no-opped and the defect looked unfixed in production. Assert the
-// exact object the runtime reaches for.
+// Check session.llm, not the returned voice.Agent: an optional hook call on the wrong object silently does nothing.
+// See PR #187.
 
 const evalAgent = () =>
   ({

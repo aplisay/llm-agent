@@ -78,10 +78,8 @@ func TestMulawDecodeMatchesG711Table(t *testing.T) {
 	}
 }
 
-// Every s16 input must land inside the decision interval of the code the
-// encoder emits. This is the property the old A-law encoder broke: it
-// picked a segment one too high for everything between 256 and 16383,
-// doubling the level, then fell back to the right one above that.
+// Check every s16 input against its encoded decision interval to catch incorrect A-law segment selection. See PR
+// #277.
 func TestAlawEncodeStaysInInterval(t *testing.T) {
 	for s := -32768; s <= 32767; s++ {
 		got := linearToPCMA(int16(s))

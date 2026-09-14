@@ -72,14 +72,7 @@ DELEGATION_STRANDED_COMMENTARY = (
     "with what you already know or to take a message. Do not say you will check again."
 )
 
-#: How long a faulted delegation has to show any sign of life before the voice
-#: model is told to speak.
-#:
-#: What this guards against is silence, not error. When the backend strands a
-#: delegation the live session stays healthy and the call stays up, so the
-#: caller hears nothing at all: on the 2026-09-14 beta call that ran to 82
-#: seconds across three further attempts to talk to the agent before the caller
-#: gave up. A few seconds is the most a person reads as thinking.
+#: Bound silent delegation recovery even while the voice session itself remains healthy. See PR #320.
 DEAD_AIR_GRACE_SECS = 4.0
 
 #: Function-call-output events remembered for error correlation. The backend
@@ -278,28 +271,8 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
         self._cancel_dead_air_guard()
         await super()._handle_evt_delegation_created(evt)
 
-    # ---- delegation recovery ---------------------------------------------
-    #
-    # The failure being recovered from (2026-09-14, beta): the backend refused
-    # three oversized function-call outputs with `response_input_buffer_full`,
-    # then refused to continue the response because those three calls were
-    # still unanswered. Upstream had already popped them from its own pending
-    # set and sent `response.create`, so client and backend disagreed about
-    # what was owed and nothing reconciled them. The live session stayed
-    # healthy, so the call stayed up and simply went quiet: 82 seconds, three
-    # further attempts by the caller, then they hung up.
-    #
-    # Recovery is in two parts, because they fail independently:
-    #
-    #   HEAL   answer each dropped call with a few dozen bytes saying the
-    #          result was too large, then continue the response. The backend
-    #          only needs SOME output per call, and a stub fits where the real
-    #          result did not, so the model gets to answer from what it does
-    #          have instead of the turn being lost.
-    #   SPEAK  if nothing from the delegation arrives within
-    #          DEAD_AIR_GRACE_SECS, tell the voice model to say so. This is
-    #          the part that must not fail: whether or not healing works, the
-    #          caller gets words rather than silence.
+    # Reconcile refused tool outputs with small placeholders before resuming; the backend may still consider them
+    # unanswered. Independently prompt the voice model if recovery stays silent; see PR #320.
 
     async def _handle_evt_error(self, evt: events.ErrorEvent) -> None:
         await super()._handle_evt_error(evt)
@@ -385,15 +358,8 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
         await super()._handle_evt_response(evt)
 
     def _arm_dead_air_guard(self, why: str) -> None:
-        """Promise the caller words within DEAD_AIR_GRACE_SECS.
-
-        Prefers the managed task so cancellation and shutdown behave like the
-        rest of the service, but falls back to a plain task: this runs from an
-        error handler, and an error handler that raises because the task
-        manager is not up would replace a recoverable fault with a broken
-        pipeline. The reference is held on self either way, so the task cannot
-        be collected mid-wait.
-        """
+        """Keep recovery available before the task manager starts; retain the fallback task for cancellation on shutdown. See
+        PR #320."""
         if self._delegation_stranded:
             return  # already apologised; a second apology is worse than none
         self._cancel_dead_air_guard()

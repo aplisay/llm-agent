@@ -119,11 +119,7 @@ describe('Tenant usage API (GET /api/usage)', () => {
     await UsageRecord.destroy({ where: { detail: 'cost-test' } });
   });
 
-  // The defect this fixes: `quantity` summed EVERY row in the bucket while
-  // `costMicros` summed only the costed ones, so a line read "238,897 input
-  // tokens · £0.05" when 21,451 of those tokens had never been valued. The
-  // number and the price on the same line disagreed, with nothing on screen
-  // saying so.
+  // Quantity and cost must cover the same valued rows; keep uncosted usage separate. See PR #289.
   it('reports the quantity the cost is actually the price of', async () => {
     const rows = [
       { sessionId: `${orgA}-q1`, organisationId: orgA, userId: userA, technology: 'llm', provider: 'openai', detail: 'split-test', unit: 'input_tokens', quantity: 1000, costMicros: 2000, costStatus: 'matched', finalised: true },
