@@ -22,6 +22,8 @@ is in :mod:`pipecat_aplisay.call_session`.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -74,6 +76,52 @@ assistant to speak: no Markdown, no lists, no raw JSON."""
 #: Mode names.
 MODE_RESPONSES = "responses"
 MODE_CLIENT = "client"
+
+#: The backend refused an item because the delegation's per-session input
+#: history is full (128 items / 32768 UTF-8 bytes). One oversized tool result
+#: is enough; see :func:`dropped_output_stub`.
+ERROR_INPUT_BUFFER_FULL = "response_input_buffer_full"
+
+#: The backend will not continue a response while it is still owed outputs for
+#: function calls it made. This is the error that strands a call: the outputs
+#: WERE sent, the backend rejected them for size, and neither side reconciles.
+ERROR_OUTPUTS_REQUIRED = "function_call_outputs_required"
+
+#: Call ids in an ``function_call_outputs_required`` message. The backend names
+#: them in prose ("Missing function call outputs for: call_a, call_b"), which
+#: is the only machine-readable part of that error.
+_CALL_ID_RE = re.compile(r"\bcall_[A-Za-z0-9]+")
+
+
+def missing_call_ids(message: Optional[str]) -> list[str]:
+    """The call ids an ``function_call_outputs_required`` error is waiting on,
+    in the order named, without duplicates."""
+    seen: list[str] = []
+    for call_id in _CALL_ID_RE.findall(message or ""):
+        if call_id not in seen:
+            seen.append(call_id)
+    return seen
+
+
+def dropped_output_stub(call_id: str) -> str:
+    """The stand-in output sent for a tool result the backend refused.
+
+    The backend counts a function call as unanswered until it accepts SOME
+    output for it, and refuses to continue the response meanwhile. A few dozen
+    bytes fit where the real result did not, which both unblocks the response
+    and tells the model the truth: it asked for too much, and should narrow
+    the request rather than assume the tool failed.
+    """
+    return json.dumps({
+        "error": "result_too_large",
+        "message": (
+            "This result was too large for the conversation and was not delivered. "
+            "Ask again for a smaller part of it (a single section or a narrower "
+            "query), or answer from what you already have. Do not retry the same "
+            "request unchanged."
+        ),
+        "call_id": call_id,
+    })
 
 
 def is_gpt_live_model_id(model_id: Optional[str]) -> bool:
