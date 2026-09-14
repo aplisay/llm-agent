@@ -5,12 +5,10 @@ description = "Aplisay voice agent worker built on Pipecat. Daily as a pure SIP 
 requires-python = ">=3.11"
 dependencies = [
     "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,openai,silero,ultravox,webrtc]==1.10.0",
-    # We import mcp directly (pipecat_aplisay/mcp_tools.py), so declare it. Held
-    # below 2: mcp 2 drops streamablehttp_client for streamable_http_client,
-    # which takes no headers argument, and our per-server auth rides on
-    # headers. pipecat 1.10.0 allows mcp <3, so without this a `uv lock
-    # --upgrade` takes mcp 2 and every MCP tool stops loading.
-    "mcp[cli]>=1.24,<2",
+    # We import mcp directly (pipecat_aplisay/mcp_tools.py), so declare it. The
+    # 2 floor is deliberate: mcp 2 renamed the transport and moved the model
+    # attributes to snake_case, and mcp_tools.py now speaks only that dialect.
+    "mcp[cli]>=2,<3",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
