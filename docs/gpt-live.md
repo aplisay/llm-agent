@@ -184,9 +184,17 @@ The input budget is per session, so once it is exhausted later delegations fail
 the same way. The caller is told once, not once per attempt. Both steps are
 logged under `event="delegation_recovery"` in the call's debug log.
 
-Tool results are not capped on the way in, so a server returning very large
-payloads can still spend the budget. Prefer tools that return the part you
-asked for over ones that return whole documents.
+Tool results are also bounded on the way in. An MCP server is a third party and
+can return whatever it likes, so the worker caps each result and tells the model
+it did: 8,000 bytes normally, and 2,500 for a tool set behind a responses
+delegation, where the budget has to cover a whole call's tool use rather than
+one turn (`MCP_MAX_RESULT_BYTES` and `MCP_MAX_RESULT_BYTES_DELEGATED` in
+`mcp_tools.py`). A truncated result is logged as a warning with the byte counts,
+because the debug log's own copy of a result is capped too.
+
+Capping makes the failure rare; the recovery above makes it survivable. Neither
+removes the session budget, so prefer tools that return the part you asked for
+over ones that return whole documents.
 
 ## Tools
 

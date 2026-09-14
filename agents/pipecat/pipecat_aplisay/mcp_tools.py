@@ -45,6 +45,28 @@ MCP_CONNECT_TIMEOUT = 10.0
 # call otherwise pins the bot mid-turn.
 MCP_TOOL_TIMEOUT = 30.0
 
+# Largest tool result handed to the model, in UTF-8 bytes.
+#
+# An MCP server is a third party. Operators point agents at their own servers
+# and at other people's, so the worker cannot assume any of them return an
+# amount of text that suits a phone call. One that returns whole documents
+# will happily hand back tens of kilobytes, and a model's input budget is
+# finite and, on some backends, spent for the whole session rather than the
+# turn: OpenAI's responses delegation allows 32768 UTF-8 bytes of tool input
+# per session, so a single unbounded result can end an agent's ability to use
+# tools at all (see docs/gpt-live.md).
+#
+# 8000 bytes is far more than a spoken answer needs while leaving a document
+# recognisable to a model that wanted a specific fact from it. Callers whose
+# model has a tighter budget pass their own.
+MCP_MAX_RESULT_BYTES = 8000
+
+# The cap for a tool set behind a responses delegation, whose 32768-byte
+# budget is consumed for the whole session. A voice call makes tool calls in
+# double figures, so a result has to cost a fraction of the budget rather than
+# a quarter of it; at this size the budget lasts a dozen-plus calls.
+MCP_MAX_RESULT_BYTES_DELEGATED = 2500
+
 
 def _namespace_tool_name(server_name: str, tool_name: str) -> str:
     """Prefix an MCP tool with its server name and sanitise to the platform's
@@ -76,6 +98,37 @@ def _result_text(results: Any) -> str:
     return response
 
 
+def clip_result(text: str, max_bytes: int, *, tool: str) -> tuple[str, int]:
+    """Bound one tool result, returning ``(text, bytes_dropped)``.
+
+    Truncation is announced in the text rather than done quietly. A model
+    cannot tell a short answer from a cut one, and a silently halved document
+    is answered from with full confidence — the marker is what turns that into
+    "ask for a smaller part", which is a thing the model can act on.
+
+    Cuts on a line boundary when one falls in the last quarter, so a result is
+    not left ending mid-word, but never sacrifices more than that to find one.
+    """
+    if max_bytes <= 0:
+        return text, 0
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text, 0
+    # Decode back with errors="ignore" so a cut inside a multi-byte character
+    # drops that character rather than producing invalid UTF-8.
+    kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    boundary = kept.rfind("\n")
+    if boundary > max_bytes * 0.75:
+        kept = kept[:boundary]
+    dropped = len(encoded) - len(kept.encode("utf-8"))
+    marker = (
+        f"\n\n[{tool}: truncated here. {dropped} of {len(encoded)} bytes were not returned, "
+        "because the full result is too large for this conversation. Ask for a smaller or more "
+        "specific part of it if you need more, and do not repeat this call unchanged.]"
+    )
+    return kept.rstrip() + marker, dropped
+
+
 def _error_summary(e: BaseException) -> str:
     """Flatten an exception (or nested ``ExceptionGroup``) to its leaf messages.
 
@@ -98,6 +151,7 @@ def _make_descriptor(
     session: Any,
     tool: Any,
     log: Any,
+    max_result_bytes: int = MCP_MAX_RESULT_BYTES,
 ) -> dict:
     """Build a ``{"schema", "execute"}`` descriptor for one MCP tool."""
     input_schema = getattr(tool, "inputSchema", None) or {}
@@ -130,6 +184,19 @@ def _make_descriptor(
         text = _result_text(results)
         if is_error:
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
+        text, dropped = clip_result(text, max_result_bytes, tool=_name)
+        if dropped:
+            # WARNING, not debug: a truncated result changes the answer the
+            # caller hears, and the tool log's own copy of the result is
+            # capped too, so without this line the size is invisible after
+            # the fact. It reads as a prompt or corpus problem to fix at the
+            # source, not as a transport error.
+            log.bind(
+                server=server_name, tool=_name, dropped_bytes=dropped, cap=max_result_bytes
+            ).warning(
+                f"MCP tool {_name} returned more than {max_result_bytes} bytes; "
+                f"dropped {dropped} and told the model to narrow the request"
+            )
         return text
 
     # ``kind: "mcp"`` is surfaced in the InvocationLog tool logs so MCP
@@ -197,7 +264,7 @@ def _resolve_key_auth(
 
 
 async def _connect_one(
-    server: dict, keys: list[dict], log: Any
+    server: dict, keys: list[dict], log: Any, max_result_bytes: int = MCP_MAX_RESULT_BYTES
 ) -> tuple[list[dict], Callable[[], Awaitable[None]]] | None:
     """Open a session to one MCP server and return its descriptors + a closer.
 
@@ -260,7 +327,8 @@ async def _connect_one(
                     listed = await session.list_tools()
                     descriptors = [
                         _make_descriptor(
-                            server_name=name, session=session, tool=tool, log=log
+                            server_name=name, session=session, tool=tool, log=log,
+                            max_result_bytes=max_result_bytes,
                         )
                         for tool in listed.tools
                     ]
@@ -324,7 +392,7 @@ async def _connect_one(
 
 
 async def connect_mcp_servers(
-    agent: dict, *, log: Any = _logger
+    agent: dict, *, log: Any = _logger, max_result_bytes: int = MCP_MAX_RESULT_BYTES
 ) -> tuple[list[dict], list[Callable[[], Awaitable[None]]]]:
     """Connect to every server in ``agent["mcpServers"]``.
 
@@ -334,13 +402,17 @@ async def connect_mcp_servers(
       ready to ``extend`` onto the session's ``tools`` list.
     * ``closers`` — async callables; the caller must ``await`` each at teardown
       to release the MCP connections.
+
+    ``max_result_bytes`` bounds each tool result (see MCP_MAX_RESULT_BYTES).
+    Pass MCP_MAX_RESULT_BYTES_DELEGATED for a tool set behind a responses
+    delegation, whose input budget is spent per session rather than per turn.
     """
     servers = agent.get("mcpServers") or []
     keys = agent.get("keys") or []
     descriptors: list[dict] = []
     closers: list[Callable[[], Awaitable[None]]] = []
     for server in servers:
-        result = await _connect_one(server, keys, log)
+        result = await _connect_one(server, keys, log, max_result_bytes)
         if result is None:
             continue
         server_descriptors, closer = result

@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 from pipecat.frames.frames import OutputAudioRawFrame, TTSAudioRawFrame
 
-from pipecat_aplisay import gpt_live
+from pipecat_aplisay import gpt_live, mcp_tools
 from pipecat_aplisay.agent_tools import build_agent_tools
 from pipecat_aplisay.gpt_live import (
     DelegateSpec,
@@ -556,7 +556,12 @@ def test_compose_gpt_live_merges_delegate_tools_and_settings(monkeypatch):
 
     monkeypatch.setattr(api_client, "get_internal_agent_by_id", fetch)
 
-    async def no_mcp(agent, *, log=None):
+    # The delegate's tools run behind the delegation, whose tool-input budget
+    # is spent per session, so they must be connected with the tighter cap.
+    caps: list[int] = []
+
+    async def no_mcp(agent, *, log=None, max_result_bytes=None):
+        caps.append(max_result_bytes)
         return [], []
 
     monkeypatch.setattr(call_session, "connect_mcp_servers", no_mcp)
@@ -566,6 +571,7 @@ def test_compose_gpt_live_merges_delegate_tools_and_settings(monkeypatch):
     session = CallSession(session_id="s", agent=agent, instance={}, call=call, sip_gateway=None, gateway_session=None)  # type: ignore[arg-type]
     voice_tools = session._build_tools_for(agent)
     composed, merged = asyncio.run(session._compose_gpt_live(agent, "You are Sam.", voice_tools, {}))
+    assert caps == [mcp_tools.MCP_MAX_RESULT_BYTES_DELEGATED]
     assert composed.delegate.synthetic is False
     assert composed.delegate.mode == "responses"
     assert [t["schema"]["name"] for t in merged] == ["get_slots", "hangup"]
