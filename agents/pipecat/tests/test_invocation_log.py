@@ -165,15 +165,8 @@ def test_drain_removes_only_that_calls_buffer():
 
 
 def test_sink_reports_evictions_without_re_entering_loguru(monkeypatch, capsys):
-    """The eviction path must not use ``logger``.
-
-    loguru calls this sink inline (enqueue=False) and is not re-entrant:
-    a log emitted from inside the sink trips its "deadlock avoided"
-    guard, which raises out of the sink — losing the message and turning
-    every eviction into a handler error. The eviction is reported with a
-    counter and a direct stderr write instead. Driving a real eviction
-    through the real logger is the only way to check this.
-    """
+    """Drive eviction through loguru itself: calling the sink directly misses its non-reentrant logging guard. See PR
+    #285."""
     from loguru import logger
 
     monkeypatch.setattr(invocation_log, "_MAX_CALLS", 2)

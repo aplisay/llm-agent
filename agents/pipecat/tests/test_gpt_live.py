@@ -1,27 +1,5 @@
-"""GPT-Live on the Pipecat worker (docs/gpt-live.md): :mod:`pipecat_aplisay.gpt_live`,
-:mod:`pipecat_aplisay.gpt_live_service` and the wiring in ``voice_session`` /
-``call_session``.
-
-These tests lock, without a network or a transport:
-
-* delegate resolution: declared (static and metadata-sourced), synthetic when
-  absent, and the synthetic fallback when the target is missing, not a text
-  agent or cannot be fetched;
-* mode selection from the delegate's model, and the prompt composition;
-* the tool merge (delegate wins a clash) and that the ``delegate`` declaration
-  is never a tool;
-* the service: the Responses delegation config, ``vendorSpecific.openai.live``
-  merged into ``session.start``, the context seeded without the prompt, the
-  greeting opening instruction, the injection shim's events (DTMF, inactivity),
-  the client-delegation round trip (answer as commentary, failure as an
-  apology), and the provider-close callback;
-* the output audit tap's frame class, the full-restart rule, and the usage
-  relabel to the delegate's model;
-* delegation recovery: a refused tool result answered with a placeholder so
-  the response resumes, stranded calls reconciled from the backend's own
-  error, and the voice model told to speak when the delegation stays dead
-  (the 2026-09-14 beta call's 82 seconds of silence).
-"""
+"""Exercise GPT-Live composition, delegation and worker wiring without a network. See docs/gpt-live.md.
+Refused tool outputs must be reconciled so the voice response can resume; see PR #320."""
 
 from __future__ import annotations
 
@@ -684,12 +662,7 @@ def test_greeting_guard_is_off_without_a_configured_greeting():
     asyncio.run(run())
 
 
-# --- delegation recovery (2026-09-14 beta incident) -----------------------------
-#
-# The real sequence, replayed from the call's own InvocationLog: three
-# oversized tool results refused with `response_input_buffer_full`, then
-# `function_call_outputs_required` naming those three calls, then 82 seconds of
-# silence on a live call.
+# Reconcile refused tool outputs before resuming the delegated response. See PR #320.
 
 
 def _error(code: str, message: str = "", *, client_event_id: str | None = None):

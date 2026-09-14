@@ -98,13 +98,8 @@ test("callback is replaceable and only the latest fires", () => {
   assert.equal(second.length, 1);
 });
 
-// --- the wiring contract ---------------------------------------------------
-// This is the test that was missing. The hook shipped once bound to the wrong
-// object: createVoiceModelAndSession returns `model` as the voice.Agent (behaviour),
-// while the RealtimeModel is constructed inline and reachable ONLY via session.llm.
-// The runtime called setProviderEndedCallback on the Agent through an optional call,
-// so it silently no-opped and the defect looked unfixed in production. Assert the
-// exact object the runtime reaches for.
+// Check session.llm, not the returned voice.Agent: an optional hook call on the wrong object silently does nothing.
+// See PR #187.
 
 const evalAgent = () =>
   ({

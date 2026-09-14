@@ -13,23 +13,8 @@ import {
   TransactionLog,
 } from './setup/database-test-wrapper.js';
 
-// Live call progress has to cross processes.
-//
-// The `/progress/<instanceId>` socket (Handler.handleUpdates) subscribes with
-// TransactionLog.on, a Postgres LISTEN, and every transaction log write is
-// relayed to it with NOTIFY from the afterCreate hook. The relay itself has
-// always been cross-process. The gate in front of it was not: whether to
-// notify was read from a per-process object that only Call.afterCreate wrote,
-// so only the process that created the Call row ever notified. The livekit and
-// pipecat workers create a call with one HTTP request and write every log with
-// another, and with more than one server process those land on different
-// processes, so the live transcript went dark for exactly the calls somebody
-// was watching.
-//
-// These tests write the logs from a genuinely separate node process (the
-// fixture in tests/fixtures/progress-log-writer.mjs) against the same
-// database, and read them here on the LISTEN this process holds. A
-// single-process stand-in would pass with the old code.
+// Write logs from another process to verify notification decisions on cache misses; a same-process test misses the
+// failure. See PR #293.
 describe('transaction log progress notify across processes', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const writer = join(here, 'fixtures', 'progress-log-writer.mjs');

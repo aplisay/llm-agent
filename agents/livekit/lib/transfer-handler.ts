@@ -924,11 +924,7 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 4: Move to "dialling" BEFORE placing the SIP call. This is the
-    // dead-air gap the confidence tone must cover, and transfer_status should
-    // report an in-progress dial rather than "none" while the target rings.
-    // (Previously this was only set after the target answered, so the tone
-    // never covered the dial — and never played at all when the dial failed.)
+    // Set dialling before placing the SIP call so the confidence tone covers ringing. See docs/call-transfers.md.
     context.setTransferState("dialling", "Dialling transfer target...");
 
     // Holds the consult target across the attribute-sync listener below and the
@@ -1420,14 +1416,8 @@ async function finaliseConsultativeTransfer(
   );
 
   /**
-   * End the consult CALL RECORD. Hoisted out of the try below so the error path can
-   * reach it too: every other terminal path ends the record, and if this one does not
-   * the row is stranded `live=true` forever — its agent-concurrency slot never
-   * released and the transcript `end()` flushes never written.
-   *
-   * `call.end()` is idempotent (its `_endCalled` latch returns the original promise),
-   * so calling this on a record another path already ended is a no-op, as is the
-   * meter flush.
+   * End the consult record on every terminal path to release its concurrency slot; repeated cleanup is safe. See PR
+   * #183.
    */
   const endConsultRecord = async (reason: string): Promise<void> => {
     const consultCall = getConsultCall();
@@ -1478,17 +1468,8 @@ async function finaliseConsultativeTransfer(
     };
 
     if (useRefer) {
-      // Case 4: SIP REFER the original caller to the transfer target (attended
-      // transfer when a Replaces token is available).
-      //
-      // End the consult call RECORD BEFORE the (blocking) REFER — transferParticipant
-      // does not return until the caller's SIP leg leaves the room, and the
-      // caller-disconnect graceful shutdown then races the record teardown
-      // (destroyInProgressTransfer no-ops because setConsultInProgress(false) ran
-      // above), which previously orphaned the consult record. BUT keep the consult
-      // SIP dialog ALIVE: the REFER carries ?Replaces naming the B2BUA<->carrier
-      // consult dialog, which the carrier can only honour while that dialog still
-      // exists — so the room is deleted AFTER the REFER, not before.
+      // End the consult record before REFER races caller teardown, but keep its SIP dialog alive for Replaces.
+      // Delete the room only after REFER completes; see docs/call-transfers.md.
       await endConsultationRecord();
 
       // Determine registrar and transport for the transfer
@@ -1540,10 +1521,7 @@ async function finaliseConsultativeTransfer(
         );
       }
 
-      // Use SIP REFER to transfer the original participant to the transfer target.
-      // LiveKit can report a spurious failure even when the REFER actually
-      // completed (same race as handleBlindReferTransfer); swallow the known
-      // false-failures so a successful transfer is not marked as failed.
+      // A completed REFER can report a disconnect error; accept only the known false failures. See docs/call-transfers.md.
       try {
         await transferParticipant(
           room.name!,
@@ -1721,10 +1699,7 @@ export async function destroyInProgressTransfer(
       }
     }
 
-    // Step 3: End consultation call and create transaction logs for transcript.
-    // Gated on the CALL only: the record must be ended even when there is no transfer
-    // session to read a transcript from, or it is stranded live=true with its
-    // concurrency slot held.
+    // End the consult record even without a transfer session, or its concurrency slot remains held. See PR #183.
     if (consultCall) {
       try {
         const transcript = transferSession

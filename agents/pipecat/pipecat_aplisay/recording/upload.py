@@ -140,16 +140,8 @@ _client_lock = threading.Lock()
 
 
 def _client() -> storage.Client:
-    """The process-wide GCS client, built on first use (P5).
-
-    ``storage.Client()`` re-reads the service-account credentials, mints
-    a fresh urllib3 pool and does an OAuth token exchange — and the
-    session it creates is never closed. Doing that per recording is pure
-    waste on a worker that uploads one per call; ``fallback_message/
-    store.py`` already holds a shared lazy client for the same reason.
-    Built under a lock because it is reached from the upload worker
-    thread, not the event loop.
-    """
+    """Reuse one GCS client to avoid per-recording auth and pool setup; lock lazy creation because uploads run in threads.
+    See PR #285."""
     global _shared_client
     if _shared_client is None:
         with _client_lock:

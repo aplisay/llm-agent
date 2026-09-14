@@ -47,10 +47,7 @@ MCP_CONNECT_TIMEOUT = 10.0
 # call otherwise pins the bot mid-turn.
 MCP_TOOL_TIMEOUT = 30.0
 
-# Result size caps live in tool_result.py, shared with the agent's own REST
-# functions in function_handler.py — both are third-party callouts that can
-# return more than a conversation can hold. Re-exported under the MCP names
-# the call sites already use.
+# Share caps with REST functions; retain the MCP aliases used by existing callers. See PR #322.
 MCP_MAX_RESULT_BYTES = MAX_RESULT_BYTES
 MCP_MAX_RESULT_BYTES_DELEGATED = MAX_RESULT_BYTES_DELEGATED
 
@@ -142,11 +139,8 @@ def _make_descriptor(
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
         text, dropped = clip_result(text, max_result_bytes, tool=_name)
         if dropped:
-            # WARNING, not debug: a truncated result changes the answer the
-            # caller hears, and the tool log's own copy of the result is
-            # capped too, so without this line the size is invisible after
-            # the fact. It reads as a prompt or corpus problem to fix at the
-            # source, not as a transport error.
+            # Warn with byte counts: the tool log also clips results and cannot show their original size.
+            # See PR #321.
             log.bind(
                 server=server_name, tool=_name, dropped_bytes=dropped, cap=max_result_bytes
             ).warning(

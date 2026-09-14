@@ -459,15 +459,8 @@ export default defineAgent({
           break fallbackLoop;
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
-          // A concurrency rejection is not a fault we can retry around: the limit
-          // is enforced in Call.start() regardless of which agent or model is
-          // behind it, so fallback.agent and fallback.model would spend setup
-          // time only to be refused identically, and fallback.number's
-          // transfer-only path calls Call.start() too. Only the fixed message
-          // can actually serve a caller who arrived at a full system, because it
-          // plays from cache without starting a call at all — so `busy` skips
-          // straight to step 3 and, failing that, rethrows so LiveKit still
-          // signals busy rather than answering and dropping.
+          // Concurrency refusal skips to the fixed message: the other fallbacks also need a Call slot.
+          // If no message plays, preserve the busy response; see docs/agent-failover.md.
           const busy =
             (error as any)?.code === "AGENT_CONCURRENCY_LIMIT_EXCEEDED";
           logger.error(
@@ -561,14 +554,8 @@ export default defineAgent({
             continue fallbackLoop;
           }
 
-          // 3. Fixed-message fallback: play the operator's announcement.
-          //
-          // Terminal on success — the chain stops at the first step that works,
-          // and the caller having heard the announcement *is* the outcome. The
-          // original error is then rethrown so the outer handler performs its
-          // usual setup-failure teardown: the call keeps its real failure reason
-          // and stays diagnosable, with the announcement having been a courtesy
-          // played on the way out rather than a different result.
+          // Successful announcement playout still rethrows the setup error for teardown and the original failure reason. See PR
+          // #236.
           if (fallbackConfig.message) {
             const played = await playFixedFallbackMessage(ctx, activeAgent);
             if (played) {

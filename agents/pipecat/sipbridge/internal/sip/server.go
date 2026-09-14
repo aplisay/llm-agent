@@ -855,19 +855,8 @@ func (s *Server) Originate(
 		extra = append(extra, sip.NewHeader(k, v))
 	}
 
-	// Advertise a Contact that matches the transport we're dialling out
-	// over. The DialogUA carries a single static ContactHDR, built in
-	// NewServer for the plaintext UDP case; for a TLS target we Invite on
-	// a shallow copy carrying the ``sips:``/TLS-port/``;transport=tls``
-	// form instead. (Copy rather than mutate: Originate runs concurrently
-	// for every outbound call on this Server.)
-	//
-	// This is the UAC twin of the contactForDialog bug, and it fails the
-	// same silent way — the peer takes our Contact as the remote target
-	// for the whole dialog, so a ``sip:...:5060`` Contact on a TLS dialog
-	// sends their BYE to UDP 5060. Kamailio logs "protocol/port mismatch
-	// (forced tls:...:5061, to udp:...:5060)", the BYE times out at 408,
-	// and the leg lingers until the RTP watchdog reaps it seconds later.
+	// Copy the DialogUA for TLS Contact headers: it is shared by concurrent calls, and peers route BYE using Contact. See
+	// PR #220.
 	ua := s.ub
 	if isTLSURI(targetURI) {
 		tlsUA := *s.ub

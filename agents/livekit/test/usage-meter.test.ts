@@ -72,10 +72,7 @@ test("realtime voiceMode suppresses stt/tts component rows but keeps llm", async
   const s = fakeSession();
   meter.wire(s);
 
-  // A realtime (e.g. Ultravox) agent bundles STT+TTS; the SDK should not emit
-  // tts/stt_metrics, but UserInputTranscribed DOES fire — and previously tagged
-  // the transcript chars with the pipeline-default STT vendor (deepgram). Assert
-  // none of these become rows, while llm tokens (gpt-realtime) still flow.
+  // Realtime models bundle STT/TTS; transcription events must not create separate STT charges. See PR #126.
   s.emit(voice.AgentSessionEventTypes.MetricsCollected, {
     metrics: { type: "llm_metrics", label: "inference.LLM", promptTokens: 100, completionTokens: 20 },
   });

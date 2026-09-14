@@ -8,46 +8,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// pacer smooths the worker→caller audio path onto a real-time RTP cadence.
-//
-// Why it exists: Pipecat's websocket output transport deliberately sends
-// audio at up to 2× real-time when it has a backlog (its send interval is
-// half the chunk duration — a buffer-priming strategy for browser clients).
-// The bridge used to forward each WS chunk to RTP the moment it arrived, so
-// during any long utterance the wire carried ~20 ms of audio every ~10 ms.
-// A carrier-side jitter buffer plays at 1×, overflows within a few hundred
-// milliseconds, and discards the rest — heard as garbled/chopped speech at
-// the handset while the worker-side recording (tapped before the WS) stays
-// perfect. The pacer restores the invariant the PSTN expects: one 20 ms
-// packet every 20 ms, timestamps that track the wall clock across silence,
-// and a marker bit on each talkspurt start (RFC 3550 §5.1).
-//
-// Shape: onWSAudio enqueues encoded 20 ms G.711 payloads; a single goroutine
-// (run) pops one payload per 20 ms frame slot and hands it to sendFn together
-// with the accumulated timestamp gap (in frames) and the talkspurt marker.
-// clear() drops queued-but-unsent audio (barge-in — the worker has already
-// shipped the rest of the utterance at 2×, and it must not play over the
-// caller).
-//
-// Empty slots — the bot has nothing to say — are handled by fill:
-//
-//   - fill non-nil (the default, "continuous transmission"): the slot carries
-//     a frame of codec silence, so the outbound stream never stops. This is
-//     what a SIP UA is supposed to do: RTP flows every 20 ms for the life of
-//     the call regardless of who is talking. It matters because the far end
-//     usually has a media watchdog — ours tears the call down after
-//     SIPBRIDGE_RTP_TIMEOUT_SECONDS of no inbound RTP — and because carrier
-//     NAT/firewall pinholes lapse on an idle flow. Suppressing silence made
-//     two of our own legs bridged through a carrier kill each other the moment
-//     both bots stopped speaking (2026-08-11).
-//   - fill nil (SIPBRIDGE_RTP_SILENCE_FILL=false): the older
-//     silence-suppressed behaviour — transmit nothing and let the next real
-//     packet carry a timestamp jump. Kept as an escape hatch for a peer that
-//     genuinely wants VAD-style suppression.
-//
-// Either way the RTP timestamp advances one frame per 20 ms of wall clock, so
-// playout timing is identical; the difference is only whether the untransmitted
-// slots go on the wire.
+// pacer sends one RTP frame per 20 ms even when worker audio arrives faster; clear queued speech on interruption.
+// Fill silent slots to keep media watchdogs and NAT bindings alive; see PR #191 and docs/sipbridge-integration.md.
 type pacer struct {
 	// sendFn writes one payload to the wire. gapFrames is how many whole
 	// 20 ms frames were NOT transmitted before this packet (0 = the packet

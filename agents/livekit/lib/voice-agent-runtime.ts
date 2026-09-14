@@ -1520,13 +1520,8 @@ export async function runAgentWorker({
     digits: string;
   }): Promise<{ status: string; detail?: string; error?: string }> => {
     const cleaned = (digits ?? "").trim();
-    // Reject browser/WebRTC sessions — there is no telephone leg to relay tones
-    // to. The worker stamps the "WebRTC" sentinel on BOTH callerId and calledId
-    // for browser calls (worker.ts); any SIP call — inbound OR outbound — has
-    // real numbers. Do NOT gate on the inbound caller participant's SIP
-    // attributes: outbound calls have a null `participant` (the SIP leg is the
-    // "sip-outbound-call" participant), which previously mis-flagged every
-    // outbound call as WebRTC and blocked DTMF to IVRs.
+    // Outbound SIP calls have no inbound participant; use the WebRTC sentinel to distinguish browser calls.
+    // See docs/send-dtmf.md.
     if (callerId === "WebRTC" && calledId === "WebRTC") {
       return {
         status: "FAILED",
@@ -1762,23 +1757,8 @@ export async function runAgentWorker({
           },
         );
 
-        // When the realtime provider ends the session itself — Ultravox's own
-        // maxDuration, an options.inactivity.hangup endBehavior hangup, or a genuine
-        // outage — the agent is dead but the SIP leg is still up. Nothing else notices:
-        // the SDK turns it into an unrecoverable error whose `recoverable` flag is
-        // stripped before any listener sees it (see setProviderEndedCallback), and the
-        // Close event never arrives because closeImpl blocks in drain(). Observed on
-        // staging: 2m10s of dead air on a live leg, then teardown under the unrelated
-        // "Session timeout" long-stop, then a 120s forced process exit.
-        //
-        // The callback fires for the PRIMARY session only, so a consult TransferAgent
-        // session or a post-handover session ending cannot reach here. The guards below
-        // cover the cases where the primary model is deliberately dead but the call is
-        // healthy or already coming down.
-        // NB the realtime model is `session.llm`, NOT the `model` this factory returns
-        // — that one is the voice.Agent (behaviour/instructions). The RealtimeModel is
-        // constructed inline inside createVoiceModelAndSession and is reachable only
-        // through the session, the same way getLlmForTransferSession does it.
+        // Observe primary-provider termination on session.llm; the returned model is a voice.Agent, and SDK close may stall.
+        // Keep the teardown guards for deliberate handover and bridging; see PRs #186 and #187.
         const realtimeModel = session.llm as unknown as {
           setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
         } | null;
@@ -1800,10 +1780,8 @@ export async function runAgentWorker({
               logger.error({ e }, "error ending call after provider end"),
             );
           });
-          // Logged at INFO deliberately: app-level debug is invisible inside job
-          // processes, so a silently-unregistered hook is exactly how this shipped
-          // broken once already (it was wired to the wrong object and the optional
-          // call no-opped). If this line is absent, the hook is NOT armed.
+          // Keep this at INFO: app-level debug is unavailable in job processes, so hook registration needs a visible signal.
+          // See PR #187.
           logger.info(
             { callId: call.id, modelName },
             "provider-ended teardown hook armed",
@@ -2177,15 +2155,7 @@ export async function runAgentWorker({
 
     logger.debug({ room }, "connected got room");
 
-    // ---- Opening greeting (uninterruptible, drop early user audio) ----
-    // First pass:
-    // - OpenAI realtime: `generateReply({ instructions: <greeting>, allowInterruptions:false })` and wait for playout.
-    // - Pipeline: fixed greeting uses `say(<text>, { allowInterruptions:false })`; LLM greeting uses `generateReply(...)`.
-    // - Ultravox realtime: always handled provider-side — caller-supplied
-    //   vendorSpecific.ultravox.firstSpeakerSettings pass through, and a portable
-    //   options.greeting is mapped to firstSpeakerSettings by the session factory.
-    //   The say()/generateReply fallback below is inert for Ultravox (no TTS, and the
-    //   plugin never sends response.create), so skip it entirely.
+    // Ultravox greetings run provider-side; say()/generateReply() cannot start them. See PR #166.
     try {
       const greeting = agent?.options?.greeting;
 

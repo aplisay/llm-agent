@@ -378,14 +378,8 @@ func (m *Manager) srtpRecentlyRejected(key string) bool {
 	return true
 }
 
-// noteSRTPRejected records that the route just rejected an SRTP offer.
-//
-// Also sweeps the whole map. Reads prune only the key being looked up,
-// which is fine for the fixed trunk/registration keys but not for the
-// per-destination ``dest:<uri>`` ones — those accumulate one entry per
-// distinct destination that ever rejected SRTP and are never read
-// again. The map is tiny and writes are rare (only on a rejection), so
-// a full sweep here costs nothing.
+// noteSRTPRejected sweeps expired routes on writes because one-off destination keys may never be read again. See PR
+// #285.
 func (m *Manager) noteSRTPRejected(key string) {
 	m.srtpAvoidMu.Lock()
 	defer m.srtpAvoidMu.Unlock()

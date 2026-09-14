@@ -120,11 +120,7 @@ export default class JambonzSession {
         };
       })
       logger.debug({ session, model }, 'initial gathering');
-      // Drivers now THROW on completion failure (they used to swallow errors
-      // into an apology string), and #handleCompletion is async: BOTH promises
-      // need a rejection handler or a single failed call kills the whole
-      // worker. Deliberately NOT awaited — awaiting would gate call teardown
-      // (billed duration + concurrency release) behind a stalled LLM request.
+      // Handle both rejections without awaiting completion; a stalled LLM must not delay call teardown. See PR #149.
       model.initial((args) => this.#handleCompletion(args).catch((err) => this.#onError(err)))
         .catch((err) => this.#onError(err));
     }

@@ -1,44 +1,15 @@
-"""Bounding what one tool result may cost the conversation.
-
-Shared by the two places a tool result reaches a model: MCP proxying
-(:mod:`pipecat_aplisay.mcp_tools`) and the agent's own REST/builtin functions
-(:mod:`pipecat_aplisay.function_handler`). Both call out to third parties that
-can return whatever they like, at whatever size.
-
-WHY A CAP EXISTS AT ALL (2026-09-14)
-------------------------------------
-A model's input budget is finite, and on some backends it is spent for the
-whole session rather than the turn. OpenAI's responses delegation allows 32768
-UTF-8 bytes of tool input per session; past that it refuses items, and because
-it still counts the function call as unanswered it then refuses to continue the
-response — which strands the delegation rather than failing it, leaving a live
-call silent (see docs/gpt-live.md and ``gpt_live_service``'s recovery).
-
-One beta call fetched four whole documents in a single turn: eleven tool
-results totalling 104502 bytes against that 32768-byte budget.
-
-Truncation is always announced in the returned text. Silence is the dangerous
-option: a model cannot tell a short answer from a cut one, and will answer
-confidently from half a document. The marker names the byte counts and asks for
-a smaller or more specific part, which is something the model can act on.
-"""
+"""Cap third-party results against the model's input budget, which may cover the whole session. See PR #322.
+Mark truncation so the model can request a smaller result; see docs/gpt-live.md."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-#: Largest tool result handed to the model, in UTF-8 bytes.
-#:
-#: Far more than a spoken answer needs, while leaving a document recognisable
-#: to a model that wanted one fact from it. Callers whose model has a tighter
-#: budget pass their own.
+#: Limit model-visible text in UTF-8 bytes; callers with tighter budgets override this cap. See PR #322.
 MAX_RESULT_BYTES = 8000
 
-#: The cap for tools behind a responses delegation, whose 32768-byte budget is
-#: consumed for the whole session. A voice call makes tool calls in double
-#: figures, so a result has to cost a fraction of the budget rather than a
-#: quarter of it; at this size the budget lasts a dozen-plus calls.
+#: Delegation budgets cover the whole session, so leave room for later tool calls. See PR #322.
 MAX_RESULT_BYTES_DELEGATED = 2500
 
 
@@ -73,18 +44,8 @@ def clip_result(text: str, max_bytes: int, *, tool: str) -> tuple[str, int]:
 
 
 def clip_any_result(result: Any, max_bytes: int, *, tool: str) -> tuple[Any, int]:
-    """Bound a tool result of any shape, returning ``(result, bytes_dropped)``.
-
-    A REST function returns parsed JSON as often as text, and half a ``dict``
-    is not a ``dict`` — there is no way to cut structured data and leave it
-    structured. So an oversized structured result is rendered to JSON and
-    clipped as text: the model reads the result as JSON either way (the live
-    services ``json.dumps`` whatever comes back), so what it loses is the
-    guarantee of well-formedness, which the marker immediately explains.
-
-    Values that fit are returned untouched, with their type intact — which is
-    every ordinary result, so the common path changes nothing.
-    """
+    """Return (result, bytes_dropped); oversized structured values become marked JSON text because they cannot be sliced.
+    Keep the type intact for values within the cap; see PR #322."""
     if max_bytes <= 0 or result is None:
         return result, 0
     if isinstance(result, str):

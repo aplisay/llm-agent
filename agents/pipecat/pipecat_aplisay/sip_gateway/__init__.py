@@ -21,12 +21,8 @@ from .base import (
 try:
     from .daily_gateway import DailySipGateway
 except ImportError as exc:
-    # Images built with ONLY_TRANSPORTS excluding "daily" omit the
-    # daily-python wheel, so the Daily gateway module cannot import. Keep a
-    # placeholder class: isinstance() checks against DailySipGateway elsewhere
-    # in the worker still work (nothing is ever an instance of it), and
-    # selecting SIP_GATEWAY=daily fails with a clear error at gateway
-    # construction instead of an import crash at boot.
+    # Keep a placeholder type when Daily is excluded so isinstance checks remain valid and other gateways can boot. See
+    # PR #193.
     from loguru import logger
 
     _daily_import_error = exc

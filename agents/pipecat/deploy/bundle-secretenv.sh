@@ -149,24 +149,8 @@ case "$BACKEND" in
     k8s) require kubectl ;;
 esac
 
-# ---- k8s cluster binding -----------------------------------------------------
-#
-# The k8s backend used to publish to whatever `kubectl config current-context`
-# happened to be. Every environment writes the SAME Secret names into the SAME
-# namespace, so aiming at the wrong cluster fails SILENTLY: the write succeeds,
-# the intended cluster keeps its old bundle, and the only symptom is config that
-# "didn't take" (2026-08-14, the sibling bundlers: a beta bundle landed on the
-# staging cluster and beta restarted onto month-old values).
-#
-# So the environment BINDS the cluster — staging -> AMS3, beta -> LON1 — matched
-# by REGION substring against the configured contexts, which survives a cluster
-# rebuild (the DOKS id in the context name changes, the region does not). No
-# match, or more than one, is a hard error: never a silent fall back to whatever
-# context happens to be current.
-#
-# dev and production have NO binding: this agent's production overlay has run on
-# more than one cluster, so guessing is exactly the failure being fixed. Name the
-# cluster with --k8s-context there.
+# Bind the environment to an unambiguous cluster; identical secret names make the current context unsafe.
+# Unbound environments require --k8s-context; see PR #223.
 
 k8s_context_for_env() {
     local pattern matches count

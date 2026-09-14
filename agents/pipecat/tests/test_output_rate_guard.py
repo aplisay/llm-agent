@@ -1,16 +1,4 @@
-"""The output rate guard makes the resampler-latch failure impossible.
-
-Background: ``BaseOutputTransport``'s ``MediaSender`` holds ONE
-``SOXRStreamAudioResampler`` for the whole call, and it latches the first
-``(in_rate, out_rate)`` pair it is handed — every later pair raises and the
-frame is DROPPED, silently and permanently (2026-08-21 beta incident: 1283
-frames lost over 55 s of dead air).
-
-The guard sits immediately before ``transport.output()`` and rewrites every
-outbound frame to the transport's own rate. Because ``resample()``
-short-circuits on equal rates, the transport's resampler is then never
-constructed at all and can never latch. That is the invariant these tests pin.
-"""
+"""Keep the transport resampler on its equal-rate path even when upstream sources change rates. See PR #235."""
 
 from __future__ import annotations
 
@@ -57,13 +45,8 @@ class TestRateAgileResampler:
         asyncio.run(run())
 
     def test_survives_a_rate_change_that_would_latch_the_stock_resampler(self) -> None:
-        """The exact incident sequence: 24k->16k, then 48k->16k.
-
-        soxr's ResampleStream emits in bursts (it holds filter delay), so an
-        individual chunk may legitimately return b"" — the invariant is that
-        the rate change does not RAISE and that audio keeps coming out
-        afterwards, which is precisely what the stock resampler stops doing.
-        """
+        """A resampler may buffer an individual chunk; assert continued output across rate changes, not output for every
+        input. See PR #235."""
 
         async def run() -> None:
             r = _RateAgileResampler()

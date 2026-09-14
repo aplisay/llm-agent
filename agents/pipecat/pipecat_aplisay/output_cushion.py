@@ -1,137 +1,5 @@
-"""Let the WebRTC output queue run a little ahead of the playhead.
-
-WHY THIS EXISTS (measured on staging, 2026-08-25/26)
----------------------------------------------------
-``RawAudioTrack.recv()`` emits one 10 ms chunk per 10 ms of media time and, when
-its queue is empty, emits ``bytes(self._bytes_per_10ms)`` — arithmetic zero, on
-the wire, in real packets. A rig capturing the agent's audio at both the
-platform's recording tap and the browser's decoder found exactly that: holes of
-digital zero present only in the browser copy, with nothing lost and nothing
-concealed. Instrumenting the track (see ``output_underrun``) confirmed it from
-the other end and measured the shape of it, gated on the bot's own speaking
-window so that the silence between turns is not miscounted as starvation:
-
-  39 starves inside speech over a 6-minute call, 1.79 s of inserted silence.
-  Gap ladder: 20 ms x20, 30 x9, 40 x2, 50 x1, 60 x2, then 140, 150, 160, 210, 210.
-
-Two things follow. The distribution is bimodal with **nothing at all between
-60 ms and 140 ms**, so 60 ms covers the whole small-jitter cluster — 34 of 39
-events — and anything up to 140 ms buys not one extra event. And the audio was
-always merely late: ``never_refilled`` was zero, so there is something to
-buffer.
-
-WHY THERE IS NO CUSHION TODAY — and why this costs no latency
---------------------------------------------------------------
-``write_audio_frame`` awaits the future ``add_audio_bytes`` returns, and the
-parent attaches that future to the LAST chunk of the batch. So the producer is
-released only once the track has drained everything it just handed over: the
-queue is held near empty by design, and the measured depth bears that out (0 or
-1 chunk for ~44 % of slots, never more than 5). Any upstream hiccup longer than
-that lands as a hole.
-
-This does not add a pre-roll and does not delay playout. The pacer still emits
-chunk N at ``start + N * 10 ms``; the first chunk of a turn still goes out at
-the very next slot. All that changes is WHEN backpressure is released — at a
-queue depth of ``cushion`` rather than at zero — so a burst from the model can
-sit in the queue instead of being refused, and the next stall drains the queue
-instead of the wire. The cushion only ever forms out of audio the model has
-already produced.
-
-The one real cost: the track has no ``clear()``, so whatever is queued plays out
-even after a barge-in. That is true today at up to 5 chunks; this raises the
-ceiling to ``cushion``, so an interrupted bot may talk over the caller for a few
-tens of milliseconds longer than it does now.
-
-THE KNOBS, AND WHAT ``WEBRTC_OUTPUT_TARGET_MS`` ACTUALLY DOES
-------------------------------------------------------------
-``WEBRTC_OUTPUT_TARGET_MS`` (300) is a **ceiling on the stretcher, not a depth
-the queue reaches.** Measured on staging: with it at 300 the queue never
-exceeded 10 chunks — 100 ms — because backpressure still releases at
-``WEBRTC_OUTPUT_CUSHION_MS`` (60). The producer is held once the queue passes
-the hard cushion, so stretching can push depth to roughly cushion+4 and no
-further. The target only ever stops the stretcher going higher.
-
-That is deliberate as it stands, because the result was good: pause-stretching
-took mid-speech starvation from 39 events per call to 1, at an effective cushion
-of 60-100 ms. Raising the release point to the target instead would triple the
-audio queued behind an interrupting caller for no measured benefit — the
-experiment below says the depth was never the binding constraint.
-
-Do not "fix" this by keying the release point to the target without re-running
-that measurement. If the knob's name is the problem, rename the knob.
-
-Until 2026-09-11 the target was compared with this track's queue, which never
-gets near it, so in practice the stretcher had no ceiling at all. It is now
-compared with the whole output backlog. See WHY THE CEILING COUNTS THE WHOLE
-BACKLOG below.
-
-WHAT THE RELEASE POINT IS *NOT* FOR
------------------------------------
-Tested directly (staging, 2026-08-26): ``WEBRTC_OUTPUT_CUSHION_MS=300`` with
-``WEBRTC_STRETCH_EVERY=0`` — release backpressure at 30 chunks, no stretching.
-The queue **still never exceeded 10 chunks** and mid-speech starvation was
-essentially unchanged (36 events, 5.38 ms/s against 6.46 stock). The producer
-was free to run 300 ms ahead and could not: there was no audio to buffer.
-
-So Ultravox really does deliver at about realtime with no surplus, and the
-transport's own audio queue is an UNBOUNDED ``asyncio.Queue`` — holding the
-track's future never back-pressures anything upstream. Releasing backpressure
-later achieves almost nothing; the stretcher works precisely because it
-MANUFACTURES slack that does not otherwise exist.
-
-  ================================  =========  ==============
-  configuration                     starves    ms/s of speech
-  ================================  =========  ==============
-  60 ms release, no stretch              39              6.46
-  300 ms release, no stretch             36              5.38
-  60 ms release + pause-stretch           1              0.06
-  ================================  =========  ==============
-
-WHY THE CEILING COUNTS THE WHOLE BACKLOG (staging, 2026-09-11)
--------------------------------------------------------------
-A repeated chunk is 10 ms that the track plays and the source never sent, so it
-delays all the audio behind it by 10 ms. That delay goes away only when the
-source stops sending and the queue empties. Ultravox stops between turns, so its
-queue empties and the delay is gone before the next turn starts.
-
-GPT-Live never stops. It streams audio at real-time pace, silence included
-(pipecat marks this with ``SpeechOutputAudioRawFrame``), so the queue never
-empties and every repeated chunk stays as delay. The ceiling counted only this
-track's queue, so it never engaged, and the extra audio waited in the
-transport's unbounded queue instead. One test call stretched 1800 chunks in
-109 s. Frames queued behind that audio reached the end of the pipeline 7.8 s
-late at 42 s into the call and 14.9 s late at 74 s, and each reply started later
-than the one before. The transcript does not wait in that queue, so it arrived
-long before the audio.
-
-So the ceiling now counts the whole output backlog: this track's queue plus the
-audio ``OutputCushionInterrupt`` has forwarded that the transport has not yet
-handed to the track. The stretcher runs only while that total is under
-``WEBRTC_OUTPUT_TARGET_MS``, so it can add at most that much delay to any
-source. On GPT-Live the backlog settles at the target, so the target is the
-delay the cushion adds there, in exchange for that much protection against late
-audio. In a long Ultravox turn the stretcher used to add about 67 ms per second
-of speech until the turn ended; it now stops at the target there too.
-
-TRIMMING A SPEECH STREAM BACK TO THE TARGET
--------------------------------------------
-The backlog can still pass the target without the stretcher: a source that
-delivers late and then catches up in a burst leaves the burst queued. On a
-continuous speech stream nothing ever empties the queue, so that would be extra
-delay for the rest of the call. Once the backlog passes ``WEBRTC_OUTPUT_MAX_MS``
-(500), one quiet chunk in ``WEBRTC_TRIM_EVERY`` (3) is dropped until the backlog
-is back at the target. As with the stretcher, voiced audio is never touched, and
-neither is the chunk that carries the producer's future.
-
-Only speech streams are trimmed. TTS audio (Ultravox, OpenAI Realtime, Gemini
-Live and the TTS services) arrives faster than real time and waits ahead of the
-playhead, so a large backlog there is speech made early, not delay, and
-shortening its pauses would gain nothing.
-
-``WEBRTC_OUTPUT_CUSHION_MS=0`` restores the stock lock-step behaviour;
-``WEBRTC_STRETCH_EVERY=0`` keeps the hard cushion but disables stretching;
-``WEBRTC_TRIM_EVERY=0`` disables trimming.
-"""
+"""Release at the hard cushion, but cap stretching against the whole transport-plus-track backlog. See PRs #249 and
+#311. Only continuous speech streams may be trimmed; TTS backlogs can contain valid speech produced ahead of time."""
 
 from __future__ import annotations
 
@@ -250,14 +118,7 @@ def cushioned(base: type) -> type:
                     continue
                 self._chunk_queue.append((chunk, future if i == release else None))
                 if action == _STRETCH:
-                    # Build the cushion out of the agent's own pauses. A quarter
-                    # of in-turn agent audio is pause (measured: 60 s in 240 s,
-                    # ~360 runs of >=40 ms), so repeating one quiet chunk in three
-                    # banks ~67 ms of cushion per second of audio: 13x what a
-                    # flat 95% playout rate would yield, and inaudible, because a
-                    # repeated near-silent frame has no pitch to shift and no
-                    # transient to smear. Voiced audio is never touched: that
-                    # would need WSOLA, and these pods have little CPU to spare.
+                    # Repeat only quiet chunks to build the cushion without altering voiced audio. See PRs #251 and #311.
                     self._chunk_queue.append((chunk, None))
                     backlog += self._chunk_ms
                     self.stretched_chunks += 1
@@ -373,33 +234,8 @@ def cushioned(base: type) -> type:
 
 
 class OutputCushionInterrupt(FrameProcessor):
-    """Empty the output track's queue the moment the caller interrupts.
-
-    The track sits below the transport and nothing upstream can reach it, so
-    clearing the transport's own buffers is not enough: whatever the track holds
-    still goes on the wire. That is tolerable at the 60 ms hard cushion and not
-    at a 300 ms stretched one, which is why this ships with the stretcher rather
-    than after it.
-
-    Place it immediately before ``transport.output()`` so it sees the
-    InterruptionFrame on its way down.
-
-    It also carries the IN-FLIGHT PROBE, because it is the only place that holds
-    both halves of the measurement: every OutputAudioRawFrame passes through here
-    on its way to the transport, and the track is reachable from here too. The
-    difference between what we have forwarded and what the track has received is
-    exactly the audio sitting in the transport's own (unbounded) queue. Sampled
-    when a starve begins, that number answers the question nothing else can: did
-    the audio EXIST and we failed to move it, or had it not arrived at all? The
-    two have opposite fixes, so the same class does both jobs rather than
-    resolving the track twice.
-
-    The same number is half of the whole output backlog that the track's
-    stretcher and trimmer steer by. The track anchors the count when the probe
-    is wired and on each interruption. This processor also tells the track what
-    kind of audio is arriving: a ``SpeechOutputAudioRawFrame`` is part of a
-    continuous speech stream (GPT-Live), the only kind the track may trim.
-    """
+    """Clear the track as well as the transport on interruption; account for audio between them when limiting backlog.
+    Place immediately before transport.output(); see PRs #251 and #311."""
 
     def __init__(self, *, output_transport: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)

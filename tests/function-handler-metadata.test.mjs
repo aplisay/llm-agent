@@ -128,10 +128,7 @@ describe('function-handler metadata deep paths', () => {
   });
 
   test('built-in `metadata` helper returns a live aplisay.dateTime alongside seeded keys', async () => {
-    // The exact "get_metadata for dateTime alongside callerId" flow: callerId is
-    // seeded in the call metadata; dateTime is NOT seeded but is computed live so
-    // an agent doing date reasoning gets ground truth (2026-07-24 incident: a
-    // voice model called calendar_list_events with a 2025 range).
+    // Compute dateTime live while reading callerId from stored metadata; do not rely on the model's date. See PR #170.
     const metadata = { aplisay: { callerId: '+441632960001' } };
 
     const functions = [

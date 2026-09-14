@@ -451,18 +451,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Shape the opening turn of the NEXT session created from this model, and only
-   * that one.
-   *
-   * Used by the consultative-transfer consult leg: it shares the primary call's
-   * model instance but has the opposite conversational posture — it DIALS its peer,
-   * so the peer answers and greets first. Without this the model's default
-   * `FIRST_SPEAKER_AGENT` makes the TransferAgent open its own turn immediately and
-   * talk over the target's greeting, which Ultravox then discards as barge-in.
-   *
-   * Consumed and cleared by the next `session()` call. Call
-   * `clearNextSessionFirstSpeaker()` if the session is never started, so the
-   * override cannot leak onto an unrelated session (e.g. an agent handover).
+   * The consult target must greet first; consume this override once and clear it if setup fails. See PR #182.
    */
   setNextSessionFirstSpeaker(
     firstSpeakerSettings: api_proto.UltravoxFirstSpeakerSettings
@@ -1418,14 +1407,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         });
 
         this.#ws.onclose = (event?: { code?: number; reason?: string }) => {
-          // NB no #expiresAt short-circuit here. It used to set #closing = true once
-          // Date.now() passed a HARDCODED start+5min (see #expiresAt assignment), which
-          // silently swallowed every provider-side close after that point — no error,
-          // no signal, and the SIP leg left up with a dead agent. Deriving it from
-          // maxDuration would be worse still: it would suppress exactly the provider
-          // hangups we now need to act on (Ultravox maxDuration, and the
-          // inactivityMessages endBehavior hangup). #expiresAt remains for the session
-          // -update payloads that report it; it is not a close classifier.
+          // Do not classify provider closes by #expiresAt: duration and inactivity hangups must reach call teardown. See PR
+          // #186.
           const code = event?.code;
           const reason = event?.reason || undefined;
           if (!this.#closing) {
@@ -1717,10 +1700,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#userTranscriptOrdinal = event.ordinal;
       }
 
-      // Accumulate the turn the same way the agent side does: `text` is an
-      // authoritative snapshot when present, otherwise fold in the delta. A final
-      // frame carrying only `delta` used to fall through to "Skipping empty
-      // transcript event" and the whole user turn was lost silently.
+      // Treat text as a snapshot and delta as incremental, including on final frames. See PR #182.
       this.#userTranscriptBuffer = foldTranscriptFrame(
         this.#userTranscriptBuffer,
         event

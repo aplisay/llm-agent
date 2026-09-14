@@ -1,22 +1,5 @@
-"""The output queue is allowed to run ahead, so a short stall drains it not the wire.
-
-Measured cause (see output_cushion's docstring): `write_audio_frame` awaits the
-future `add_audio_bytes` returns, and the stock track hands that future to the
-LAST chunk of the batch — so the producer is released only once the track has
-drained everything. The queue is pinned near empty by design, and a stall of
-more than a few tens of milliseconds becomes arithmetic zero on the wire.
-
-These tests pin the two properties that make the fix a fix: the producer is
-released while audio remains queued, and a stall the cushion is sized for is
-absorbed without a single silent frame. Plus the shape of the parent's queue,
-because we append to it directly and an upstream change there would break us
-quietly.
-
-They also pin the ceiling (2026-09-11). The stretcher counts the whole output
-backlog, so a source that never stops sending (GPT-Live) cannot push its audio
-further and further behind, and a speech stream that has fallen behind is
-trimmed back to the target.
-"""
+"""Verify early producer release and whole-backlog limits, including continuous speech that never drains between
+turns. Pin the upstream queue shape used by the subclass; see PRs #249 and #311."""
 
 from __future__ import annotations
 
@@ -198,11 +181,8 @@ class TestInstall:
             assert hasattr(made, "underrun"), "lost the instrumentation"
             assert made._cushion_chunks == 6
 
-            # Attributes surviving is not the same as the instrument WORKING.
-            # The cushion reimplements add_audio_bytes instead of delegating,
-            # so unless it calls the refill hook the event never closes and the
-            # counters read zero for ever — which is exactly what happened on
-            # the first call after this shipped.
+            # Exercise refill accounting: the cushion overrides add_audio_bytes and must invoke the underrun hook itself. See PR
+            # #250.
             async def starve_then_refill() -> None:
                 await made.recv()          # queue empty: starvation begins
                 await made.recv()
@@ -216,14 +196,7 @@ class TestInstall:
 
 
 class TestPauseStretching:
-    """Build the cushion out of the agent's own pauses.
-
-    Measured on two calls: ~25% of in-turn agent audio is pause (60 s in 240 s),
-    across ~360 runs of >=40 ms. Repeating one quiet chunk in three banks ~67 ms
-    of cushion per second of audio — against 5 ms/s for a flat 95% playout rate,
-    and with no pitch shift to hear, because a repeated near-silent frame has
-    neither pitch nor transient.
-    """
+    """Stretch quiet chunks only so the cushion does not change voiced audio. See PR #251."""
 
     def _quiet(self, chunks: int) -> bytes:
         return b"\x05\x00" * PER_CHUNK * chunks      # ~-76 dBFS
@@ -360,20 +333,8 @@ class TestClearOnInterruption:
 
 
 class TestInflightProbe:
-    """Did the audio exist and we failed to move it, or had it not arrived?
-
-    The transport's own audio queue is an UNBOUNDED asyncio.Queue, so holding
-    the track's future never back-pressures anything upstream — frames simply
-    accumulate there. Which means a starve has two possible causes with opposite
-    fixes: audio waiting in that queue (ours to move) versus nothing arriving
-    (upstream's to deliver). Every OutputAudioRawFrame passes through the
-    processor and everything the track holds passed through it first, so the
-    difference between the two counters is exactly what is sitting in between.
-
-    The track anchors that count when the probe is wired, since audio forwarded
-    before a track existed was dropped by the transport. So these tests wire
-    first and forward after, as the processor does.
-    """
+    """Anchor the probe before forwarding audio; pre-track frames were dropped and must not count as transport backlog.
+    See PR #311."""
 
     def _mk(self, monkeypatch: pytest.MonkeyPatch):
         from types import SimpleNamespace
@@ -552,13 +513,8 @@ async def _play(track, steps: int, source) -> _Played:
 
 
 class TestContinuousSpeechStreams:
-    """GPT-Live streams audio at real-time pace, silence included, and never stops.
-
-    Staging, 2026-09-11: the stretcher's ceiling counted only this track's queue,
-    which backpressure holds at 6-10 chunks, so it never engaged. Every repeated
-    chunk stayed in the transport's queue as delay: 1800 chunks in a 109 s call,
-    and the replies reached the caller many seconds after their transcript.
-    """
+    """Continuous speech never drains between turns; the stretcher must cap transport-plus-track backlog to bound delay.
+    See PR #311."""
 
     @staticmethod
     def _stream(reply_at: Optional[int] = None):

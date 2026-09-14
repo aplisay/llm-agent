@@ -584,18 +584,8 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
-    // `err`, NOT `error` — do not "tidy" this to match the `error: errorText` above.
-    // pino only applies its error serialiser to the key `err`; an Error logged under
-    // any other key serialises to `{}`, because `message` and `stack` are
-    // non-enumerable. That is not theoretical: a consult-leg createCall failed here on
-    // staging and logged `{"error":{}}`, so establishing whether it was a 5xx, a DNS
-    // failure or a reset needed the Cloud Run logs to rule out a server round trip
-    // entirely. Under `err`, pino reports type, message and stack — and folds in
-    // `cause`, which is where fetch puts ECONNRESET / EAI_AGAIN.
-    //
-    // This branch is reached ONLY for non-ApiRequestError failures, i.e. never for an
-    // HTTP response: `fetch` itself rejecting, or a 2xx body that would not parse. So
-    // whatever it logs is by definition the interesting case.
+    // Log Error objects under err so pino includes message, stack and cause; other keys serialize them as {}. See PR
+    // #188.
     if (!(error instanceof ApiRequestError)) {
       logger.error({ url, err: error }, 'API request error');
     }

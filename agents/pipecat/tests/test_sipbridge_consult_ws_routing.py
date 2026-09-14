@@ -1,29 +1,5 @@
-"""/sipbridge/agent WS routing for warm-transfer consult legs.
-
-Root cause pinned here (beta 2026-08-05, caller 07970939456): a consultative
-transfer's callback WS (``sb-consult-<uuid>``, dialled by the Go bridge the
-moment the transfer target answers — ``Consult`` → ``Originate`` opens the
-worker WS only after the SIP dial completes) was 404-denied by the worker
-itself. The handler only reached the consult flow inside ``if is_outbound:``,
-but ``is_outbound()`` checks ``_pending_outbound``, which ``_do_consultative``
-never touches (it registers in the ConsultStateMixin map instead). The WS fell
-through to inbound agent resolution, which has no ``x-sipbridge-to`` header on
-a worker-initiated leg → ``_ws_deny(404)`` → the bridge's POST /consult failed
-502 and the just-answered consult leg was torn down.
-
-These tests drive the real ``sipbridge_agent`` handler over a scripted ASGI
-channel:
-
-- a session id registered via ``register_consult_session`` must be ACCEPTED
-  (here it then closes 1011 because no live parent session exists — the
-  regression under test is the handshake-level 404 denial);
-- an unknown session id must still take the inbound path and be denied
-  (guard against over-routing);
-- with a live parent, flow (b) must reach ``_run_session`` with the consult
-  context's caller id sourced from ``metadata.aplisay.callerId`` (the
-  ``CallRecord`` pydantic model has no ``callerId`` attribute — reading one
-  crashed the handler and left the answered transfer target in silence).
-"""
+"""Route registered consult callbacks before inbound lookup; they are absent from the outbound registry. See PR #194.
+Use parent metadata for callerId and the transfer target for calledId; see PRs #196 and #197."""
 
 from __future__ import annotations
 
@@ -116,17 +92,8 @@ def test_unknown_session_ws_still_takes_inbound_path(monkeypatch):
 
 
 def test_consult_ws_reaches_run_session_with_metadata_caller_id(monkeypatch):
-    """Drive flow (b) with a LIVE parent all the way to ``_run_session``.
-
-    Regression (beta 2026-08-05, second incarnation): with routing fixed,
-    the handler crashed building the consult ``InboundCallContext`` —
-    ``consult_parent.call.callerId`` on a pydantic ``CallRecord`` that has
-    no such field (AttributeError). The Go bridge held the answered leg
-    open with no bot attached, so the transfer target heard silence. The
-    parent's ``call`` here is a REAL CallRecord so any attribute-access
-    regression re-raises; the caller id must come from
-    ``metadata.aplisay.callerId``.
-    """
+    """Use a real CallRecord to catch invalid callerId access; consult caller identity comes from parent metadata. See PR
+    #196."""
     gateway = SipBridgeSipGateway()
     session_id = "sb-consult-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     gateway.register_consult_session(
@@ -195,16 +162,7 @@ def test_consult_ws_reaches_run_session_with_metadata_caller_id(monkeypatch):
 
 
 def test_consult_call_record_posts_string_called_and_caller_ids(monkeypatch):
-    """Drive flow (b) through the REAL ``setup_consult_call`` to the
-    agent-db POST.
-
-    Regression (beta 2026-08-05, third incarnation): the sipbridge arm
-    built its consult ctx with ``called_id=None``, and the agent-db API's
-    OpenAPI validation 400s a null calledId ("must be string") — so the
-    consult call record was never created, setup failed, and the answered
-    transfer target heard silence. The record's calledId must be the
-    transfer destination and callerId the origin caller, both strings.
-    """
+    """Exercise the agent-db POST: calledId must be the transfer destination, not null. See PR #197."""
     gateway = SipBridgeSipGateway()
     session_id = "sb-consult-99999999-8888-7777-6666-555555555555"
     gateway.register_consult_session(
