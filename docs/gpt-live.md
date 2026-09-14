@@ -313,14 +313,15 @@ fragments, preserving their spacing, to the external TTS stage. Native TTS text
 and start/stop frames are suppressed so synthesized speech is not duplicated in
 the audit transcript.
 
-For ElevenLabs, the experimental path uses phrase streaming with `auto_mode=true`
-and the existing Flash v2.5 model. The first chunk is released at punctuation,
-four complete words, or a 250 ms deadline when complete words are available.
-Following chunks use punctuation, twelve words, or a 600 ms deadline. Split
-words are retained until their boundary arrives; turn completion flushes the
-remainder. These are buffering budgets, not promised end-to-end latency. The
-same ElevenLabs context is reused within a response. Normal pipeline TTS and
-Realtime text-output sessions retain their existing sentence aggregation.
+For ElevenLabs, the experimental path sends transcript fragments immediately
+using Pipecat's token streaming mode, with `auto_mode=false` and the existing
+Flash v2.5 model. ElevenLabs' default input buffering and chunk scheduling decide
+when there is enough text to synthesize. This gives the synthesizer more context
+for natural emphasis while avoiding Pipecat's full-sentence wait. There is no
+local phrase timer or custom provider chunk schedule. The same ElevenLabs context
+is reused within a response, and response completion flushes any remainder.
+Normal pipeline TTS and Realtime text-output sessions retain their existing
+sentence aggregation. Live trials are needed to assess the latency/prosody tradeoff.
 
 Local VAD interrupts immediately when caller speech begins during external
 playback. Before playback, it allows 600 ms of speech after VAD confirmation
@@ -338,7 +339,8 @@ timeout as a fallback if synthesis fails.
 ElevenLabs trials log `transcript_tts_latency` events with a per-response `trace`,
 `stage`, monotonic timestamp, and milliseconds since `first_transcript`:
 `first_tts_submission`, `first_audio`, and `playback_start`. Subtract consecutive
-stage times to separate caption buffering, synthesis, and local output buffering.
+stage times to separate local text forwarding, provider buffering/synthesis,
+and local output buffering.
 Playback is measured after the transport successfully writes its first TTS audio
 chunk; it excludes downstream network/jitter buffering and is not proof the
 remote caller heard it. Interrupted responses also log `interrupted`; responses
