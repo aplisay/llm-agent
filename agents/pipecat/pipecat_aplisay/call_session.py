@@ -44,7 +44,9 @@ from .gpt_live import (
     merge_tools,
     resolve_delegate,
 )
-from .mcp_tools import close_mcp_servers, connect_mcp_servers
+from .mcp_tools import (
+    MCP_MAX_RESULT_BYTES_DELEGATED, close_mcp_servers, connect_mcp_servers,
+)
 from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
 from .pipeline_error_alarm import PipelineErrorAlarm
@@ -1870,7 +1872,16 @@ class CallSession:
         if not spec.synthetic:
             delegate_tools = self._build_tools_for(spec.agent)
             with logger.contextualize(callId=self.call.id):
-                delegate_mcp, delegate_closers = await connect_mcp_servers(spec.agent, log=logger)
+                # These tools run behind the delegation, whose tool-input
+                # budget is spent for the whole session rather than per turn,
+                # so their results are held to the tighter cap. Without it one
+                # verbose server exhausts the session in a single turn and
+                # strands the delegation (see the recovery in
+                # gpt_live_service, and docs/gpt-live.md).
+                delegate_mcp, delegate_closers = await connect_mcp_servers(
+                    spec.agent, log=logger,
+                    max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED,
+                )
             self._mcp_closers.extend(delegate_closers)
             delegate_tools.extend(delegate_mcp)
             backend_prompt = prompt_with_metadata(
