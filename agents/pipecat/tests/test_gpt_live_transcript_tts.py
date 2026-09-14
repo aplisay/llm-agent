@@ -7,6 +7,7 @@ import pytest
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import (
     AggregationType,
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InputAudioRawFrame,
     InterruptionFrame,
@@ -116,6 +117,7 @@ def test_barge_in_clears_tts_without_cancelling_delegation_and_discards_old_turn
 
     async def run():
         llm._assistant_turn.open = True
+        llm._bot_speaking = True
         vad.state = VADState.SPEAKING
         await llm._send_user_audio(audio)
         await llm._send_user_audio(audio)
@@ -267,3 +269,66 @@ def test_replayed_live_events_flow_through_real_tts_pipeline_once(monkeypatch):
 
     asyncio.run(run())
     assert spoken == ["Hello there."]
+
+
+def test_brief_speech_before_playback_preserves_pending_reply(service, monkeypatch):
+    llm, vad, pushed = service
+    monkeypatch.setattr(AplisayOpenAILiveLLMService, "_send_user_audio", AsyncMock())
+    monkeypatch.setattr(AplisayOpenAILiveLLMService, "process_frame", AsyncMock())
+    audio = InputAudioRawFrame(audio=b"\0" * 640, sample_rate=16000, num_channels=1)
+
+    async def run():
+        llm._assistant_turn.open = True
+        vad.state = VADState.SPEAKING
+        for _ in range(10):  # 200 ms after speech confirmation
+            await llm._send_user_audio(audio)
+        await llm._push_assistant_text("Hello")
+        # Starting playback during the acknowledgment must not revoke grace.
+        await llm.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await llm._send_user_audio(audio)
+        vad.state = VADState.QUIET
+        await llm._send_user_audio(audio)
+        await llm._push_assistant_text(" there.")
+
+    asyncio.run(run())
+    assert not any(isinstance(f, InterruptionFrame) for f, _ in pushed)
+    assert not llm._awaiting_user_transcript
+    assert "".join(f.text for f, _ in pushed if isinstance(f, LLMTextFrame)) == "Hello there."
+
+
+def test_sustained_preplay_speech_cancels_and_fresh_answer_recovers_without_gap(service, monkeypatch):
+    llm, vad, pushed = service
+    monkeypatch.setattr(AplisayOpenAILiveLLMService, "_send_user_audio", AsyncMock())
+    monkeypatch.setattr(llm, "_push_interim_transcription", AsyncMock())
+    audio = InputAudioRawFrame(audio=b"\0" * 640, sample_rate=16000, num_channels=1)
+
+    async def run():
+        llm._assistant_turn.open = True
+        vad.state = VADState.SPEAKING
+        for _ in range(35):
+            await llm._send_user_audio(audio)
+        await llm._push_assistant_text("Discard during speech")
+        user = events.TranscriptDeltaEvent(type="session.input_transcript.delta", delta="Actually", end_ms=1500)
+        await llm._append_turn("user", user.delta, user.delta, user)
+        vad.state = VADState.QUIET
+        await llm._send_user_audio(audio)
+        for start, end, text in [(900, 1400, "stale"), (1500, 1600, "New answer.")]:
+            evt = events.TranscriptDeltaEvent(type="session.output_transcript.delta", delta=text, start_ms=start, end_ms=end)
+            await llm._append_turn("assistant", text, text, evt)
+
+    asyncio.run(run())
+    assert len([f for f, _ in pushed if isinstance(f, InterruptionFrame)]) == 1
+    assert [f.text for f, _ in pushed if isinstance(f, LLMTextFrame)] == ["New answer."]
+
+
+def test_playback_notifications_control_barge_in_state(service, monkeypatch):
+    llm, _, _ = service
+    monkeypatch.setattr(AplisayOpenAILiveLLMService, "process_frame", AsyncMock())
+
+    async def run():
+        await llm.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        assert llm._bot_speaking
+        await llm.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        assert not llm._bot_speaking
+
+    asyncio.run(run())
