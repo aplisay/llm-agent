@@ -45,7 +45,8 @@ from .gpt_live import (
     resolve_delegate,
 )
 from .mcp_tools import (
-    MCP_MAX_RESULT_BYTES_DELEGATED, close_mcp_servers, connect_mcp_servers,
+    MCP_MAX_RESULT_BYTES, MCP_MAX_RESULT_BYTES_DELEGATED,
+    close_mcp_servers, connect_mcp_servers,
 )
 from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
@@ -148,6 +149,23 @@ class _RelayLeg:
     runner: Any  # PipelineRunner driving ``task``
     call: api_client.CallRecord
     endpoint: Any  # media_relay.RelayEndpoint for the leg
+
+
+def _result_cap_for(model_name: str) -> int:
+    """The tool-result cap for a model, in UTF-8 bytes.
+
+    GPT-Live runs its tools through a responses delegation, and EVERY result —
+    the voice agent's own included — goes back to the backend as delegation
+    input, charged against its 32768-byte per-session budget. The merged tool
+    set is one surface there, not two, so the tighter cap has to govern the
+    whole set rather than only the delegate's half. Every other model spends
+    its context per turn and gets the ordinary cap. See tool_result.py.
+    """
+    from .voice_mode import model_id_from_name
+
+    if is_gpt_live_model_id(model_id_from_name(model_name or "")):
+        return MCP_MAX_RESULT_BYTES_DELEGATED
+    return MCP_MAX_RESULT_BYTES
 
 
 @dataclass
@@ -597,7 +615,10 @@ class CallSession:
                 "reject_transfer": _builtin_consult_reject(self),
             }
 
-        tools = self._build_tools_for(agent, extra_builtins=extra_builtins)
+        result_cap = _result_cap_for(model_name)
+        tools = self._build_tools_for(
+            agent, extra_builtins=extra_builtins, max_result_bytes=result_cap
+        )
 
         # Worker-as-MCP-client: connect to any remote MCP servers configured on
         # the agent and append their tools to the SAME ``tools`` list, so they
@@ -610,7 +631,7 @@ class CallSession:
         # debug log (a silent tool drop reads as "the model won't call tools").
         with logger.contextualize(callId=self.call.id):
             mcp_descriptors, mcp_closers = await connect_mcp_servers(
-                agent, log=logger
+                agent, log=logger, max_result_bytes=result_cap
             )
         self._mcp_closers = mcp_closers
         if mcp_descriptors:
@@ -1311,7 +1332,8 @@ class CallSession:
         await self.gateway_session.shutdown()
 
     def _build_tools_for(
-        self, agent: dict, *, extra_builtins: Optional[dict] = None
+        self, agent: dict, *, extra_builtins: Optional[dict] = None,
+        max_result_bytes: int = MCP_MAX_RESULT_BYTES,
     ) -> list[dict]:
         """Build the tool descriptor list for an agent definition with this
         session's callbacks wired in. Used both at pipeline construction
@@ -1332,6 +1354,7 @@ class CallSession:
             on_send_dtmf=self._on_send_dtmf,
             on_transfer_summary=self._on_transfer_summary,
             extra_builtins=extra_builtins,
+            max_result_bytes=max_result_bytes,
         )
 
     async def _on_transfer_summary(self, args: dict) -> dict:
@@ -1870,7 +1893,10 @@ class CallSession:
         delegate_tools: list[dict] = []
         backend_prompt = system_prompt
         if not spec.synthetic:
-            delegate_tools = self._build_tools_for(spec.agent)
+            # The delegate's REST functions run behind the delegation too, so
+            # they share the tighter cap with its MCP tools below.
+            delegate_tools = self._build_tools_for(
+                spec.agent, max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED)
             with logger.contextualize(callId=self.call.id):
                 # These tools run behind the delegation, whose tool-input
                 # budget is spent for the whole session rather than per turn,

@@ -33,6 +33,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from loguru import logger as _logger
 
+from .tool_result import MAX_RESULT_BYTES, MAX_RESULT_BYTES_DELEGATED, clip_result
+
 # How long the worker waits for an MCP server to complete its handshake
 # and list its tools. Servers are connected serially during call setup,
 # with the caller already answered and holding a concurrency slot, so
@@ -45,27 +47,12 @@ MCP_CONNECT_TIMEOUT = 10.0
 # call otherwise pins the bot mid-turn.
 MCP_TOOL_TIMEOUT = 30.0
 
-# Largest tool result handed to the model, in UTF-8 bytes.
-#
-# An MCP server is a third party. Operators point agents at their own servers
-# and at other people's, so the worker cannot assume any of them return an
-# amount of text that suits a phone call. One that returns whole documents
-# will happily hand back tens of kilobytes, and a model's input budget is
-# finite and, on some backends, spent for the whole session rather than the
-# turn: OpenAI's responses delegation allows 32768 UTF-8 bytes of tool input
-# per session, so a single unbounded result can end an agent's ability to use
-# tools at all (see docs/gpt-live.md).
-#
-# 8000 bytes is far more than a spoken answer needs while leaving a document
-# recognisable to a model that wanted a specific fact from it. Callers whose
-# model has a tighter budget pass their own.
-MCP_MAX_RESULT_BYTES = 8000
-
-# The cap for a tool set behind a responses delegation, whose 32768-byte
-# budget is consumed for the whole session. A voice call makes tool calls in
-# double figures, so a result has to cost a fraction of the budget rather than
-# a quarter of it; at this size the budget lasts a dozen-plus calls.
-MCP_MAX_RESULT_BYTES_DELEGATED = 2500
+# Result size caps live in tool_result.py, shared with the agent's own REST
+# functions in function_handler.py — both are third-party callouts that can
+# return more than a conversation can hold. Re-exported under the MCP names
+# the call sites already use.
+MCP_MAX_RESULT_BYTES = MAX_RESULT_BYTES
+MCP_MAX_RESULT_BYTES_DELEGATED = MAX_RESULT_BYTES_DELEGATED
 
 
 def _namespace_tool_name(server_name: str, tool_name: str) -> str:
@@ -96,37 +83,6 @@ def _result_text(results: Any) -> str:
             if text:
                 response += text
     return response
-
-
-def clip_result(text: str, max_bytes: int, *, tool: str) -> tuple[str, int]:
-    """Bound one tool result, returning ``(text, bytes_dropped)``.
-
-    Truncation is announced in the text rather than done quietly. A model
-    cannot tell a short answer from a cut one, and a silently halved document
-    is answered from with full confidence — the marker is what turns that into
-    "ask for a smaller part", which is a thing the model can act on.
-
-    Cuts on a line boundary when one falls in the last quarter, so a result is
-    not left ending mid-word, but never sacrifices more than that to find one.
-    """
-    if max_bytes <= 0:
-        return text, 0
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text, 0
-    # Decode back with errors="ignore" so a cut inside a multi-byte character
-    # drops that character rather than producing invalid UTF-8.
-    kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
-    boundary = kept.rfind("\n")
-    if boundary > max_bytes * 0.75:
-        kept = kept[:boundary]
-    dropped = len(encoded) - len(kept.encode("utf-8"))
-    marker = (
-        f"\n\n[{tool}: truncated here. {dropped} of {len(encoded)} bytes were not returned, "
-        "because the full result is too large for this conversation. Ask for a smaller or more "
-        "specific part of it if you need more, and do not repeat this call unchanged.]"
-    )
-    return kept.rstrip() + marker, dropped
 
 
 def _error_summary(e: BaseException) -> str:

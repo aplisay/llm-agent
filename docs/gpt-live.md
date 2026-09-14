@@ -184,13 +184,22 @@ The input budget is per session, so once it is exhausted later delegations fail
 the same way. The caller is told once, not once per attempt. Both steps are
 logged under `event="delegation_recovery"` in the call's debug log.
 
-Tool results are also bounded on the way in. An MCP server is a third party and
-can return whatever it likes, so the worker caps each result and tells the model
-it did: 8,000 bytes normally, and 2,500 for a tool set behind a responses
-delegation, where the budget has to cover a whole call's tool use rather than
-one turn (`MCP_MAX_RESULT_BYTES` and `MCP_MAX_RESULT_BYTES_DELEGATED` in
-`mcp_tools.py`). A truncated result is logged as a warning with the byte counts,
-because the debug log's own copy of a result is capped too.
+Tool results are also bounded on the way in. MCP servers and REST functions both
+call out to third parties that can return whatever they like, so the worker caps
+every result and tells the model it did: 8,000 bytes normally, and 2,500 on
+GPT-Live, where the budget has to cover a whole call's tool use rather than one
+turn (`MAX_RESULT_BYTES` and `MAX_RESULT_BYTES_DELEGATED` in `tool_result.py`).
+
+On GPT-Live the tighter cap applies to **every** tool the agent has, not just
+the delegate's own. In responses mode the merged tool set is one surface: a
+result from the voice agent's REST function goes back to the backend as
+delegation input exactly as the delegate's does, and is charged against the same
+budget.
+
+The cap bounds what the model is shown, not what is kept. A REST function's full
+result still reaches `metadata.toolsCalls` for tool chaining, the same split
+`redact` already uses. A truncated result is logged as a warning with the byte
+counts, because the debug log's own copy of a result is capped too.
 
 Capping makes the failure rare; the recovery above makes it survivable. Neither
 removes the session budget, so prefer tools that return the part you asked for
