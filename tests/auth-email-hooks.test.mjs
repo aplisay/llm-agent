@@ -1,7 +1,4 @@
-// Send hooks (lib/auth/email-hooks.js). The load-bearing contract: a send
-// failure is logged and SWALLOWED — a rethrow from sendVerificationEmail
-// becomes better-call's bare 500, which fires only for registered-and-
-// unverified addresses (an enumeration oracle during any mail outage).
+// Swallow and log send-hook failures so HTTP responses cannot disclose registered, unverified addresses. See PR #199.
 import { createSendHooks } from '../lib/auth/email-hooks.js';
 import { loadBrands } from '../lib/auth/email-brands.js';
 

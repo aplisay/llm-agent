@@ -25,19 +25,8 @@ from loguru import logger
 
 from . import api_client
 
-# Per-call buffers, keyed by callId. Guarded by a threading.Lock: the loguru
-# sink runs synchronously in whatever thread emitted the log (possibly a worker
-# thread, e.g. ``asyncio.to_thread``), while flush runs on the event loop.
-#
-# This used to be ONE process-wide list with a shared 20 000-entry cap and
-# oldest-first eviction across the whole process (P1). On a busy node — tens of
-# concurrent calls, a few hundred records a minute each, plus every pipecat line
-# emitted while a callId is bound — that saturated within minutes, and what got
-# evicted was the OLDEST entries of the still-running long calls: their setup and
-# connect lines, which are exactly the ones you need when diagnosing a silent
-# leg. Per-call deques give each call its own budget, make eviction a property of
-# that call's own verbosity, and turn the drain from an O(N) rebuild under the
-# lock (taken by every log call in every thread) into a dict pop.
+# Use per-call budgets so busy calls cannot evict another call's setup logs.
+# The sink runs on arbitrary threads, so flush and writes share a threading.Lock; see PR #285.
 _BUFFERS: dict[str, deque] = {}
 _LOCK = threading.Lock()
 _installed = False
@@ -48,10 +37,7 @@ _installed = False
 # call only.
 _MAX_ENTRIES_PER_CALL = 4_000
 
-# Ceiling on how many calls' buffers we hold. Every buffer is normally dropped
-# by its own call's flush; this only bounds the pathological case where a call
-# ends without one (a hard crash between segments). At the cap the
-# least-recently-written call is dropped whole.
+# Bound buffers left by calls that never flush; evict the least recently written call at capacity. See PR #285.
 _MAX_CALLS = 500
 
 # How many call buffers have been dropped un-flushed. Non-zero means
@@ -132,13 +118,8 @@ def _capture_sink(message) -> None:
                 del _BUFFERS[evicted]
             buf = _BUFFERS[key] = deque(maxlen=_MAX_ENTRIES_PER_CALL)
         buf.append(entry)
-    # NOT ``logger`` — we are inside a loguru sink, and loguru is not
-    # re-entrant: any log emitted from here trips its "deadlock avoided"
-    # guard, which raises out of the sink, loses the message and turns
-    # every eviction into a handler error on stderr. Moving it out of
-    # the lock does not help; the guard is on the loguru handler, not on
-    # our buffer. So: a counter (reported by ``dropped_call_buffers``)
-    # plus a direct stderr line, neither of which re-enters logging.
+    # Do not log through loguru inside its sink: its re-entrancy guard raises even outside our lock.
+    # Use the counter and direct stderr write; see PR #285.
     if evicted is not None:
         global _dropped_call_buffers
         _dropped_call_buffers += 1

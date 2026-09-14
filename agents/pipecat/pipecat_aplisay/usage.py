@@ -95,15 +95,8 @@ class UsageMeteringObserver(BaseObserver):
         self._services = services or {}
         # key "technology|provider|detail|unit" -> meter dict with a running qty.
         self._meters: dict[str, dict[str, Any]] = {}
-        # Observers fire on every push hop, so a frame is seen multiple times;
-        # dedupe by frame id to count each frame once.
-        #
-        # Bounded (P8). An unbounded set held one int per frame for the
-        # whole call — ~6-7 MB per hour of bot speech, freed only at
-        # hangup. Duplicate sightings of a frame all happen within a few
-        # push hops of each other, so a short ring of recent ids is as
-        # good as remembering every frame ever seen: the deque evicts
-        # oldest-first and the set mirrors it for O(1) lookup.
+        # Deduplicate repeated push-hop sightings by frame id; a bounded recent window avoids retaining every frame for the
+        # call. See PR #285.
         self._seen_frame_ids: set[int] = set()
         self._seen_frame_order: deque[int] = deque()
         # Open VAD user-speech window start timestamp (seconds), for stt/ms.

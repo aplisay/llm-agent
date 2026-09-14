@@ -118,19 +118,7 @@ export function logToolResult(
 }
 
 /**
- * Log a runaway tool-call loop with `event: "tool_loop"`.
- *
- * This is the alertable signal for the class of failure where a realtime model
- * re-issues the same tool as fast as it can generate (observed at ~2.5 calls/s
- * against Ultravox): the call stays up and billed, no error is raised anywhere
- * else, and nothing in the transcript looks wrong. `action` says what the
- * breaker did — `"refused"` (tool not executed, hard error returned to the
- * model), `"terminated"` (call torn down), or `"exempt"` (poll-by-design
- * builtin — counted and reported, but executed anyway; see the exemption set
- * in ./tool-loop-breaker.ts).
- *
- * `"exempt"` logs at WARN, not ERROR: nothing is broken and no call is at
- * risk, but a poll running this hot is still worth seeing in the debug log.
+ * Report runaway tool loops; exempt polling tools remain executable and log at WARN. See PR #258.
  */
 export function logToolLoop(
   log: ToolLogger,

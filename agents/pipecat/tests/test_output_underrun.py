@@ -1,16 +1,5 @@
-"""The output track reports how long it starved for, and how late the audio was.
-
-A rig comparing the platform's own recording tap against the browser's decoder
-found gaps that exist only in the browser copy — arithmetic zero, with packets
-flowing and nothing lost or concealed. That is ``RawAudioTrack.recv()`` finding
-an empty queue and sending ``bytes(bytes_per_10ms)``.
-
-These tests pin the measurement that decides what to do about it: **lateness**.
-Audio that turns up a few tens of milliseconds after the queue ran dry could
-have been covered by a cushion. Audio that never turns up could not have been,
-by anything, and the fix would belong upstream. A counter that only said "an
-underrun happened" would not tell those two apart, and that is the whole point.
-"""
+"""Distinguish late refills from audio that never arrives; an underrun count alone cannot size a useful buffer. See PR
+#248."""
 
 from __future__ import annotations
 

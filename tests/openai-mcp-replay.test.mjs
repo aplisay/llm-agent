@@ -1,15 +1,5 @@
-// Hosted-MCP replay retention: the Responses API ACCEPTS a replayed
-// `mcp_call` input item but silently DISCARDS its `output` — the model never
-// sees the content again and it is not token-charged (verified against the
-// live API: a replayed mcp_call whose output named a magic token got "NONE"
-// back at 46 input tokens; the same content as a function_call/
-// function_call_output pair was quoted back at 90). With store:false that
-// made every MCP result amnesic one request later — the builder's playbook
-// gate then re-fetched get_playbook on every turn and could loop without
-// ever reaching its save. These tests pin the driver-side cure: each
-// completed mcp_call is rewritten into a retained function pair when pushed
-// onto the replay history; everything else replays verbatim.
-// No network: fake stream helpers stand in for the SDK stream objects.
+// Rewrite hosted mcp_call outputs as function-call/result pairs so store:false replay retains them. See PR #225.
+// Keep all other output items unchanged.
 process.env.OPENAI_API_KEY ||= 'test-key';
 
 const { default: OpenAi } = await import('../lib/models/openai.js');

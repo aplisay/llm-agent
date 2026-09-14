@@ -1,14 +1,5 @@
-// The outbound-authorisation request schema must accept the pipecat worker's
-// actual payload, which serialises unknown fields as literal NULLS (a
-// WebRTC-origin transfer has no callerId or aplisayId to send). The handler
-// was always written for that shape (`callerId &&` guards, `aplisayId ||
-// null`), but bare `type: 'string'` properties made express-openapi 400 the
-// request before the handler ran — and the worker fails CLOSED on any
-// non-200, so every human transfer out of a browser test call was refused
-// with "destination could not be authorised" (beta call
-// 99d15781-7e3f-436d-bdc9-9157c588eded). These tests pin the contract at the
-// schema itself: every optional property is nullable, and the worker's
-// real null-bearing payload validates.
+// Allow null for optional authorisation fields: WebRTC-origin transfers send null identities, and validation precedes
+// the handler. See PR #226.
 import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);

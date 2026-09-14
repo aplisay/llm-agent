@@ -1,45 +1,5 @@
-"""Measure how badly the WebRTC output track starves, and by how long.
-
-WHY THIS EXISTS (measured on staging, 2026-08-25)
--------------------------------------------------
-A closed-loop rig that captures the agent's audio both at the platform's own
-recording tap (which sits after ``transport.output()``, so it holds the bytes
-handed to the track) and at the browser's decoder found gaps that exist ONLY in
-the browser copy: 50 ms, 80 ms and 100 ms of **arithmetic zero** across two
-calls, each with packets still flowing, nothing lost and nothing concealed.
-NetEq's concealment extrapolates waveform and never emits zeroes, so those
-samples were transmitted as zeroes — which is ``RawAudioTrack.recv()`` finding
-its queue empty and emitting ``bytes(self._bytes_per_10ms)``.
-
-That much is settled. What is NOT settled is the only thing that decides
-whether it can be fixed at the transport at all:
-
-  * if the audio **arrives late** — a few tens of milliseconds — then a modest
-    output cushion absorbs it and the gap disappears;
-  * if the audio **never arrives** — the model or the pipeline simply produced
-    nothing for that span — then there is nothing to buffer and no amount of
-    pre-roll helps. The gap is real and the fix belongs upstream.
-
-So the number that matters is ``late_by_ms``: the interval from the first
-starved ``recv()`` to the moment real audio was next queued. Everything else
-here is context for it.
-
-The second measurement is the **queue-depth histogram**, sampled at every
-``recv()``. If the queue normally sits at 0 or 1 chunks then there is no
-cushion at all and any hiccup at all underruns — which would make a pre-roll
-the obvious fix. If it normally sits several chunks deep, a starve means
-something upstream stopped for longer than that cushion, and the depth tells
-you how much longer would have been needed.
-
-Mechanism: ``RawAudioTrack`` is constructed inside pipecat's
-``SmallWebRTCClient._handle_client_connected`` by module-global lookup, so
-swapping that global for a subclass instruments it without touching the
-transport or duplicating its logic. We observe around ``super()`` rather than
-reimplementing ``recv()``, so an upstream change to the pacing cannot silently
-diverge from what we measure.
-
-Off with ``WEBRTC_UNDERRUN_STATS=0``.
-"""
+"""Measure refill lateness to distinguish delayed audio from missing audio; preserve upstream pacing by wrapping
+super(). See PR #248; WEBRTC_UNDERRUN_STATS=0 disables instrumentation."""
 
 from __future__ import annotations
 
@@ -76,12 +36,8 @@ class UnderrunStats:
         self.events = 0
         self.chunks_filled = 0            # 10 ms slots filled with zeroes
         self.max_gap_ms = 0.0
-        # One sample per refilled event, bounded (P8). These were plain
-        # lists that grew for the life of the call — small per entry, but
-        # unbounded in call length for a diagnostic that only ever
-        # reports percentiles. A rolling window gives the same answer;
-        # the true maxima are tracked separately below so nothing that
-        # matters is lost to eviction.
+        # Bound diagnostic samples to a rolling window; track lifetime maxima separately so eviction does not erase peaks.
+        # See PR #285.
         self.late_ms: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
         self.max_late_ms = 0.0
         self.gap_hist: dict[str, int] = {}  # gap size distribution, for the summary
@@ -89,11 +45,8 @@ class UnderrunStats:
         self.depth = {label: 0 for _, label in _BUCKETS}
         self.depth[">10"] = 0
         self.recvs = 0
-        #: ms of audio already forwarded downstream but not yet handed to the
-        #: track, sampled at the instant each starve began. Non-zero means the
-        #: audio EXISTED and we simply had not moved it — the starve is ours.
-        #: Zero means nothing had arrived from upstream. Nothing else in the
-        #: system distinguishes those two, and they call for opposite fixes.
+        #: Audio waiting between the transport and track at underrun time distinguishes local delay from late input. See PR
+        #: #252.
         self.inflight_at_starve: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
         self.max_inflight_at_starve = 0.0
         #: Total starves seen with audio already in flight — a running

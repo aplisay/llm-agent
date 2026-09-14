@@ -1,51 +1,5 @@
-# WebRTC on the EXISTING SIP load balancer (DigitalOcean).
-#
-# Rather than a second LB, this extends the `pipecat-sip` Service (the LB that
-# already fronts TCP 5061) with a TLS-terminated 443 -> worker :8082 port. DO
-# supports a mix on one LB: 5061 stays TCP passthrough (the gateway does its own
-# SIP TLS), 443 terminates with a cert and forwards plain HTTP to the worker. The
-# LB keeps its IP (it's the same Service / do-loadbalancer-name).
-#
-# Browsers POST /webrtc/offer to https://<fqdn>/ ; an off-cluster llm-agent POSTs
-# /dispatch there too. Sessions are pod-local: the first offer is stateless and
-# any pod can answer it, but everything after it (trickle-ICE PATCH,
-# renegotiation POST carrying a pc_id) must reach the pod that owns the session.
-#
-# sessionAffinity: ClientIP below is kept as a cheap first-hit optimisation, but
-# it is NOT what makes this correct, and on its own it does not work: with
-# externalTrafficPolicy: Local and one pod per node, the pod is decided by which
-# NODE the DO LB picked, and kube-proxy's affinity table is per-node — it can
-# never move a request between nodes. Measured on staging over 20 hours with
-# this setting live: 6 of 6 offer POSTs succeeded (they are stateless, so that
-# proves nothing about pinning) while 5 of 6 trickle PATCHes 404'd on the wrong
-# node.
-#
-# The correctness now comes from the worker: a pod that does not hold the pc_id
-# forwards to its siblings, found via the headless pipecat-worker-peers Service
-# (see pipecat_aplisay/webrtc_peers.py). That is the "route by session" fix this
-# comment used to call for. SIP on 5061 is unaffected either way — each TLS
-# dialog is one connection.
-#
-# Layer AFTER cloud-digitalocean (which creates the annotations object), then set
-# the per-env cert ID + LB name in the overlay:
-#
-#     components:
-#       - ../components/cloud-digitalocean
-#       - ../components/webrtc-do
-#     patches: [ ... do-loadbalancer-certificate-id: <DO cert ID>, ... ]
-#
-# Prerequisites (see README "WebRTC"): a DO-managed Let's Encrypt cert for the
-# FQDN (pipecat.aplisay.net is delegated to DO, so `doctl compute certificate
-# create --type lets_encrypt --dns-names <fqdn>` issues + auto-renews it) — put
-# its ID in the overlay; a DNS A record -> the LB IP; a DO firewall opening the
-# WebRTC media UDP range to browsers; PIPECAT_PUBLIC_URL + PIPECAT_WORKER_URL on
-# the llm-agent side.
-#
-# Surface note: this exposes ALL worker routes on :8082, not just /webrtc/offer +
-# /dispatch (they're token-gated; /daily/dialin is unauthenticated but no-ops off
-# a Daily gateway). To expose only the two paths, front with an Ingress instead.
-#
-# Other clouds (GKE/EKS): use an Ingress controller + cert-manager.
+# ClientIP affinity cannot route across nodes; the worker forwards signalling to the session owner.
+# Layer after cloud-digitalocean; see agents/pipecat/deploy/k8s/README.md and PR #247.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

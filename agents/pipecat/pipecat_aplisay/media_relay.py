@@ -227,14 +227,7 @@ def bridge(a: RelayEndpoint, b: RelayEndpoint) -> None:
 
 
 def unbridge(a: Optional[RelayEndpoint], b: Optional[RelayEndpoint]) -> None:
-    """Disengage both ends of a relay (P7).
-
-    ``disengage()`` had no caller anywhere in the package, so when one
-    bridged leg ended first the survivor's ``_RelayTap`` kept feeding the
-    dead leg's unbounded injector queue — ~96 KB/s from a 48 kHz browser
-    peer — until the survivor was itself hung up, which is best-effort.
-    Safe to call with either side already gone or never engaged.
-    """
+    """Disengage both relay ends so the surviving leg cannot keep filling a dead peer's queue. See PR #285."""
     for endpoint in (a, b):
         if endpoint is not None and endpoint.engaged:
             endpoint.disengage()

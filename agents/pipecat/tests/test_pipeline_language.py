@@ -1,17 +1,5 @@
-"""``options.stt.language`` / ``options.tts.language`` → the pipeline's STT and
-TTS services (:mod:`pipecat_aplisay.voice_session`).
-
-Before this wiring the pipeline path ignored both fields entirely: every agent
-got Deepgram's ``en`` and Cartesia's ``en`` regardless of what the agent
-definition declared, so a French agent was transcribed and voiced as English.
-
-The assertions deliberately reach for the value each service will actually put
-on the wire (``_build_connect_kwargs`` for Deepgram, ``_get_language_codes`` for
-Google, the resolved ``_settings.language`` for the TTS pair) rather than the
-value we passed in — the vendor mapping in between is the part most likely to
-silently drop a tag. Cartesia and ElevenLabs both reduce regional tags to base
-codes, which is their APIs' documented shape, not a bug.
-"""
+"""Assert the language each service sends to its vendor, since provider mappings can alter or drop regional tags. See
+PR #205."""
 
 from __future__ import annotations
 

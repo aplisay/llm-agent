@@ -1,21 +1,5 @@
-"""The gateway must release its per-call registrations on every exit path.
-
-From the 2026-09-03 production-readiness audit. Two of its highest-impact
-findings were the same shape: state registered at call setup and released
-only on the happy path.
-
-  * W1 — every OUTBOUND call. The dispatch task owns the CallSession and
-    runner; the WebSocket handler only registers the transport and then
-    parks on the leg-done event. Nothing but ``unregister_session`` sets
-    that event, and dispatch's teardown calls ``shutdown()`` → ``hangup()``,
-    so the handler task, its transport, its Starlette WebSocket and three
-    map entries were retained for the life of the process, per call. The
-    comment claiming FastAPI cancels the handler on peer close is not true
-    of uvicorn: peer close only enqueues a ``websocket.disconnect``.
-
-  * W6 — a completed warm transfer never cleared its consult call id,
-    because ``hangup`` returns early once the leg is bridged.
-"""
+"""Release gateway registrations on outbound teardown and bridged-transfer exits; otherwise handlers and maps retain
+calls. See PR #285."""
 
 from __future__ import annotations
 

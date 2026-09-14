@@ -77,10 +77,8 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --local-secrets)
-            # Used to read the pair with the operator's credentials and scp it
-            # to the VM. The secretenv pair is now fetched by the container at
-            # start-up and never written to any disk, so there is nothing to
-            # copy; the VM's own service account must be able to read it.
+            # The container fetches secrets at startup using the VM service account; do not copy them to the VM.
+            # See agents/livekit/deploy/gcp/README.md.
             echo -e "${RED}Error: --local-secrets is gone.${NC}" >&2
             echo "The container now reads Secret Manager itself at start-up. Grant the VM's" >&2
             echo "service account roles/secretmanager.secretAccessor on the pair instead." >&2
@@ -434,10 +432,8 @@ for i in "${!NODE_NAMES[@]}"; do
     fi
 
     if wants_component secrets; then
-        # Nothing to install: the container fetches the pair itself on every
-        # start. All this does is fail early — with a usable message — if the
-        # VM's service account cannot read it, rather than leaving a container
-        # crash-looping. The values are discarded, never written anywhere.
+        # Check secret access with the VM service account before restarting the container.
+        # See agents/livekit/deploy/gcp/README.md.
         echo -e "\n${YELLOW}Checking Secret Manager access to ${SECRET_BASE}_KEY / ${SECRET_BASE}_BUNDLE...${NC}"
         ssh_node "$NODE_NAME" "$ZONE" "
             set -euo pipefail

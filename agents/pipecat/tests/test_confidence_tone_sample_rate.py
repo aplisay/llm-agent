@@ -1,28 +1,5 @@
-"""Regression: the confidence tone must be emitted at the OUTPUT TRANSPORT's
-sample rate, never at StartFrame's.
-
-Beta incident 2026-08-21 (call 6de176b3-…, PSTN → +442030518682): an agent
-handover to the "Web support" member left the whole second leg silent. The
-chain was:
-
-  * ``BaseOutputTransport`` owns ONE ``SOXRStreamAudioResampler`` per call and
-    that resampler LATCHES the first ``(in_rate, out_rate)`` pair it is handed;
-    every later frame at a different rate raises and is dropped, for good.
-  * The SIP gateway transports pin ``audio_out_sample_rate=16000``, but
-    ``PipelineParams.audio_out_sample_rate`` is never set, so StartFrame still
-    advertises pipecat's 24000 default.
-  * On handover the injector is rebuilt (``_dst_rate is None``) and armed
-    before the incoming agent speaks, so its tone — at StartFrame's 24000 —
-    was the first audio to reach the fresh transport and latched it 24000→16000.
-  * Ultravox realtime then emitted at 48000 → ``ValueError`` on every frame →
-    total silence until the caller hung up.
-
-It stayed invisible on the WebRTC path only because that transport leaves its
-rate unpinned: tone frames matched it exactly and ``resample()`` short-circuits
-on equal rates, so the resampler was first latched by the agent's own audio.
-
-These tests pin the rule that fixes it: ask the output transport.
-"""
+"""Use the output transport's rate, not StartFrame's default, so tone audio cannot latch the resampler incorrectly.
+See PR #235."""
 
 from __future__ import annotations
 
@@ -91,12 +68,7 @@ class TestGeneratorEmitsAtTransportRate:
 
 
 def test_start_frame_alone_does_not_set_the_emit_rate() -> None:
-    """StartFrame teaches the fallback but must not win over the transport.
-
-    Uses stock ``PipelineParams`` — exactly what ``voice_session`` builds — so
-    the 24 kHz that broke the live call is the value under test, not a
-    hand-picked number.
-    """
+    """Use stock PipelineParams to exercise the mismatch between StartFrame and the pinned SIP transport. See PR #235."""
 
     async def run() -> None:
         assert PipelineParams().audio_out_sample_rate == 24000, (

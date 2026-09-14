@@ -17,19 +17,8 @@
 # only — no deploy: a beta K8s overlay pulls :beta (or pins :beta-n.n.n) and
 # is rolled with kubectl, exactly like the :next / :latest channels.
 #
-# SKIP-OR-BUILD (per image): the pipecat staging lane pushes :$COMMIT_SHA to
-# these SAME image paths on every next push, so a beta tag on an
-# already-built commit skips the whole stack rebuild (freeswitch is the big
-# win) — Check PROMOTES server-side (digest-pinned manifest copy via `docker
-# buildx imagetools create`, no rebuild) and each image's Build/Push steps
-# no-op via a /workspace skip marker. Deliberately NOT `gcloud artifacts
-# docker tags add`: moving an existing floating tag (:beta on a re-version)
-# needs artifactregistry.tags.delete, which the Cloud Build SA lacks — a
-# manifest PUT moves tags with ordinary push permissions (the polite-ai
-# beta-0.9.56 promote incident). Partial skips are fine: every image is
-# gated independently. No `images:` provenance list: Cloud Build fails the
-# build when a listed image wasn't produced locally, which is exactly the
-# skip path.
+# Promote existing images by manifest copy: moving tags with gcloud needs delete permission. See PR #175.
+# Omit images: provenance because promoted images are not produced locally.
 #
 # _ONLY_TRANSPORTS (set on the trigger; empty / unset = everything):
 # comma-separated allow-list — no spaces — of the SIP transports in this

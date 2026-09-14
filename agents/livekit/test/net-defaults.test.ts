@@ -8,13 +8,8 @@ import {
   outboundNetworkDefaults,
 } from "../lib/net-defaults.js";
 
-// Node ≥20 walks every resolved address with a 250ms per-address connect budget and
-// throws AggregateError [ETIMEDOUT] when the list is exhausted — surfacing as
-// "TypeError: fetch failed". The runner's API host advertises an AAAA the VM cannot
-// route (ENETUNREACH in ~1ms), so IPv4 was left a 250ms budget; a SYN slower than that
-// failed the request before it reached the server. Observed on staging on both
-// /api/agent-db/call (aborting a warm transfer) and /api/agent-db/transaction-log.
-// run: npx tsx --test test/net-defaults.test.ts
+// Keep family autoselection enabled with IPv4-first ordering and a longer connection budget. See PR #189.
+// Run: npx tsx --test test/net-defaults.test.ts
 
 test("importing the module applies the attempt timeout as a side effect", () => {
   // Load order matters: realtime.ts imports this first so the default is in force

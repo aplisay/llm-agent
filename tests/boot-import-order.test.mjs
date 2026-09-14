@@ -5,21 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// The boot contract: NOTHING index.mjs imports statically may need the
-// environment, because `dotenv.config()` runs in index.mjs's BODY and every
-// static import is evaluated before that. In the containers `dotenv.config()`
-// is what decodes SECRETENV_BUNDLE, so until it runs the environment really is
-// empty — an import that reads process.env at module scope sees nothing.
-//
-// lib/database.js is the one that bites: it builds its Sequelize instance and
-// pg-listen connection string from POSTGRES_* at module evaluation, so
-// importing it early exits the process with `TypeError: Invalid URL` before it
-// can listen. That is not hypothetical — it shipped, and llm-agent failed to
-// start from 61645b7 until it was fixed. lib/ws-handler.js documents the same
-// trap and imports text-chat lazily to avoid it.
-//
-// Every module that needs the environment must therefore be imported
-// DYNAMICALLY, after dotenv.config().
+// Import environment-dependent modules only after dotenv.config(); static imports run before index.mjs can decrypt
+// its bundle. See PR #297.
 
 /** The specifiers index.mjs imports statically, in source order. */
 function staticImportsOfIndex() {

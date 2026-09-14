@@ -1,24 +1,5 @@
-"""Native tool-result delivery on the Ultravox realtime path
-(:mod:`pipecat_aplisay.voice_session` + :mod:`pipecat_aplisay.ultravox_compat`).
-
-Evolved over two 2026-07-24 staging incidents:
-
-1. Data tools registered SYNCHRONOUSLY were cancelled ~30ms in by the caller's
-   trailing-speech interruption, and their results only shipped on the next
-   context push — the call froze until the next tool call.
-2. Registering ``cancel_on_interruption=False`` fixed the cancel but put the
-   service on Pipecat's async-tool path, which unfreezes with a PLACEHOLDER and
-   delivers the real result as user-side TEXT that Ultravox ignores — so the
-   model looped re-calling the tool (booking_get_slots ×4).
-
-The fix keeps ``cancel_on_interruption=False`` for its no-cancel property only,
-SUPPRESSES the placeholder, and ships the true result as a native
-``client_tool_result`` for the same invocation id. These tests lock:
-  * registration mode per tool-type (data async, builtins/off-path sync),
-  * the subclass suppresses the placeholder but still runs the tool,
-  * deliver_native_tool_result sends a native result + is idempotent,
-  * the _runner helper forwards to it only when the service supports it.
-"""
+"""Ultravox data tools must survive interruption and deliver one native result, without an async placeholder. See PR
+#169."""
 
 from __future__ import annotations
 
