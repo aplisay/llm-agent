@@ -157,26 +157,36 @@ def test_deepgram_stt_ignores_the_non_specific_sentinels(api_keys):
 
 
 # --- Google STT --------------------------------------------------------------
+#
+# ``default_event_loop`` (tests/conftest.py) is load-bearing: GoogleSTTService
+# builds a grpc.aio channel, which on Python 3.12 needs a default event loop
+# that an earlier asyncio.run() anywhere in the suite has taken away.
 
 
-def test_google_stt_uses_the_declared_recognition_language(api_keys, google_credentials):
+def test_google_stt_uses_the_declared_recognition_language(
+    api_keys, google_credentials, default_event_loop
+):
     stt = build_stt_service(_agent(stt={"vendor": "google", "language": "en-GB"}))
     assert stt._get_language_codes() == ["en-GB"]
 
 
-def test_google_stt_maps_through_its_own_code_table(api_keys, google_credentials):
+def test_google_stt_maps_through_its_own_code_table(
+    api_keys, google_credentials, default_event_loop
+):
     # Google wants cmn-Hans-CN, not zh-CN — the vendor map has to be applied.
     stt = build_stt_service(_agent(stt={"vendor": "google", "language": "zh-CN"}))
     assert stt._get_language_codes() == ["cmn-Hans-CN"]
 
 
-def test_google_stt_keeps_its_default_when_unset(api_keys, google_credentials):
+def test_google_stt_keeps_its_default_when_unset(
+    api_keys, google_credentials, default_event_loop
+):
     stt = build_stt_service(_agent(stt={"vendor": "google"}))
     assert stt._get_language_codes() == ["en-US"]
 
 
 def test_google_stt_falls_back_to_default_for_an_unresolvable_tag(
-    api_keys, google_credentials
+    api_keys, google_credentials, default_event_loop
 ):
     # Google can only be configured with a Language enum, so a raw string that
     # doesn't resolve has to leave the default in place rather than crash.
