@@ -534,7 +534,7 @@ def build_stt_service(agent: dict) -> Any:
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
 
-def build_tts_service(agent: dict) -> Any:
+def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
     (defaulting to Cartesia).
 
@@ -571,6 +571,12 @@ def build_tts_service(agent: dict) -> Any:
     if tts_vendor == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 
+        service_class = ElevenLabsTTSService
+        if transcript_tts:
+            from .elevenlabs_transcript_tts import ElevenLabsTranscriptTTSService
+
+            service_class = ElevenLabsTranscriptTTSService
+
         # ElevenLabs only honours a language code on its multilingual models;
         # Pipecat's default here (eleven_flash_v2_5) is one of them, so the
         # setting takes effect. If the model is ever pinned to a non-multilingual
@@ -580,7 +586,7 @@ def build_tts_service(agent: dict) -> Any:
         # that arg is deprecated in Pipecat 1.x, and since we now pass settings
         # for the language anyway, using both would mean relying on the
         # settings-wins precedence rule between them.
-        return ElevenLabsTTSService(
+        return service_class(
             api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
@@ -1579,7 +1585,10 @@ async def _build_realtime(
     # model so its LLMTextFrames are spoken. The stages downstream (tone,
     # relay, rate guard, output audit tap, transport) already handle TTS audio
     # at the transport's rate, exactly as in pipeline mode.
-    external_tts = [build_tts_service(agent)] if external_tts_enabled(agent, model_id) else []
+    external_tts = (
+        [build_tts_service(agent, transcript_tts=transcript_tts)]
+        if external_tts_enabled(agent, model_id) else []
+    )
 
     if gpt_live_model:
         # No prompt developer message: the service's adapter would send it as
@@ -1661,6 +1670,10 @@ async def _build_realtime(
         *output,
         transport.output(),
     ]
+    if transcript_tts and requested_tts_vendor == "elevenlabs":
+        from .transcript_tts_latency import TranscriptTtsPlaybackProbe
+
+        processors.append(TranscriptTtsPlaybackProbe())
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
     # ``transport.output()`` so it sees both the user's input frames and the
     # bot's rendered TTS output frames.

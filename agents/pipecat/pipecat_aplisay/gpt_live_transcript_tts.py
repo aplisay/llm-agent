@@ -9,8 +9,10 @@ from typing import Any
 
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InterruptionFrame,
+    LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
@@ -20,6 +22,7 @@ from pipecat.processors.frame_processor import FrameDirection
 
 from .gpt_live_service import AplisayOpenAILiveLLMService
 from .output_rate_guard import _RateAgileResampler
+from .transcript_tts_latency import TRACE_KEY, TranscriptTtsTrace
 
 
 class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
@@ -44,6 +47,10 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
         self._awaiting_user_transcript = False
         self._discard_through_ms = 0
         self._greeting_text_done = False
+        self._bot_speaking = False
+        self._speech_interrupts = False
+        self._preplay_speech_secs = 0.0
+        self._tts_trace = None
 
     async def cleanup(self) -> None:
         try:
@@ -57,6 +64,10 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
         self._awaiting_user_transcript = False
         self._discard_through_ms = 0
         self._greeting_text_done = False
+        self._bot_speaking = False
+        self._speech_interrupts = False
+        self._preplay_speech_secs = 0.0
+        self._tts_trace = None
         self._transcript_vad.set_sample_rate(16000)
         self._vad_resampler = _RateAgileResampler()
         await super()._handle_evt_session_started(evt)
@@ -66,6 +77,9 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
         pass
 
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, LLMFullResponseStartFrame):
+            self._tts_trace = TranscriptTtsTrace()
+            frame.metadata[TRACE_KEY] = self._tts_trace
         if direction == FrameDirection.DOWNSTREAM and isinstance(
             frame, (TTSStartedFrame, TTSStoppedFrame, TTSTextFrame)
         ):
@@ -75,9 +89,14 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
         await super().push_frame(frame, direction)
 
     async def _push_assistant_text(self, text: str) -> None:
-        if text and not self._vad_speaking and not self._discard_assistant_turn:
+        if (
+            text and not (self._vad_speaking and self._speech_interrupts)
+            and not self._discard_assistant_turn
+        ):
             # Keep exact delta spacing. TTS consumes this frame and appends its
             # own spoken text to context, so no TTSTextFrame is emitted here.
+            if self._tts_trace:
+                self._tts_trace.mark("first_transcript")
             await self.push_frame(LLMTextFrame(text))
 
     async def _append_turn(self, role, delta, accumulated, evt) -> None:
@@ -87,7 +106,28 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
             # A delayed fragment from before the interruption must not restart
             # synthesis. The provider/delegation transcript is still retained.
             return
+        if (
+            role == "assistant" and self._discard_assistant_turn and not self._vad_speaking
+            and self._discard_through_ms and evt.start_ms is not None
+            and evt.start_ms >= self._discard_through_ms
+        ):
+            # Live may begin its new answer without the 800 ms caption gap
+            # needed to close the previous inferred turn. Don't suppress it.
+            await self._end_turn("assistant")
+            self._assistant_turn.open = True
+            self._assistant_turn.text = delta
+            accumulated = delta
+            await self._open_turn("assistant")
         await super()._append_turn(role, delta, accumulated, evt)
+
+    async def _interrupt_external_speech(self):
+        self._speech_interrupts = True
+        self._awaiting_user_transcript = True
+        self._discard_assistant_turn = self._assistant_turn.open
+        if self._tts_trace:
+            self._tts_trace.mark("interrupted")
+        # Skip LLMService.process_frame: delegated tools must keep running.
+        await self.push_frame(InterruptionFrame())
 
     async def _send_user_audio(self, frame) -> None:
         if not self.greeting_guard_active:
@@ -95,12 +135,19 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
             state = await self._transcript_vad.analyze_audio(audio)
             if state == VADState.SPEAKING and not self._vad_speaking:
                 self._vad_speaking = True
-                self._awaiting_user_transcript = True
-                self._discard_assistant_turn = self._assistant_turn.open
-                # Skip LLMService.process_frame: that would cancel delegated
-                # tools. Clear the external TTS and output buffers only.
-                await self.push_frame(InterruptionFrame())
-            elif state == VADState.QUIET:
+                self._preplay_speech_secs = 0.0
+                self._speech_interrupts = False
+                if self._bot_speaking:
+                    await self._interrupt_external_speech()
+            if state == VADState.SPEAKING and not self._speech_interrupts:
+                # Count audio duration, not network packet arrival intervals.
+                # Before playback, tolerate brief acknowledgments. Sustained
+                # speech (600 ms after VAD confirms speech) cancels the queue.
+                # Keep the grace period if playback starts during the ack.
+                self._preplay_speech_secs += len(audio) / (16000 * 2)
+                if self._preplay_speech_secs >= 0.6:
+                    await self._interrupt_external_speech()
+            if state == VADState.QUIET:
                 self._vad_speaking = False
         await super()._send_user_audio(frame)
 
@@ -120,6 +167,10 @@ class GptLiveTranscriptTtsService(AplisayOpenAILiveLLMService):
                 self._greeting_text_done = True
 
     async def process_frame(self, frame, direction) -> None:
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
         if isinstance(frame, BotStoppedSpeakingFrame) and self._greeting_text_done:
             self._greeting_guard_until = None
         await super().process_frame(frame, direction)

@@ -309,19 +309,41 @@ unchanged because it has no supported text-only modality; choose external voices
 from the corresponding pipeline TTS catalogue.
 
 The worker discards native audio and feeds `session.output_transcript.delta`
-fragments, preserving their spacing, to the existing TTS stage. Native TTS text
-and start/stop frames are suppressed so synthesized speech is not duplicated.
-Recordings, output STT, and the call's bot transcript use the external TTS output;
-the provider and delegation history still contain the model's own transcript.
+fragments, preserving their spacing, to the external TTS stage. Native TTS text
+and start/stop frames are suppressed so synthesized speech is not duplicated in
+the audit transcript.
 
-Local Silero VAD clears external synthesis and queued playback when the caller
-speaks. It does not cancel delegated tools. Fragments from the interrupted
-assistant turn are discarded until its transcript gap ends, and text is withheld
-while the caller speaks. Timestamped fragments ending before the observed user
-interruption interval are also discarded. This conservative policy can drop an
-acknowledgment or the start of a new answer during overlapping speech. The
-existing greeting guard feeds silence to OpenAI until external playback finishes,
-with its existing timeout as a fallback if synthesis fails.
+For ElevenLabs, the experimental path uses phrase streaming with `auto_mode=true`
+and the existing Flash v2.5 model. The first chunk is released at punctuation,
+four complete words, or a 250 ms deadline when complete words are available.
+Following chunks use punctuation, twelve words, or a 600 ms deadline. Split
+words are retained until their boundary arrives; turn completion flushes the
+remainder. These are buffering budgets, not promised end-to-end latency. The
+same ElevenLabs context is reused within a response. Normal pipeline TTS and
+Realtime text-output sessions retain their existing sentence aggregation.
+
+Local VAD interrupts immediately when caller speech begins during external
+playback. Before playback, it allows 600 ms of speech after VAD confirmation
+(the VAD itself also has a speech-onset threshold), so a brief acknowledgment
+does not automatically clear a queued reply. Sustained speech still cancels
+queued synthesis and playback. This is a duration heuristic, not a semantic
+acknowledgment classifier; speech can begin during that grace period. The
+microphone remains connected to GPT-Live, which can independently change its
+answer. Late pre-interruption captions are discarded, and a timestamped new
+answer can resume even without an intervening transcript-gap boundary.
+Delegated tool calls continue through local interruptions. The existing greeting
+guard feeds silence to OpenAI until external playback finishes, with its existing
+timeout as a fallback if synthesis fails.
+
+ElevenLabs trials log `transcript_tts_latency` events with a per-response `trace`,
+`stage`, monotonic timestamp, and milliseconds since `first_transcript`:
+`first_tts_submission`, `first_audio`, and `playback_start`. Subtract consecutive
+stage times to separate caption buffering, synthesis, and local output buffering.
+Playback is measured after the transport successfully writes its first TTS audio
+chunk; it excludes downstream network/jitter buffering and is not proof the
+remote caller heard it. Interrupted responses also log `interrupted`; responses
+that fail or are cancelled may lack later stages. These logs contain no transcript
+text. Stage correlation uses TTS context IDs so queued responses remain separate.
 
 This is a prototype: OpenAI still generates audio and charges for the Live session;
 external TTS usage is additional. Transcript delivery has no guaranteed lead over
