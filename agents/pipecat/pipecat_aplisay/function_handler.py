@@ -26,6 +26,7 @@ from loguru import logger
 
 from . import http_client
 from .current_datetime import current_datetime_string, is_datetime_metadata_key
+from .tool_result import MAX_RESULT_BYTES, clip_any_result
 
 
 def _get_by_path(obj: Any, path: str) -> Any:
@@ -324,6 +325,26 @@ async def function_handler(
         visible_result = result
         if options.get("allowRedactedFunctionResults") and fn_def.get("redact"):
             visible_result = "OK"
+
+        # Bound what the model is shown. This belongs beside redaction, and
+        # after the metadata write, for the same reason redaction does: the
+        # full value stays available to later tools through
+        # ``metadata.toolsCalls``, so chaining is unaffected by the cap. A
+        # customer endpoint returning a large page would otherwise spend a
+        # model's whole tool-input budget in one call, and on a responses
+        # delegation that budget is per session, so exhausting it strands the
+        # delegation rather than failing the turn (see tool_result.py).
+        visible_result, dropped = clip_any_result(
+            visible_result, options.get("maxResultBytes", MAX_RESULT_BYTES), tool=name
+        )
+        if dropped:
+            # WARNING: a truncated result changes the answer the caller hears,
+            # and it points at a function or endpoint to fix rather than at a
+            # transport fault.
+            logger.bind(name=name, dropped_bytes=dropped).warning(
+                f"function {name} returned more than the result cap; dropped {dropped} "
+                "bytes and told the model to narrow the request"
+            )
 
         function_results.append(
             {"name": name, "result": visible_result, "error": error}

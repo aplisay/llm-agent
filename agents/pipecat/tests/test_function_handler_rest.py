@@ -110,7 +110,14 @@ def _rest_fn(**over) -> dict:
     return fn
 
 
-def _run(fn: dict, keys: list[dict], llm_input: Optional[dict] = None, messages: Optional[list] = None) -> dict:
+def _run(
+    fn: dict,
+    keys: list[dict],
+    llm_input: Optional[dict] = None,
+    messages: Optional[list] = None,
+    options: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+) -> dict:
     async def handler(message: dict) -> None:
         if messages is not None:
             messages.append(message)
@@ -121,9 +128,9 @@ def _run(fn: dict, keys: list[dict], llm_input: Optional[dict] = None, messages:
             [fn],
             keys,
             handler,
+            metadata if metadata is not None else {},
             {},
-            {},
-            {},
+            options or {},
         )
 
     return asyncio.run(go())
@@ -231,3 +238,76 @@ class TestUnsuppliedParamsOmitted:
         }
         _run(fn, [{"name": "POLITE_BOOKING", "in": "bearer", "value": "k"}], {"days": 3})
         assert _FakeClient.last["json"] == {"days": 3, "policy": "bpol_x"}
+
+
+class TestResultCap:
+    """A REST function calls a customer endpoint, which can return a whole
+    page. Left unbounded one call spends a model's tool-input budget, and on a
+    responses delegation that budget is per session — exhausting it strands
+    the delegation and leaves a live call silent (tool_result.py)."""
+
+    def test_a_small_result_is_untouched_and_keeps_its_type(self) -> None:
+        _FakeClient.response = _FakeResponse(body={"slots": ["09:30", "11:00"]})
+        out = _run(_rest_fn(), [])
+        result = out["function_results"][0]["result"]
+        assert result == {"slots": ["09:30", "11:00"]}, "the ordinary path is unchanged"
+        assert isinstance(result, dict)
+
+    def test_an_oversized_json_result_is_rendered_and_clipped(self) -> None:
+        # Half a dict is not a dict, so there is no way to cut structured data
+        # and leave it structured; it becomes clipped JSON text plus a marker.
+        _FakeClient.response = _FakeResponse(body={"rows": ["x" * 200] * 200})
+        out = _run(_rest_fn(), [], options={"maxResultBytes": 2000})
+        result = out["function_results"][0]["result"]
+        assert isinstance(result, str)
+        assert len(result.encode("utf-8")) < 2600
+        assert "truncated here" in result
+        assert "booking_get_slots" in result
+
+    def test_chaining_still_sees_the_whole_result(self) -> None:
+        # The cap is LLM-visibility only. A later tool reading
+        # metadata.toolsCalls must get the real value, exactly as it does
+        # through `redact`. Getting this wrong would silently break chaining.
+        big = {"rows": ["y" * 200] * 200}
+        _FakeClient.response = _FakeResponse(body=big)
+        metadata: dict = {}
+        out = _run(_rest_fn(), [], options={"maxResultBytes": 2000}, metadata=metadata)
+        assert isinstance(out["function_results"][0]["result"], str), "visible is clipped"
+        assert metadata["toolsCalls"]["booking_get_slots"]["result"] == big, "chaining is not"
+
+    def test_a_large_text_result_is_clipped(self) -> None:
+        _FakeClient.response = _FakeResponse(body="z" * 40000, json_body=False)
+        out = _run(_rest_fn(), [], options={"maxResultBytes": 2000})
+        result = out["function_results"][0]["result"]
+        assert len(result.encode("utf-8")) < 2600
+        assert "truncated here" in result
+
+    def test_a_large_error_body_is_clipped_too(self) -> None:
+        # An error body becomes the tool result so the model can read the
+        # server's message; a 40 KB stack trace is still 40 KB.
+        _FakeClient.response = _FakeResponse(status_code=500, body={"trace": "t" * 40000})
+        out = _run(_rest_fn(), [], options={"maxResultBytes": 2000})
+        first = out["function_results"][0]
+        assert first["error"]
+        assert len(json.dumps(first["result"]).encode("utf-8")) < 2700
+
+    def test_redaction_still_wins_and_is_not_clipped(self) -> None:
+        _FakeClient.response = _FakeResponse(body={"pan": "4" * 40000})
+        out = _run(
+            _rest_fn(redact=True), [],
+            options={"allowRedactedFunctionResults": True, "maxResultBytes": 2000},
+        )
+        assert out["function_results"][0]["result"] == "OK"
+
+    def test_the_default_cap_applies_when_options_name_none(self) -> None:
+        _FakeClient.response = _FakeResponse(body={"rows": ["x" * 200] * 200})
+        out = _run(_rest_fn(), [])
+        result = out["function_results"][0]["result"]
+        assert isinstance(result, str), "still capped without an explicit option"
+        assert len(result.encode("utf-8")) < fh.MAX_RESULT_BYTES + 600
+
+    def test_a_cap_of_zero_disables_capping(self) -> None:
+        big = {"rows": ["x" * 200] * 200}
+        _FakeClient.response = _FakeResponse(body=big)
+        out = _run(_rest_fn(), [], options={"maxResultBytes": 0})
+        assert out["function_results"][0]["result"] == big

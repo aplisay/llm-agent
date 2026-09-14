@@ -566,12 +566,27 @@ def test_compose_gpt_live_merges_delegate_tools_and_settings(monkeypatch):
 
     monkeypatch.setattr(call_session, "connect_mcp_servers", no_mcp)
 
+    # The delegate's own REST/builtin functions are behind the delegation too,
+    # so they take the same tighter cap. Separate hop from the MCP one above.
+    rest_caps: list[int] = []
+    real_build = call_session.build_agent_tools
+
+    def spy_build(**kwargs):
+        rest_caps.append(kwargs.get("max_result_bytes"))
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(call_session, "build_agent_tools", spy_build)
+
     call = api_client.CallRecord(id="c", userId="u", organisationId="org-1", instanceId="i", agentId="a", persisted=False)
     agent = _voice_agent(options={"tts": {"language": "en-GB"}, "vendorSpecific": {"openai": {"live": {"store": False}}}})
     session = CallSession(session_id="s", agent=agent, instance={}, call=call, sip_gateway=None, gateway_session=None)  # type: ignore[arg-type]
     voice_tools = session._build_tools_for(agent)
     composed, merged = asyncio.run(session._compose_gpt_live(agent, "You are Sam.", voice_tools, {}))
     assert caps == [mcp_tools.MCP_MAX_RESULT_BYTES_DELEGATED]
+    # Only the delegate's tools are built inside _compose_gpt_live; the voice
+    # agent's were built by the caller (prepare_run picks the same cap there,
+    # since in responses mode the merged set is one surface to the backend).
+    assert rest_caps[-1] == mcp_tools.MCP_MAX_RESULT_BYTES_DELEGATED
     assert composed.delegate.synthetic is False
     assert composed.delegate.mode == "responses"
     assert [t["schema"]["name"] for t in merged] == ["get_slots", "hangup"]
