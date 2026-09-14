@@ -1831,7 +1831,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-ai"
-version = "1.9.0"
+version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -1859,9 +1859,9 @@ dependencies = [
     { name = "wait-for2", marker = "python_full_version < '3.12'" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/66/07eeb9828559717736ac7a3398c2b419646d8d16ca1e8ab1cd230c488558/pipecat_ai-1.9.0.tar.gz", hash = "sha256:118050ebebc69368bf3d3ca6cea277d999afd4dcc31d59eca400433848d6eabd", size = 12179777, upload-time = "2026-09-11T03:05:15.85Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/ec/eb5988b676b9e2517700fa4800168e73d81b04fd60bb6c2f121a4d0c1fd1/pipecat_ai-1.10.0.tar.gz", hash = "sha256:e8786effe38fea32991e70510e285115d30dc5648160d889f2d20f8e6790ef39", size = 12191372, upload-time = "2026-09-12T02:44:18.879Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/56/bbe4a0f6388ba826430c317ed220e1a3d90e4b60dee3b36cce341f146c00/pipecat_ai-1.9.0-py3-none-any.whl", hash = "sha256:5b3d952c50b70c1ace3aace87493009a4460ae3cfc6225af5807953008884ac5", size = 11668155, upload-time = "2026-09-11T03:05:13.27Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/91/01895030d248df09430a625407de70cc74642fd9fa825f3574d4b1cc080a/pipecat_ai-1.10.0-py3-none-any.whl", hash = "sha256:1086925372d17cbb475ca061b50479d6053d5e9d93acb2e7b3c8e6d18dc51404", size = 11676632, upload-time = "2026-09-12T02:44:16.214Z" },
 ]
 
 [package.optional-dependencies]
@@ -1897,6 +1897,7 @@ dependencies = [
     { name = "google-cloud-storage" },
     { name = "httpx" },
     { name = "loguru" },
+    { name = "mcp", extra = ["cli"] },
     { name = "pipecat-ai", extra = ["anthropic", "daily", "deepgram", "google", "mcp", "webrtc"] },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -1910,7 +1911,8 @@ requires-dist = [
     { name = "google-cloud-storage", specifier = ">=2.14" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "loguru", specifier = ">=0.7" },
-    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "mcp", "openai", "silero", "ultravox", "webrtc"], specifier = "==1.9.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.24,<2" },
+    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "mcp", "openai", "silero", "ultravox", "webrtc"], specifier = "==1.10.0" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
