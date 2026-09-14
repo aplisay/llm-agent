@@ -16,6 +16,10 @@ Why a subclass rather than event handlers:
   upstream builds privately; the payload is merged on the way out.
 - ``session.closed`` with ``expired``, ``content`` or ``connection_lost``
   must end the call cleanly; upstream only unblocks its own graceful close.
+- a responses delegation the backend refuses has to be revived, or the caller
+  is left on a live but silent line. Upstream reports the refusal and stops
+  there, which is correct for a library and fatal for a phone call; see the
+  delegation recovery section below.
 
 The pure composition (delegate resolution, prompts, tool merge) is in
 :mod:`pipecat_aplisay.gpt_live`.
@@ -24,6 +28,7 @@ The pure composition (delegate resolution, prompts, tool merge) is in
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
@@ -58,7 +63,48 @@ DELEGATION_FAILED_COMMENTARY = "Apologise briefly: you could not complete that r
 #: closes its opening turn (it should within a few seconds).
 GREETING_GUARD_MAX_SECS = 20.0
 
+#: What the voice model says when the delegation could not be revived. Distinct
+#: from DELEGATION_FAILED_COMMENTARY: that one covers one failed request, this
+#: admits the lookup itself is unavailable, so the model stops promising to go
+#: and check.
+DELEGATION_STRANDED_COMMENTARY = (
+    "Tell the caller you could not look that up just now, apologise briefly, and offer to help "
+    "with what you already know or to take a message. Do not say you will check again."
+)
+
+#: How long a faulted delegation has to show any sign of life before the voice
+#: model is told to speak.
+#:
+#: What this guards against is silence, not error. When the backend strands a
+#: delegation the live session stays healthy and the call stays up, so the
+#: caller hears nothing at all: on the 2026-09-14 beta call that ran to 82
+#: seconds across three further attempts to talk to the agent before the caller
+#: gave up. A few seconds is the most a person reads as thinking.
+DEAD_AIR_GRACE_SECS = 4.0
+
+#: Function-call-output events remembered for error correlation. The backend
+#: echoes the client event id on a rejection, which is how a refused item is
+#: traced back to its call; only the in-flight handful can ever be referenced.
+_OUTPUT_EVENT_MEMORY = 64
+
 ClientDelegate = Callable[[list[dict], bool], Awaitable[str]]
+
+
+def _function_output_call_id(event: events.ClientEvent) -> Optional[str]:
+    """The call a ``response.item.create`` answers, or None for other events.
+
+    The item is typed when upstream builds it and a plain dict when it comes
+    from elsewhere, so both shapes are read.
+    """
+    if not isinstance(event, events.ResponseItemCreateEvent):
+        return None
+    item = event.item
+    if isinstance(item, events.FunctionCallOutputItem):
+        return item.call_id
+    if isinstance(item, dict) and item.get("type") == "function_call_output":
+        call_id = item.get("call_id")
+        return call_id if isinstance(call_id, str) else None
+    return None
 
 
 class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
@@ -89,6 +135,13 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
         # Typed input that arrived while no delegation was running (client
         # mode): prepended to the next delegation's transcript.
         self._pending_typed_inputs: list[str] = []
+        # Delegation recovery state (responses mode). `_output_event_calls`
+        # maps a sent client event id to the call it answered, so a rejection
+        # naming that event id identifies the call whose result was dropped.
+        self._output_event_calls: OrderedDict[str, str] = OrderedDict()
+        self._stubbed_calls: set[str] = set()
+        self._dead_air_guard: Optional[asyncio.Task] = None
+        self._delegation_stranded = False
         #: The ``{vendor, model}`` backend tokens are metered against (the
         #: service labels its own metrics ``gpt-live-1``). Set by the factory.
         self.aplisay_backend: Optional[dict[str, Optional[str]]] = None
@@ -101,7 +154,18 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
 
     async def send_client_event(self, event: events.ClientEvent) -> None:
         """Upstream's send, with ``vendorSpecific.openai.live`` merged into
-        ``session.start`` so an explicit value there wins."""
+        ``session.start`` so an explicit value there wins.
+
+        Also notes which call each function-call output answered. Upstream
+        builds and sends those events itself, and the only handle on a
+        rejection is the client event id the backend echoes back, so the
+        mapping has to be captured here on the way out.
+        """
+        call_id = _function_output_call_id(event)
+        if call_id is not None:
+            self._output_event_calls[event.event_id] = call_id
+            while len(self._output_event_calls) > _OUTPUT_EVENT_MEMORY:
+                self._output_event_calls.popitem(last=False)
         if isinstance(event, events.SessionStartEvent) and self._live_overrides:
             payload = event.to_payload()
             payload["session"] = deep_merge(payload.get("session") or {}, self._live_overrides)
@@ -204,7 +268,160 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
             target=delegation.target,
             response_id=delegation.response_id,
         ).info(f"delegation {delegation.id} created (target={delegation.target})")
+        # A fresh delegation is a fresh chance: drop the previous one's
+        # recovery state so a later fault is stubbed and announced on its own
+        # merits. `_delegation_stranded` is deliberately NOT cleared — the
+        # input budget is per session, so once it is exhausted every
+        # delegation after it fails the same way and the caller should not be
+        # apologised to once per attempt.
+        self._stubbed_calls.clear()
+        self._cancel_dead_air_guard()
         await super()._handle_evt_delegation_created(evt)
+
+    # ---- delegation recovery ---------------------------------------------
+    #
+    # The failure being recovered from (2026-09-14, beta): the backend refused
+    # three oversized function-call outputs with `response_input_buffer_full`,
+    # then refused to continue the response because those three calls were
+    # still unanswered. Upstream had already popped them from its own pending
+    # set and sent `response.create`, so client and backend disagreed about
+    # what was owed and nothing reconciled them. The live session stayed
+    # healthy, so the call stayed up and simply went quiet: 82 seconds, three
+    # further attempts by the caller, then they hung up.
+    #
+    # Recovery is in two parts, because they fail independently:
+    #
+    #   HEAL   answer each dropped call with a few dozen bytes saying the
+    #          result was too large, then continue the response. The backend
+    #          only needs SOME output per call, and a stub fits where the real
+    #          result did not, so the model gets to answer from what it does
+    #          have instead of the turn being lost.
+    #   SPEAK  if nothing from the delegation arrives within
+    #          DEAD_AIR_GRACE_SECS, tell the voice model to say so. This is
+    #          the part that must not fail: whether or not healing works, the
+    #          caller gets words rather than silence.
+
+    async def _handle_evt_error(self, evt: events.ErrorEvent) -> None:
+        await super()._handle_evt_error(evt)
+        if not self.responses_mode:
+            return
+        code = (evt.error.code or "").strip()
+        if code == gpt_live.ERROR_INPUT_BUFFER_FULL:
+            await self._on_output_rejected(evt)
+        elif code == gpt_live.ERROR_OUTPUTS_REQUIRED:
+            await self._on_outputs_required(evt)
+
+    async def _on_output_rejected(self, evt: events.ErrorEvent) -> None:
+        """One item did not fit the delegation's input budget.
+
+        When the rejected item was a function-call output, the call it
+        answered is now unanswerable by any real result, so substitute the
+        stub immediately rather than waiting for the backend to complain.
+        """
+        call_id = self._output_event_calls.get(evt.error.client_event_id or "")
+        if call_id is None:
+            # Something other than a tool result was refused (or the backend
+            # did not correlate it). Nothing to substitute, but the delegation
+            # is in trouble, so make sure the caller hears about it.
+            self._arm_dead_air_guard("input buffer full")
+            return
+        if call_id in self._stubbed_calls:
+            # The stub itself was refused: the budget is exhausted beyond what
+            # a few dozen bytes can fix. Stop trying and let the guard speak.
+            logger.bind(event="delegation_recovery", call_id=call_id, ok=False).warning(
+                "delegation recovery: even the placeholder output was refused"
+            )
+            self._arm_dead_air_guard("placeholder refused")
+            return
+        await self._send_stub_output(call_id, reason="output refused as too large")
+        self._arm_dead_air_guard("output refused")
+
+    async def _on_outputs_required(self, evt: events.ErrorEvent) -> None:
+        """The backend will not continue while calls are unanswered.
+
+        The message names them; that prose list is the only machine-readable
+        part of the error. Stub whatever is still outstanding and continue.
+        """
+        call_ids = gpt_live.missing_call_ids(evt.error.message)
+        if not call_ids:
+            self._arm_dead_air_guard("outputs required, none named")
+            return
+        outstanding = [c for c in call_ids if c not in self._stubbed_calls]
+        for call_id in outstanding:
+            await self._send_stub_output(call_id, reason="backend reported it unanswered")
+        logger.bind(
+            event="delegation_recovery",
+            calls=call_ids,
+            stubbed=outstanding,
+            ok=True,
+        ).info(
+            f"delegation recovery: answered {len(outstanding)} of {len(call_ids)} stranded "
+            "call(s) with a placeholder and resumed the response"
+        )
+        # Upstream already sent its own `response.create`, which is what the
+        # backend refused. Now that nothing is owed, ask again.
+        await self.send_client_event(events.ResponseCreateEvent())
+        self._arm_dead_air_guard("response resumed")
+
+    async def _send_stub_output(self, call_id: str, *, reason: str) -> None:
+        self._stubbed_calls.add(call_id)
+        logger.bind(event="delegation_recovery", call_id=call_id, reason=reason).warning(
+            f"delegation recovery: substituting a placeholder result for {call_id} ({reason})"
+        )
+        await self.send_client_event(
+            events.ResponseItemCreateEvent(
+                item=events.FunctionCallOutputItem(
+                    call_id=call_id, output=gpt_live.dropped_output_stub(call_id),
+                )
+            )
+        )
+
+    async def _handle_evt_response(self, evt: events.ResponseEventEnvelope) -> None:
+        # Any delegated response event means the delegation is producing
+        # again, so the caller is about to hear something and the guard is no
+        # longer needed. This is the single dispatch point upstream routes
+        # every `response.*` lifecycle event through.
+        self._cancel_dead_air_guard()
+        await super()._handle_evt_response(evt)
+
+    def _arm_dead_air_guard(self, why: str) -> None:
+        """Promise the caller words within DEAD_AIR_GRACE_SECS.
+
+        Prefers the managed task so cancellation and shutdown behave like the
+        rest of the service, but falls back to a plain task: this runs from an
+        error handler, and an error handler that raises because the task
+        manager is not up would replace a recoverable fault with a broken
+        pipeline. The reference is held on self either way, so the task cannot
+        be collected mid-wait.
+        """
+        if self._delegation_stranded:
+            return  # already apologised; a second apology is worse than none
+        self._cancel_dead_air_guard()
+        coro = self._dead_air_watch(why)
+        try:
+            self._dead_air_guard = self.create_task(coro, "delegation:dead-air")
+        except Exception:  # noqa: BLE001
+            self._dead_air_guard = asyncio.get_running_loop().create_task(coro)
+
+    def _cancel_dead_air_guard(self) -> None:
+        guard, self._dead_air_guard = self._dead_air_guard, None
+        if guard is not None and not guard.done():
+            guard.cancel()
+
+    async def _dead_air_watch(self, why: str) -> None:
+        try:
+            await asyncio.sleep(DEAD_AIR_GRACE_SECS)
+        except asyncio.CancelledError:
+            return
+        self._delegation_stranded = True
+        logger.bind(event="delegation_recovery", reason=why, ok=False).error(
+            f"delegation stranded ({why}): nothing from the backend in "
+            f"{DEAD_AIR_GRACE_SECS:.0f}s — telling the voice model to speak"
+        )
+        try:
+            await self.append_commentary(DELEGATION_STRANDED_COMMENTARY)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"delegation recovery: could not prompt the voice model: {e}")
 
     async def _handle_evt_session_closed(self, evt: events.SessionClosedEvent) -> None:
         reason = evt.reason or ""

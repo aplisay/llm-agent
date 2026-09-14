@@ -16,7 +16,11 @@ These tests lock, without a network or a transport:
   the client-delegation round trip (answer as commentary, failure as an
   apology), and the provider-close callback;
 * the output audit tap's frame class, the full-restart rule, and the usage
-  relabel to the delegate's model.
+  relabel to the delegate's model;
+* delegation recovery: a refused tool result answered with a placeholder so
+  the response resumes, stranded calls reconciled from the backend's own
+  error, and the voice model told to speak when the delegation stays dead
+  (the 2026-09-14 beta call's 82 seconds of silence).
 """
 
 from __future__ import annotations
@@ -657,3 +661,246 @@ def test_greeting_guard_is_off_without_a_configured_greeting():
         assert llm.greeting_guard_active is False
 
     asyncio.run(run())
+
+
+# --- delegation recovery (2026-09-14 beta incident) -----------------------------
+#
+# The real sequence, replayed from the call's own InvocationLog: three
+# oversized tool results refused with `response_input_buffer_full`, then
+# `function_call_outputs_required` naming those three calls, then 82 seconds of
+# silence on a live call.
+
+
+def _error(code: str, message: str = "", *, client_event_id: str | None = None):
+    from pipecat.services.openai.live.events import ErrorDetails, ErrorEvent
+
+    return ErrorEvent(
+        type="error",
+        error=ErrorDetails(
+            type="invalid_request_error",
+            code=code,
+            message=message,
+            client_event_id=client_event_id,
+        ),
+    )
+
+
+_BUFFER_FULL_MESSAGE = (
+    "Backend response input history is limited to 128 items and 32768 UTF-8 bytes per session."
+)
+
+
+def _started(llm):
+    """A service far enough along to accept delegation traffic."""
+    llm._session_started = True
+    llm._session_started_on_connection = True
+    return llm
+
+
+def _send_output(llm, call_id: str, output: str = "x"):
+    """Send a function-call output the way upstream does, returning its event id."""
+    from pipecat.services.openai.live.events import (
+        FunctionCallOutputItem, ResponseItemCreateEvent,
+    )
+
+    event = ResponseItemCreateEvent(item=FunctionCallOutputItem(call_id=call_id, output=output))
+    asyncio.run(llm.send_client_event(event))
+    return event.event_id
+
+
+def _response_event(inner_type: str):
+    from pipecat.services.openai.live.events import ResponseEventEnvelope
+
+    return ResponseEventEnvelope(
+        type="response.event", delegation_id="dlg_1", event={"type": inner_type, "id": "resp_1"})
+
+
+def _delegation_created(delegation_id: str):
+    from pipecat.services.openai.live.events import (
+        DelegationMetadata, SessionDelegationCreatedEvent,
+    )
+
+    return SessionDelegationCreatedEvent(
+        type="session.delegation.created",
+        delegation=DelegationMetadata(id=delegation_id, target="responses"),
+    )
+
+
+def test_a_refused_tool_result_is_answered_with_a_placeholder():
+    llm, sent = _build(_session())
+    _started(llm)
+    event_id = _send_output(llm, "call_big", "y" * 40000)
+    sent.clear()
+
+    asyncio.run(llm._handle_evt_error(
+        _error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE, client_event_id=event_id)))
+
+    # The refused call is answered immediately, so the backend stops being owed
+    # an output for it, and the placeholder says why rather than looking like a
+    # tool failure.
+    [item] = [p for p in sent if p["type"] == "response.item.create"]
+    assert item["item"]["call_id"] == "call_big"
+    payload = json.loads(item["item"]["output"])
+    assert payload["error"] == "result_too_large"
+    assert "smaller part" in payload["message"]
+    # and it has to actually fit where the real result did not
+    assert len(item["item"]["output"]) < 1000
+
+
+def test_the_placeholder_is_not_retried_when_it_is_itself_refused():
+    llm, sent = _build(_session())
+    _started(llm)
+    first = _send_output(llm, "call_big", "y" * 40000)
+    asyncio.run(llm._handle_evt_error(
+        _error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE, client_event_id=first)))
+    stub_event = [p for p in sent if p["type"] == "response.item.create"][-1]
+    sent.clear()
+
+    # The budget is exhausted beyond what a stub can fix: the stub is refused
+    # too. Retrying forever would be the obvious bug here.
+    stub_id = next(k for k, v in llm._output_event_calls.items() if v == "call_big")
+    asyncio.run(llm._handle_evt_error(
+        _error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE, client_event_id=stub_id)))
+    assert [p for p in sent if p["type"] == "response.item.create"] == []
+    assert stub_event["item"]["call_id"] == "call_big"
+
+
+def test_stranded_calls_are_answered_and_the_response_resumed():
+    llm, sent = _build(_session())
+    _started(llm)
+    sent.clear()
+
+    # The backend's own wording, with the three call ids from the real call.
+    asyncio.run(llm._handle_evt_error(_error(
+        gpt_live.ERROR_OUTPUTS_REQUIRED,
+        "Missing function call outputs for: call_TgWqZ1mKpLxR4vBnDe7s2, "
+        "call_Hj8YcRm2PqLvNb6TzXw4A, call_Kd3FnQs9WvJrMt5ZyBx7L.",
+    )))
+
+    kinds = [p["type"] for p in sent]
+    assert kinds == [
+        "response.item.create", "response.item.create", "response.item.create", "response.create",
+    ], "every stranded call answered, then exactly one attempt to continue"
+    assert [p["item"]["call_id"] for p in sent[:3]] == [
+        "call_TgWqZ1mKpLxR4vBnDe7s2",
+        "call_Hj8YcRm2PqLvNb6TzXw4A",
+        "call_Kd3FnQs9WvJrMt5ZyBx7L",
+    ]
+
+
+def test_a_call_already_answered_by_a_placeholder_is_not_answered_twice():
+    llm, sent = _build(_session())
+    _started(llm)
+    event_id = _send_output(llm, "call_a", "y" * 40000)
+    asyncio.run(llm._handle_evt_error(
+        _error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE, client_event_id=event_id)))
+    sent.clear()
+
+    # The rejection healed call_a already; the backend's later complaint lists
+    # it alongside one we have not seen. Only the new one needs a placeholder.
+    asyncio.run(llm._handle_evt_error(_error(
+        gpt_live.ERROR_OUTPUTS_REQUIRED,
+        "Missing function call outputs for: call_a, call_b.",
+    )))
+    items = [p for p in sent if p["type"] == "response.item.create"]
+    assert [p["item"]["call_id"] for p in items] == ["call_b"]
+    assert [p["type"] for p in sent][-1] == "response.create"
+
+
+def test_an_unrelated_error_is_not_treated_as_a_delegation_fault():
+    llm, sent = _build(_session())
+    _started(llm)
+    sent.clear()
+    asyncio.run(llm._handle_evt_error(_error("invalid_value", "bad voice")))
+    assert sent == []
+    assert llm._dead_air_guard is None
+
+
+def test_client_mode_does_not_run_responses_recovery():
+    async def delegate(messages, first):
+        return "ok"
+
+    spec = DelegateSpec(agent=_text_agent("text:anthropic/claude-sonnet-5"), synthetic=False, mode="client")
+    llm, sent = _build(_session(spec, client_delegate=delegate))
+    _started(llm)
+    sent.clear()
+    asyncio.run(llm._handle_evt_error(_error(
+        gpt_live.ERROR_OUTPUTS_REQUIRED, "Missing function call outputs for: call_a.")))
+    assert sent == []
+
+
+def test_silence_after_a_fault_makes_the_voice_model_speak(monkeypatch):
+    monkeypatch.setattr(live_service, "DEAD_AIR_GRACE_SECS", 0.05)
+    llm, sent = _build(_session())
+    _started(llm)
+
+    async def scenario():
+        # A fault the stub cannot fix: nothing correlates, so nothing is sent
+        # to the backend and the delegation simply stops answering.
+        await llm._handle_evt_error(_error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE))
+        assert llm._dead_air_guard is not None
+        sent.clear()
+        await asyncio.sleep(live_service.DEAD_AIR_GRACE_SECS * 4)
+
+    asyncio.run(scenario())
+    # This is the whole point: the caller hears words instead of 82 seconds of
+    # a live but silent line.
+    [commentary] = [p for p in sent if p["type"] == "session.commentary.append"]
+    assert commentary["content"] == live_service.DELEGATION_STRANDED_COMMENTARY
+    assert llm._delegation_stranded is True
+
+
+def test_a_recovered_delegation_says_nothing_about_it(monkeypatch):
+    monkeypatch.setattr(live_service, "DEAD_AIR_GRACE_SECS", 0.05)
+    llm, sent = _build(_session())
+    _started(llm)
+
+    async def scenario():
+        await llm._handle_evt_error(_error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE))
+        sent.clear()
+        # The resumed response produces output within the grace period, so the
+        # apology must never be spoken: the caller gets their answer.
+        await llm._handle_evt_response(_response_event("response.output_item.done"))
+        await asyncio.sleep(live_service.DEAD_AIR_GRACE_SECS * 4)
+
+    asyncio.run(scenario())
+    assert [p for p in sent if p["type"] == "session.commentary.append"] == []
+    assert llm._delegation_stranded is False
+
+
+def test_the_caller_is_apologised_to_once_not_once_per_attempt(monkeypatch):
+    monkeypatch.setattr(live_service, "DEAD_AIR_GRACE_SECS", 0.05)
+    llm, sent = _build(_session())
+    _started(llm)
+
+    async def scenario():
+        await llm._handle_evt_error(_error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE))
+        await asyncio.sleep(live_service.DEAD_AIR_GRACE_SECS * 4)
+        sent.clear()
+        # The input budget is per session, so every later delegation fails the
+        # same way. One apology is information; four is a broken agent.
+        await llm._handle_evt_delegation_created(_delegation_created("dlg_2"))
+        await llm._handle_evt_error(_error(gpt_live.ERROR_INPUT_BUFFER_FULL, _BUFFER_FULL_MESSAGE))
+        await asyncio.sleep(live_service.DEAD_AIR_GRACE_SECS * 4)
+
+    asyncio.run(scenario())
+    assert [p for p in sent if p["type"] == "session.commentary.append"] == []
+
+
+def test_a_new_delegation_clears_the_previous_placeholders():
+    llm, _ = _build(_session())
+    _started(llm)
+    llm._stubbed_calls.add("call_old")
+    asyncio.run(llm._handle_evt_delegation_created(_delegation_created("dlg_9")))
+    assert llm._stubbed_calls == set()
+
+
+def test_output_event_correlation_does_not_grow_without_bound():
+    llm, _ = _build(_session())
+    _started(llm)
+    for n in range(live_service._OUTPUT_EVENT_MEMORY + 25):
+        _send_output(llm, f"call_{n}")
+    assert len(llm._output_event_calls) == live_service._OUTPUT_EVENT_MEMORY
+    # the oldest are the ones dropped
+    assert "call_0" not in llm._output_event_calls.values()
+    assert f"call_{live_service._OUTPUT_EVENT_MEMORY + 24}" in llm._output_event_calls.values()

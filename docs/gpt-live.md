@@ -154,6 +154,40 @@ functions and MCP servers work; the voice agent's call-control builtins
 delegate, because nothing on the OpenAI side can call them. Use an OpenAI
 delegate when the backend must control the call.
 
+### When a responses delegation is refused
+
+The responses backend holds its own input history, capped at **128 items and
+32,768 UTF-8 bytes for the whole session**, and every tool result the worker
+returns is charged against it. One oversized result exhausts it: the item is
+refused with `response_input_buffer_full`, and because the backend counts that
+function call as unanswered it then refuses to continue the response at all
+(`function_call_outputs_required`).
+
+Left alone this strands the call rather than failing it. The live session stays
+healthy, so the line stays up and the agent simply stops answering. That is
+what happened on 2026-09-14: four whole documents (92 KB) were fetched in one
+turn, and the caller sat in silence for 82 seconds before hanging up.
+
+The worker now recovers in two steps:
+
+1. **Answer the refused call with a placeholder.** A few dozen bytes fit where
+   the result did not, so the backend is no longer owed an output and the
+   response resumes. The placeholder says the result was too large and to ask
+   for a smaller part, so the model narrows its request instead of treating the
+   tool as broken, and it answers from what it does have.
+2. **Speak if nothing comes back.** If the delegation shows no sign of life
+   within a few seconds of a fault, the voice model is told to apologise and
+   offer what it can. This runs whether or not step 1 worked, because the
+   failure being prevented is silence, not error.
+
+The input budget is per session, so once it is exhausted later delegations fail
+the same way. The caller is told once, not once per attempt. Both steps are
+logged under `event="delegation_recovery"` in the call's debug log.
+
+Tool results are not capped on the way in, so a server returning very large
+payloads can still spend the budget. Prefer tools that return the part you
+asked for over ones that return whole documents.
+
 ## Tools
 
 The backend's tool set is the union of:
