@@ -6,6 +6,7 @@ import PipecatModel, {
 } from '../lib/models/pipecat.js';
 import {
   filterVoiceTreeBySearch,
+  gptLiveTranscriptTtsEnabled,
   getTtsVendorsForAgentValidation,
   getVoiceNamesForAgentValidation,
   modelSupportsDelegation,
@@ -45,6 +46,19 @@ function delegateFunction(target, name = 'brain') {
 }
 
 describe('GPT-Live roster row', () => {
+  test('transcript TTS requires an explicit opt-in and an external vendor on Pipecat GPT-Live', () => {
+    const options = { tts: { experimentalTranscript: true, vendor: 'deepgram' } };
+    expect(gptLiveTranscriptTtsEnabled({ modelName: GPT_LIVE, options })).toBe(true);
+    for (const modelName of ['livekit:openai/gpt-live-1', 'pipecat:openai/gpt-realtime', 'pipecat:google/gemini-2.0-flash-exp']) {
+      expect(gptLiveTranscriptTtsEnabled({ modelName, options })).toBe(false);
+    }
+    for (const experimentalTranscript of [undefined, false, 'true', 1]) {
+      expect(gptLiveTranscriptTtsEnabled({ modelName: GPT_LIVE, options: { tts: { vendor: 'deepgram', experimentalTranscript } } })).toBe(false);
+    }
+    expect(gptLiveTranscriptTtsEnabled({ modelName: GPT_LIVE, options: { tts: { experimentalTranscript: true, vendor: 'openai' } } })).toBe(false);
+    expect(gptLiveTranscriptTtsEnabled({ modelName: GPT_LIVE })).toBe(false);
+  });
+
   test('is a realtime row with delegation and without external TTS', () => {
     expect(pipecatModelIdFlags['openai/gpt-live-1']).toEqual({
       voiceStack: 'realtime', audioModel: true, pipeline: false, externalTts: false, delegation: true,

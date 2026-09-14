@@ -270,15 +270,72 @@ The accents of the twelve voices added with GPT-Live follow OpenAI's
 descriptions. OpenAI gives no accent for the other ten, and their gender is
 Aplisay's label.
 
-`options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
-response modality, so it cannot be paired with an external TTS: the row
-reports `hasExternalTts: false` and any other vendor is rejected. This is
+By default `options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
+response modality: the row reports `hasExternalTts: false` and any other vendor
+is rejected unless the transcript-synthesis prototype below is enabled. This is
 unlike `pipecat:openai/gpt-realtime`, which shares the `openai` provider
 segment but is a different API: the Realtime API takes
 `output_modalities: ["text"]`, and the Live API's `session.start` has no
 modality field at all (its only output events are audio deltas and the
 transcript of that audio). See [realtime-external-tts.md](realtime-external-tts.md)
 for the rows that do support it.
+
+### Experimental transcript TTS
+
+On the Pipecat worker, opt in with `options.tts.experimentalTranscript: true`
+and select an external TTS vendor. For example, this agent configuration uses
+Deepgram to speak GPT-Live's output transcript:
+
+```json
+{
+  "modelName": "pipecat:openai/gpt-live-1",
+  "prompt": "You are a helpful receptionist. Keep replies short.",
+  "options": {
+    "tts": {
+      "experimentalTranscript": true,
+      "vendor": "deepgram",
+      "voice": "aura-athena-en",
+      "language": "en-GB"
+    }
+  }
+}
+```
+
+The worker needs its usual OpenAI credentials and the selected TTS provider's
+credentials (`DEEPGRAM_API_KEY` for this example). Existing delegate configuration
+continues to work. The option is off by default; remove it and the external vendor
+to return to native audio. The model's voice picker and `hasExternalTts` remain
+unchanged because it has no supported text-only modality; choose external voices
+from the corresponding pipeline TTS catalogue.
+
+The worker discards native audio and feeds `session.output_transcript.delta`
+fragments, preserving their spacing, to the existing TTS stage. Native TTS text
+and start/stop frames are suppressed so synthesized speech is not duplicated.
+Recordings, output STT, and the call's bot transcript use the external TTS output;
+the provider and delegation history still contain the model's own transcript.
+
+Local Silero VAD clears external synthesis and queued playback when the caller
+speaks. It does not cancel delegated tools. Fragments from the interrupted
+assistant turn are discarded until its transcript gap ends, and text is withheld
+while the caller speaks. Timestamped fragments ending before the observed user
+interruption interval are also discarded. This conservative policy can drop an
+acknowledgment or the start of a new answer during overlapping speech. The
+existing greeting guard feeds silence to OpenAI until external playback finishes,
+with its existing timeout as a fallback if synthesis fails.
+
+This is a prototype: OpenAI still generates audio and charges for the Live session;
+external TTS usage is additional. Transcript delivery has no guaranteed lead over
+native audio, so synthesis adds latency and its playback can drift from the Live
+model's speech timeline. Transcript turn boundaries are inferred from gaps, not
+authoritative API events. The model may believe words were heard when they were
+discarded or interrupted. No text modality is sent to OpenAI.
+
+For a live trial, check the greeting, multi-sentence replies, interruptions during
+speech and pauses, and a delegated tool call interrupted while running. Compare
+the recording and bot transcript, verify only one voice is audible, and measure
+time to first speech and how much audio continues after barge-in. Offline tests
+exercise frame routing and interruption state; they cannot establish live latency
+or conversational quality.
 
 ## Options
 

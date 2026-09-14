@@ -548,6 +548,7 @@ def build_gpt_live_service(
     api_key: str,
     voice: Optional[str],
     session: GptLiveSession,
+    transcript_tts: bool = False,
 ) -> AplisayOpenAILiveLLMService:
     """Construct the service for one session from its resolved composition."""
     delegate = session.delegate
@@ -568,11 +569,19 @@ def build_gpt_live_service(
     else:
         client_delegate = session.client_delegate
 
-    llm = AplisayOpenAILiveLLMService(
+    service_class = AplisayOpenAILiveLLMService
+    if transcript_tts:
+        from .gpt_live_transcript_tts import GptLiveTranscriptTtsService
+
+        service_class = GptLiveTranscriptTtsService
+    llm = service_class(
         api_key=api_key,
         settings=AplisayOpenAILiveLLMService.Settings(
             system_instruction=session.voice_instructions,
-            voice=voice or gpt_live.GPT_LIVE_DEFAULT_VOICE,
+            voice=(
+                gpt_live.GPT_LIVE_DEFAULT_VOICE
+                if transcript_tts else voice or gpt_live.GPT_LIVE_DEFAULT_VOICE
+            ),
         ),
         delegation=delegation,
         live_overrides=session.overrides,

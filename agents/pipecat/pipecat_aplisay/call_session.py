@@ -739,14 +739,14 @@ class CallSession:
         # because LLM and TTS carry the same words. A text-output realtime
         # session (realtime_tts.py) has both, and logs the TTS side: that is
         # what the caller heard, and a barge-in truncates it honestly.
-        from .realtime_tts import text_output_enabled
+        from .realtime_tts import external_tts_enabled
         from .voice_mode import model_id_from_name
 
         mode = resolve_voice_mode(model_name, agent.get("options"))
         bot_text_from = (
             "tts"
             if mode == "realtime"
-            and text_output_enabled(agent, model_id_from_name(model_name))
+            and external_tts_enabled(agent, model_id_from_name(model_name))
             else None
         )
         task.add_observer(

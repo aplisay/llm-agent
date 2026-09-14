@@ -100,6 +100,24 @@ def text_output_enabled(agent: dict, model_id: str) -> bool:
     return external_tts_vendor(agent, model_id) is not None
 
 
+def transcript_tts_enabled(agent: dict, model_id: str) -> bool:
+    """Opt-in GPT-Live transcript synthesis; the provider still generates audio.
+
+    Keep separate from text_output_enabled: no text modality is sent to Live.
+    Mirrors gptLiveTranscriptTtsEnabled in lib/model-voices.js.
+    """
+    return (
+        is_gpt_live_model_id(model_id)
+        and ((agent.get("options") or {}).get("tts") or {}).get("experimentalTranscript") is True
+        and external_tts_vendor(agent, model_id) is not None
+    )
+
+
+def external_tts_enabled(agent: dict, model_id: str) -> bool:
+    """Whether this session actually builds a discrete TTS stage."""
+    return text_output_enabled(agent, model_id) or transcript_tts_enabled(agent, model_id)
+
+
 def local_vad_required(agent: dict, model_id: str) -> bool:
     """True when a text-output session needs the worker's own VAD to raise
     barge-in interruptions (see :data:`LOCAL_VAD_PROVIDERS`)."""
