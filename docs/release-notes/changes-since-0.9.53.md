@@ -309,7 +309,13 @@ Pipecat), and **ci** (build and release pipeline).
 - **[pipecat] Agent handover** (`transfer_agent`) on GPT-Live is always a full
   restart.
 - **[pipecat] Pipecat upgrade**: the worker moves from pipecat-ai 1.6.0 to
-  1.9.0, the first release that carries the OpenAI Live service.
+  1.10.0. 1.9.0 is the first release that carries the OpenAI Live service;
+  1.10.0 adds the WebSocket audio-pacing fix.
+- **[pipecat] MCP SDK 2**: the worker's own MCP client moves to the mcp 2
+  transport. `streamable_http_client` takes no `headers`, so a server's auth now
+  rides on an HTTP client the worker builds and owns, and the SDK's models are
+  snake_case (`input_schema`, `is_error`). Agent `mcpServers` config, including
+  `transport: "streamable_http"`, is unchanged.
 - **[core] Documentation**: new [gpt-live.md](../gpt-live.md) and
   [gpt-live-agent-sets.md](../gpt-live-agent-sets.md).
 
@@ -457,8 +463,8 @@ Pipecat), and **ci** (build and release pipeline).
 - **[sipbridge] New optional environment**: `SIPBRIDGE_RTP_SILENCE_FILL`.
 - **[pipecat] `OPENAI_API_KEY`** on the Pipecat worker must belong to an OpenAI
   project with GPT-Live access for `pipecat:openai/gpt-live-1` calls to start.
-- **[pipecat] Worker image** installs pipecat-ai 1.9.0 from PyPI. Rebuild the
-  image with the updated `uv.lock`.
+- **[pipecat] Worker image** installs pipecat-ai 1.10.0 and mcp 2 from PyPI.
+  Rebuild the image with the updated `uv.lock`.
 - **[core] `AUTH_PROXY_SECRET`** is required for
   `POST /api/auth/sign-up/email`; deploy the paired front-end header change
   before enabling this server change.

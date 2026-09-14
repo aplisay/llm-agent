@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-from datetime import timedelta
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -67,6 +67,22 @@ def _namespace_tool_name(server_name: str, tool_name: str) -> str:
     raw = f"{server_name}_{tool_name}" if server_name else tool_name
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     return cleaned[:64] or "mcp_tool"
+
+
+@asynccontextmanager
+async def _streamable_http_streams(url: str, headers: dict[str, str] | None):
+    """Open a streamable-HTTP transport, owning the HTTP client it runs on.
+
+    ``streamable_http_client`` takes no ``headers``: HTTP settings arrive as a
+    prepared client, and a client the caller supplies is a client the caller
+    must close. The SDK's own factory builds it, so the timeouts stay the ones
+    the transport used to apply itself (30 s connect, 300 s read).
+    """
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+    async with create_mcp_http_client(headers=headers) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as streams:
+            yield streams
 
 
 def _result_text(results: Any) -> str:
@@ -110,7 +126,12 @@ def _make_descriptor(
     max_result_bytes: int = MCP_MAX_RESULT_BYTES,
 ) -> dict:
     """Build a ``{"schema", "execute"}`` descriptor for one MCP tool."""
-    input_schema = getattr(tool, "inputSchema", None) or {}
+    # mcp 2 names its model attributes in snake_case; the wire format still
+    # sends camelCase, so servers are unaffected. No getattr default on either
+    # this or is_error below: both have to raise if the SDK moves the name
+    # again, because a default turns that into a tool with no parameters and a
+    # failure reported as a success.
+    input_schema = tool.input_schema or {}
     schema = {
         "name": _namespace_tool_name(server_name, tool.name),
         "description": getattr(tool, "description", "") or "",
@@ -128,7 +149,7 @@ def _make_descriptor(
             results = await _session.call_tool(
                 _name,
                 arguments=args or {},
-                read_timeout_seconds=timedelta(seconds=MCP_TOOL_TIMEOUT),
+                read_timeout_seconds=MCP_TOOL_TIMEOUT,
             )
         except Exception as e:  # noqa: BLE001
             detail = _error_summary(e)
@@ -136,7 +157,7 @@ def _make_descriptor(
                 f"MCP tool call {_name} failed: {detail}"
             )
             raise RuntimeError(f"MCP tool {_name} failed: {detail}") from e
-        is_error = getattr(results, "isError", False)
+        is_error = results.is_error
         text = _result_text(results)
         if is_error:
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
@@ -227,7 +248,7 @@ async def _connect_one(
     Returns ``None`` (and logs a warning) if the server is misconfigured or
     unreachable, so one bad server never takes the whole call down.
 
-    The MCP transport clients (``streamablehttp_client`` / ``sse_client``) and
+    The MCP transport clients (``streamable_http_client`` / ``sse_client``) and
     ``ClientSession`` are anyio context managers that spawn a task group — its
     cancel scope **must** be entered and exited in the same task. Connect runs
     during ``prepare_run`` and the closer fires in ``run_prepared``'s finally,
@@ -272,9 +293,7 @@ async def _connect_one(
 
                 client_cm = sse_client(url, headers=headers)
             else:  # streamable_http (default)
-                from mcp.client.streamable_http import streamablehttp_client
-
-                client_cm = streamablehttp_client(url, headers=headers)
+                client_cm = _streamable_http_streams(url, headers)
 
             async with client_cm as streams:
                 read_stream, write_stream = streams[0], streams[1]

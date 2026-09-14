@@ -28,14 +28,14 @@ class _Content:
 class _ToolResult:
     def __init__(self, content, is_error=False):
         self.content = content
-        self.isError = is_error
+        self.is_error = is_error
 
 
 class _Tool:
     def __init__(self, name, description, input_schema):
         self.name = name
         self.description = description
-        self.inputSchema = input_schema
+        self.input_schema = input_schema
 
 
 class _FakeSession:
@@ -236,7 +236,7 @@ def test_error_summary_plain_exception_keeps_type_and_text():
 
 
 class _ExplodingCM:
-    """Async CM standing in for ``streamablehttp_client`` whose enter fails the
+    """Async CM standing in for ``streamable_http_client`` whose enter fails the
     way anyio surfaces transport errors — wrapped in an ExceptionGroup."""
 
     def __init__(self, exc):
@@ -258,7 +258,7 @@ def test_connect_failure_log_names_server_url_and_cause(monkeypatch):
         [ValueError(f"Client error '404 Not Found' for url '{url}/'")],
     )
     monkeypatch.setattr(
-        shttp, "streamablehttp_client", lambda *_a, **_k: _ExplodingCM(cause)
+        shttp, "streamable_http_client", lambda *_a, **_k: _ExplodingCM(cause)
     )
 
     log = _CapturingLog()
@@ -316,7 +316,7 @@ def test_connect_success_logs_server_and_tool_names(monkeypatch):
     monkeypatch.setattr(_FakeSession, "initialize", _initialize, raising=False)
     monkeypatch.setattr(_FakeSession, "list_tools", _list_tools, raising=False)
     monkeypatch.setattr(
-        shttp, "streamablehttp_client", lambda *_a, **_k: _FakeStreamsCM()
+        shttp, "streamable_http_client", lambda *_a, **_k: _FakeStreamsCM()
     )
     monkeypatch.setattr(mcp, "ClientSession", _FakeClientSessionCM)
 
@@ -476,7 +476,7 @@ def test_the_cap_reaches_a_real_descriptor_through_connect(monkeypatch):
     monkeypatch.setattr(_FakeSession, "initialize", _initialize, raising=False)
     monkeypatch.setattr(_FakeSession, "list_tools", _list_tools, raising=False)
     monkeypatch.setattr(_FakeSession, "call_tool", _call_tool, raising=False)
-    monkeypatch.setattr(shttp, "streamablehttp_client", lambda *_a, **_k: _FakeStreamsCM())
+    monkeypatch.setattr(shttp, "streamable_http_client", lambda *_a, **_k: _FakeStreamsCM())
     monkeypatch.setattr(mcp, "ClientSession", _FakeClientSessionCM)
 
     agent = {"mcpServers": [{"name": "docs", "url": "https://mcp.example.com/mcp"}]}
