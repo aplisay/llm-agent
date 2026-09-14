@@ -270,8 +270,15 @@ The accents of the twelve voices added with GPT-Live follow OpenAI's
 descriptions. OpenAI gives no accent for the other ten, and their gender is
 Aplisay's label.
 
-`options.tts.vendor` must be unset or `openai`. There is no text-output mode
-(`hasExternalTts` is false), so an external TTS vendor is rejected.
+`options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
+response modality, so it cannot be paired with an external TTS: the row
+reports `hasExternalTts: false` and any other vendor is rejected. This is
+unlike `pipecat:openai/gpt-realtime`, which shares the `openai` provider
+segment but is a different API: the Realtime API takes
+`output_modalities: ["text"]`, and the Live API's `session.start` has no
+modality field at all (its only output events are audio deltas and the
+transcript of that audio). See [realtime-external-tts.md](realtime-external-tts.md)
+for the rows that do support it.
 
 ## Options
 

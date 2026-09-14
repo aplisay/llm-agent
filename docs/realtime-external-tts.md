@@ -36,6 +36,12 @@ The Gemini Live rows do not carry the flag. No Live model Google still serves
 accepts a text response modality: the half-cascade models have been
 withdrawn and the native-audio model rejects it.
 
+The GPT-Live rows (`openai/gpt-live-1`) do not carry it either, even though
+they share the `openai` provider segment with OpenAI Realtime. They are a
+different API: the Live API's `session.start` has no response-modality field,
+and its only output events are audio deltas and the transcript of that audio.
+The flag is computed per model id for this reason, not per provider.
+
 `GET /models/{modelName}/voices/{locale}` lists, for a flagged row, the
 model's own voices and the discrete TTS catalogue side by side, keyed by
 vendor. Picking a voice from one of the TTS vendors is what switches the
