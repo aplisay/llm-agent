@@ -44,6 +44,7 @@ from .gpt_live import (
     merge_tools,
     resolve_delegate,
 )
+from .grok import is_xai_voice_model_id
 from .mcp_tools import (
     MCP_MAX_RESULT_BYTES, MCP_MAX_RESULT_BYTES_DELEGATED,
     close_mcp_servers, connect_mcp_servers,
@@ -692,6 +693,8 @@ class CallSession:
             gpt_live=gpt_live_session,
             history=history,
             opening=self._platform_opening(),
+            on_provider_session_ended=self._on_provider_session_ended,
+            on_injected_dtmf=self._on_injected_dtmf,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -898,6 +901,24 @@ class CallSession:
             greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
         )
         greeting_instructions = (greeting_instructions or "").strip()
+
+        if is_xai_voice_model_id(model_id_from_name(model_name)) and greeting_text and not platform_opening:
+            # Grok (docs/grok.md): the greeting text is spoken exactly through
+            # xAI's uninterruptible verbatim item. The first run still seeds
+            # the conversation and the session's tools, but must not make the
+            # model speak as well, so the service holds that first response.
+            llm = self._llm_service
+
+            @transport.event_handler("on_client_connected")
+            async def _on_client_connected_grok(*_args, **_kwargs) -> None:
+                try:
+                    llm.hold_first_response()
+                    await task.queue_frames([_RunFrame()])
+                    await llm.speak_verbatim(greeting_text)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Grok greeting handler failed: {e}")
+
+            return
 
         # `text` and `instructions` are mutually exclusive per the API
         # contract; the server should reject configurations that set both,
@@ -1486,8 +1507,13 @@ class CallSession:
             return True
         current_id = model_id_from_name(current_model)
         # GPT-Live fixes instructions, voice and delegation mode at session
-        # start, so a handover is always a restart (docs/gpt-live.md).
-        return current_id.startswith("ultravox/") or is_gpt_live_model_id(current_id)
+        # start, so a handover is always a restart (docs/gpt-live.md). Grok
+        # fixes the model and voice per connection (docs/grok.md).
+        return (
+            current_id.startswith("ultravox/")
+            or is_gpt_live_model_id(current_id)
+            or is_xai_voice_model_id(current_id)
+        )
 
     async def _on_agent_transfer(self, args: dict) -> dict:
         """Builtin ``transfer_agent`` platform function: hand the live call
@@ -1541,8 +1567,11 @@ class CallSession:
         from .voice_mode import model_id_from_name as _model_id_from_name
 
         history: Optional[list] = None
-        target_is_gpt_live = is_gpt_live_model_id(_model_id_from_name(new_agent.get("modelName") or ""))
-        if include_history and target_is_gpt_live:
+        target_model_id = _model_id_from_name(new_agent.get("modelName") or "")
+        # GPT-Live and the Grok voice row seed the new session with the turns
+        # themselves (the Grok adapter packs them into one item).
+        target_seeds_history = is_gpt_live_model_id(target_model_id) or is_xai_voice_model_id(target_model_id)
+        if include_history and target_seeds_history:
             history = self._history_for_handover()
         elif include_history:
             transcript = self.get_parent_transcript()
@@ -1924,7 +1953,7 @@ class CallSession:
             overrides=live_overrides(agent),
             client_delegate=self._gpt_live_client_delegate(spec) if spec.mode == "client" else None,
             on_session_ended=self._on_provider_session_ended,
-            on_dtmf=self._on_gpt_live_dtmf,
+            on_dtmf=self._on_injected_dtmf,
             # When the platform opens the call (a handover or a takeover), the
             # greeting does not play, so the caller is not made inaudible.
             deaf_during_greeting=has_greeting(agent) and self._platform_opening() is None,
@@ -1996,11 +2025,11 @@ class CallSession:
 
         return delegate
 
-    async def _on_gpt_live_dtmf(self, digits: str) -> None:
-        """Aggregated keypad digits on a GPT-Live session: a ``user`` transcript
-        row (as the DTMF aggregator's TranscriptionFrame would have produced)
-        and the injection shim (typed input for the backend, context for the
-        voice model)."""
+    async def _on_injected_dtmf(self, digits: str) -> None:
+        """Aggregated keypad digits on a session whose service never sees a
+        context frame after it starts (GPT-Live, the Grok voice row): a
+        ``user`` transcript row (as the DTMF aggregator's TranscriptionFrame
+        would have produced) and the service's own injection path."""
         await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
         llm = self._llm_service
         inject = getattr(llm, "inject_dtmf", None)
@@ -2009,9 +2038,11 @@ class CallSession:
         await inject(digits)
 
     async def _on_provider_session_ended(self, reason: str) -> None:
-        """The provider closed the GPT-Live session (expiry, a content policy
-        close, a lost connection): end the call cleanly with that reason."""
-        logger.bind(reason=reason).warning("GPT-Live session ended by the provider; ending the call")
+        """The provider closed the realtime session (GPT-Live: expiry, a
+        content policy close, a lost connection; Grok: a server close, a fatal
+        error, the concurrent-session limit): end the call cleanly with that
+        reason."""
+        logger.bind(reason=reason).warning("realtime session ended by the provider; ending the call")
         self._wants_hangup = True
         await self._end(f"{DISCONNECT_REASONS['SESSION_CLOSED']}: provider {reason}")
         await self.gateway_session.shutdown()

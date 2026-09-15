@@ -27,6 +27,8 @@ WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 
 # Provider keys — uncomment for those you actually use.
 # OPENAI_API_KEY=
+# xAI Grok voice and text models (docs/grok.md); GROK_API_KEY is accepted as a fallback
+# XAI_API_KEY=
 # GEMINI_API_KEY=
 # ANTHROPIC_API_KEY=
 # DEEPGRAM_API_KEY=

@@ -70,6 +70,15 @@ def usage_vendors(
     tts_opts = options.get("tts") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
+    # The Grok voice model speaks with its own voices and its speech is paid
+    # for by the model's minute line (docs/grok.md): its metered TTS audio is
+    # attributed to xai, the bundled provider a card zero-prices, never to the
+    # pipeline default above.
+    from .grok import is_xai_voice_model_id
+    from .realtime_tts import external_tts_vendor
+
+    if is_xai_voice_model_id(model_id) and external_tts_vendor(agent, model_id) is None:
+        tts_vendor = "xai"
     return {
         "llm": {"vendor": llm_vendor, "model": llm_model, **({"authoritative": True} if backend else {})},
         "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
