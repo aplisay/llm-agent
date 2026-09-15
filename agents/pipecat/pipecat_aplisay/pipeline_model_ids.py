@@ -14,6 +14,8 @@ PIPELINE_MODEL_IDS: frozenset[str] = frozenset(
         "google/gemini-2.5-flash",
         "google/gemini-2.0-flash",
         "anthropic/claude-sonnet-4-5",
+        "xai/grok-4.20-0309-non-reasoning",
+        "xai/grok-4.3",
     }
 )
 

@@ -19,6 +19,7 @@ const implementations = [
 const models = [
   { name: 'livekit:ultravox/ultravox-v0.6', description: 'Ultravox' },
   { name: 'livekit:openai/gpt-4o', description: 'GPT-4o' },
+  { name: 'pipecat:xai/grok-voice-think-fast-2.0', description: 'Grok Voice' },
 ];
 
 describe('rate-components catalogue', () => {
@@ -41,6 +42,10 @@ describe('rate-components catalogue', () => {
     const gpt = byKey('model:livekit:openai/gpt-4o');
     expect(gpt.units).toEqual(['token']);
     expect(gpt.match).toEqual({ technology: 'llm', provider: 'openai', detail: 'openai/gpt-4o', unit: 'output_tokens' });
+    // The Grok voice model bills per minute of audio too (docs/grok.md).
+    const grok = byKey('model:pipecat:xai/grok-voice-think-fast-2.0');
+    expect(grok.units).toEqual(['minute']);
+    expect(grok.match).toEqual({ technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' });
   });
 
   it('advertises tts/stt engines with their billing units', () => {

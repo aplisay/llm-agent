@@ -42,6 +42,11 @@ different API: the Live API's `session.start` has no response-modality field,
 and its only output events are audio deltas and the transcript of that audio.
 The flag is computed per model id for this reason, not per provider.
 
+The Grok voice row (`pipecat:xai/grok-voice-think-fast-2.0`) does not carry
+it. xAI's Voice Agent API echoes a text modality request and ignores it: every
+form was tried on 2026-09-15 and the model kept speaking (see
+[grok.md](grok.md)).
+
 `GET /models/{modelName}/voices/{locale}` lists, for a flagged row, the
 model's own voices and the discrete TTS catalogue side by side, keyed by
 vendor. Picking a voice from one of the TTS vendors is what switches the
@@ -99,3 +104,4 @@ produced by the model. They arrive as text and the TTS speaks them.
 - The native `ultravox:` handler (browser or Jambonz straight to Ultravox)
   has no worker in the media path, so it cannot host a TTS.
 - The Gemini Live rows, for the reason above.
+- The Grok voice row, for the reason above.

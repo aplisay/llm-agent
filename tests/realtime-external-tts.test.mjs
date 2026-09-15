@@ -31,6 +31,8 @@ describe('external TTS on realtime models', () => {
       expect(pipecatModelSupportsExternalTts('openai/gpt-realtime')).toBe(true);
       // No Gemini Live model the API still serves accepts a TEXT modality.
       expect(pipecatModelSupportsExternalTts('google/gemini-2.0-flash-exp')).toBe(false);
+      // The Grok Voice Agent API has no text-only output either (docs/grok.md).
+      expect(pipecatModelSupportsExternalTts('xai/grok-voice-think-fast-2.0')).toBe(false);
       expect(pipecatModelSupportsExternalTts('openai/gpt-4o-mini')).toBe(false);
       expect(pipecatModelIdFlags['ultravox/ultravox-v0.7']).toMatchObject({
         voiceStack: 'realtime',
