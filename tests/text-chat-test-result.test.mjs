@@ -126,7 +126,8 @@ describe('text-chat slimResults', () => {
     agents: [
       { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000),
         functions: [{ name: 'end_call' }, { name: 'to_sales' }],
-        options: { transferTone: true, maxDuration: 900 } },
+        options: { transferTone: true, maxDuration: 900 },
+        mcpServers: [{ name: 'knowledge', url: 'https://k.example.com/mcp' }] },
       { id: 'a-2', label: 'sales', name: 'Sales', prompt: 'y'.repeat(4000), functions: [] },
     ],
   });
@@ -143,8 +144,8 @@ describe('text-chat slimResults', () => {
         // The function and option NAMES ride along: a save is the only view the
         // model gets of what its own write left on each member.
         { label: 'main', id: 'a-1', name: 'Main', functions: ['end_call', 'to_sales'],
-          options: ['maxDuration', 'transferTone'] },
-        { label: 'sales', id: 'a-2', name: 'Sales', functions: [], options: [] },
+          options: ['maxDuration', 'transferTone'], mcpServers: ['knowledge'] },
+        { label: 'sales', id: 'a-2', name: 'Sales', functions: [], options: [], mcpServers: [] },
       ],
     });
     expect(slim.result.length).toBeLessThan(fullSet.length / 10);
