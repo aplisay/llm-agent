@@ -28,13 +28,17 @@
  * Pricing (micro-pence per token; override via env):
  *   xAI lists grok-4.6 at $2.00 / $0.50 / $6.00 per MTok (input / cached /
  *   output) and grok-4.3 and both grok-4.20-0309 models at $1.25 / $0.20 /
- *   $2.50. By the Sonnet 5 convention (scripts/add-sonnet5-rate-lines.mjs)
- *   the defaults are the same digits in GBP micro-pence per token, which is
- *   the platform's usual margin at typical FX. XAI_INPUT_PRICE_MICROS,
- *   XAI_OUTPUT_PRICE_MICROS and XAI_CACHE_READ_PRICE_MICROS override the base
- *   prices for every model. MODELS (comma-separated bare model ids) selects
- *   the text models; VOICE_MODELS (comma-separated full model names) the voice
- *   rows, default the Pipecat row only until the LiveKit row exists.
+ *   $2.50. Each card prices its models at one factor of the USD list digits
+ *   (the staging cards sit at 0.7333: Sonnet 5 at 2.2 / 11 / 0.22, Kimi at
+ *   1.1 / 4.4), so the Grok lines take that card's factor, read from its
+ *   Sonnet 5 input line, rounded to two significant figures like the rest of
+ *   the card. XAI_PRICE_FACTOR sets the factor explicitly; a card with no
+ *   Sonnet 5 line and no override gets the raw list digits (the original
+ *   Sonnet 5 script's convention). XAI_INPUT_PRICE_MICROS,
+ *   XAI_OUTPUT_PRICE_MICROS and XAI_CACHE_READ_PRICE_MICROS override the
+ *   prices for every model outright. MODELS (comma-separated bare model ids)
+ *   selects the text models; VOICE_MODELS (comma-separated full model names)
+ *   the voice rows, default the Pipecat row only until the LiveKit row exists.
  *
  * Self-contained: loads ./.env and talks to Postgres directly (no app boot).
  */
@@ -52,10 +56,46 @@ export const TEXT_LIST_PRICES = {
   'grok-4.20-0309-non-reasoning': { input: 1.25, cacheRead: 0.2, output: 2.5 },
 };
 
-/** Prices for one text model: the env overrides, else the list table, else grok-4.3's. */
-export function textPricesFor(model, env = process.env) {
+/**
+ * Round to two significant figures, the precision the cards' token lines use
+ * (2.2, 11, 0.22, 4.4).
+ */
+export const round2sf = (n) => (n === 0 ? 0 : Number(n.toPrecision(2)));
+
+/**
+ * The reference the per-card price factor is read from: Sonnet 5's input
+ * line against its $3 per MTok list price. A card that prices Sonnet 5 at
+ * 2.2 micro-pence per token is at 0.7333 of list, and every model on it
+ * follows the same rule (checked on the staging cards, 2026-09-16), so the
+ * Grok lines take the same factor rather than the raw list digits.
+ */
+export const FACTOR_REFERENCE = { provider: 'anthropic', detail: 'claude-sonnet-5', unit: 'input_tokens', listPrice: 3 };
+
+/**
+ * The factor a card applies to list prices: XAI_PRICE_FACTOR when set, else
+ * the card's own Sonnet 5 input line over its list price, else 1 (the raw
+ * list digits, the original Sonnet 5 convention).
+ */
+export function priceFactorFor(lines, env = process.env) {
+  if (env.XAI_PRICE_FACTOR) return Number(env.XAI_PRICE_FACTOR);
+  const ref = (lines || []).find((l) => l?.dim === 'model'
+    && l?.match?.provider === FACTOR_REFERENCE.provider
+    && l?.match?.detail === FACTOR_REFERENCE.detail
+    && l?.match?.unit === FACTOR_REFERENCE.unit
+    && typeof l?.priceMicros === 'number' && l.priceMicros > 0);
+  return ref ? Number((ref.priceMicros / FACTOR_REFERENCE.listPrice).toFixed(4)) : 1;
+}
+
+/**
+ * Prices for one text model: the env overrides, else the list table (grok-4.3's
+ * for an unknown model) scaled by `factor` and rounded to two significant
+ * figures.
+ */
+export function textPricesFor(model, env = process.env, factor = 1) {
   const base = TEXT_LIST_PRICES[model] || TEXT_LIST_PRICES['grok-4.3'];
-  const num = (name, fallback) => (env[name] ? Number(env[name]) : fallback);
+  // The raw list digits are exact; only a scaled price is rounded.
+  const scaled = (price) => (factor === 1 ? price : round2sf(price * factor));
+  const num = (name, fallback) => (env[name] ? Number(env[name]) : scaled(fallback));
   return {
     input: num('XAI_INPUT_PRICE_MICROS', base.input),
     output: num('XAI_OUTPUT_PRICE_MICROS', base.output),
@@ -88,9 +128,13 @@ export function voiceModelLine(modelName, priceMicros) {
  * the same change.
  */
 export function bundledTtsLines(providers = BUNDLED_TTS_PROVIDERS) {
-  return providers.map((provider) => ({
-    dim: 'tts', match: { technology: 'tts', provider }, unit: 'minute', priceMicros: 0,
-  }));
+  // The pair the cards already carry for ultravox: the row unit inside the
+  // match, one line per unit the worker meters (audio milliseconds and
+  // transcript characters).
+  return providers.flatMap((provider) => [
+    { dim: 'tts', match: { technology: 'tts', provider, unit: 'milliseconds' }, unit: 'minute', priceMicros: 0 },
+    { dim: 'tts', match: { technology: 'tts', provider, unit: 'characters' }, unit: 'character', priceMicros: 0 },
+  ]);
 }
 
 /**
@@ -125,11 +169,11 @@ export function hasLine(lines, candidate) {
  * minus those already present. Pure, so a fixture card can be checked in a
  * test.
  */
-export function xaiAdditions(lines, { textModels = DEFAULT_TEXT_MODELS, voiceModels = DEFAULT_VOICE_MODELS, voicePrice, env = process.env } = {}) {
+export function xaiAdditions(lines, { textModels = DEFAULT_TEXT_MODELS, voiceModels = DEFAULT_VOICE_MODELS, voicePrice, env = process.env, factor = 1 } = {}) {
   const wanted = [
     ...voiceModels.map((name) => voiceModelLine(name, voicePrice)),
     ...bundledTtsLines(),
-    ...textModels.flatMap((model) => textModelLines(model, textPricesFor(model, env))),
+    ...textModels.flatMap((model) => textModelLines(model, textPricesFor(model, env, factor))),
   ];
   return wanted.filter((l) => !hasLine(lines, l));
 }
@@ -192,7 +236,9 @@ async function main() {
         missing.push(card.name);
         continue;
       }
-      plans.push({ card, lines, additions: xaiAdditions(lines, { textModels, voiceModels, voicePrice }) });
+      const factor = priceFactorFor(lines);
+      console.log(`card "${card.name}": voice minute ${voicePrice} micro-pence, text lines at ${factor} of list`);
+      plans.push({ card, lines, additions: xaiAdditions(lines, { textModels, voiceModels, voicePrice, factor }) });
     }
     if (missing.length) {
       throw new Error(
@@ -235,7 +281,7 @@ async function main() {
         await client.query('ROLLBACK');
         throw e;
       }
-      additions.forEach((l) => console.log(`  + ${l.match.detail} ${l.match.unit || 'voice'} @ ${l.priceMicros} micro-pence/${l.unit}`));
+      additions.forEach((l) => console.log(`  + ${l.match.detail || `tts|${l.match.provider}`} ${l.match.unit || 'voice'} @ ${l.priceMicros} micro-pence/${l.unit}`));
     }
   } finally {
     await client.end();
