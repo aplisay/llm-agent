@@ -70,11 +70,67 @@ def usage_vendors(
     tts_opts = options.get("tts") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
+    tts: dict[str, Any] = {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")}
+    bundled = bundled_speech_vendor(agent, model_id)
+    if bundled is not None:
+        # A realtime model speaking with its own voice: its speech is paid for
+        # by the model's own rows (a minute line, or audio tokens), so the
+        # metered TTS audio is attributed to the model's vendor, which a card
+        # zero-prices (BUNDLED_TTS_PROVIDERS in lib/rate-components.js), never
+        # to the pipeline default above. The first Grok live call showed the
+        # default in action: tts|cartesia rows a Cartesia line would have
+        # priced on top of the minute.
+        tts["vendor"] = bundled
+    elif bundled is None and _bundled_speech_is_unmeterable(agent, model_id):
+        # Gemini Live: its vendor, google, is also a discrete TTS engine, so a
+        # tts|google row would be priced by the Google TTS line. Meter nothing
+        # for its speech, as the LiveKit worker does for every realtime row.
+        tts["skip"] = True
     return {
         "llm": {"vendor": llm_vendor, "model": llm_model, **({"authoritative": True} if backend else {})},
         "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
-        "tts": {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")},
+        "tts": tts,
     }
+
+
+def _speaks_with_own_voice(agent: dict, model_id: str) -> bool:
+    """A realtime row of a provider this worker runs, with no external TTS."""
+    from .pipeline_model_ids import is_pipeline_model_id
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, external_tts_vendor, realtime_provider
+
+    if is_pipeline_model_id(model_id):
+        return False
+    if realtime_provider(model_id) not in REALTIME_NATIVE_TTS_VENDORS:
+        return False
+    return external_tts_vendor(agent, model_id) is None
+
+
+def bundled_speech_vendor(agent: dict, model_id: str) -> str | None:
+    """The provider the model's own speech is metered under, or None when the
+    session has an external TTS, is a pipeline row, or the provider's speech
+    cannot be attributed without colliding with a TTS engine of the same name
+    (Gemini Live). Must agree with BUNDLED_TTS_PROVIDERS in lib/rate-components.js."""
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, realtime_provider
+
+    if not _speaks_with_own_voice(agent, model_id):
+        return None
+    vendor = REALTIME_NATIVE_TTS_VENDORS[realtime_provider(model_id)]
+    return None if vendor in UNMETERED_BUNDLED_SPEECH_VENDORS else vendor
+
+
+#: Realtime providers whose name is also a discrete TTS engine's, so their own
+#: speech cannot carry a bundled row: a `tts|google` row would be priced by the
+#: Google TTS line. Their speech is not metered as tts at all.
+UNMETERED_BUNDLED_SPEECH_VENDORS: frozenset[str] = frozenset({"google"})
+
+
+def _bundled_speech_is_unmeterable(agent: dict, model_id: str) -> bool:
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, realtime_provider
+
+    return (
+        _speaks_with_own_voice(agent, model_id)
+        and REALTIME_NATIVE_TTS_VENDORS[realtime_provider(model_id)] in UNMETERED_BUNDLED_SPEECH_VENDORS
+    )
 
 
 class UsageMeteringObserver(BaseObserver):
@@ -120,6 +176,11 @@ class UsageMeteringObserver(BaseObserver):
         if len(self._seen_frame_order) > _SEEN_FRAME_WINDOW:
             self._seen_frame_ids.discard(self._seen_frame_order.popleft())
         return False
+
+    @property
+    def _tts_skipped(self) -> bool:
+        """The session's speech is not metered as tts (see usage_vendors)."""
+        return bool((self._services.get("tts") or {}).get("skip"))
 
     def _resolve(self, technology: str, model: str | None) -> tuple[str | None, str | None]:
         """Canonical (provider, detail) for a metered row: provider from the
@@ -179,7 +240,7 @@ class UsageMeteringObserver(BaseObserver):
                         self._add("llm", "output_tokens", getattr(tokens, "completion_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_read_tokens", getattr(tokens, "cache_read_input_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_write_tokens", getattr(tokens, "cache_creation_input_tokens", 0), provider=provider, detail=detail)
-                    elif isinstance(m, TTSUsageMetricsData):
+                    elif isinstance(m, TTSUsageMetricsData) and not self._tts_skipped:
                         provider, detail = self._resolve("tts", m.model)
                         self._add("tts", "characters", m.value, provider=provider, detail=detail)
                 except Exception as e:  # noqa: BLE001
@@ -225,7 +286,7 @@ class UsageMeteringObserver(BaseObserver):
         # Each audio chunk is a distinct frame we sum; dedup-by-id stops the
         # per-hop multiplier (the set is bounded by the call's frame count).
         if isinstance(frame, TTSAudioRawFrame):
-            if self._seen(frame_id):
+            if self._seen(frame_id) or self._tts_skipped:
                 return
             sr = getattr(frame, "sample_rate", 0) or 0
             nf = getattr(frame, "num_frames", 0) or 0

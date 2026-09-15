@@ -41,6 +41,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 )
 
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
+from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
 from .realtime_tts import (
@@ -1040,14 +1041,23 @@ async def build_voice_session(
     gpt_live: "Optional[GptLiveSession]" = None,
     history: "Optional[list[dict]]" = None,
     opening: Optional[str] = None,
+    on_provider_session_ended: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_injected_dtmf: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
 
     ``gpt_live`` is the resolved two-layer composition for a GPT-Live model
     (``call_session._compose_gpt_live``): required on such a model, ignored on
     every other. ``history`` seeds the context with prior ``user`` /
-    ``assistant`` turns (an agent handover onto GPT-Live carries the transcript
-    as the session's startup history rather than inside the prompt).
+    ``assistant`` turns (an agent handover onto GPT-Live or a Grok voice row
+    carries the transcript as the session's startup history rather than
+    inside the prompt).
+
+    ``on_provider_session_ended`` is called with the provider's reason when a
+    Grok voice session ends on xAI's side (a server close, a fatal error, the
+    concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
+    receives the aggregated keypad digits on a Grok voice row, where they
+    reach the model through the service rather than a transcription frame.
 
     ``opening`` is set when this generation continues a call already in
     progress, so the caller has been greeted: it is the platform's first-turn
@@ -1135,7 +1145,8 @@ async def build_voice_session(
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
             on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, gpt_live=gpt_live, history=history,
-            opening=opening,
+            opening=opening, on_provider_session_ended=on_provider_session_ended,
+            on_injected_dtmf=on_injected_dtmf,
         )
     else:
         task, context, llm = await _build_pipeline(
@@ -1239,6 +1250,43 @@ def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> An
     voice = (options.get("tts") or {}).get("voice") or "alloy"
     return SessionProperties(
         audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+    )
+
+
+def _xai_session_properties(agent: dict) -> Any:
+    """The Grok ``SessionProperties`` for one session (docs/grok.md).
+
+    ``options.tts.voice`` (default ``eve``) at the top level, server VAD with
+    xAI's own defaults (the session is created with no turn detection at all,
+    so it has to be asked for), the caller's transcription with
+    ``grok-transcribe`` and ``options.stt.language`` as the hint, and
+    ``options.effort`` as the reasoning effort. There is no text-output mode.
+    The subclass fills the audio formats from the transport rates.
+    """
+    from pipecat.services.xai.realtime.events import (
+        AudioConfiguration,
+        AudioInput,
+        InputAudioTranscription,
+        Reasoning,
+        SessionProperties,
+        TurnDetection,
+    )
+
+    from .grok import XAI_DEFAULT_VOICE, XAI_TRANSCRIPTION_MODEL, language_hint, voice_effort
+
+    options = agent.get("options") or {}
+    effort = voice_effort(options)
+    return SessionProperties(
+        voice=(options.get("tts") or {}).get("voice") or XAI_DEFAULT_VOICE,
+        turn_detection=TurnDetection(type="server_vad"),
+        audio=AudioConfiguration(
+            input=AudioInput(
+                transcription=InputAudioTranscription(
+                    model=XAI_TRANSCRIPTION_MODEL, language_hint=language_hint(agent)
+                )
+            )
+        ),
+        reasoning=Reasoning(effort=effort) if effort else None,
     )
 
 
@@ -1416,10 +1464,13 @@ async def _build_realtime(
     gpt_live: "Optional[GptLiveSession]" = None,
     history: "Optional[list[dict]]" = None,
     opening: Optional[str] = None,
+    on_provider_session_ended: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_injected_dtmf: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
     gpt_live_model = is_gpt_live_model_id(model_id)
+    grok_voice_model = is_xai_voice_model_id(model_id)
 
     # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
     # than the model's own, so the model emits text and a discrete TTS stage
@@ -1494,6 +1545,22 @@ async def _build_realtime(
         llm = GeminiLiveLLMService(
             api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
             system_instruction=system_prompt,
+        )
+    elif grok_voice_model:
+        # xAI Grok voice (docs/grok.md): the stock service speaks the OpenAI
+        # Realtime wire protocol; the subclass adds the injection paths (the
+        # forced greeting and inactivity line, keypad digits), the
+        # vendorSpecific merge and the provider-close callback (grok_service.py).
+        from .grok_service import build_grok_service
+
+        _, xai_model = model_id.split("/", 1)
+        llm = build_grok_service(
+            api_key=_require_env("XAI_API_KEY", "GROK_API_KEY"),
+            model=xai_model,
+            system_prompt=system_prompt,
+            session_properties=_xai_session_properties(agent),
+            agent=agent,
+            on_session_ended=on_provider_session_ended,
         )
     elif model_id.startswith("ultravox/"):
         # Ultravox Realtime — Pipecat constructs a one-shot call against the
@@ -1590,11 +1657,12 @@ async def _build_realtime(
         if external_tts_enabled(agent, model_id) else []
     )
 
-    if gpt_live_model:
+    if gpt_live_model or grok_voice_model:
         # No prompt developer message: the service's adapter would send it as
-        # startup history (8,192-token cap) instead of instructions, which the
-        # service carries in Settings.system_instruction. Prior turns from a
-        # handover seed the session; the greeting's trailing developer message
+        # startup history (8,192-token cap on GPT-Live, a packed user item on
+        # Grok) instead of instructions, which the service carries in
+        # Settings.system_instruction. Prior turns from a handover seed the
+        # session; the greeting's trailing developer message
         # (call_session._wire_greeting) becomes the opening instruction.
         context = LLMContext(list(history or []), tools=schemas)
     else:
@@ -1643,9 +1711,15 @@ async def _build_realtime(
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped. GPT-Live routes the digits through
     # the injection shim instead of a TranscriptionFrame.
-    dtmf_aggregator = _dtmf_aggregator_for(
-        agent, on_digits=gpt_live.on_dtmf if (gpt_live_model and gpt_live is not None) else None
-    )
+    if gpt_live_model and gpt_live is not None:
+        on_digits = gpt_live.on_dtmf
+    elif grok_voice_model:
+        # Same reason as GPT-Live: a TranscriptionFrame would become a user
+        # message the service never sends; the digits go through the service.
+        on_digits = on_injected_dtmf
+    else:
+        on_digits = None
+    dtmf_aggregator = _dtmf_aggregator_for(agent, on_digits=on_digits)
     # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
     # engaged relay silences the caller's audio for the aux engine too, and the
     # tap copies audio out to a side pipeline — nothing of the second engine
@@ -1708,8 +1782,13 @@ async def _build_realtime(
         relay_endpoint=relay_endpoint,
         on_inactivity_hangup=on_inactivity_hangup,
         # GPT-Live ignores context frames once started: the kick is spoken
-        # context sent through the service (gpt_live_service.py).
-        inject=llm.inject_inactivity_prompt if gpt_live_model else None,
+        # context sent through the service (gpt_live_service.py). Grok speaks
+        # the message exactly through its verbatim item (grok_service.py).
+        inject=(
+            llm.inject_inactivity_prompt if gpt_live_model
+            else llm.speak_verbatim if grok_voice_model
+            else None
+        ),
     )
     return task, context, llm
 
@@ -1762,6 +1841,15 @@ async def _build_pipeline(
             api_key=_require_env("ANTHROPIC_API_KEY"),
             model=anthropic_model,
             settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
+        )
+    elif model_id.startswith("xai/"):
+        # xAI Grok text models over their OpenAI-compatible endpoint (docs/grok.md).
+        from pipecat.services.xai.llm import GrokLLMService
+
+        _, xai_model = model_id.split("/", 1)
+        llm = GrokLLMService(
+            api_key=_require_env("XAI_API_KEY", "GROK_API_KEY"),
+            settings=GrokLLMService.Settings(model=xai_model, system_instruction=system_prompt),
         )
     else:
         raise RuntimeError(f"Unsupported LLM in pipeline mode: {model_id}")

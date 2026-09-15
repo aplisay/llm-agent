@@ -18,6 +18,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [gpt-live-agent-sets.md](gpt-live-agent-sets.md) | Build GPT-Live teams with familiar sets: native delegation, existing text specialists and the wider model catalogue, with worked API examples |
 | [multi-agent-api.md](multi-agent-api.md) | The multi-agent REST surface and agent-to-agent transfer |
 | [gpt-live.md](gpt-live.md) | OpenAI GPT-Live: a voice model with a backend text agent (`delegate`), and how it relates to text subagents |
+| [grok.md](grok.md) | xAI Grok: the Grok voice model on Pipecat, the Grok text and pipeline models, voices, options, `vendorSpecific.xai` and billing |
 | [mcp-servers.md](mcp-servers.md) | Attaching remote MCP tool servers to agents |
 | [tool-call-chaining-metadata-priming.md](tool-call-chaining-metadata-priming.md) | Static/metadata parameter sourcing and chained tool calls |
 | [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |
