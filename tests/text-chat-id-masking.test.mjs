@@ -80,11 +80,11 @@ describe('slimResults keeps internal ids out of the conversation', () => {
     expect(parsed.members[0]).toMatchObject({ label: 'front', id: '00000000-0000-4000-8000-000000000002' });
   });
 
-  test('the stub names each member\'s resulting functions and options', async () => {
-    // The model cannot re-read the set, and a member's functions and options are
-    // whole-field replaces on save — so the names are its only way to see that a
-    // save it just made kept the transfer wiring and the kit. Both function
-    // storage shapes appear.
+  test('the stub names each member\'s resulting functions, options and mcpServers', async () => {
+    // The model cannot re-read the set, and a member's functions, options and
+    // mcpServers are whole-field replaces on save — so the names are its only way
+    // to see that a save it just made kept the transfer wiring, the kit and the
+    // tool servers. Both function storage shapes appear.
     const session = await makeSession();
     const [out] = session.slimResults([
       {
@@ -98,7 +98,9 @@ describe('slimResults keeps internal ids out of the conversation', () => {
               options: { transferTone: true, maxDuration: 900, inactivity: { hangup: true } } },
             { label: 'backend', id: '00000000-0000-4000-8000-000000000003', name: 'Backend',
               functions: { search_docs: { implementation: 'rest' } },
-              options: { effort: 'medium', fallback: null } },
+              options: { effort: 'medium', fallback: null },
+              mcpServers: [{ name: 'knowledge', url: 'https://k.example.com/mcp' },
+                { name: 'crm', url: 'https://c.example.com/mcp' }] },
             { label: 'bare', id: '00000000-0000-4000-8000-000000000004', name: 'Bare' },
           ],
         }),
@@ -116,11 +118,14 @@ describe('slimResults keeps internal ids out of the conversation', () => {
       ['effort'],
       [],
     ]);
+    // Tool servers in document order: the name is what namespaces their tools.
+    expect(members.map((m) => m.mcpServers)).toEqual([[], ['knowledge', 'crm'], []]);
   });
 
-  test('an option VALUE never reaches the conversation', async () => {
+  test('an option or mcpServers VALUE never reaches the conversation', async () => {
     // Stored options can hold an encrypted recording key and the org's failover
-    // number; the stub is a fingerprint, so only key names travel.
+    // number, and an mcpServers entry an inline authorization header; the stub is
+    // a fingerprint, so only names travel.
     const session = await makeSession();
     const [out] = session.slimResults([
       {
@@ -130,14 +135,20 @@ describe('slimResults keeps internal ids out of the conversation', () => {
           name: 'Reception',
           agents: [
             { label: 'front', id: '00000000-0000-4000-8000-000000000002', name: 'Front desk',
-              options: { fallback: { number: '+441632960123' }, recording: { enabled: true, key: 'enc:abc123' } } },
+              options: { fallback: { number: '+441632960123' }, recording: { enabled: true, key: 'enc:abc123' } },
+              mcpServers: [{ name: 'crm', url: 'https://c.example.com/mcp?t=urltoken',
+                headers: { Authorization: 'Bearer inlinetoken' }, key: 'POLITE_MCP' }] },
           ],
         }),
       },
     ]);
     expect(out.result).not.toContain('441632960123');
     expect(out.result).not.toContain('enc:abc123');
-    expect(JSON.parse(out.result).members[0].options).toEqual(['fallback', 'recording']);
+    expect(out.result).not.toContain('inlinetoken');
+    expect(out.result).not.toContain('urltoken');
+    const [member] = JSON.parse(out.result).members;
+    expect(member.options).toEqual(['fallback', 'recording']);
+    expect(member.mcpServers).toEqual(['crm']);
   });
 
   test('a failure from a NON-set tool is masked too', async () => {
