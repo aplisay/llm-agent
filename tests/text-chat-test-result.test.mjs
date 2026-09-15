@@ -124,7 +124,8 @@ describe('text-chat slimResults', () => {
     name: 'Team',
     description: 'a team',
     agents: [
-      { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000), functions: [] },
+      { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000),
+        functions: [{ name: 'end_call' }, { name: 'to_sales' }] },
       { id: 'a-2', label: 'sales', name: 'Sales', prompt: 'y'.repeat(4000), functions: [] },
     ],
   });
@@ -138,8 +139,10 @@ describe('text-chat slimResults', () => {
       id: 'set-1',
       name: 'Team',
       members: [
-        { label: 'main', id: 'a-1', name: 'Main' },
-        { label: 'sales', id: 'a-2', name: 'Sales' },
+        // The function NAMES ride along: a save is the only view the model gets
+        // of what its own write left on each member.
+        { label: 'main', id: 'a-1', name: 'Main', functions: ['end_call', 'to_sales'] },
+        { label: 'sales', id: 'a-2', name: 'Sales', functions: [] },
       ],
     });
     expect(slim.result.length).toBeLessThan(fullSet.length / 10);

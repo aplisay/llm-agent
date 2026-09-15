@@ -80,6 +80,35 @@ describe('slimResults keeps internal ids out of the conversation', () => {
     expect(parsed.members[0]).toMatchObject({ label: 'front', id: '00000000-0000-4000-8000-000000000002' });
   });
 
+  test('the stub names each member\'s resulting functions', async () => {
+    // The model cannot re-read the set, and a member's functions are a
+    // whole-field replace on save — so the names are its only way to see that a
+    // save it just made kept the transfer wiring. Both storage shapes appear.
+    const session = await makeSession();
+    const [out] = session.slimResults([
+      {
+        name: 'patch_agent_set',
+        result: JSON.stringify({
+          id: ID,
+          name: 'Reception',
+          agents: [
+            { label: 'front', id: '00000000-0000-4000-8000-000000000002', name: 'Front desk',
+              functions: [{ name: 'end_call' }, { name: 'to_engineer' }] },
+            { label: 'backend', id: '00000000-0000-4000-8000-000000000003', name: 'Backend',
+              functions: { search_docs: { implementation: 'rest' } } },
+            { label: 'bare', id: '00000000-0000-4000-8000-000000000004', name: 'Bare' },
+          ],
+        }),
+      },
+    ]);
+    const { members } = JSON.parse(out.result);
+    expect(members.map((m) => m.functions)).toEqual([
+      ['end_call', 'to_engineer'],
+      ['search_docs'],
+      [],
+    ]);
+  });
+
   test('a failure from a NON-set tool is masked too', async () => {
     // The leak is not specific to set saves: any tool error the model reads is
     // one it can relay. Masking runs before the set-platform branch.
