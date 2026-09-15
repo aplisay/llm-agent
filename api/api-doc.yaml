@@ -464,7 +464,9 @@ components:
         temperature:
           description: |-
             Agent LLM temperature. Ignored on GPT-Live rows (`hasDelegation`): the Live API does not
-            accept a temperature for the voice model or for a delegated backend model.
+            accept a temperature for the voice model or for a delegated backend model. Ignored on the
+            Grok voice rows (`xai/grok-voice-...`), which have no temperature, and on the xAI reasoning
+            text models; forwarded on `text:xai/grok-4.20-0309-non-reasoning` (docs/grok.md).
           type: number
           example: 0.2
         callHook:
@@ -813,6 +815,11 @@ components:
             spoken context, so it is paraphrased rather than read verbatim; timing, repeat count and
             `hangup` are unchanged.
 
+            On the Grok voice rows (`pipecat:xai/grok-voice-think-fast-2.0`) the message is spoken
+            exactly, through xAI's verbatim speech item, with the platform's own idle detection;
+            xAI's server-side check-in (`turn_detection.idle_timeout_ms`) is off unless set through
+            `vendorSpecific.xai.session`, where it would double up with this option.
+
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
             which is handled entirely server-side by Ultravox and is not portable across workers; when
             both are set on an Ultravox-backed path, the vendor-specific block wins.
@@ -1109,6 +1116,19 @@ components:
               { "openai": { "live": { "delegation": { "responses": { "service_tier": "priority" } } } } }
               ```
 
+            `xai.session`: on a Grok voice row (`pipecat:xai/grok-voice-think-fast-2.0`) a free-form object
+            deep-merged into every `session.update` after the platform's own mapping, so an explicit value
+            here wins. Use it for `turn_detection` tuning (`threshold`, `silence_duration_ms`,
+            `prefix_padding_ms`, `idle_timeout_ms`), `audio.output.speed`, the `replace` pronunciation map or
+            a `voice` the catalogue does not list. Server-side tools are not offered: a `tools` array, or
+            any entry of type `mcp`, `web_search`, `x_search` or `file_search`, is rejected when the agent
+            is saved. `resumption` has no effect under the account's zero data retention. See docs/grok.md.
+              ```json
+              { "xai": { "session": { "turn_detection": { "type": "server_vad", "silence_duration_ms": 350 },
+                                       "audio": { "output": { "speed": 1.1 } },
+                                       "replace": { "Aplisay": "Appli-say" } } } }
+              ```
+
             The structure and allowed values are vendor-specific and should be documented by each vendor.
           type: object
           additionalProperties: true
@@ -1151,6 +1171,11 @@ components:
             paraphrases rather than reads, so `text` is best-effort wording. Caller audio is still dropped
             until the model's first turn completes. Without a greeting the platform asks the model to greet
             the caller and ask how it can help, so the agent still speaks first.
+
+        Note for the Grok voice rows (`pipecat:xai/grok-voice-think-fast-2.0`):
+          - `text` is spoken exactly, through xAI's verbatim speech item, and cannot be talked over;
+            the caller's speech is not detected until it ends. `instructions` and the no-greeting opening
+            are a first response with per-response instructions, best-effort wording as on OpenAI Realtime.
       oneOf:
         - type: object
           additionalProperties: false

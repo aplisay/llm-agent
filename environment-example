@@ -132,6 +132,12 @@ CREDENTIALS_KEY=<RANDOM SECRET>
 ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # ULTRAVOX_API_KEY=
 # ELEVENLABS_API_KEY=
+# DEEPSEEK_KEY=
+# KIMI_KEY=
+# OPENROUTER_KEY=
+# xAI Grok text models and the Grok voice model (docs/grok.md). The older
+# GROK_API_KEY name is accepted as a fallback.
+# XAI_API_KEY=
 
 # ── LiveKit handler ──────────────────────────────────────────────────────────
 LIVEKIT_URL=wss://<your-livekit-host>

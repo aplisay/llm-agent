@@ -27,6 +27,9 @@ REALTIME_NATIVE_TTS_VENDORS: dict[str, str] = {
     "ultravox": "ultravox",
     "openai": "openai",
     "google": "google",
+    # The Grok voice model speaks with xAI's own voices and has no text-only
+    # output (docs/grok.md), so it never appears in TEXT_OUTPUT_PROVIDERS.
+    "xai": "xai",
 }
 
 #: Realtime providers this worker can run in text-output mode. Gemini Live is
