@@ -107,8 +107,10 @@ a realtime row speaking with its own voice the rows carry the model's vendor
 vendor, and the rate-component catalogue advertises those three as bundled
 so a card can carry an explicit zero line for each. Without the zero line
 the rows settle "not priced", which reads as a mistake beside the call that
-already charged for the same audio. In text-output mode the rows name the
-external TTS, as they should: that vendor is billing for the speech.
+already charged for the same audio; `scripts/add-xai-rate-lines.mjs` seeds
+the three zero lines on every card it touches. In text-output mode the rows
+name the external TTS, as they should: that vendor is billing for the
+speech.
 
 Gemini Live is the exception. Its vendor name, `google`, is also the name of
 a discrete TTS engine, so a `tts|google` row would be priced by a card's

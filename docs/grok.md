@@ -173,7 +173,11 @@ detail.
 The text models are token-billed on `input_tokens`, `output_tokens` and
 `cache_read_tokens` lines. `scripts/add-xai-rate-lines.mjs` seeds the voice
 minute line, at the price of the card's Ultravox minute line, and the text
-lines on the default card and on every bespoke card that prices models.
+lines on the default card and on every bespoke card that prices models. It
+also seeds a zero `tts` minute line for each realtime provider whose model
+speaks with its own voice (`ultravox`, `openai`, `xai`), so the speech the
+worker meters settles as included rather than "not priced" (see
+[realtime-external-tts.md](realtime-external-tts.md)).
 
 ## Data retention and residency
 

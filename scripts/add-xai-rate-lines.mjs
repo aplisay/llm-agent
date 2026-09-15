@@ -8,10 +8,12 @@
  * What it does, per target card:
  *   1. Finds the card version covering now().
  *   2. Adds a `voice` minute line per Grok voice row at the price of that
- *      card's existing Ultravox minute line (read from the card), and
- *      `input_tokens`, `output_tokens` and `cache_read_tokens` lines per Grok
- *      text model. Lines already present are left untouched, so re-running is
- *      a no-op.
+ *      card's existing Ultravox minute line (read from the card), a zero
+ *      `tts` minute line per bundled provider (ultravox, openai, xai: the
+ *      speech a realtime model synthesises itself, which the Pipecat worker
+ *      meters under the model's vendor), and `input_tokens`, `output_tokens`
+ *      and `cache_read_tokens` lines per Grok text model. Lines already
+ *      present are left untouched, so re-running is a no-op.
  *   3. Honours the card-immutability rule: a version already referenced by
  *      costed usage is SUPERSEDED (end-dated at now, new version inserted with
  *      the extra lines) instead of edited in place, mirroring the beforeUpdate
@@ -37,6 +39,7 @@
  * Self-contained: loads ./.env and talks to Postgres directly (no app boot).
  */
 import { pathToFileURL } from 'node:url';
+import { BUNDLED_TTS_PROVIDERS } from '../lib/rate-components.js';
 
 export const DEFAULT_TEXT_MODELS = ['grok-4.6', 'grok-4.3', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning'];
 export const DEFAULT_VOICE_MODELS = ['pipecat:xai/grok-voice-think-fast-2.0'];
@@ -76,12 +79,19 @@ export function voiceModelLine(modelName, priceMicros) {
 }
 
 /**
- * The zero line for the speech the voice model synthesises: the worker still
- * meters it as `tts` audio, and without a line those rows settle `no_line`
- * and read as "not priced" beside the minute charge that already covers them
- * (BUNDLED_TTS_PROVIDERS in lib/rate-components.js).
+ * The zero lines for the speech a realtime model synthesises itself: the
+ * Pipecat worker meters it as `tts` audio under the model's vendor, and
+ * without a line those rows settle `no_line` and read as "not priced" beside
+ * the model charge that already covers them. One per bundled provider
+ * (BUNDLED_TTS_PROVIDERS in lib/rate-components.js: ultravox, openai, xai),
+ * not only xai, because the worker's attribution changed for all three in
+ * the same change.
  */
-export const BUNDLED_TTS_LINE = { dim: 'tts', match: { technology: 'tts', provider: 'xai' }, unit: 'minute', priceMicros: 0 };
+export function bundledTtsLines(providers = BUNDLED_TTS_PROVIDERS) {
+  return providers.map((provider) => ({
+    dim: 'tts', match: { technology: 'tts', provider }, unit: 'minute', priceMicros: 0,
+  }));
+}
 
 /**
  * The price of the card's Ultravox minute line, preferring the row on the
@@ -111,13 +121,14 @@ export function hasLine(lines, candidate) {
 
 /**
  * The lines to add to one card: voice minute lines at `voicePrice`, the zero
- * line for the voice model's own speech, and the text token lines, minus
- * those already present. Pure, so a fixture card can be checked in a test.
+ * lines for every bundled provider's own speech, and the text token lines,
+ * minus those already present. Pure, so a fixture card can be checked in a
+ * test.
  */
 export function xaiAdditions(lines, { textModels = DEFAULT_TEXT_MODELS, voiceModels = DEFAULT_VOICE_MODELS, voicePrice, env = process.env } = {}) {
   const wanted = [
     ...voiceModels.map((name) => voiceModelLine(name, voicePrice)),
-    ...(voiceModels.length ? [{ ...BUNDLED_TTS_LINE, match: { ...BUNDLED_TTS_LINE.match } }] : []),
+    ...bundledTtsLines(),
     ...textModels.flatMap((model) => textModelLines(model, textPricesFor(model, env))),
   ];
   return wanted.filter((l) => !hasLine(lines, l));
