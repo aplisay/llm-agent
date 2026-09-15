@@ -203,3 +203,67 @@ def test_flush_posts_canonical_rows(monkeypatch):
     assert row["provider"] == "elevenlabs" and row["detail"] == "eleven_turbo_v2"
     assert row["quantity"] == 7 and row["mode"] == "set" and row["finalised"] is True
     assert row["callId"] == "call-1" and row["organisationId"] == "org-1"
+
+
+# --- a realtime model's own speech (docs/realtime-external-tts.md) -----------
+#
+# The Pipecat worker meters every TTSAudioRawFrame a realtime model speaks.
+# That audio is paid for by the model's own rows, so it is attributed to the
+# model's vendor (a bundled provider a card zero-prices), never to the
+# pipeline's default TTS vendor: on the first Grok live call the rows came
+# out as tts|cartesia, which a Cartesia line would have priced on top of the
+# minute. Gemini Live's vendor is also a TTS engine's name, so its speech is
+# not metered at all.
+
+def test_realtime_rows_meter_their_own_speech_under_the_models_vendor():
+    from pipecat_aplisay.usage import bundled_speech_vendor
+
+    cases = {
+        "pipecat:ultravox/ultravox-v0.7": "ultravox",
+        "pipecat:ultravox/ultravox-v0.6-gemma3-27b": "ultravox",
+        "pipecat:openai/gpt-realtime": "openai",
+        "pipecat:xai/grok-voice-think-fast-2.0": "xai",
+    }
+    for model_name, vendor in cases.items():
+        v = usage_vendors({"options": {"tts": {"voice": "Mark"}}}, model_name)
+        assert v["tts"] == {"vendor": vendor, "model": "Mark"}, model_name
+        assert bundled_speech_vendor({"options": {}}, model_name.split(":", 1)[1]) == vendor
+    # the model's own vendor named explicitly is still its own voice
+    v = usage_vendors({"options": {"tts": {"vendor": "ultravox", "voice": "Mark"}}}, "pipecat:ultravox/ultravox-v0.7")
+    assert v["tts"]["vendor"] == "ultravox"
+
+
+def test_text_output_mode_keeps_the_external_tts_vendor():
+    v = usage_vendors(
+        {"options": {"tts": {"vendor": "elevenlabs", "voice": "Rachel"}}}, "pipecat:ultravox/ultravox-v0.7"
+    )
+    assert v["tts"] == {"vendor": "elevenlabs", "model": "Rachel"}
+    v = usage_vendors({"options": {"tts": {"vendor": "deepgram"}}}, "pipecat:openai/gpt-realtime")
+    assert v["tts"]["vendor"] == "deepgram"
+
+
+def test_pipeline_rows_and_unknown_providers_keep_the_pipeline_default():
+    assert usage_vendors({}, "pipecat:openai/gpt-4o")["tts"]["vendor"] == "cartesia"
+    assert usage_vendors({}, "pipecat:xai/grok-4.3")["tts"]["vendor"] == "cartesia"
+    assert usage_vendors({}, "pipecat:anthropic/claude-sonnet-4-6")["tts"]["vendor"] == "cartesia"
+    for name in ("pipecat:openai/gpt-4o", "pipecat:ultravox/ultravox-v0.7"):
+        assert "skip" not in usage_vendors({}, name)["tts"]
+
+
+def test_gemini_live_speech_is_not_metered():
+    from pipecat.frames.frames import TTSAudioRawFrame
+    from pipecat.metrics.metrics import TTSUsageMetricsData
+
+    services = usage_vendors({}, "pipecat:google/gemini-2.0-flash-exp")
+    assert services["tts"]["skip"] is True
+    obs = UsageMeteringObserver(services=services)
+    _push(obs, TTSAudioRawFrame(audio=b"\x00" * 48000, sample_rate=24000, num_channels=1))
+    _push(obs, MetricsFrame(data=[TTSUsageMetricsData(processor="tts", model="x", value=42)]))
+    assert _meter(obs, "tts", "milliseconds") is None
+    assert _meter(obs, "tts", "characters") is None
+    # with an external TTS the speech is that vendor's and is metered
+    external = usage_vendors({"options": {"tts": {"vendor": "elevenlabs", "voice": "Rachel"}}}, "pipecat:google/gemini-2.0-flash-exp")
+    assert "skip" not in external["tts"] and external["tts"]["vendor"] == "elevenlabs"
+    obs2 = UsageMeteringObserver(services=external)
+    _push(obs2, TTSAudioRawFrame(audio=b"\x00" * 48000, sample_rate=24000, num_channels=1))
+    assert _meter(obs2, "tts", "milliseconds")["quantity"] == 1000

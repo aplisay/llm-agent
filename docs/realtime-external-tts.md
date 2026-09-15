@@ -96,6 +96,25 @@ produced by the model. They arrive as text and the TTS speaks them.
   vendor and priced by that vendor's rate lines. The model's own charge is
   unchanged.
 
+## Metering the model's own speech
+
+The Pipecat worker measures every audio frame a realtime model speaks and
+records it as `tts` usage (milliseconds), the same meter a discrete TTS
+stage feeds. That audio is already paid for by the model's own rows: a
+per-minute line on Ultravox and Grok, audio tokens on OpenAI Realtime. So on
+a realtime row speaking with its own voice the rows carry the model's vendor
+(`tts|ultravox`, `tts|openai`, `tts|xai`), never the pipeline's default TTS
+vendor, and the rate-component catalogue advertises those three as bundled
+so a card can carry an explicit zero line for each. Without the zero line
+the rows settle "not priced", which reads as a mistake beside the call that
+already charged for the same audio. In text-output mode the rows name the
+external TTS, as they should: that vendor is billing for the speech.
+
+Gemini Live is the exception. Its vendor name, `google`, is also the name of
+a discrete TTS engine, so a `tts|google` row would be priced by a card's
+Google TTS line. The worker meters nothing for Gemini Live's own speech,
+which is what the LiveKit worker does for every realtime row.
+
 ## Not covered
 
 - GPT-Live has no text-output modality. A separate, explicitly enabled

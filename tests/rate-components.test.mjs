@@ -63,7 +63,9 @@ describe('rate-components catalogue', () => {
   // the rows match nothing and sit on the customer's usage screen as minutes of
   // TTS marked "not priced", beside the call that already charged for them.
   it('advertises bundled realtime speech as a zero-priceable tts component', () => {
-    expect(BUNDLED_TTS_PROVIDERS).toContain('ultravox');
+    // The Pipecat worker attributes a realtime model's own speech to the
+    // model's vendor; Gemini Live is absent because google is also a TTS engine.
+    expect([...BUNDLED_TTS_PROVIDERS].sort()).toEqual(['openai', 'ultravox', 'xai']);
     for (const provider of BUNDLED_TTS_PROVIDERS) {
       const c = byKey(`tts:${provider}`);
       expect(c.dim).toBe('tts');
