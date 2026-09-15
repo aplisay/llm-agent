@@ -7,10 +7,13 @@ process.env.ANTHROPIC_API_KEY ||= 'test-key';
 process.env.KIMI_KEY ||= 'test-key';
 process.env.OPENROUTER_KEY ||= 'test-key';
 process.env.GOOGLE_API_KEY ||= 'test-key';
+process.env.XAI_API_KEY ||= 'test-key';
 
 const { default: OpenAi } = await import('../lib/models/openai.js');
 const { default: Kimi } = await import('../lib/models/kimi.js');
 const { default: OpenRouter } = await import('../lib/models/openrouter.js');
+const { default: Xai } = await import('../lib/models/xai.js');
+const { XAI_FALLBACK_VOICES, XAI_VENDOR, mapXaiVoices } = await import('../lib/voices/xai.js');
 const { default: McpToolBridge } = await import('../lib/models/mcp-tools.js');
 
 const logger = {
@@ -274,5 +277,117 @@ describe('McpToolBridge auth resolution', () => {
     expect(bridge.authFor({ key: 'WRONG_KIND' })).toBeNull();
     expect(bridge.authFor({ key: 'MISSING' })).toBeNull();
     expect(bridge.authFor({})).toBeUndefined();
+  });
+});
+
+describe('xAI (Grok) driver', () => {
+  const xai = (model, options = { maxTokens: 12345 }) => new Xai({ ...baseArgs(`text:xai/${model}`), options });
+
+  test('strips only the leading provider segment and uses max_tokens', () => {
+    const grok = xai('grok-4.3');
+    expect(grok.model).toBe('grok-4.3');
+    expect(grok.requestBody([]).max_tokens).toBe(12345);
+    expect(grok.requestBody([])).not.toHaveProperty('max_completion_tokens');
+    expect(Xai.provider).toBe('xai');
+    expect(Xai.allModels.map(([id]) => id)).toEqual([
+      'xai/grok-4.6', 'xai/grok-4.3', 'xai/grok-4.20-0309-reasoning', 'xai/grok-4.20-0309-non-reasoning',
+    ]);
+  });
+
+  test('maps options.effort to reasoning_effort per model', () => {
+    // grok-4.3 takes every level; the platform's max is xhigh there.
+    expect(Xai.effortFor('grok-4.3', 'max', logger)).toBe('xhigh');
+    expect(Xai.effortFor('grok-4.3', 'none', logger)).toBe('none');
+    expect(Xai.effortFor('grok-4.3', 'medium', logger)).toBe('medium');
+    // grok-4.6 rejects the value none: the nearest level is low.
+    expect(Xai.effortFor('grok-4.6', 'none', logger)).toBe('low');
+    expect(Xai.effortFor('grok-4.6', 'high', logger)).toBe('high');
+    // both 4.20 models reject the parameter outright.
+    expect(Xai.effortFor('grok-4.20-0309-reasoning', 'high', logger)).toBeUndefined();
+    expect(Xai.effortFor('grok-4.20-0309-non-reasoning', 'low', logger)).toBeUndefined();
+    expect(Xai.effortFor('grok-4.3', 'bogus', logger)).toBeUndefined();
+    expect(Xai.effortFor('grok-4.3', undefined, logger)).toBeUndefined();
+    expect(xai('grok-4.3', { maxTokens: 1, effort: 'max' }).requestBody([]).reasoning_effort).toBe('xhigh');
+    expect(xai('grok-4.20-0309-reasoning', { maxTokens: 1, effort: 'high' }).requestBody([])).not.toHaveProperty('reasoning_effort');
+    expect(xai('grok-4.3').requestBody([])).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('forwards temperature on the non-reasoning model only', () => {
+    expect(xai('grok-4.20-0309-non-reasoning', { maxTokens: 1, temperature: 0.4 }).requestBody([]).temperature).toBe(0.4);
+    for (const model of ['grok-4.6', 'grok-4.3', 'grok-4.20-0309-reasoning']) {
+      expect(xai(model, { maxTokens: 1, temperature: 0.4 }).requestBody([])).not.toHaveProperty('temperature');
+    }
+  });
+
+  test('usage reads cached tokens from prompt_tokens_details and keeps the units disjoint', () => {
+    const grok = xai('grok-4.3');
+    expect(grok.usageOf({
+      prompt_tokens: 304, completion_tokens: 3, total_tokens: 608,
+      prompt_tokens_details: { text_tokens: 304, cached_tokens: 256 },
+      completion_tokens_details: { reasoning_tokens: 301 },
+    })).toEqual({ inputTokens: 48, outputTokens: 3, cacheReadTokens: 256, cacheWriteTokens: 0 });
+  });
+
+  test('the key is XAI_API_KEY with GROK_API_KEY as a fallback, and no key fails closed', () => {
+    const saved = { XAI_API_KEY: process.env.XAI_API_KEY, GROK_API_KEY: process.env.GROK_API_KEY };
+    try {
+      delete process.env.XAI_API_KEY;
+      delete process.env.GROK_API_KEY;
+      expect(Xai.canLoad.ok).toBe(false);
+      expect(Xai.canLoad.need).toEqual(['XAI_API_KEY']);
+      expect(() => xai('grok-4.3')).toThrow(/XAI_API_KEY is not set/);
+      process.env.GROK_API_KEY = 'legacy-key';
+      expect(Xai.canLoad.ok).toBe(true);
+      expect(xai('grok-4.3').model).toBe('grok-4.3');
+    } finally {
+      delete process.env.GROK_API_KEY;
+      if (saved.GROK_API_KEY !== undefined) process.env.GROK_API_KEY = saved.GROK_API_KEY;
+      process.env.XAI_API_KEY = saved.XAI_API_KEY;
+    }
+  });
+
+  test('voices come from the catalogue endpoint, mapped to the xAI block', async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, auth: init.headers.Authorization });
+      return {
+        ok: true,
+        json: async () => ({ voices: [
+          { voice_id: 'eve', name: 'Eve', language: 'multilingual', gender: 'female' },
+          { voice_id: 'rex', name: 'Rex', language: 'multilingual', gender: 'Male' },
+          { voice_id: 'custom_1', name: 'Mine', language: 'en', gender: 'neutral' },
+          { name: 'no id' },
+        ] }),
+      };
+    };
+    const tree = await Xai.fetchVoices({ fetchImpl, key: 'k', logger });
+    expect(calls).toEqual([{ url: 'https://api.x.ai/v1/tts/voices', auth: 'Bearer k' }]);
+    expect(Object.keys(tree)).toEqual([XAI_VENDOR]);
+    expect(tree.xAI.any).toEqual([
+      { name: 'eve', description: 'Eve (multilingual, the default voice)', gender: 'female' },
+      { name: 'rex', description: 'Rex (multilingual)', gender: 'male' },
+      { name: 'custom_1', description: 'Mine (en)', gender: 'unknown' },
+    ]);
+    expect(mapXaiVoices([{ voice_id: 'ara', gender: 'female' }])).toEqual([
+      { name: 'ara', description: 'ara (multilingual)', gender: 'female' },
+    ]);
+  });
+
+  test('voices fall back to the static list when the fetch fails or no key is set', async () => {
+    const failing = async () => { throw new Error('boom'); };
+    const fallback = await Xai.fetchVoices({ fetchImpl: failing, key: 'k', logger });
+    expect(fallback.xAI.any.map((v) => v.name)).toEqual(XAI_FALLBACK_VOICES.map((v) => v.name));
+    expect(fallback.xAI.any).toHaveLength(26);
+    expect(fallback.xAI.any.find((v) => v.name === 'eve').gender).toBe('female');
+    const notOk = async () => ({ ok: false, status: 401, json: async () => ({}) });
+    expect((await Xai.fetchVoices({ fetchImpl: notOk, key: 'k', logger })).xAI.any).toHaveLength(26);
+    const empty = async () => ({ ok: true, json: async () => ({ voices: [] }) });
+    expect((await Xai.fetchVoices({ fetchImpl: empty, key: 'k', logger })).xAI.any).toHaveLength(26);
+    let fetched = false;
+    const noKey = await Xai.fetchVoices({ fetchImpl: async () => { fetched = true; }, key: null, logger });
+    expect(fetched).toBe(false);
+    expect(noKey.xAI.any).toHaveLength(26);
+    // the block is a fresh copy each time
+    expect(noKey.xAI.any[0]).not.toBe(XAI_FALLBACK_VOICES[0]);
   });
 });
