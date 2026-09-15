@@ -170,18 +170,20 @@ export const realtimePluginModules: Record<string, unknown> = {
   google,
 };
 
+type RealtimeNamespace = {
+  RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel;
+};
+
 export function getRealtimePlugin(modelName: string): {
   plugin: string | undefined;
-  realtime:
-    | { RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel }
-    | undefined;
+  realtime: RealtimeNamespace | undefined;
 } {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const mod = plugin ? realtimePluginModules[plugin] : undefined;
-  const realtime = mod as
-    | { realtime?: { RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel } }
+  const mod = (plugin ? realtimePluginModules[plugin] : undefined) as
+    | { realtime?: RealtimeNamespace; beta?: { realtime?: RealtimeNamespace } }
     | undefined;
-  return { plugin, realtime: realtime?.realtime };
+  // @livekit/agents-plugin-google 1.0.x exports its Gemini Live model only as beta.realtime.
+  return { plugin, realtime: mod?.realtime ?? mod?.beta?.realtime };
 }
 
 /** Provider segment after `livekit:<plugin>/` (e.g. gpt-4o, fixie-ai/ultravox-70B). */
