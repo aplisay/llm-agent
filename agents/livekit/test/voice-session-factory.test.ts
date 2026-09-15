@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
+import * as google from "@livekit/agents-plugin-google";
+import * as openai from "@livekit/agents-plugin-openai";
+import * as ultravox from "../plugins/ultravox/src/index.js";
+import { buildRealtimeLlmOptions, getRealtimePlugin } from "../lib/voice-session-factory.js";
+import { LIVEKIT_REALTIME_MODEL_ROWS } from "../lib/livekit-model-registry.js";
 import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
@@ -327,5 +331,31 @@ test("non-ultravox realtime: the options are the same on a handover or hand-back
   const agent = makeAgent({ greeting: { text: "Hello!" }, vendorSpecific: { openai: { something: true } } });
   for (const opening of [HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION]) {
     assert.deepEqual(handoverLeg(OPENAI, agent, opening), buildRealtimeLlmOptions(OPENAI, agent, "call-2"));
+  }
+});
+
+// --- realtime plugin lookup -------------------------------------------------------
+// A realtime row that GET /models advertises but no plugin resolves fails every
+// call at session start with "Unsupported realtime model".
+
+test("google: the Gemini Live row resolves to the plugin's RealtimeModel", () => {
+  const { plugin, realtime } = getRealtimePlugin("livekit:google/gemini-2.0-flash-exp");
+  assert.equal(plugin, "google");
+  assert.equal(realtime?.RealtimeModel, google.beta.realtime.RealtimeModel);
+});
+
+test("openai and ultravox rows still resolve to their plugin's RealtimeModel", () => {
+  assert.equal(getRealtimePlugin(OPENAI).realtime?.RealtimeModel, openai.realtime.RealtimeModel);
+  assert.equal(getRealtimePlugin(ULTRAVOX).realtime?.RealtimeModel, ultravox.realtime.RealtimeModel);
+});
+
+test("every realtime row in the registry resolves to a RealtimeModel", () => {
+  for (const [vendor, model] of LIVEKIT_REALTIME_MODEL_ROWS) {
+    const modelName = `livekit:${vendor}/${model}`;
+    assert.equal(
+      typeof getRealtimePlugin(modelName).realtime?.RealtimeModel,
+      "function",
+      `${modelName} has no RealtimeModel`,
+    );
   }
 });
