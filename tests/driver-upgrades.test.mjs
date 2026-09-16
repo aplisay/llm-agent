@@ -82,14 +82,23 @@ describe('openai-compatible request bodies', () => {
     expect(or.requestBody([])).not.toHaveProperty('provider');
   });
 
-  test('usage units are DISJOINT: cached tokens are subtracted from prompt_tokens', () => {
+  test('usage units are DISJOINT: cache reads and writes are subtracted from prompt_tokens', () => {
     const kimi = new Kimi(baseArgs('text:kimi/kimi-k2.6'));
     // prompt_tokens INCLUDES the cached subset on these providers — reporting
     // both un-split would bill cache hits at full input rate AND cache-read rate.
     expect(kimi.usageOf({ prompt_tokens: 10, completion_tokens: 5, cached_tokens: 7 }))
       .toEqual({ inputTokens: 3, outputTokens: 5, cacheReadTokens: 7, cacheWriteTokens: 0 });
     expect(kimi.usageOf({ prompt_tokens: 10, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 } }))
-      .toEqual({ inputTokens: 7, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 });
+      .toEqual({ inputTokens: 5, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 });
+  });
+
+  test('openrouter usage for anthropic/* counts cache reads and writes inside prompt_tokens', () => {
+    const or = new OpenRouter(baseArgs('text:openrouter/anthropic/claude-sonnet-5'));
+    // Two live requests: OpenRouter's reported cost charged the input rate on 12 and 25 tokens only (#309).
+    expect(or.usageOf({ prompt_tokens: 4258, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 4246 } }))
+      .toEqual({ inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 4246 });
+    expect(or.usageOf({ prompt_tokens: 4271, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 4246, cache_write_tokens: 0 } }))
+      .toEqual({ inputTokens: 25, outputTokens: 3, cacheReadTokens: 4246, cacheWriteTokens: 0 });
   });
 });
 
