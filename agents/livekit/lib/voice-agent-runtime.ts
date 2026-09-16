@@ -21,13 +21,9 @@ import { invocationLogs } from "./invocation-log-buffer.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
-import { isOpenAIRealtime, speakGreetingText, speakInactivityMessage } from "./speak-text.js";
-import {
-  createVoiceModelAndSession,
-  inactivityAwayTimeoutSecs,
-  inactivityHangupEnabled,
-  INACTIVITY_PROMPT_COUNT,
-} from "./voice-session-factory.js";
+import { isOpenAIRealtime, speakGreetingText } from "./speak-text.js";
+import { createVoiceModelAndSession } from "./voice-session-factory.js";
+import { createInactivityKick } from "./inactivity-kick.js";
 import {
   armHandoverFirstSpeaker,
   HANDOVER_OPENING_INSTRUCTION,
@@ -345,14 +341,6 @@ export async function runAgentWorker({
   };
   const MAX_DTMF_DIGITS = 64;
   const DTMF_INTER_DIGIT_MS = 200;
-
-  // Inactivity "kick": repeating timer that re-speaks options.inactivity.message
-  // every `timeout` seconds while the user is in the "away" state. The first
-  // kick fires from the SDK `user_state_changed` → "away" event (driven by
-  // `voiceOptions.userAwayTimeout`); subsequent kicks come from this interval.
-  // Cleared when the user becomes active again or on teardown. Null/unset when
-  // options.inactivity is absent — zero behavioural change in that case.
-  let inactivityInterval: NodeJS.Timeout | null = null;
 
   let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
@@ -816,10 +804,7 @@ export async function runAgentWorker({
         dtmfTimeout = null;
       }
       // Stop the inactivity-kick repeat timer
-      if (inactivityInterval) {
-        clearInterval(inactivityInterval);
-        inactivityInterval = null;
-      }
+      inactivityKick.stop();
       // Stop the leak watchdog
       if (watchdogInterval) {
         clearInterval(watchdogInterval);
@@ -1038,6 +1023,24 @@ export async function runAgentWorker({
   // Only the session that is currently active may act on its events.
   const isStaleSession = (s: voice.AgentSession | null): boolean => s !== session;
 
+  const inactivityKick = createInactivityKick({
+    currentSession: () => session,
+    activeAgent: () => ({
+      agent: activeAgentDef,
+      modelName: activeModelName,
+      voiceMode: resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options),
+      textOutput: resolvedTextOutput,
+    }),
+    isBridged: () => Boolean(getBridgedParticipant()),
+    transferInFlight: () => {
+      if (getConsultInProgress()) return true;
+      if (getBridgedParticipant()) return true;
+      const st = getTransferState?.();
+      return st?.state === "dialling" || st?.state === "talking";
+    },
+    endCall: () => cleanupAndClose(DISCONNECT_REASONS.INACTIVITY_TIMEOUT),
+  });
+
   /**
    * Compose the incoming agent's system prompt for a handover: its own prompt
    * plus the takeover preamble, the optional LLM-written summary, and (when
@@ -1099,10 +1102,10 @@ export async function runAgentWorker({
 
   /**
    * Wire the handlers a freshly-started handover session needs: transcript
-   * capture, agent-initiated hangup, error logging, and close-driven teardown
-   * (suppressed while a further handover is in flight). Mirrors the inline
-   * wiring in the setup path; the startup-error watcher and watchdog are
-   * call-scoped and already running.
+   * capture, agent-initiated hangup, error logging, the inactivity kick, and
+   * close-driven teardown (suppressed while a further handover is in flight).
+   * Mirrors the inline wiring in the setup path; the startup-error watcher and
+   * watchdog are call-scoped and already running.
    */
   const wireHandoverSession = (s: voice.AgentSession, forAgent: Agent): void => {
     const skipText =
@@ -1160,6 +1163,7 @@ export async function runAgentWorker({
     s.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
       logger.error({ ev }, "error (handover session)");
     });
+    inactivityKick.attach(s);
     // Keep metering the post-handover session into the same usage accumulator.
     wireUsageMetrics(s);
     s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
@@ -1262,6 +1266,9 @@ export async function runAgentWorker({
       },
     })) as Call;
     await newCall.start();
+    // Stop here, not at the session swap: a takeover's onReserved clears the
+    // bridge that keeps the outgoing agent's prompts silent.
+    inactivityKick.stop();
 
     if (takeover) {
       // Slot held: commit the takeover — drop the transfer target and end the
@@ -1471,6 +1478,7 @@ export async function runAgentWorker({
       const onUltravox =
         voiceMode === "realtime" && activeModelName.includes(":ultravox/");
       activeAgentDef = { ...newAgentDef, modelName: activeModelName };
+      inactivityKick.applyAwayTimeout();
       // The incoming agent opens with the handover instruction, not its
       // greeting. The SDK starts it in a new activity on the running session.
       // On Ultravox that activity opens a new Ultravox call from the running
@@ -2000,127 +2008,9 @@ export async function runAgentWorker({
         armAuxSttFor(agent);
         armOutputSttFor(agent, session);
 
-        // ---- Inactivity "kick" ----
-        // When options.inactivity is configured, the session was built with
-        // `voiceOptions.userAwayTimeout` = inactivity.timeout (see
-        // voice-session-factory.ts), so LiveKit emits a `user_state_changed`
-        // event with newState === "away" after that many seconds of silence.
-        // We speak the literal message on that event and then re-speak it on a
-        // repeat interval for as long as the user stays away, cancelling the
-        // moment any activity flips the user back to speaking/listening. This
-        // gives the "re-fire every `timeout` of continued silence, reset on
-        // activity" contract. Inert (handler never registered) when unset.
-        const inactivityMessage =
-          typeof agent?.options?.inactivity?.message === "string"
-            ? agent.options.inactivity.message.trim()
-            : "";
-        const inactivityTimeoutSecs = inactivityAwayTimeoutSecs(agent);
-        // Ultravox realtime handles inactivity NATIVELY via
-        // `vendorSpecific.ultravox.inactivityMessages` (wired in
-        // voice-session-factory.ts): Ultravox is speech-to-speech with no
-        // separate TTS, so a JS-side say()/generateReply kick is unreliable for
-        // it. Only wire the generic SDK user-away kick for NON-ultravox models
-        // (pipeline TTS / OpenAI / Gemini realtime); speak-text.ts picks say() or
-        // generateReply for each.
-        const isUltravoxRealtime =
-          (resolvedVoiceMode || resolveVoiceMode(modelName, agent.options)) ===
-            "realtime" && modelName.includes("livekit:ultravox/");
-        if (
-          inactivityMessage &&
-          inactivityTimeoutSecs !== undefined &&
-          session &&
-          !isUltravoxRealtime
-        ) {
-          // Consecutive unanswered prompts in the current away streak. Reset the
-          // moment the user comes back (see the UserStateChanged handler), so the
-          // hangup only ever fires on a genuinely abandoned call.
-          let inactivityPrompts = 0;
-          const hangupAfterPrompts = inactivityHangupEnabled(agent);
-
-          /**
-           * True while the caller is legitimately unattended by us: held through a
-           * consultation, or already bridged/transferring. Their silence is expected
-           * and must not be counted towards abandonment.
-           *
-           * NB the Ultravox native path cannot make this distinction — Ultravox
-           * enforces its own endBehavior server-side with no view of a transfer.
-           * See the `hangup` option docs in api-client.
-           */
-          const transferInFlight = () => {
-            if (getConsultInProgress()) return true;
-            if (getBridgedParticipant()) return true;
-            const st = getTransferState?.();
-            return st?.state === "dialling" || st?.state === "talking";
-          };
-
-          const speakInactivity = async () => {
-            // Suppress during/after a transfer bridge — the local agent's audio
-            // is no longer what the caller hears.
-            if (getBridgedParticipant()) return;
-            const s = session;
-            if (!s) return;
-            try {
-              speakInactivityMessage(s, inactivityMessage, {
-                voiceMode:
-                  resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options),
-                textOutput: resolvedTextOutput,
-              });
-            } catch (e) {
-              logger.info({ e }, "inactivity kick failed");
-            }
-
-            // Count only prompts the caller actually heard, and only when we are the
-            // ones they are waiting on. Without the opt-in this stays a pure counter
-            // and the kick repeats indefinitely, exactly as before.
-            if (!hangupAfterPrompts) return;
-            if (transferInFlight()) return;
-            inactivityPrompts += 1;
-            if (inactivityPrompts < INACTIVITY_PROMPT_COUNT) return;
-
-            if (inactivityInterval) {
-              clearInterval(inactivityInterval);
-              inactivityInterval = null;
-            }
-            logger.info(
-              { prompts: inactivityPrompts, inactivityTimeoutSecs },
-              "inactivity prompt unanswered, ending call",
-            );
-            await cleanupAndClose(DISCONNECT_REASONS.INACTIVITY_TIMEOUT).catch(
-              (e) => logger.error({ e }, "error ending call on inactivity"),
-            );
-          };
-
-          session.on(
-            voice.AgentSessionEventTypes.UserStateChanged,
-            (event: { newState?: string }) => {
-              if (event?.newState === "away") {
-                // First kick immediately on becoming away, then repeat every
-                // `timeout` seconds of continued silence.
-                if (inactivityInterval) {
-                  clearInterval(inactivityInterval);
-                  inactivityInterval = null;
-                }
-                void speakInactivity();
-                inactivityInterval = setInterval(() => {
-                  void speakInactivity();
-                }, inactivityTimeoutSecs * 1000);
-              } else {
-                // User became active again (speaking / listening) — stop kicking and
-                // forget the streak, so three prompts spread across a long call never
-                // add up to a hangup.
-                inactivityPrompts = 0;
-                if (inactivityInterval) {
-                  clearInterval(inactivityInterval);
-                  inactivityInterval = null;
-                }
-              }
-            },
-          );
-          logger.debug(
-            { inactivityTimeoutSecs, isUltravoxRealtime },
-            "inactivity kick wired",
-          );
-        }
+        // Inactivity kick (inactivity-kick.ts). A full-stack handover attaches
+        // its new session in wireHandoverSession.
+        inactivityKick.attach(setupSession);
 
         // Leak watchdog. Periodically verify the room still has at least one
         // remote participant. If not, and there is no transfer or consult in

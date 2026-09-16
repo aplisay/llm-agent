@@ -12,7 +12,7 @@ import {
 // leg nobody hangs up is only reclaimed by the model's maxDuration long-stop, which can
 // leave a caller (or an abandoned transfer target) on silence for minutes.
 // This file covers the option gate and the Ultravox native mapping; the generic
-// (non-Ultravox) counter lives in voice-agent-runtime.
+// (non-Ultravox) counter lives in inactivity-kick.ts (test/inactivity-kick.test.ts).
 // run: npx tsx --test test/inactivity-hangup.test.ts
 
 const ULTRAVOX = "livekit:ultravox/ultravox-v0.7";
@@ -114,7 +114,7 @@ test("prompt entries are independent objects, not shared references", () => {
 });
 
 test("non-ultravox models get no native inactivityMessages", () => {
-  // Enforcement for these lives in voice-agent-runtime's counter instead.
+  // Enforcement for these lives in inactivity-kick.ts instead.
   const opts = buildRealtimeLlmOptions(OPENAI, withInactivity({ hangup: true }), "call-1");
   assert.equal((opts.vendorSpecific as any)?.ultravox?.inactivityMessages, undefined);
 });
