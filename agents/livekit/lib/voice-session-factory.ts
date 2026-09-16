@@ -29,8 +29,8 @@ import { openingFirstSpeakerSettings } from "./handover-opening.js";
  * How many times the inactivity prompt is spoken before the call is considered
  * abandoned. Shared so the two enforcement paths agree: the Ultravox native
  * `inactivityMessages` list length, and our own repeat-kick counter in
- * voice-agent-runtime. Only acted on when `options.inactivity.hangup` is set —
- * otherwise Ultravox stops prompting after this many and we keep prompting.
+ * inactivity-kick.ts. Only acted on when `options.inactivity.hangup` is set.
+ * Otherwise Ultravox stops prompting after this many and we keep prompting.
  */
 export const INACTIVITY_PROMPT_COUNT = 3;
 
@@ -68,7 +68,7 @@ export function inactivityHangupEnabled(agent: Agent): boolean {
  * Returns `undefined` when `options.inactivity` is absent or malformed (no
  * usable timeout, or no non-empty `message`). In that case the caller omits
  * `userAwayTimeout` entirely, so the session keeps the SDK default
- * (`15s`) but no kick handler is wired — behaviour is unchanged.
+ * (`15s`) and the inactivity kick ignores its "away" events.
  */
 export function inactivityAwayTimeoutSecs(agent: Agent): number | undefined {
   const inactivity = agent?.options?.inactivity;
@@ -299,7 +299,7 @@ export function buildRealtimeLlmOptions(
   // `inactivityMessages` so Ultravox itself does the idle detection and speaks
   // the phrase in-model. Ultravox is speech-to-speech with no separate TTS, so
   // the JS-side say()/generateReply kick is unreliable for it; the generic SDK
-  // user-away kick (voice-agent-runtime.ts) is gated to NON-ultravox models, and
+  // user-away kick (inactivity-kick.ts) is gated to NON-ultravox models, and
   // the Ultravox session omits `userAwayTimeout`. A native
   // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
   if (modelName.includes("livekit:ultravox/")) {
@@ -434,7 +434,7 @@ export function createVoiceModelAndSession(
 
   // Inactivity "kick": when options.inactivity is configured, set LiveKit's
   // user-away timeout so the session emits a `user_state_changed` → "away"
-  // event after `timeout` of silence. The runtime (voice-agent-runtime.ts)
+  // event after `timeout` of silence. The kick (inactivity-kick.ts)
   // listens for that and speaks options.inactivity.message. Omitted entirely
   // when unset, so the default behaviour is unchanged.
   const userAwayTimeout = inactivityAwayTimeoutSecs(agent);

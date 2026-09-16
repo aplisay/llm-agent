@@ -31,7 +31,7 @@
  *
  * Speaking detection rides the AgentSession's `AgentStateChanged` /
  * `UserStateChanged` events (same source the inactivity kick uses in
- * voice-agent-runtime.ts). A configurable quiet "grace" window after the
+ * inactivity-kick.ts). A configurable quiet "grace" window after the
  * last speech keeps the tone from blipping into normal turn-taking pauses.
  *
  * Mirrors agents/pipecat/pipecat_aplisay/confidence_tone.py — keep the
