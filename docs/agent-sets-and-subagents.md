@@ -219,6 +219,9 @@ Semantics:
   still replaces the stored one, and listing a name in the member's
   `removeFunctions` array deletes it explicitly (`removeFunctions` also works
   without resending `functions` at all — a remove-only patch).
+  The exception is a GPT-Live voice member whose in-set `delegate` target
+  declares the same name: the voice member's copy is dropped, so a document
+  can move a keyed function to the delegate ([gpt-live.md](gpt-live.md#tools)).
 * `DELETE /agent-sets/{id}` removes the set and all member agents.
 
 Endpoints: `POST /agent-sets`, `GET /agent-sets`, `GET /agent-sets/{id}`,

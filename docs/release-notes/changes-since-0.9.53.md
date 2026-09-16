@@ -299,7 +299,8 @@ Pipecat), and **ci** (build and release pipeline).
   by accent.
 - **[core] Agent sets** resolve `label:` references in `delegate` functions and
   reject a voice member and its in-set delegate declaring a function of the same
-  name.
+  name. A keyed function that a document moves to the delegate is dropped from
+  the voice member rather than rejected.
 - **[core] Billing**: session minutes are priced on the row's `voice` line;
   backend tokens on the delegate model's `llm` lines.
 - **[pipecat] Greeting, inactivity prompt, and DTMF** on GPT-Live use the Live

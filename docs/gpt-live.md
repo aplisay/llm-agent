@@ -101,7 +101,8 @@ Rules the API enforces when the agent is saved:
 - a `delegate` on a model without `hasDelegation` is rejected;
 - a second `delegate`, or any parameter other than `agent`, is rejected;
 - inside an agent set, a voice member and its in-set delegate that both
-  declare a function of the same name are rejected (see tools below).
+  declare a function of the same name are rejected, except for a keyed
+  function the save only kept on the voice member (see tools below).
 
 ## No `delegate` declared
 
@@ -219,6 +220,18 @@ Each function runs in the worker with its own agent's keys, and results
 return to the backend on the call that asked for them. A name declared on
 both sides resolves in the delegate's favour and is logged at call start;
 inside an agent set the clash is rejected when the set is saved.
+
+There is one exception, for functions that reference a key (their `key`
+property). A set save keeps a keyed function even when the member's
+`functions` leaves it out, and removes it only when its name is in the
+member's `removeFunctions` ([agent-sets-and-subagents.md](agent-sets-and-subagents.md)).
+So when a document moves a keyed function from the voice member to the
+delegate, the voice member would keep its old copy and the save would be
+rejected. Instead, the save drops the voice member's copy. The worker would
+never call that copy, so nothing changes on a call. This applies only when
+the document sends the voice member's `functions`, and it never drops the
+delegate's copy. A clash the document writes on both members is still
+rejected.
 
 Every tool behaves as not cancelled by interruption: the voice model handles
 being talked over itself, and a delegation keeps running while it does.
