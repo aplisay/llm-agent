@@ -275,6 +275,32 @@ export function withFirstSpeakerOverride(
 }
 
 /**
+ * Return `base` with `inactivityMessages` REPLACED by `override.messages`, or
+ * `base` shallow-copied when there is no override. An override without
+ * messages removes them, so the call is created with none. Like
+ * {@link withFirstSpeakerOverride}, it rebuilds the `vendorSpecific` containers
+ * and leaves the model's defaults untouched.
+ */
+export function withInactivityMessagesOverride(
+  base: ModelOptions,
+  override?: { messages?: api_proto.UltravoxInactivityMessage[] }
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (!override) {
+    return opts;
+  }
+  const { inactivityMessages: _replaced, ...ultravox } =
+    opts.vendorSpecific?.ultravox ?? {};
+  opts.vendorSpecific = {
+    ...opts.vendorSpecific,
+    ultravox: override.messages
+      ? { ...ultravox, inactivityMessages: override.messages }
+      : ultravox,
+  };
+  return opts;
+}
+
+/**
  * Fold one transcript frame into the turn accumulated so far.
  *
  * `text` is an authoritative snapshot of the whole turn when present; otherwise the
@@ -341,8 +367,13 @@ export class RealtimeModel extends llm.RealtimeModel {
    * this model. See `setNextSessionFirstSpeaker`.
    */
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
+  /** See {@link setNextSessionInactivityMessages}. */
+  #nextSessionInactivity?: { messages?: api_proto.UltravoxInactivityMessage[] };
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
+  /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
+  #primarySession?: RealtimeSession;
+  #nextSessionPrimary = false;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
@@ -476,6 +507,22 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
+   * Use `messages` as the `inactivityMessages` of the NEXT session created from
+   * this model, and only that session. `undefined` means that call is created
+   * with none.
+   *
+   * Used by an in-place agent handover. The SDK opens the incoming agent's
+   * session from the running model, whose `inactivityMessages` were built for
+   * the agent the model was created for. Consumed and cleared by the next
+   * `session()` call, together with any first-speaker override.
+   */
+  setNextSessionInactivityMessages(
+    messages: api_proto.UltravoxInactivityMessage[] | undefined
+  ): void {
+    this.#nextSessionInactivity = { messages };
+  }
+
+  /**
    * Called when Ultravox ends a session we did not ask it to end — its own
    * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
    *
@@ -487,9 +534,10 @@ export class RealtimeModel extends llm.RealtimeModel {
    * treating reconnects as fatal hangs up live calls, treating hangups as transient
    * leaves the caller on a dead line until an unrelated long-stop fires.
    *
-   * Fires for the PRIMARY session only (the first this model creates). A consult
-   * TransferAgent session and post-handover sessions share the model instance but
-   * their ending must never tear down the primary call.
+   * Fires for the PRIMARY session only: the first session this model creates, or
+   * the one {@link setNextSessionPrimary} put in its place. A consult
+   * TransferAgent session shares the model instance, but its end must never tear
+   * down the call.
    */
   setProviderEndedCallback(
     cb: (info: { code?: number; reason?: string }) => void
@@ -502,10 +550,29 @@ export class RealtimeModel extends llm.RealtimeModel {
     session: RealtimeSession,
     info: { code?: number; reason?: string }
   ): void {
-    if (this.#sessions[0] !== session) {
+    if (session !== this.#primarySession) {
       return;
     }
     this.#providerEndedCallback?.(info);
+  }
+
+  /**
+   * Make the NEXT session created from this model the primary session, in place
+   * of the current one, so its provider-side end is the one reported.
+   *
+   * Used by an in-place agent handover. The SDK starts the incoming agent on a
+   * new session from this model, and the caller hears that session from then on.
+   * Consumed by the next `session()` call. A consult leg calls
+   * `clearNextSessionPrimary()` before it starts its session, so a mark left by a
+   * handover the SDK never started cannot make the consult session primary.
+   */
+  setNextSessionPrimary(): void {
+    this.#nextSessionPrimary = true;
+  }
+
+  /** Discard a pending {@link setNextSessionPrimary} mark. */
+  clearNextSessionPrimary(): void {
+    this.#nextSessionPrimary = false;
   }
 
   /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
@@ -515,18 +582,33 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#nextSessionFirstSpeaker;
   }
 
+  /** The inactivity override awaiting the next `session()`, if any. Diagnostics/tests. */
+  get pendingInactivityOverride():
+    | { messages?: api_proto.UltravoxInactivityMessage[] }
+    | undefined {
+    return this.#nextSessionInactivity;
+  }
+
   session(): RealtimeSession {
     const firstSpeakerOverride = this.#nextSessionFirstSpeaker;
     this.#nextSessionFirstSpeaker = undefined;
-    const opts: ModelOptions = withFirstSpeakerOverride(
-      this.#defaultOpts,
-      firstSpeakerOverride
+    const inactivityOverride = this.#nextSessionInactivity;
+    this.#nextSessionInactivity = undefined;
+    const opts: ModelOptions = withInactivityMessagesOverride(
+      withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
+      inactivityOverride
     );
     if (firstSpeakerOverride) {
       // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
       log().info(
         { firstSpeakerSettings: firstSpeakerOverride },
         "applying one-shot firstSpeakerSettings override to new session"
+      );
+    }
+    if (inactivityOverride) {
+      log().info(
+        { inactivityMessages: inactivityOverride.messages ?? [] },
+        "applying one-shot inactivityMessages override to new session"
       );
     }
 
@@ -539,6 +621,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     newSession.instructions = opts.instructions;
 
     this.#sessions.push(newSession);
+    if (this.#nextSessionPrimary) {
+      log().info(
+        { callId: opts.callId },
+        "applying one-shot primary mark: provider-ended now reports the new session"
+      );
+    }
+    if (this.#nextSessionPrimary || !this.#primarySession) {
+      this.#primarySession = newSession;
+    }
+    this.#nextSessionPrimary = false;
     return newSession;
   }
 

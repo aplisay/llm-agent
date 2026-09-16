@@ -22,8 +22,9 @@ import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { isOpenAIRealtime, speakGreetingText } from "./speak-text.js";
-import { createVoiceModelAndSession } from "./voice-session-factory.js";
+import { armHandoverInactivity, createVoiceModelAndSession } from "./voice-session-factory.js";
 import { createInactivityKick } from "./inactivity-kick.js";
+import { createProviderEndedTeardown, markNextSessionPrimary } from "./provider-ended.js";
 import {
   armHandoverFirstSpeaker,
   HANDOVER_OPENING_INSTRUCTION,
@@ -1041,6 +1042,15 @@ export async function runAgentWorker({
     endCall: () => cleanupAndClose(DISCONNECT_REASONS.INACTIVITY_TIMEOUT),
   });
 
+  const providerEnded = createProviderEndedTeardown({
+    currentSession: () => session,
+    isCleaningUp: () => isCleaningUp,
+    handoverInProgress: () => agentHandoverInProgress,
+    isBridged: () => Boolean(getBridgedParticipant()),
+    consultInProgress: () => getConsultInProgress(),
+    endCall: () => cleanupAndClose(DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED),
+  });
+
   /**
    * Compose the incoming agent's system prompt for a handover: its own prompt
    * plus the takeover preamble, the optional LLM-written summary, and (when
@@ -1351,6 +1361,7 @@ export async function runAgentWorker({
           opening,
         });
       wireHandoverSession(newSession, newAgentDef);
+      providerEnded.arm(newSession, { callId: newCall.id, modelName: targetModelName });
 
       session = newSession;
       sessionRef(newSession);
@@ -1490,6 +1501,14 @@ export async function runAgentWorker({
           "agent handover: could not arm the Ultravox handover opening",
         );
       }
+      // Without this the new Ultravox call keeps the inactivityMessages the
+      // running model was built with, from an earlier agent.
+      if (onUltravox && !armHandoverInactivity(session?.llm, newAgentDef)) {
+        logger.warn(
+          { agentId: newAgentDef.id },
+          "agent handover: could not arm the incoming agent's Ultravox inactivity messages",
+        );
+      }
       const handoffAgent = new HandoverAgent(
         {
           instructions,
@@ -1505,6 +1524,15 @@ export async function runAgentWorker({
       sendMessage({
         inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
       });
+      // From here the caller hears the Ultravox session the SDK opens for the
+      // incoming agent, so a provider end on that session must end the call.
+      // Armed last, so a throw above leaves no mark behind.
+      if (onUltravox && !markNextSessionPrimary(session?.llm)) {
+        logger.warn(
+          { agentId: newAgentDef.id },
+          "agent handover: could not move provider-ended teardown to the incoming agent's session",
+        );
+      }
       return { handoffAgent, detail: "in-place handover" };
     }
 
@@ -1771,58 +1799,10 @@ export async function runAgentWorker({
           },
         );
 
-        // When the realtime provider ends the session itself — Ultravox's own
-        // maxDuration, an options.inactivity.hangup endBehavior hangup, or a genuine
-        // outage — the agent is dead but the SIP leg is still up. Nothing else notices:
-        // the SDK turns it into an unrecoverable error whose `recoverable` flag is
-        // stripped before any listener sees it (see setProviderEndedCallback), and the
-        // Close event never arrives because closeImpl blocks in drain(). Observed on
-        // staging: 2m10s of dead air on a live leg, then teardown under the unrelated
-        // "Session timeout" long-stop, then a 120s forced process exit.
-        //
-        // The callback fires for the PRIMARY session only, so a consult TransferAgent
-        // session or a post-handover session ending cannot reach here. The guards below
-        // cover the cases where the primary model is deliberately dead but the call is
-        // healthy or already coming down.
-        // NB the realtime model is `session.llm`, NOT the `model` this factory returns
-        // — that one is the voice.Agent (behaviour/instructions). The RealtimeModel is
-        // constructed inline inside createVoiceModelAndSession and is reachable only
-        // through the session, the same way getLlmForTransferSession does it.
-        const realtimeModel = session.llm as unknown as {
-          setProviderEndedCallback?: (cb: (i: unknown) => void) => void;
-        } | null;
-        if (typeof realtimeModel?.setProviderEndedCallback === "function") {
-          realtimeModel.setProviderEndedCallback((info: unknown) => {
-            if (isCleaningUp) return;
-            if (agentHandoverInProgress) return;
-            // Bridged/transferred out: the caller no longer hears this agent, so its
-            // model dying is expected and must not end the bridged call.
-            if (getBridgedParticipant()) return;
-            if (getConsultInProgress()) return;
-            logger.warn(
-              { info, callId: call.id },
-              "realtime provider ended the session; ending call",
-            );
-            void cleanupAndClose(
-              DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED,
-            ).catch((e) =>
-              logger.error({ e }, "error ending call after provider end"),
-            );
-          });
-          // Logged at INFO deliberately: app-level debug is invisible inside job
-          // processes, so a silently-unregistered hook is exactly how this shipped
-          // broken once already (it was wired to the wrong object and the optional
-          // call no-opped). If this line is absent, the hook is NOT armed.
-          logger.info(
-            { callId: call.id, modelName },
-            "provider-ended teardown hook armed",
-          );
-        } else {
-          logger.info(
-            { callId: call.id, modelName },
-            "realtime model does not report provider-ended; teardown hook not armed",
-          );
-        }
+        // End the call when the realtime provider ends the session
+        // (provider-ended.ts). restartWithAgent arms each later model, and an
+        // in-place handover moves the hook in onAgentTransfer.
+        providerEnded.arm(setupSession, { callId: call.id, modelName });
 
         // Watch for any non-recoverable model/STT/TTS errors that occur while
         // the session is still starting. If we see one before callStarted is
