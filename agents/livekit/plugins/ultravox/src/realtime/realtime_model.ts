@@ -343,6 +343,9 @@ export class RealtimeModel extends llm.RealtimeModel {
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
+  /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
+  #primarySession?: RealtimeSession;
+  #nextSessionPrimary = false;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
@@ -487,9 +490,10 @@ export class RealtimeModel extends llm.RealtimeModel {
    * treating reconnects as fatal hangs up live calls, treating hangups as transient
    * leaves the caller on a dead line until an unrelated long-stop fires.
    *
-   * Fires for the PRIMARY session only (the first this model creates). A consult
-   * TransferAgent session and post-handover sessions share the model instance but
-   * their ending must never tear down the primary call.
+   * Fires for the PRIMARY session only: the first session this model creates, or
+   * the one {@link setNextSessionPrimary} put in its place. A consult
+   * TransferAgent session shares the model instance, but its end must never tear
+   * down the call.
    */
   setProviderEndedCallback(
     cb: (info: { code?: number; reason?: string }) => void
@@ -502,10 +506,29 @@ export class RealtimeModel extends llm.RealtimeModel {
     session: RealtimeSession,
     info: { code?: number; reason?: string }
   ): void {
-    if (this.#sessions[0] !== session) {
+    if (session !== this.#primarySession) {
       return;
     }
     this.#providerEndedCallback?.(info);
+  }
+
+  /**
+   * Make the NEXT session created from this model the primary session, in place
+   * of the current one, so its provider-side end is the one reported.
+   *
+   * Used by an in-place agent handover. The SDK starts the incoming agent on a
+   * new session from this model, and the caller hears that session from then on.
+   * Consumed by the next `session()` call. A consult leg calls
+   * `clearNextSessionPrimary()` before it starts its session, so a mark left by a
+   * handover the SDK never started cannot make the consult session primary.
+   */
+  setNextSessionPrimary(): void {
+    this.#nextSessionPrimary = true;
+  }
+
+  /** Discard a pending {@link setNextSessionPrimary} mark. */
+  clearNextSessionPrimary(): void {
+    this.#nextSessionPrimary = false;
   }
 
   /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
@@ -539,6 +562,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     newSession.instructions = opts.instructions;
 
     this.#sessions.push(newSession);
+    if (this.#nextSessionPrimary) {
+      log().info(
+        { callId: opts.callId },
+        "applying one-shot primary mark: provider-ended now reports the new session"
+      );
+    }
+    if (this.#nextSessionPrimary || !this.#primarySession) {
+      this.#primarySession = newSession;
+    }
+    this.#nextSessionPrimary = false;
     return newSession;
   }
 

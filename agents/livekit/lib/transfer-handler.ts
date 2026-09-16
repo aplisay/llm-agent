@@ -34,6 +34,7 @@ import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { getRoomService } from "./livekit-constants.js";
 import { closeSessionBounded } from "./utils.js";
+import { clearNextSessionPrimary } from "./provider-ended.js";
 import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
   parseBridgedTransferMap,
@@ -1213,6 +1214,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
         },
       },
     });
+    // If a handover's primary mark were left on the model, this session would take
+    // it, and its end would end the caller's call (provider-ended.ts).
+    clearNextSessionPrimary(consultLlm);
 
     try {
       await transferSession.start({
