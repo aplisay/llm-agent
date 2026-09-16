@@ -59,6 +59,56 @@ test("accumulates llm/tts/stt and flushes vendor-correct per-call records", asyn
   assert.ok(saved.every((r) => r.mode === "set" && r.finalised === true));
 });
 
+async function llmRows(voiceMode: "pipeline" | "realtime", ...metrics: any[]) {
+  const saved: any[] = [];
+  const meter = makeUsageMeter({
+    getCall: () => ({ id: "call-1", organisationId: "o1", userId: "u1", agentId: "a1" }),
+    usageVendors: vendors,
+    voiceMode,
+    saveUsageFn: async (records) => {
+      saved.push(...(records as any[]));
+    },
+  });
+  const s = fakeSession();
+  meter.wire(s);
+  for (const m of metrics) s.emit(voice.AgentSessionEventTypes.MetricsCollected, { metrics: m });
+  await meter.flush(true);
+  return Object.fromEntries(saved.filter((r) => r.technology === "llm").map((r) => [r.unit, r.quantity]));
+}
+
+// Token counts below are from live requests on 2026-09-16 with a 4.6k-token prompt sent twice.
+test("llm_metrics input_tokens excludes the cached tokens the plugins count inside promptTokens", async () => {
+  const openai = { type: "llm_metrics", label: "openai.LLM", promptTokens: 4638, promptCachedTokens: 4608, completionTokens: 1 };
+  assert.deepEqual(await llmRows("pipeline", openai), {
+    input_tokens: 30,
+    output_tokens: 1,
+    cache_read_tokens: 4608,
+  });
+
+  const gemini = { type: "llm_metrics", label: "google.LLM", promptTokens: 5328, promptCachedTokens: 5094, completionTokens: 1 };
+  const cold = { ...gemini, promptCachedTokens: 0 };
+  assert.deepEqual(await llmRows("pipeline", cold, gemini), {
+    input_tokens: 5328 + 234,
+    output_tokens: 2,
+    cache_read_tokens: 5094,
+  });
+});
+
+test("realtime_model_metrics input_tokens excludes the cached tokens OpenAI Realtime counts inside inputTokens", async () => {
+  const response = {
+    type: "realtime_model_metrics",
+    label: "openai_realtime",
+    inputTokens: 4648,
+    outputTokens: 4,
+    inputTokenDetails: { audioTokens: 0, textTokens: 4648, imageTokens: 0, cachedTokens: 4608 },
+  };
+  assert.deepEqual(await llmRows("realtime", response), {
+    input_tokens: 40,
+    output_tokens: 4,
+    cache_read_tokens: 4608,
+  });
+});
+
 test("realtime voiceMode suppresses stt/tts component rows but keeps llm", async () => {
   const saved: any[] = [];
   const meter = makeUsageMeter({

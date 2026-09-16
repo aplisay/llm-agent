@@ -524,6 +524,42 @@ def test_usage_relabels_backend_tokens_to_the_delegate_model():
     assert UsageMeteringObserver(services=plain)._resolve("llm", "gpt-4o") == ("openai", "gpt-4o")
 
 
+def test_backend_usage_rows_keep_input_tokens_apart_from_the_prompt_cache():
+    from pipecat.frames.frames import MetricsFrame
+    from pipecat.metrics.metrics import LLMUsageMetricsData
+    from pipecat.observers.base_observer import FramePushed
+    from pipecat.processors.frame_processor import FrameDirection
+
+    llm, _ = _build(_session())
+    reported = []
+
+    async def capture(tokens):
+        reported.append(tokens)
+
+    llm.start_llm_usage_metrics = capture  # type: ignore[method-assign]
+    # Responses input_tokens counts cache reads and writes; the input figures are from the GPT-5.6 live check in PR #345.
+    usage = {
+        "input_tokens": 2828,
+        "input_tokens_details": {"cached_tokens": 2808, "cache_write_tokens": 17},
+        "output_tokens": 12,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 2840,
+    }
+    asyncio.run(llm._report_backend_usage({"usage": usage}))
+
+    observer = UsageMeteringObserver(services=usage_vendors(_voice_agent(), GPT_LIVE, backend=llm.aplisay_backend))
+    frame = MetricsFrame(data=[LLMUsageMetricsData(processor="live", model="gpt-live-1", value=reported[0])])
+    pushed = FramePushed(source=None, destination=None, frame=frame, direction=FrameDirection.DOWNSTREAM, timestamp=0)
+    asyncio.run(observer.on_push_frame(pushed))
+    rows = {m["unit"]: (m["provider"], m["detail"], m["quantity"]) for m in observer._meters.values()}
+    assert rows == {
+        "input_tokens": ("openai", "openai/gpt-5.6-terra", 3),
+        "output_tokens": ("openai", "openai/gpt-5.6-terra", 12),
+        "cache_read_tokens": ("openai", "openai/gpt-5.6-terra", 2808),
+        "cache_write_tokens": ("openai", "openai/gpt-5.6-terra", 17),
+    }
+
+
 def test_compose_gpt_live_merges_delegate_tools_and_settings(monkeypatch):
     from pipecat_aplisay import api_client, call_session
     from pipecat_aplisay.call_session import CallSession
