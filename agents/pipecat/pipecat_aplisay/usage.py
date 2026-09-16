@@ -127,6 +127,22 @@ def _bundled_speech_is_unmeterable(agent: dict, model_id: str) -> bool:
     )
 
 
+#: LLM vendors whose Pipecat service reports ``prompt_tokens`` net of the prompt cache. Every other service the worker
+#: builds reports it gross, with the cache counts inside it (see ``LLMTokenUsage``). See PR #346.
+PROMPT_TOKENS_NET_OF_CACHE_VENDORS: frozenset[str] = frozenset({"anthropic"})
+
+
+def uncached_input_tokens(tokens: Any, vendor: str | None) -> int:
+    """The prompt tokens neither read from nor written to the prompt cache: the
+    ledger prices ``input_tokens`` apart from the two cache units."""
+    prompt = getattr(tokens, "prompt_tokens", 0) or 0
+    if vendor in PROMPT_TOKENS_NET_OF_CACHE_VENDORS:
+        return prompt
+    cached = getattr(tokens, "cache_read_input_tokens", 0) or 0
+    written = getattr(tokens, "cache_creation_input_tokens", 0) or 0
+    return max(0, prompt - cached - written)
+
+
 class UsageMeteringObserver(BaseObserver):
     """Accumulate per-(technology, provider, detail, unit) usage and ``flush()``
     the running totals to the ledger. Sources:
@@ -223,7 +239,7 @@ class UsageMeteringObserver(BaseObserver):
                     if isinstance(m, LLMUsageMetricsData):
                         provider, detail = self._resolve("llm", m.model)
                         tokens = m.value
-                        self._add("llm", "input_tokens", getattr(tokens, "prompt_tokens", 0), provider=provider, detail=detail)
+                        self._add("llm", "input_tokens", uncached_input_tokens(tokens, provider), provider=provider, detail=detail)
                         self._add("llm", "output_tokens", getattr(tokens, "completion_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_read_tokens", getattr(tokens, "cache_read_input_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_write_tokens", getattr(tokens, "cache_creation_input_tokens", 0), provider=provider, detail=detail)

@@ -47,6 +47,47 @@ export interface MakeUsageMeterOptions {
   saveUsageFn?: (records: unknown[]) => Promise<unknown>;
 }
 
+export type AddMeter = (
+  technology: string,
+  label: string | undefined,
+  unit: string,
+  quantity: number | undefined,
+) => void;
+
+/**
+ * Add one LiveKit metrics event to the meters through `addMeter`. Shared by
+ * makeUsageMeter and the main metering closure in voice-agent-runtime.ts.
+ */
+export function meterMetrics(m: any, addMeter: AddMeter): void {
+  switch (m?.type) {
+    case "llm_metrics":
+      addMeter("llm", m.label, "input_tokens", uncachedTokens(m.promptTokens, m.promptCachedTokens));
+      addMeter("llm", m.label, "output_tokens", m.completionTokens);
+      addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
+      break;
+    case "realtime_model_metrics":
+      addMeter("llm", m.label, "input_tokens", uncachedTokens(m.inputTokens, m.inputTokenDetails?.cachedTokens));
+      addMeter("llm", m.label, "output_tokens", m.outputTokens);
+      addMeter("llm", m.label, "cache_read_tokens", m.inputTokenDetails?.cachedTokens);
+      break;
+    case "tts_metrics":
+      addMeter("tts", m.label, "characters", m.charactersCount);
+      addMeter("tts", m.label, "milliseconds", m.audioDurationMs);
+      break;
+    case "stt_metrics":
+      addMeter("stt", m.label, "milliseconds", m.audioDurationMs);
+      break;
+    default:
+      break;
+  }
+}
+
+// Every LLM this worker runs reports input tokens gross of the prompt cache, but the ledger prices
+// input_tokens and cache_read_tokens separately, so the cached tokens must come out. See PR #346.
+function uncachedTokens(input: number | undefined, cached: number | undefined): number {
+  return Math.max(0, (input || 0) - (cached || 0));
+}
+
 /**
  * A reusable per-call usage meter: accumulate llm/tts/stt metrics from a voice
  * session and flush them to the ledger attributed to `getCall()`. This mirrors
@@ -90,27 +131,7 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
 
   const onMetrics = (m: any): void => {
     try {
-      switch (m?.type) {
-        case "llm_metrics":
-          addMeter("llm", m.label, "input_tokens", m.promptTokens);
-          addMeter("llm", m.label, "output_tokens", m.completionTokens);
-          addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
-          break;
-        case "realtime_model_metrics":
-          addMeter("llm", m.label, "input_tokens", m.inputTokens);
-          addMeter("llm", m.label, "output_tokens", m.outputTokens);
-          addMeter("llm", m.label, "cache_read_tokens", m.inputTokenDetails?.cachedTokens);
-          break;
-        case "tts_metrics":
-          addMeter("tts", m.label, "characters", m.charactersCount);
-          addMeter("tts", m.label, "milliseconds", m.audioDurationMs);
-          break;
-        case "stt_metrics":
-          addMeter("stt", m.label, "milliseconds", m.audioDurationMs);
-          break;
-        default:
-          break;
-      }
+      meterMetrics(m, addMeter);
     } catch (e) {
       log.debug({ e }, "usage metrics accumulation failed");
     }
