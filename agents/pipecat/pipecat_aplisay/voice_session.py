@@ -1754,13 +1754,13 @@ async def _build_pipeline(
             settings=GoogleLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("anthropic/"):
-        from pipecat.services.anthropic.llm import AnthropicLLMService
+        from .anthropic_service import AplisayAnthropicLLMService
 
         _, anthropic_model = model_id.split("/", 1)
-        llm = AnthropicLLMService(
+        llm = AplisayAnthropicLLMService(
             api_key=_require_env("ANTHROPIC_API_KEY"),
             model=anthropic_model,
-            settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
+            settings=AplisayAnthropicLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("xai/"):
         # xAI Grok text models over their OpenAI-compatible endpoint (docs/grok.md).
