@@ -61,7 +61,7 @@ def test_pipeline_rows_and_no_text_output_mode():
 
 def test_usage_vendor_split():
     services = usage_vendors(_agent(tts={"voice": "rex"}), GROK)
-    assert services["llm"] == {"vendor": "xai", "model": "grok-voice-think-fast-2.0"}
+    assert services["llm"] == {"vendor": "xai", "model": "xai/grok-voice-think-fast-2.0", "authoritative": True}
     # Attribute native speech to xai's bundled rate, not the pipeline's default TTS vendor. See PR #338.
     assert services["tts"] == {"vendor": "xai", "model": "rex"}
     # a pipeline row keeps the pipeline default
