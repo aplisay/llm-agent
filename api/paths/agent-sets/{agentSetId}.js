@@ -111,7 +111,9 @@ agentSetUpdate.apiDoc = {
                 platform-wired tools such as calendar booking) are PRESERVED even when the incoming member's
                 \`functions\` omits them: an incoming function of the same name replaces the stored one, and a
                 name listed in the member's \`removeFunctions\` deletes it, but omission alone never strips a
-                keyed function. Documents written before such wiring therefore round-trip safely.`,
+                keyed function. Documents written before such wiring therefore round-trip safely. The one
+                exception is a member whose in-set \`delegate\` target declares a function of the same name:
+                the member's omitted copy is dropped, because the delegate's copy is the one called.`,
   operationId: 'updateAgentSet',
   tags: ["Agent Sets"],
   parameters: [agentSetIdParameter],

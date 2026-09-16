@@ -20,6 +20,7 @@ import {
   AgentSetValidationError,
   delegateToolCollisions,
   fixupLabelReferences,
+  keyedCopiesShadowedByDelegate,
   validateAgentTargets,
   validateDelegateToolCollisions,
 } from '../lib/agent-set-labels.js';
@@ -254,5 +255,37 @@ describe('delegate in agent-set label handling', () => {
     // A delegate outside the set is checked by the worker at call start, not here.
     const outside = [{ label: 'voice', id: VOICE_A, functions: [delegateFunction('33333333-3333-4333-8333-333333333333'), { name: 'x' }] }];
     expect(() => validateDelegateToolCollisions(outside)).not.toThrow();
+  });
+
+  test('validateDelegateToolCollisions says to use removeFunctions when a clashing function is keyed', () => {
+    const members = [
+      { label: 'voice', id: VOICE_A, functions: [delegateFunction(TEXT_B), { name: 'get_slots', implementation: 'rest' }] },
+      { label: 'brain', id: TEXT_B, functions: [{ name: 'get_slots', implementation: 'rest', key: 'BOOKING_TOKEN' }] },
+    ];
+    expect(() => validateDelegateToolCollisions(members)).toThrow(/remove one copy of each .*removeFunctions/);
+    members[1].functions = [{ name: 'get_slots', implementation: 'rest' }];
+    expect(() => validateDelegateToolCollisions(members)).toThrow(/rename one so the backend tool set has no duplicate names$/);
+  });
+
+  test('keyedCopiesShadowedByDelegate names keyed voice copies kept by omission that the delegate declares', () => {
+    const keyed = (name) => ({ name, implementation: 'rest', key: 'BOOKING_TOKEN' });
+    const voice = {
+      label: 'voice',
+      id: VOICE_A,
+      functions: [delegateFunction(TEXT_B), keyed('get_slots'), keyed('book_slot'), keyed('send_summary'), { name: 'lookup', implementation: 'rest' }],
+      sentNames: new Set(['brain', 'book_slot', 'lookup']),
+    };
+    const brain = {
+      label: 'brain',
+      id: TEXT_B,
+      functions: { get_slots: keyed('get_slots'), book_slot: keyed('book_slot'), lookup: { name: 'lookup', implementation: 'rest' } },
+    };
+    // book_slot and lookup were sent, so they are a clash the document wrote;
+    // send_summary has no copy on the delegate.
+    expect(keyedCopiesShadowedByDelegate([voice, brain])).toEqual(new Map([[VOICE_A, ['get_slots']]]));
+    // A member the document sent no functions for keeps what it stores.
+    expect(keyedCopiesShadowedByDelegate([{ ...voice, sentNames: undefined }, brain]).size).toBe(0);
+    // A delegate outside the set is not checked here.
+    expect(keyedCopiesShadowedByDelegate([voice]).size).toBe(0);
   });
 });

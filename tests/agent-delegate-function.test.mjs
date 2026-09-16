@@ -49,7 +49,7 @@ function delegateFunction(target, { name = 'brain', extra = {}, source = 'static
 }
 
 describe('delegate builtin validation', () => {
-  let createAgent, createAgentSet;
+  let createAgent, createAgentSet, updateAgentSet, patchAgentSetForAgent;
   let user, org, textAgent, voiceAgent;
 
   beforeAll(async () => {
@@ -58,6 +58,8 @@ describe('delegate builtin validation', () => {
     createAgent = agents.POST;
     const sets = (await import('../api/paths/agent-sets.js')).default(mockLogger, {}, {});
     createAgentSet = sets.POST;
+    updateAgentSet = (await import('../api/paths/agent-sets/{agentSetId}.js')).default(mockLogger).PUT;
+    ({ patchAgentSetForAgent } = await import('../lib/agent-set-service.js'));
 
     org = await Organisation.create({ id: randomUUID(), name: 'Delegate Test Org' });
     const dbUser = await User.create({
@@ -210,6 +212,94 @@ describe('delegate builtin validation', () => {
       await createAgentSet(makeReq(doc), res);
       expect(res.statusCode).toBe(400);
       expect(res.body.message).toMatch(/must target a text agent/);
+    });
+
+    describe('keyed functions moving between the voice member and its delegate', () => {
+      // A keyed function survives a save that leaves it out (lib/agent-set-functions.js),
+      // so without the drop, moving one to the delegate fails the collision check above.
+      const keyedFunction = (name) => ({ ...restFunction(name), key: 'BOOKING_TOKEN' });
+      const namesOf = (functions) => (functions || []).map((f) => f.name).sort();
+      const owner = () => ({ userId: user.id, organisationId: user.organisationId });
+
+      /** A set whose voice row was given keyed functions directly, outside any set document. */
+      async function createSet({ voiceKeyed = [], brainFunctions = [] } = {}) {
+        const res = makeRes(user);
+        await createAgentSet(makeReq(setDocument({ brainFunctions })), res);
+        expect(res.statusCode).toBe(200);
+        const voice = res.body.agents.find((a) => a.label === 'voice');
+        const brain = res.body.agents.find((a) => a.label === 'brain');
+        const row = await Agent.findByPk(voice.id);
+        await row.update({ functions: [...row.functions, ...voiceKeyed.map(keyedFunction)] });
+        return { setId: res.body.id, voiceId: voice.id, brainId: brain.id };
+      }
+
+      test('a whole-set PUT that moves them to the delegate drops the voice copies', async () => {
+        const { setId, voiceId, brainId } = await createSet({ voiceKeyed: ['get_slots', 'book_slot'] });
+
+        const doc = setDocument({ brainFunctions: [keyedFunction('get_slots'), keyedFunction('book_slot')] });
+        const res = makeRes(user);
+        await updateAgentSet(makeReq(doc, { agentSetId: setId }), res);
+
+        expect(res.statusCode).toBe(200);
+        expect(namesOf((await Agent.findByPk(voiceId)).functions)).toEqual(['brain']);
+        expect(namesOf((await Agent.findByPk(brainId)).functions)).toEqual(['book_slot', 'get_slots']);
+      });
+
+      test('a patch that resends the voice functions without them drops the copies the untouched delegate shadows', async () => {
+        const { setId, voiceId, brainId } = await createSet({
+          voiceKeyed: ['get_slots', 'send_summary'],
+          brainFunctions: [keyedFunction('get_slots')],
+        });
+
+        const rendered = await patchAgentSetForAgent(setId, {
+          agents: [{ label: 'voice', functions: [delegateFunction('label:brain')] }],
+        }, owner());
+
+        // send_summary has no copy on the delegate, so omission still keeps it.
+        expect(namesOf(rendered.agents.find((a) => a.id === voiceId).functions)).toEqual(['brain', 'send_summary']);
+        expect(namesOf((await Agent.findByPk(brainId)).functions)).toEqual(['get_slots']);
+      });
+
+      test('still rejects a clash the document writes on both members, and says to use removeFunctions', async () => {
+        const { setId } = await createSet();
+
+        const doc = setDocument({
+          voiceFunctions: [keyedFunction('get_slots')],
+          brainFunctions: [keyedFunction('get_slots')],
+        });
+        const res = makeRes(user);
+        await updateAgentSet(makeReq(doc, { agentSetId: setId }), res);
+
+        expect(res.statusCode).toBe(400);
+        expect(res.body.message).toMatch(/both agents declare a function named "get_slots"/);
+        expect(res.body.message).toMatch(/removeFunctions/);
+      });
+
+      test('still rejects when the document leaves the voice functions alone', async () => {
+        const { setId, voiceId } = await createSet({
+          voiceKeyed: ['get_slots'],
+          brainFunctions: [keyedFunction('get_slots')],
+        });
+
+        await expect(patchAgentSetForAgent(setId, {
+          agents: [{ label: 'voice', prompt: 'You are Sam, v2.' }],
+        }, owner())).rejects.toThrow(/both agents declare a function named "get_slots"/);
+        expect(namesOf((await Agent.findByPk(voiceId)).functions)).toEqual(['brain', 'get_slots']);
+      });
+
+      test('keeps the delegate\'s stored copy when the document moves the function to the voice member', async () => {
+        const { setId, brainId } = await createSet({ brainFunctions: [keyedFunction('get_slots')] });
+
+        // Only the voice copy is dropped automatically: the delegate's copy is
+        // the one the worker calls, so losing it would change the call.
+        const doc = setDocument({ voiceFunctions: [keyedFunction('get_slots')] });
+        const res = makeRes(user);
+        await updateAgentSet(makeReq(doc, { agentSetId: setId }), res);
+
+        expect(res.statusCode).toBe(400);
+        expect(res.body.message).toMatch(/both agents declare a function named "get_slots"/);
+        expect(namesOf((await Agent.findByPk(brainId)).functions)).toEqual(['get_slots']);
+      });
     });
   });
 });
