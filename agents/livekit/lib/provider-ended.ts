@@ -1,27 +1,11 @@
 /**
- * End the call when the realtime provider ends the session the caller hears:
- * Ultravox's own maxDuration, an options.inactivity.hangup endBehavior hangup,
- * or an outage. Without it the caller hears dead air until the "Session
- * timeout" long-stop (seen on staging: 2m10s).
- *
- * The SDK cannot report this. AgentSession.Error forwards the inner Error, so
- * `recoverable` is lost, and the Close event never arrives because closeImpl
- * blocks in drain(). So the Ultravox plugin reports it out of band, for one
- * session per model: its primary session (RealtimeModel.setProviderEndedCallback).
- *
- * A handover changes the session the caller hears. A full-stack handover or a
- * hand-back builds a new model, and the runtime arms that model too. An in-place
- * handover opens a new session on the running model, and the runtime marks that
- * session primary before the SDK creates it (markNextSessionPrimary). A consult
- * leg also opens a session on the running model. It is never primary
- * (clearNextSessionPrimary).
+ * Use the plugin's provider-end hook because SDK error events lose recoverability and close can stall. See PR #342.
+ * Follow the session the caller hears across handovers; consult sessions must never become primary.
  */
 import logger from "./logger.js";
 
 /**
- * The `voice.AgentSession` surface the hook uses. The realtime model is
- * `session.llm`, not the voice.Agent that createVoiceModelAndSession returns as
- * `model`: the hook once shipped bound to that one and never fired.
+ * The realtime model is session.llm; the returned voice.Agent cannot report provider termination. See PR #342.
  */
 export interface ProviderEndedSession {
   llm?: unknown;
@@ -77,8 +61,7 @@ export function createProviderEndedTeardown(params: ProviderEndedParams): Provid
           .endCall()
           .catch((e) => logger.error({ e }, "error ending call after provider end"));
       });
-      // INFO, not debug: app-level debug is invisible inside job processes. If
-      // this line is absent, the hook is NOT armed.
+      // Keep registration at INFO: app-level debug is unavailable in job processes. See PR #187.
       logger.info({ callId, modelName }, "provider-ended teardown hook armed");
       return true;
     },
@@ -86,9 +69,8 @@ export function createProviderEndedTeardown(params: ProviderEndedParams): Provid
 }
 
 /**
- * Before an in-place handover: make the next session created from the running
- * model its primary session, so a provider end on the incoming agent's session
- * ends the call. Returns false, and changes nothing, for a model without the mark.
+ * Mark the incoming handover session as primary so its provider-side end tears down the call. See PR #342.
+ * Return false for models without the one-shot override.
  */
 export function markNextSessionPrimary(realtimeModel: unknown): boolean {
   const model = realtimeModel as ProviderEndedModel | null | undefined;
@@ -100,8 +82,7 @@ export function markNextSessionPrimary(realtimeModel: unknown): boolean {
 }
 
 /**
- * Before a consult leg starts its session on the primary's model: drop a mark
- * that a handover left behind, so the consult session never becomes primary.
+ * Clear any unused handover mark before a consult starts, or its session could become primary. See PR #342.
  */
 export function clearNextSessionPrimary(realtimeModel: unknown): void {
   (realtimeModel as ProviderEndedModel | null | undefined)?.clearNextSessionPrimary?.();

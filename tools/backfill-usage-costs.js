@@ -51,27 +51,8 @@ const plans = [];
 
 for (const org of orgs) {
   const history = Array.isArray(org.rateHistory) ? [...org.rateHistory] : [];
-  // The earliest instant this organisation could owe anything. `billedAt` is
-  // null until a row is costed, so fall back to createdAt exactly as the
-  // costing path's own anchor resolution does.
-  // The floor is the earliest instant this organisation could owe anything, and
-  // two things make that earlier than it looks.
-  //
-  // Rows the sweep is ABOUT to attribute count towards it. A row written with a
-  // user but no organisation (lib/set-builder-agent.js takes
-  // `user.organisationId ?? null`) is recovered from its user by
-  // `attributeOrphanRow`, but that happens during the sweep, after this floor
-  // is fixed.
-  //
-  // And a row is billed at its BILLING instant, not at the moment it was
-  // written: `resolveBilledAt` prefers billed_at, then the call's start, then
-  // the `metadata.startedAt` anchor a text session carries. That anchor is the
-  // session start, so it precedes created_at — by nine seconds on the rows this
-  // was measured against, which was enough to leave them just before a floor
-  // taken from created_at, resolving no rate for ever.
-  //
-  // Erring early is free: no usage exists before the earliest row, so a floor
-  // set earlier than necessary rates nothing extra.
+  // Use the earliest billing instant, including rows attributable through their user; createdAt may be later than the
+  // usage anchor. See PR #292.
   const [[earliestRow]] = await UsageRecord.sequelize.query(
     `SELECT MIN(LEAST(
               COALESCE(u.billed_at, u.created_at),

@@ -1,12 +1,4 @@
-"""ErrorFrames must be loud, once — not silent, and not 1283 times.
-
-On the 2026-08-21 beta incident the pipeline emitted an ErrorFrame per dropped
-audio frame for 55 seconds. Pipecat logs those as WARNINGs on its own logger and
-the call still ends "normally", so nothing marked the call as bad. These tests
-pin the two halves of the fix: the first occurrence of each distinct fault
-escalates immediately, and a persistent flood collapses into a count rather than
-drowning the log it is supposed to make readable.
-"""
+"""Escalate the first distinct pipeline error and count repeats without flooding call logs. See PR #235."""
 
 from __future__ import annotations
 

@@ -26,30 +26,8 @@ export const testDbConnection = {
 export const bootstrapDatabase = 'llmvoicetest';
 
 /**
- * Per-CHECKOUT tag, so two checkouts sharing this container do not share
- * database names.
- *
- * global-setup.js drops every worker database it is about to create, WITH
- * (FORCE), which terminates whatever is connected to them. With one set of
- * names per machine, a second run starting mid-way through a first one
- * destroys the first one's databases underneath it: the losing side fails at
- * its first query, often with an empty error, sometimes `database
- * "llmvoicetest_N" does not exist`, and lib/database.js's pg-listen error
- * handler then exits the process.
- *
- * That is not theoretical. On 2026-09-08 two sessions ran the suite on this
- * machine at once — six global setups inside 65 seconds — and the resulting
- * failures were indistinguishable from flakes. One was reported as a flake.
- * A red run that is really a collision is worse than a slow one: it teaches
- * people to re-run until green, which is how a real regression gets through.
- *
- * Derived from the checkout path rather than a random value, so a given
- * checkout keeps the same names across runs and its databases are reused
- * rather than accumulating. Worktrees each get their own, which is the point.
- * `TEST_DB_TAG` overrides it where something outside needs to pin the name.
- * Truncated to 8 hex characters: the whole identifier has to stay inside
- * Postgres's 63-byte limit, and collisions between two paths on one laptop are
- * not a real risk.
+ * Derive stable database names per checkout so another worktree's setup cannot drop an active suite's databases.
+ * TEST_DB_TAG overrides the path-derived tag; see PR #302.
  */
 const checkoutTag = process.env.TEST_DB_TAG
   || createHash('sha1').update(repoRoot).digest('hex').slice(0, 8);

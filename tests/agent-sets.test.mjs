@@ -555,10 +555,7 @@ describe('Agent sets', () => {
   });
 
   describe('platform-wired (keyed) function preservation on set saves', () => {
-    // The 2026-07-25 beta incident class: an attach panel injects keyed booking
-    // functions straight onto saved member rows and arms their write-only key;
-    // the builder's working document predates the injection, so its next save
-    // must NOT strip them.
+    // A stale builder document must preserve keyed functions attached directly to saved member rows. See PR #171.
 
     /** Create the standard set and inject booking wiring onto one member row. */
     async function createSetWithInjectedBooking(label = 'specialist') {

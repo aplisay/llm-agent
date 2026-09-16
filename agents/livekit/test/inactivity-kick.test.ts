@@ -273,10 +273,7 @@ test("in-place handover while the caller is away: the next prompt is the incomin
   assert.deepEqual(s.spoken, [A_PROMPT, B_PROMPT, B_PROMPT]);
 });
 
-// --- against the real session factory and SDK ---------------------------------
-// These fail if the SDK stops emitting "away" from userAwayTimeout, or stops
-// reading the timeout each time it arms its timer. No room: the agent state is
-// set directly.
+// Exercise real SDK away events and timeout updates; set agent state directly to avoid a room. See PR #340.
 
 /** An OpenAI Realtime session from the factory, recording generateReply calls. */
 const factorySession = (agent: any) => {

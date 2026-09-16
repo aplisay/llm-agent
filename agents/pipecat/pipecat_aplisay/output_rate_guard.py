@@ -1,35 +1,5 @@
-"""Last processor before the output transport: make every audio frame match the
-transport's sample rate, so nothing upstream can ever mute the call.
-
-WHY THIS EXISTS (beta incident, 2026-08-21)
-------------------------------------------
-``BaseOutputTransport`` hands all outbound audio to a single
-``SOXRStreamAudioResampler`` per ``MediaSender``, created once in
-``MediaSender.__init__`` and reused for the life of the call
-(``base_output.py:426``, used at ``:574``). That resampler LATCHES the first
-``(in_rate, out_rate)`` pair it is given: ``_maybe_initialize_sox_stream``
-raises ``ValueError`` on any later pair and pipecat surfaces this only as a
-NON-FATAL ``ErrorFrame``. The frame is dropped, the call carries on, and the
-caller hears nothing — for the rest of the call. On the live incident that was
-1283 dropped frames over 55 seconds while the agent talked to no one.
-
-``resample()`` short-circuits when ``in_rate == out_rate`` and never even builds
-the stream. So if every frame reaching the transport already carries the
-transport's own rate, the latch can never happen and the failure mode is gone
-by construction — which is exactly what this processor guarantees.
-
-That makes this defence in depth, not a duplicate of the transport's own
-resampling: the transport still resamples, it just always takes the
-equal-rates fast path. The specific bug that motivated this (the confidence
-tone emitting at ``StartFrame``'s 24 kHz into a 16 kHz-pinned SIP transport) is
-fixed at source in ``confidence_tone.py``; this stops the NEXT component that
-gets it wrong — a relay injector, a fallback TTS voice, a model swapped
-mid-handover — from costing a customer a call.
-
-We convert in place rather than rebuilding the frame so that subclass identity
-(``TTSAudioRawFrame`` and friends) and every other field survive; the transport
-keys off ``type(frame)`` downstream.
-"""
+"""Normalise to the transport rate: its resampler latches the first rate pair and rejects later changes. See PR #235.
+Modify frames in place to preserve their subclass and metadata."""
 
 from __future__ import annotations
 

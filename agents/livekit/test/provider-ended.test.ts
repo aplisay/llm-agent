@@ -9,12 +9,8 @@ import {
 } from "../lib/provider-ended.js";
 import { createVoiceModelAndSession } from "../lib/voice-session-factory.js";
 
-// The provider-ended teardown across the sessions of one call, wired as
-// voice-agent-runtime wires it: the first session, an in-place handover, a
-// full-stack handover or hand-back, and a consult leg on the running model.
-// Where the SDK would open a realtime session (AgentActivity.start), the tests
-// call llm.session() themselves. No room, and nothing connects.
-// run: npx tsx --test test/provider-ended.test.ts
+// Exercise primary-session ownership across handovers and consults without opening a connection. See PR #342.
+// Run: npx tsx --test test/provider-ended.test.ts
 
 // The SDK's logger must exist before a model or session is built.
 initializeLogger({ pretty: false, level: "fatal" });

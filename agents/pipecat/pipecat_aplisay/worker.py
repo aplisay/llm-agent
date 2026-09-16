@@ -380,15 +380,7 @@ def _voiceblender_session_lookup(app: FastAPI, session_id: str):
 
 
 def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
-    """Origin caller id as seeded at ``metadata.aplisay.callerId``.
-
-    ``CallRecord`` deliberately has no top-level ``callerId`` field — the
-    number lives only in the aplisay metadata blob (see the create_call
-    payloads), and attribute access on the pydantic model raises
-    AttributeError. Beta 2026-08-05: the sipbridge consult arm did exactly
-    that, killing the TransferAgent WS the moment the transfer target
-    answered — they heard silence while the bridge held the leg open.
-    """
+    """Read caller identity from aplisay metadata; CallRecord has no top-level callerId attribute. See PR #196."""
     meta = call.metadata if isinstance(call.metadata, dict) else {}
     return (meta.get("aplisay") or {}).get("callerId")
 
@@ -577,11 +569,7 @@ async def healthz(request: Request) -> JSONResponse:
         threads = len(os.listdir("/proc/self/task"))
     except OSError:  # non-Linux dev hosts
         threads = threading.active_count()
-    # Accumulation this endpoint could not previously see. The two worst
-    # leaks in the audit (a parked WS handler per outbound call, and a
-    # gateway session per concurrency-refused inbound call) were both
-    # invisible here: neither touches live_calls, and neither spawns a
-    # thread. Tasks and the gateway's own maps are where they showed.
+    # Include tasks and gateway maps: leaked sessions need not appear in live_calls or thread counts. See PR #285.
     tasks = len(getattr(request.app.state, "tasks", ()) or ())
     gateway_maps = _gateway_map_sizes(getattr(request.app.state, "sip_gateway", None))
     gateway_total = sum(gateway_maps.values())
@@ -1959,13 +1947,8 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
             ctx = InboundCallContext(
                 session_id=session_id,
-                # The consult record's calledId/callerId must be real strings
-                # — the agent-db API 400s a null (beta 2026-08-05: calledId=
-                # None failed every consult-record POST, so the TransferAgent
-                # never spawned and the answered target heard silence).
-                # calledId = the transfer destination, stashed on the
-                # ConsultPayload at _do_consultative time; callerId = the
-                # origin caller from the parent's aplisay metadata.
+                # Consult calledId is the transfer target and callerId comes from parent metadata; the API rejects null values. See
+                # PR #197.
                 called_id=payload.destination or "unknown",
                 caller_id=_aplisay_caller_id(consult_parent.call) or "unknown",
                 aplisay_id=None,

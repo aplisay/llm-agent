@@ -25,9 +25,7 @@ XAI_DEFAULT_VOICE = "eve"
 #: xAI's transcription model for the caller's audio; always on (plan decision 10).
 XAI_TRANSCRIPTION_MODEL = "grok-transcribe"
 
-#: Session tool types that mean an xAI server-side tool. Not offered (plan
-#: decision 14): rejected by the API server at save time and stripped here as
-#: a second line. Must match XAI_SERVER_TOOL_TYPES in lib/grok-limits.js.
+#: Reject xAI server-side tools and strip them from legacy rows; keep XAI_SERVER_TOOL_TYPES in sync. See docs/grok.md.
 XAI_SERVER_TOOL_TYPES = frozenset({"mcp", "web_search", "x_search", "file_search"})
 
 #: What the model is told when the caller presses keypad digits.
@@ -61,9 +59,7 @@ def _is_server_tool(value: Any) -> bool:
 
 
 def strip_server_tools(session: dict) -> dict:
-    """The overrides without a ``tools`` array and without any entry that is
-    an xAI server-side tool. The API server rejects these at save time; this
-    is the worker's own line so an older row can never enable one."""
+    """Strip tools and server-tool entries even from legacy rows that predate save-time validation. See docs/grok.md."""
     out: dict = {}
     for key, value in (session or {}).items():
         if key == "tools":

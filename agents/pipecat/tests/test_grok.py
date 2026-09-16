@@ -1,22 +1,5 @@
-"""xAI Grok on the Pipecat worker (docs/grok.md): :mod:`pipecat_aplisay.grok`,
-:mod:`pipecat_aplisay.grok_service` and the wiring in ``voice_session`` /
-``call_session``.
-
-These tests lock, without a network or a transport:
-
-* the option mappings: the session properties (voice default, server VAD,
-  transcription with the language hint, reasoning effort), the effort rule,
-  the vendorSpecific overrides and their server-tool strip;
-* the service: the vendorSpecific merge into ``session.update``, the audio
-  input format fill, the verbatim item, keypad digits, the context
-  watermark (a developer message becomes a system item and a response; user
-  turns are never resent), the held first response behind a forced
-  greeting, the interim transcription split, and the provider-ended mapping
-  for the concurrent-session refusal, a fatal error and a server close;
-* the wiring: no text-output mode, ``xai`` as the native TTS vendor, the
-  pipeline ids, the usage vendor split, the full-restart rule and the
-  greeting handler.
-"""
+"""Check Grok options, protocol overrides and worker wiring without a network or transport.
+See docs/grok.md and PR #338."""
 
 from __future__ import annotations
 
@@ -79,9 +62,7 @@ def test_pipeline_rows_and_no_text_output_mode():
 def test_usage_vendor_split():
     services = usage_vendors(_agent(tts={"voice": "rex"}), GROK)
     assert services["llm"] == {"vendor": "xai", "model": "grok-voice-think-fast-2.0"}
-    # the model's own speech is metered as xai (bundled in the minute line),
-    # not as the pipeline's default TTS vendor (seen as tts|cartesia on the
-    # first live call)
+    # Attribute native speech to xai's bundled rate, not the pipeline's default TTS vendor. See PR #338.
     assert services["tts"] == {"vendor": "xai", "model": "rex"}
     # a pipeline row keeps the pipeline default
     assert usage_vendors(_agent(), "pipecat:xai/grok-4.3")["tts"]["vendor"] == "cartesia"

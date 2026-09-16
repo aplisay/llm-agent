@@ -1,31 +1,5 @@
-// load-secretenv.js — everything the container needs to have secrets before
-// the agent starts. Run by entrypoint.sh, which `eval`s its stdout.
-//
-// Two jobs:
-//
-//   1. Put SECRETENV_KEY / SECRETENV_BUNDLE in the environment, reading them
-//      from Google Secret Manager when they are not already there. Same client
-//      library and the same `${GOOGLE_SECRETENV_PATH}_{KEY,BUNDLE}/versions/latest`
-//      resource names as aplisay-sbc/google-secret-helper.js. Credentials come
-//      from ADC — on a GCE VM the instance's own service account, which needs
-//      roles/secretmanager.secretAccessor on both secrets and the
-//      cloud-platform OAuth scope.
-//
-//   2. Materialise the Google service-account JSON at the path the bundle's
-//      GOOGLE_APPLICATION_CREDENTIALS names. The google-cloud-storage client
-//      used for recording uploads authenticates via ADC, i.e. it opens that
-//      *file*. The image used to bake it at build time
-//      (`npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json`), which
-//      put a live service-account private key in a registry layer; this is the
-//      runtime equivalent, and the direct analogue of
-//      agents/pipecat/pipecat_aplisay/secretenv.py::_materialise_google_credential.
-//
-// Decrypting the bundle here is only in service of (2) — the agent decrypts it
-// again for itself, through its `dotenv` dependency (aliased to
-// github:rjp44/secretenv). The pair leaves this process on stdout and nothing
-// else is written anywhere except that one credential file.
-//
-// Diagnostics go to stderr, so stdout carries only the export lines.
+// Emit only shell exports on stdout: entrypoint.sh evaluates them. Load secrets and materialise ADC credentials at
+// runtime. See agents/livekit/deploy/gcp/README.md; diagnostics belong on stderr.
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';

@@ -1,13 +1,4 @@
-"""Tests for transfer-leg target normalisation on the sipbridge gateway.
-
-Root cause pinned here (beta 2026-08-04): a trunk-origin blind transfer takes
-the dial_bridge path, which POSTed the agent-configured bare number verbatim;
-the Go bridge's ``Manager.Originate`` → ``sip.ParseUri`` then 502s with
-``invalid target URI "44...": invalid uri scheme``. The outbound-originate
-path already solved this (``_outbound_target_uri``); these tests pin the
-shared ``_routable_leg_uri`` helper and the dial_bridge / consult POST bodies
-(routable target, caller-ID fallback, X-Aplisay-* egress headers).
-"""
+"""Transfer legs need the same routable SIP URI and egress headers as outbound calls. See PR #191."""
 
 from __future__ import annotations
 

@@ -1,12 +1,4 @@
-"""Voiceblender inbound agent resolution — field-name + origin threading.
-
-Pins the fix for the `sip_headers` vs `custom_headers` misnomer: voiceblender's
-`leg.ringing` VSI event carries the INVITE's routing headers in `sip_headers`
-(`LegRingingData.SIPHeaders` in the voiceblender source), NOT `custom_headers`.
-The resolver must read `sip_headers` and thread the resolved `_InboundOrigin`
-back so `_on_leg_ringing` can stamp the transfer-mode context onto the inbound
-`InboundCallContext` (mirroring the sipbridge resolver).
-"""
+"""Read routing headers from VSI sip_headers and preserve origin transfer flags. See docs/voiceblender-integration.md."""
 
 from __future__ import annotations
 

@@ -1,10 +1,5 @@
-"""Live `aplisay.dateTime` from the pipecat `metadata` builtin + its helper.
-
-Ground-truth date for date-reasoning agents (2026-07-24 incident: an Ultravox
-agent called calendar_list_events with a 2025-06-18 range). Mirrors the node
-guard in tests/function-handler-metadata.test.mjs so the two workers stay in
-lockstep.
-"""
+"""Resolve aplisay.dateTime live rather than trusting the model's date; keep parity with the Node handler. See PR
+#170."""
 
 from __future__ import annotations
 

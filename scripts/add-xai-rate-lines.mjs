@@ -63,11 +63,7 @@ export const TEXT_LIST_PRICES = {
 export const round2sf = (n) => (n === 0 ? 0 : Number(n.toPrecision(2)));
 
 /**
- * The reference the per-card price factor is read from: Sonnet 5's input
- * line against its $3 per MTok list price. A card that prices Sonnet 5 at
- * 2.2 micro-pence per token is at 0.7333 of list, and every model on it
- * follows the same rule (checked on the staging cards, 2026-09-16), so the
- * Grok lines take the same factor rather than the raw list digits.
+ * Scale Grok token rates by the card's Sonnet 5 input-price factor so bespoke pricing stays consistent. See PR #339.
  */
 export const FACTOR_REFERENCE = { provider: 'anthropic', detail: 'claude-sonnet-5', unit: 'input_tokens', listPrice: 3 };
 
@@ -119,18 +115,11 @@ export function voiceModelLine(modelName, priceMicros) {
 }
 
 /**
- * The zero lines for the speech a realtime model synthesises itself: the
- * Pipecat worker meters it as `tts` audio under the model's vendor, and
- * without a line those rows settle `no_line` and read as "not priced" beside
- * the model charge that already covers them. One per bundled provider
- * (BUNDLED_TTS_PROVIDERS in lib/rate-components.js: ultravox, openai, xai),
- * not only xai, because the worker's attribution changed for all three in
- * the same change.
+ * Add zero TTS lines for every bundled provider so included speech settles matched rather than unpriced.
+ * See PR #338 and docs/realtime-external-tts.md.
  */
 export function bundledTtsLines(providers = BUNDLED_TTS_PROVIDERS) {
-  // The pair the cards already carry for ultravox: the row unit inside the
-  // match, one line per unit the worker meters (audio milliseconds and
-  // transcript characters).
+  // Match both milliseconds and characters, with each unit inside match as existing cards require. See PR #339.
   return providers.flatMap((provider) => [
     { dim: 'tts', match: { technology: 'tts', provider, unit: 'milliseconds' }, unit: 'minute', priceMicros: 0 },
     { dim: 'tts', match: { technology: 'tts', provider, unit: 'characters' }, unit: 'character', priceMicros: 0 },

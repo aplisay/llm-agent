@@ -1,33 +1,5 @@
-"""The Pipecat side of the Grok voice row: a subclass of upstream's
-``GrokRealtimeLLMService`` with the platform's injection paths, the
-``vendorSpecific`` merge and provider-close handling.
-
-Why a subclass rather than event handlers:
-
-- Nothing appended to the context after the first turn reaches the model in
-  the stock service (``_handle_messages_append`` only logs a warning and
-  ``_handle_context`` sends tool results only). The greeting instructions,
-  the handover opening and keypad digits need their own path.
-- ``greeting.text`` and the inactivity message are spoken through xAI's
-  ``force_message`` item, marked uninterruptible, which the typed item model
-  cannot express; it is sent as a raw dict.
-- ``vendorSpecific.xai.session`` has to land inside every ``session.update``,
-  which upstream builds from a typed model that drops unknown keys; the
-  overrides are merged into the payload on the way out.
-- The session's ``audio.input.format`` is only filled in by upstream when the
-  whole input block is absent, and the block is present here because it
-  carries the transcription request; without the format the server assumes
-  24 kHz and a 16 kHz SIP leg is misread.
-- The transcription ``completed`` event arrives several times per utterance
-  with ``status: in_progress`` (one final ``completed``), and upstream's event
-  model drops ``status``, so every interim would become a final transcript
-  and a separate user message. The event model is widened and the interims
-  are pushed as interim frames.
-- A server close (the concurrent-session limit, an error) leaves the stock
-  service silent on a live call; here it ends the call cleanly.
-
-The option mappings are in :mod:`pipecat_aplisay.grok`.
-"""
+"""Override upstream context, session and close handling to preserve platform controls; see docs/grok.md and PR #338.
+Set the input rate explicitly and retain transcription status so interim completed events stay interim."""
 
 from __future__ import annotations
 

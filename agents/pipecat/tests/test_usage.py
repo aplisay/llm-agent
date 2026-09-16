@@ -205,15 +205,8 @@ def test_flush_posts_canonical_rows(monkeypatch):
     assert row["callId"] == "call-1" and row["organisationId"] == "org-1"
 
 
-# --- a realtime model's own speech (docs/realtime-external-tts.md) -----------
-#
-# The Pipecat worker meters every TTSAudioRawFrame a realtime model speaks.
-# That audio is paid for by the model's own rows, so it is attributed to the
-# model's vendor (a bundled provider a card zero-prices), never to the
-# pipeline's default TTS vendor: on the first Grok live call the rows came
-# out as tts|cartesia, which a Cartesia line would have priced on top of the
-# minute. Gemini Live's vendor is also a TTS engine's name, so its speech is
-# not metered at all.
+# Native realtime speech uses zero-priced rows under its model vendor; google is excluded to avoid paid TTS rates.
+# See PR #338 and docs/realtime-external-tts.md.
 
 def test_realtime_rows_meter_their_own_speech_under_the_models_vendor():
     from pipecat_aplisay.usage import bundled_speech_vendor

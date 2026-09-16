@@ -5,9 +5,7 @@ description = "Aplisay voice agent worker built on Pipecat. Daily as a pure SIP 
 requires-python = ">=3.11"
 dependencies = [
     "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,openai,silero,ultravox,webrtc]==1.10.0",
-    # We import mcp directly (pipecat_aplisay/mcp_tools.py), so declare it. The
-    # 2 floor is deliberate: mcp 2 renamed the transport and moved the model
-    # attributes to snake_case, and mcp_tools.py now speaks only that dialect.
+    # mcp_tools.py requires mcp 2's transport API and snake_case attributes; keep this direct dependency. See PR #327.
     "mcp[cli]>=2,<3",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

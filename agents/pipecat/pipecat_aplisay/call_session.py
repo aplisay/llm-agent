@@ -383,15 +383,8 @@ class CallSession:
                 await self._run_once(active_agent, active_model, active_prompt)
                 return
             except api_client.AgentConcurrencyLimitExceededBusyError:
-                # A concurrency rejection reaching *here* comes from a child
-                # call started mid-session (an agent handover, a consult leg),
-                # not from the caller's own arrival — that one is refused in
-                # ``setup_inbound_call`` before this loop exists, and is where
-                # the fixed message gets its chance (see ``fixed_message_only``).
-                # Retrying a model or agent cannot help either way, and a
-                # mid-call announcement to someone already talking to an agent
-                # would be worse than the failure. Map upstream — the caller
-                # signals SIP busy / 429 to its own caller.
+                # Child-call concurrency failures must propagate as busy; the initial arrival handles announcements in
+                # setup_inbound_call. See docs/agent-failover.md.
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.error(f"voice session failed: {e}; evaluating fallback")
@@ -430,14 +423,8 @@ class CallSession:
                     )
                     continue
 
-                # 3. Fixed-message fallback: play the operator's announcement.
-                #
-                #    Terminal on success — the chain stops at the first step that
-                #    works, and the caller having heard the announcement *is* the
-                #    outcome. The original error is then re-raised so the caller's
-                #    usual setup-failure teardown runs and the call keeps its real
-                #    failure reason, with the announcement having been a courtesy
-                #    played on the way out rather than a different result.
+                # Successful announcement playout still re-raises the setup error for teardown and the original failure reason. See
+                # PR #236.
                 if fallback_cfg.get("message"):
                     from .fixed_message import run_fixed_message
 
@@ -490,22 +477,8 @@ class CallSession:
 
     @staticmethod
     def _snapshot_transport_handlers(transport: Any) -> Optional[dict]:
-        """Capture the transport's currently-registered event handlers (W8).
-
-        ``prepare_run`` registers ``on_client_connected`` /
-        ``on_client_disconnected`` closures on the gateway's transport —
-        greeting, recorder start, task cancel — and pipecat's
-        ``add_event_handler`` APPENDS. The fallback loop in ``run()``
-        re-enters ``prepare_run`` on the SAME transport object, so a
-        failed attempt's closures stayed registered and fired again on
-        the retry's StartFrame, still holding the dead task and its
-        audio buffer: a duplicate greeting, and ``start_recording()``
-        called on the wrong buffer. Bounded by the fallback chain rather
-        than unbounded, but wrong either way.
-
-        Returns None when the transport doesn't expose the registry, in
-        which case the restore is a no-op and behaviour is unchanged.
-        """
+        """Snapshot handlers before fallback setup: retries reuse the transport and would otherwise retain stale task
+        closures. Restore only when the registry is exposed; see PR #285."""
         registry = getattr(transport, "_event_handlers", None)
         if not isinstance(registry, dict):
             return None
@@ -529,13 +502,7 @@ class CallSession:
                 entry.handlers[:] = saved
 
     def _hold_task(self, task: "asyncio.Task") -> "asyncio.Task":
-        """Keep a strong reference to a background task (W10).
-
-        asyncio holds only weak references to tasks, so a bare
-        ``create_task`` whose result nobody awaits can be collected
-        mid-flight; these survive today only by virtue of whatever they
-        happen to be awaiting. Mirrors ``bridged_transfer._summary_tasks``.
-        """
+        """Retain detached tasks until completion; asyncio only holds weak references. See PR #285."""
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
@@ -903,10 +870,7 @@ class CallSession:
         greeting_instructions = (greeting_instructions or "").strip()
 
         if is_xai_voice_model_id(model_id_from_name(model_name)) and greeting_text and not platform_opening:
-            # Grok (docs/grok.md): the greeting text is spoken exactly through
-            # xAI's uninterruptible verbatim item. The first run still seeds
-            # the conversation and the session's tools, but must not make the
-            # model speak as well, so the service holds that first response.
+            # Seed Grok's context and tools without a first response: the forced greeting already speaks. See docs/grok.md.
             llm = self._llm_service
 
             @transport.event_handler("on_client_connected")
@@ -1927,12 +1891,7 @@ class CallSession:
             delegate_tools = self._build_tools_for(
                 spec.agent, max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED)
             with logger.contextualize(callId=self.call.id):
-                # These tools run behind the delegation, whose tool-input
-                # budget is spent for the whole session rather than per turn,
-                # so their results are held to the tighter cap. Without it one
-                # verbose server exhausts the session in a single turn and
-                # strands the delegation (see the recovery in
-                # gpt_live_service, and docs/gpt-live.md).
+                # Cap results against the delegation's session-wide budget, not a per-turn budget. See PR #321.
                 delegate_mcp, delegate_closers = await connect_mcp_servers(
                     spec.agent, log=logger,
                     max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED,
@@ -3166,13 +3125,8 @@ async def setup_inbound_call(
             },
         }
     )
-    # A concurrency rejection is raised by ``start_call``. When the agent has a
-    # fixed announcement configured, answer and play it instead of refusing the
-    # call: that is precisely the case the feature exists for. The call stays
-    # unstarted — the server has already marked it failed with the limit as the
-    # reason — so no slot is reserved, which is what makes it safe to do this at
-    # the very moment we are out of slots. Without a message, behaviour is
-    # unchanged and the caller gets the busy signal.
+    # Play busy announcements without starting a Call or reserving a slot; otherwise keep the busy response.
+    # See docs/agent-failover.md.
     fixed_message_only = False
     try:
         await api_client.start_call(call)

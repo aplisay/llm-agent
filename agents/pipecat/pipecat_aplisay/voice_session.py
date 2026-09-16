@@ -850,49 +850,8 @@ def _is_ultravox_realtime(llm: Any) -> bool:
 
 
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
-    """Register the platform's tool descriptors against a Pipecat LLM service.
-
-    The ``tools`` argument matches the format produced by
-    :func:`agent_tools.build_agent_tools`: each entry has ``schema`` and
-    ``execute``. The schema is converted to ``FunctionSchema`` and registered
-    with the service so it appears on the LLM-visible tool surface.
-
-    On the **Ultravox realtime** path, data-returning tools (REST functions, MCP
-    tools, stubs — anything that is not a shielded side-effecting builtin) are
-    handled specially, evolved over two staging incidents (2026-07-24):
-
-    * Ultravox FREEZES the conversation between ``client_tool_invocation`` and
-      the matching ``client_tool_result``. With plain synchronous registration
-      the constant speech-to-speech interruptions cancel the in-flight call
-      (``LLMService._handle_interruptions`` cancels every
-      ``cancel_on_interruption=True`` call ~30ms in), and the result, when it
-      arrives, is only shipped on the NEXT context push — which the assistant
-      aggregator skips while the caller is still speaking. The call froze until
-      the *next* tool call flushed the stale result.
-    * Registering ``cancel_on_interruption=False`` fixes the CANCEL (the call
-      survives the interruption — the tool turn is protected). But it also puts
-      the service on Pipecat's async-tool path, which unfreezes with a
-      *placeholder* result and delivers the real result as user-side TEXT.
-      Ultravox does NOT recognise that text as a function result, so the model
-      loops re-calling the tool (2nd incident: booking_get_slots 4× on
-      placeholder results).
-
-    So we keep ``cancel_on_interruption=False`` for its no-cancel property ONLY,
-    and replace the delivery: our Ultravox subclass suppresses the placeholder
-    and ``_runner`` ships the true result as a NATIVE ``client_tool_result`` via
-    :func:`_deliver_native_result` (both success and error). The tool turn stays
-    frozen — uninterruptible — until that real result lands. ``_native`` below is
-    this tool set; ``enable_async_tool_cancellation`` stays off, so no cancel
-    tool or system-prompt change is injected.
-
-    Side-effecting builtins (``hangup``, ``transfer``, ``transfer_agent``,
-    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS and are
-    NOT native-delivered: their handover machinery (``suppress_result_run`` +
-    ``CallSession._apply_agent_transfer``) depends on the normal result path, the
-    ``_runner`` already shields their execution, and the outgoing model does not
-    need their result. Off the Ultravox path (pipeline STT→LLM→TTS) every tool
-    stays synchronous — the freeze is Ultravox-specific.
-    """
+    """Ultravox data tools must survive interruptions and return native results without async placeholders. See PRs #168 and #169. Keep
+    protected builtins on the synchronous result path used by handover; other providers remain synchronous."""
     ultravox_realtime = _is_ultravox_realtime(llm)
     schemas: list[FunctionSchema] = []
     for entry in tools:
@@ -1099,26 +1058,8 @@ async def build_voice_session(
 
     audio_buffer: Optional[AudioBufferProcessor] = None
     if enable_recording:
-        # Stereo, "user left / bot right" — matches LiveKit's RecorderIO
-        # output exactly.
-        #
-        # ``buffer_size`` and ``sample_rate`` are both load-bearing (W3).
-        # Pipecat's default buffer_size=0 means "only flush on
-        # stop_recording()": both channels accumulate in bytearrays for
-        # the WHOLE call, and the flush then copies them again (bytes()
-        # per track plus the interleaved merge) for a 3–4x transient at
-        # hangup. At the default 24 kHz that is ~96 KB/s per recorded
-        # call — roughly 345 MB for an hour, against a 1 GiB pod limit,
-        # and an OOM kill takes every other call on the node with it.
-        # RecordingSession._append is already written for incremental
-        # delivery (lazy sink open, running bytes_written, disk write off
-        # the loop), so periodic flushes just work.
-        #
-        # Pinning the rate to 16 kHz also matches what the sipbridge path
-        # actually carries, halving the PCM written for no loss of
-        # fidelity; pipecat resets its primary buffers after each flush,
-        # and the sink is append-only, so the encoded OGG stays
-        # contiguous.
+        # Set a nonzero buffer_size: zero accumulates the whole call until stop_recording(). See PR #285.
+        # Keep stereo user-left/bot-right at the SIP path's 16 kHz; RecordingSession appends each flush.
         audio_buffer = AudioBufferProcessor(
             num_channels=2,
             sample_rate=RECORDING_SAMPLE_RATE,
@@ -1547,10 +1488,7 @@ async def _build_realtime(
             system_instruction=system_prompt,
         )
     elif grok_voice_model:
-        # xAI Grok voice (docs/grok.md): the stock service speaks the OpenAI
-        # Realtime wire protocol; the subclass adds the injection paths (the
-        # forced greeting and inactivity line, keypad digits), the
-        # vendorSpecific merge and the provider-close callback (grok_service.py).
+        # Use the Grok subclass for platform injection, vendor overrides and provider-close handling. See docs/grok.md.
         from .grok_service import build_grok_service
 
         _, xai_model = model_id.split("/", 1)
@@ -1647,23 +1585,16 @@ async def _build_realtime(
 
     schemas = _register_tools_on_llm(llm, tools)
 
-    # Text-output mode and experimental GPT-Live transcript synthesis reuse
-    # the pipeline TTS, built from ``options.tts`` and placed after the
-    # model so its LLMTextFrames are spoken. The stages downstream (tone,
-    # relay, rate guard, output audit tap, transport) already handle TTS audio
-    # at the transport's rate, exactly as in pipeline mode.
+    # External TTS consumes model text and supplies downstream audio at the transport rate.
+    # See docs/realtime-external-tts.md for GPT-Live's transcript-synthesis exception.
     external_tts = (
         [build_tts_service(agent, transcript_tts=transcript_tts)]
         if external_tts_enabled(agent, model_id) else []
     )
 
     if gpt_live_model or grok_voice_model:
-        # No prompt developer message: the service's adapter would send it as
-        # startup history (8,192-token cap on GPT-Live, a packed user item on
-        # Grok) instead of instructions, which the service carries in
-        # Settings.system_instruction. Prior turns from a handover seed the
-        # session; the greeting's trailing developer message
-        # (call_session._wire_greeting) becomes the opening instruction.
+        # Put the system prompt in Settings.system_instruction, not capped startup history; seed only prior turns there.
+        # The greeting's developer message supplies the opening instruction; see docs/gpt-live.md and docs/grok.md.
         context = LLMContext(list(history or []), tools=schemas)
     else:
         context = LLMContext(
@@ -1697,10 +1628,7 @@ async def _build_realtime(
     tone = [tone_injector] if tone_injector is not None else []
     if tone_injector is not None:
         tone_injector.bind_output(transport.output())
-    # Defence in depth, immediately before output(): normalise every outbound
-    # audio frame to the transport's rate so nothing upstream can latch its
-    # stream resampler at the wrong ratio and mute the call. See
-    # output_rate_guard for the incident this prevents recurring.
+    # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
     rate_guard = OutputRateGuard(output_transport=transport.output())
     # Barge-in has to reach BELOW the transport: the output track plays out
     # whatever it holds regardless of what the pipeline decides, so the cushion
@@ -1755,16 +1683,8 @@ async def _build_realtime(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    # F1: the framework's idle watchdog is left ON here deliberately.
-    # pipecat cancels any pipeline that goes 300 s without a
-    # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
-    # cancel_on_idle_timeout and cancel_runner_on_idle_timeout, all on by
-    # default). On a MAIN pipeline that is the backstop we want: 300 s is
-    # comfortably longer than any consult hold, and a pipeline with no
-    # speech in either direction for five minutes is not a call anyone is
-    # still on. Do NOT "fix" this to match the side pipelines, which do
-    # opt out (bridge_transcript, media_relay, fixed_message) because they
-    # emit neither frame by design and were being cancelled mid-use.
+    # Keep the main pipeline's idle watchdog; STT-only and relay-only side pipelines emit no speaking frames and opt out.
+    # See PR #285.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
@@ -1880,10 +1800,7 @@ async def _build_pipeline(
     tone = [tone_injector] if tone_injector is not None else []
     if tone_injector is not None:
         tone_injector.bind_output(transport.output())
-    # Defence in depth, immediately before output(): normalise every outbound
-    # audio frame to the transport's rate so nothing upstream can latch its
-    # stream resampler at the wrong ratio and mute the call. See
-    # output_rate_guard for the incident this prevents recurring.
+    # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
     rate_guard = OutputRateGuard(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
@@ -1915,16 +1832,8 @@ async def _build_pipeline(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
-    # F1: the framework's idle watchdog is left ON here deliberately.
-    # pipecat cancels any pipeline that goes 300 s without a
-    # BotSpeakingFrame or UserSpeakingFrame (idle_timeout_secs=300,
-    # cancel_on_idle_timeout and cancel_runner_on_idle_timeout, all on by
-    # default). On a MAIN pipeline that is the backstop we want: 300 s is
-    # comfortably longer than any consult hold, and a pipeline with no
-    # speech in either direction for five minutes is not a call anyone is
-    # still on. Do NOT "fix" this to match the side pipelines, which do
-    # opt out (bridge_transcript, media_relay, fixed_message) because they
-    # emit neither frame by design and were being cancelled mid-use.
+    # Keep the main pipeline's idle watchdog; STT-only and relay-only side pipelines emit no speaking frames and opt out.
+    # See PR #285.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),

@@ -1,15 +1,5 @@
-"""A WebRTC signalling request finds the node that owns the peer.
-
-Background: the SDP offer is stateless and any node answers it, but the aiortc
-peer it creates lives on ONE node. Trickle candidates and renegotiation are
-load-balanced independently of that offer, so on staging five of six sessions
-had every candidate 404'd on the wrong node. Load-balancer stickiness cannot fix
-it (see the module docstring), so the worker asks its siblings instead.
-
-What these tests pin is the part that can go badly wrong: exactly one hop, never
-a loop; a peer that is down or slow must not take the batch with it; and a
-request that nobody owns must still 404 exactly as it did before.
-"""
+"""Forward signalling at most once; unavailable peers must not block discovery and unknown ids must still return 404.
+See PR #247."""
 
 from __future__ import annotations
 

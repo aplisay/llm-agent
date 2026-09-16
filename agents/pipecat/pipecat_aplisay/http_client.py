@@ -1,28 +1,5 @@
-"""Process-wide pooled HTTP clients.
-
-Every ``httpx.AsyncClient(...)`` constructed inside a request handler
-builds a fresh ``ssl.SSLContext`` — a synchronous parse of the certifi
-CA bundle, on the event loop, measured at ~5 ms here and 2–4x that on a
-250m-CPU node — and then opens a connection that is thrown away when the
-``async with`` exits.
-
-That is affordable a handful of times per call. It is not affordable on
-the transcript-streaming path: with ``instance.streamLog`` on, the
-observer POSTs a row for every STT interim and every TTS/LLM text chunk,
-10–30 times a second per call. Ten concurrent streaming calls put the
-loop into permanent SSL-context construction, which every other call on
-the node hears as output jitter. Kernel-side it is worse: each request
-is a new connection, and a host-network node runs out of ephemeral ports
-(28k / 60 s TIME_WAIT) at a few hundred connections a second, after which
-every agent-db call fails — call setup, transfer authorisation, the lot.
-
-So: one client per base URL for the life of the process, with a
-connection pool and keep-alive. Per-request deadlines go on the request
-(``client.request(..., timeout=...)``), never on the client, so a shared
-client does not impose one call's timeout on another's.
-
-Closed from the worker's lifespan shutdown via ``aclose_all()``.
-"""
+"""Reuse clients to avoid synchronous TLS setup and connection churn on streaming paths; keep deadlines per request.
+Close pools at worker shutdown with aclose_all(); see PR #285."""
 
 from __future__ import annotations
 

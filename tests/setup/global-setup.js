@@ -81,14 +81,8 @@ export default async (globalConfig, projectConfig) => {
     }
   });
 
-  // Opt-in, because this file is shared. agents/jambonz/Dockerfile copies this
-  // directory into the jambonz image and runs `yarn test` during the image
-  // build, against agents/jambonz/jest.config.js and with no database anywhere:
-  // its suite needs none. Provisioning unconditionally broke that build. Only a
-  // config whose suites actually reach Postgres sets the flag.
-  //
-  // After the env is cleaned, so the connection details come from
-  // test-db-config.js and never from a stray .env in the checkout.
+  // Provision databases only when the config opts in, and after clearing inherited env; the Jambonz image suite needs
+  // none. See PR #301.
   if (projectConfig?.globals?.provisionWorkerDatabases) {
     await createWorkerDatabases(globalConfig?.maxWorkers ?? 1);
   }

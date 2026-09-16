@@ -47,10 +47,7 @@ MCP_CONNECT_TIMEOUT = 10.0
 # call otherwise pins the bot mid-turn.
 MCP_TOOL_TIMEOUT = 30.0
 
-# Result size caps live in tool_result.py, shared with the agent's own REST
-# functions in function_handler.py — both are third-party callouts that can
-# return more than a conversation can hold. Re-exported under the MCP names
-# the call sites already use.
+# Share caps with REST functions; retain the MCP aliases used by existing callers. See PR #322.
 MCP_MAX_RESULT_BYTES = MAX_RESULT_BYTES
 MCP_MAX_RESULT_BYTES_DELEGATED = MAX_RESULT_BYTES_DELEGATED
 
@@ -71,13 +68,8 @@ def _namespace_tool_name(server_name: str, tool_name: str) -> str:
 
 @asynccontextmanager
 async def _streamable_http_streams(url: str, headers: dict[str, str] | None):
-    """Open a streamable-HTTP transport, owning the HTTP client it runs on.
-
-    ``streamable_http_client`` takes no ``headers``: HTTP settings arrive as a
-    prepared client, and a client the caller supplies is a client the caller
-    must close. The SDK's own factory builds it, so the timeouts stay the ones
-    the transport used to apply itself (30 s connect, 300 s read).
-    """
+    """Own and close the HTTP client: mcp 2 accepts HTTP settings through the client, not headers on the transport.
+    Use the SDK factory to preserve its timeout defaults; see PR #327."""
     from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
     async with create_mcp_http_client(headers=headers) as http_client:
@@ -126,11 +118,8 @@ def _make_descriptor(
     max_result_bytes: int = MCP_MAX_RESULT_BYTES,
 ) -> dict:
     """Build a ``{"schema", "execute"}`` descriptor for one MCP tool."""
-    # mcp 2 names its model attributes in snake_case; the wire format still
-    # sends camelCase, so servers are unaffected. No getattr default on either
-    # this or is_error below: both have to raise if the SDK moves the name
-    # again, because a default turns that into a tool with no parameters and a
-    # failure reported as a success.
+    # Read mcp 2's snake_case attributes directly: defaults would hide SDK drift as empty schemas or successful errors.
+    # See PR #327.
     input_schema = tool.input_schema or {}
     schema = {
         "name": _namespace_tool_name(server_name, tool.name),
@@ -163,11 +152,8 @@ def _make_descriptor(
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
         text, dropped = clip_result(text, max_result_bytes, tool=_name)
         if dropped:
-            # WARNING, not debug: a truncated result changes the answer the
-            # caller hears, and the tool log's own copy of the result is
-            # capped too, so without this line the size is invisible after
-            # the fact. It reads as a prompt or corpus problem to fix at the
-            # source, not as a transport error.
+            # Warn with byte counts: the tool log also clips results and cannot show their original size.
+            # See PR #321.
             log.bind(
                 server=server_name, tool=_name, dropped_bytes=dropped, cap=max_result_bytes
             ).warning(
@@ -243,22 +229,8 @@ def _resolve_key_auth(
 async def _connect_one(
     server: dict, keys: list[dict], log: Any, max_result_bytes: int = MCP_MAX_RESULT_BYTES
 ) -> tuple[list[dict], Callable[[], Awaitable[None]]] | None:
-    """Open a session to one MCP server and return its descriptors + a closer.
-
-    Returns ``None`` (and logs a warning) if the server is misconfigured or
-    unreachable, so one bad server never takes the whole call down.
-
-    The MCP transport clients (``streamable_http_client`` / ``sse_client``) and
-    ``ClientSession`` are anyio context managers that spawn a task group — its
-    cancel scope **must** be entered and exited in the same task. Connect runs
-    during ``prepare_run`` and the closer fires in ``run_prepared``'s finally,
-    which can be different tasks; closing across tasks raises anyio's
-    "exit cancel scope in a different task" error. So we hold the whole
-    ``async with`` open inside one dedicated task for the connection's lifetime
-    and signal it to unwind via ``close_event`` — open and close then happen in
-    the same task. The live ``session`` is safe to call from other tasks (that's
-    the normal MCP usage); only the scope enter/exit is task-bound.
-    """
+    """Keep each MCP connection in one task: anyio's cancel scope must enter and exit there. See PR #327.
+    Signal close_event for teardown; log and return None when a server cannot connect."""
     name = server.get("name") or ""
     url = server.get("url")
     if not url:

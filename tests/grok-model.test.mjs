@@ -31,12 +31,8 @@ import {
 } from '../scripts/add-xai-rate-lines.mjs';
 
 /**
- * xAI Grok on the server (docs/grok.md): the Pipecat roster rows and their
- * flags, the model-scoped xAI voice list, the minute-billed rate component,
- * the save-time rules for reserved tool names and vendorSpecific server
- * tools, and the rate-line script's planning against a fixture card. The
- * DB-backed save-time checks are tests/grok-validation.test.mjs; the driver
- * itself is tests/driver-upgrades.test.mjs.
+ * Check Grok catalogue, validation and rate planning without a database; see docs/grok.md.
+ * Database and driver coverage lives in grok-validation.test.mjs and driver-upgrades.test.mjs.
  */
 
 const GROK_VOICE = 'pipecat:xai/grok-voice-think-fast-2.0';
@@ -256,9 +252,7 @@ describe('add-xai-rate-lines planning', () => {
     expect(additions[0]).toEqual({
       dim: 'model', match: { technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' }, unit: 'minute', priceMicros: 5500000,
     });
-    // the worker meters a realtime model's own speech under the model's
-    // vendor for all three, so all three get their zero pair here, in the
-    // shape the cards already carry for ultravox (the row unit inside the match)
+    // Keep units inside match for every bundled provider's zero-rate pair. See PR #339.
     const pair = (provider) => [
       { dim: 'tts', match: { technology: 'tts', provider, unit: 'milliseconds' }, unit: 'minute', priceMicros: 0 },
       { dim: 'tts', match: { technology: 'tts', provider, unit: 'characters' }, unit: 'character', priceMicros: 0 },

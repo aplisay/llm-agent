@@ -1,55 +1,5 @@
-"""Compatibility shims for Pipecat's upstream ``UltravoxRealtimeLLMService``.
-
-Four fixes live here today:
-
-1. ``_receive_messages`` teardown race (original): upstream wraps its
-   ``try/except`` around the loop *body* rather than the iteration itself, so
-   when the WebRTC client hangs up before we cleanly close the Ultravox
-   websocket the resulting ``ConnectionClosedError`` (the "sent 1000 (OK); no
-   close frame received" form) bypasses the catch and lands in Pipecat's
-   TaskManager as an "unexpected exception" ERROR line. Hoisting the try/except
-   one level out makes the existing ``_disconnecting`` guard cover the iteration
-   too.
-
-2. NATIVE tool-result delivery (see ``deliver_native_tool_result`` and
-   ``_handle_tool_invocation``): our data tools are registered
-   ``cancel_on_interruption=False`` so the caller's trailing speech can't cancel
-   the call mid-turn — but that puts Pipecat's Ultravox service on its
-   *async-tool* path, which unfreezes the call with a placeholder and then
-   delivers the true result as user-side TEXT. Ultravox does not treat that text
-   as a function result, so the model loops (staging 2026-07-24: booking_get_slots
-   re-called 4× on placeholder results it couldn't use). We suppress the
-   placeholder and deliver the true result as a native ``client_tool_result``
-   for the same invocation id instead.
-
-3. Tool ``timeout`` (see ``_to_selected_tools``): Ultravox limits client tools
-   to a DEFAULT execution window of 2.5 seconds — a tool whose result arrives
-   later is treated as failed, the late ``client_tool_result`` is discarded as
-   stale, and the model retries the call. Upstream's ``_to_selected_tools``
-   emits ``temporaryTool`` definitions with no ``timeout`` field, so every tool
-   gets that default (beta 2026-07-27: booking_book's ~4s round-trip — freebusy
-   re-validation + Google event insert — was retried with identical args after
-   each SUCCESSFUL booking, and the duplicate 409'd as slot_unavailable, so the
-   agent told the caller a slot they had just secured was taken). We stamp an
-   explicit per-tool timeout on every definition.
-
-4. Text-medium agent transcripts (see ``_handle_agent_transcript``): in
-   text-output mode (realtime_tts.py) the agent's text is what a downstream TTS
-   speaks. Ultravox streams a turn as a first ``text`` snapshot, then
-   ``delta`` frames, then a final ``text`` snapshot of the whole turn; a
-   ``firstSpeakerSettings`` greeting arrives as ONE final frame with no deltas
-   (measured 2026-09-10, plan section 9). Upstream pushes ``text or delta`` for
-   non-final frames and nothing for a final one, so a mid-turn snapshot would
-   be spoken twice and the greeting never. We track what has been streamed and
-   push exactly the unspoken remainder.
-
-The ``_receive_messages`` override also carries upstream's own
-``playback_clear_buffer`` case (broadcast an interruption): it was added
-upstream after this copy was taken, and a text-output session depends on it
-to stop the external TTS when Ultravox cuts a turn short.
-
-This file is intended to shrink as upstream fixes land.
-"""
+"""Upstream compatibility for teardown, native tool results, timeouts and text transcripts; remove overrides as fixes
+land. See PRs #115, #169, #176 and #305."""
 
 from __future__ import annotations
 
@@ -153,20 +103,8 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
         await self._send_tool_result(tool_call_id, payload)
 
     async def _handle_tool_invocation(self, tool_name: str, invocation_id: str, parameters: dict) -> None:
-        """Run the tool WITHOUT shipping the async "started" placeholder.
-
-        Ultravox freezes the conversation between ``client_tool_invocation`` and
-        the matching ``client_tool_result``. We WANT that freeze to hold for the
-        (short) tool turn: ``deliver_native_tool_result`` sends the true result
-        the instant the tool finishes, so the freeze ends with the real answer
-        rather than a placeholder. Shipping the placeholder here would make IT
-        the result Ultravox accepts, leaving our real result to arrive as an
-        ignored second result / user text — the bug this shim removes.
-
-        (Every tool we register as async on Ultravox is a data tool delivered
-        natively; sync builtins never triggered the placeholder anyway, so
-        dropping it unconditionally is safe.)
-        """
+        """Suppress the async placeholder: Ultravox accepts one native result per invocation, so it must be the real answer.
+        See PR #169."""
         await self.run_function_calls(
             [
                 FunctionCallFromLLM(
