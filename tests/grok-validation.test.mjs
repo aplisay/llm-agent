@@ -131,6 +131,8 @@ describe('Grok rows at agent save time', () => {
     expect(errorText(external)).toMatch(/not supported by pipecat:xai\/grok-voice-think-fast-2.0/);
     const native = await create({ modelName: GROK_VOICE, options: { tts: { vendor: 'xai', voice: 'eve' } } });
     expect(native.statusCode).toBe(200);
+    const liora = await create({ modelName: GROK_VOICE, options: { tts: { voice: 'liora' } } });
+    expect(liora.statusCode).toBe(200);
   });
 
   test('a Grok text agent saves as a text agent', async () => {
@@ -150,8 +152,8 @@ describe('Grok rows at agent save time', () => {
     expect(res.body.voiceStack).toBe('realtime');
     expect(Object.keys(res.body.vendors)).toEqual(['xAI']);
     const names = res.body.vendors.xAI.map((v) => v.name);
-    expect(names).toHaveLength(26);
-    expect(names).toEqual(expect.arrayContaining(['eve', 'rex', 'ara']));
+    expect(names).toHaveLength(28);
+    expect(names).toEqual(expect.arrayContaining(['eve', 'rex', 'ara', 'aurora', 'liora']));
     expect(names).not.toContain('alloy');
     // no text-output mode, so no discrete TTS catalogue at a real locale either
     const gb = makeRes();

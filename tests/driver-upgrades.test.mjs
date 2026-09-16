@@ -377,16 +377,16 @@ describe('xAI (Grok) driver', () => {
     const failing = async () => { throw new Error('boom'); };
     const fallback = await Xai.fetchVoices({ fetchImpl: failing, key: 'k', logger });
     expect(fallback.xAI.any.map((v) => v.name)).toEqual(XAI_FALLBACK_VOICES.map((v) => v.name));
-    expect(fallback.xAI.any).toHaveLength(26);
+    expect(fallback.xAI.any).toHaveLength(28);
     expect(fallback.xAI.any.find((v) => v.name === 'eve').gender).toBe('female');
     const notOk = async () => ({ ok: false, status: 401, json: async () => ({}) });
-    expect((await Xai.fetchVoices({ fetchImpl: notOk, key: 'k', logger })).xAI.any).toHaveLength(26);
+    expect((await Xai.fetchVoices({ fetchImpl: notOk, key: 'k', logger })).xAI.any).toHaveLength(28);
     const empty = async () => ({ ok: true, json: async () => ({ voices: [] }) });
-    expect((await Xai.fetchVoices({ fetchImpl: empty, key: 'k', logger })).xAI.any).toHaveLength(26);
+    expect((await Xai.fetchVoices({ fetchImpl: empty, key: 'k', logger })).xAI.any).toHaveLength(28);
     let fetched = false;
     const noKey = await Xai.fetchVoices({ fetchImpl: async () => { fetched = true; }, key: null, logger });
     expect(fetched).toBe(false);
-    expect(noKey.xAI.any).toHaveLength(26);
+    expect(noKey.xAI.any).toHaveLength(28);
     // the block is a fresh copy each time
     expect(noKey.xAI.any[0]).not.toBe(XAI_FALLBACK_VOICES[0]);
   });
