@@ -23,6 +23,8 @@ import {
   DEFAULT_VOICE_MODELS,
   bundledTtsLines,
   hasLine,
+  priceFactorFor,
+  round2sf,
   textPricesFor,
   ultravoxMinutePrice,
   xaiAdditions,
@@ -225,28 +227,50 @@ describe('add-xai-rate-lines planning', () => {
       .toEqual({ input: 4, output: 12, cacheRead: 0.5 });
   });
 
+  test('a card\'s own factor scales the list digits, rounded to two significant figures', () => {
+    // The staging cards price Sonnet 5 input at 2.2 micro-pence: 0.7333 of its $3 list.
+    const staging = [{ dim: 'model', match: { technology: 'llm', provider: 'anthropic', detail: 'claude-sonnet-5', unit: 'input_tokens' }, unit: 'token', priceMicros: 2.2 }];
+    expect(priceFactorFor(staging, {})).toBe(0.7333);
+    expect(textPricesFor('grok-4.6', {}, 0.7333)).toEqual({ input: 1.5, output: 4.4, cacheRead: 0.37 });
+    expect(textPricesFor('grok-4.3', {}, 0.7333)).toEqual({ input: 0.92, output: 1.8, cacheRead: 0.15 });
+    // an explicit override still wins over the factor
+    expect(textPricesFor('grok-4.6', { XAI_OUTPUT_PRICE_MICROS: '5' }, 0.7333).output).toBe(5);
+    // no reference line and no override: the raw list digits
+    expect(priceFactorFor(card, {})).toBe(1);
+    expect(priceFactorFor([], { XAI_PRICE_FACTOR: '0.5' })).toBe(0.5);
+    expect(round2sf(1.4667)).toBe(1.5);
+    expect(round2sf(0.14667)).toBe(0.15);
+    expect(round2sf(0)).toBe(0);
+    const additions = xaiAdditions(staging, { voiceModels: [], factor: priceFactorFor(staging, {}), env: {} });
+    expect(additions.find((l) => l.match.detail === 'xai/grok-4.6' && l.match.unit === 'output_tokens').priceMicros).toBe(4.4);
+  });
+
   test('the voice model\'s own speech is a bundled tts provider a card can zero-price', () => {
     expect(BUNDLED_TTS_PROVIDERS).toContain('xai');
     expect(TTS_ENGINES).not.toContain('xai');
   });
 
-  test('the additions are one minute line per voice row, a zero speech line per bundled provider and three token lines per text model, minus what is present', () => {
+  test('the additions are one minute line per voice row, a zero speech pair per bundled provider and three token lines per text model, minus what is present', () => {
     const additions = xaiAdditions(card, { voicePrice: 5500000, env: {} });
-    expect(additions).toHaveLength(DEFAULT_VOICE_MODELS.length + BUNDLED_TTS_PROVIDERS.length + DEFAULT_TEXT_MODELS.length * 3);
+    expect(additions).toHaveLength(DEFAULT_VOICE_MODELS.length + BUNDLED_TTS_PROVIDERS.length * 2 + DEFAULT_TEXT_MODELS.length * 3);
     expect(additions[0]).toEqual({
       dim: 'model', match: { technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' }, unit: 'minute', priceMicros: 5500000,
     });
     // the worker meters a realtime model's own speech under the model's
-    // vendor for all three, so all three get their zero line here
-    expect(additions.filter((l) => l.dim === 'tts')).toEqual(
-      ['ultravox', 'openai', 'xai'].map((provider) => ({ dim: 'tts', match: { technology: 'tts', provider }, unit: 'minute', priceMicros: 0 })),
-    );
-    expect(bundledTtsLines(['ultravox'])).toEqual([{ dim: 'tts', match: { technology: 'tts', provider: 'ultravox' }, unit: 'minute', priceMicros: 0 }]);
+    // vendor for all three, so all three get their zero pair here, in the
+    // shape the cards already carry for ultravox (the row unit inside the match)
+    const pair = (provider) => [
+      { dim: 'tts', match: { technology: 'tts', provider, unit: 'milliseconds' }, unit: 'minute', priceMicros: 0 },
+      { dim: 'tts', match: { technology: 'tts', provider, unit: 'characters' }, unit: 'character', priceMicros: 0 },
+    ];
+    expect(additions.filter((l) => l.dim === 'tts')).toEqual([...pair('ultravox'), ...pair('openai'), ...pair('xai')]);
+    expect(bundledTtsLines(['ultravox'])).toEqual(pair('ultravox'));
     // the zero lines are seeded even on a run that skips the voice rows
-    expect(xaiAdditions(card, { voiceModels: [], env: {} }).filter((l) => l.dim === 'tts')).toHaveLength(3);
-    // and a card that already carries one keeps it (a real Ultravox zero line is left alone)
-    const withUltravox = [...card, { dim: 'tts', match: { technology: 'tts', provider: 'ultravox' }, unit: 'minute', priceMicros: 0 }];
-    expect(xaiAdditions(withUltravox, { voicePrice: 5500000, env: {} }).filter((l) => l.dim === 'tts').map((l) => l.match.provider)).toEqual(['openai', 'xai']);
+    expect(xaiAdditions(card, { voiceModels: [], env: {} }).filter((l) => l.dim === 'tts')).toHaveLength(6);
+    // a card that already carries the ultravox pair keeps it (the staging cards do)
+    const withUltravox = [...card, ...pair('ultravox')];
+    expect(xaiAdditions(withUltravox, { voicePrice: 5500000, env: {} }).filter((l) => l.dim === 'tts').map((l) => l.match.provider))
+      .toEqual(['openai', 'openai', 'xai', 'xai']);
     const units = additions.filter((l) => l.match.detail === 'xai/grok-4.6').map((l) => [l.match.unit, l.priceMicros]);
     expect(units).toEqual([['input_tokens', 2], ['output_tokens', 6], ['cache_read_tokens', 0.5]]);
     expect(additions.every((l) => l.match.technology === 'voice'
