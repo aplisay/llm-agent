@@ -182,6 +182,26 @@ async function* audioFrames(n: number) {
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
+/**
+ * Poll until each count reaches its target. The fake source yields one frame per
+ * event-loop turn, so a fixed sleep can end before the pump does on a busy machine.
+ */
+async function waitForCounts(
+  read: () => Record<string, number>,
+  targets: Record<string, number>,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const counts = read();
+    if (Object.entries(targets).every(([key, target]) => counts[key] >= target)) return;
+    if (Date.now() > deadline) {
+      assert.fail(`timed out after ${timeoutMs} ms: wanted ${JSON.stringify(targets)}, got ${JSON.stringify(counts)}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 test("armAuxStt: pumps the caller track, logs finals, meters the engine's own audio report + characters", async () => {
   const room = fakeRoom();
   const stream = new FakeSpeechStream(3, "  hello there ");
@@ -208,7 +228,10 @@ test("armAuxStt: pumps the caller track, logs finals, meters the engine's own au
   });
   assert.equal(room.handlerCount(), 2, "listens for caller leave + room disconnect");
 
-  await settle();
+  await waitForCounts(
+    () => ({ frames: stream.pushed.length, transcripts: transcripts.length, characters: usage.characters }),
+    { frames: 5, transcripts: 1, characters: "hello there".length },
+  );
   assert.deepEqual(
     transcripts.map((t) => t.text),
     ["hello there"],
@@ -256,7 +279,7 @@ test("armAuxStt: an engine that accepts nothing (e.g. rejected credentials) mete
       openAudioStream: () => audioFrames(10),
     },
   });
-  await settle();
+  await waitForCounts(() => ({ frames: stream.pushed.length }), { frames: 10 });
   // The SDK reports a failing connection as recoverable error events while it retries.
   engine.emit("error", { type: "stt_error", label: "deepgram.STT", recoverable: true, error: new Error("401") });
   assert.equal(closed.n, 0, "a recoverable error keeps the stream up");
