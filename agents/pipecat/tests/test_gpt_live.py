@@ -520,8 +520,8 @@ def test_usage_relabels_backend_tokens_to_the_delegate_model():
     # the service labels its token metrics with the live model
     assert observer._resolve("llm", "gpt-live-1") == ("openai", "openai/gpt-5.6-terra")
     plain = usage_vendors(_voice_agent(), GPT_LIVE)
-    assert plain["llm"] == {"vendor": "openai", "model": "gpt-live-1"}
-    assert UsageMeteringObserver(services=plain)._resolve("llm", "gpt-4o") == ("openai", "gpt-4o")
+    assert plain["llm"] == {"vendor": "openai", "model": "openai/gpt-live-1", "authoritative": True}
+    assert UsageMeteringObserver(services=plain)._resolve("llm", "gpt-4o") == ("openai", "openai/gpt-live-1")
 
 
 def test_backend_usage_rows_keep_input_tokens_apart_from_the_prompt_cache():
