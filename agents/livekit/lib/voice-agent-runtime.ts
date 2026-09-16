@@ -39,6 +39,7 @@ import {
 } from "./handover-opening.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
+import { meterMetrics } from "./usage-meter.js";
 import {
   armAuxStt,
   parseAuxSttOption,
@@ -603,27 +604,7 @@ export async function runAgentWorker({
   };
   const onMetrics = (m: any): void => {
     try {
-      switch (m?.type) {
-        case "llm_metrics":
-          addMeter("llm", m.label, "input_tokens", m.promptTokens);
-          addMeter("llm", m.label, "output_tokens", m.completionTokens);
-          addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
-          break;
-        case "realtime_model_metrics":
-          addMeter("llm", m.label, "input_tokens", m.inputTokens);
-          addMeter("llm", m.label, "output_tokens", m.outputTokens);
-          addMeter("llm", m.label, "cache_read_tokens", m.inputTokenDetails?.cachedTokens);
-          break;
-        case "tts_metrics":
-          addMeter("tts", m.label, "characters", m.charactersCount);
-          addMeter("tts", m.label, "milliseconds", m.audioDurationMs);
-          break;
-        case "stt_metrics":
-          addMeter("stt", m.label, "milliseconds", m.audioDurationMs);
-          break;
-        default:
-          break;
-      }
+      meterMetrics(m, addMeter);
     } catch (e) {
       logger.debug({ e }, "usage metrics accumulation failed");
     }
