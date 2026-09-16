@@ -1,3 +1,4 @@
+import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 import PipecatModel, {
   PIPECAT_PIPELINE_MODEL_IDS,
   isPipecatPipelineModelId,
@@ -10,6 +11,7 @@ import {
   modelSupportsExternalTts,
   nativeTtsVendorForModel,
 } from '../lib/model-voices.js';
+import Xai from '../lib/models/xai.js';
 import { XAI_DEFAULT_VOICE, XAI_FALLBACK_VOICES, XAI_VENDOR, xaiVoiceTree } from '../lib/voices/xai.js';
 import { BUNDLED_TTS_PROVIDERS, TTS_ENGINES, buildRateComponents, isMinuteBilledModel } from '../lib/rate-components.js';
 import {
@@ -31,15 +33,32 @@ import {
 } from '../scripts/add-xai-rate-lines.mjs';
 
 /**
- * xAI Grok on the server (docs/grok.md): the Pipecat roster rows and their
- * flags, the model-scoped xAI voice list, the minute-billed rate component,
- * the save-time rules for reserved tool names and vendorSpecific server
- * tools, and the rate-line script's planning against a fixture card. The
- * DB-backed save-time checks are tests/grok-validation.test.mjs; the driver
- * itself is tests/driver-upgrades.test.mjs.
+ * xAI Grok on the server (docs/grok.md): the Pipecat roster rows, their
+ * flags and the xAI key they need, the model-scoped xAI voice list and its
+ * built-in fallback, the minute-billed rate component, the save-time rules
+ * for reserved tool names and vendorSpecific server tools, and the rate-line
+ * script's planning against a fixture card. The DB-backed save-time checks
+ * are tests/grok-validation.test.mjs; the driver itself is
+ * tests/driver-upgrades.test.mjs.
  */
 
 const GROK_VOICE = 'pipecat:xai/grok-voice-think-fast-2.0';
+
+async function withXaiKeys(keys, fn) {
+  const saved = { XAI_API_KEY: process.env.XAI_API_KEY, GROK_API_KEY: process.env.GROK_API_KEY };
+  const apply = (values) => {
+    for (const name of Object.keys(saved)) {
+      if (values[name] === undefined) delete process.env[name];
+      else process.env[name] = values[name];
+    }
+  };
+  apply(keys);
+  try {
+    return await fn();
+  } finally {
+    apply(saved);
+  }
+}
 
 describe('Grok roster rows', () => {
   test('the voice row is realtime with no text-output mode', () => {
@@ -78,6 +97,52 @@ describe('Grok roster rows', () => {
   });
 });
 
+describe('the xAI key gate on the Pipecat roster', () => {
+  let Roster;
+
+  beforeAll(async () => {
+    // lib/handlers/pipecat.js imports lib/database.js, which connects on import.
+    await setupRealDatabase();
+    // The handler loads its voices on import; seed them so nothing calls xAI.
+    Xai._voices = Promise.resolve(xaiVoiceTree());
+    const { default: PipecatHandler } = await import('../lib/handlers/pipecat.js');
+    // The worker credential gates read the environment when their modules
+    // load. Hold them open so the xAI key is the only gate under test.
+    class Rows extends PipecatModel {
+      static needKey = undefined;
+    }
+    Roster = class extends PipecatHandler {
+      static name = 'pipecat';
+      static needKey = undefined;
+      // Its own roster cache, never PipecatHandler's.
+      static _availableModels;
+      static get models() { return [Rows]; }
+    };
+  }, 60000);
+
+  afterAll(async () => {
+    await teardownRealDatabase();
+  }, 60000);
+
+  const allRows = () => PipecatModel.allModels.map(([id]) => `pipecat:${id}`);
+  const isXaiRow = (name) => name.startsWith('pipecat:xai/');
+  const listed = () => Roster.availableModels.map((m) => m.name);
+
+  test('without a key no xai row is listed, and every other Pipecat row is', async () => {
+    expect(await withXaiKeys({}, listed)).toEqual(allRows().filter((name) => !isXaiRow(name)));
+  });
+
+  test('XAI_API_KEY, or GROK_API_KEY on its own, lists the xai rows too', async () => {
+    expect(allRows().filter(isXaiRow)).toEqual([
+      'pipecat:xai/grok-voice-think-fast-2.0',
+      'pipecat:xai/grok-4.20-0309-non-reasoning',
+      'pipecat:xai/grok-4.3',
+    ]);
+    expect(await withXaiKeys({ XAI_API_KEY: 'test-key' }, listed)).toEqual(allRows());
+    expect(await withXaiKeys({ GROK_API_KEY: 'test-key' }, listed)).toEqual(allRows());
+  });
+});
+
 describe('Grok voices', () => {
   // The handler's merged catalogue: the xAI block beside the other vendors.
   const Handler = {
@@ -90,10 +155,15 @@ describe('Grok voices', () => {
   };
   const voicesInstance = { listVoices: async () => ({ elevenlabs: { 'en-GB': [{ name: 'Rachel' }] } }) };
 
-  test('the fallback list is the 26 documented voices with eve as the default', () => {
+  test('the fallback list is 28 voices with eve as the default', () => {
     expect(XAI_FALLBACK_VOICES.map((v) => v.name)).toEqual([
       'ara', 'eve', 'leo', 'rex', 'sal', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith',
       'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas',
+      'aurora', 'liora',
+    ]);
+    expect(XAI_FALLBACK_VOICES.slice(-2)).toEqual([
+      { name: 'aurora', description: 'Aurora (multilingual)', gender: 'female' },
+      { name: 'liora', description: 'Liora (multilingual)', gender: 'female' },
     ]);
     expect(XAI_DEFAULT_VOICE).toBe('eve');
     expect(XAI_VENDOR).toBe('xAI');
@@ -103,6 +173,16 @@ describe('Grok voices', () => {
     }
     expect(Object.keys(xaiVoiceTree())).toEqual(['xAI']);
     expect(Object.keys(xaiVoiceTree().xAI)).toEqual(['any']);
+  });
+
+  test('with no key the fallback is used without a fetch, and a warning names the key', async () => {
+    const warnings = [];
+    const logger = { warn: (...args) => warnings.push(args) };
+    let fetched = false;
+    const tree = await withXaiKeys({}, () => Xai.fetchVoices({ fetchImpl: async () => { fetched = true; }, logger }));
+    expect(fetched).toBe(false);
+    expect(tree).toEqual(xaiVoiceTree());
+    expect(warnings).toEqual([[expect.stringMatching(/XAI_API_KEY/)]]);
   });
 
   test('a Grok voice row validates voices against the xAI block only', async () => {

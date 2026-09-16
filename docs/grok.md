@@ -13,7 +13,7 @@ xAI sells two things the platform offers under the `xai` vendor segment:
 
 All of them need one key on the API server and the Pipecat worker:
 `XAI_API_KEY`. The older `GROK_API_KEY` name is accepted as a fallback.
-Without a key the rows are not advertised.
+Without the key on the API server, `GET /models` lists none of the rows.
 
 ## Rows
 
@@ -61,16 +61,18 @@ pair with an external TTS.
 `GET /models/pipecat:xai/grok-voice-think-fast-2.0/voices/any` lists the xAI
 voices under the `xAI` vendor. The list comes from xAI's catalogue endpoint
 (`GET https://api.x.ai/v1/tts/voices`), fetched once when the API server
-starts, with a built-in list of the 26 documented voices as the fallback.
+starts. When the fetch fails, or the API server has no xAI key, the server
+logs a warning and uses a built-in list of 28 voices instead.
 Every voice is multilingual, so all of them sit under the `any` locale and
 the model speaks the language of the conversation whichever voice is chosen.
 The default is `eve`.
 
-The documented voices: ara, eve, leo, rex, sal, carina, zagan, helix, orion,
-luna, iris, altair, zenith, perseus, helios, lux, kepler, rigel, cosmo,
-celeste, ursa, sirius, lumen, castor, naksh and atlas. The catalogue may list
-more (it listed `aurora` and `liora` on 2026-09-15). Each row carries xAI's
-gender label.
+The built-in list holds the 28 voices the catalogue listed on 2026-09-16:
+ara, eve, leo, rex, sal, carina, zagan, helix, orion, luna, iris, altair,
+zenith, perseus, helios, lux, kepler, rigel, cosmo, celeste, ursa, sirius,
+lumen, castor, naksh, atlas, aurora and liora. A voice xAI adds later is
+listed when the fetch works, but not by the built-in list until that list is
+updated. Each row carries xAI's gender label.
 
 `options.tts.voice` is validated against this list when the agent is saved.
 That check matters more than usual: xAI accepts an unknown voice id without
