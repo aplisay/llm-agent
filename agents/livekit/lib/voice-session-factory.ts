@@ -24,6 +24,7 @@ import {
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
+import type { UltravoxInactivityMessage } from "../plugins/ultravox/src/realtime/api_proto.js";
 
 /**
  * How many times the inactivity prompt is spoken before the call is considered
@@ -86,6 +87,60 @@ export function inactivityAwayTimeoutSecs(agent: Agent): number | undefined {
   }
   if (secs === undefined || !(secs > 0)) return undefined;
   return secs;
+}
+
+/**
+ * The Ultravox `inactivityMessages` for `agent`: a native
+ * `vendorSpecific.ultravox.inactivityMessages` when set, else
+ * `options.inactivity` mapped to native messages, else undefined.
+ */
+export function ultravoxInactivityMessages(
+  agent: Agent,
+): UltravoxInactivityMessage[] | undefined {
+  const native = agent?.options?.vendorSpecific?.ultravox?.inactivityMessages;
+  if (native) return native;
+  const inactivitySecs = inactivityAwayTimeoutSecs(agent);
+  if (inactivitySecs === undefined) return undefined;
+  const entry: UltravoxInactivityMessage = {
+    duration: `${inactivitySecs}s`,
+    message: agent.options!.inactivity!.message.trim(),
+  };
+  // Ultravox fires each entry once, in sequence, after `duration` of further
+  // user inactivity. So a short run of identical entries re-prompts every
+  // `timeout` of continued silence, up to INACTIVITY_PROMPT_COUNT times.
+  const messages = Array.from({ length: INACTIVITY_PROMPT_COUNT }, () => ({ ...entry }));
+  // endBehavior stays default (keep prompting, never hang up) unless the agent
+  // opted in. HANG_UP_SOFT, not STRICT: the model still speaks the last prompt
+  // before it ends the call, so the other end hears "hello? ... ok, goodbye"
+  // and not a cut mid-word.
+  if (inactivityHangupEnabled(agent)) {
+    messages[messages.length - 1] = { ...entry, endBehavior: "END_BEHAVIOR_HANG_UP_SOFT" };
+  }
+  return messages;
+}
+
+/**
+ * Give the NEXT session created from a running Ultravox realtime model the
+ * incoming agent's {@link ultravoxInactivityMessages}, through the plugin's
+ * one-shot `setNextSessionInactivityMessages` override.
+ *
+ * Needed for an in-place handover, for the same reason as
+ * armHandoverFirstSpeaker (handover-opening.ts): the incoming agent's session
+ * is a new Ultravox call built from the running model, whose
+ * `inactivityMessages` came from the agent the model was created for.
+ *
+ * Returns false, and changes nothing, when the model has no such override.
+ */
+export function armHandoverInactivity(realtimeModel: unknown, agent: Agent): boolean {
+  const model = realtimeModel as
+    | { setNextSessionInactivityMessages?: (m: UltravoxInactivityMessage[] | undefined) => void }
+    | null
+    | undefined;
+  if (typeof model?.setNextSessionInactivityMessages !== "function") {
+    return false;
+  }
+  model.setNextSessionInactivityMessages(ultravoxInactivityMessages(agent));
+  return true;
 }
 
 /**
@@ -303,49 +358,17 @@ export function buildRealtimeLlmOptions(
   // the Ultravox session omits `userAwayTimeout`. A native
   // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
   if (modelName.includes("livekit:ultravox/")) {
-    const inactivitySecs = inactivityAwayTimeoutSecs(agent);
-    const inactivityMsg =
-      typeof agent?.options?.inactivity?.message === "string"
-        ? agent.options.inactivity.message.trim()
-        : "";
-    const base =
-      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
-      vendorSpecific ||
-      undefined;
-    const alreadyNative = (base as any)?.ultravox?.inactivityMessages;
-    if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
-      // Ultravox fires each entry once, in sequence, after `duration` of further
-      // user inactivity — so a short run of identical entries gives the
-      // "re-fire every `timeout` of continued silence" behaviour (here up to
-      // INACTIVITY_PROMPT_COUNT nudges).
-      type InactivityEntry = {
-        duration: string;
-        message: string;
-        endBehavior?: string;
-      };
-      const entry: InactivityEntry = {
-        duration: `${inactivitySecs}s`,
-        message: inactivityMsg,
-      };
-      const messages: InactivityEntry[] = Array.from(
-        { length: INACTIVITY_PROMPT_COUNT },
-        () => ({ ...entry }),
-      );
-      // endBehavior stays default (keep prompting, never hang up) unless the agent
-      // opted in. HANG_UP_SOFT rather than STRICT so the model still delivers the
-      // last prompt before ending, which is what the other end hears as
-      // "hello? ... ok, goodbye" rather than a mid-word cut.
-      if (inactivityHangupEnabled(agent)) {
-        messages[messages.length - 1] = {
-          ...entry,
-          endBehavior: "END_BEHAVIOR_HANG_UP_SOFT",
-        };
-      }
+    const inactivityMessages = ultravoxInactivityMessages(agent);
+    if (inactivityMessages) {
+      const base =
+        (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+        vendorSpecific ||
+        undefined;
       llmOptions.vendorSpecific = {
         ...(base || {}),
         ultravox: {
           ...((base && base.ultravox) || {}),
-          inactivityMessages: messages,
+          inactivityMessages,
         },
       };
     }

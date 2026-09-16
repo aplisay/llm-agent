@@ -275,6 +275,32 @@ export function withFirstSpeakerOverride(
 }
 
 /**
+ * Return `base` with `inactivityMessages` REPLACED by `override.messages`, or
+ * `base` shallow-copied when there is no override. An override without
+ * messages removes them, so the call is created with none. Like
+ * {@link withFirstSpeakerOverride}, it rebuilds the `vendorSpecific` containers
+ * and leaves the model's defaults untouched.
+ */
+export function withInactivityMessagesOverride(
+  base: ModelOptions,
+  override?: { messages?: api_proto.UltravoxInactivityMessage[] }
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (!override) {
+    return opts;
+  }
+  const { inactivityMessages: _replaced, ...ultravox } =
+    opts.vendorSpecific?.ultravox ?? {};
+  opts.vendorSpecific = {
+    ...opts.vendorSpecific,
+    ultravox: override.messages
+      ? { ...ultravox, inactivityMessages: override.messages }
+      : ultravox,
+  };
+  return opts;
+}
+
+/**
  * Fold one transcript frame into the turn accumulated so far.
  *
  * `text` is an authoritative snapshot of the whole turn when present; otherwise the
@@ -341,6 +367,8 @@ export class RealtimeModel extends llm.RealtimeModel {
    * this model. See `setNextSessionFirstSpeaker`.
    */
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
+  /** See {@link setNextSessionInactivityMessages}. */
+  #nextSessionInactivity?: { messages?: api_proto.UltravoxInactivityMessage[] };
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
   /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
@@ -479,6 +507,22 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
+   * Use `messages` as the `inactivityMessages` of the NEXT session created from
+   * this model, and only that session. `undefined` means that call is created
+   * with none.
+   *
+   * Used by an in-place agent handover. The SDK opens the incoming agent's
+   * session from the running model, whose `inactivityMessages` were built for
+   * the agent the model was created for. Consumed and cleared by the next
+   * `session()` call, together with any first-speaker override.
+   */
+  setNextSessionInactivityMessages(
+    messages: api_proto.UltravoxInactivityMessage[] | undefined
+  ): void {
+    this.#nextSessionInactivity = { messages };
+  }
+
+  /**
    * Called when Ultravox ends a session we did not ask it to end — its own
    * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
    *
@@ -538,18 +582,33 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#nextSessionFirstSpeaker;
   }
 
+  /** The inactivity override awaiting the next `session()`, if any. Diagnostics/tests. */
+  get pendingInactivityOverride():
+    | { messages?: api_proto.UltravoxInactivityMessage[] }
+    | undefined {
+    return this.#nextSessionInactivity;
+  }
+
   session(): RealtimeSession {
     const firstSpeakerOverride = this.#nextSessionFirstSpeaker;
     this.#nextSessionFirstSpeaker = undefined;
-    const opts: ModelOptions = withFirstSpeakerOverride(
-      this.#defaultOpts,
-      firstSpeakerOverride
+    const inactivityOverride = this.#nextSessionInactivity;
+    this.#nextSessionInactivity = undefined;
+    const opts: ModelOptions = withInactivityMessagesOverride(
+      withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
+      inactivityOverride
     );
     if (firstSpeakerOverride) {
       // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
       log().info(
         { firstSpeakerSettings: firstSpeakerOverride },
         "applying one-shot firstSpeakerSettings override to new session"
+      );
+    }
+    if (inactivityOverride) {
+      log().info(
+        { inactivityMessages: inactivityOverride.messages ?? [] },
+        "applying one-shot inactivityMessages override to new session"
       );
     }
 

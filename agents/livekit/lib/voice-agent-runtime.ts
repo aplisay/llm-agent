@@ -22,7 +22,7 @@ import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { isOpenAIRealtime, speakGreetingText } from "./speak-text.js";
-import { createVoiceModelAndSession } from "./voice-session-factory.js";
+import { armHandoverInactivity, createVoiceModelAndSession } from "./voice-session-factory.js";
 import { createInactivityKick } from "./inactivity-kick.js";
 import { createProviderEndedTeardown, markNextSessionPrimary } from "./provider-ended.js";
 import {
@@ -1499,6 +1499,14 @@ export async function runAgentWorker({
         logger.warn(
           { agentId: newAgentDef.id },
           "agent handover: could not arm the Ultravox handover opening",
+        );
+      }
+      // Without this the new Ultravox call keeps the inactivityMessages the
+      // running model was built with, from an earlier agent.
+      if (onUltravox && !armHandoverInactivity(session?.llm, newAgentDef)) {
+        logger.warn(
+          { agentId: newAgentDef.id },
+          "agent handover: could not arm the incoming agent's Ultravox inactivity messages",
         );
       }
       const handoffAgent = new HandoverAgent(
