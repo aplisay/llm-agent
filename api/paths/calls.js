@@ -1,7 +1,19 @@
 import { Call, Op } from '../../lib/database.js';
+import { Sequelize } from 'sequelize';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 let appParameters, log;
+
+/**
+ * Finalised cost of a call in micro-pounds (1e-6 GBP): the sum of its costed,
+ * finalised usage records, as a correlated aggregate so list pages stay one
+ * query. NULL when nothing has been costed yet — distinct from a zero-cost
+ * call. float8 keeps the JSON value numeric (a bigint SUM would serialise as a
+ * string).
+ */
+const COST_MICROS_LITERAL =
+  '(SELECT SUM(ur.cost_micros)::float8 FROM usage_records ur WHERE ur.call_id = "Call"."id" AND ur.finalised AND ur.cost_micros IS NOT NULL)';
+
 
 export default function (logger) {
 
@@ -26,7 +38,7 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId'],
+        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],
         where,
         order: [['index', 'ASC']],
         limit: parseInt(limit),

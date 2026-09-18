@@ -37,6 +37,7 @@ import httpx
 from loguru import logger
 from pipecat.transports.base_transport import BaseTransport
 
+from .. import http_client
 from .base import (
     ConsultStateMixin,
     GatewaySession,
@@ -177,6 +178,10 @@ class _FsGatewaySession(GatewaySession):
     async def shutdown(self) -> None:
         self._finished.set()
         await self.hangup("Session closed")
+        # P6: ``set_consult_call_id`` had no matching clear on this
+        # gateway (only sipbridge cleared it), so every warm transfer
+        # left its consult id behind for the life of the process.
+        self._gateway.clear_consult_call_id(self.session_id)
 
 
 class FreeswitchSipGateway(ConsultStateMixin, SipGateway):
@@ -311,8 +316,10 @@ class FreeswitchSipGateway(ConsultStateMixin, SipGateway):
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.token:
             headers["authorization"] = f"Bearer {self.token}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.request(method, url, headers=headers, json=body)
+        client = await http_client.get_client("esl-poller")
+        resp = await client.request(
+            method, url, headers=headers, json=body, timeout=15.0
+        )
         if resp.status_code >= 400:
             msg = f"esl-poller {method} {path} -> {resp.status_code} {resp.text}"
             if raise_on_error:

@@ -1,12 +1,14 @@
 // Package api implements sipbridge's HTTP control surface.
 //
 // Phase A endpoints:
-//   GET  /health            liveness + active-call count
-//   DELETE /v1/calls/{id}   hangup (caller-initiated)
+//
+//	GET  /health            liveness + active-call count
+//	DELETE /v1/calls/{id}   hangup (caller-initiated)
 //
 // Phase B adds:
-//   POST /v1/calls          outbound originate
-//   POST /v1/calls/{id}/transfer  blind / attended REFER
+//
+//	POST /v1/calls          outbound originate
+//	POST /v1/calls/{id}/transfer  blind / attended REFER
 //
 // All endpoints require a Bearer token if SIPBRIDGE_API_TOKEN is set
 // in the environment; auth is disabled when the token is empty for
@@ -18,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -45,9 +48,15 @@ func New(mgr *call.Manager, addr, token string) *Server {
 	mux.HandleFunc("POST /v1/calls/{id}/dtmf", s.handleDTMF)
 
 	s.hs = &http.Server{
-		Addr:              addr,
-		Handler:           s.withAuth(mux),
+		Addr:    addr,
+		Handler: s.withAuth(mux),
+		// Full request/response timeouts, not just the header read:
+		// without them a client that opens a connection and stalls
+		// mid-body holds a goroutine and a connection indefinitely.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second, // > the 60 s consult ceiling
+		IdleTimeout:       120 * time.Second,
 	}
 	return s
 }
@@ -75,14 +84,26 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				return
 			}
 		}
+		// Cap the request body for every handler. These are small JSON
+		// control messages (the largest carries an agent's custom SIP
+		// headers); without a cap a bad or hostile client can stream
+		// unbounded data into json.Decode.
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 		next.ServeHTTP(w, r)
 	})
 }
 
+// maxRequestBody caps the JSON control bodies this API accepts. 1 MiB
+// is far above the largest real request (an originate carrying custom
+// SIP headers) and far below anything that could pressure the heap.
+const maxRequestBody = 1 << 20
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":            true,
-		"active_calls":  len(s.mgr.ActiveCallIDs()),
+		"ok":           true,
+		"active_calls": len(s.mgr.ActiveCallIDs()),
+		"draining":     s.mgr.Draining(),
+		"goroutines":   runtime.NumGoroutine(),
 	})
 }
 
@@ -105,11 +126,11 @@ func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request) {
 // promoted to X-Aplisay-Call-Id automatically by the call manager so
 // callers don't have to duplicate it in both places.
 type originateBody struct {
-	Destination       string            `json:"destination"`
-	CallerID          string            `json:"caller_id"`
-	AgentWSSessionID  string            `json:"agent_ws_session_id"`
-	CustomHeaders     map[string]string `json:"custom_headers"`
-	Metadata          map[string]string `json:"metadata"`
+	Destination      string            `json:"destination"`
+	CallerID         string            `json:"caller_id"`
+	AgentWSSessionID string            `json:"agent_ws_session_id"`
+	CustomHeaders    map[string]string `json:"custom_headers"`
+	Metadata         map[string]string `json:"metadata"`
 }
 
 func (s *Server) handleOriginate(w http.ResponseWriter, r *http.Request) {
@@ -223,7 +244,7 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":           true,
+			"ok":            true,
 			"relay_call_id": relayID,
 		})
 		return
@@ -284,11 +305,11 @@ func (s *Server) handleUnbridge(w http.ResponseWriter, r *http.Request) {
 // id, which the worker passes back as ``target`` (mode "bridged") to
 // /transfer when ready to finalize.
 type consultBody struct {
-	Destination       string            `json:"destination"`
-	CallerID          string            `json:"caller_id"`
-	AgentWSSessionID  string            `json:"agent_ws_session_id"`
-	CustomHeaders     map[string]string `json:"custom_headers"`
-	Metadata          map[string]string `json:"metadata"`
+	Destination      string            `json:"destination"`
+	CallerID         string            `json:"caller_id"`
+	AgentWSSessionID string            `json:"agent_ws_session_id"`
+	CustomHeaders    map[string]string `json:"custom_headers"`
+	Metadata         map[string]string `json:"metadata"`
 }
 
 func (s *Server) handleConsult(w http.ResponseWriter, r *http.Request) {
@@ -315,19 +336,19 @@ func (s *Server) handleConsult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	consultID, err := s.mgr.Consult(ctx, call.ConsultParams{
-		OriginalCallID:  id,
-		Destination:     body.Destination,
-		CallerID:        body.CallerID,
-		AgentSessionID:  body.AgentWSSessionID,
-		CustomHeaders:   body.CustomHeaders,
-		Metadata:        body.Metadata,
+		OriginalCallID: id,
+		Destination:    body.Destination,
+		CallerID:       body.CallerID,
+		AgentSessionID: body.AgentWSSessionID,
+		CustomHeaders:  body.CustomHeaders,
+		Metadata:       body.Metadata,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok":             true,
+		"ok":              true,
 		"consult_call_id": consultID,
 	})
 }

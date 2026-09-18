@@ -212,6 +212,15 @@ export interface BridgedTakeoverRuntime {
     /** Invoked once the continuation slot is reserved — drops the bridge. */
     onReserved: () => Promise<void>;
   }): Promise<void>;
+  /**
+   * Invoked when the primary agent's media is detached after a bridged
+   * transfer (the humans now talk directly). Anything the runtime was running
+   * over the caller's audio alongside the agent — the auxiliary STT
+   * (options.stt.aux) — stops here: there is no agent transcript left to
+   * second-guess, and the bridged segment has its own transcription option.
+   * A takeover that restarts an agent stack re-arms what it needs.
+   */
+  onPrimaryAgentDetached?(): void;
 }
 
 /**

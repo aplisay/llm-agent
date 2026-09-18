@@ -131,6 +131,14 @@ class OutboundCallParams:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+    # Trunk media-security contract (``Trunk.flags.srtp`` in llm-agent). None
+    # means "unchanged": offer SRTP and let the sipbridge downgrade on a
+    # 415/488/606. False suppresses the offer outright, which is the only thing
+    # that works for a carrier that ADVERTISES RTP/SAVP and then sends plain
+    # RTP — nothing rejects the offer, so the downgrade never fires, and every
+    # inbound packet is then dropped on its auth tag until the media timeout
+    # kills the call. Stamped onto the leg as ``X-Aplisay-Srtp: off``.
+    srtp: Optional[bool] = None
 
 
 @dataclass
@@ -172,6 +180,11 @@ class TransferRequest:
     origin_caller_id: Optional[str] = None
     can_refer: bool = False  # if False, force blind-bridge per section 6.7
     force_bridged: bool = False
+    # Egress trunk's media-security contract, same meaning and provenance as
+    # ``OutboundCallParams.srtp`` — a transfer leg dials out over a trunk just
+    # as an originate does, so a carrier that cannot really do SRTP must be
+    # honoured here too.
+    srtp: Optional[bool] = None
 
     # Egress routing for the legs the gateway *originates* (dial_bridge and
     # the consultative consult leg). Same tuple as OutboundCallParams, for the

@@ -4,7 +4,8 @@ import { isSafeCallbackUrl } from '../../../../lib/balance-callback.js';
 
 /**
  * /api/organisations/{id}/billing — the org's billing CONTROLS (not money):
- *   GET    read `billingBlocked` + `billingConfig` + `chargeableNumberLimit`.
+ *   GET    read `billingBlocked` + `billingConfig` + `chargeableNumberLimit` +
+ *          `agentLimit`.
  *   PATCH  set any of them. `billingConfig` is validated whole (callbackUrl must
  *          pass the SSRF guard, hashKey ≥ 16 chars, balanceLowPennies ≥ 0) or
  *          cleared with null; `billingBlocked` is the hard call-refusal lever
@@ -13,6 +14,12 @@ import { isSafeCallbackUrl } from '../../../../lib/balance-callback.js';
  *          (null = unlimited) that a client billing service sets alongside the
  *          rest of the billing config — the direct org-PATCH route keeps its
  *          own stricter `organisation:setRate` gate for this field.
+ *          `agentLimit` is the generic per-organisation concurrency cap already
+ *          enforced by lib/concurrency (null = unlimited, 0 = no concurrent
+ *          calls); it is exposed here for the same reason as
+ *          `chargeableNumberLimit` — a client billing service sets it from
+ *          whatever package the customer is on, and the direct org-PATCH route
+ *          keeps its stricter `organisation:setLimits` gate.
  *
  * Gated on `organisation:billing` — held by superAdmin and the least-privilege
  * `billingService` role (the client billing system's server-side seam, like
@@ -25,6 +32,7 @@ export default function (logger) {
     billingBlocked: !!org.billingBlocked,
     billingConfig: org.billingConfig ?? null,
     chargeableNumberLimit: org.chargeableNumberLimit ?? null,
+    agentLimit: org.agentLimit ?? null,
   });
 
   const get = async (req, res) => {
@@ -51,8 +59,23 @@ export default function (logger) {
     if (!org) return res.status(404).send({ message: `Organisation ${req.params.organisationId} not found` });
 
     const body = req.body || {};
-    if (!('billingBlocked' in body) && !('billingConfig' in body) && !('chargeableNumberLimit' in body)) {
-      return res.status(400).send({ message: 'Provide billingBlocked, billingConfig and/or chargeableNumberLimit' });
+    if (
+      !('billingBlocked' in body) &&
+      !('billingConfig' in body) &&
+      !('chargeableNumberLimit' in body) &&
+      !('agentLimit' in body)
+    ) {
+      return res
+        .status(400)
+        .send({ message: 'Provide billingBlocked, billingConfig, chargeableNumberLimit and/or agentLimit' });
+    }
+
+    if ('agentLimit' in body) {
+      const limit = body.agentLimit;
+      if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
+        return res.status(400).send({ message: 'agentLimit must be a non-negative integer or null (unlimited)' });
+      }
+      org.agentLimit = limit;
     }
 
     if ('chargeableNumberLimit' in body) {
@@ -102,7 +125,7 @@ export default function (logger) {
     return res.send(shape(org));
   };
   update.apiDoc = {
-    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig / chargeableNumberLimit).',
+    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig / chargeableNumberLimit / agentLimit).',
     operationId: 'updateOrganisationBilling',
     tags: ['Organisations', 'Billing'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
@@ -129,6 +152,12 @@ export default function (logger) {
                 nullable: true,
                 minimum: 0,
                 description: 'Spend-policy cap: max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited. A client billing service sets this alongside the other billing controls.',
+              },
+              agentLimit: {
+                type: 'integer',
+                nullable: true,
+                minimum: 0,
+                description: 'Concurrency cap: max simultaneous calls for the organisation, enforced at call start; null = unlimited, 0 = none allowed. A client billing service sets this alongside the other billing controls.',
               },
             },
           },

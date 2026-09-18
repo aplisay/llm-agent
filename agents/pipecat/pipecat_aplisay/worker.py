@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import uuid
 
 # The ``websockets`` library logs every frame it sends/receives as a hex dump
@@ -72,7 +73,10 @@ from .call_session import (
     setup_takeover_call,
 )
 from .constants import DISCONNECT_REASONS, PLATFORM
+from . import http_client
 from .invocation_log import flush_invocation_logs, install_capture
+from .output_cushion import install as install_output_cushion
+from .output_underrun import install as install_underrun_stats
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
 from .serializers.freeswitch_audio_stream import FreeSwitchAudioStreamStart
 from .sip_gateway import (
@@ -84,6 +88,7 @@ from .sip_gateway import (
     VoiceblenderSipGateway,
     collect_sip_headers,
 )
+from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 
@@ -110,6 +115,15 @@ async def lifespan(app: FastAPI):
     # Capture call-scoped logs into the InvocationLog buffer. Installed here (at
     # runtime, after all imports) so nothing resets loguru's handlers on us.
     install_capture()
+
+    # Count how often the WebRTC output track runs dry and, crucially, how LATE
+    # the audio was when it came back — the number that says whether an output
+    # cushion could have covered the gap or whether the audio was never coming.
+    # See output_underrun for the measurements this exists to settle.
+    install_underrun_stats()
+    # ...and let the queue those stats measure actually hold something. Layered
+    # after the instrumentation so the cushioned class inherits it.
+    install_output_cushion()
 
     # SIP gateway is selected at startup. SIP_GATEWAY=daily|freeswitch|voiceblender.
     gateway_name = os.environ.get("SIP_GATEWAY", "freeswitch").lower()
@@ -149,6 +163,11 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
     app.state.calls_by_channel: dict[str, str] = {}
+    # W10: asyncio keeps only WEAK references to tasks, so a
+    # fire-and-forget ``create_task`` can be collected mid-flight if
+    # nothing else happens to be awaiting it. Hold them here (and drop
+    # them on completion), which also gives /healthz a real task count.
+    app.state.tasks: set[asyncio.Task] = set()
     # Live browser WebRTC peers keyed by pc_id, so trickle-ICE PATCHes and
     # renegotiation can find the connection a prior /webrtc/offer created.
     app.state.webrtc_connections: dict[str, SmallWebRTCConnection] = {}
@@ -172,6 +191,12 @@ async def lifespan(app: FastAPI):
             await gw_obj.stop()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"sipbridge gateway stop failed: {e}")
+    # Close the shared HTTP pools last — everything above may still want
+    # to make a REST call on the way out.
+    try:
+        await http_client.aclose_all()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"http client shutdown failed: {e}")
 
 
 async def _ws_deny(websocket: WebSocket, status: int, body: bytes = b"") -> None:
@@ -253,7 +278,10 @@ async def _lookup_instance_for_inbound(
 
     All three inbound paths (voiceblender VSI event, sipbridge WS headers,
     FreeSWITCH /inbound-dispatch) need the same lookup ladder:
-    phone_registration → trunk+number → bare number. Each step can return
+    phone_registration → trunk+number. There is deliberately no bare-number
+    rung after that: an inbound call resolves by (number, trunk) or not at
+    all, so a number that failed the trunk check, or has no agent, is "no
+    instance" rather than "try again without the trunk". Each step can return
     404 from the REST API; that's a "this step found nothing", not an
     error — we want to continue to the next step (and ultimately tell the
     SIP / gateway layer "no agent for this call"), not let an
@@ -301,8 +329,6 @@ async def _lookup_instance_for_inbound(
                     origin.force_refer_transfer = bool(flags.get("forceReferTransfer"))
                 elif flags.get("canRefer") is True:
                     origin.force_refer_transfer = True
-    if not instance and to_number:
-        instance = await _maybe(api_client.get_instance_by_number(to_number))
     return instance, origin
 
 
@@ -322,7 +348,7 @@ async def _voiceblender_resolve_agent(
     ``_on_leg_ringing`` reads to build the ctx.
     """
     headers = event.get("sip_headers") or {}
-    to_number = event.get("to")
+    to_number = headers.get("X-Aplisay-Called") or event.get("to")
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
@@ -354,15 +380,7 @@ def _voiceblender_session_lookup(app: FastAPI, session_id: str):
 
 
 def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
-    """Origin caller id as seeded at ``metadata.aplisay.callerId``.
-
-    ``CallRecord`` deliberately has no top-level ``callerId`` field — the
-    number lives only in the aplisay metadata blob (see the create_call
-    payloads), and attribute access on the pydantic model raises
-    AttributeError. Beta 2026-08-05: the sipbridge consult arm did exactly
-    that, killing the TransferAgent WS the moment the transfer target
-    answered — they heard silence while the bridge held the leg open.
-    """
+    """Read caller identity from aplisay metadata; CallRecord has no top-level callerId attribute. See PR #196."""
     meta = call.metadata if isinstance(call.metadata, dict) else {}
     return (meta.get("aplisay") or {}).get("callerId")
 
@@ -432,7 +450,9 @@ async def _sipbridge_resolve_agent_from_headers(
         return s
 
     from_number = _user_of(from_uri)
-    to_number = _user_of(to_uri)
+    # A registration trunk's B2BUA puts the dialled number in X-Aplisay-Called
+    # as well as the Request-URI; the header wins when present.
+    to_number = h.get("x-aplisay-called") or _user_of(to_uri)
 
     instance, origin = await _lookup_instance_for_inbound(
         phone_registration=phone_registration,
@@ -503,6 +523,114 @@ app.add_middleware(
 )
 
 
+# Watermarks for /healthz, env-overridable. The canary below is the decisive
+# check; these catch runaway accumulation before it starves the process (the
+# healthy baseline on a SIP node is ~1-2 concurrent sessions and ~25 threads).
+HEALTHZ_MAX_SESSIONS = int(os.environ.get("HEALTHZ_MAX_SESSIONS", "64"))
+HEALTHZ_MAX_THREADS = int(os.environ.get("HEALTHZ_MAX_THREADS", "400"))
+# Per-call gateway map entries, summed across the maps below. A healthy
+# node holds a handful per live call; a few hundred means state is being
+# registered and never released.
+HEALTHZ_MAX_GATEWAY_ENTRIES = int(os.environ.get("HEALTHZ_MAX_GATEWAY_ENTRIES", "512"))
+# Tracked background tasks (call runners and their helpers). Comfortably
+# above any real concurrency; a climb here is a task that never returns.
+HEALTHZ_MAX_TASKS = int(os.environ.get("HEALTHZ_MAX_TASKS", "256"))
+
+
+@app.get("/healthz")
+async def healthz(request: Request) -> JSONResponse:
+    """Liveness/readiness that actually detects a worker unable to run calls.
+
+    The decisive check is the THREAD-SPAWN CANARY. aiortc starts one decoder
+    thread per received track inside RTCPeerConnection's connect sequence —
+    AFTER the sender side is already up. When ``Thread.start()`` raises under
+    process resource exhaustion, every new call connects with working outbound
+    audio and no inbound audio at all: the receiver never registers with the
+    RTP router, inbound RTP is silently dropped, and the only in-log trace is a
+    deferred "Task exception was never retrieved". A bare TCP probe stays green
+    through all of that (HTTP keeps serving); this endpoint goes 503 the moment
+    the process can no longer start a thread.
+
+    Session/peer-registry and thread-count watermarks ride along as early
+    warning for the accumulation that produces the exhaustion.
+    """
+    problems: list[str] = []
+    try:
+        canary = threading.Thread(target=lambda: None, name="healthz-canary", daemon=True)
+        canary.start()
+        canary.join(1.0)
+        if canary.is_alive():
+            problems.append("thread canary did not complete within 1s")
+    except Exception as e:  # noqa: BLE001 — this is precisely the failure probed for
+        problems.append(f"cannot start threads: {type(e).__name__}: {e}")
+    live_calls = len(getattr(request.app.state, "live_calls", {}) or {})
+    peers = len(getattr(request.app.state, "webrtc_connections", {}) or {})
+    try:
+        threads = len(os.listdir("/proc/self/task"))
+    except OSError:  # non-Linux dev hosts
+        threads = threading.active_count()
+    # Include tasks and gateway maps: leaked sessions need not appear in live_calls or thread counts. See PR #285.
+    tasks = len(getattr(request.app.state, "tasks", ()) or ())
+    gateway_maps = _gateway_map_sizes(getattr(request.app.state, "sip_gateway", None))
+    gateway_total = sum(gateway_maps.values())
+    if live_calls > HEALTHZ_MAX_SESSIONS:
+        problems.append(f"live_calls={live_calls} above {HEALTHZ_MAX_SESSIONS}")
+    if peers > HEALTHZ_MAX_SESSIONS:
+        problems.append(f"webrtc_connections={peers} above {HEALTHZ_MAX_SESSIONS}")
+    if threads > HEALTHZ_MAX_THREADS:
+        problems.append(f"threads={threads} above {HEALTHZ_MAX_THREADS}")
+    if gateway_total > HEALTHZ_MAX_GATEWAY_ENTRIES:
+        problems.append(
+            f"gateway map entries={gateway_total} above "
+            f"{HEALTHZ_MAX_GATEWAY_ENTRIES} ({gateway_maps})"
+        )
+    if tasks > HEALTHZ_MAX_TASKS:
+        problems.append(f"asyncio tasks={tasks} above {HEALTHZ_MAX_TASKS}")
+    return JSONResponse(
+        {
+            "ok": not problems,
+            "live_calls": live_calls,
+            "webrtc_connections": peers,
+            "threads": threads,
+            "tasks": tasks,
+            "all_tasks": len(asyncio.all_tasks()),
+            "gateway_maps": gateway_maps,
+            "problems": problems,
+        },
+        status_code=200 if not problems else 503,
+    )
+
+
+#: Gateway attributes that hold per-call state. Reported individually on
+#: /healthz so a leak is attributable to the path that caused it rather
+#: than showing up as an unexplained memory climb.
+_GATEWAY_MAP_ATTRS = (
+    "_sessions",
+    "_session_to_bridge_call",
+    "_leg_done_events",
+    "_consult_payloads",
+    "_consult_call_ids",
+    "_takeover_payloads",
+    "_pending_outbound",
+    "pending_attaches",
+)
+
+
+def _gateway_map_sizes(gateway: Any) -> dict[str, int]:
+    """Sizes of the active gateway's per-call maps, for /healthz."""
+    sizes: dict[str, int] = {}
+    if gateway is None:
+        return sizes
+    for attr in _GATEWAY_MAP_ATTRS:
+        container = getattr(gateway, attr, None)
+        if container is not None:
+            try:
+                sizes[attr.lstrip("_")] = len(container)
+            except TypeError:
+                continue
+    return sizes
+
+
 @app.post("/dispatch")
 async def dispatch(request: Request, authorization: Optional[str] = Header(default=None)):
     require_dispatch_token(authorization)
@@ -544,6 +672,15 @@ async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:
         caller_id=payload["callerId"],
         called_id=payload["calledId"],
         aplisay_id=payload.get("aplisayId"),
+        # Absent = unchanged (offer SRTP, downgrade if the carrier rejects it);
+        # only an explicit false suppresses the offer. See OutboundCallParams.
+        srtp=payload.get("srtp"),
+        # A number on a registration trunk: the JS side resolved the trunk's
+        # registration and its B2BUA, so the leg dials that rather than the
+        # SBC, presenting the number.
+        registration_endpoint_id=payload.get("registrationEndpointId"),
+        b2bua_gateway_ip=payload.get("b2buaGatewayIp"),
+        b2bua_gateway_transport=payload.get("b2buaGatewayTransport"),
         extra_session_params=extra_session_params or None,
     )
     app.state.live_calls[payload["callId"]] = session
@@ -554,8 +691,24 @@ async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:
     if channel_uuid:
         app.state.calls_by_channel[channel_uuid] = payload["callId"]
 
-    asyncio.create_task(_run_session(app, session, payload["callId"]))
+    _spawn(app, _run_session(app, session, payload["callId"]), name=f"call-{payload['callId']}")
     return {"ok": True, "callId": payload["callId"]}
+
+
+def _spawn(app: FastAPI, coro, *, name: str) -> asyncio.Task:
+    """Start a background task and hold a strong reference to it (W10).
+
+    ``asyncio`` keeps only weak references to tasks: a plain
+    ``create_task`` whose result nobody awaits can be garbage-collected
+    mid-flight, and today these survive only because of whatever they
+    happen to be awaiting. The set also gives ``/healthz`` an honest
+    count of the work the worker has in flight.
+    """
+    task = asyncio.create_task(coro, name=name)
+    tasks: set = app.state.tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return task
 
 
 async def _run_session(app: FastAPI, session: CallSession, key: str) -> None:
@@ -569,8 +722,26 @@ async def _run_session(app: FastAPI, session: CallSession, key: str) -> None:
             await api_client.end_call(session.call, reason=DISCONNECT_REASONS["UNCAUGHT_ERROR_RUNNING_AGENT"])
         except Exception as inner:  # noqa: BLE001
             logger.error(f"end_call after failure failed: {inner}")
+        # A setup failure means the pipeline runner never ran, so its
+        # finally never flushed this call's captured logs — and those are
+        # precisely the records that explain the failure. Harmless when
+        # the runner did flush: the drain is a pop, so this finds nothing.
+        try:
+            await flush_invocation_logs(
+                call_id=session.call.id,
+                user_id=session.call.userId,
+                org_id=session.call.organisationId,
+            )
+        except Exception as inner:  # noqa: BLE001
+            logger.warning(f"invocation log flush after failure failed: {inner}")
     finally:
         app.state.live_calls.pop(key, None)
+        # W7: calls_by_channel (FreeSWITCH only) was inserted into on
+        # three paths and popped on none — one uuid → call-id pair per
+        # call, for the life of the process.
+        channel_uuid = getattr(session.gateway_session, "channel_uuid", None)
+        if channel_uuid:
+            app.state.calls_by_channel.pop(channel_uuid, None)
         try:
             await session.gateway_session.shutdown()
         except Exception as e:  # noqa: BLE001
@@ -599,6 +770,7 @@ async def daily_dialin(request: Request) -> dict:
     # SIP custom headers, if Daily surfaces them. The keys here mirror the
     # contract; degrade gracefully when missing.
     headers = body.get("sip_headers") or {}
+    to_number = headers.get("X-Aplisay-Called") or to_number
     aplisay_id = headers.get("X-Aplisay-Trunk")
     phone_registration = headers.get("X-Aplisay-PhoneRegistration")
 
@@ -642,7 +814,11 @@ async def daily_dialin(request: Request) -> dict:
     )
     request.app.state.live_calls[session.call.id] = session
 
-    asyncio.create_task(_run_session(request.app, session, session.call.id))
+    _spawn(
+        request.app,
+        _run_session(request.app, session, session.call.id),
+        name=f"call-{session.call.id}",
+    )
 
     # Respond with the Daily room so Daily can pinlessCallUpdate the caller in.
     return {"room_url": room_url, "sip_endpoint": dialin.get("sip_endpoint")}
@@ -671,16 +847,33 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     # SmallWebRTC client re-POSTs to the same endpoint carrying the pc_id we
     # handed back in the original answer (restart_pc=true for an ICE restart).
     # Reuse the live connection and its running pipeline rather than standing up
-    # a whole new session. Affinity caveat as on the PATCH handler: this must
-    # reach the worker that owns the pc_id.
+    # a whole new session. Like the PATCH handler, this must reach the worker
+    # that owns the pc_id, so hand it on if that is not us.
     pc_id = body.get("pc_id")
     if pc_id:
         existing = request.app.state.webrtc_connections.get(pc_id)
         if existing is None:
+            owner = await forward_to_owner(
+                method="POST", token=token, body=body, headers=request.headers
+            )
+            if owner is not None:
+                return JSONResponse(owner)
             raise HTTPException(status_code=404, detail="unknown pc_id")
         await existing.renegotiate(
             sdp=sdp, type=sdp_type, restart_pc=bool(body.get("restart_pc"))
         )
+        # A restart_pc renegotiation mints a FRESH pc_id: the upstream wrapper
+        # strips the old aiortc peer's listeners before closing it (so no
+        # "closed" event ever fires for the old identity) and _initialize()
+        # assigns a new id, which the answer below hands to the browser. Re-key
+        # the registry to the current id, or (a) the browser's follow-up
+        # trickle PATCH — sent with the NEW id — 404s on the very pod that owns
+        # the peer, forcing reconnects to limp through peer-reflexive ICE, and
+        # (b) the entry under the old id can never be popped and leaks for the
+        # life of the process (one leaked entry per reconnect attempt).
+        if existing.pc_id != pc_id:
+            request.app.state.webrtc_connections.pop(pc_id, None)
+            request.app.state.webrtc_connections[existing.pc_id] = existing
         answer = existing.get_answer()
         if not answer:
             raise HTTPException(
@@ -898,7 +1091,7 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         startup_error["exception"] = getattr(error_frame, "exception", None)
         error_event.set()
 
-    session_task = asyncio.create_task(_run_browser_session())
+    session_task = _spawn(request.app, _run_browser_session(), name=f"webrtc-{call.id}")
 
     started_waiter = asyncio.create_task(started_event.wait())
     error_waiter = asyncio.create_task(error_event.wait())
@@ -939,14 +1132,29 @@ async def webrtc_offer(request: Request) -> JSONResponse:
         # gets a chance to run (end_call + gateway shutdown). Bound the
         # wait so a misbehaving runner can't stall the HTTP response.
         session_task.cancel()
+        cancelled = True
         try:
             await asyncio.wait_for(session_task, timeout=2.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            # W9: the pipeline is STILL RUNNING. pipecat's own cancel
+            # budget is longer than this 2 s wait, so popping live_calls
+            # here would hide a live pipeline from /healthz and from
+            # every operator tool — the runner's own finally does the
+            # pop when it finally unwinds. Leave it in place; the task
+            # is held in app.state.tasks either way.
+            cancelled = False
+            logger.bind(call_id=call.id).warning(
+                "webrtc session still cancelling after 2s; leaving it "
+                "registered so it stays visible until its own teardown runs"
+            )
+        except asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001
             pass
-        # Defensive cleanup in case the runner's finally didn't fire.
-        request.app.state.live_calls.pop(call.id, None)
+        # Defensive cleanup in case the runner's finally didn't fire —
+        # only once we know it has actually stopped.
+        if cancelled:
+            request.app.state.live_calls.pop(call.id, None)
         try:
             await api_client.end_call(call, reason=f"startup failed: {detail}")
         except Exception:  # noqa: BLE001
@@ -979,11 +1187,12 @@ async def webrtc_ice_candidate(request: Request) -> JSONResponse:
     leaves ICE restart / reconnect (restart_pc) dead.
 
     SESSION AFFINITY: the offer is stateless (self-contained token, any node
-    answers — see deploy/k8s README), but a peer lives on ONE node once created.
-    In a multi-node pool with no LB affinity a PATCH can land on a different node
-    and 404 here; the client logs and ignores that, falling back to
-    peer-reflexive discovery. Reliable trickle needs signalling affinity (a
-    single WebRTC replica, or LB sticky sessions).
+    answers — see deploy/k8s README), but a peer lives on ONE node once created,
+    and a PATCH is load-balanced independently of the POST that created it. On a
+    two-node staging pool that put five of six sessions' candidates on the wrong
+    node. Rather than depend on load-balancer stickiness — which cannot work
+    here; see webrtc_peers for why — a node that does not hold this pc_id asks
+    its siblings and returns their answer.
     """
     body = await request.json()
     token = request.query_params.get("token") or body.get("token")
@@ -995,6 +1204,11 @@ async def webrtc_ice_candidate(request: Request) -> JSONResponse:
     pc_id = body.get("pc_id")
     pc = request.app.state.webrtc_connections.get(pc_id) if pc_id else None
     if pc is None:
+        owner = await forward_to_owner(
+            method="PATCH", token=token, body=body, headers=request.headers
+        )
+        if owner is not None:
+            return JSONResponse(owner)
         raise HTTPException(status_code=404, detail="unknown pc_id")
 
     for c in body.get("candidates") or []:
@@ -1187,8 +1401,6 @@ async def freeswitch_audio(websocket: WebSocket) -> None:
         )
         if endpoint and endpoint.get("instanceId"):
             instance = await api_client.get_instance_by_id(endpoint["instanceId"])
-    if not instance and start.called_id:
-        instance = await api_client.get_instance_by_number(start.called_id)
     if not instance:
         logger.bind(start=start.raw).error("no instance for inbound freeswitch call")
         await websocket.close(code=1011)
@@ -1601,11 +1813,17 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
         try:
             session = await setup_takeover_call(sip_gateway, ctx, payload=takeover)
         except Exception as e:  # noqa: BLE001
+            # W2: setup_takeover_call registers the gateway session
+            # (transport + WebSocket) before it can fail, so the failure
+            # path has to unregister it — clear_takeover_session alone
+            # left the session, its transport and the closed WebSocket
+            # in the gateway maps for the life of the process.
             logger.bind(session_id=session_id).error(
                 f"sipbridge takeover setup failed: {e}"
             )
             await websocket.close(code=1011)
             sip_gateway.clear_takeover_session(session_id)
+            sip_gateway.unregister_session(session_id)
             return
         sip_gateway.register_inbound_session(
             session_id=session_id,
@@ -1729,13 +1947,8 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
 
             ctx = InboundCallContext(
                 session_id=session_id,
-                # The consult record's calledId/callerId must be real strings
-                # — the agent-db API 400s a null (beta 2026-08-05: calledId=
-                # None failed every consult-record POST, so the TransferAgent
-                # never spawned and the answered target heard silence).
-                # calledId = the transfer destination, stashed on the
-                # ConsultPayload at _do_consultative time; callerId = the
-                # origin caller from the parent's aplisay metadata.
+                # Consult calledId is the transfer target and callerId comes from parent metadata; the API rejects null values. See
+                # PR #197.
                 called_id=payload.destination or "unknown",
                 caller_id=_aplisay_caller_id(consult_parent.call) or "unknown",
                 aplisay_id=None,
@@ -1888,10 +2101,20 @@ async def sipbridge_agent(websocket: WebSocket, session_id: str) -> None:
             sip_gateway, ctx, instance=instance, agent=agent
         )
     except Exception as e:  # noqa: BLE001
+        # W2: ``setup_inbound_call`` registers the gateway session
+        # (transport + WebSocket) BEFORE it creates and starts the call,
+        # so every failure after that point leaked one _SbGatewaySession
+        # plus its transport and closed WebSocket. The commonest failure
+        # here is the entirely routine one — the agent is at its
+        # concurrency limit with no fallback message — which means this
+        # leaked hardest exactly when the node was busiest. Second
+        # commonest is an agent-db outage, which leaks one per inbound
+        # call for the duration.
         logger.bind(session_id=ctx.session_id).error(
             f"sipbridge setup_inbound_call failed: {e}"
         )
         await websocket.close(code=1011)
+        sip_gateway.unregister_session(ctx.session_id)
         return
 
     # Register the bridge_call_id → session mapping so REST hangup /

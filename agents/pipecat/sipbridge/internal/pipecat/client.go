@@ -12,6 +12,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// wsFailureLogEvery rate-limits the per-message protocol-violation
+// warnings on the read loop to the 1st then every 250th, mirroring the
+// media-side limiter in internal/rtp.
+const wsFailureLogEvery = 250
+
 // Client is a per-call WebSocket client speaking the Pipecat protobuf
 // frame protocol. The worker side uses
 // `pipecat.transports.websocket.fastapi.FastAPIWebsocketTransport` with
@@ -301,6 +306,8 @@ func (c *Client) readLoop(ctx context.Context) {
 		}
 	}()
 
+	// Consecutive-failure counters for the rate-limited warnings below.
+	badType, badFrame := 0, 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -318,14 +325,27 @@ func (c *Client) readLoop(ctx context.Context) {
 		if mt != websocket.MessageBinary {
 			// Pipecat sends everything as binary protobuf; text messages
 			// would be a protocol violation, so drop them with a log.
-			log.Warn().Int("type", int(mt)).Msg("pipecat ws: dropping non-binary message")
+			// Rate-limited: a peer that is wrong about this is wrong
+			// about every message, many times a second for the whole
+			// call.
+			badType++
+			if badType == 1 || badType%wsFailureLogEvery == 0 {
+				log.Warn().Int("type", int(mt)).Int("consecutive", badType).
+					Msg("pipecat ws: dropping non-binary message")
+			}
 			continue
 		}
+		badType = 0
 		frame, err := DecodeFrame(data)
 		if err != nil {
-			log.Warn().Err(err).Int("len", len(data)).Msg("pipecat ws: malformed frame")
+			badFrame++
+			if badFrame == 1 || badFrame%wsFailureLogEvery == 0 {
+				log.Warn().Err(err).Int("len", len(data)).Int("consecutive", badFrame).
+					Msg("pipecat ws: malformed frame")
+			}
 			continue
 		}
+		badFrame = 0
 		c.dispatch(frame)
 	}
 }

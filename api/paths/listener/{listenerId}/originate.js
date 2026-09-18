@@ -1,9 +1,11 @@
-import { Agent, Instance, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { Op } from 'sequelize';
+import { Agent, Instance, PhoneNumber, PhoneRegistration, Trunk } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
 import { userOwnsRow, userOwnsPhoneNumber } from '../../../../lib/scope.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { authoriseOutboundDestination } from '../../../../lib/outbound-authorisation.js';
 
 let appParameters, log;
 
@@ -48,11 +50,26 @@ const originateCall = (async (req, res) => {
     }
 
     // Check if callerId is present in phoneNumbers table or phoneRegistrations table and belongs to the user/org.
-    let callerPhoneNumber = await PhoneNumber.findByPk(callerId, {
-      include: [{ model: Instance, attributes: ['id', 'userId', 'organisationId'] }]
+    // The caller's own row for this number first, then the pool's; a row
+    // another organisation holds for the same number must never be picked.
+    let callerPhoneNumber = await PhoneNumber.findOne({
+      where: {
+        number: callerId,
+        [Op.or]: [{ organisationId: res.locals.user?.organisationId ?? null }, { organisationId: null }],
+      },
+      order: [[PhoneNumber.sequelize.literal('"PhoneNumber"."organisation_id" IS NULL'), 'ASC']],
+      include: [
+        { model: Instance, attributes: ['id', 'userId', 'organisationId'] },
+        { model: Trunk, as: 'Trunk', required: false, attributes: ['id', 'flags'] },
+      ]
     });
     let callerPhoneRegistration = null;
     let aplisayId = null;
+    // Set when the caller is a NUMBER on a registration trunk: the leg goes
+    // through that registration's B2BUA, presenting the number, and the
+    // worker gets the B2BUA explicitly rather than inferring it from the
+    // caller id (which stays the number).
+    let registrationEgress = null;
 
     if (callerPhoneNumber && userOwnsPhoneNumber(res.locals.user, callerPhoneNumber)) {
       // Found in phone numbers table
@@ -62,6 +79,26 @@ const originateCall = (async (req, res) => {
         });
       }
       aplisayId = callerPhoneNumber.aplisayId;
+      const trunkFlags = callerPhoneNumber.Trunk?.flags;
+      if (trunkFlags?.provider === 'registration' && trunkFlags.registrationId) {
+        const registration = await PhoneRegistration.findByPk(String(trunkFlags.registrationId));
+        if (!registration || !userOwnsRow(res.locals.user, registration)) {
+          return res.status(400).send({
+            error: `Caller phone number ${callerId} is on a registration trunk whose registration is missing`
+          });
+        }
+        const b2buaHost = String(registration.b2buaId || '').trim();
+        if (!b2buaHost) {
+          return res.status(400).send({
+            error: `Caller phone number ${callerId} is on a registration trunk that is not currently held by a SIP node`
+          });
+        }
+        registrationEgress = {
+          registrationEndpointId: registration.id,
+          b2buaGatewayIp: b2buaHost,
+          b2buaGatewayTransport: String(registration.options?.transport || 'tcp').toLowerCase(),
+        };
+      }
     } else {
       // Try phone registrations table (PK is UUID; invalid UUID strings make Postgres throw)
       const uuidRe =
@@ -87,21 +124,26 @@ const originateCall = (async (req, res) => {
       }
     }
 
-    // Validate that calledId matches the agent's outboundCallFilter if specified
-    if (agent.options?.outboundCallFilter) {
-      const filterRegexp = new RegExp(agent.options.outboundCallFilter);
-      if (!filterRegexp.test(calledId)) {
-        return res.status(400).send({
-          error: `Called number ${calledId} does not match the agent's outbound call filter pattern`
-        });
-      }
-    } else {
-      // Fallback to default UK validation if no filter is specified
-      if (!calledId.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-        return res.status(400).send({
-          error: `Called number ${calledId} is not a valid UK geographic or mobile number`
-        });
-      }
+    // Authorise the destination. On a non-chargeable egress (a registration B2BUA to
+    // the customer's own PBX, a BYO trunk) this is the historical agent-filter check.
+    // On one of OUR chargeable carrier trunks the operator's per-trunk filter plus the
+    // organisation's rating deck decide, and the agent's own filter may only narrow
+    // them — the tenant does not choose which destinations we pay a carrier for.
+    // See lib/outbound-authorisation.js.
+    const decision = await authoriseOutboundDestination({
+      calledId,
+      agentOptions: agent.options,
+      organisationId: instance.organisationId || agent.organisationId,
+      userId: instance.userId || agent.userId,
+      aplisayId,
+      registrationOriginated: !!callerPhoneRegistration || !!registrationEgress,
+    });
+    if (!decision.allowed) {
+      req.log.info(
+        { listenerId, calledId, code: decision.code, trunkId: decision.trunkId, chargeable: decision.chargeable },
+        'originate refused: destination not authorised',
+      );
+      return res.status(400).send({ error: decision.reason, code: decision.code });
     }
 
     // Check if the handler for this model has a outbound handler
@@ -112,7 +154,10 @@ const originateCall = (async (req, res) => {
       });
     }
 
-    const { callId } = await handler.outbound({ instance, callerId, calledId, metadata, aplisayId });
+    const { callId } = await handler.outbound({
+      instance, callerId, calledId, metadata, aplisayId, srtp: decision.srtp,
+      ...(registrationEgress || {}),
+    });
 
     // If all validations pass, return success
     res.send({
@@ -164,7 +209,10 @@ originateCall.apiDoc = {
           properties: {
             calledId: {
               type: "string",
-              description: "The phone number to call (must be a valid UK geographic or mobile number)",
+              description: "The phone number to call. Must be permitted by the agent's options.outboundCallFilter "
+                + "(default: a UK geographic or mobile number). When the call egresses one of the platform's "
+                + "chargeable carrier trunks it must ALSO be permitted by that trunk's outboundCallFilter and be "
+                + "priced by the organisation's destination tariff; the agent's own filter can only narrow that.",
               example: "+447911123456"
             },
             callerId: {

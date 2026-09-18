@@ -1,0 +1,236 @@
+"""Measure refill lateness to distinguish delayed audio from missing audio; preserve upstream pacing by wrapping
+super(). See PR #248; WEBRTC_UNDERRUN_STATS=0 disables instrumentation."""
+
+from __future__ import annotations
+
+import os
+import time
+from collections import deque
+from typing import Any, Optional
+
+from loguru import logger
+
+# How many recent samples the underrun percentiles are computed over
+# (P8). 2 000 events is far more than a healthy call produces and enough
+# for a stable p50/p90 on a bad one; whole-call maxima are tracked
+# separately so the window never hides the worst case.
+_SAMPLE_WINDOW = 2000
+
+# Depth buckets, sampled every recv(). The first two are the interesting ones:
+# time spent at 0 or 1 is time with no cushion.
+_BUCKETS = ((0, "0"), (1, "1"), (2, "2"), (5, "3-5"), (10, "6-10"))
+
+
+def _bucket(depth: int) -> str:
+    for limit, label in _BUCKETS:
+        if depth <= limit:
+            return label
+    return ">10"
+
+
+class UnderrunStats:
+    """Counters for one output track."""
+
+    def __init__(self, chunk_ms: float) -> None:
+        self.chunk_ms = chunk_ms
+        self.events = 0
+        self.chunks_filled = 0            # 10 ms slots filled with zeroes
+        self.max_gap_ms = 0.0
+        # Bound diagnostic samples to a rolling window; track lifetime maxima separately so eviction does not erase peaks.
+        # See PR #285.
+        self.late_ms: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
+        self.max_late_ms = 0.0
+        self.gap_hist: dict[str, int] = {}  # gap size distribution, for the summary
+        self.never_refilled = 0           # starved and the track ended first
+        self.depth = {label: 0 for _, label in _BUCKETS}
+        self.depth[">10"] = 0
+        self.recvs = 0
+        #: Audio waiting between the transport and track at underrun time distinguishes local delay from late input. See PR
+        #: #252.
+        self.inflight_at_starve: deque[float] = deque(maxlen=_SAMPLE_WINDOW)
+        self.max_inflight_at_starve = 0.0
+        #: Total starves seen with audio already in flight — a running
+        #: count, so the ratio below stays whole-call even though the
+        #: samples behind the percentiles are windowed.
+        self.starves_with_audio_waiting = 0
+
+    @property
+    def silence_ms(self) -> float:
+        return self.chunks_filled * self.chunk_ms
+
+    def note_gap(self, gap_ms: float) -> None:
+        b = ("<=20 ms" if gap_ms <= 20 else "21-50 ms" if gap_ms <= 50
+             else "51-100 ms" if gap_ms <= 100 else "101-250 ms" if gap_ms <= 250
+             else ">250 ms")
+        self.gap_hist[b] = self.gap_hist.get(b, 0) + 1
+
+    def summary(self) -> str:
+        if not self.events:
+            return f"no output underruns in {self.recvs} slots"
+        late = sorted(self.late_ms)
+        p50 = late[len(late) // 2] if late else float("nan")
+        p90 = late[int(len(late) * 0.9)] if late else float("nan")
+        # Percentiles over the recent window; the max is whole-call.
+        worst = self.max_late_ms
+        depth = " ".join(
+            f"{k}:{100.0 * v / max(1, self.recvs):.0f}%" for k, v in self.depth.items() if v
+        )
+        order = ("<=20 ms", "21-50 ms", "51-100 ms", "101-250 ms", ">250 ms")
+        gaps = " ".join(f"{k}:{self.gap_hist[k]}" for k in order if k in self.gap_hist)
+        inflight = ""
+        if self.inflight_at_starve:
+            arr = sorted(self.inflight_at_starve)
+            inflight = (
+                f"; audio in flight at starve: p50 {arr[len(arr)//2]:.0f} ms, "
+                f"max {self.max_inflight_at_starve:.0f} ms, "
+                f"{self.starves_with_audio_waiting}/{self.events} starved with audio waiting"
+            )
+        return (
+            f"output underruns: {self.events} events, {self.silence_ms:.0f} ms of inserted "
+            f"silence over {self.recvs * self.chunk_ms / 1000:.0f} s, worst gap "
+            f"{self.max_gap_ms:.0f} ms; refill lateness p50 {p50:.0f} ms / p90 {p90:.0f} ms / "
+            f"max {worst:.0f} ms ({self.never_refilled} never refilled); gaps {gaps}; "
+            f"queue depth {depth}" + inflight
+        )
+
+
+def instrumented(base: type) -> type:
+    """Build a subclass of pipecat's RawAudioTrack that counts its own starvation."""
+
+    class _InstrumentedRawAudioTrack(base):  # type: ignore[misc, valid-type]
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            super().__init__(*a, **kw)
+            chunk_ms = 1000.0 * self._samples_per_10ms / max(1, self._sample_rate)
+            self.underrun = UnderrunStats(chunk_ms)
+            self._starved_at: Optional[float] = None
+            self._starved_slots = 0
+            self.queued_ms = 0.0            # audio handed to this track, ever
+            self.inflight_probe = None      # set by OutputCushionInterrupt
+            # Per-event logging is OFF by default and exists only for a
+            # deliberate debugging session. Degradation that is survivable but
+            # quality-impacting hits every concurrent call at once: at ~50
+            # events per call, a pod carrying a few dozen calls through a bad
+            # minute would emit thousands of lines a second, burning the CPU
+            # and log bandwidth that the degradation is already eating. Set
+            # WEBRTC_UNDERRUN_LOG_MS to a gap size to turn it back on.
+            self._event_log_ms = float(os.environ.get("WEBRTC_UNDERRUN_LOG_MS", "0"))
+
+        # --- observation points ------------------------------------------
+        def note_refill(self, audio_bytes: bytes) -> None:
+            """Real audio has been queued — close any open starvation event.
+
+            Separate from add_audio_bytes because a SUBCLASS may reimplement
+            that method rather than delegating to it (output_cushion does, to
+            place the backpressure future differently). When it does, it must
+            still call this, or every event stays open, nothing is ever counted
+            and the whole instrument silently reports zero.
+            """
+            if audio_bytes:
+                self.queued_ms += 1000.0 * (len(audio_bytes) / 2) / max(1, self._sample_rate)
+            if self._starved_at is not None and audio_bytes:
+                self._close(time.monotonic())
+
+        def add_audio_bytes(self, audio_bytes: bytes):  # noqa: ANN201
+            # The instant real audio comes back is what makes lateness
+            # measurable at all; close the open event here rather than waiting
+            # for the next recv(), which would add up to one slot of error.
+            self.note_refill(audio_bytes)
+            return super().add_audio_bytes(audio_bytes)
+
+        async def recv(self):  # noqa: ANN201
+            st = self.underrun
+            depth = len(self._chunk_queue)
+            st.recvs += 1
+            st.depth[_bucket(depth)] += 1
+            starving = depth == 0 and getattr(self, "_auto_silence", True)
+            if starving:
+                if self._starved_at is None:
+                    self._starved_at = time.monotonic()
+                    self._starved_slots = 0
+                    probe = self.inflight_probe
+                    if probe is not None:
+                        try:
+                            # The cushion anchors this count across track changes
+                            # and interruptions; use its figure when it is there,
+                            # so this line reports what the stretcher steered by.
+                            upstream = getattr(self, "upstream_ms", None)
+                            if callable(upstream):
+                                inflight = upstream()
+                            else:
+                                inflight = max(0.0, probe() - self.queued_ms)
+                            st.inflight_at_starve.append(inflight)
+                            st.max_inflight_at_starve = max(
+                                st.max_inflight_at_starve, inflight
+                            )
+                            if inflight > 5.0:
+                                st.starves_with_audio_waiting += 1
+                        except Exception:  # noqa: BLE001
+                            pass
+                self._starved_slots += 1
+                st.chunks_filled += 1
+            return await super().recv()
+
+        # --- bookkeeping --------------------------------------------------
+        def _close(self, now: float) -> None:
+            st = self.underrun
+            gap_ms = self._starved_slots * st.chunk_ms
+            late_ms = (now - (self._starved_at or now)) * 1000.0
+            st.events += 1
+            st.max_gap_ms = max(st.max_gap_ms, gap_ms)
+            st.late_ms.append(late_ms)
+            st.max_late_ms = max(st.max_late_ms, late_ms)
+            st.note_gap(gap_ms)
+            if self._event_log_ms > 0 and gap_ms >= self._event_log_ms:
+                # The verdict this line exists to support: a lateness of a few
+                # tens of ms means a cushion would have covered it; a lateness
+                # far larger than the gap means the audio was never coming.
+                logger.info(
+                    f"output underrun: {gap_ms:.0f} ms of silence sent, real audio arrived "
+                    f"{late_ms:.0f} ms after the queue ran dry"
+                )
+            self._starved_at = None
+            self._starved_slots = 0
+
+        def stop(self) -> None:  # noqa: ANN201
+            if self._starved_at is not None:
+                self.underrun.never_refilled += 1
+                self._starved_at = None
+            if self.underrun.recvs:
+                # The cushion counts its own pause-repeats but has nowhere to
+                # report them; ride the one per-call line rather than add a
+                # second. Without this there is no way to tell the stretcher
+                # fired at all, short of inferring it from the depth histogram.
+                # The trims and the peak backlog ride the same line: the peak is
+                # the number that shows whether the output fell behind at all.
+                chunk_ms = self.underrun.chunk_ms
+                banked = getattr(self, "stretched_chunks", 0)
+                trimmed = getattr(self, "trimmed_chunks", 0)
+                peak = getattr(self, "peak_backlog_ms", 0.0)
+                extra = ""
+                if banked:
+                    extra += (f"; stretched {banked} chunks "
+                              f"({banked * chunk_ms:.0f} ms banked from pauses)")
+                if trimmed:
+                    extra += (f"; trimmed {trimmed} quiet chunks "
+                              f"({trimmed * chunk_ms:.0f} ms of backlog recovered)")
+                if peak:
+                    extra += f"; peak output backlog {peak:.0f} ms"
+                logger.info(f"track finished — {self.underrun.summary()}{extra}")
+            return super().stop()
+
+    _InstrumentedRawAudioTrack.__name__ = "InstrumentedRawAudioTrack"
+    return _InstrumentedRawAudioTrack
+
+
+def install() -> bool:
+    """Swap pipecat's RawAudioTrack for the instrumented subclass. Idempotent."""
+    if os.environ.get("WEBRTC_UNDERRUN_STATS", "1").strip() in ("0", "false", "no"):
+        return False
+    from pipecat.transports.smallwebrtc import transport as _t
+
+    current = getattr(_t, "RawAudioTrack", None)
+    if current is None or getattr(current, "__name__", "") == "InstrumentedRawAudioTrack":
+        return False
+    _t.RawAudioTrack = instrumented(current)
+    logger.info("output underrun stats installed on RawAudioTrack")
+    return True

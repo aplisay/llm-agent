@@ -71,6 +71,7 @@ Supported shape:
 Notes:
 
 - If you omit `options.stt.vendor`, the default is at this time `deepgram` → `deepgram/nova-3:<derivedLang>`.
+- `options.stt.aux` (same shape: `vendor`, `language`, plus `enabled`) runs a *second* STT engine over the caller's audio purely for comparison — on realtime models too — logging `user-aux` transcript entries and `stt-aux` usage. `options.tts.output` does the same over the agent's own audio (`agent-speech`, `stt-output`). See [`docs/auxiliary-stt.md`](./auxiliary-stt.md).
 
 #### `options.tts`
 
@@ -111,4 +112,4 @@ See [`docs/voices-deprecation.md`](./voices-deprecation.md) for details and exam
   - refresh the voice UI from `GET /models/{modelName}/voices` + `.../{locale}`
 - **Validation expectation**:
   - pipeline: changing `options.stt` / `options.tts` affects the session configuration
-  - realtime: only certain provider-native options apply; STT/TTS vendor selection is not relevant
+  - realtime: only certain provider-native options apply; STT vendor selection is not relevant. On rows flagged `hasExternalTts`, a `tts.vendor` other than the model's own provider switches the model to text output and that TTS speaks (see `docs/realtime-external-tts.md`); on other realtime rows `tts.vendor` may only name the model's own provider

@@ -70,6 +70,14 @@ type Config struct {
 	// send a BYE. 0 disables the watchdog. Default 10.
 	RTPTimeoutSeconds int
 
+	// RTPSilenceFill: transmit a frame of codec silence every 20 ms
+	// while the bot has nothing to say, instead of suppressing the
+	// packet and carrying the pause as an RTP timestamp jump. On by
+	// default — ordinary SIP UA behaviour, and what keeps the PEER's
+	// equivalent of RTPTimeoutSeconds (and any carrier NAT pinhole)
+	// alive through a silent stretch. See pacer.go.
+	RTPSilenceFill bool
+
 	// DTLSCert is the X.509 cert (with private key) we use for
 	// DTLS-SRTP handshakes. Reuse of the SIP TLS cert is recommended —
 	// the same identity covers both signalling and media. nil disables
@@ -146,6 +154,51 @@ func (m *Manager) ActiveCallIDs() []string {
 	return out
 }
 
+// byeTimeout bounds how long a hangup will wait for the far end to
+// answer our BYE. sipgo's own Timer B fires at 32 s; anything past
+// that is a peer that is never going to respond, and we must not hold
+// the caller's goroutine (or, before the reordering below, its RTP
+// port) hostage to it.
+const byeTimeout = 35 * time.Second
+
+// HangupAll tears down every live call, in parallel, and waits for them
+// all (bounded by ctx). Used by the SIGTERM drain so a rolling update
+// releases the carrier's channels and the worker's sessions instead of
+// abandoning every dialog without a BYE. Returns how many it hung up.
+func (m *Manager) HangupAll(ctx context.Context) int {
+	ids := m.ActiveCallIDs()
+	if len(ids) == 0 {
+		return 0
+	}
+	log.Info().Int("calls", len(ids)).Msg("call: hanging up all active calls (drain)")
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(callID string) {
+			defer wg.Done()
+			_ = m.Hangup(ctx, callID)
+		}(id)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Warn().Msg("call: drain deadline reached with hangups still in flight")
+	}
+	return len(ids)
+}
+
+// Draining reports whether the SIP layer has stopped accepting new
+// calls (SIGTERM drain). Surfaced on /health so a readiness probe can
+// take the node out of rotation.
+func (m *Manager) Draining() bool {
+	if m.sip == nil {
+		return false
+	}
+	return m.sip.Draining()
+}
+
 // Hangup terminates an active call by its SIP Call-ID. Tears down the
 // media path and sends a SIP BYE in whichever direction the dialog
 // has. Idempotent — multiple calls for the same id are silently fine.
@@ -161,12 +214,28 @@ func (m *Manager) Hangup(ctx context.Context, callID string) error {
 		log.Warn().Str("call_id", callID).Msg("call: hangup for unknown call_id — already torn down?")
 		return fmt.Errorf("call: unknown call_id %q", callID)
 	}
-	// SIP-side BYE first so the far end starts terminating; then
-	// release our local media. Errors on BYE are non-fatal — we
-	// continue with media teardown either way.
+	// A bridged pair lives and dies together, exactly as in onBye:
+	// detach the peer here so it is torn down alongside this leg
+	// rather than being left with dead air until its own media
+	// timeout. Reachable via DELETE /v1/calls/{id} on a bridged leg
+	// and from DialAndBridge's failure path.
+	c.mu.Lock()
+	peer := c.peer
+	c.peer = nil
+	c.mu.Unlock()
+	// Release local media BEFORE the BYE. The BYE can take up to
+	// sipgo's Timer B (32 s) against a peer that never responds, and
+	// media release must never be held hostage to signalling: the RTP
+	// port, readLoop, pacer and jitter loop would all stay alive for
+	// the duration, and the pacer would keep sending silence to a
+	// dead address. Close() is idempotent.
+	c.Close()
 	if m.sip != nil {
 		log.Info().Str("call_id", callID).Msg("call: sending BYE upstream")
-		if err := m.sip.Hangup(ctx, callID); err != nil {
+		byeCtx, cancel := context.WithTimeout(ctx, byeTimeout)
+		err := m.sip.Hangup(byeCtx, callID)
+		cancel()
+		if err != nil {
 			log.Warn().Err(err).Str("call_id", callID).Msg("call: BYE failed during hangup")
 		} else {
 			log.Info().Str("call_id", callID).Msg("call: BYE upstream complete")
@@ -174,7 +243,10 @@ func (m *Manager) Hangup(ctx context.Context, callID string) error {
 	} else {
 		log.Warn().Str("call_id", callID).Msg("call: no SIP layer registered — skipping BYE")
 	}
-	c.Close()
+	if peer != nil {
+		peer.ClearPeer()
+		_ = m.Hangup(context.Background(), peer.callID)
+	}
 	return nil
 }
 
@@ -210,11 +282,11 @@ func (m *Manager) SendDTMF(callID, digits string) error {
 // OriginateParams carries everything the REST `POST /v1/calls` body
 // needs to feed to ``Originate``.
 type OriginateParams struct {
-	Destination     string            // SIP URI or bare number
-	CallerID        string            // From: User part
-	AgentSessionID  string            // session_id to use in the worker WS URL
-	CustomHeaders   map[string]string // X-Aplisay-* etc.
-	Metadata        map[string]string // free-form; included as X-Aplisay-Call-Id when present
+	Destination    string            // SIP URI or bare number
+	CallerID       string            // From: User part
+	AgentSessionID string            // session_id to use in the worker WS URL
+	CustomHeaders  map[string]string // X-Aplisay-* etc.
+	Metadata       map[string]string // free-form; included as X-Aplisay-Call-Id when present
 }
 
 // buildOutboundOffer builds the SDP offer for an outbound INVITE on ``rtpSess``.
@@ -263,6 +335,19 @@ func isSRTPMediaReject(code int) bool {
 	return code == 415 || code == 488 || code == 606
 }
 
+// srtpOptOutHeader carries the egress trunk's media-security contract from the
+// worker (Trunk.flags.srtp in llm-agent). Value "off" means do not offer SDES
+// on this leg; the header is absent for every trunk that hasn't opted out, so
+// nothing changes for existing carriers.
+const srtpOptOutHeader = "X-Aplisay-Srtp"
+
+// srtpOptedOut reports whether the worker asked us not to offer SDES on this
+// leg. Only the exact value "off" counts: an unrecognised value leaves the
+// historical behaviour rather than silently disabling encryption.
+func srtpOptedOut(custom map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(custom[srtpOptOutHeader]), "off")
+}
+
 // srtpRouteKey identifies the egress route for the SRTP avoid-cache. Every
 // trunk call is dialled through the same upstream SBC, so the destination
 // host alone cannot distinguish carriers — prefer the routing headers that
@@ -293,11 +378,18 @@ func (m *Manager) srtpRecentlyRejected(key string) bool {
 	return true
 }
 
-// noteSRTPRejected records that the route just rejected an SRTP offer.
+// noteSRTPRejected sweeps expired routes on writes because one-off destination keys may never be read again. See PR
+// #285.
 func (m *Manager) noteSRTPRejected(key string) {
 	m.srtpAvoidMu.Lock()
 	defer m.srtpAvoidMu.Unlock()
-	m.srtpAvoid[key] = time.Now()
+	now := time.Now()
+	for k, at := range m.srtpAvoid {
+		if now.Sub(at) > srtpAvoidTTL {
+			delete(m.srtpAvoid, k)
+		}
+	}
+	m.srtpAvoid[key] = now
 }
 
 // dialAndWireRTP performs the SIP-dial + RTP-socket + codec/SRTP
@@ -344,6 +436,18 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 	// first attempt costs a full INVITE round trip.
 	offeringSDES := m.cfg.SRTPEnabled && m.cfg.SRTPOutbound
 	routeKey := srtpRouteKey(custom, p.Destination)
+	// Per-trunk opt-out, stamped by the worker from Trunk.flags.srtp. This is
+	// the case the reject-driven downgrade below cannot reach: a carrier that
+	// ANSWERS RTP/SAVP with a crypto line and then sends plain RTP never
+	// rejects anything, so we would keep offering SRTP forever while every
+	// inbound packet failed its auth tag and got dropped. Honoured unless
+	// SRTPRequired makes encryption non-negotiable.
+	if offeringSDES && !m.cfg.SRTPRequired && srtpOptedOut(custom) {
+		log.Info().
+			Str("route", routeKey).
+			Msg("call: trunk forbids SRTP (X-Aplisay-Srtp: off) — offering plaintext RTP/AVP")
+		offeringSDES = false
+	}
 	if offeringSDES && !m.cfg.SRTPRequired && m.srtpRecentlyRejected(routeKey) {
 		log.Debug().
 			Str("route", routeKey).
@@ -439,6 +543,8 @@ func (m *Manager) dialAndWireRTP(ctx context.Context, p OriginateParams) (*Call,
 		payload: pt,
 		closed:  make(chan struct{}),
 	}
+	outCallID := out.CallID
+	c.hangup = func() { _ = m.Hangup(context.Background(), outCallID) }
 	c.lastRTPNanos.Store(time.Now().UnixNano())
 	return c, custom, nil
 }
@@ -476,11 +582,11 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	}
 
 	pc := pcclient.NewClient(wsURL)
-	c.ws = pc
+	c.setWS(pc)
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
-	c.releaseStop = releaseCancel
+	c.setReleaseStop(releaseCancel)
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 	outCallID := c.callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), outCallID)
@@ -498,7 +604,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 			return
 		}
 		log.Info().Str("call_id", outCallID).Err(err).Msg("call: ws closed (outbound)")
-		c.Close()
+		c.teardown()
 	})
 
 	// Stamp the same headers we sent on the INVITE onto the WS so the
@@ -513,9 +619,20 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := pc.Connect(dctx, hdr); err != nil {
-		c.rtp.Close()
+		c.Close()
 		_ = m.sip.Hangup(ctx, c.callID)
 		return "", fmt.Errorf("call: pipecat ws connect: %w", err)
+	}
+
+	// Same early-close check as the inbound path: the worker can accept
+	// the upgrade and then close immediately with a 4xxx code carrying
+	// the real rejection. Without it the close handler fires before the
+	// registration below and we register an already-closed Call that
+	// nothing will ever BYE.
+	if pc.WaitForEarlyClose(300 * time.Millisecond) {
+		c.Close()
+		_ = m.sip.Hangup(ctx, c.callID)
+		return "", fmt.Errorf("call: pipecat ws closed immediately: %w", pc.CloseErr())
 	}
 
 	c.rtp.Start(context.Background())
@@ -554,6 +671,7 @@ func (m *Manager) Originate(ctx context.Context, p OriginateParams) (string, err
 //     ``docs/call-transfers.md``.
 //   - mode "consult": invalid for the transfer endpoint — clients
 //     should call the dedicated /v1/calls/{id}/consult endpoint.
+//
 // ``opts`` applies to mode "bridged" only — see BridgeOptions.
 func (m *Manager) Transfer(ctx context.Context, callID, target, mode string, opts BridgeOptions) error {
 	if m.sip == nil {
@@ -628,16 +746,27 @@ func (m *Manager) BridgeRelay(callA, callB string, opts BridgeOptions) error {
 	a.mu.Lock()
 	a.dtmfMonitor = opts.MonitorDTMF
 	a.mu.Unlock()
-	if opts.TapAudio && a.ws != nil {
-		mixer := newTapMixer(a.ws)
+	if aWS := a.currentWS(); opts.TapAudio && aWS != nil {
+		mixer := newTapMixer(aWS)
+		// Swapping in a new mixer must stop the old one: a repeated
+		// bridge for the same pair would otherwise leave the previous
+		// tapMixer's goroutine running with no way to reach it.
 		a.mu.Lock()
+		prevA := a.tap
 		a.tap = mixer
 		a.tapSide = tapSideCaller
 		a.mu.Unlock()
 		b.mu.Lock()
+		prevB := b.tap
 		b.tap = mixer
 		b.tapSide = tapSideTarget
 		b.mu.Unlock()
+		if prevA != nil {
+			prevA.Stop()
+		}
+		if prevB != nil && prevB != prevA {
+			prevB.Stop()
+		}
 	}
 	a.SetPeer(b, keepWS)
 	b.SetPeer(a, false)
@@ -735,9 +864,9 @@ func (m *Manager) DialAndBridge(ctx context.Context, p DialBridgeParams) (string
 // new bot pipeline can take the caller over. This is the finalise step
 // of a bridged transfer-to-agent (options.bridgedTransferToAgent).
 type UnbridgeParams struct {
-	CallID           string
-	AgentSessionID   string
-	CustomHeaders    map[string]string
+	CallID         string
+	AgentSessionID string
+	CustomHeaders  map[string]string
 }
 
 // Unbridge reverses a bridged transfer on the monitoring leg: the peer
@@ -768,7 +897,7 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 
 	// 1. Retire the old monitor WS while the relay guard (hasPeer) is
 	// still active, so its close handler doesn't tear the call down.
-	if old := c.ws; old != nil {
+	if old := c.currentWS(); old != nil {
 		old.Stop()
 		select {
 		case <-old.Done():
@@ -802,7 +931,7 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 			return
 		}
 		log.Info().Str("call_id", unbridgedID).Err(err).Msg("call: ws closed (post-unbridge)")
-		c.Close()
+		c.teardown()
 	})
 	hdr := http.Header{}
 	hdr.Set("X-Sipbridge-Call-ID", c.callID)
@@ -829,9 +958,11 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 	}
 	c.mu.Unlock()
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
-	c.releaseStop = releaseCancel
+	if prev := c.setReleaseStop(releaseCancel); prev != nil {
+		prev()
+	}
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 
 	log.Info().
 		Str("call_id", c.callID).
@@ -849,12 +980,12 @@ func (m *Manager) Unbridge(ctx context.Context, p UnbridgeParams) error {
 // resulting consult call_id so the worker can use it later as the
 // ``target`` of a bridged transfer.
 type ConsultParams struct {
-	OriginalCallID  string
-	Destination     string
-	CallerID        string
-	AgentSessionID  string
-	CustomHeaders   map[string]string
-	Metadata        map[string]string
+	OriginalCallID string
+	Destination    string
+	CallerID       string
+	AgentSessionID string
+	CustomHeaders  map[string]string
+	Metadata       map[string]string
 }
 
 // Consult dials a second SIP leg for the consult phase of a warm
@@ -965,10 +1096,11 @@ func (m *Manager) onInvite(
 		closed:    make(chan struct{}),
 	}
 	c.lastRTPNanos.Store(time.Now().UnixNano())
+	c.hangup = func() { _ = m.Hangup(context.Background(), callID) }
 	releaseCtx, releaseCancel := context.WithCancel(context.Background())
-	c.releaseStop = releaseCancel
+	c.setReleaseStop(releaseCancel)
 	c.startJitterRelease(releaseCtx)
-	c.startPacer(releaseCtx)
+	c.startPacer(releaseCtx, m.cfg.RTPSilenceFill)
 	inCallID := callID
 	c.startMediaTimeoutWatchdog(m.cfg.RTPTimeoutSeconds, func() {
 		_ = m.Hangup(context.Background(), inCallID)
@@ -986,7 +1118,7 @@ func (m *Manager) onInvite(
 			return
 		}
 		log.Info().Str("call_id", callID).Err(err).Msg("call: ws closed")
-		c.Close()
+		c.teardown()
 	})
 
 	// 5. Open the WS (with a short timeout to keep the SIP transaction
@@ -1036,7 +1168,12 @@ func (m *Manager) onInvite(
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := pc.Connect(dctx, hdr); err != nil {
-		rtpSess.Close()
+		// c.Close(), not rtpSess.Close(): the jitter-release loop, the
+		// pacer and the media watchdog were all started above, and
+		// only Close cancels them. Closing the RTP session alone left
+		// one 20 ms ticker goroutine per rejected INVITE running for
+		// the life of the process.
+		c.Close()
 		return nil, mapWSDialErrorToReject(err)
 	}
 
@@ -1051,7 +1188,7 @@ func (m *Manager) onInvite(
 	// real audio start-up is much slower so we don't risk false
 	// positives here.
 	if pc.WaitForEarlyClose(300 * time.Millisecond) {
-		rtpSess.Close()
+		c.Close() // see above: releases the loops, not just the socket
 		return nil, mapEarlyCloseToReject(pc.CloseErr())
 	}
 
@@ -1578,8 +1715,8 @@ type Call struct {
 	// amounts of network jitter and absorbs occasional reordering;
 	// gaps are filled with silence packets. ``releaseStop`` cancels
 	// the release-loop goroutine on call close.
-	jb           *rtp.JitterBuffer
-	releaseStop  context.CancelFunc
+	jb          *rtp.JitterBuffer
+	releaseStop context.CancelFunc
 
 	// outPacer is the egress mirror of jb: worker WS audio arrives at up
 	// to 2× real-time (Pipecat's transport design), so onWSAudio enqueues
@@ -1651,6 +1788,76 @@ type Call struct {
 	// the watchdog goroutine is started; nil-safe (Close handles
 	// both states).
 	mediaTimeoutStop context.CancelFunc
+
+	// hangup is the manager-level teardown for this call — BYE
+	// upstream, registry delete, peer teardown, media release —
+	// closed over the Manager at construction. The failure paths deep
+	// in the WS and media goroutines need it: a plain ``Close()``
+	// there releases our media but leaves the dialog up from the
+	// peer's perspective and leaves the call in both registries
+	// forever (``/health active_calls`` drifts up for the life of the
+	// process). See the comment on startMediaTimeoutWatchdog, which
+	// has always taken the same closure. Nil in unit tests that build
+	// a bare Call; ``teardown`` is nil-safe.
+	hangup func()
+}
+
+// currentWS returns the call's worker WebSocket under the lock. The
+// field is swapped on the unbridge path (bridged transfer → agent
+// re-attach) while the media goroutines are reading it, so every read
+// outside the constructor goes through here.
+func (c *Call) currentWS() *pcclient.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ws
+}
+
+// setWS installs a new worker WebSocket and returns the one it
+// replaced (the caller decides whether to stop it).
+func (c *Call) setWS(ws *pcclient.Client) *pcclient.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev := c.ws
+	c.ws = ws
+	return prev
+}
+
+// takeReleaseStop hands over the jitter-release/pacer cancel function
+// and clears it, so the loops are cancelled exactly once. SetPeer,
+// Unbridge and Close all race for this on a bridged call.
+func (c *Call) takeReleaseStop() context.CancelFunc {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	stop := c.releaseStop
+	c.releaseStop = nil
+	return stop
+}
+
+// setReleaseStop installs the cancel for a freshly-started release
+// loop, returning any previous one the caller must cancel.
+func (c *Call) setReleaseStop(stop context.CancelFunc) context.CancelFunc {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev := c.releaseStop
+	c.releaseStop = stop
+	return prev
+}
+
+// teardown is the failure-path exit for a call: release media
+// immediately, then run the manager-level hangup (BYE + registry
+// delete + peer teardown) on a detached goroutine.
+//
+// The goroutine matters. teardown is called from the WS close handler,
+// the RTP read loop, the jitter-release loop and the pacer — the very
+// goroutines that need to exit — and the BYE inside Hangup can block
+// until sipgo's Timer B against a peer that never answers. Close()
+// first, so media is always released synchronously and the ordering
+// matches what these call sites did before.
+func (c *Call) teardown() {
+	c.Close()
+	if c.hangup != nil {
+		go c.hangup()
+	}
 }
 
 // SendDTMF plays a string of DTMF digits to the far end of this call as
@@ -1682,12 +1889,11 @@ func (c *Call) SetPeer(peer *Call, keepWS bool) {
 	}
 	c.mu.Unlock()
 	// Stop the release ticker; relay mode owns the inbound path now.
-	if c.releaseStop != nil {
-		c.releaseStop()
-		c.releaseStop = nil
+	if stop := c.takeReleaseStop(); stop != nil {
+		stop()
 	}
-	if c.ws != nil && !keepWS {
-		c.ws.Stop()
+	if ws := c.currentWS(); ws != nil && !keepWS {
+		ws.Stop()
 	}
 }
 
@@ -1775,7 +1981,7 @@ func (c *Call) onRTPPayload(pt rtp.PayloadType, seq uint16, payload []byte, _ bo
 				Str("from", c.callID).
 				Str("to", peer.callID).
 				Msg("call: relay forward failed")
-			c.Close()
+			c.teardown()
 			return
 		}
 		// Transcription tap (tap_audio): push a decoded COPY of this
@@ -1835,10 +2041,11 @@ func (c *Call) handleDTMF(payload []byte) {
 		`{"type":"dtmf","digit":%q,"duration_ms":%d,"call_id":%q}`,
 		string(sym), durationMS, c.callID,
 	)
-	if c.ws == nil {
+	ws := c.currentWS()
+	if ws == nil {
 		return
 	}
-	if err := c.ws.SendMessage(msg); err != nil {
+	if err := ws.SendMessage(msg); err != nil {
 		log.Warn().Err(err).Str("call_id", c.callID).Msg("call: dtmf ws send failed")
 	}
 }
@@ -1848,7 +2055,9 @@ func (c *Call) handleDTMF(payload []byte) {
 // target). On the end-of-event packet it ships a MessageFrame to the
 // monitoring leg's still-open worker WS:
 // ``{"type":"dtmf","digit":"5","duration_ms":120,"call_id":"<this>",
-//    "peer_call_id":"<target>","source":"transfer_target"}``.
+//
+//	"peer_call_id":"<target>","source":"transfer_target"}``.
+//
 // The ``source`` discriminator lets the worker distinguish these
 // post-bridge target-leg presses from ordinary pre-bridge caller DTMF.
 // No-op unless the leg was bridged with monitor_dtmf.
@@ -1856,7 +2065,8 @@ func (c *Call) maybeEmitPeerDTMF(peerCallID string, payload []byte) {
 	c.mu.Lock()
 	monitoring := c.dtmfMonitor
 	c.mu.Unlock()
-	if !monitoring || c.ws == nil {
+	ws := c.currentWS()
+	if !monitoring || ws == nil {
 		return
 	}
 	ev, ok := rtp.ParseDTMF(payload)
@@ -1903,11 +2113,24 @@ func (c *Call) processDecodedPayload(payload []byte) {
 		return
 	}
 	samples16k := codec.Upsample8To16(samples8k)
-	if err := c.ws.SendAudio(codec.PCMS16LEToBytes(samples16k)); err != nil {
+	ws := c.currentWS()
+	if ws == nil {
+		return
+	}
+	if err := ws.SendAudio(codec.PCMS16LEToBytes(samples16k)); err != nil {
 		log.Warn().Err(err).Str("call_id", c.callID).Msg("call: ws send failed")
-		c.Close()
+		c.teardown()
 	}
 }
+
+// jitterDrainAbove is the buffered-packet count above which the release
+// loop pops more than one packet per tick — 4× the 3-packet target, so
+// normal jitter never trips it. jitterDrainPerTick bounds the catch-up
+// so one tick can't run away with the loop.
+const (
+	jitterDrainAbove   = 12
+	jitterDrainPerTick = 8
+)
 
 // startJitterRelease starts the 20 ms ticker that drains the JB. Runs
 // until the call closes (closure detected via ctx) or relay mode
@@ -1940,6 +2163,20 @@ func (c *Call) startJitterRelease(ctx context.Context) {
 					continue
 				}
 				c.processDecodedPayload(payload)
+				// One pop per tick only keeps up while depth stays at
+				// target. If it has run away — a WS write stall inside
+				// this goroutine, or a burst — every extra packet held
+				// is latency the call never gets back, so drain the
+				// excess now rather than carrying it for the rest of
+				// the call. Bounded per tick so a pathological buffer
+				// can't monopolise the loop.
+				for n := 0; n < jitterDrainPerTick && jb.Len() > jitterDrainAbove; n++ {
+					extra, _ := jb.Pop()
+					if extra == nil {
+						break
+					}
+					c.processDecodedPayload(extra)
+				}
 			}
 		}
 	}()
@@ -1949,13 +2186,29 @@ func (c *Call) startJitterRelease(ctx context.Context) {
 // one 20 ms packet per 20 ms (see pacer.go for why the WS arrival cadence
 // cannot be trusted). Shares ctx with the jitter release loop so SetPeer /
 // Close cancel both together.
-func (c *Call) startPacer(ctx context.Context) {
+//
+// With silenceFill (SIPBRIDGE_RTP_SILENCE_FILL, on by default), slots with no
+// bot audio carry a frame of codec silence so egress is continuous for the
+// life of the call — see pacer.go. The fill func returns nil while the peer's
+// media address is unknown (a send before that is a guaranteed error, and
+// onSendError tears the call down) or while a DTMF burst is on the wire.
+func (c *Call) startPacer(ctx context.Context, silenceFill bool) {
+	var fill func() []byte
+	if silenceFill {
+		fill = func() []byte {
+			if !c.rtp.CanFill() {
+				return nil
+			}
+			return c.rtp.SilencePayload()
+		}
+	}
 	p := &pacer{
 		sendFn:    c.rtp.SendPayloadPaced,
 		suspended: c.hasPeer,
+		fill:      fill,
 		onSendError: func(err error) {
 			log.Warn().Err(err).Str("call_id", c.callID).Msg("call: rtp send failed")
-			c.Close()
+			c.teardown()
 		},
 	}
 	c.mu.Lock()
@@ -2042,12 +2295,17 @@ func (c *Call) Close() {
 	close(c.closed)
 	tap := c.tap
 	c.tap = nil
+	ws := c.ws
+	stop := c.releaseStop
+	c.releaseStop = nil
 	c.mu.Unlock()
+	// Everything below runs outside the lock: Stop() can run a close
+	// handler synchronously, and that handler takes c.mu.
 	if tap != nil {
 		tap.Stop()
 	}
-	if c.releaseStop != nil {
-		c.releaseStop()
+	if stop != nil {
+		stop()
 	}
 	if c.mediaTimeoutStop != nil {
 		c.mediaTimeoutStop()
@@ -2055,8 +2313,8 @@ func (c *Call) Close() {
 	if c.rtp != nil {
 		c.rtp.Close()
 	}
-	if c.ws != nil {
-		c.ws.Stop()
+	if ws != nil {
+		ws.Stop()
 	}
 }
 

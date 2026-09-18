@@ -1,11 +1,6 @@
 /**
- * Regression: GET /api/me must report the caller's organisation NAME (issue #203).
- *
- * The bug was upstream of the handler: attachRbac lazy-loaded the Organisation
- * with an attribute allow-list that omitted `name`, so `u.Organisation.name`
- * was undefined and `?? null` made it look like a legitimate "unnamed org".
- * Both halves are asserted here: the load selects `name`, and the handler
- * surfaces it.
+ * Assert both the RBAC attribute selection and /api/me response; omitting name during loading looks like an unnamed
+ * org. See issue #203.
  */
 import { ORGANISATION_RBAC_ATTRIBUTES } from '../lib/auth/permissions.js';
 import meRoute from '../api/paths/me.js';

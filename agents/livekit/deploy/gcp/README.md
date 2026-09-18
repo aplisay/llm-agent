@@ -203,10 +203,10 @@ which left a live service-account private key in the layer of a *pushed* image
 — readable by anyone who could pull it, and outliving every key rotation.
 
 The objection is retention, not materialisation. Decrypting secrets during a
-build is fine and sometimes necessary: `Dockerfile.test` does exactly that so
-the CI suite can reach the external LLM providers (Google included), and that
-image is a throwaway the `Test` step in `cloudbuild-staging.yaml` builds, runs
-and discards without ever pushing it. What must not happen is a published
+build is fine and sometimes necessary: the `test` target of `Dockerfile` does
+exactly that so the CI suite can reach the external LLM providers (Google
+included), and that image is a throwaway the `Test` step in
+`cloudbuild-staging.yaml` builds, runs and discards without ever pushing it. What must not happen is a published
 artefact carrying the key. Worth knowing if you fix one of the others: removing
 the file in a later `RUN` does **not** achieve that — the layer that created it
 still holds it, so it takes a same-layer `rm` or a multi-stage copy.
@@ -448,8 +448,9 @@ an exposed inspector port is remote code execution.**
 - The other **published** Node images still leave `credentials/google.json` in
   what they push — `Dockerfile` (the llm-agent service, on Cloud Run) and
   `agents/jambonz/Dockerfile`. They want the same runtime rehydration.
-  `Dockerfile.test` writes it too, but that one is the CI test runner: never
-  pushed, and its tests need live provider credentials, so it stays as it is.
+  The `test` target of `Dockerfile` writes it too, but that one is the CI test
+  runner: never pushed, and its tests need live provider credentials, so it
+  stays as it is.
 - `deploy/gcp/cloudrun/cloudbuild-livekit-staging.yaml` sets
   `_SERVICE_NAME: livekit-agent-staging`, which would push to an image that
   does not exist in the registry — the `:staging` tag that is actually deployed

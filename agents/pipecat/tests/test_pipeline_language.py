@@ -1,17 +1,5 @@
-"""``options.stt.language`` / ``options.tts.language`` → the pipeline's STT and
-TTS services (:mod:`pipecat_aplisay.voice_session`).
-
-Before this wiring the pipeline path ignored both fields entirely: every agent
-got Deepgram's ``en`` and Cartesia's ``en`` regardless of what the agent
-definition declared, so a French agent was transcribed and voiced as English.
-
-The assertions deliberately reach for the value each service will actually put
-on the wire (``_build_connect_kwargs`` for Deepgram, ``_get_language_codes`` for
-Google, the resolved ``_settings.language`` for the TTS pair) rather than the
-value we passed in — the vendor mapping in between is the part most likely to
-silently drop a tag. Cartesia and ElevenLabs both reduce regional tags to base
-codes, which is their APIs' documented shape, not a bug.
-"""
+"""Assert the language each service sends to its vendor, since provider mappings can alter or drop regional tags. See
+PR #205."""
 
 from __future__ import annotations
 
@@ -156,27 +144,33 @@ def test_deepgram_stt_ignores_the_non_specific_sentinels(api_keys):
     assert stt._build_connect_kwargs()["language"] == "en"
 
 
-# --- Google STT --------------------------------------------------------------
+# GoogleSTTService needs default_event_loop for synchronous grpc.aio construction on Python 3.12. See PR #326.
 
 
-def test_google_stt_uses_the_declared_recognition_language(api_keys, google_credentials):
+def test_google_stt_uses_the_declared_recognition_language(
+    api_keys, google_credentials, default_event_loop
+):
     stt = build_stt_service(_agent(stt={"vendor": "google", "language": "en-GB"}))
     assert stt._get_language_codes() == ["en-GB"]
 
 
-def test_google_stt_maps_through_its_own_code_table(api_keys, google_credentials):
+def test_google_stt_maps_through_its_own_code_table(
+    api_keys, google_credentials, default_event_loop
+):
     # Google wants cmn-Hans-CN, not zh-CN — the vendor map has to be applied.
     stt = build_stt_service(_agent(stt={"vendor": "google", "language": "zh-CN"}))
     assert stt._get_language_codes() == ["cmn-Hans-CN"]
 
 
-def test_google_stt_keeps_its_default_when_unset(api_keys, google_credentials):
+def test_google_stt_keeps_its_default_when_unset(
+    api_keys, google_credentials, default_event_loop
+):
     stt = build_stt_service(_agent(stt={"vendor": "google"}))
     assert stt._get_language_codes() == ["en-US"]
 
 
 def test_google_stt_falls_back_to_default_for_an_unresolvable_tag(
-    api_keys, google_credentials
+    api_keys, google_credentials, default_event_loop
 ):
     # Google can only be configured with a Language enum, so a raw string that
     # doesn't resolve has to leave the default in place rather than crash.

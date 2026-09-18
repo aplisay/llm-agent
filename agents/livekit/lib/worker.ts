@@ -17,7 +17,6 @@ import { invocationLogs } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
   getInstanceById,
-  getInstanceByNumber,
   createCall,
   createTransactionLog,
   type Instance,
@@ -27,7 +26,6 @@ import {
   type OutboundInfo,
   getPhoneEndpointById,
   getPhoneEndpointByNumber,
-  getPhoneNumberByNumber,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
@@ -46,9 +44,10 @@ import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
 } from "./confidence-tone.js";
-import { DISCONNECT_REASONS, roomService } from "./livekit-constants.js";
+import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
+import { runFallbackMessage } from "./fallback-message.js";
 import { userOwnsRow } from "./scope.js";
 
 // Types
@@ -401,12 +400,17 @@ export default defineAgent({
        *  - First attempt runs with the primary modelName from the agent.
        *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
        *    we consult the current agent's options.fallback with precedence:
-       *      1. fallback.agent  – fetch and substitute a different agent, then retry.
-       *      2. fallback.model  – retry the same agent with a different modelName.
-       *      3. fallback.number – perform a blind transfer to this number and exit.
+       *      1. fallback.agent   – fetch and substitute a different agent, then retry.
+       *      2. fallback.model   – retry the same agent with a different modelName.
+       *      3. fallback.message – play a fixed TTS announcement at the caller.
+       *      4. fallback.number  – perform a blind transfer to this number and exit.
        *
        * Once we have switched to a fallback agent, any further fallback decisions are
        * controlled by that agent's own options.fallback.
+       *
+       * Concurrency rejections enter this chain at step 3 (see the catch block):
+       * retrying a different agent or model cannot help, but an announcement is
+       * exactly what a caller who arrived at a full system should hear.
        */
       let activeAgent = agent;
       let activeModelName = modelName;
@@ -455,13 +459,12 @@ export default defineAgent({
           break fallbackLoop;
         } catch (e) {
           const error = e instanceof Error ? e : new Error(String(e));
-          // Concurrency limit failures should not trigger fallback attempts.
-          // We want to fail fast so LiveKit can reject with a "busy" cause.
-          if ((error as any)?.code === "AGENT_CONCURRENCY_LIMIT_EXCEEDED") {
-            throw error;
-          }
+          // Concurrency refusal skips to the fixed message: the other fallbacks also need a Call slot.
+          // If no message plays, preserve the busy response; see docs/agent-failover.md.
+          const busy =
+            (error as any)?.code === "AGENT_CONCURRENCY_LIMIT_EXCEEDED";
           logger.error(
-            { error, message: error.message, fallbackConfig },
+            { error, message: error.message, busy, fallbackConfig },
             "runAgentWorker failed, evaluating fallback options",
           );
 
@@ -472,6 +475,7 @@ export default defineAgent({
 
           // 1. Agent-level fallback: fetch and substitute a different agent
           if (
+            !busy &&
             !usedFallbackAgent &&
             fallbackConfig.agent &&
             fallbackConfig.agent !== activeAgent.id
@@ -532,6 +536,7 @@ export default defineAgent({
 
           // 2. Model-level fallback (restart with a different modelName)
           if (
+            !busy &&
             !usedFallbackModel &&
             fallbackConfig.model &&
             activeModelName !== fallbackConfig.model
@@ -549,7 +554,27 @@ export default defineAgent({
             continue fallbackLoop;
           }
 
-          // 3. Number-level fallback (transfer to a phone number / endpoint)
+          // Successful announcement playout still rethrows the setup error for teardown and the original failure reason. See PR
+          // #236.
+          if (fallbackConfig.message) {
+            const played = await playFixedFallbackMessage(ctx, activeAgent);
+            if (played) {
+              throw error;
+            }
+            logger.warn(
+              {},
+              "fixed fallback message unavailable; continuing down the fallback chain",
+            );
+          }
+
+          // A busy call has no route left: the number fallback would reserve
+          // concurrency it cannot get. Rethrow so the SIP leg is refused rather
+          // than answered and dropped.
+          if (busy) {
+            throw error;
+          }
+
+          // 4. Number-level fallback (transfer to a phone number / endpoint)
           if (fallbackConfig.number) {
             try {
               logger.info(
@@ -779,6 +804,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     aplisayId,
     outbound,
     callMetadata,
+    registrationEndpointId: metaRegistrationEndpointId,
+    b2buaGatewayIp: metaB2buaGatewayIp,
+    b2buaGatewayTransport: metaB2buaGatewayTransport,
   } = jobMetadata || {};
   logger.info(
     {
@@ -876,7 +904,24 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           const uuidRe =
             /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-          if (!aplisayStr && uuidRe.test(callerIdStr)) {
+          if (metaRegistrationEndpointId && metaB2buaGatewayIp) {
+            // A NUMBER on a registration trunk. The originate route resolved
+            // the trunk's registration and its B2BUA; the leg dials that
+            // B2BUA with the registration header and presents the number,
+            // and keeps its trunk identity for the X-Aplisay-Trunk header.
+            registrationOriginated = true;
+            registrationEndpointId = String(metaRegistrationEndpointId);
+            b2buaGatewayIp = String(metaB2buaGatewayIp);
+            b2buaGatewayTransport = String(metaB2buaGatewayTransport || "tcp");
+            registrationUsername = callerIdStr.replace(/^\+/, "");
+            callerId = registrationUsername;
+            outboundInfo = {
+              toNumber: calledId,
+              fromNumber: callerId,
+              aplisayId: aplisayStr || undefined,
+              instanceId: instanceId,
+            };
+          } else if (!aplisayStr && uuidRe.test(callerIdStr)) {
             const regEndpoint = await getPhoneEndpointById(callerIdStr);
             if (!regEndpoint || !("id" in regEndpoint)) {
               throw new Error(
@@ -931,6 +976,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
             b2buaGatewayIp = gatewayHost;
             b2buaGatewayTransport = gatewayTransport;
             callerId = cliRaw.replace(/^\+/, "");
+            // The calling number presented towards the gateway. Only the
+            // inbound path set this before, so an originated registration
+            // call presented the 00000 placeholder instead of its CLI.
+            registrationUsername = callerId;
             outboundInfo = {
               toNumber: calledId,
               fromNumber: callerId,
@@ -946,7 +995,9 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           }
         } else {
           logger.info({ room }, "room name getting participants");
-          const participants = await roomService.listParticipants(room.name!);
+          const participants = await getRoomService().listParticipants(
+            room.name!,
+          );
           participant = participants.find(
             (p) => p.identity !== "sip-outbound-call",
           ) as ParticipantInfo;
@@ -997,6 +1048,10 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
               );
 
               calledId = calledIdAttr;
+              // A registration trunk's INVITE reaches LiveKit on the trunk's
+              // fixed number; the dialled number rides in X-Aplisay-Called.
+              const aplisayCalledAttr = sipAttribute(attrs, "aplisayCalled");
+              if (aplisayCalledAttr) calledId = aplisayCalledAttr;
               callerId = callerIdAttr;
               aplisayId = aplisayIdAttr;
               phoneRegistration = phoneRegistrationAttr ?? null;
@@ -1099,7 +1154,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                   );
                 }
               }
-            } else if (calledId) {
+            }
+            // A registration with no agent attached is a registration TRUNK:
+            // the call resolves by (dialled number, trunk) like any other
+            // trunk call. Same ladder as pipecat's _lookup_instance_for_inbound.
+            if (!instance && calledId) {
               logger.info(
                 { callerId, calledId, aplisayId },
                 "new Livekit inbound telephone call, looking up phone endpoint by number",
@@ -1123,17 +1182,15 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                     "trunk info retrieved from phone endpoint",
                   );
                 }
-                // PhoneNumber has instanceId, so we can lookup the instance
+                // The number row names its instance. There is deliberately no
+                // lookup by bare number behind this: an inbound call is
+                // resolved by (number, trunk) or not at all, so a number that
+                // failed the trunk check above, or has no agent, is "no
+                // instance" rather than "try again without the trunk".
                 if (numInfo.instanceId) {
                   instance = await getInstanceById(numInfo.instanceId);
-                } else {
-                  // Fallback to old behavior
-                  instance = await getInstanceByNumber(calledId);
                 }
                 aplisayId = numInfo.aplisayId || aplisayId;
-              } else {
-                // Fallback: try direct instance lookup by number
-                instance = await getInstanceByNumber(calledId);
               }
             }
           }
@@ -1197,6 +1254,39 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
  * It is not a perfect solution, but it is a better experience for the customer.
  *
  */
+/**
+ * Play an agent's fixed fallback announcement (`options.fallback.message`).
+ *
+ * Never throws: this runs when setup has already failed, so a problem here must
+ * cost the caller the announcement and nothing more, leaving the fallback chain
+ * free to try `fallback.number`.
+ *
+ * Connects to the room if we are not already in it. The main flow reserves
+ * concurrency in `Call.start()` *before* `ctx.connect()` precisely so a refused
+ * call is never answered — which means the busy path arrives here having never
+ * joined, and audio cannot be published from outside the room. Connecting
+ * answers the SIP leg, and that is the intended trade: an operator who
+ * configured an announcement has asked for the caller to hear it instead of
+ * getting a busy tone.
+ *
+ * Publishes from `ctx.room` rather than the worker's `room`, which is the job
+ * assignment's room info and has no local participant to publish from.
+ */
+async function playFixedFallbackMessage(
+  ctx: JobContext,
+  agent: Agent,
+): Promise<boolean> {
+  try {
+    if (!ctx.room?.isConnected) {
+      await ctx.connect();
+    }
+    return await runFallbackMessage(ctx.room, agent);
+  } catch (e) {
+    logger.error({ e }, "fixed fallback message failed");
+    return false;
+  }
+}
+
 async function waitForExistingBridgedParticipant(
   ctx: JobContext,
   room: Room,
@@ -1206,7 +1296,7 @@ async function waitForExistingBridgedParticipant(
     return "no bridged participant found";
   }
   // We have already bridged this call, so we need to get the bridged participant
-  const roomInfo = await roomService.listRooms([room.name!]);
+  const roomInfo = await getRoomService().listRooms([room.name!]);
   const metadata = roomInfo[0]?.metadata as any;
   const bridgedCallId = JSON.parse(metadata)?.bridgedCallId || null;
   logger.info(

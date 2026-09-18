@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 from loguru import logger
 
 from .function_handler import function_handler
+from .tool_result import MAX_RESULT_BYTES
 
 
 # Property-level keys that are valid JSON Schema and that LLM providers
@@ -105,6 +106,7 @@ def build_agent_tools(
     on_send_dtmf: Optional[Callable[[dict], Awaitable[Any]]] = None,
     on_transfer_summary: Optional[Callable[[dict], Awaitable[Any]]] = None,
     extra_builtins: Optional[dict[str, Callable[[dict, dict, dict], Awaitable[Any]]]] = None,
+    max_result_bytes: int = MAX_RESULT_BYTES,
 ) -> list[dict]:
     """Return a list of tool descriptors ready to register with Pipecat's LLM.
 
@@ -135,6 +137,10 @@ def build_agent_tools(
     runtime_options = {
         "allowToolsCallsMetadataPaths": True,
         "allowRedactedFunctionResults": True,
+        # Bounds the LLM-visible result only; chaining still sees the full
+        # value through metadata.toolsCalls. Callers behind a responses
+        # delegation pass MAX_RESULT_BYTES_DELEGATED (see tool_result.py).
+        "maxResultBytes": max_result_bytes,
     }
 
     builtins = {
@@ -155,6 +161,10 @@ def build_agent_tools(
 
     descriptors: list[dict] = []
     for fn_def in functions:
+        if fn_def.get("implementation") == "builtin" and fn_def.get("platform") == "delegate":
+            # A GPT-Live agent's ``delegate`` names its backend text agent
+            # (gpt_live.py); no model ever calls it, so it is never a tool.
+            continue
         properties = (fn_def.get("input_schema") or {}).get("properties") or {}
         visible = _filter_llm_visible_schema(properties)
         required = [k for k, v in properties.items() if v.get("required")]

@@ -81,7 +81,7 @@ curl -X GET "https://llm-agent.aplisay.com/api/phone-numbers?originate=true" \
 
 Phone numbers are stored in the `phone_numbers` table with the following structure:
 
-- `number` (primary key): The phone number string
+- `number`: The phone number string. Unique per organisation and per trunk (not platform-wide); the row's primary key is an internal `id`.
 - `handler`: The handler type ("livekit" or "jambonz")
 - `reservation`: Boolean flag for reservation status
 - `outbound`: Boolean flag for outbound capability

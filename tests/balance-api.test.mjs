@@ -4,6 +4,7 @@ import {
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import { penniesToMicros, microsToPennies, MICROS_PER_PENNY } from '../lib/rates.js';
+import { can } from '../lib/auth/permissions.js';
 
 // Phase-3 billing edge: rate-history assignment, balance read (pennies), and the
 // idempotent balance/credit (Stripe top-up seam) backed by the BalanceCredit table.
@@ -126,15 +127,44 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(await BalanceCredit.count({ where: { organisationId: orgId } })).toBe(2);
   });
 
-  it('the billingService role can credit but cannot assign rates (least privilege)', async () => {
+  it('the billingService role can credit AND put an org on its rate card', async () => {
     const c = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { idempotencyKey: 'svc-1', amountPennies: 300 } });
     await creditPOST(c.req, c.res);
     expect(c.res.statusCode).toBe(200);
     expect(c.res.body.balancePennies).toBe(300);
-    // …but not rate assignment (organisation:setRate) — that stays superAdmin-only.
-    const r = mockReqRes({ role: 'billingService', params: { organisationId: orgId }, body: { rateHistory: [] } });
+
+    // Rate assignment is the same seam's job: a client billing service puts an
+    // org on the card its subscription package implies when the account is
+    // approved or the subscription changes. Reading FIRST is part of it — the
+    // assignment is idempotent, so it compares the existing timeline before
+    // writing — and this principal carries no organisationId of its own, so it
+    // reaches the row only via organisation:readAll.
+    const before = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
+    await rateHistGET(before.req, before.res);
+    expect(before.res.statusCode).toBe(200);
+
+    const r = mockReqRes({
+      role: 'billingService',
+      params: { organisationId: orgId },
+      body: { rateHistory: [{ name: `${PREFIX}r1`, startDate: '2026-02-01T00:00:00.000Z' }] },
+    });
     await rateHistPUT(r.req, r.res);
-    expect(r.res.statusCode).toBe(403);
+    expect(r.res.statusCode).toBe(200);
+    const saved = (await Organisation.findByPk(orgId)).rateHistory;
+    expect(saved).toHaveLength(1);
+    expect(saved[0].name).toBe(`${PREFIX}r1`);
+  });
+
+  it('billingService still cannot author or alter the rate cards themselves', async () => {
+    // The boundary that survives: it prices its own tenants against cards a
+    // super admin authors. Widening `organisation:setRate` must not have
+    // dragged the pricing config along with it.
+    for (const action of ['create', 'update', 'delete']) {
+      expect(can({ role: 'billingService' }, 'rate', action)).toBe(false);
+      expect(can({ role: 'billingService' }, 'tariff', action)).toBe(false);
+    }
+    expect(can({ role: 'billingService' }, 'organisation', 'update')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'delete')).toBe(false);
   });
 
   it('credit 400s missing key / zero amount, and 403s a non-super', async () => {
@@ -186,7 +216,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
 
     const read = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
     await billingGET(read.req, read.res);
-    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3 });
+    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3, agentLimit: null });
 
     // balance read (own-org member) surfaces the block flag
     const bal = mockReqRes({ role: 'owner', organisationId: orgId, params: { organisationId: orgId } });
@@ -194,7 +224,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(bal.res.body.blocked).toBe(true);
 
     const cleared = await patch({ billingBlocked: false, billingConfig: null });
-    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3 });
+    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3, agentLimit: null });
   });
 
   it('billing PATCH sets chargeableNumberLimit (integer >= 0, null = unlimited) and validates it', async () => {
@@ -232,6 +262,46 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect((await patch({ chargeableNumberLimit: 99 }, 'owner')).statusCode).toBe(403);
   });
 
+  it('billing PATCH sets agentLimit (the concurrency cap lib/concurrency already enforces)', async () => {
+    // Exposed on the billing seam for the same reason as chargeableNumberLimit:
+    // a client billing service sets it from whatever package the customer is
+    // on, without holding the stricter organisation:setLimits the direct
+    // org-PATCH route requires. The CAP is generic here; what number goes in it
+    // is the billing system's policy, not ours.
+    const patch = (body, role = 'billingService') => {
+      const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+
+    const capped = await patch({ agentLimit: 2 });
+    expect(capped.statusCode).toBe(200);
+    expect(capped.body.agentLimit).toBe(2);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(2);
+
+    // 0 is meaningful and distinct from null: no concurrent calls at all.
+    const none = await patch({ agentLimit: 0 });
+    expect(none.statusCode).toBe(200);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(0);
+
+    const unlimited = await patch({ agentLimit: null });
+    expect(unlimited.statusCode).toBe(200);
+    expect(unlimited.body.agentLimit).toBeNull();
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBeNull();
+
+    // Settable alongside the other controls in one PATCH.
+    const combined = await patch({ agentLimit: 6, chargeableNumberLimit: 10 });
+    expect(combined.body).toMatchObject({ agentLimit: 6, chargeableNumberLimit: 10 });
+
+    // Invalid values reject without persisting anything.
+    expect((await patch({ agentLimit: -1 })).statusCode).toBe(400);
+    expect((await patch({ agentLimit: 1.5 })).statusCode).toBe(400);
+    expect((await patch({ agentLimit: '2' })).statusCode).toBe(400);
+    expect((await Organisation.findByPk(orgId)).agentLimit).toBe(6);
+
+    // Same gate as the rest of the billing controls.
+    expect((await patch({ agentLimit: 99 }, 'owner')).statusCode).toBe(403);
+  });
+
   it('billing PATCH validates: unsafe URL, short hashKey, bad types, empty body, owner 403', async () => {
     const patch = (body, role = 'billingService') => {
       const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
@@ -241,7 +311,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'short' } })).statusCode).toBe(400);
     expect((await patch({ billingConfig: { callbackUrl: 'https://ok.example.com/x', hashKey: 'k'.repeat(32), balanceLowPennies: -5 } })).statusCode).toBe(400);
     expect((await patch({ billingBlocked: 'yes' })).statusCode).toBe(400);
-    expect((await patch({})).statusCode).toBe(400);
+    expect((await patch({})).statusCode).toBe(400); // still 400 with agentLimit added to the accepted set
     expect((await patch({ billingBlocked: true }, 'owner')).statusCode).toBe(403);
     // nothing stuck from the failed attempts
     const org = await Organisation.findByPk(orgId);

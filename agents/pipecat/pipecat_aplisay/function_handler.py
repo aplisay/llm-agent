@@ -24,7 +24,9 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 from loguru import logger
 
+from . import http_client
 from .current_datetime import current_datetime_string, is_datetime_metadata_key
+from .tool_result import MAX_RESULT_BYTES, clip_any_result
 
 
 def _get_by_path(obj: Any, path: str) -> Any:
@@ -152,19 +154,8 @@ HARDWIRED_BUILTINS["metadata"] = _builtin_metadata
 def _resolve_inputs(
     fn: dict, llm_args: dict, metadata: dict, options: dict
 ) -> dict:
-    """Resolve a function's parameters by source. Mirrors the JS dispatcher.
-
-    A parameter that resolves to ``None`` is OMITTED, never sent as ``null``:
-    in the JS handler an absent argument resolves to ``undefined``, which
-    ``JSON.stringify`` drops from the request body — but Python's ``None``
-    survives serialisation as a REAL ``null`` the server must interpret. Beta
-    2026-07-27: every no-preference booking_get_slots went out as
-    ``{"from": null, "days": null}``; the server's ``Number(null) === 0``
-    coerced that to a one-day scan, so afternoon callers were told no slots
-    existed anywhere. (For metadata sources the JS handler throws when the
-    path is missing; omitting is deliberately softer — absent optional
-    metadata degrades to \"parameter not sent\" instead of failing the call.)
-    """
+    """Omit parameters resolving to None: unlike JS undefined, Python None becomes a meaningful JSON null. See PR #177.
+    Missing metadata is also omitted rather than failing the call."""
     properties = (fn.get("input_schema") or {}).get("properties") or {}
     resolved: dict[str, Any] = {}
     allow_tools_calls = bool(options.get("allowToolsCallsMetadataPaths"))
@@ -324,6 +315,20 @@ async def function_handler(
         if options.get("allowRedactedFunctionResults") and fn_def.get("redact"):
             visible_result = "OK"
 
+        # Cap only the model-visible result after storing full metadata, so later tool calls can still chain it.
+        # See PR #322.
+        visible_result, dropped = clip_any_result(
+            visible_result, options.get("maxResultBytes", MAX_RESULT_BYTES), tool=name
+        )
+        if dropped:
+            # WARNING: a truncated result changes the answer the caller hears,
+            # and it points at a function or endpoint to fix rather than at a
+            # transport fault.
+            logger.bind(name=name, dropped_bytes=dropped).warning(
+                f"function {name} returned more than the result cap; dropped {dropped} "
+                "bytes and told the model to narrow the request"
+            )
+
         function_results.append(
             {"name": name, "result": visible_result, "error": error}
         )
@@ -405,8 +410,14 @@ async def _execute_rest(fn_def: dict, inputs: dict, keys: list[dict]) -> Any:
         params = [(k, str(v)) for k, v in (leftover or {}).items() if v is not None]
         params.extend(auth_params)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.request(method, url, headers=headers, params=params or None, json=body)
+    # Pooled per-host client (W4). Agent REST callouts hit arbitrary
+    # third-party hosts, so they get their own pool rather than sharing
+    # the agent-db one — a slow customer endpoint must not consume the
+    # connection budget the call's own control plane needs.
+    client = await http_client.get_client("rest-callout")
+    resp = await client.request(
+        method, url, headers=headers, params=params or None, json=body, timeout=15.0
+    )
     is_json = resp.headers.get("content-type", "").startswith("application/json")
     if resp.status_code >= 400:
         parsed = _try_parse_json(resp.text) if is_json else None

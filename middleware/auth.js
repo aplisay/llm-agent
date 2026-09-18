@@ -7,6 +7,18 @@ import { fromNodeHeaders } from 'better-auth/node';
 import { effectivePermissions, statementsFor, intersectStatements, keyRestrictionStatements, can, ORGANISATION_RBAC_ATTRIBUTES } from '../lib/auth/permissions.js';
 import { effectiveAllowedModels } from '../lib/auth/model-access.js';
 import { isBootstrapSuperAdmin } from '../lib/admin-gate.js';
+import { timingSafeEqual } from 'node:crypto';
+
+/**
+ * Constant-time token comparison, for a secret presented by an untrusted
+ * caller. Length is compared first because timingSafeEqual throws on a length
+ * mismatch rather than returning false.
+ */
+function tokensMatch(presented, expected) {
+  const a = Buffer.from(String(presented), 'utf8');
+  const b = Buffer.from(String(expected), 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 const BA_SESSION_TTL_MS = 60_000;
 const BA_SESSION_MAX = 5000;
@@ -127,6 +139,36 @@ function init(app, logger) {
     // Tenant auth (Firebase / AuthKey) must never be able to access these routes.
     const isAgentDbPath = req.originalUrl.startsWith('/api/agent-db');
     
+    // A b2bua node announcing itself needs exactly one route, and it runs on
+    // the most exposed machines in the estate — internet-facing SIP, reachable
+    // from any address the firewall admits. Handing it SHARED_API_TOKEN, which
+    // the check below accepts on *every* route and turns into a full system
+    // principal, would mean that compromising one SIP node yields complete
+    // internal-API control including stored credentials and super-admin
+    // permissions. So the heartbeat gets its own token, scoped to its own route
+    // and nothing else — not even reading the fleet list back.
+    //
+    // SHARED_API_TOKEN still works here, so nodes can be moved onto the scoped
+    // token without a coordinated deploy; drop it from the node bundles once
+    // they all carry B2BUA_HEARTBEAT_TOKEN.
+    const heartbeatToken = process.env.B2BUA_HEARTBEAT_TOKEN;
+    const presentedToken = req.headers['x-shared-token'];
+    if (heartbeatToken && presentedToken && tokensMatch(presentedToken, heartbeatToken)) {
+      if (!req.originalUrl.startsWith('/api/agent-db/b2bua-nodes')) {
+        res.status(403).json({ message: 'Forbidden: this token is scoped to the b2bua node heartbeat' });
+        return;
+      }
+      res.locals.user = {
+        id: 'b2bua-node',
+        user_id: 'b2bua-node',
+        name: 'b2bua node (heartbeat)',
+        isB2buaNode: true
+      };
+      res.locals.user.sql = { where: { userId: 'system' } };
+      next();
+      return;
+    }
+
     // Check for shared token for internal API calls
     const sharedToken = process.env.SHARED_API_TOKEN;
     if (sharedToken && req.headers['x-shared-token'] === sharedToken) {

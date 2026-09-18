@@ -6,7 +6,8 @@ import { randomUUID } from 'crypto';
 import {
   resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName,
   resolveRateCard, settle, costUsageRow, sweepUncostedRows,
-  BILLING_INCREMENT_SECONDS,
+  finaliseStaleSessions, attributeOrphanRow, previewRowCost,
+  BILLING_INCREMENT_SECONDS, STALE_SESSION_HOURS,
 } from '../lib/rates.js';
 import { recordUsage, finaliseSession } from '../lib/usage.js';
 
@@ -398,5 +399,90 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(Number((await frozen.reload()).costMicros)).toBe(123); // untouched (not scanned)
     // 100M - 6.5M (uncosted) - 6.5M (no_rate) = 87M; the frozen row was never settled here.
     expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(87_000_000);
+  });
+
+  // The gap that made the documented backstop not one. lib/text-chat.js
+  // `teardown` says a process exit inside the re-attach grace is "covered by the
+  // nightly uncosted-row sweep" — but the sweep only ever selected `finalised:
+  // true`, and a session that dies before teardown never sets it. Those meters
+  // were therefore invisible to the one thing that was supposed to catch them,
+  // and sat on the customer's usage screen counted as "not priced" forever.
+  it('sweep finalises meters abandoned by a session that never tore down, then costs them', async () => {
+    const name = `${PREFIX}stale`;
+    await assignRate(name, [
+      { dim: 'model', match: { technology: 'llm', provider: 'openai', detail: 'gpt-5.6-terra', unit: 'output_tokens' }, unit: 'token', priceMicros: 2_000 },
+    ], 50_000_000);
+    const stale = await mkRow({
+      technology: 'llm', provider: 'openai', detail: 'gpt-5.6-terra', unit: 'output_tokens',
+      media: null, quantity: 1_000, finalised: false,
+      metadata: { startedAt: '2026-02-01T00:00:00Z' },
+    });
+    // Age it past the staleness window the way time would. Raw SQL because
+    // Sequelize owns updatedAt and will not let a model write move it.
+    await UsageRecord.sequelize.query(
+      'UPDATE usage_records SET updated_at = :ts WHERE id = :id',
+      { replacements: { ts: new Date(Date.now() - (STALE_SESSION_HOURS + 1) * 3600_000), id: stale.id } },
+    );
+
+    const res = await sweepUncostedRows();
+    expect(res.finalised).toBeGreaterThanOrEqual(1);
+    const after = await stale.reload();
+    expect(after.finalised).toBe(true);
+    expect(after.costStatus).toBe('matched');
+    expect(Number(after.costMicros)).toBe(2_000_000);
+  });
+
+  // The other half of the same guarantee: a session that is still running must
+  // NOT be finalised early. A `matched` row is never re-costed, so finalising a
+  // live meter would freeze an under-count and every later token would be
+  // metered but never charged.
+  it('sweep leaves a still-active session alone', async () => {
+    const fresh = await mkRow({
+      technology: 'llm', provider: 'openai', detail: 'gpt-5.6-terra', unit: 'output_tokens',
+      media: null, quantity: 500, finalised: false,
+    });
+    expect(await finaliseStaleSessions()).toBe(0);
+    expect((await fresh.reload()).finalised).toBe(false);
+  });
+
+  // A row that metered against a user but no organisation belongs to nobody: it
+  // can never resolve a rate history, never appears on the owning org's usage
+  // screen, and never reaches a balance. The user is the attribution.
+  it('sweep re-attributes an orphaned row from its user, then rates it', async () => {
+    const name = `${PREFIX}orphan`;
+    await assignRate(name, [
+      { dim: 'model', match: { technology: 'llm', provider: 'openai', detail: 'gpt-5.6-terra', unit: 'output_tokens' }, unit: 'token', priceMicros: 1_000 },
+    ], 50_000_000);
+    const orphan = await UsageRecord.create({
+      sessionId: randomUUID(), meterKey: randomUUID(), organisationId: null, userId,
+      technology: 'llm', provider: 'openai', detail: 'gpt-5.6-terra', unit: 'output_tokens',
+      quantity: 100, finalised: true, metadata: { startedAt: '2026-02-01T00:00:00Z' },
+    });
+    expect(await attributeOrphanRow(orphan)).toBe(true);
+    expect((await orphan.reload()).organisationId).toBe(orgId);
+    await costUsageRow(orphan);
+    expect((await orphan.reload()).costStatus).toBe('matched');
+  });
+
+  // A backfill that will settle real money has to be previewable first.
+  it('dryRun reports what the sweep would do and writes nothing', async () => {
+    const name = `${PREFIX}dry`;
+    await assignRate(name, [
+      { dim: 'audio-path', match: { technology: 'voice', provider: 'livekit', media: 'webrtc' }, unit: 'minute', priceMicros: 500_000 },
+    ], 100_000_000);
+    const row = await mkRow({ metadata: { startedAt: '2026-02-01T00:00:00Z' } });
+
+    const res = await sweepUncostedRows({ dryRun: true });
+    expect(res.byStatus.matched).toBeGreaterThanOrEqual(1);
+    const after = await row.reload();
+    expect(after.costStatus).toBeNull();
+    expect(after.costMicros).toBeNull();
+    expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(100_000_000); // untouched
+
+    // …and the preview agrees with what the real sweep then does.
+    const preview = await previewRowCost(row);
+    await costUsageRow(row);
+    expect((await row.reload()).costStatus).toBe(preview.status);
+    expect(Number((await row.reload()).costMicros)).toBe(preview.costMicros);
   });
 });

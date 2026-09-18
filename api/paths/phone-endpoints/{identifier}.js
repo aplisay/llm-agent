@@ -1,8 +1,92 @@
-import { PhoneNumber, PhoneRegistration, Op } from '../../../lib/database.js';
-import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy } from '../../../lib/validation.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Op } from '../../../lib/database.js';
+import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy, validateRegistrationTrunkFields } from '../../../lib/validation.js';
+import { createRegistrationTrunk } from '../phone-endpoints.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { userOwnsRow } from '../../../lib/scope.js';
-import { requirePermission } from '../../../lib/auth/permissions.js';
+import { requirePermission, can } from '../../../lib/auth/permissions.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Move a number between organisations, or into and out of the unallocated
+ * pool (organisationId null). Platform operators only (phoneEndpoint:assign).
+ *
+ * Refused while the number is attached to an agent: the attachment belongs to
+ * the organisation that made it, and moving the row under it would leave one
+ * organisation's calls answered by another's agent. Detach first, then move.
+ * The source row is the caller's own organisation's (or the pool's) unless
+ * `fromOrganisationId` names another; a number is not unique on its own since
+ * schema 61, so the source has to be said.
+ */
+async function movePhoneNumber(req, res, normalizedNumber) {
+  if (!can(res.locals.user, 'phoneEndpoint', 'assign')) {
+    return res.status(403).send({ error: 'Moving a number between organisations requires phoneEndpoint:assign' });
+  }
+  const { organisationId: to, fromOrganisationId } = req.body;
+  const from = fromOrganisationId === undefined ? (res.locals.user.organisationId ?? null) : fromOrganisationId;
+  if (to !== null && !(typeof to === 'string' && UUID.test(to))) {
+    return res.status(400).send({ error: 'organisationId must be an organisation id, or null for the unallocated pool' });
+  }
+  if (from !== null && !(typeof from === 'string' && UUID.test(from))) {
+    return res.status(400).send({ error: 'fromOrganisationId must be an organisation id, or null for the unallocated pool' });
+  }
+
+  const row = await PhoneNumber.findOne({ where: { number: normalizedNumber, organisationId: from } });
+  if (!row) {
+    return res.status(404).send({ error: 'Phone endpoint not found' });
+  }
+  if (to === from) {
+    return res.send({ success: true, number: row.number, organisationId: to });
+  }
+  if (to && !(await Organisation.findByPk(to, { attributes: ['id'] }))) {
+    return res.status(404).send({ error: 'Organisation not found' });
+  }
+  if (row.instanceId) {
+    return res.status(409).send({
+      error: 'This number is attached to an agent; detach it before moving it to another organisation',
+      code: 'number_in_use',
+    });
+  }
+  if (await PhoneNumber.findOne({ where: { number: normalizedNumber, organisationId: to }, attributes: ['id'] })) {
+    return res.status(409).send({ error: 'The target organisation already holds this number' });
+  }
+  // A customer trunk (non-chargeable) is assigned to organisations; the
+  // number cannot outrun its trunk. Carrier trunks are shared, so no check.
+  if (to && row.aplisayId) {
+    const trunk = await Trunk.findByPk(row.aplisayId);
+    if (trunk && !trunk.chargeable && !(await trunk.hasOrganisation(to))) {
+      return res.status(409).send({ error: "The number's trunk is not assigned to the target organisation" });
+    }
+  }
+  try {
+    await row.update({ organisationId: to });
+  } catch (err) {
+    if (err.code === 'number_in_use') {
+      return res.status(409).send({ error: err.message, code: err.code });
+    }
+    if (err.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).send({ error: 'The target organisation already holds this number' });
+    }
+    throw err;
+  }
+  return res.send({ success: true, number: row.number, organisationId: to });
+}
+
+/**
+ * A DDI addressed by number, as the caller sees it: their organisation's own
+ * row first, else the unallocated pool's (organisationId null). Identity is
+ * (number, organisation) since schema 61, so the same number held by another
+ * organisation is simply not found here.
+ */
+async function findOwnOrPoolNumber(number, organisationId) {
+  return PhoneNumber.findOne({
+    where: {
+      number,
+      [Op.or]: [{ organisationId: organisationId ?? null }, { organisationId: null }],
+    },
+    order: [[PhoneNumber.sequelize.literal('organisation_id IS NULL'), 'ASC']],
+  });
+}
 
 let log;
 
@@ -33,7 +117,10 @@ const getPhoneEndpoint = async (req, res) => {
       if (!normalizedNumber) {
         return res.status(400).send({ error: 'Invalid phone number format' });
       }
-      record = await PhoneNumber.findByPk(normalizedNumber);
+      // The caller's own row for this number, else the pool's (no
+      // organisation). Another organisation's row for the same number is not
+      // visible here at all.
+      record = await findOwnOrPoolNumber(normalizedNumber, organisationId);
     } else {
       // registration id lookup
       const registration = await PhoneRegistration.findByPk(identifier);
@@ -55,7 +142,20 @@ const getPhoneEndpoint = async (req, res) => {
         handler: registration.handler,
         outbound: !!registration.outbound,
         callReceived: registration.callReceived ? registration.callReceived.toISOString() : null,
-        options: registration.options || null
+        options: registration.options || null,
+        trunkId: registration.trunkId || null,
+        trunk: !!registration.trunkId,
+        didSource: registration.didSource || null,
+        didCountry: registration.didCountry || null,
+        mode: registration.mode || 'client',
+        kind: registration.kind || null,
+        // The bindings the owning regserver node last mirrored onto the row:
+        // who is registered to this account, from where, until when. Client
+        // rows have none, and the password is never here for either.
+        ...(registration.mode === 'registrar' ? {
+          bindings: Array.isArray(registration.bindings) ? registration.bindings : [],
+          bindingsUpdatedAt: registration.bindingsUpdatedAt ? new Date(registration.bindingsUpdatedAt).toISOString() : null
+        } : {})
       });
     }
 
@@ -184,7 +284,10 @@ const updatePhoneEndpoint = async (req, res) => {
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      if (updateData.organisationId !== undefined) {
+        return movePhoneNumber(req, res, normalizedNumber);
+      }
+      const phoneNumber = await findOwnOrPoolNumber(normalizedNumber, organisationId);
       
       if (!phoneNumber) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -225,8 +328,26 @@ const updatePhoneEndpoint = async (req, res) => {
         return res.status(403).send({ error: 'Access denied' });
       }
 
+      // Mode is fixed at creation, and a registrar account's identity is the
+      // platform's: the realm is the deployment's, the username and password
+      // are minted (a new password comes from /credentials), and
+      // b2buaId is written by the node that accepts the REGISTER — ownership
+      // follows the socket, never this route.
+      if (updateData.mode !== undefined && updateData.mode !== (registration.mode || 'client')) {
+        return res.status(400).send({ error: 'mode cannot be changed after creation', code: 'mode_immutable' });
+      }
+      if (registration.mode === 'registrar') {
+        const refused = ['registrar', 'username', 'password', 'b2buaId'].filter((field) => updateData[field] !== undefined);
+        if (refused.length) {
+          return res.status(400).send({
+            error: `${refused.join(', ')} cannot be set on a registrar account; POST /phone-endpoints/{id}/credentials issues a new password`,
+            code: 'registrar_identity_immutable'
+          });
+        }
+      }
+
       // Update allowed fields for registrations
-      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId'];
+      const allowedFields = ['outbound', 'handler', 'name', 'options', 'b2buaId', 'didSource', 'didCountry'];
       const credentialFields = ['registrar', 'username', 'password'];
       const updateFields = {};
       
@@ -248,6 +369,23 @@ const updatePhoneEndpoint = async (req, res) => {
       }
       if (updateFields.options !== undefined && typeof updateFields.options !== 'object') {
         return res.status(400).send({ error: 'options must be an object if provided' });
+      }
+      const trunkErrors = validateRegistrationTrunkFields(updateData);
+      if (trunkErrors.length) {
+        return res.status(400).send({ error: 'Validation failed', details: trunkErrors });
+      }
+      if (updateFields.didCountry) updateFields.didCountry = String(updateFields.didCountry).toUpperCase();
+      // Turning a line into a trunk creates its trunks row and detaches it
+      // from any single agent (a trunk's numbers are attached, not the trunk).
+      // Turning a trunk back into a line needs the trunk to be empty first.
+      let trunkChange = null;
+      if (updateData.trunk === true && !registration.trunkId) trunkChange = 'create';
+      if (updateData.trunk === false && registration.trunkId) {
+        const numbers = await PhoneNumber.count({ where: { aplisayId: registration.trunkId } });
+        if (numbers > 0) {
+          return res.status(409).send({ error: `This trunk still carries ${numbers} number${numbers === 1 ? '' : 's'}. Remove them before turning it back into a line.` });
+        }
+        trunkChange = 'remove';
       }
       if (updateFields.b2buaId !== undefined) {
         if (updateFields.b2buaId === null || updateFields.b2buaId === '') {
@@ -304,7 +442,43 @@ const updatePhoneEndpoint = async (req, res) => {
         updateFields.error = null;
       }
       
-      await registration.update(updateFields);
+      await PhoneRegistration.sequelize.transaction(async (transaction) => {
+      
+        if (trunkChange === 'create') {
+      
+          const trunk = await createRegistrationTrunk(registration, null, organisationId, transaction);
+      
+          updateFields.trunkId = trunk.id;
+      
+          updateFields.instanceId = null;
+      
+        }
+      
+        if (trunkChange === 'remove') {
+      
+          await Trunk.destroy({ where: { id: registration.trunkId }, transaction });
+      
+          updateFields.trunkId = null;
+      
+        }
+      
+        await registration.update(updateFields, { transaction });
+      
+        // The trunk mirrors the registration's handler and outbound.
+      
+        if (registration.trunkId && (updateFields.handler !== undefined || updateFields.outbound !== undefined)) {
+      
+          await Trunk.update(
+      
+            { ...(updateFields.handler !== undefined ? { handler: updateFields.handler } : {}), ...(updateFields.outbound !== undefined ? { outbound: updateFields.outbound } : {}) },
+      
+            { where: { id: registration.trunkId }, transaction },
+      
+          );
+      
+        }
+      
+      });
       
       // TODO: Emit worker signal for credential rotation if credentialsChanged
       
@@ -333,7 +507,7 @@ const deletePhoneEndpoint = async (req, res) => {
     // Check if identifier is a phone number (contains digits and possibly +)
     if (identifier.match(/^\+?[0-9]+$/)) {
       const normalizedNumber = normalizeE164(identifier);
-      const phoneNumber = await PhoneNumber.findByPk(normalizedNumber);
+      const phoneNumber = await findOwnOrPoolNumber(normalizedNumber, organisationId);
       
       if (!phoneNumber) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
@@ -357,8 +531,19 @@ const deletePhoneEndpoint = async (req, res) => {
         return res.status(403).send({ error: 'Access denied' });
       }
 
-      // Hard delete the registration
-      await registration.destroy();
+      // A registration trunk goes with its registration, but not while
+      // numbers still sit on it: those would silently lose their trunk.
+      if (registration.trunkId) {
+        const numbers = await PhoneNumber.count({ where: { aplisayId: registration.trunkId } });
+        if (numbers > 0) {
+          return res.status(409).send({ error: `This trunk still carries ${numbers} number${numbers === 1 ? '' : 's'}. Remove them before deleting the connection.` });
+        }
+      }
+      // Hard delete the registration (and its trunk row)
+      await PhoneRegistration.sequelize.transaction(async (transaction) => {
+        if (registration.trunkId) await Trunk.destroy({ where: { id: registration.trunkId }, transaction });
+        await registration.destroy({ transaction });
+      });
       return res.send({
         success: true,
         message: 'Phone registration deleted successfully'

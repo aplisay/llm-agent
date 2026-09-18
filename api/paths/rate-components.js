@@ -44,6 +44,14 @@ export default function (logger) {
                       match: { type: 'object' },
                       units: { type: 'array', items: { type: 'string' } },
                       available: { type: 'boolean' },
+                      bundled: {
+                        type: 'boolean',
+                        description:
+                          'True when this meter measures consumption ALREADY charged by another line '
+                          + '(a realtime model that synthesises its own speech still meters the TTS audio '
+                          + 'its per-minute model line paid for). Price it at zero so the row settles '
+                          + 'matched rather than lingering unpriced, and present it as included.',
+                      },
                     },
                   },
                 },

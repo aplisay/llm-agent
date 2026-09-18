@@ -18,6 +18,7 @@ priced per vendor on either basis.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from loguru import logger
@@ -30,21 +31,38 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.services.stt_service import STTService
 
 from . import api_client
+
+# How many recently-seen frame ids the dedupe window remembers (P8).
+# A frame is re-observed on each push hop within the same pipeline pass,
+# so a few thousand is orders of magnitude more than needed; the cap only
+# exists to stop the set growing with call length.
+_SEEN_FRAME_WINDOW = 4096
 from .voice_mode import model_id_from_name
 
 
-def usage_vendors(agent: dict, model_name: str) -> dict[str, dict[str, str | None]]:
+def usage_vendors(
+    agent: dict, model_name: str, backend: dict[str, str | None] | None = None
+) -> dict[str, dict[str, str | None]]:
     """Canonical ``{vendor, model}`` per priced technology, mirroring the service
     selection in ``voice_session.build_voice_session``'s pipeline build so metered
     rows carry the real vendor rather than a bare metric label. Keep the vendor
     defaults aligned with that build (stt=deepgram, tts=cartesia). Realtime mode
     has no separate STT/TTS stage, so only ``llm`` is meaningful there.
+
+    ``backend`` (GPT-Live) names the delegate model the LLM tokens belong to:
+    the live service labels its token metrics ``gpt-live-1`` although the
+    backend text model billed them, so the configured backend is authoritative
+    over the metric label (``_resolve``) and the rows land on the delegate
+    model's own rate line (docs/gpt-live.md).
     """
     options = agent.get("options") or {}
     model_id = model_id_from_name(model_name)
-    if "/" in model_id:
+    if backend and backend.get("model"):
+        llm_vendor, llm_model = backend.get("vendor"), backend.get("model")
+    elif "/" in model_id:
         llm_vendor, llm_model = model_id.split("/", 1)
     else:
         llm_vendor, llm_model = None, model_id
@@ -52,11 +70,61 @@ def usage_vendors(agent: dict, model_name: str) -> dict[str, dict[str, str | Non
     tts_opts = options.get("tts") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     tts_vendor = (tts_opts.get("vendor") or "cartesia").split("/")[0].lower()
+    tts: dict[str, Any] = {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")}
+    bundled = bundled_speech_vendor(agent, model_id)
+    if bundled is not None:
+        # Attribute native realtime speech to its model vendor's zero-priced TTS rows to avoid double billing.
+        # Keep aligned with BUNDLED_TTS_PROVIDERS; see PR #338 and docs/realtime-external-tts.md.
+        tts["vendor"] = bundled
+    elif bundled is None and _bundled_speech_is_unmeterable(agent, model_id):
+        # Gemini Live: its vendor, google, is also a discrete TTS engine, so a
+        # tts|google row would be priced by the Google TTS line. Meter nothing
+        # for its speech, as the LiveKit worker does for every realtime row.
+        tts["skip"] = True
     return {
-        "llm": {"vendor": llm_vendor, "model": llm_model},
+        "llm": {"vendor": llm_vendor, "model": llm_model, **({"authoritative": True} if backend else {})},
         "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
-        "tts": {"vendor": tts_vendor, "model": tts_opts.get("model") or tts_opts.get("voice")},
+        "tts": tts,
     }
+
+
+def _speaks_with_own_voice(agent: dict, model_id: str) -> bool:
+    """A realtime row of a provider this worker runs, with no external TTS."""
+    from .pipeline_model_ids import is_pipeline_model_id
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, external_tts_vendor, realtime_provider
+
+    if is_pipeline_model_id(model_id):
+        return False
+    if realtime_provider(model_id) not in REALTIME_NATIVE_TTS_VENDORS:
+        return False
+    return external_tts_vendor(agent, model_id) is None
+
+
+def bundled_speech_vendor(agent: dict, model_id: str) -> str | None:
+    """The provider the model's own speech is metered under, or None when the
+    session has an external TTS, is a pipeline row, or the provider's speech
+    cannot be attributed without colliding with a TTS engine of the same name
+    (Gemini Live). Must agree with BUNDLED_TTS_PROVIDERS in lib/rate-components.js."""
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, realtime_provider
+
+    if not _speaks_with_own_voice(agent, model_id):
+        return None
+    vendor = REALTIME_NATIVE_TTS_VENDORS[realtime_provider(model_id)]
+    return None if vendor in UNMETERED_BUNDLED_SPEECH_VENDORS else vendor
+
+
+#: Do not meter native speech as TTS when the vendor also sells discrete TTS: its paid rate would match.
+#: See docs/realtime-external-tts.md.
+UNMETERED_BUNDLED_SPEECH_VENDORS: frozenset[str] = frozenset({"google"})
+
+
+def _bundled_speech_is_unmeterable(agent: dict, model_id: str) -> bool:
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, realtime_provider
+
+    return (
+        _speaks_with_own_voice(agent, model_id)
+        and REALTIME_NATIVE_TTS_VENDORS[realtime_provider(model_id)] in UNMETERED_BUNDLED_SPEECH_VENDORS
+    )
 
 
 class UsageMeteringObserver(BaseObserver):
@@ -77,9 +145,10 @@ class UsageMeteringObserver(BaseObserver):
         self._services = services or {}
         # key "technology|provider|detail|unit" -> meter dict with a running qty.
         self._meters: dict[str, dict[str, Any]] = {}
-        # Observers fire on every push hop, so a frame is seen multiple times;
-        # dedupe by frame id to count each frame once.
+        # Deduplicate repeated push-hop sightings by frame id; a bounded recent window avoids retaining every frame for the
+        # call. See PR #285.
         self._seen_frame_ids: set[int] = set()
+        self._seen_frame_order: deque[int] = deque()
         # Open VAD user-speech window start timestamp (seconds), for stt/ms.
         self._vad_start_ts: float | None = None
 
@@ -90,7 +159,15 @@ class UsageMeteringObserver(BaseObserver):
         if frame_id in self._seen_frame_ids:
             return True
         self._seen_frame_ids.add(frame_id)
+        self._seen_frame_order.append(frame_id)
+        if len(self._seen_frame_order) > _SEEN_FRAME_WINDOW:
+            self._seen_frame_ids.discard(self._seen_frame_order.popleft())
         return False
+
+    @property
+    def _tts_skipped(self) -> bool:
+        """The session's speech is not metered as tts (see usage_vendors)."""
+        return bool((self._services.get("tts") or {}).get("skip"))
 
     def _resolve(self, technology: str, model: str | None) -> tuple[str | None, str | None]:
         """Canonical (provider, detail) for a metered row: provider from the
@@ -98,10 +175,21 @@ class UsageMeteringObserver(BaseObserver):
         Falls back to the old label-split only when the technology is unmapped."""
         svc = self._services.get(technology) or {}
         provider = svc.get("vendor")
-        detail = model or svc.get("model")
+        # An authoritative service (a GPT-Live backend) names the model billed
+        # regardless of what the metric says.
+        detail = svc.get("model") if svc.get("authoritative") else (model or svc.get("model"))
         if provider is None and model and "/" in model:
             provider = model.split("/", 1)[0]
         return provider, detail
+
+    def add_meter(
+        self, technology: str, unit: str, qty: Any, *, provider: str | None = None, detail: str | None = None
+    ) -> None:
+        """Accumulate usage produced outside the observed pipeline — e.g. the
+        auxiliary STT tap (``aux_stt.py``), whose engine runs in a side
+        pipeline this observer never sees — so every meter for the call still
+        flushes through the one ledger writer."""
+        self._add(technology, unit, qty, provider=provider, detail=detail)
 
     def _add(self, technology: str, unit: str, qty: Any, *, provider: str | None, detail: str | None) -> None:
         try:
@@ -139,7 +227,7 @@ class UsageMeteringObserver(BaseObserver):
                         self._add("llm", "output_tokens", getattr(tokens, "completion_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_read_tokens", getattr(tokens, "cache_read_input_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_write_tokens", getattr(tokens, "cache_creation_input_tokens", 0), provider=provider, detail=detail)
-                    elif isinstance(m, TTSUsageMetricsData):
+                    elif isinstance(m, TTSUsageMetricsData) and not self._tts_skipped:
                         provider, detail = self._resolve("tts", m.model)
                         self._add("tts", "characters", m.value, provider=provider, detail=detail)
                 except Exception as e:  # noqa: BLE001
@@ -147,9 +235,15 @@ class UsageMeteringObserver(BaseObserver):
             return
 
         # STT characters — the final transcript text length (Pipecat has no
-        # STTUsageMetricsData). Gate on `finalized` so interims don't double-count.
+        # STTUsageMetricsData). A TranscriptionFrame is by definition final
+        # (interims are InterimTranscriptionFrame), so every one counts — its
+        # `finalized` flag only records a commit/finalize handshake, which the
+        # Deepgram service never sets in normal streaming (gating on it counted
+        # nothing). Count only frames an STT *service* originated: a realtime
+        # model's own transcripts (source = the LLM service) are bundled into
+        # its charge, and the auxiliary engine meters itself (``stt-aux``).
         if isinstance(frame, TranscriptionFrame):
-            if not getattr(frame, "finalized", True):
+            if not isinstance(data.source, STTService):
                 return
             if self._seen(frame_id):
                 return
@@ -179,7 +273,7 @@ class UsageMeteringObserver(BaseObserver):
         # Each audio chunk is a distinct frame we sum; dedup-by-id stops the
         # per-hop multiplier (the set is bounded by the call's frame count).
         if isinstance(frame, TTSAudioRawFrame):
-            if self._seen(frame_id):
+            if self._seen(frame_id) or self._tts_skipped:
                 return
             sr = getattr(frame, "sample_rate", 0) or 0
             nf = getattr(frame, "num_frames", 0) or 0
@@ -200,22 +294,25 @@ class UsageMeteringObserver(BaseObserver):
         for meter in self._meters.values():
             if not meter["quantity"]:
                 continue
-            records.append(
-                {
-                    "sessionId": getattr(call, "id", None),
-                    "callId": getattr(call, "id", None),
-                    "organisationId": getattr(call, "organisationId", None),
-                    "userId": getattr(call, "userId", None),
-                    "agentId": getattr(call, "agentId", None),
-                    "technology": meter["technology"],
-                    "provider": meter["provider"],
-                    "detail": meter["detail"],
-                    "unit": meter["unit"],
-                    "quantity": meter["quantity"],
-                    "mode": "set",
-                    "finalised": finalised,
-                }
-            )
+            record = {
+                "sessionId": getattr(call, "id", None),
+                "callId": getattr(call, "id", None),
+                "organisationId": getattr(call, "organisationId", None),
+                "userId": getattr(call, "userId", None),
+                "agentId": getattr(call, "agentId", None),
+                "technology": meter["technology"],
+                "provider": meter["provider"],
+                "detail": meter["detail"],
+                "unit": meter["unit"],
+                "quantity": meter["quantity"],
+                "mode": "set",
+                "finalised": finalised,
+            }
+            # The ledger schema types provider and detail as strings; an
+            # unknown one (a side STT engine with no scoped model) is omitted
+            # rather than sent as null, which fails validation and takes every
+            # other record in the batch down with it.
+            records.append({k: v for k, v in record.items() if not (k in ("provider", "detail") and v is None)})
         if not records:
             return
         try:

@@ -16,23 +16,39 @@ rather than accumulated forever.
 from __future__ import annotations
 
 import os
+import sys
 import threading
+from collections import deque
 from typing import Any
 
 from loguru import logger
 
 from . import api_client
 
-# Process-wide, callId-tagged. Guarded by a threading.Lock: the loguru sink runs
-# synchronously in whatever thread emitted the log (possibly a worker thread,
-# e.g. ``asyncio.to_thread``), while flush runs on the event loop.
-_BUFFER: list[dict[str, Any]] = []
+# Use per-call budgets so busy calls cannot evict another call's setup logs.
+# The sink runs on arbitrary threads, so flush and writes share a threading.Lock; see PR #285.
+_BUFFERS: dict[str, deque] = {}
 _LOCK = threading.Lock()
 _installed = False
 
-# Soft cap so a pathologically long / verbose call can't grow the buffer without
-# bound; when exceeded we drop the oldest entry (the server prunes anyway).
-_MAX_ENTRIES = 20_000
+# Per-call cap. A call that talks for an hour at INFO produces a few thousand
+# records; 4 000 leaves headroom for a verbose one without letting any single
+# call dominate. deque(maxlen=...) evicts oldest-first on append, within that
+# call only.
+_MAX_ENTRIES_PER_CALL = 4_000
+
+# Bound buffers left by calls that never flush; evict the least recently written call at capacity. See PR #285.
+_MAX_CALLS = 500
+
+# How many call buffers have been dropped un-flushed. Non-zero means
+# calls are ending without their invocation log being persisted, which is
+# worth knowing about; the sink cannot log it itself (see _capture_sink).
+_dropped_call_buffers = 0
+
+
+def dropped_call_buffers() -> int:
+    """Count of call buffers evicted before they were ever flushed."""
+    return _dropped_call_buffers
 
 
 # loguru level name -> pino numeric level. The Calls UI (polite-ai
@@ -89,10 +105,32 @@ def _capture_sink(message) -> None:
         entry = _record_to_entry(record)
     except Exception:  # noqa: BLE001 — logging must never raise
         return
+    key = entry.get("callId") or "system"
+    evicted: str | None = None
     with _LOCK:
-        _BUFFER.append(entry)
-        if len(_BUFFER) > _MAX_ENTRIES:
-            del _BUFFER[0]
+        buf = _BUFFERS.get(key)
+        if buf is None:
+            if len(_BUFFERS) >= _MAX_CALLS:
+                # Insertion-ordered dict: the first key is the least
+                # recently created buffer. Only reachable if calls are
+                # ending without flushing.
+                evicted = next(iter(_BUFFERS))
+                del _BUFFERS[evicted]
+            buf = _BUFFERS[key] = deque(maxlen=_MAX_ENTRIES_PER_CALL)
+        buf.append(entry)
+    # Do not log through loguru inside its sink: its re-entrancy guard raises even outside our lock.
+    # Use the counter and direct stderr write; see PR #285.
+    if evicted is not None:
+        global _dropped_call_buffers
+        _dropped_call_buffers += 1
+        try:
+            print(
+                f"invocation log: dropped buffered records for {evicted} — "
+                f"more than {_MAX_CALLS} unflushed calls",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001 — logging must never raise
+            pass
 
 
 def install_capture(level: str | None = None) -> None:
@@ -119,16 +157,13 @@ def _drain(call_id: str | None) -> list[dict[str, Any]]:
     """Remove and return buffered entries — one call's, or all when ``call_id`` is None."""
     with _LOCK:
         if call_id is None:
-            batch = list(_BUFFER)
-            _BUFFER.clear()
+            batch: list[dict[str, Any]] = []
+            for buf in _BUFFERS.values():
+                batch.extend(buf)
+            _BUFFERS.clear()
             return batch
-        keep: list[dict[str, Any]] = []
-        batch: list[dict[str, Any]] = []
-        for entry in _BUFFER:
-            (batch if (entry.get("callId") or "system") == call_id else keep).append(entry)
-        if batch:
-            _BUFFER[:] = keep
-        return batch
+        buf = _BUFFERS.pop(call_id, None)
+        return list(buf) if buf else []
 
 
 async def _post(

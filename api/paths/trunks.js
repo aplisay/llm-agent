@@ -1,8 +1,9 @@
 import { Trunk, Organisation, Op } from '../../lib/database.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
+import { validateOutboundCallFilter, DEFAULT_TRUNK_OUTBOUND_FILTER } from '../../lib/outbound-filter.js';
 
-const TRUNK_ATTRS = ['id', 'name', 'handler', 'outbound', 'chargeable', 'flags'];
+const TRUNK_ATTRS = ['id', 'name', 'handler', 'outbound', 'chargeable', 'outboundCallFilter', 'flags'];
 const withOrgs = { include: [{ model: Organisation, attributes: ['id'], through: { attributes: [] } }] };
 const projectWithOrgs = (t) => ({
   id: t.id,
@@ -10,6 +11,7 @@ const projectWithOrgs = (t) => ({
   handler: t.handler ?? null,
   outbound: !!t.outbound,
   chargeable: !!t.chargeable,
+  outboundCallFilter: t.outboundCallFilter ?? null,
   flags: t.flags ?? null,
   organisationIds: (t.Organisations || []).map((o) => o.id),
 });
@@ -93,7 +95,7 @@ const TRUNK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  */
 const createTrunk = async (req, res) => {
   if (!requirePermission(res, 'trunk', 'create')) return;
-  const { id, name, handler, outbound, chargeable, provider, organisationIds } = req.body || {};
+  const { id, name, handler, outbound, chargeable, outboundCallFilter, provider, organisationIds } = req.body || {};
 
   const trunkId = typeof id === 'string' ? id.trim() : '';
   if (!TRUNK_ID_RE.test(trunkId)) {
@@ -110,6 +112,10 @@ const createTrunk = async (req, res) => {
   }
   if (chargeable !== undefined && typeof chargeable !== 'boolean') {
     return res.status(400).send({ message: 'chargeable must be a boolean' });
+  }
+  if (outboundCallFilter !== undefined && outboundCallFilter !== null) {
+    const filterError = validateOutboundCallFilter(outboundCallFilter);
+    if (filterError) return res.status(400).send({ message: filterError });
   }
 
   // Validate the org-assignment set up-front so a bad id fails cleanly.
@@ -141,6 +147,9 @@ const createTrunk = async (req, res) => {
         handler: handler ?? null,
         outbound: !!outbound,
         chargeable: !!chargeable,
+        outboundCallFilter: (typeof outboundCallFilter === 'string' && outboundCallFilter.trim())
+          ? outboundCallFilter.trim()
+          : null,
         flags: Object.keys(flags).length ? flags : null,
       }, { transaction });
       if (orgs && orgs.length) await trunk.setOrganisations(orgs, { transaction });
@@ -214,6 +223,7 @@ listTrunks.apiDoc = {
                     handler: { type: 'string', nullable: true, description: 'Telephony handler for this trunk (e.g. livekit, jambonz)' },
                     outbound: { type: 'boolean', description: 'Whether this trunk can be used for outbound calls' },
                     chargeable: { type: 'boolean', description: 'Whether outbound minutes on this trunk are destination-billed to the org (our carrier trunks); false for BYO/inbound/registration trunks' },
+                    outboundCallFilter: { type: 'string', nullable: true, description: `Operator allow-pattern (regex) for outbound destinations carried on this trunk, applied to the canonical +E.164 form. Authoritative on a chargeable trunk: an agent's own options.outboundCallFilter may only narrow it. Null = the UK geographic/mobile default (${DEFAULT_TRUNK_OUTBOUND_FILTER})` },
                     flags: { type: 'object', nullable: true, description: 'JSON object containing trunk flags (e.g., canRefer, provider)' },
                     organisationIds: { type: 'array', items: { type: 'string' }, description: 'Organisations this trunk is assigned to (only present for scope=all)' }
                   }
@@ -257,6 +267,7 @@ createTrunk.apiDoc = {
             handler: { type: 'string', enum: TELEPHONY_HANDLER_NAMES, nullable: true, description: 'Telephony handler this trunk routes via' },
             outbound: { type: 'boolean', default: false, description: 'Whether the trunk supports outbound calls' },
             chargeable: { type: 'boolean', default: false, description: 'Shared carrier trunk whose outbound minutes are destination-billed' },
+            outboundCallFilter: { type: 'string', nullable: true, description: `Operator allow-pattern (regex) for outbound destinations on this trunk, matched against the canonical +E.164 destination. Only meaningful on a chargeable trunk, where it overrides any wider agent-supplied filter. Null/omitted = the UK geographic/mobile default (${DEFAULT_TRUNK_OUTBOUND_FILTER})` },
             provider: { type: 'string', nullable: true, description: 'Numbering provider a chargeable trunk fronts (stored under flags.provider)' },
             organisationIds: { type: 'array', items: { type: 'string' }, description: 'Organisations to assign this trunk to' }
           }

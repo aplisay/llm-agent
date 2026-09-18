@@ -88,6 +88,13 @@ Common to both:
   model-`generated` — there is no `static`/`metadata` source resolution, no
   `redact` support, and results are **not** written into `metadata.toolsCalls`
   (those are features of platform `functions`).
+- **Result size**: a result is capped before the model sees it, and the
+  truncation is stated in the text with the byte counts and a prompt to ask for
+  a smaller part. The limit is 8,000 UTF-8 bytes, or 2,500 on GPT-Live, whose
+  backend spends its tool-input budget across the whole session rather than per
+  turn (`tool_result.py`; see docs/gpt-live.md). A server that returns whole
+  documents will be truncated, so prefer one that can return the part that was
+  asked for.
 - **Failure isolation**: a misconfigured or unreachable server is reported to the
   model as an error result rather than taking the turn down, so the conversation
   can recover.

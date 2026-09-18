@@ -1,14 +1,5 @@
-"""Explicit per-tool ``timeout`` on Ultravox ``temporaryTool`` definitions
-(:mod:`pipecat_aplisay.ultravox_compat`).
-
-Ultravox limits client tools to a 2.5s default execution window; a result
-arriving later is discarded as stale and the model RETRIES the call. On beta
-(2026-07-27) booking_book's ~4s round-trip meant every successful booking was
-immediately re-attempted with identical args — the duplicate 409'd
-(slot_unavailable) and the agent told the caller their just-secured slot was
-taken. The shim stamps ``timeout`` on every tool definition so slow-but-healthy
-data tools survive; these tests lock that in.
-"""
+"""Stamp an explicit tool timeout so healthy calls slower than Ultravox's default are not discarded and retried. See
+PR #176."""
 
 from __future__ import annotations
 

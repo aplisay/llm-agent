@@ -48,6 +48,12 @@ export default function (logger) {
     const rawName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const name = rawName.slice(0, 200) || email.split('@')[0]; // fall back to the email local-part
     const orgName = (typeof req.body?.organisation === 'string' ? req.body.organisation.trim() : '').slice(0, 200);
+    // The sender persona for the double opt-in email (lib/auth/email-brands.js).
+    // Server-side auth.api calls carry no request of their own, so the hooks see
+    // a persona only if we hand them one; unknown/absent falls to the operator's
+    // default, so this can never select an unapproved sender.
+    const brand = (typeof req.body?.brand === 'string' ? req.body.brand.trim() : '').slice(0, 64);
+    const brandHeaders = brand ? new Headers({ 'x-email-brand': brand }) : undefined;
     const callbackURL = process.env.WAITLIST_CALLBACK_URL;
     if (!callbackURL) {
       logger.error('WAITLIST_CALLBACK_URL is unset; cannot build the confirmation link');
@@ -73,6 +79,7 @@ export default function (logger) {
         // signUpEmail to avoid enabling the admin() plugin.)
         await auth.api.signUpEmail({
           body: { email, password, name, callbackURL },
+          ...(brandHeaders ? { headers: brandHeaders } : {}),
         });
         const organisationId = await createProvisionalOrg(orgName);
         await User.update(
@@ -104,7 +111,10 @@ export default function (logger) {
       // re-submit. Enumeration-safe (no-ops for missing/verified user), so the row
       // MUST exist by here. No request headers => not session-scoped.
       try {
-        await auth.api.sendVerificationEmail({ body: { email, callbackURL } });
+        await auth.api.sendVerificationEmail({
+          body: { email, callbackURL },
+          ...(brandHeaders ? { headers: brandHeaders } : {}),
+        });
       } catch (err) {
         // The auth hooks 429 a re-submit once the address's send budget is
         // spent (lib/auth/send-budget.js) — earlier emails already went out, so
@@ -134,6 +144,7 @@ export default function (logger) {
               name: { type: 'string', maxLength: 200, description: "Optional display name. Falls back to the email's local-part." },
               organisation: { type: 'string', maxLength: 200, description: 'Optional. Creates a PROVISIONAL organisation and links the user to it.' },
               password: { type: 'string', minLength: 8, description: 'Optional. The user is provisional either way.' },
+              brand: { type: 'string', maxLength: 64, description: 'Optional. Sender persona for the confirmation email, from the deployment\'s configured set. Unknown values fall back to its default.' },
             },
             required: ['email'],
           },

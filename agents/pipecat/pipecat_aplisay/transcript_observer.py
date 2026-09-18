@@ -43,6 +43,13 @@ Bot side (mode-specific — see ``mode`` constructor arg):
   - **Realtime mode**: :class:`LLMTextFrame` ONLY. There's no separate
     TTS service in the pipeline — the realtime LLM does its own audio
     output, and `TTSTextFrame` never fires.
+  - **Realtime mode with an external TTS** (text-output mode, see
+    realtime_tts.py): the realtime model emits text and a discrete TTS
+    speaks it, so BOTH frame types flow. The caller passes
+    ``bot_text_from="tts"`` so bot rows come from :class:`TTSTextFrame`,
+    which is what the caller actually hears: a barge-in that clears the
+    TTS truncates the row, whereas the model's own text would record a
+    reply the caller never heard.
 
 Finalisation triggers (any of these flushes the bot buffer as
 ``isFinal: true``):
@@ -64,6 +71,7 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Literal, Optional
 
 VoiceMode = Literal["realtime", "pipeline"]
+BotTextSource = Literal["llm", "tts"]
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -109,14 +117,26 @@ class TranscriptForwardingObserver(BaseObserver):
             ``"realtime"`` to consume :class:`LLMTextFrame` only.
             See the module docstring for why this matters — listening to
             both produces duplicated bot text.
+        bot_text_from: Override the bot text source the mode implies:
+            ``"tts"`` for :class:`TTSTextFrame`, ``"llm"`` for
+            :class:`LLMTextFrame`. Text-output realtime sessions pass
+            ``"tts"`` (see the module docstring). ``None`` keeps the
+            mode's default.
     """
 
     def __init__(
-        self, send_message: SendMessageFn, *, mode: VoiceMode = "pipeline"
+        self,
+        send_message: SendMessageFn,
+        *,
+        mode: VoiceMode = "pipeline",
+        bot_text_from: Optional[BotTextSource] = None,
     ) -> None:
         super().__init__()
         self._send_message = send_message
         self._mode: VoiceMode = mode
+        self._bot_text_from: BotTextSource = bot_text_from or (
+            "tts" if mode == "pipeline" else "llm"
+        )
         # Drop duplicate emissions of the same (final, text) pair to avoid
         # writing identical rows when frames re-emit through multiple
         # processors.
@@ -175,14 +195,15 @@ class TranscriptForwardingObserver(BaseObserver):
             return
 
         # ----- Bot per-chunk text -----
-        # Mode-gated: pipeline consumes TTSTextFrame, realtime consumes
-        # LLMTextFrame. Accepting both in pipeline mode produces "You're
-        # welcome! If You're welcome!"-style mash-ups because LLM and TTS
-        # carry the same content. Source filtering (originator class) is
-        # still applied within each mode to avoid double-counting from
-        # downstream re-pushes.
+        # Source-gated (``bot_text_from``, defaulting from the mode): pipeline
+        # consumes TTSTextFrame, realtime consumes LLMTextFrame, and a
+        # text-output realtime session consumes TTSTextFrame. Accepting both
+        # produces "You're welcome! If You're welcome!"-style mash-ups because
+        # LLM and TTS carry the same content. Source filtering (originator
+        # class) is still applied to avoid double-counting from downstream
+        # re-pushes.
         if (
-            self._mode == "pipeline"
+            self._bot_text_from == "tts"
             and TTSTextFrame is not None
             and isinstance(frame, TTSTextFrame)
         ):
@@ -191,7 +212,7 @@ class TranscriptForwardingObserver(BaseObserver):
             return
 
         if (
-            self._mode == "realtime"
+            self._bot_text_from == "llm"
             and LLMTextFrame is not None
             and isinstance(frame, LLMTextFrame)
         ):

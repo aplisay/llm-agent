@@ -73,10 +73,20 @@ deploy/k8s/
 ## Prerequisites
 
 1. **A dedicated SIP node pool** whose nodes have **public/external IPs** (or 1:1
-   NAT) reachable by your SBCs, labelled so the DaemonSet lands only there:
+   NAT) reachable by your SBCs, labelled so the DaemonSet lands only there.
+   Label the **POOL**, not the nodes, so that every node the pool ever creates
+   carries it — an autoscaled node, or a node replaced by an upgrade or an
+   auto-repair, comes up bare otherwise and silently runs no SIP pod:
    ```
-   kubectl label node <node> aplisay.com/pipecat-sip=true
+   # DigitalOcean (--label REPLACES the pool's label set, so pass them all):
+   doctl kubernetes cluster node-pool update <cluster-id> <pool> \
+       --label aplisay.com/pipecat-sip=true
+   # GKE:  gcloud container node-pools create … --node-labels=aplisay.com/pipecat-sip=true
+   # EKS:  eksctl … --node-labels aplisay.com/pipecat-sip=true
    ```
+   `kubectl label node <node> aplisay.com/pipecat-sip=true` is for
+   single-node/test clusters only: it labels the node that exists right now, and
+   nothing the cluster creates later.
 2. **Firewall** opened on those nodes:
    - `TCP 5061` (SIP TLS) — from your SBC source ranges
    - `UDP 10000-20000` (RTP — sipbridge / voiceblender) **or** `UDP 16384-16484`
@@ -112,8 +122,8 @@ cd deploy/k8s
 
 # 3. Label the node(s) the SIP pod should run on. The DaemonSet ONLY schedules
 #    on nodes with this label — without it you get a DaemonSet with 0 pods.
-#    On a dedicated SIP node pool, label that pool (see Prerequisites). On a
-#    single-node / test cluster:
+#    On a real cluster label the POOL (see Prerequisites) so autoscaled and
+#    replacement nodes inherit it. On a single-node / test cluster:
 kubectl label nodes --all aplisay.com/pipecat-sip=true
 
 # 4. (Optional) a CA-signed SIP TLS cert; otherwise the gateway self-signs.
@@ -125,6 +135,12 @@ kubectl apply -k overlays/sipbridge
 
 # 6. Verify (see "Verification" below).
 ```
+
+> **Which cluster:** the bundler binds `--env=staging` to AMS3 and `--env=beta`
+> to LON1, and pins `--context` on every kubectl call, so your current context is
+> irrelevant and a bundle cannot land on the wrong cluster. `dev` and
+> `production` have no binding — name the cluster with `--k8s-context=<context>`
+> (production's overlay has run on more than one cluster, so it is not guessed).
 
 `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, and `SHARED_API_TOKEN` in the
 bundle **must match the llm-agent server side**. Also set `SERVICE_BASE_URI` (the
@@ -394,6 +410,16 @@ The flow: the browser calls the llm-agent server's `…/join`, gets back
 answering node** directly. The offer is self-contained from the join token, so
 any worker node can answer any offer (no session affinity).
 
+Everything *after* that offer is a different matter: the aiortc peer lives on
+the node that answered, keyed by `pc_id`, and the browser's trickle-ICE
+`PATCH`es and any renegotiation `POST` are load-balanced independently. They
+therefore reach the owning node only by chance — measured at 1 in 6 on the
+two-node staging pool. A node that does not hold the `pc_id` now **forwards to
+its siblings**, discovered through the headless `pipecat-worker-peers` Service
+(`pipecat_aplisay/webrtc_peers.py`); the request carries a marker header so a
+forward is never forwarded again. Set `WEBRTC_PEER_HOST=""` to switch it off on
+single-replica deploys.
+
 **1. Public TLS endpoint — on the EXISTING SIP LB.** The base `pipecat-worker`
 Service is ClusterIP (in-cluster only). Rather than a second LB, the
 **`components/webrtc-do`** component (already wired into `do-staging` /
@@ -506,6 +532,22 @@ kubectl get nodes -L aplisay.com/pipecat-sip    # is any node labelled?
 kubectl label nodes --all aplisay.com/pipecat-sip=true   # label them (test cluster)
 ```
 
+**Fewer pods than nodes after a scale-up?** Same cause, quieter: the DaemonSet
+looks healthy (all its pods Ready) and only `DESIRED` fails to grow, so nothing
+alerts. It means the label is on the NODES rather than on the POOL, so nodes the
+autoscaler added came up bare. Compare the two:
+
+```bash
+kubectl get nodes -L aplisay.com/pipecat-sip                  # which nodes have it
+doctl kubernetes cluster node-pool list <cluster-id>          # does the POOL have it
+```
+
+Fix it at the pool (Prerequisites step 1) rather than re-labelling by hand —
+otherwise it recurs on the next scale-up or node replacement. Node replacement is
+the worse direction: capacity silently DROPS. Watch for it on the LB too, since
+`externalTrafficPolicy: Local` means an unlabelled node has no local pod to serve
+the tcp/5061 health check and shows up as an unhealthy backend.
+
 If pods exist but stay in `Init:` or `ImagePullBackOff`, `kubectl describe pod
 -n pipecat <pod>` shows why — commonly the private Artifact Registry images need
 an `imagePullSecret` (see *imagePullSecret for Artifact Registry* above), or
@@ -519,8 +561,9 @@ UDP ranges are intentionally open to all sources (direct media from any source I
 
 ## Out of scope (follow-ups)
 
-- **Autoscaling** — a DaemonSet scales with the node pool; size the SIP pool for
-  peak concurrent calls (each call uses 2 RTP ports).
+- **Autoscaling** — a DaemonSet scales with the node pool *provided the
+  nodeSelector label is set on the POOL* (Prerequisites step 1); size the SIP
+  pool for peak concurrent calls (each call uses 2 RTP ports).
 - **Production secret backend** — only templates + guidance here; wire
   sealed-secrets / SOPS / External Secrets Operator for real deployments.
 - **Dedicated k8s image pipeline** — the deploy reuses the existing Artifact

@@ -14,6 +14,7 @@ resources:
   - daemonset.yaml
   - service-sip.yaml
   - service-worker.yaml
+  - service-worker-peers.yaml
   # NOTE: secret.example.yaml / sip-tls-secret.example.yaml are intentionally
   # NOT listed — create the real Secrets out-of-band (see README) so pods fail
   # closed until secrets exist rather than running with placeholders.

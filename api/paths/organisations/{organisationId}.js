@@ -55,6 +55,15 @@ export default function (logger) {
     if ('chargeableNumberLimit' in req.body && !can(res.locals.user, 'organisation', 'setRate')) {
       return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setRate (super admin)' });
     }
+    // `status` is a soft-delete lever (DELETE sets status='deactivated'), so a
+    // cross-tenant principal changing someone ELSE's status must hold the same
+    // capability as DELETE. orgAdmin editing their OWN org is unaffected, and
+    // superAdmin holds organisation:delete.
+    if ('status' in req.body
+      && org.id !== res.locals.user?.organisationId
+      && !can(res.locals.user, 'organisation', 'delete')) {
+      return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:delete to change status cross-tenant' });
+    }
     const baselineKeys = ['role', 'permissions', 'allowedModels'];
     if (baselineKeys.some((k) => k in req.body)) {
       if (!can(res.locals.user, 'organisation', 'setPermissions')) {

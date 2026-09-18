@@ -31,7 +31,9 @@ export default function (wsServer) {
       
       // If number is provided, look up the PhoneNumber record
       if (number) {
-        const phoneNumber = await PhoneNumber.findByPk(number);
+        // Existence only; ownership and allocation are decided in
+        // Instance.linkNumber, which is organisation-scoped.
+        const phoneNumber = await PhoneNumber.findOne({ where: { number: String(number).replace(/^\+/, '') } });
         if (!phoneNumber) {
           throw new Error(`Phone number ${number} not found`);
         }
@@ -132,6 +134,25 @@ export default function (wsServer) {
                     streamLog: {
                       type: "boolean",
                       description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                    },
+                    recording: {
+                      type: "object",
+                      description: `Per-listener override of the agent's \`options.recording\`. WINS over the agent-level
+                        value in both directions, so \`{ enabled: true }\` here records an agent that did not ask to be
+                        recorded and \`{ enabled: false }\` suppresses one that did — only send it when the override is
+                        genuinely intended. Omit it to inherit the agent's own setting. Recording is opt-in: with neither
+                        level set, the call is not recorded.`,
+                      properties: {
+                        enabled: {
+                          type: "boolean",
+                          description: "Record calls on this listener. Absent or false means no recording; only true arms it."
+                        },
+                        key: {
+                          type: "string",
+                          nullable: true,
+                          description: "Optional client-provided encryption key for this listener's recordings. When set, the server cannot decrypt them."
+                        }
+                      }
                     },
                     metadata: {
                       type: "object",

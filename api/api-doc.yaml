@@ -54,9 +54,9 @@ tags:
   - name: Agent Sets
     description: |-
       Agent Sets group a number of agents which are created, updated and deleted together from a single JSON document.
-      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent` and
-      `subagent` builtin functions using `label:<label>` references, which the platform fixes up to real agent IDs
-      on creation or update.
+      Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent`,
+      `subagent` and `delegate` builtin functions using `label:<label>` references, which the platform fixes up to
+      real agent IDs on creation or update.
 
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
@@ -115,6 +115,41 @@ components:
           description: This model supports audio input via WebRTC
           type: boolean
           example: true
+        hasAuxStt:
+          description: |-
+            This model accepts `options.stt.aux` — an auxiliary ("second opinion") STT run over the
+            caller's audio alongside the model's own recognition, logged as `user-aux` transcript
+            entries and metered as `stt-aux` usage (see docs/auxiliary-stt.md). True for the
+            LiveKit and Pipecat voice workers; the option is rejected on other models.
+          type: boolean
+          example: true
+        hasOutputStt:
+          description: |-
+            This model accepts `options.tts.output` — an output audit STT run over the agent's own audio,
+            logged as `agent-speech` transcript entries beside the `agent` turns the model produced and
+            metered as `stt-output` usage (see docs/auxiliary-stt.md). True for the LiveKit and Pipecat
+            voice workers; the option is rejected on other models.
+          type: boolean
+          example: true
+        hasExternalTts:
+          description: |-
+            This realtime model can run in text-output mode with an external TTS. Set `options.tts.vendor`
+            to a pipeline TTS vendor (for example `elevenlabs`, `deepgram` or `cartesia`) and the model
+            emits text that the named TTS speaks; `options.tts.voice` and `options.tts.language` then
+            apply to that TTS. Leave `vendor` unset, or set it to the model's own provider, to keep the
+            model's own voice. Realtime models without this flag accept only their own provider as
+            `vendor`. See docs/realtime-external-tts.md.
+          type: boolean
+          example: false
+        hasDelegation:
+          description: |-
+            This realtime model is a two-layer voice model (OpenAI GPT-Live): the voice model holds the
+            conversation and delegates reasoning and tool use to a backend `text` agent. Name that agent
+            with one builtin `delegate` function; without one the platform runs the agent's own prompt,
+            functions and MCP servers as the backend on `openai/gpt-5.6-luna`. Only rows with this flag
+            accept a `delegate` function. See docs/gpt-live.md.
+          type: boolean
+          example: false
       required:
         - name
         - description
@@ -182,10 +217,12 @@ components:
     AgentSetInput:
       type: object
       description: |-
-        Document describing a complete agent set. Within member `functions`, `transfer_agent` and `subagent`
-        builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference other
-        members; these are resolved to real agent IDs when the set is created or updated (the original label is
+        Document describing a complete agent set. Within member `functions`, `transfer_agent`, `subagent` and
+        `delegate` builtin `agent` parameters may use `{"source": "static", "from": "label:<label>"}` to reference
+        other members; these are resolved to real agent IDs when the set is created or updated (the original label is
         retained in a `fromLabel` annotation so the stored document still round-trips through GET and PUT).
+        A GPT-Live member whose `delegate` targets another member is rejected when the two declare a function of
+        the same name (the backend tool set is the union of both, see docs/gpt-live.md).
       required:
         - agents
       properties:
@@ -425,7 +462,11 @@ components:
       type: object
       properties:
         temperature:
-          description: Agent LLM temperature
+          description: |-
+            Agent LLM temperature. Ignored on GPT-Live rows (`hasDelegation`): the Live API does not
+            accept a temperature for the voice model or for a delegated backend model. Ignored on the
+            Grok voice rows (`xai/grok-voice-...`), which have no temperature, and on the xAI reasoning
+            text models; forwarded on `text:xai/grok-4.20-0309-non-reasoning` (docs/grok.md).
           type: number
           example: 0.2
         callHook:
@@ -435,7 +476,11 @@ components:
           description: |-
             Call recording configuration for this agent.
 
-            When enabled, calls handled by this agent can be recorded to a storage bucket.
+            Recording is OPT-IN: calls are recorded only when this object is present with
+            `enabled: true`. Omitting it means no recording. (A client application that wants
+            recording on by default is responsible for sending it — the API does not assume
+            consent on your users' behalf.)
+
             Recordings are always encrypted. If you provide a `key`, the recording will be
             encrypted with a key derived from that value and the server will not be able
             to decrypt it for you. If you omit `key`, a random per-call key will be
@@ -446,7 +491,9 @@ components:
           properties:
             enabled:
               type: boolean
-              description: Enable or disable call recording for this agent.
+              description: |-
+                Enable call recording for this agent. Absent or `false` means the call is not
+                recorded; only `true` arms recording.
             key:
               type: string
               nullable: true
@@ -465,12 +512,26 @@ components:
         tts:
           type: object
           properties:
+            experimentalTranscript:
+              type: boolean
+              default: false
+              description: |-
+                Experimental Pipecat GPT-Live only: with an external `vendor`, discard the model's
+                native audio and synthesize its output transcript through that TTS. The Live API
+                still generates audio and retains its own speech timeline. Adds synthesis latency;
+                interruption timing and model history may differ from what the caller heard.
+                Does not enable a text-only API modality or change the model's `hasExternalTts` flag.
             language:
               $ref: "#/components/schemas/Language"
             vendor:
               type: string
               description: |-
-                TTS provider for pipeline models (e.g. cartesia, google, elevenlabs, deepgram).
+                TTS provider (e.g. cartesia, google, elevenlabs, deepgram). On pipeline models it selects the
+                TTS stage. On a realtime model flagged `hasExternalTts` in GET /models, a vendor other than the
+                model's own provider switches the model to text output and the named TTS speaks its text, with
+                `voice` and `language` applying to that TTS (see docs/realtime-external-tts.md). Other realtime
+                models accept only their own provider here, except Pipecat GPT-Live with the explicit
+                `experimentalTranscript: true` prototype option.
                 You may optionally scope the inference model via `vendor/model` (e.g. `deepgram/aura-2`, `cartesia/sonic-3`).
             voice:
               description: |-
@@ -478,6 +539,36 @@ components:
                 Must be a supported voice language as returned from a get on the `voices` api
               type: string
               example: en-GB-Wavenet-A
+            output:
+              type: object
+              description: |-
+                Output audit speech recognition. When set, the worker runs an independent STT engine over the
+                agent's OWN audio — what the caller actually hears, whether synthesised by the pipeline TTS
+                or produced by a realtime model — and logs each final transcript it produces as an
+                `agent-speech` transaction-log entry beside the `agent` entry, so what the agent said can be
+                compared with what the model thought it said. Observation only: it never affects the call.
+
+                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the platform's
+                default STT engine; `language` defaults to `tts.language`, then `stt.language`.
+
+                Its consumption is metered separately as `stt-output` usage (audio the engine accepted, and
+                transcript characters) and priced by that component's own rate lines. Supported on
+                `livekit:` and `pipecat:` models, in both realtime and pipeline modes; rejected on other models.
+                Nothing is installed on a call unless this option is set. See docs/auxiliary-stt.md.
+              properties:
+                enabled:
+                  type: boolean
+                  default: true
+                  description: Set `false` to switch the audit engine off without removing the object.
+                language:
+                  $ref: "#/components/schemas/Language"
+                vendor:
+                  type: string
+                  description: |-
+                    Audit STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`, `assemblyai`,
+                    `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally scoped as `vendor/model[:lang]`.
+              example:
+                vendor: deepgram
         stt:
           type: object
           properties:
@@ -488,6 +579,40 @@ components:
               description: |-
                 STT provider for pipeline models (e.g. deepgram, assemblyai, cartesia).
                 You may optionally scope the inference model (and suffix) using `vendor/model[:lang]`, e.g. `deepgram/nova-3:en`.
+            aux:
+              type: object
+              description: |-
+                Auxiliary ("second opinion") speech recognition. When set, the worker runs a second,
+                independent STT engine over the caller's audio alongside the agent's own recognition —
+                the pipeline STT, or a realtime model's built-in transcription — and logs each final
+                transcript it produces as a `user-aux` transaction-log entry next to the primary `user`
+                entry, so two recognitions of the same speech can be compared. The auxiliary engine
+                never feeds the model; it is observation only.
+
+                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the
+                platform's default STT engine; `language` defaults to `stt.language`, then `tts.language`.
+
+                Its consumption is metered separately as `stt-aux` usage — the audio streamed to the
+                auxiliary engine (milliseconds, silence included) and the transcript characters it
+                returned — and priced by that component's own rate lines. Supported on `livekit:` and
+                `pipecat:` models, in both realtime and pipeline modes; rejected on other models.
+                See docs/auxiliary-stt.md.
+              properties:
+                enabled:
+                  type: boolean
+                  default: true
+                  description: Set `false` to switch the auxiliary engine off without removing the object.
+                language:
+                  $ref: "#/components/schemas/Language"
+                vendor:
+                  type: string
+                  description: |-
+                    Auxiliary STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`,
+                    `assemblyai`, `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally
+                    scoped as `vendor/model[:lang]`.
+              example:
+                vendor: assemblyai
+                language: en-GB
         fallback:
           type: object
           description: |-
@@ -498,8 +623,15 @@ components:
              1. `agent` – if specified, the current call/room will be torn down and restarted using the given fallback agent.
              2. `model` – if specified and no `agent` fallback is configured, the session will be restarted using this fallback model name,
                 keeping all other agent configuration the same.
-             3. `number` – if neither an `agent` nor `model` fallback is available (or the configured fallback model also fails),
-                the call will be transferred to this number using the builtin `transfer` platform function.
+             3. `message` – if no agent or model fallback is available (or those also failed), a fixed announcement is spoken
+                to the caller and the call then ends. The chain stops here when the announcement plays.
+             4. `number` – if none of the above is available or succeeded, the call will be transferred to this number using
+                the builtin `transfer` platform function.
+
+            An agent concurrency limit rejection is a special case: `agent` and `model` are skipped (the limit applies whichever
+            agent or model is behind it) and `number` is unreachable (its transfer would need the same slot), so `message` is the
+            only fallback that can serve such a caller. It can do so because a cached announcement calls no TTS vendor, records no
+            usage, and therefore holds no concurrency slot of its own.
           properties:
             agent:
               description: |-
@@ -517,6 +649,58 @@ components:
                 definition (prompt, tools, options, etc).
               type: string
               example: "gpt-4.1-mini"
+            message:
+              type: object
+              required: [text]
+              description: |-
+                A fixed announcement spoken to the caller when no agent could be started — for example
+                "Sorry, we are unusually busy right now; please call back shortly."
+
+                Set `text` alone to speak it in the agent's own voice, or add `vendor` / `voice` to have it
+                spoken by a different TTS from the agent's own. That matters when the agent's configured TTS
+                stack is itself what failed: pointing the announcement at a vendor known to be healthy keeps
+                it playable in exactly the circumstances it exists for.
+
+                The rendered audio is synthesised once, on the first call that needs it, and cached; every
+                later playout replays that recording. Editing the text (or the voice, vendor, or language)
+                changes the cache key, so the next call re-synthesises automatically — there is nothing to
+                invalidate by hand. TTS characters are therefore billed once per distinct announcement, not
+                once per failed call.
+
+                Playing the announcement does not start a call or reserve an agent concurrency slot, which is
+                what allows it to be the fallback for a concurrency rejection.
+
+                Voice and vendor are validated against the catalogue of voices a TTS can render, NOT against the
+                agent model's own voices. For a realtime speech-to-speech model (Ultravox, OpenAI Realtime, Gemini
+                Live) those are different sets: the model has no TTS, and `tts.voice` names a timbre of the model
+                itself. Since the announcement plays precisely when that model could not be started, a discrete TTS
+                always speaks it — so an ElevenLabs voice on an Ultravox agent is valid here, and is the
+                configuration that works.
+
+                For the same reason, a realtime agent does NOT inherit `tts.vendor` / `tts.voice` as defaults:
+                without an explicit override the worker's default TTS voice is used. `language` is inherited either
+                way. Pipeline agents inherit all three as you would expect.
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+                  description: The words to speak.
+                  example: "Sorry, we are unusually busy right now. Please call back shortly."
+                vendor:
+                  type: string
+                  description: |-
+                    TTS provider for the announcement. Same form and constraints as `tts.vendor`.
+                    Defaults to `tts.vendor` for a pipeline agent; for a realtime agent there is no
+                    default and the worker's own default TTS is used.
+                  example: elevenlabs
+                voice:
+                  type: string
+                  description: |-
+                    TTS voice for the announcement. Defaults to `tts.voice` for a pipeline agent;
+                    for a realtime agent there is no default.
+                  example: en-GB-Wavenet-A
+                language:
+                  $ref: "#/components/schemas/Language"
             number:
               description: |-
                 A phone number or endpoint ID to transfer the call to if the LLM is unavailable or not responding (telephone agents only).
@@ -626,6 +810,15 @@ components:
             By default the call is never hung up by this mechanism — it prompts and then waits
             indefinitely. Set `hangup` to end the call once the prompt has gone unanswered three
             times.
+
+            On GPT-Live (`pipecat:openai/gpt-live-1`) the prompt is delivered to the voice model as
+            spoken context, so it is paraphrased rather than read verbatim; timing, repeat count and
+            `hangup` are unchanged.
+
+            On the Grok voice rows (`pipecat:xai/grok-voice-think-fast-2.0`) the message is spoken
+            exactly, through xAI's verbatim speech item, with the platform's own idle detection;
+            xAI's server-side check-in (`turn_detection.idle_timeout_ms`) is off unless set through
+            `vendorSpecific.xai.session`, where it would double up with this option.
 
             Note: this is distinct from the provider-native `vendorSpecific.ultravox.inactivityMessages`,
             which is handled entirely server-side by Ultravox and is not portable across workers; when
@@ -873,6 +1066,13 @@ components:
             
             Each vendor can have its own set of options under a vendor-specific key (e.g., `ultravox`).
             These options are passed through to the vendor's implementation without validation at the API level.
+
+            `ultravox.vadSettings`: when omitted, the platform applies a default of
+            `{ "minimumInterruptionDuration": "0.48s" }` on every Ultravox-backed path (native driver,
+            LiveKit worker, Pipecat worker) — Ultravox's own 0.09s default lets any ~90ms sound cancel
+            agent speech mid-turn. Supplying an explicit `vadSettings` object replaces the default
+            wholesale (it is not merged), so include `minimumInterruptionDuration` in any override
+            where you still want it raised.
             
             Example for Ultravox:
               ```json
@@ -907,6 +1107,28 @@ components:
               }
               ```
             
+            `openai.live`: on a GPT-Live row (`pipecat:openai/gpt-live-1`) a free-form object merged into the
+            Live API `session.start` configuration after the platform's own mapping, so an explicit value here
+            wins. Use it for fields the portable options do not cover, for example `store`, a custom voice id
+            under `audio.output.voice`, `delegation.responses.model`, `service_tier`, `parallel_tool_calls`,
+            `max_output_tokens` or `text.verbosity`:
+              ```json
+              { "openai": { "live": { "delegation": { "responses": { "service_tier": "priority" } } } } }
+              ```
+
+            `xai.session`: on a Grok voice row (`pipecat:xai/grok-voice-think-fast-2.0`) a free-form object
+            deep-merged into every `session.update` after the platform's own mapping, so an explicit value
+            here wins. Use it for `turn_detection` tuning (`threshold`, `silence_duration_ms`,
+            `prefix_padding_ms`, `idle_timeout_ms`), `audio.output.speed`, the `replace` pronunciation map or
+            a `voice` the catalogue does not list. Server-side tools are not offered: a `tools` array, or
+            any entry of type `mcp`, `web_search`, `x_search` or `file_search`, is rejected when the agent
+            is saved. `resumption` has no effect under the account's zero data retention. See docs/grok.md.
+              ```json
+              { "xai": { "session": { "turn_detection": { "type": "server_vad", "silence_duration_ms": 350 },
+                                       "audio": { "output": { "speed": 1.1 } },
+                                       "replace": { "Aplisay": "Appli-say" } } } }
+              ```
+
             The structure and allowed values are vendor-specific and should be documented by each vendor.
           type: object
           additionalProperties: true
@@ -943,6 +1165,17 @@ components:
 
         Note for LiveKit OpenAI realtime (`livekit:openai/...`):
           - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
+
+        Note for GPT-Live (`pipecat:openai/gpt-live-1`):
+          - The greeting is an opening instruction appended to the live session after it starts; the model
+            paraphrases rather than reads, so `text` is best-effort wording. Caller audio is still dropped
+            until the model's first turn completes. Without a greeting the platform asks the model to greet
+            the caller and ask how it can help, so the agent still speaks first.
+
+        Note for the Grok voice rows (`pipecat:xai/grok-voice-think-fast-2.0`):
+          - `text` is spoken exactly, through xAI's verbatim speech item, and cannot be talked over;
+            the caller's speech is not detected until it ends. `instructions` and the no-greeting opening
+            are a first response with per-response instructions, best-effort wording as on OpenAI Realtime.
       oneOf:
         - type: object
           additionalProperties: false
@@ -1094,9 +1327,27 @@ components:
             example: rest
           platform:
             type: string
-            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
+            enum: ["hangup", "transfer", "transfer_status", "transfer_summary", "send_dtmf", "metadata", "transfer_agent", "subagent", "delegate", "result", "create_agent_set", "update_agent_set", "patch_agent_set", "list_voices", "ask_user", "test_agent", "request_review"]
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
+                  * `delegate` names the backend of a two-layer voice model (models flagged `hasDelegation` in
+                    GET /models, today `pipecat:openai/gpt-live-1`). The voice model holds the conversation; the
+                    named `text` agent is the backend that reasons and calls tools while the voice model keeps
+                    talking. The text agent's prompt becomes the backend instructions, its `modelName` the backend
+                    model, its `functions`, `mcpServers` and `keys` the backend tools, `options.effort` the
+                    reasoning effort and `options.maxTokens` the output cap. The voice agent's own prompt is the
+                    voice persona. Declared exactly like `subagent`: one parameter, `agent`, `static` (a UUID, or a
+                    `label:<label>` reference inside an agent-set document) or `metadata` sourced, never
+                    `generated`; the target must be a `text` agent in the same organisation. No other parameters:
+                    the voice model never calls it. At most one per agent, and only on models flagged
+                    `hasDelegation`. Backend tools are the union of the delegate's tools and the voice agent's
+                    functions, MCP servers and builtins (`hangup`, `transfer`, `transfer_status`, `transfer_agent`,
+                    `subagent`, `send_dtmf`, `metadata`); on a name clash the delegate's wins. An OpenAI text
+                    model (`text:openai/...`) runs as OpenAI-hosted delegation; any other text model runs as client
+                    delegation, where each delegation is a synthetic subagent call and the answer is spoken as
+                    commentary, and the voice agent's call-control builtins are unavailable to it. Without a
+                    `delegate` function the platform synthesises the backend from the voice agent itself on
+                    `openai/gpt-5.6-luna`. See docs/gpt-live.md.
                   * `transfer_agent` hands the live call over to another agent definition mid-call (LiveKit and Pipecat agents). Parameters:
                     - `agent` (string, required): the target agent ID. Must be `static` or `metadata` sourced (never `generated`).
                       Within an agent-set document a `static` value may be a `label:<label>` reference to another member of the set.
@@ -1119,7 +1370,9 @@ components:
                       `label:<label>` references are supported within agent-set documents.
                     - any further `generated` parameters are forwarded to the text agent as its task input.
                     The platform runs the text agent headlessly until it calls its `result` platform function; those result
-                    arguments are returned to the calling LLM as this function's result.
+                    arguments are returned to the calling LLM as this function's result. Distinct from `delegate`: a
+                    `subagent` is a tool the (voice or backend) model chooses to call with generated inputs; a `delegate`
+                    is the backend the voice model hands the whole conversation to.
                   * `result` (text agents only) terminates a text-agent invocation and delivers its work product: the
                     (generated) arguments the agent passes become the result returned to the invoker. Define its
                     `input_schema` to describe the output you require from the agent.
@@ -1460,6 +1713,15 @@ components:
             When present, a recording is available for this call. Use `GET /calls/{callId}/recording`
             to stream or download it. Omit or null when the call has no recording.
           example: "development-recordings/648aa45d-204a-4c0c-a1e1-419406254134.enc"
+        costMicros:
+          type: number
+          nullable: true
+          description: |-
+            Finalised cost of this call in micro-pounds (1e-6 GBP): the sum of the call's costed,
+            finalised usage records. Costs are stamped at call end, so a completed call either
+            carries its figure or was not costed; `null` means "not costed", which is distinct
+            from a zero-cost call.
+          example: 777000
     CallId:
       type: string
       description: The Call ID the event relates to
@@ -1614,6 +1876,67 @@ components:
             When set to true, will send the extension user in the SIP Contact header. This is useful when the remote 
             gateway needs the extension user to be included in the Contact header for proper routing or authentication.
           example: true
+        register:
+          type: boolean
+          default: true
+          description: |-
+            Whether to REGISTER with the registrar at all. Set false for a static (IP-authenticated)
+            trunk: no registration is attempted, but calls still route in both directions. Such an
+            endpoint stays in state `initial` — there is no registration to report on — with
+            reachability reflected in `error` and `lastSeenAt` from keepalives.
+        from_domain:
+          type: string
+          description: |-
+            Optional From-domain override for REGISTER and outbound calls. Applied only when the
+            registrar is not itself routable; otherwise the registrar host is used.
+          example: provider.example.com
+        ping:
+          type: integer
+          default: 30
+          description: |-
+            Keepalive (SIP OPTIONS) interval in seconds towards the registrar; 0 disables keepalives.
+            Results feed the endpoint liveness reported in `error` and in the trace keepalive counters.
+          example: 30
+        caller_id_in_from:
+          type: boolean
+          default: true
+          description: |-
+            Present the calling party identity in the From header on outbound calls towards the
+            registrar. Where a provider requires the registered account in From instead, the true
+            caller is still asserted in P-Asserted-Identity.
+        media:
+          type: string
+          enum:
+            - direct
+            - relay
+          default: direct
+          description: |-
+            Media path for calls on this registration. `direct` (the default) relays SDP end to end
+            so RTP flows directly between the far end and the media server, which is both the cheaper
+            and the historical behaviour. `relay` terminates and forwards media on the b2bua node:
+            use it for a registrar behind NAT that advertises unroutable addresses, or where the two
+            legs cannot agree on encryption. There is no automatic selection — relay is opt-in per
+            registration.
+        bridged_transfer:
+          type: boolean
+          description: |-
+            Bridge transfers on this endpoint instead of releasing them with SIP REFER, even where
+            REFER is available. Set it for a PBX whose REFER handling is unreliable, or where the
+            call path has to be retained for recording or billing. A per-transfer `forceBridged` or
+            `forceRefer` on the transfer call overrides this default; `forceRefer` wins over both.
+          example: true
+        forceBridged:
+          type: boolean
+          deprecated: true
+          description: |-
+            camelCase alias for `bridged_transfer`, accepted for compatibility. `bridged_transfer` is
+            the documented spelling and takes precedence when both are present.
+        displayNumber:
+          type: string
+          description: |-
+            Calling number to present on outbound calls placed through this registration, when the
+            registered `username` is not itself a dialable number. Falls back to `username`.
+          example: "+441234567890"
       example:
         transport: tls
         auth_username: "authuser123"
@@ -1622,7 +1945,10 @@ components:
       description: |-
         Schema for creating a new phone endpoint. Supports two types of endpoints:
         DDI endpoints are created using an E.164 phone number with trunk configuration.
-        Phone registration endpoints are created using a SIP contact URI, username, and password.
+        Phone registration endpoints are created using a SIP contact URI, username, and password
+        (client mode, the default: we register out to the customer's registrar), or with
+        `mode: registrar` and no credentials at all (a registrar account: the customer's PBX
+        registers to us with a username and password the platform mints and returns once).
         Both kinds of endpoints can be created with a user-defined descriptive name and optionally set to support outbound calling
         (if supported by the handler and trunk/registration account).
       allOf:
@@ -1670,7 +1996,16 @@ components:
                 trunkId:
                   type: string
                   description: Trunk identifier for e164-ddi type. The handler and outbound capabilities for the created number are inherited from this trunk; callers cannot request a handler that is incompatible with the trunk.
-            - description: Phone registration endpoint
+                reservationRef:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Required when the trunk is chargeable, unless the caller holds trunk:create.
+                    The id of a reservation minted by POST /number-reservations for this same
+                    number, trunk and organisation; it is consumed by the claim. Missing gives
+                    403 code reservation_required; expired, used or mismatched gives 403 code
+                    reservation_invalid.
+            - description: Phone registration endpoint, client mode — we register out to the customer's registrar with the credentials given here
               type: object
               required:
                 - registrar
@@ -1681,6 +2016,11 @@ components:
                   type: string
                   description: User-defined descriptive name
                   nullable: true
+                mode:
+                  type: string
+                  enum: [client]
+                  default: client
+                  description: Direction of service. Omit, or `client`, for a line we register out with. See the registrar-account branch for `registrar`.
                 registrar:
                   $ref: '#/components/schemas/Registrar'
                 username:
@@ -1691,12 +2031,72 @@ components:
                   description: Password for phone-registration type
                 options:
                   $ref: '#/components/schemas/PhoneRegistrationOptions'
+                trunk:
+                  type: boolean
+                  default: false
+                  description: |-
+                    Create this registration as a registration trunk: it owns a trunk that numbers attach to
+                    (POST /phone-endpoints type e164-ddi with the returned trunkId), and inbound calls resolve
+                    by (dialled number, trunk) rather than to one agent attached to the registration.
+                trunkId:
+                  type: string
+                  description: |-
+                    Name the trunk instead of the default `reg-<registration id>`. Requires trunk:create (a super
+                    migrating an existing trunk keeps its id, and with it its numbers). Only with trunk: true.
+                didSource:
+                  type: string
+                  description: |-
+                    Where the dialled number is found on an inbound INVITE for a trunk: `request-uri` (default),
+                    `to`, `header:<Header-Name>` (e.g. header:P-Called-Party-ID) or `none` (single-line behaviour).
+                didCountry:
+                  type: string
+                  description: ISO 3166-1 alpha-2 country used to normalise a national-format dialled number to E.164. Null = platform default.
+            - description: |-
+                Registrar account (`mode: registrar`): the customer's PBX registers to us. The platform
+                mints the account's identity — `registrar` (the deployment's balancer name, also the
+                digest realm), `username` and `password` — and returns it once in the 201 response;
+                supplying any of the three, or `b2buaId`, is refused with 400. Everything else
+                (`trunk`, `trunkId`, `didSource`, `didCountry`, `options`, `handler`, `outbound`,
+                `name`) behaves as for a client-mode registration. Served by regserver; 503 with code
+                `registrar_unavailable` on a deployment with no registrar configured.
+              type: object
+              required:
+                - mode
+              properties:
+                mode:
+                  type: string
+                  enum: [registrar]
+                kind:
+                  type: string
+                  enum: [pbx]
+                  default: pbx
+                  description: What registers to us. Only `pbx` exists; `device` is reserved and refused.
+                options:
+                  $ref: '#/components/schemas/PhoneRegistrationOptions'
+                trunk:
+                  type: boolean
+                  default: false
+                  description: Create the account as a registration trunk that numbers attach to, exactly as for a client-mode registration.
+                trunkId:
+                  type: string
+                  description: "Name the trunk instead of the default `reg-<registration id>`; requires trunk:create, and only with trunk set to true."
+                didSource:
+                  type: string
+                  description: Where the dialled number is found on an INVITE from the PBX (`request-uri` default, `to`, `header:<Name>`, `none`).
+                didCountry:
+                  type: string
+                  description: ISO 3166-1 alpha-2 country used to normalise a national-format dialled number to E.164.
     PhoneEndpointUpdateInput:
       description: |-
         Schema for updating a phone endpoint. All fields are optional.
-        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated.
+        For e164-ddi endpoints, only `outbound`, `handler` and `provisioned` can be updated;
+        `organisationId` (with `phoneEndpoint:assign`) moves the number to another organisation
+        or the unallocated pool and is refused with 409 code number_in_use while it is attached to an agent.
         For phone-registration endpoints, `name`, `outbound`, `handler`, `registrar`, `username`, `password`, and `options` can be updated.
         When credentials (registrar, username, password) are updated, the registration state is reset to initial.
+        `mode` cannot change after creation (400 code mode_immutable). On a registrar account `registrar`,
+        `username`, `password` and `b2buaId` are the platform's and are refused (400 code
+        registrar_identity_immutable); POST /phone-endpoints/{id}/credentials issues a new password.
       type: object
       properties:
         name:
@@ -1708,6 +2108,21 @@ components:
         provisioned:
           type: boolean
           description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
+        organisationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            e164-ddi only, requires phoneEndpoint:assign. The organisation to move the number to,
+            or null for the unallocated pool. Refused (409, code number_in_use) while the number is
+            attached to an agent; detach it first. The move is exclusive: no other field is applied.
+        fromOrganisationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            With organisationId: which row to move when the number is held by an organisation other
+            than the caller's (null names the pool). Defaults to the caller's own organisation.
         handler:
           type: string
           enum:
@@ -1725,4 +2140,693 @@ components:
           description: Registration password (for registrations)
         options:
           $ref: '#/components/schemas/PhoneRegistrationOptions'
+        trunk:
+          type: boolean
+          description: |-
+            Registrations only. `true` turns a line into a registration trunk (creates its trunk and detaches it
+            from any agent); `false` turns a trunk back into a line, refused with 409 while numbers sit on it.
+        didSource:
+          type: string
+          description: Registration trunks — where the dialled number is found (see PhoneEndpointCreateInput).
+        didCountry:
+          type: string
+          description: Registration trunks — ISO 3166-1 alpha-2 for national-format dialled numbers.
+    B2buaNodeHeartbeat:
+      type: object
+      description: A b2bua node announcing itself, about once a minute.
+      required: [nodeId]
+      properties:
+        nodeId:
+          type: string
+          description: |-
+            The node's public address — the same value it writes into
+            `phone_registrations.b2bua_id`, which is what makes this joinable to a registration.
+          example: 203.0.113.10
+        privateAddress:
+          type: string
+          description: |-
+            Where this node answers from inside its own network, when that differs from `nodeId`.
+            Used in preference to the public address when llm-agent shares a network with the node
+            (`REGCLIENT_USE_PRIVATE_NODE_ADDRESS`), so the request never leaves the VPC and the node
+            API needs no public exposure. Omitted by a node with no distinct private address.
+          example: 10.154.0.62
+        type:
+          type: string
+          enum: [regclient, regserver, freeswitch]
+          default: regclient
+          description: |-
+            Which stack this node is running. regclient and regserver both serve the trace API;
+            only regclient runs probes; the FreeSWITCH stack serves neither.
+        version:
+          type: string
+          description: Build version, for telling a fleet mid-rollout apart
+          example: 1.4.2
+        registrations:
+          type: integer
+          description: Registrations this node currently holds
+        failedRegistrations:
+          type: integer
+          description: How many of those are currently failing
+        bindings:
+          type: integer
+          description: regserver only — PBXes currently registered to this node. Zero from regclient.
+        systemLoad:
+          type: number
+          description: One-minute load average as the node sees it
+    B2buaNode:
+      type: object
+      description: A b2bua node as it last reported itself.
+      properties:
+        nodeId:
+          type: string
+        privateAddress:
+          type: string
+          nullable: true
+          description: Where the node answers from inside its own network, or null if it reported none.
+        type:
+          type: string
+          enum: [regclient, regserver, freeswitch]
+        version:
+          type: string
+          nullable: true
+        registrations:
+          type: integer
+        failedRegistrations:
+          type: integer
+        bindings:
+          type: integer
+          description: PBXes currently registered to a regserver node; zero for the others.
+        systemLoad:
+          type: number
+          nullable: true
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+          description: |-
+            Whether this node has stopped heartbeating. Reported rather than omitted: a node that
+            has gone quiet is the thing worth seeing, and it is invisible if the row disappears.
+    NodeCapabilityUnavailable:
+      type: object
+      description: |-
+        Returned when the b2bua node holding this registration does not provide the trace and probe
+        API at all — it is running the FreeSWITCH stack, which has no such interface. This is not a
+        fault and retrying will not help: migrate the registration to a regclient node.
+      properties:
+        code:
+          type: string
+          enum: [trace-api-unavailable]
+        node:
+          type: string
+          description: Address of the b2bua node holding this registration
+          example: 203.0.113.10
+        message:
+          type: string
+    NodeUnavailable:
+      type: object
+      description: |-
+        Returned when the b2bua node that owns a registration could not be reached or refused the
+        request. `node` names the instance that was asked, so an operator can tell which node is
+        unhealthy rather than guessing.
+      properties:
+        error:
+          type: string
+          example: trace unavailable
+        node:
+          type: string
+          description: Address of the b2bua node that owns this registration
+          example: 203.0.113.10
+        reason:
+          type: string
+          description: Why the node could not answer
+          example: timeout
+    SipTraceIndexEntry:
+      type: object
+      description: |-
+        One captured SIP exchange, described but not reproduced. Fetch it in full from
+        `/phone-endpoints/{identifier}/trace/{id}`.
+      properties:
+        id:
+          type: string
+          description: Identifier of this exchange, for the trace detail route
+          example: reg-8
+        kind:
+          type: string
+          enum: [register, call]
+        summary:
+          type: string
+          description: One line saying what happened, suitable to show in a list
+          example: REGISTER → 403 Forbidden
+        outcome:
+          type: string
+          description: |-
+            For a REGISTER: success, failure or in-progress. For a call: active or completed.
+        code:
+          type: integer
+          description: Final SIP response code, when there was one
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          description: For a call, which way it went
+        callId:
+          type: string
+          description: |-
+            For a call, the SIP Call-ID of its customer-facing leg — the one to look for in the
+            PBX's or carrier's own logs.
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        rttMs:
+          type: number
+          description: Time from first request to final response, in milliseconds
+        pinned:
+          type: boolean
+          description: |-
+            Whether this entry is retained regardless of rotation. The most recent successful and
+            most recent failed REGISTER are always pinned, so a retry storm cannot evict the last
+            known-good exchange.
+        messages:
+          type: integer
+          description: |-
+            How many messages fetching this entry would return. For a call, that is its
+            customer-facing leg, which the detail route serves by default.
+        bytes:
+          type: integer
+          description: Approximate size of that detail, in bytes
+        internalMessages:
+          type: integer
+          description: |-
+            For a call, how many more messages its platform leg holds — the same call between the
+            b2bua node and the platform. The detail route adds them under `debug=1`.
+    RegistrarAccountCredentials:
+      type: object
+      description: |-
+        What a customer enters into their PBX for a registrar account. Revealed only for
+        registrar-mode registrations, only to callers holding phoneEndpoint:update, and every
+        reveal is written to the audit log.
+      required: [id, registrar, port, transport, username, password]
+      properties:
+        id:
+          type: string
+          description: The registration endpoint ID
+        registrar:
+          type: string
+          description: The name the PBX registers to (the deployment's balancer name), which is also the digest realm.
+          example: sip.polite.ai
+        port:
+          type: integer
+          example: 5061
+        transport:
+          type: string
+          enum: [tls]
+        username:
+          type: string
+          example: pbx-k7m2x9q4wz
+        password:
+          type: string
+    RegistrationBinding:
+      type: object
+      description: One PBX socket currently registered to the owning regserver node for this account.
+      properties:
+        contact:
+          type: string
+          description: The Contact URI as the PBX sent it, often a private address.
+        received:
+          type: string
+          description: The socket's remote address, host:port — where the node actually sends.
+        transport:
+          type: string
+        userAgent:
+          type: string
+          nullable: true
+        registeredAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        node:
+          type: string
+          description: The node holding the socket; the same value as the registration's b2buaId.
+    RegistrationBindings:
+      type: object
+      description: |-
+        The bindings held for a registrar account. By default the mirror the owning node last wrote
+        onto the row; with `live=1` the node's own view, fetched through the node API.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          nullable: true
+          description: The owning node, or null when nothing has registered yet.
+        live:
+          type: boolean
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegistrationBinding'
+        bindingsUpdatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the owning node last mirrored the bindings onto the row.
+        fetchedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: With `live=1`, when the node answered; null for the mirror.
+    SipTraceIndex:
+      type: object
+      description: |-
+        What a registration's trace buffer currently holds. A listing rather than the trace itself:
+        a full trace runs to tens of kilobytes of SIP text.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          description: Address of the b2bua node that holds this trace
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the node took this snapshot
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When this API fetched it from the node
+        transactions:
+          type: array
+          description: Captured exchanges, most recent first
+          items:
+            $ref: '#/components/schemas/SipTraceIndexEntry'
+        keepalive:
+          $ref: '#/components/schemas/SipTraceKeepalive'
+        evictions:
+          type: object
+          description: What the ring buffer has discarded, so a gap in the trace is never silent.
+          properties:
+            registerTransactions:
+              type: integer
+            calls:
+              type: integer
+            truncatedMessages:
+              type: integer
+    SipTraceMessage:
+      type: object
+      description: One captured SIP message, as it appeared on the wire.
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Capture timestamp
+        direction:
+          type: string
+          enum: [in, out]
+          description: Direction relative to the b2bua node
+        leg:
+          type: string
+          enum: [external, internal]
+          description: |-
+            For a message in a call, which leg of the bridge it was on: `external` between the node
+            and the customer's PBX or carrier, `internal` between the node and the platform. Absent
+            on a REGISTER, which has only one side.
+        transport:
+          type: string
+          enum: [udp, tcp, tls]
+        src:
+          type: string
+          description: Source address and port
+          example: 203.0.113.10:5060
+        dst:
+          type: string
+          description: Destination address and port
+          example: 198.51.100.7:5061
+        size:
+          type: integer
+          description: Message size in bytes on the wire
+        requestLine:
+          type: string
+          description: |-
+            RFC 3261 Request-Line. Present on a request, absent on a response —
+            exactly one of `requestLine` and `statusLine` appears on any message,
+            so the key itself says which kind it is.
+          example: REGISTER sip:pbx.example.com SIP/2.0
+        statusLine:
+          type: string
+          description: RFC 3261 Status-Line. Present on a response, absent on a request.
+          example: SIP/2.0 401 Unauthorized
+        callId:
+          type: string
+        cseq:
+          type: string
+          example: 3 REGISTER
+        raw:
+          type: string
+          description: |-
+            The full message text. Digest credentials in `Authorization` and `Proxy-Authorization`
+            are redacted. Long messages are truncated with a marker.
+        truncated:
+          type: boolean
+          description: Whether `raw` was truncated to fit the capture budget
+    SipTraceTransaction:
+      type: object
+      description: A grouped SIP transaction — typically REGISTER, challenge, authenticated REGISTER, final response.
+      properties:
+        outcome:
+          type: string
+          enum: [success, failure, in-progress]
+        startedAt:
+          type: string
+          format: date-time
+        rttMs:
+          type: number
+          description: Time from first request to final response, in milliseconds
+        code:
+          type: integer
+          description: Final SIP response code, when there was one
+        pinned:
+          type: boolean
+          description: |-
+            Whether this transaction is retained regardless of rotation. The most recent successful
+            and most recent failed transaction are always pinned, so a failure storm cannot evict the
+            last known-good exchange.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceMessage'
+    SipTraceDialog:
+      type: object
+      description: |-
+        The signalling of one bridged call involving this registration. The b2bua node sits between
+        the customer's PBX or carrier and the platform, so a call has two legs; by default `messages`
+        is the customer-facing leg, and with `debug=1` both legs, interleaved by timestamp and each
+        message marked with its `leg`.
+      properties:
+        id:
+          type: string
+          description: Identifier of this dialog, for the trace detail route
+          example: call-2
+        callId:
+          type: string
+          description: |-
+            SIP Call-ID of the customer-facing leg. A call refused before the customer side was
+            dialled has only a platform leg, and this is then that leg's Call-ID.
+        internalCallId:
+          type: string
+          description: SIP Call-ID of the platform leg, when the call has one
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceMessage'
+    SipTraceKeepalive:
+      type: object
+      description: |-
+        Keepalive (OPTIONS) activity, kept as counters and state transitions rather than full
+        messages — the volume is high and the diagnostic value is in the outcome, not the bytes.
+      properties:
+        sent:
+          type: integer
+        ok:
+          type: integer
+        failed:
+          type: integer
+        lastRtt:
+          type: number
+          description: Round-trip time of the most recent keepalive, in milliseconds
+        lastCode:
+          type: integer
+        transitions:
+          type: array
+          description: Recent up/down transitions, most recent last
+          items:
+            type: object
+            properties:
+              at:
+                type: string
+                format: date-time
+              state:
+                type: string
+                enum: [up, down]
+              detail:
+                type: string
+    SipTrace:
+      type: object
+      description: Transaction-grouped SIP trace for one registration.
+      properties:
+        registrationId:
+          type: string
+        node:
+          type: string
+          description: Address of the b2bua node that produced this trace
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the node took this snapshot
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When this API fetched the snapshot from the node
+        registerTransactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceTransaction'
+        calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/SipTraceDialog'
+        keepalive:
+          $ref: '#/components/schemas/SipTraceKeepalive'
+        evictions:
+          type: object
+          description: What the ring buffer has discarded, so a gap in the trace is never silent.
+          properties:
+            registerTransactions:
+              type: integer
+            calls:
+              type: integer
+            truncatedMessages:
+              type: integer
+    SipTracePacket:
+      type: object
+      description: |-
+        One decoded SIP packet, returned by `format=decode`. Header order and duplicate headers are
+        preserved so Via chains and route sets survive the decode.
+      properties:
+        ts:
+          type: string
+          format: date-time
+        direction:
+          type: string
+          enum: [in, out]
+        transport:
+          type: string
+          enum: [udp, tcp, tls]
+        src:
+          type: string
+        dst:
+          type: string
+        size:
+          type: integer
+        sip:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum: [request, response]
+            method:
+              type: string
+            requestUri:
+              type: string
+            statusCode:
+              type: integer
+            reasonPhrase:
+              type: string
+            headers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  value:
+                    type: string
+            cseq:
+              type: object
+              properties:
+                seq:
+                  type: integer
+                method:
+                  type: string
+            callId:
+              type: string
+            fromTag:
+              type: string
+            toTag:
+              type: string
+        sdp:
+          type: object
+          nullable: true
+          description: Parsed SDP body, when the message carried one.
+          properties:
+            origin:
+              type: string
+            connection:
+              type: string
+            media:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  port:
+                    type: integer
+                  protocol:
+                    type: string
+                  direction:
+                    type: string
+                  payloads:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pt:
+                          type: integer
+                        codec:
+                          type: string
+                        rate:
+                          type: integer
+                  attributes:
+                    type: array
+                    items:
+                      type: string
+        correlation:
+          type: object
+          properties:
+            registrationId:
+              type: string
+            transaction:
+              type: string
+            dialog:
+              type: string
+              description: For a packet in a call, the call's customer-facing Call-ID whichever leg the packet was on
+            leg:
+              type: string
+              enum: [external, internal]
+              description: For a packet in a call, which leg of the bridge it was on
+    RegistrationProbeRequest:
+      type: object
+      description: Options for a live registration probe.
+      properties:
+        discover:
+          type: boolean
+          default: false
+          description: |-
+            Try a matrix of transports and next-hop choices rather than a single attempt, and report
+            the minimal `options` that work.
+        apply:
+          type: boolean
+          default: false
+          description: |-
+            Merge the discovered `options` patch into the endpoint and restart its registration.
+            Only meaningful with `discover`, and only honoured where the deployment enables it.
+    RegistrationProbeAccepted:
+      type: object
+      required: [probeId]
+      properties:
+        probeId:
+          type: string
+          description: Identifier to stream or fetch this probe's results
+        node:
+          type: string
+          description: The b2bua node running the probe
+    RegistrationProbeReport:
+      type: object
+      description: The result of a registration probe.
+      properties:
+        probeId:
+          type: string
+        node:
+          type: string
+        registrationId:
+          type: string
+        state:
+          type: string
+          enum: [running, complete]
+        verdict:
+          type: string
+          description: Machine-readable outcome
+          enum:
+            - registered
+            - bad-credentials
+            - rejected
+            - unreachable
+            - tls-failure
+            - no-route
+            - timeout
+            - error
+        summary:
+          type: string
+          description: One-line diagnosis suitable to show a user
+          example: 'REGISTER → 403 Forbidden from 198.51.100.7 (TLS, 34ms)'
+        diagnosis:
+          type: array
+          description: Specific observations that led to the verdict
+          items:
+            type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        branches:
+          type: array
+          description: One entry per attempt made — a single-attempt probe has exactly one.
+          items:
+            type: object
+            properties:
+              transport:
+                type: string
+                enum: [udp, tcp, tls]
+              nextHop:
+                type: string
+              outcome:
+                type: string
+              code:
+                type: integer
+              rttMs:
+                type: number
+              messages:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SipTraceMessage'
+        suggestedOptions:
+          type: object
+          nullable: true
+          description: |-
+            Minimal `options` patch that made the registration succeed, for discovery probes.
+            Note that a later full update of an endpoint's `options` replaces them wholesale.
+          additionalProperties: true
+        applied:
+          type: boolean
+          description: Whether `suggestedOptions` was written back to the endpoint
 paths: {}

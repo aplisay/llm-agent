@@ -215,11 +215,13 @@ A realtime model handles audio in and audio out in one stage. Turn-taking, voice
 
 `agent.options.stt` and `agent.options.tts` still apply in realtime mode, even though the provider supplies its own internal STT and TTS. They tune the analogous internal stages — for example `stt.language` sets the input language, `tts.voice` selects the speaking voice. The keys carry the same shape and meaning as in pipeline mode (4.4); their effect is mediated by the realtime provider rather than selecting a separate stage.
 
-The LiveKit handler currently wires three realtime providers — OpenAI Realtime, Ultravox, Google Gemini Live. The provider set is extensible and not part of the contract.
+The LiveKit handler currently wires three realtime providers — OpenAI Realtime, Ultravox, Google Gemini Live. The Pipecat handler wires two more, OpenAI GPT-Live (`pipecat:openai/gpt-live-1`) and the xAI Grok voice model (`pipecat:xai/grok-voice-think-fast-2.0`, [docs/grok.md](grok.md)). The provider set is extensible and not part of the contract.
+
+GPT-Live is a two-layer realtime model. The voice model listens and speaks at the same time, decides its own turns and barge-in, and delegates reasoning and tool use to a backend text model while it keeps talking. The platform expresses the backend as a `text` agent named by a builtin `delegate` function on the voice agent (declared like `subagent`; at most one; only on rows flagged `hasDelegation`). The text agent's prompt, model, functions, MCP servers and keys become the backend; the voice agent's prompt is the persona; backend tools are the union of both agents' tools and the voice agent's builtins. An OpenAI text model runs as provider-hosted delegation with the worker executing the function calls; any other text model runs as client delegation, each delegation being a synthetic subagent call whose answer is spoken as commentary. Without a `delegate` the worker synthesises the backend from the voice agent itself. Nothing injected mid-call as a context message reaches the voice model, so the greeting, inactivity prompt, DTMF digits and transfer markers use the Live API's append and typed-input events, and an agent handover is a full restart. Session minutes are billed on the model's `voice` row; backend tokens on the delegate model's `llm` rows. See [docs/gpt-live.md](gpt-live.md).
 
 Realtime output is customisable: when `agent.options.tts.vendor` is set to a vendor different from the realtime provider's own (for example an Ultravox model paired with a Deepgram TTS), the realtime model runs in text-output mode and a separate TTS handles audio out. STT and LLM remain a single stage inside the provider; only the TTS stage is decomposed. The session is architecturally still realtime — this is a customisation of realtime output, not a separate mode.
 
-This customisation is slated for imminent development in the LiveKit implementation and is not yet wired. A re-implementer's runtime should be structured to allow it.
+Which rows can do this is a per-model capability, surfaced as `hasExternalTts` on `GET /models` (the `externalTts` row flag in the handler's model registry). The API server rejects an external vendor on a realtime row without the flag, and validates `tts.voice` and `tts.vendor` against the discrete-TTS catalogue when the flag applies. Both handlers wire it for Ultravox and OpenAI Realtime today; see [docs/realtime-external-tts.md](realtime-external-tts.md) for the rule, the caveats of the pattern (the provider believes its whole text was delivered even when the caller cut the TTS short) and what a worker must add for a provider that gives no early barge-in signal once its text turn is complete (Pipecat runs a local VAD; LiveKit stops the TTS on the caller's transcript). Gemini Live carries no flag because no Live model Google still serves accepts a text modality, and the Grok voice row carries none because xAI's Voice Agent API ignores a text modality request. A re-implementer's runtime should be structured to allow it.
 
 ### 4.4 The pipeline path
 
@@ -254,6 +256,8 @@ Uninterruptible greetings are an explicit feature, controlled by `agent.options.
 The two keys are mutually exclusive; exactly one of `text` or `instructions` may be set. When neither is set, default-interruptible behavior applies.
 
 The greeting contract is mode-independent. Implementations may differ in how the behavior lands per provider — for example Ultravox realtime drives uninterruptible greetings via its native `firstSpeakerSettings`, while other realtime providers and pipeline mode use TTS `say()` or LLM `generateReply` with explicit interruption suppression — but the contract is the behavior, not the mechanism.
+
+After a `transfer_agent` handover, in place or full-stack, or a human-to-agent hand-back (`bridgedTransferToAgent`), the caller has already been greeted, so the incoming agent's greeting is not used. Its first turn is a platform instruction to introduce itself and continue from what it knows of the call so far. On Ultravox the instruction is sent as `firstSpeakerSettings.agent.prompt` and replaces any `firstSpeakerSettings` the agent sets. Other stacks receive it as the instruction for their first reply. No greeting plays, so the caller is not muted and can interrupt that turn.
 
 ### 4.6 Vendor-specific passthrough
 
@@ -386,6 +390,10 @@ On an inbound INVITE from the SBC, the contract is:
 
 Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Agent. The PhoneEndpoint record carries any per-trunk flags, notably `canRefer` (see 6.7).
 
+**Registration trunks (outbound).** A leg whose caller id is a number on a registration trunk (`trunk.flags.provider = "registration"`) egresses through that registration's B2BUA exactly as a registration-originated leg does: the originate route resolves `flags.registrationId` to the registration and hands the worker `registrationEndpointId`, `b2buaGatewayIp` and `b2buaGatewayTransport`; the transfer handlers resolve the same from the number's trunk. The From user is the number, `X-Aplisay-PhoneRegistration` names the registration and `X-Aplisay-Trunk` the trunk, and `resolveEgressTrunk` treats such a trunk as non-chargeable regardless of the platform default trunk.
+
+**Registration trunks.** A phone-registration created with `trunk: true` owns a trunk (`phone_registrations.trunk_id`, `trunks.flags.provider = "registration"`). The B2BUA forwards its inbound calls with BOTH `X-Aplisay-PhoneRegistration` and `X-Aplisay-Trunk`, and carries the dialled number (normalised to E.164 per `did_source` / `did_country`) in `X-Aplisay-Called` as well as, on the Pipecat runtime, the Request-URI. The registration has no instance of its own, so the lookup ladder falls through from the registration to (called number, `aplisayId`) and the number's agent answers. `X-Aplisay-Called` wins over the Request-URI / `sip.trunkPhoneNumber` wherever both are present. The pair is the whole key: there is no lookup by bare number behind it, so a number the trunk check refuses, or one with no instance, is "no agent for this call" rather than a second attempt without the trunk.
+
 Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_X_HEADERS`); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
 
 ### 6.3 Inbound SIP — B2BUA path
@@ -425,7 +433,8 @@ All outbound destination numbers are normalized to E.164 form. The platform has 
 Destination validation is applied before any outbound is dispatched:
 
 - `agent.options.outboundCallFilter` — anchored regex applied to the destination. Calls whose destination doesn't match are rejected.
-- `transfer.callerId` override — when a caller ID is overridden on a transfer call, the agent validates that the user owns that number before honoring the override.
+- **Egress-aware authorisation** — the destination check is delegated to the platform (`POST /api/agent-db/outbound-authorisation`), not evaluated in the worker, because it depends on the egress trunk and the organisation's rating deck. On a chargeable (our-carrier) trunk the trunk's operator filter and a rateable destination are the authority, and the agent's own filter can only narrow them; on a customer-owned egress the agent's filter remains authoritative. The worker fails **closed** if the platform cannot be reached. See [outbound-call-authorisation.md](outbound-call-authorisation.md).
+- `transfer.callerId` override — when a caller ID is overridden on a transfer call, the agent validates that the user owns that number before honoring the override. The authorisation call is made *after* this resolution, since a registration caller-ID changes the egress.
 
 ### 6.7 Transfer — REFER vs blind-bridge decision
 
@@ -512,7 +521,7 @@ A re-implementer must honor:
 **Number handling**
 
 - E.164 normalization with default-country setting.
-- `agent.options.outboundCallFilter` regex gates outbound destinations.
+- `agent.options.outboundCallFilter` regex gates outbound destinations, narrowing (never widening) the platform's own per-trunk + rating policy on a chargeable trunk — see [outbound-call-authorisation.md](outbound-call-authorisation.md).
 - Caller-ID override on `transfer` requires user ownership.
 
 ## 7. Call lifecycle and disconnect taxonomy
@@ -599,7 +608,7 @@ The header name (`x-shared-token`) and the env var names (`SHARED_API_TOKEN`, `S
 
 Called during call setup to resolve the agent and its phone-number context. All are GET, read-only, idempotent.
 
-- **`GET /api/agent-db/instance`** — resolve Instance (with embedded Agent) by `?instanceId=` or `?number=`.
+- **`GET /api/agent-db/instance`** — resolve Instance (with embedded Agent) by `?instanceId=`.
 - **`GET /api/agent-db/agent`** — resolve Agent by `?agentId=`. Used for fallback-agent loading (section 9).
 - **`GET /api/agent-db/phone-endpoints`** — resolve PhoneEndpoint by `?number=&trunkId=` (trunk-based) or `?id=` (registration endpoint).
 
@@ -629,7 +638,7 @@ Two endpoints capture call activity, distinguished by when they fire and what da
 Some handlers — including LiveKit — need their upstream platform to be configured for a phone number before the number can route calls (e.g. trunk numbers must be registered with the SIP service). This is handled out-of-band:
 
 - The operator runs the agent in a dedicated **setup mode** (cron-driven, batch).
-- The setup process walks the platform's phone-number database, provisions any unprovisioned numbers in the upstream platform, and PATCHes **`/api/agent-db/phone-endpoints/:number`** with `{ provisioned: true }` for each number it has configured.
+- The setup process walks the platform's phone-number database, provisions any unprovisioned numbers in the upstream platform, and PATCHes **`/api/agent-db/phone-endpoints/:number`** with `{ provisioned: true }` for each number it has configured (every organisation's row for that number is stamped; provisioning is a fact about the number at the carrier).
 - A handler-level config flag (forthcoming) tells the REST server whether the handler requires this provisioning workflow, so number-creation can short-circuit when not needed (e.g. handlers that talk directly to a PSTN provider with no per-number trunk configuration).
 
 This workflow is part of the contract only for handlers that need it.
@@ -726,6 +735,8 @@ The catalog below covers every option that affects runtime behavior. The "Level"
 |---|---|---|---|
 | `voiceMode` | Agent | Override mode selection (pipeline / realtime) | 4.1 |
 | `stt` | Agent | STT configuration (vendor, language) | 4.3, 4.4 |
+| `stt.aux` | Agent | Auxiliary ("second opinion") STT over the caller's audio, logged as `user-aux` and metered as `stt-aux` (vendor, language, enabled) | [auxiliary-stt.md](auxiliary-stt.md) |
+| `tts.output` | Agent | Output audit STT over the agent's own audio, logged as `agent-speech` and metered as `stt-output` (vendor, language, enabled) | [auxiliary-stt.md](auxiliary-stt.md) |
 | `tts` | Agent | TTS configuration (vendor, voice, language) | 4.3, 4.4 |
 | `vendorSpecific` | Agent | Free-form provider passthrough | 4.6 |
 | `greeting` | Agent | Uninterruptible opening greeting (text or instructions) | 4.5 |

@@ -275,6 +275,29 @@ export function withFirstSpeakerOverride(
 }
 
 /**
+ * Replace inactivityMessages without changing model defaults; an override with no messages clears them.
+ * See PR #342.
+ */
+export function withInactivityMessagesOverride(
+  base: ModelOptions,
+  override?: { messages?: api_proto.UltravoxInactivityMessage[] }
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (!override) {
+    return opts;
+  }
+  const { inactivityMessages: _replaced, ...ultravox } =
+    opts.vendorSpecific?.ultravox ?? {};
+  opts.vendorSpecific = {
+    ...opts.vendorSpecific,
+    ultravox: override.messages
+      ? { ...ultravox, inactivityMessages: override.messages }
+      : ultravox,
+  };
+  return opts;
+}
+
+/**
  * Fold one transcript frame into the turn accumulated so far.
  *
  * `text` is an authoritative snapshot of the whole turn when present; otherwise the
@@ -296,6 +319,35 @@ export function foldTranscriptFrame(
   return buffer;
 }
 
+/**
+ * The part of a text-medium agent transcript frame that has not been streamed
+ * yet, plus the updated streamed total.
+ *
+ * In text-output mode the agent's text is what the TTS speaks, so every character
+ * must reach the generation stream exactly once. Measured 2026-09-10: a turn is a
+ * first `text` snapshot holding the first token, then `delta` frames, then a final
+ * `text` snapshot of the whole turn; a `firstSpeakerSettings` greeting is ONE
+ * final frame with no deltas. A snapshot therefore contributes only what extends
+ * the streamed total (nothing after a fully streamed turn, everything for the
+ * greeting), and a snapshot that does not extend it (Ultravox truncated the turn
+ * on a barge-in) contributes nothing.
+ */
+export function agentTextChunk(
+  streamed: string,
+  frame: { text?: string | null; delta?: string | null }
+): { chunk: string; streamed: string } {
+  if (frame.text) {
+    if (frame.text.startsWith(streamed)) {
+      return { chunk: frame.text.slice(streamed.length), streamed: frame.text };
+    }
+    return { chunk: "", streamed };
+  }
+  if (frame.delta) {
+    return { chunk: frame.delta, streamed: streamed + frame.delta };
+  }
+  return { chunk: "", streamed };
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -312,8 +364,13 @@ export class RealtimeModel extends llm.RealtimeModel {
    * this model. See `setNextSessionFirstSpeaker`.
    */
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
+  /** See {@link setNextSessionInactivityMessages}. */
+  #nextSessionInactivity?: { messages?: api_proto.UltravoxInactivityMessage[] };
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
+  /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
+  #primarySession?: RealtimeSession;
+  #nextSessionPrimary = false;
   #client: UltravoxClient;
   constructor({
     modalities = ["text", "audio"],
@@ -370,7 +427,9 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: false,
       userTranscription: true,
       autoToolReplyGeneration: false,
-      audioOutput: true,
+      // Text-only modalities = text-output mode: Ultravox sends no audio and the
+      // AgentSession's TTS speaks the text stream (docs/realtime-external-tts.md).
+      audioOutput: modalities.includes("audio"),
     });
     if (apiKey === "") {
       throw new Error(
@@ -420,18 +479,7 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Shape the opening turn of the NEXT session created from this model, and only
-   * that one.
-   *
-   * Used by the consultative-transfer consult leg: it shares the primary call's
-   * model instance but has the opposite conversational posture — it DIALS its peer,
-   * so the peer answers and greets first. Without this the model's default
-   * `FIRST_SPEAKER_AGENT` makes the TransferAgent open its own turn immediately and
-   * talk over the target's greeting, which Ultravox then discards as barge-in.
-   *
-   * Consumed and cleared by the next `session()` call. Call
-   * `clearNextSessionFirstSpeaker()` if the session is never started, so the
-   * override cannot leak onto an unrelated session (e.g. an agent handover).
+   * The consult target must greet first; consume this override once and clear it if setup fails. See PR #182.
    */
   setNextSessionFirstSpeaker(
     firstSpeakerSettings: api_proto.UltravoxFirstSpeakerSettings
@@ -445,20 +493,18 @@ export class RealtimeModel extends llm.RealtimeModel {
   }
 
   /**
-   * Called when Ultravox ends a session we did not ask it to end — its own
-   * `maxDuration`, an `inactivityMessages` `endBehavior` hangup, or a genuine outage.
-   *
-   * Exists because the SDK's `AgentSession.Error` event is lossy: `agent_activity`'s
-   * `onError` forwards `createErrorEvent(ev.error, …)`, i.e. the INNER `Error`, so the
-   * `RealtimeModelError` wrapper's `type` and `recoverable` never reach a listener.
-   * A subscriber therefore cannot distinguish a terminal provider hangup from a
-   * routine recoverable reconnect, and guessing in either direction is harmful —
-   * treating reconnects as fatal hangs up live calls, treating hangups as transient
-   * leaves the caller on a dead line until an unrelated long-stop fires.
-   *
-   * Fires for the PRIMARY session only (the first this model creates). A consult
-   * TransferAgent session and post-handover sessions share the model instance but
-   * their ending must never tear down the primary call.
+   * Override inactivity for the next handover session only; undefined clears the outgoing agent's prompts.
+   * Consume with the first-speaker override in session(); see PR #342.
+   */
+  setNextSessionInactivityMessages(
+    messages: api_proto.UltravoxInactivityMessage[] | undefined
+  ): void {
+    this.#nextSessionInactivity = { messages };
+  }
+
+  /**
+   * Report terminal provider closes out of band: SDK errors lose their recoverable flag. See PR #342.
+   * Only the primary session may end the call; a consult shares its model but must not trigger this hook.
    */
   setProviderEndedCallback(
     cb: (info: { code?: number; reason?: string }) => void
@@ -471,10 +517,22 @@ export class RealtimeModel extends llm.RealtimeModel {
     session: RealtimeSession,
     info: { code?: number; reason?: string }
   ): void {
-    if (this.#sessions[0] !== session) {
+    if (session !== this.#primarySession) {
       return;
     }
     this.#providerEndedCallback?.(info);
+  }
+
+  /**
+   * Make the next handover session primary; clear unused marks before a consult can consume them. See PR #342.
+   */
+  setNextSessionPrimary(): void {
+    this.#nextSessionPrimary = true;
+  }
+
+  /** Discard a pending {@link setNextSessionPrimary} mark. */
+  clearNextSessionPrimary(): void {
+    this.#nextSessionPrimary = false;
   }
 
   /** The override awaiting the next `session()`, if any. Diagnostics/tests. */
@@ -484,18 +542,33 @@ export class RealtimeModel extends llm.RealtimeModel {
     return this.#nextSessionFirstSpeaker;
   }
 
+  /** The inactivity override awaiting the next `session()`, if any. Diagnostics/tests. */
+  get pendingInactivityOverride():
+    | { messages?: api_proto.UltravoxInactivityMessage[] }
+    | undefined {
+    return this.#nextSessionInactivity;
+  }
+
   session(): RealtimeSession {
     const firstSpeakerOverride = this.#nextSessionFirstSpeaker;
     this.#nextSessionFirstSpeaker = undefined;
-    const opts: ModelOptions = withFirstSpeakerOverride(
-      this.#defaultOpts,
-      firstSpeakerOverride
+    const inactivityOverride = this.#nextSessionInactivity;
+    this.#nextSessionInactivity = undefined;
+    const opts: ModelOptions = withInactivityMessagesOverride(
+      withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
+      inactivityOverride
     );
     if (firstSpeakerOverride) {
       // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
       log().info(
         { firstSpeakerSettings: firstSpeakerOverride },
         "applying one-shot firstSpeakerSettings override to new session"
+      );
+    }
+    if (inactivityOverride) {
+      log().info(
+        { inactivityMessages: inactivityOverride.messages ?? [] },
+        "applying one-shot inactivityMessages override to new session"
       );
     }
 
@@ -508,6 +581,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     newSession.instructions = opts.instructions;
 
     this.#sessions.push(newSession);
+    if (this.#nextSessionPrimary) {
+      log().info(
+        { callId: opts.callId },
+        "applying one-shot primary mark: provider-ended now reports the new session"
+      );
+    }
+    if (this.#nextSessionPrimary || !this.#primarySession) {
+      this.#primarySession = newSession;
+    }
+    this.#nextSessionPrimary = false;
     return newSession;
   }
 
@@ -569,6 +652,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   public instructions?: string;
   // Agent transcript buffer for accumulating deltas
   #agentTranscriptBuffer: string = "";
+  // Text-output mode: the agent text streamed into the current generation so
+  // far, so Ultravox's `text` snapshots contribute only what is new.
+  #agentTextStreamed: string = "";
   // User transcript buffer for accumulating deltas. Ultravox does not guarantee a
   // `text` property on the final frame of a turn (see #handleAgentTranscript, which
   // has buffered deltas for that reason since inception); without the same buffer on
@@ -1096,6 +1182,10 @@ export class RealtimeSession extends llm.RealtimeSession {
 
         // Create Ultravox call
         const uv = this.#opts.vendorSpecific?.ultravox;
+        // Text-output mode: no Ultravox voice (options.tts.voice names the
+        // session's TTS voice now) and the text output medium, so Ultravox
+        // streams the agent's turns as text transcripts and sends no audio.
+        const textOnly = !this.#opts.modalities.includes("audio");
         const modelData: api_proto.UltravoxModelData = {
           model: this.#opts.model,
           maxDuration: this.#opts.maxDuration,
@@ -1103,7 +1193,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           systemPrompt: this.instructions || this.#opts.instructions || "",
           selectedTools,
           temperature: this.#opts.temperature,
-          voice: this.#opts.voice,
+          voice: textOnly ? undefined : this.#opts.voice,
+          ...(textOnly ? { initialOutputMedium: "MESSAGE_MEDIUM_TEXT" as const } : {}),
           transcriptOptional: this.#opts.transcriptOptional,
           medium: {
             serverWebSocket: {
@@ -1379,14 +1470,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         });
 
         this.#ws.onclose = (event?: { code?: number; reason?: string }) => {
-          // NB no #expiresAt short-circuit here. It used to set #closing = true once
-          // Date.now() passed a HARDCODED start+5min (see #expiresAt assignment), which
-          // silently swallowed every provider-side close after that point — no error,
-          // no signal, and the SIP leg left up with a dead agent. Deriving it from
-          // maxDuration would be worse still: it would suppress exactly the provider
-          // hangups we now need to act on (Ultravox maxDuration, and the
-          // inactivityMessages endBehavior hangup). #expiresAt remains for the session
-          // -update payloads that report it; it is not a close classifier.
+          // Do not classify provider closes by #expiresAt: duration and inactivity hangups must reach call teardown. See PR
+          // #186.
           const code = event?.code;
           const reason = event?.reason || undefined;
           if (!this.#closing) {
@@ -1472,9 +1557,30 @@ export class RealtimeSession extends llm.RealtimeSession {
       case "call_started":
         this.#logger.info({ event }, "Call started");
         break;
+      case "playback_clear_buffer":
+        this.#handlePlaybackClearBuffer();
+        break;
       default:
         this.#logger.debug({ event }, `Unknown message type: ${event.type}`);
     }
+  }
+
+  /** Text-output mode: Ultravox sends no audio, so its streams are text-only. */
+  get #textOnly(): boolean {
+    return !this.#opts.modalities.includes("audio");
+  }
+
+  /**
+   * The caller interrupted the agent mid-turn (Ultravox stops generating and
+   * the final transcript that follows holds the truncated turn). In text-output
+   * mode the audio the caller hears is the session's TTS, which only the SDK
+   * can stop: tell it the user started speaking so it interrupts the current
+   * speech. Voice mode is left as it was, where Ultravox clears its own audio.
+   */
+  #handlePlaybackClearBuffer(): void {
+    if (!this.#textOnly) return;
+    this.#logger.debug("playback_clear_buffer in text-output mode; interrupting the TTS");
+    this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
   }
 
   #handleStatus(event: api_proto.UltravoxStatusMessage): void {
@@ -1657,10 +1763,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#userTranscriptOrdinal = event.ordinal;
       }
 
-      // Accumulate the turn the same way the agent side does: `text` is an
-      // authoritative snapshot when present, otherwise fold in the delta. A final
-      // frame carrying only `delta` used to fall through to "Skipping empty
-      // transcript event" and the whole user turn was lost silently.
+      // Treat text as a snapshot and delta as incremental, including on final frames. See PR #182.
       this.#userTranscriptBuffer = foldTranscriptFrame(
         this.#userTranscriptBuffer,
         event
@@ -1675,6 +1778,15 @@ export class RealtimeSession extends llm.RealtimeSession {
           itemId: "ultravox-user-input",
         } as InputSpeechStarted);
         this.userSpeechStartedEmitted = true;
+      }
+
+      // Text-output mode: once the agent's text turn is complete Ultravox gives
+      // no earlier sign of the caller speaking than this transcript (measured
+      // 2026-09-10: no playback_clear_buffer, no interim frames), while the TTS
+      // may still be reading the turn out. Interrupt it now; Ultravox's reply
+      // to what the caller said follows as its own generation.
+      if (this.#textOnly && event.final && transcript.trim().length > 0) {
+        this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
       }
 
       // Only emit transcription events when there's actual text content
@@ -1992,6 +2104,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    if (event.medium === "text") {
+      this.#handleAgentTextTranscript(event);
+      return;
+    }
     // We don't bother passing up non-final transcripts to the agent generation stream
     //  as it buffers anyway. It isn't 100% clear that Ultravox will always send a
     //  final transcript with a "text" property, so we buffer deltas just in case,
@@ -2032,6 +2148,28 @@ export class RealtimeSession extends llm.RealtimeSession {
     
     // Reset buffer
     this.#agentTranscriptBuffer = "";
+  }
+
+  /**
+   * Text-output mode: the agent's text IS the response, so stream it into the
+   * generation as it arrives (the TTS starts on the first sentence rather than
+   * after the whole turn), exactly once per character (see `agentTextChunk`).
+   * Ultravox reports `thinking`, never `speaking`, while it generates text, so
+   * the generation is opened here on the first chunk when the state message has
+   * not opened one; `listening` closes it as usual.
+   */
+  #handleAgentTextTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    const { chunk, streamed } = agentTextChunk(this.#agentTextStreamed, event);
+    this.#agentTextStreamed = event.final ? "" : streamed;
+    if (!chunk) return;
+    if (!this.currentGeneration || this.currentGeneration._done) {
+      this.#startNewGeneration();
+    }
+    const generation = this.currentGeneration!;
+    if (!generation._firstTokenTimestamp) {
+      generation._firstTokenTimestamp = Date.now();
+    }
+    generation.textChannel.write(chunk);
   }
 
   #executeFunctionFromEvent(

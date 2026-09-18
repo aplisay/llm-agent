@@ -4,7 +4,9 @@ Builds a Pipecat ``PipelineTask`` for a given agent / model / transport. Two
 modes:
 
 - ``realtime``: a single speech-to-speech LLM service (OpenAI Realtime / Gemini
-  Live) handles audio in / audio out.
+  Live / Ultravox) handles audio in / audio out. When ``agent.options.tts.vendor``
+  names a TTS vendor other than the model's own (realtime_tts.py), the model
+  runs in text-output mode and a discrete TTS stage speaks its text.
 - ``pipeline``: STT → LLM → TTS, plus a turn detector. Vendor + voice picked
   from ``agent.options.stt`` / ``agent.options.tts``.
 
@@ -38,7 +40,34 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .gpt_live import GptLiveSession, is_gpt_live_model_id
+from .grok import is_xai_voice_model_id
+from .output_cushion import OutputCushionInterrupt
+from .output_rate_guard import OutputRateGuard
+from .realtime_tts import (
+    external_tts_enabled,
+    external_tts_vendor,
+    local_vad_required,
+    text_output_enabled,
+    transcript_tts_enabled,
+)
 from .tool_log import log_tool_call, log_tool_result
+
+
+# Recording capture rate. The sipbridge WS carries 16 kHz in both
+# directions, so anything higher just doubles the PCM we write and
+# upload for no extra fidelity. Pipecat's own default comes from the
+# StartFrame (24 kHz for the realtime services), which is why this has
+# to be stated explicitly.
+RECORDING_SAMPLE_RATE = 16000
+
+# How much audio the AudioBufferProcessor accumulates before handing it
+# to the recording sink: 5 s of one 16-bit channel. Pipecat's default of
+# 0 means "never flush until stop_recording()", i.e. hold the whole call
+# in memory. Small enough that a long recorded call is bounded, large
+# enough that the write path runs a few times a minute rather than per
+# frame.
+RECORDING_FLUSH_BYTES = RECORDING_SAMPLE_RATE * 2 * 5
 
 
 def _inactivity_timeout_secs(agent: dict) -> Optional[float]:
@@ -174,6 +203,35 @@ def _language_setting(agent: dict, prefer: str) -> Language | str | None:
     return _language_enum(tag) or tag
 
 
+#: Default Ultravox ``vadSettings`` for the /calls request body, applied when
+#: the agent supplies no explicit ``options.vendorSpecific.ultravox.vadSettings``.
+#: Ultravox's stock ``minimumInterruptionDuration`` is 0.09s — any ~90ms sound
+#: (a breath, a backchannel "mm-hm", handset rustle) cancels agent speech
+#: mid-turn and the truncated text is finalised, with nothing re-offering the
+#: lost answer. 0.48s (15 × the VAD's 32ms frames) requires deliberate speech
+#: to barge in, at the cost of ~0.4s extra latency on a deliberate
+#: interruption. Must stay in step with DEFAULT_VAD_SETTINGS in
+#: lib/models/ultravox.js and ULTRAVOX_DEFAULT_VAD_SETTINGS in the LiveKit
+#: worker's voice-session-factory.ts.
+ULTRAVOX_DEFAULT_VAD_SETTINGS = {"minimumInterruptionDuration": "0.48s"}
+
+
+def _ultravox_vad_extra(agent: dict) -> dict:
+    """Native Ultravox ``vadSettings`` for the /calls request body.
+
+    An explicit ``options.vendorSpecific.ultravox.vadSettings`` dict passes
+    through verbatim — caller wins wholesale, the same contract as the native
+    driver and the LiveKit plugin (this is also the first vendorSpecific field
+    this worker honours at all). Otherwise the platform default applies; see
+    :data:`ULTRAVOX_DEFAULT_VAD_SETTINGS`.
+    """
+    vendor = ((agent.get("options") or {}).get("vendorSpecific") or {})
+    supplied = (vendor.get("ultravox") or {}).get("vadSettings") if isinstance(vendor, dict) else None
+    if isinstance(supplied, dict) and supplied:
+        return {"vadSettings": supplied}
+    return {"vadSettings": dict(ULTRAVOX_DEFAULT_VAD_SETTINGS)}
+
+
 def _ultravox_language_extra(agent: dict) -> dict:
     """Native Ultravox ``languageHint`` derived from ``options.tts.language``.
 
@@ -235,10 +293,55 @@ def _ultravox_inactivity_extra(agent: dict) -> dict:
     return {"inactivityMessages": messages}
 
 
-def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams]:
+#: Onset the local VAD needs before it declares a user turn on a text-output
+#: realtime session (see ``_local_vad_analyzer``). Close to Ultravox's own
+#: ``minimumInterruptionDuration`` (ULTRAVOX_DEFAULT_VAD_SETTINGS, 0.48s) so a
+#: cough or a backchannel does not clear the TTS unless Ultravox would also
+#: have treated it as a turn. Pipecat's stock 0.2s is tuned for a pipeline
+#: whose own STT decides the turn; here the provider does.
+LOCAL_VAD_START_SECS = 0.4
+
+
+def _local_vad_analyzer() -> Any:
+    """A fresh Silero VAD for one text-output realtime session.
+
+    Ultravox's Pipecat service emits no user-turn frames and our transports run
+    no VAD, so on a text-output session nothing would clear queued TTS audio
+    when the caller talks over it. The spike (plan section 9) showed Ultravox
+    itself gives no early signal once its text turn is complete, which is the
+    common case because text finishes long before its playout does. A VAD on
+    the user aggregator makes Pipecat's normal turn machinery broadcast the
+    interruption that clears the TTS and the output transport.
+    """
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
+
+    return SileroVADAnalyzer(params=VADParams(start_secs=LOCAL_VAD_START_SECS))
+
+
+def _user_aggregator_params_for(
+    agent: dict, *, local_vad: bool = False, mute_for_greeting: bool = True
+) -> Optional[LLMUserAggregatorParams]:
     """Build the user-aggregator params, applying ``MuteUntilFirstBotComplete``
     when the agent configures an opening greeting, and ``user_idle_timeout``
     when ``options.inactivity`` is configured.
+
+    ``mute_for_greeting=False`` (GPT-Live) leaves the greeting mute off: that
+    strategy drops the caller's audio frames before the LLM service, and the
+    Live API's session timeline only advances on input audio, so a muted
+    session never speaks its opening instruction and never unmutes. The
+    GPT-Live service keeps the caller inaudible during the greeting by sending
+    silence instead (gpt_live_service.AplisayOpenAILiveLLMService). The
+    builders also pass False when the platform opens the call in place of the
+    greeting (``build_voice_session``'s ``opening``: an agent handover or a
+    takeover). No greeting plays then, so the caller can interrupt the opening.
+
+    ``local_vad`` (text-output realtime sessions) adds a Silero VAD plus
+    VAD-driven turn strategies so the caller's speech interrupts the external
+    TTS: see :func:`_local_vad_analyzer`. The stop strategy is the plain
+    speech-timeout one rather than Pipecat's default smart-turn model, because
+    the provider still owns the real end-of-turn decision; the local turn only
+    exists to fire the interruption.
 
     The architecture doc says greetings are uninterruptible — VAD-detected
     user speech should be dropped while the greeting plays. We do that with
@@ -274,14 +377,24 @@ def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams
 
     idle_timeout = _inactivity_timeout_secs(agent)
 
-    if not has_greeting and idle_timeout is None:
+    if not has_greeting and idle_timeout is None and not local_vad:
         return None
 
     params = LLMUserAggregatorParams()
-    if has_greeting:
+    if has_greeting and mute_for_greeting:
         params.user_mute_strategies = [MuteUntilFirstBotCompleteUserMuteStrategy()]
     if idle_timeout is not None:
         params.user_idle_timeout = idle_timeout
+    if local_vad:
+        from pipecat.turns.user_start import VADUserTurnStartStrategy
+        from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+        from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+        params.vad_analyzer = _local_vad_analyzer()
+        params.user_turn_strategies = UserTurnStrategies(
+            start=[VADUserTurnStartStrategy()],
+            stop=[SpeechTimeoutUserTurnStopStrategy()],
+        )
     return params
 
 
@@ -292,10 +405,16 @@ def _user_aggregator_params_for(agent: dict) -> Optional[LLMUserAggregatorParams
 _DEFAULT_DTMF_TIMEOUT_MS = 1500
 
 
-def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
+def _dtmf_aggregator_for(
+    agent: dict, *, on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None
+) -> DTMFAggregator:
     """Build the DTMF aggregator that buffers keypad digits into a single user
     turn, honouring per-agent ``options.dtmfTimeout`` and
     ``options.dtmfTerminator``.
+
+    ``on_digits`` (GPT-Live) swaps the ``TranscriptionFrame`` delivery for a
+    callback: the live session ignores context frames after it has started,
+    so the digits go to the injection shim instead (see gpt_live_service.py).
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -345,6 +464,14 @@ def _dtmf_aggregator_for(agent: dict) -> DTMFAggregator:
     )
     # termination_digit may be None to disable the terminator (see above); the
     # base class type-hints KeypadEntry but only does an equality comparison.
+    if on_digits is not None:
+        from .gpt_live_service import GptLiveDtmfAggregator
+
+        return GptLiveDtmfAggregator(
+            timeout=timeout_s,
+            termination_digit=termination_digit,  # type: ignore[arg-type]
+            on_digits=on_digits,
+        )
     return DTMFAggregator(
         timeout=timeout_s,
         termination_digit=termination_digit,  # type: ignore[arg-type]
@@ -408,7 +535,7 @@ def build_stt_service(agent: dict) -> Any:
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
 
-def build_tts_service(agent: dict) -> Any:
+def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
     (defaulting to Cartesia).
 
@@ -445,6 +572,12 @@ def build_tts_service(agent: dict) -> Any:
     if tts_vendor == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 
+        service_class = ElevenLabsTTSService
+        if transcript_tts:
+            from .elevenlabs_transcript_tts import ElevenLabsTranscriptTTSService
+
+            service_class = ElevenLabsTranscriptTTSService
+
         # ElevenLabs only honours a language code on its multilingual models;
         # Pipecat's default here (eleven_flash_v2_5) is one of them, so the
         # setting takes effect. If the model is ever pinned to a non-multilingual
@@ -454,7 +587,7 @@ def build_tts_service(agent: dict) -> Any:
         # that arg is deprecated in Pipecat 1.x, and since we now pass settings
         # for the language anyway, using both would mean relying on the
         # settings-wins precedence rule between them.
-        return ElevenLabsTTSService(
+        return service_class(
             api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
@@ -514,8 +647,14 @@ def _wire_inactivity_kick(
     is_ultravox: bool,
     relay_endpoint: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    inject: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> None:
     """Register the inactivity "kick" handler on the user aggregator.
+
+    ``inject`` replaces the frame-based delivery for a service that ignores
+    context frames after it has started (GPT-Live): it is awaited with the
+    configured message and speaks it through the service's own channel
+    (``gpt_live_service.AplisayOpenAILiveLLMService.inject_inactivity_prompt``).
 
     Fires the configured ``options.inactivity.message`` as deterministic
     spoken audio after ``options.inactivity.timeout`` seconds of silence,
@@ -590,8 +729,10 @@ def _wire_inactivity_kick(
     hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
     idle_prompts = 0
 
+    # Pipecat calls this with (aggregator, strategy). If the signature does not
+    # accept both, the call raises and pipecat only logs it, so no reset happens.
     @user_aggregator.event_handler("on_user_turn_started")
-    async def _on_user_turn_started(_aggregator) -> None:  # noqa: ANN001
+    async def _on_user_turn_started(_aggregator, _strategy=None) -> None:  # noqa: ANN001
         nonlocal idle_prompts
         idle_prompts = 0
 
@@ -606,7 +747,9 @@ def _wire_inactivity_kick(
         if task is None:
             return
         try:
-            if mode == "pipeline" and TTSSpeakFrame is not None:
+            if inject is not None:
+                await inject(message)
+            elif mode == "pipeline" and TTSSpeakFrame is not None:
                 await task.queue_frames([TTSSpeakFrame(message)])
             else:
                 await task.queue_frames(
@@ -707,49 +850,8 @@ def _is_ultravox_realtime(llm: Any) -> bool:
 
 
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
-    """Register the platform's tool descriptors against a Pipecat LLM service.
-
-    The ``tools`` argument matches the format produced by
-    :func:`agent_tools.build_agent_tools`: each entry has ``schema`` and
-    ``execute``. The schema is converted to ``FunctionSchema`` and registered
-    with the service so it appears on the LLM-visible tool surface.
-
-    On the **Ultravox realtime** path, data-returning tools (REST functions, MCP
-    tools, stubs — anything that is not a shielded side-effecting builtin) are
-    handled specially, evolved over two staging incidents (2026-07-24):
-
-    * Ultravox FREEZES the conversation between ``client_tool_invocation`` and
-      the matching ``client_tool_result``. With plain synchronous registration
-      the constant speech-to-speech interruptions cancel the in-flight call
-      (``LLMService._handle_interruptions`` cancels every
-      ``cancel_on_interruption=True`` call ~30ms in), and the result, when it
-      arrives, is only shipped on the NEXT context push — which the assistant
-      aggregator skips while the caller is still speaking. The call froze until
-      the *next* tool call flushed the stale result.
-    * Registering ``cancel_on_interruption=False`` fixes the CANCEL (the call
-      survives the interruption — the tool turn is protected). But it also puts
-      the service on Pipecat's async-tool path, which unfreezes with a
-      *placeholder* result and delivers the real result as user-side TEXT.
-      Ultravox does NOT recognise that text as a function result, so the model
-      loops re-calling the tool (2nd incident: booking_get_slots 4× on
-      placeholder results).
-
-    So we keep ``cancel_on_interruption=False`` for its no-cancel property ONLY,
-    and replace the delivery: our Ultravox subclass suppresses the placeholder
-    and ``_runner`` ships the true result as a NATIVE ``client_tool_result`` via
-    :func:`_deliver_native_result` (both success and error). The tool turn stays
-    frozen — uninterruptible — until that real result lands. ``_native`` below is
-    this tool set; ``enable_async_tool_cancellation`` stays off, so no cancel
-    tool or system-prompt change is injected.
-
-    Side-effecting builtins (``hangup``, ``transfer``, ``transfer_agent``,
-    ``subagent`` — flagged ``protect_from_interruption``) stay SYNCHRONOUS and are
-    NOT native-delivered: their handover machinery (``suppress_result_run`` +
-    ``CallSession._apply_agent_transfer``) depends on the normal result path, the
-    ``_runner`` already shields their execution, and the outgoing model does not
-    need their result. Off the Ultravox path (pipeline STT→LLM→TTS) every tool
-    stays synchronous — the freeze is Ultravox-specific.
-    """
+    """Ultravox data tools must survive interruptions and return native results without async placeholders. See PRs #168 and #169. Keep
+    protected builtins on the synchronous result path used by handover; other providers remain synchronous."""
     ultravox_realtime = _is_ultravox_realtime(llm)
     schemas: list[FunctionSchema] = []
     for entry in tools:
@@ -891,8 +993,49 @@ async def build_voice_session(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    on_aux_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_aux_usage: "Optional[Callable[[str, int, dict], None]]" = None,
+    on_output_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_output_usage: "Optional[Callable[[str, int, dict], None]]" = None,
+    gpt_live: "Optional[GptLiveSession]" = None,
+    history: "Optional[list[dict]]" = None,
+    opening: Optional[str] = None,
+    on_provider_session_ended: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_injected_dtmf: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, Optional[AudioBufferProcessor], LLMContext, Any]:
     """Construct a configured ``PipelineTask`` for the call.
+
+    ``gpt_live`` is the resolved two-layer composition for a GPT-Live model
+    (``call_session._compose_gpt_live``): required on such a model, ignored on
+    every other. ``history`` seeds the context with prior ``user`` /
+    ``assistant`` turns (an agent handover onto GPT-Live or a Grok voice row
+    carries the transcript as the session's startup history rather than
+    inside the prompt).
+
+    ``on_provider_session_ended`` is called with the provider's reason when a
+    Grok voice session ends on xAI's side (a server close, a fatal error, the
+    concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
+    receives the aggregated keypad digits on a Grok voice row, where they
+    reach the model through the service rather than a transcription frame.
+
+    ``opening`` is set when this generation continues a call already in
+    progress, so the caller has been greeted: it is the platform's first-turn
+    instruction, used in place of the agent's greeting.
+    :data:`~pipecat_aplisay.transfer_prompts.HANDOVER_OPENING_INSTRUCTION`
+    follows a ``transfer_agent`` full-stack handover, and
+    :data:`~pipecat_aplisay.transfer_prompts.TAKEOVER_OPENING_INSTRUCTION`
+    opens a human-to-agent takeover leg (``CallSession._platform_opening``).
+    Ultravox takes it here, because it takes its first turn at call creation;
+    ``call_session._wire_greeting`` handles the other models. No greeting
+    plays on such a generation, so the greeting mute is off.
+
+    ``on_aux_transcript`` / ``on_aux_usage`` receive the auxiliary STT's final
+    transcripts and usage deltas (``unit, quantity, {vendor, model}``) when the
+    agent sets ``options.stt.aux``; ``on_output_transcript`` /
+    ``on_output_usage`` likewise for the output audit STT when the agent sets
+    ``options.tts.output`` — see aux_stt.py. Neither tap exists on a call
+    unless its option is set; without a transcript callback an option is
+    ignored.
 
     When ``enable_recording`` is true the returned ``AudioBufferProcessor``
     is appended to the pipeline (stereo, user-left/bot-right per
@@ -915,22 +1058,335 @@ async def build_voice_session(
 
     audio_buffer: Optional[AudioBufferProcessor] = None
     if enable_recording:
-        # Stereo, sample rate inherits from whatever the source pipeline
-        # produces. ``num_channels=2`` is the documented "user left / bot
-        # right" layout — matches LiveKit's RecorderIO output exactly.
-        audio_buffer = AudioBufferProcessor(num_channels=2)
+        # Set a nonzero buffer_size: zero accumulates the whole call until stop_recording(). See PR #285.
+        # Keep stereo user-left/bot-right at the SIP path's 16 kHz; RecordingSession appends each flush.
+        audio_buffer = AudioBufferProcessor(
+            num_channels=2,
+            sample_rate=RECORDING_SAMPLE_RATE,
+            buffer_size=RECORDING_FLUSH_BYTES,
+        )
+
+    aux_tap = _aux_stt_tap_for(agent, on_aux_transcript, on_aux_usage)
+    # GPT-Live streams speech as ``SpeechOutputAudioRawFrame`` (a sibling of
+    # ``TTSAudioRawFrame`` under ``OutputAudioRawFrame``), so the audit tap keys
+    # on the parent class there.
+    output_frame_cls = None
+    if (
+        is_gpt_live_model_id(model_id_from_name(model_name))
+        and not transcript_tts_enabled(agent, model_id_from_name(model_name))
+    ):
+        from pipecat.frames.frames import OutputAudioRawFrame
+
+        output_frame_cls = OutputAudioRawFrame
+    output_tap = _output_stt_tap_for(
+        agent, on_output_transcript, on_output_usage, frame_cls=output_frame_cls
+    )
 
     if mode == "realtime":
         task, context, llm = await _build_realtime(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, gpt_live=gpt_live, history=history,
+            opening=opening, on_provider_session_ended=on_provider_session_ended,
+            on_injected_dtmf=on_injected_dtmf,
         )
     else:
         task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
-            on_inactivity_hangup,
+            on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, opening=opening,
         )
     return task, audio_buffer, context, llm
+
+
+def _aux_stt_tap_for(
+    agent: dict,
+    on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
+    on_usage: "Optional[Callable[[str, int, dict], None]]",
+) -> "Optional[Any]":
+    """The auxiliary STT tap for ``options.stt.aux`` (see aux_stt.py), or
+    ``None`` when the option is off. The engine is built lazily by the tap
+    through :func:`build_stt_service` with the aux block standing in for
+    ``options.stt`` — an unsupported vendor therefore costs only the second
+    opinion (logged), never the call."""
+    from .aux_stt import AuxSttTap, aux_stt_agent, aux_stt_vendor, parse_aux_stt_option
+
+    config = parse_aux_stt_option(agent.get("options"))
+    if config is None or on_transcript is None:
+        return None
+    effective_agent = aux_stt_agent(agent, config)
+    vendor = aux_stt_vendor(agent, config)
+    logger.bind(vendor=vendor).info("auxiliary STT configured (options.stt.aux)")
+
+    def _report(unit: str, quantity: int) -> None:
+        if on_usage is not None:
+            on_usage(unit, quantity, vendor)
+
+    return AuxSttTap(
+        stt_factory=lambda: build_stt_service(effective_agent),
+        on_final=on_transcript,
+        on_usage=_report,
+    )
+
+
+def _output_stt_tap_for(
+    agent: dict,
+    on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
+    on_usage: "Optional[Callable[[str, int, dict], None]]",
+    *,
+    frame_cls: "Optional[type]" = None,
+) -> "Optional[Any]":
+    """The output audit tap for ``options.tts.output`` (see aux_stt.py), or
+    ``None`` when the option is off — in which case nothing is inserted into
+    the chain. Taps the agent's ``TTSAudioRawFrame``s only, unless ``frame_cls``
+    names another output audio class (GPT-Live's speech frames)."""
+    from pipecat.frames.frames import TTSAudioRawFrame
+
+    from .aux_stt import AuxSttTap, output_stt_agent, output_stt_vendor, parse_output_stt_option
+
+    config = parse_output_stt_option(agent.get("options"))
+    if config is None or on_transcript is None:
+        return None
+    effective_agent = output_stt_agent(agent, config)
+    vendor = output_stt_vendor(agent, config)
+    logger.bind(vendor=vendor).info("output audit STT configured (options.tts.output)")
+
+    def _report(unit: str, quantity: int) -> None:
+        if on_usage is not None:
+            on_usage(unit, quantity, vendor)
+
+    return AuxSttTap(
+        stt_factory=lambda: build_stt_service(effective_agent),
+        on_final=on_transcript,
+        on_usage=_report,
+        frame_cls=frame_cls or TTSAudioRawFrame,
+        label="outputStt",
+    )
+
+
+def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> Any:
+    """The OpenAI Realtime ``SessionProperties`` for one session.
+
+    Native: the caller's transcription on, and ``options.tts.voice`` (default
+    ``alloy``) as the output voice. Text-output mode: ``output_modalities``
+    ``["text"]`` and no output audio block at all, so the service streams
+    ``response.text.delta`` as LLMTextFrames for the external TTS and the voice
+    (which now names the TTS voice) is never sent to OpenAI. The server VAD is
+    unchanged either way: its ``speech_started`` event is what the service turns
+    into the interruption that clears the TTS.
+    """
+    from pipecat.services.openai.realtime.events import (
+        AudioConfiguration,
+        AudioInput,
+        AudioOutput,
+        InputAudioTranscription,
+        SessionProperties,
+    )
+
+    options = agent.get("options") or {}
+    audio_input = AudioInput(transcription=InputAudioTranscription())
+    if text_output:
+        return SessionProperties(
+            output_modalities=["text"],
+            audio=AudioConfiguration(input=audio_input),
+        )
+    voice = (options.get("tts") or {}).get("voice") or "alloy"
+    return SessionProperties(
+        audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+    )
+
+
+def _xai_session_properties(agent: dict) -> Any:
+    """The Grok ``SessionProperties`` for one session (docs/grok.md).
+
+    ``options.tts.voice`` (default ``eve``) at the top level, server VAD with
+    xAI's own defaults (the session is created with no turn detection at all,
+    so it has to be asked for), the caller's transcription with
+    ``grok-transcribe`` and ``options.stt.language`` as the hint, and
+    ``options.effort`` as the reasoning effort. There is no text-output mode.
+    The subclass fills the audio formats from the transport rates.
+    """
+    from pipecat.services.xai.realtime.events import (
+        AudioConfiguration,
+        AudioInput,
+        InputAudioTranscription,
+        Reasoning,
+        SessionProperties,
+        TurnDetection,
+    )
+
+    from .grok import XAI_DEFAULT_VOICE, XAI_TRANSCRIPTION_MODEL, language_hint, voice_effort
+
+    options = agent.get("options") or {}
+    effort = voice_effort(options)
+    return SessionProperties(
+        voice=(options.get("tts") or {}).get("voice") or XAI_DEFAULT_VOICE,
+        turn_detection=TurnDetection(type="server_vad"),
+        audio=AudioConfiguration(
+            input=AudioInput(
+                transcription=InputAudioTranscription(
+                    model=XAI_TRANSCRIPTION_MODEL, language_hint=language_hint(agent)
+                )
+            )
+        ),
+        reasoning=Reasoning(effort=effort) if effort else None,
+    )
+
+
+def _ultravox_one_shot_params(
+    agent: dict,
+    system_prompt: str,
+    ultravox_model: str,
+    *,
+    text_output: bool,
+    opening: Optional[str] = None,
+) -> Any:
+    """The ``OneShotInputParams`` for one Ultravox /calls request.
+
+    Split out of ``_build_realtime`` so the mapping from agent options to the
+    request body (greeting, inactivity, language hint, VAD settings, voice, and
+    the text-output medium) is testable without a transport. ``text_output``
+    is :func:`realtime_tts.text_output_enabled` for this session.
+    ``opening`` is the platform's first-turn instruction when the generation
+    continues a call already in progress (see ``build_voice_session``); the
+    opening turn is then that instruction, not the agent's greeting.
+    """
+    import uuid as _uuid
+
+    from pipecat.services.ultravox.llm import OneShotInputParams
+
+    options = agent.get("options") or {}
+    # In text-output mode ``options.tts.voice`` names the external TTS voice,
+    # not an Ultravox one, so the Ultravox call gets no voice at all.
+    voice = None if text_output else (options.get("tts") or {}).get("voice")
+
+    # ----- Greeting wiring (Ultravox-specific) -----
+    # Ultravox's ``process_frame`` only handles ``LLMContextFrame``,
+    # ``InterruptionFrame``, ``InputTextRawFrame``,
+    # ``InputAudioRawFrame``, and ``VADUserStoppedSpeakingFrame`` — the
+    # model-agnostic greeting frames we use for OpenAI Realtime / Gemini
+    # Live (``LLMMessagesAppendFrame`` + ``LLMRunFrame``, or
+    # ``TTSSpeakFrame``) pass through untouched. So we wire greetings
+    # via the Ultravox API instead, using ``firstSpeakerSettings.agent``
+    # (https://docs.ultravox.ai/api-reference/calls/calls-post#body-first-speaker-settings):
+    #
+    # - ``greeting.text`` → ``firstSpeakerSettings.agent.text`` — the
+    #   exact text is spoken verbatim, uninterruptible.
+    # - ``greeting.instructions`` → ``firstSpeakerSettings.agent.prompt``
+    #   — Ultravox uses the instructions as an LLM prompt to generate
+    #   the opening line. Uninterruptible. We deliberately *do not*
+    #   touch the agent's system prompt: ``prompt`` here is scoped to
+    #   the first turn only, which preserves the contract that the
+    #   greeting doesn't bleed into the rest of the conversation.
+    # - No greeting configured → ``firstSpeakerSettings.agent`` with
+    #   no overrides — agent speaks first (interruptible) using its
+    #   system prompt, matching the model-agnostic default in
+    #   ``call_session._wire_greeting``.
+    # - A generation that continues a call in progress (``opening``: the
+    #   first generation after a ``transfer_agent`` full-stack handover, or a
+    #   human-to-agent takeover leg) → ``firstSpeakerSettings.agent.prompt``
+    #   set to that opening instruction, interruptible. The agent's greeting
+    #   is not used, because the caller was greeted when the call started.
+    #   Without a prompt, Ultravox writes the first turn from its own
+    #   "(New Call) Respond as if you are answering the phone." message,
+    #   which overrides the handover or takeover context in the system
+    #   prompt, and the agent greets the caller as if the call were new.
+    #
+    # ``call_session._wire_greeting`` short-circuits for Ultravox so
+    # those no-op frames are never queued; this branch is the sole
+    # owner of the greeting behaviour on Ultravox.
+    greeting = (options.get("greeting") or {})
+    greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
+    greeting_text = (greeting_text or "").strip()
+    greeting_instructions = (
+        greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
+    )
+    greeting_instructions = (greeting_instructions or "").strip()
+
+    ultravox_first_speaker: dict[str, Any]
+    if opening:
+        ultravox_first_speaker = {"agent": {"prompt": opening}}
+    elif greeting_text:
+        ultravox_first_speaker = {
+            "agent": {
+                "text": greeting_text,
+                "uninterruptible": True,
+            }
+        }
+    elif greeting_instructions:
+        ultravox_first_speaker = {
+            "agent": {
+                "prompt": greeting_instructions,
+                "uninterruptible": True,
+            }
+        }
+    else:
+        # Agent speaks first (interruptible) using its system prompt.
+        ultravox_first_speaker = {"agent": {}}
+
+    # Pipecat's ``OneShotInputParams.voice`` is typed ``uuid.UUID | None``
+    # via pydantic, so a plain ``voice="Louisamay"`` raises
+    # ``ValidationError: Input should be a valid UUID``. But the
+    # underlying Ultravox /calls API accepts BOTH the voiceId UUID and
+    # the human-readable voice name (the docs at
+    # https://docs.ultravox.ai/api-reference/calls/calls-post describe
+    # ``voice`` as "voice id or name"). Pipecat itself only does
+    # ``str(params.voice)`` when building the request body
+    # (services/ultravox/llm.py:_start_one_shot_call), so the wire
+    # representation is identical for either form. The Aplisay
+    # platform stores voices by their name (see lib/handlers/ultravox.js
+    # which fetches the /voices catalogue and exposes the ``name``
+    # field), so we want to support names here.
+    #
+    # Strategy: construct with ``voice=None`` to satisfy the validator,
+    # then route around it via ``object.__setattr__`` to plant the
+    # raw string (or parsed UUID) directly into the model dict. This
+    # is safe because pydantic v2 BaseModel uses ``__dict__`` for
+    # field storage and Pipecat's downstream code only stringifies the
+    # value.
+    params = OneShotInputParams(
+        api_key=_require_env("ULTRAVOX_API_KEY"),
+        system_prompt=system_prompt,
+        # ``model`` on the request body maps to the Ultravox catalogue
+        # id (``ultravox-v0.6`` etc.). The default in the library is
+        # ``fixie-ai/ultravox`` which is the public alias — pass our
+        # explicit id through verbatim.
+        model=ultravox_model,
+        voice=None,
+        # Text-output mode: ``initialOutputMedium: MESSAGE_MEDIUM_TEXT`` on the
+        # /calls body. Ultravox then sends no audio and streams the agent's
+        # text as ``medium: "text"`` transcripts, which ultravox_compat turns
+        # into LLMTextFrames for the external TTS stage.
+        output_medium="text" if text_output else None,
+        # ``OneShotInputParams.extra`` is merged into the /calls request
+        # body (see ``_start_one_shot_call`` in Pipecat's Ultravox
+        # service: ``request_body = request_body | params.extra``), so
+        # this is the canonical place to surface API parameters that
+        # the OneShotInputParams class doesn't model directly —
+        # ``firstSpeakerSettings`` being the headline case here.
+        extra={
+            "firstSpeakerSettings": ultravox_first_speaker,
+            # Native Ultravox idle handling (speech-to-speech has no
+            # separate TTS, so the generic kick is unreliable here).
+            **_ultravox_inactivity_extra(agent),
+            # Portable ``options.tts.language`` → native ``languageHint``.
+            # Same reason: no separate TTS stage to carry the language, so
+            # this single hint drives both recognition and synthesis.
+            **_ultravox_language_extra(agent),
+            # Interruption sensitivity: platform default unless the agent
+            # carries an explicit vendorSpecific override.
+            **_ultravox_vad_extra(agent),
+        },
+    )
+    if voice:
+        # Accept either a UUID string or a human-readable voice name.
+        # Stringify a UUID where possible so any future strict
+        # validator further down would still pass; otherwise plant the
+        # raw name and rely on str(params.voice) at request time.
+        try:
+            resolved_voice: object = _uuid.UUID(str(voice))
+        except (ValueError, AttributeError, TypeError):
+            resolved_voice = str(voice)
+        object.__setattr__(params, "voice", resolved_voice)
+    return params
 
 
 async def _build_realtime(
@@ -944,11 +1400,65 @@ async def _build_realtime(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    aux_tap: "Optional[Any]" = None,
+    output_tap: "Optional[Any]" = None,
+    gpt_live: "Optional[GptLiveSession]" = None,
+    history: "Optional[list[dict]]" = None,
+    opening: Optional[str] = None,
+    on_provider_session_ended: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    on_injected_dtmf: "Optional[Callable[[str], Awaitable[None]]]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
+    gpt_live_model = is_gpt_live_model_id(model_id)
+    grok_voice_model = is_xai_voice_model_id(model_id)
 
-    if model_id.startswith("openai/"):
+    # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
+    # than the model's own, so the model emits text and a discrete TTS stage
+    # speaks it. The API server only accepts such a vendor on rows flagged
+    # ``externalTts``, so a provider this worker cannot run in text mode is a
+    # misconfiguration worth a warning, not a dead call: fall back to native
+    # audio.
+    text_output = text_output_enabled(agent, model_id)
+    transcript_tts = transcript_tts_enabled(agent, model_id)
+    requested_tts_vendor = external_tts_vendor(agent, model_id)
+    if transcript_tts:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
+            "experimental GPT-Live transcript TTS: native audio is generated but discarded; "
+            "external speech timing may diverge from the Live session"
+        )
+    elif requested_tts_vendor and not text_output:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
+            "options.tts.vendor names an external TTS but this realtime provider "
+            "has no text-output mode on this worker; using the model's own voice"
+        )
+    elif text_output:
+        logger.bind(vendor=requested_tts_vendor, model=model_id).info(
+            "realtime text-output mode: external TTS speaks the model's text"
+        )
+
+    if gpt_live_model:
+        # OpenAI GPT-Live (docs/gpt-live.md): a full-duplex voice model that
+        # delegates reasoning and tool use to a backend text model. The call
+        # session resolved the composition (``gpt_live``): the voice
+        # instructions, the backend model, instructions and effort, the merged
+        # tool set (already in ``tools``) and the client-mode delegate. The
+        # service subclass carries the injection shim, the vendorSpecific merge
+        # and the provider-close callback (gpt_live_service.py).
+        if gpt_live is None:
+            raise RuntimeError(
+                f"{model_id} needs a resolved GPT-Live composition; build it with "
+                "call_session._compose_gpt_live before build_voice_session"
+            )
+        from .gpt_live_service import build_gpt_live_service
+
+        llm = build_gpt_live_service(
+            api_key=_require_env("OPENAI_API_KEY"),
+            voice=(options.get("tts") or {}).get("voice"),
+            session=gpt_live,
+            transcript_tts=transcript_tts,
+        )
+    elif model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
         # output, not directly on Settings. The Settings class only accepts
         # `session_properties` (plus inherited `model` / `system_instruction`).
@@ -958,26 +1468,15 @@ async def _build_realtime(
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
         from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
-        from pipecat.services.openai.realtime.events import (
-            AudioConfiguration,
-            AudioInput,
-            AudioOutput,
-            InputAudioTranscription,
-            SessionProperties,
-        )
 
         _, openai_model = model_id.split("/", 1)
-        voice = (options.get("tts") or {}).get("voice") or "alloy"
         llm = OpenAIRealtimeLLMService(
             api_key=_require_env("OPENAI_API_KEY"),
             settings=OpenAIRealtimeLLMService.Settings(
                 model=openai_model,
                 system_instruction=system_prompt,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(transcription=InputAudioTranscription()),
-                        output=AudioOutput(voice=voice),
-                    ),
+                session_properties=_openai_realtime_session_properties(
+                    agent, text_output=text_output
                 ),
             ),
         )
@@ -987,6 +1486,19 @@ async def _build_realtime(
         llm = GeminiLiveLLMService(
             api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
             system_instruction=system_prompt,
+        )
+    elif grok_voice_model:
+        # Use the Grok subclass for platform injection, vendor overrides and provider-close handling. See docs/grok.md.
+        from .grok_service import build_grok_service
+
+        _, xai_model = model_id.split("/", 1)
+        llm = build_grok_service(
+            api_key=_require_env("XAI_API_KEY", "GROK_API_KEY"),
+            model=xai_model,
+            system_prompt=system_prompt,
+            session_properties=_xai_session_properties(agent),
+            agent=agent,
+            on_session_ended=on_provider_session_ended,
         )
     elif model_id.startswith("ultravox/"):
         # Ultravox Realtime — Pipecat constructs a one-shot call against the
@@ -1000,10 +1512,6 @@ async def _build_realtime(
         # ``transcript_observer.py`` already accepts TranscriptionFrame from
         # LLMService originators, so user transcripts flow without extra
         # configuration.
-        import uuid as _uuid
-
-        from pipecat.services.ultravox.llm import OneShotInputParams
-
         # Local subclass overrides ``_receive_messages`` to silence a benign
         # ERROR line on client-driven teardown. See ultravox_compat.py.
         from .ultravox_compat import AplisayUltravoxRealtimeLLMService as UltravoxRealtimeLLMService
@@ -1020,117 +1528,9 @@ async def _build_realtime(
         # the last ``/`` before sending — mirroring the native handler
         # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
         ultravox_model = model_id.rsplit("/", 1)[-1]
-        voice = (options.get("tts") or {}).get("voice")
-
-        # ----- Greeting wiring (Ultravox-specific) -----
-        # Ultravox's ``process_frame`` only handles ``LLMContextFrame``,
-        # ``InterruptionFrame``, ``InputTextRawFrame``,
-        # ``InputAudioRawFrame``, and ``VADUserStoppedSpeakingFrame`` — the
-        # model-agnostic greeting frames we use for OpenAI Realtime / Gemini
-        # Live (``LLMMessagesAppendFrame`` + ``LLMRunFrame``, or
-        # ``TTSSpeakFrame``) pass through untouched. So we wire greetings
-        # via the Ultravox API instead, using ``firstSpeakerSettings.agent``
-        # (https://docs.ultravox.ai/api-reference/calls/calls-post#body-first-speaker-settings):
-        #
-        # - ``greeting.text`` → ``firstSpeakerSettings.agent.text`` — the
-        #   exact text is spoken verbatim, uninterruptible.
-        # - ``greeting.instructions`` → ``firstSpeakerSettings.agent.prompt``
-        #   — Ultravox uses the instructions as an LLM prompt to generate
-        #   the opening line. Uninterruptible. We deliberately *do not*
-        #   touch the agent's system prompt: ``prompt`` here is scoped to
-        #   the first turn only, which preserves the contract that the
-        #   greeting doesn't bleed into the rest of the conversation.
-        # - No greeting configured → ``firstSpeakerSettings.agent`` with
-        #   no overrides — agent speaks first (interruptible) using its
-        #   system prompt, matching the model-agnostic default in
-        #   ``call_session._wire_greeting``.
-        #
-        # ``call_session._wire_greeting`` short-circuits for Ultravox so
-        # those no-op frames are never queued; this branch is the sole
-        # owner of the greeting behaviour on Ultravox.
-        greeting = (options.get("greeting") or {})
-        greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
-        greeting_text = (greeting_text or "").strip()
-        greeting_instructions = (
-            greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
+        params = _ultravox_one_shot_params(
+            agent, system_prompt, ultravox_model, text_output=text_output, opening=opening
         )
-        greeting_instructions = (greeting_instructions or "").strip()
-
-        ultravox_first_speaker: dict[str, Any]
-        if greeting_text:
-            ultravox_first_speaker = {
-                "agent": {
-                    "text": greeting_text,
-                    "uninterruptible": True,
-                }
-            }
-        elif greeting_instructions:
-            ultravox_first_speaker = {
-                "agent": {
-                    "prompt": greeting_instructions,
-                    "uninterruptible": True,
-                }
-            }
-        else:
-            # Agent speaks first (interruptible) using its system prompt.
-            ultravox_first_speaker = {"agent": {}}
-
-        # Pipecat's ``OneShotInputParams.voice`` is typed ``uuid.UUID | None``
-        # via pydantic, so a plain ``voice="Louisamay"`` raises
-        # ``ValidationError: Input should be a valid UUID``. But the
-        # underlying Ultravox /calls API accepts BOTH the voiceId UUID and
-        # the human-readable voice name (the docs at
-        # https://docs.ultravox.ai/api-reference/calls/calls-post describe
-        # ``voice`` as "voice id or name"). Pipecat itself only does
-        # ``str(params.voice)`` when building the request body
-        # (services/ultravox/llm.py:_start_one_shot_call), so the wire
-        # representation is identical for either form. The Aplisay
-        # platform stores voices by their name (see lib/handlers/ultravox.js
-        # which fetches the /voices catalogue and exposes the ``name``
-        # field), so we want to support names here.
-        #
-        # Strategy: construct with ``voice=None`` to satisfy the validator,
-        # then route around it via ``object.__setattr__`` to plant the
-        # raw string (or parsed UUID) directly into the model dict. This
-        # is safe because pydantic v2 BaseModel uses ``__dict__`` for
-        # field storage and Pipecat's downstream code only stringifies the
-        # value.
-        params = OneShotInputParams(
-            api_key=_require_env("ULTRAVOX_API_KEY"),
-            system_prompt=system_prompt,
-            # ``model`` on the request body maps to the Ultravox catalogue
-            # id (``ultravox-v0.6`` etc.). The default in the library is
-            # ``fixie-ai/ultravox`` which is the public alias — pass our
-            # explicit id through verbatim.
-            model=ultravox_model,
-            voice=None,
-            # ``OneShotInputParams.extra`` is merged into the /calls request
-            # body (see ``_start_one_shot_call`` in Pipecat's Ultravox
-            # service: ``request_body = request_body | params.extra``), so
-            # this is the canonical place to surface API parameters that
-            # the OneShotInputParams class doesn't model directly —
-            # ``firstSpeakerSettings`` being the headline case here.
-            extra={
-                "firstSpeakerSettings": ultravox_first_speaker,
-                # Native Ultravox idle handling (speech-to-speech has no
-                # separate TTS, so the generic kick is unreliable here).
-                **_ultravox_inactivity_extra(agent),
-                # Portable ``options.tts.language`` → native ``languageHint``.
-                # Same reason: no separate TTS stage to carry the language, so
-                # this single hint drives both recognition and synthesis.
-                **_ultravox_language_extra(agent),
-            },
-        )
-        if voice:
-            # Accept either a UUID string or a human-readable voice name.
-            # Stringify a UUID where possible so any future strict
-            # validator further down would still pass; otherwise plant the
-            # raw name and rely on str(params.voice) at request time.
-            try:
-                resolved_voice: object = _uuid.UUID(str(voice))
-            except (ValueError, AttributeError, TypeError):
-                resolved_voice = str(voice)
-            object.__setattr__(params, "voice", resolved_voice)
 
         # Ultravox needs the function schemas at construction time:
         # ``UltravoxRealtimeLLMService`` only forwards ``selectedTools`` to
@@ -1185,11 +1585,33 @@ async def _build_realtime(
 
     schemas = _register_tools_on_llm(llm, tools)
 
-    context = LLMContext(
-        [{"role": "developer", "content": system_prompt}],
-        tools=schemas,
+    # External TTS consumes model text and supplies downstream audio at the transport rate.
+    # See docs/realtime-external-tts.md for GPT-Live's transcript-synthesis exception.
+    external_tts = (
+        [build_tts_service(agent, transcript_tts=transcript_tts)]
+        if external_tts_enabled(agent, model_id) else []
     )
-    user_params = _user_aggregator_params_for(agent)
+
+    if gpt_live_model or grok_voice_model:
+        # Put the system prompt in Settings.system_instruction, not capped startup history; seed only prior turns there.
+        # The greeting's developer message supplies the opening instruction; see docs/gpt-live.md and docs/grok.md.
+        context = LLMContext(list(history or []), tools=schemas)
+    else:
+        context = LLMContext(
+            [{"role": "developer", "content": system_prompt}],
+            tools=schemas,
+        )
+    # A text-output session on a provider that emits no user-turn frames also
+    # gets a local VAD so the caller can interrupt the external TTS (see
+    # _local_vad_analyzer). OpenAI Realtime's server VAD raises the
+    # interruption itself. There is no greeting mute on GPT-Live (see
+    # _user_aggregator_params_for), or when the platform opens the call in
+    # place of the greeting.
+    user_params = _user_aggregator_params_for(
+        agent,
+        local_vad=local_vad_required(agent, model_id),
+        mute_for_greeting=not gpt_live_model and opening is None,
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context, user_params=user_params
     )
@@ -1201,21 +1623,59 @@ async def _build_realtime(
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     # Confidence tone (options.transferTone) sits upstream of the relay
     # injector so an engaged relay drops tone frames too — see confidence_tone.
+    # Bind it to the output transport it feeds: the tone MUST be emitted at that
+    # transport's own sample rate, not StartFrame's (see confidence_tone._out_rate).
     tone = [tone_injector] if tone_injector is not None else []
+    if tone_injector is not None:
+        tone_injector.bind_output(transport.output())
+    # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
+    rate_guard = OutputRateGuard(output_transport=transport.output())
+    # Barge-in has to reach BELOW the transport: the output track plays out
+    # whatever it holds regardless of what the pipeline decides, so the cushion
+    # that protects against starvation would otherwise become tail-talk over an
+    # interrupting caller. Inert unless the cushioned track is installed.
+    cushion_interrupt = OutputCushionInterrupt(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
-    # never consumed and digits are dropped.
-    dtmf_aggregator = _dtmf_aggregator_for(agent)
+    # never consumed and digits are dropped. GPT-Live routes the digits through
+    # the injection shim instead of a TranscriptionFrame.
+    if gpt_live_model and gpt_live is not None:
+        on_digits = gpt_live.on_dtmf
+    elif grok_voice_model:
+        # Same reason as GPT-Live: a TranscriptionFrame would become a user
+        # message the service never sends; the digits go through the service.
+        on_digits = on_injected_dtmf
+    else:
+        on_digits = None
+    dtmf_aggregator = _dtmf_aggregator_for(agent, on_digits=on_digits)
+    # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
+    # engaged relay silences the caller's audio for the aux engine too, and the
+    # tap copies audio out to a side pipeline — nothing of the second engine
+    # enters this chain (see aux_stt.py).
+    aux = [aux_tap] if aux_tap is not None else []
+    # Output audit tap (options.tts.output) immediately before transport.output():
+    # after the rate guard, so it sees the agent's TTS audio at the transport's
+    # own rate; TTS frames only, so the tone and relayed audio never reach it.
+    output = [output_tap] if output_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
+        *aux,
         dtmf_aggregator,
         user_aggregator,
         llm,
+        *external_tts,
         *tone,
         *relay_inject,
+        rate_guard,
+        cushion_interrupt,
+        *output,
         transport.output(),
     ]
+    if transcript_tts and requested_tts_vendor == "elevenlabs":
+        from .transcript_tts_latency import TranscriptTtsPlaybackProbe
+
+        processors.append(TranscriptTtsPlaybackProbe())
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
     # ``transport.output()`` so it sees both the user's input frames and the
     # bot's rendered TTS output frames.
@@ -1223,6 +1683,8 @@ async def _build_realtime(
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
+    # Keep the main pipeline's idle watchdog; STT-only and relay-only side pipelines emit no speaking frames and opt out.
+    # See PR #285.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
@@ -1239,6 +1701,14 @@ async def _build_realtime(
         is_ultravox=model_id.startswith("ultravox/"),
         relay_endpoint=relay_endpoint,
         on_inactivity_hangup=on_inactivity_hangup,
+        # GPT-Live ignores context frames once started: the kick is spoken
+        # context sent through the service (gpt_live_service.py). Grok speaks
+        # the message exactly through its verbatim item (grok_service.py).
+        inject=(
+            llm.inject_inactivity_prompt if gpt_live_model
+            else llm.speak_verbatim if grok_voice_model
+            else None
+        ),
     )
     return task, context, llm
 
@@ -1254,6 +1724,9 @@ async def _build_pipeline(
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
+    aux_tap: "Optional[Any]" = None,
+    output_tap: "Optional[Any]" = None,
+    opening: Optional[str] = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1289,6 +1762,15 @@ async def _build_pipeline(
             model=anthropic_model,
             settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
         )
+    elif model_id.startswith("xai/"):
+        # xAI Grok text models over their OpenAI-compatible endpoint (docs/grok.md).
+        from pipecat.services.xai.llm import GrokLLMService
+
+        _, xai_model = model_id.split("/", 1)
+        llm = GrokLLMService(
+            api_key=_require_env("XAI_API_KEY", "GROK_API_KEY"),
+            settings=GrokLLMService.Settings(model=xai_model, system_instruction=system_prompt),
+        )
     else:
         raise RuntimeError(f"Unsupported LLM in pipeline mode: {model_id}")
 
@@ -1300,7 +1782,9 @@ async def _build_pipeline(
         [{"role": "developer", "content": system_prompt}],
         tools=schemas,
     )
-    user_params = _user_aggregator_params_for(agent)
+    # No greeting mute when the platform opens the call in place of the
+    # greeting (``opening``): no greeting plays.
+    user_params = _user_aggregator_params_for(agent, mute_for_greeting=opening is None)
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context, user_params=user_params
     )
@@ -1311,14 +1795,28 @@ async def _build_pipeline(
     relay_inject = [relay_endpoint.inject] if relay_endpoint is not None else []
     # Confidence tone (options.transferTone) sits upstream of the relay
     # injector so an engaged relay drops tone frames too — see confidence_tone.
+    # Bind it to the output transport it feeds: the tone MUST be emitted at that
+    # transport's own sample rate, not StartFrame's (see confidence_tone._out_rate).
     tone = [tone_injector] if tone_injector is not None else []
+    if tone_injector is not None:
+        tone_injector.bind_output(transport.output())
+    # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
+    rate_guard = OutputRateGuard(output_transport=transport.output())
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
     # audio frames, so ordering relative to it is immaterial.
     dtmf_aggregator = _dtmf_aggregator_for(agent)
+    # Auxiliary STT tap (options.stt.aux) between the relay tap and the primary
+    # STT: the tap only copies audio out to a side pipeline, so the primary STT
+    # sees exactly the frames it always did (see aux_stt.py).
+    aux = [aux_tap] if aux_tap is not None else []
+    # Output audit tap (options.tts.output) immediately before transport.output()
+    # — see _build_realtime.
+    output = [output_tap] if output_tap is not None else []
     processors: list = [
         transport.input(),
         *relay_tap,
+        *aux,
         stt,
         dtmf_aggregator,
         user_aggregator,
@@ -1326,12 +1824,16 @@ async def _build_pipeline(
         tts,
         *tone,
         *relay_inject,
+        rate_guard,
+        *output,
         transport.output(),
     ]
     if audio_buffer is not None:
         processors.append(audio_buffer)
     processors.append(assistant_aggregator)
     pipeline = Pipeline(processors)
+    # Keep the main pipeline's idle watchdog; STT-only and relay-only side pipelines emit no speaking frames and opt out.
+    # See PR #285.
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),

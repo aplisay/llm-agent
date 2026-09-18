@@ -1,0 +1,244 @@
+"""Distinguish late refills from audio that never arrives; an underrun count alone cannot size a useful buffer. See PR
+#248."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+from pipecat.transports.smallwebrtc.transport import RawAudioTrack
+
+from pipecat_aplisay.output_underrun import install, instrumented
+
+RATE = 16000
+CHUNK = RATE * 10 // 1000 * 2  # bytes in 10 ms of s16 mono
+
+
+def _track(**kw):
+    return instrumented(RawAudioTrack)(sample_rate=RATE, **kw)
+
+
+def _audio(chunks: int = 1) -> bytes:
+    return b"\x01\x00" * (RATE * 10 // 1000) * chunks
+
+
+class TestStarvationIsCounted:
+    def test_a_full_queue_never_reports_an_underrun(self) -> None:
+        async def run() -> None:
+            t = _track()
+            t.add_audio_bytes(_audio(3))
+            for _ in range(3):
+                await t.recv()
+            assert t.underrun.events == 0
+            assert t.underrun.chunks_filled == 0
+            assert "no output underruns" in t.underrun.summary()
+
+        asyncio.run(run())
+
+    def test_an_empty_queue_is_counted_as_inserted_silence(self) -> None:
+        async def run() -> None:
+            t = _track()
+            for _ in range(4):
+                await t.recv()
+            assert t.underrun.chunks_filled == 4
+            assert t.underrun.silence_ms == pytest.approx(40.0)
+            # still open — nothing has come back yet, so there is no lateness
+            assert t.underrun.events == 0
+
+        asyncio.run(run())
+
+    def test_the_event_closes_when_real_audio_returns(self) -> None:
+        async def run() -> None:
+            t = _track()
+            for _ in range(3):
+                await t.recv()
+            t.add_audio_bytes(_audio())
+            assert t.underrun.events == 1
+            assert t.underrun.max_gap_ms == pytest.approx(30.0)
+
+        asyncio.run(run())
+
+
+class TestLatenessIsTheAnswer:
+    """The distinction the whole module exists for."""
+
+    def test_late_audio_reports_a_lateness_a_cushion_could_cover(self) -> None:
+        async def run() -> None:
+            t = _track()
+            await t.recv()                      # queue dry
+            await asyncio.sleep(0.05)           # ...audio is 50 ms late
+            t.add_audio_bytes(_audio())
+            assert t.underrun.events == 1
+            (late,) = t.underrun.late_ms
+            assert 40 <= late <= 200, late
+            summary = t.underrun.summary()
+            assert "refill lateness" in summary, summary
+            assert "0 never refilled" in summary, summary
+
+        asyncio.run(run())
+
+    def test_audio_that_never_returns_is_reported_separately(self) -> None:
+        """The case no amount of buffering can fix: the track ends still starved."""
+
+        async def run() -> None:
+            t = _track()
+            for _ in range(5):
+                await t.recv()
+            t.stop()
+            assert t.underrun.never_refilled == 1
+            # A bounded deque now, not a list — compare contents.
+            assert list(t.underrun.late_ms) == [], (
+                "nothing arrived, so nothing can be late"
+            )
+
+        asyncio.run(run())
+
+    def test_lateness_is_measured_from_the_starve_not_the_refill_slot(self) -> None:
+        """Closing on add_audio_bytes rather than the next recv() keeps up to one
+        slot of error out of the number the decision rests on."""
+
+        async def run() -> None:
+            t = _track()
+            await t.recv()
+            t0 = time.monotonic()
+            await asyncio.sleep(0.03)
+            t.add_audio_bytes(_audio())
+            measured = t.underrun.late_ms[0]
+            elapsed = (time.monotonic() - t0) * 1000.0
+            assert measured >= elapsed - 5, (measured, elapsed)
+
+        asyncio.run(run())
+
+
+class TestQueueDepth:
+    def test_depth_is_sampled_every_slot(self) -> None:
+        """If the queue normally sits at 0 or 1 there is no cushion at all, and
+        that is what would justify adding one."""
+
+        async def run() -> None:
+            t = _track()
+            t.add_audio_bytes(_audio(3))
+            for _ in range(3):
+                await t.recv()
+            assert t.underrun.recvs == 3
+            assert sum(t.underrun.depth.values()) == 3
+            assert t.underrun.depth["3-5"] == 1     # first recv saw 3 queued
+            assert t.underrun.depth["2"] == 1
+            assert t.underrun.depth["1"] == 1
+
+        asyncio.run(run())
+
+
+class TestInstall:
+    def test_install_is_idempotent_and_reversible_by_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat.transports.smallwebrtc import transport as t
+
+        original = t.RawAudioTrack
+        try:
+            monkeypatch.setenv("WEBRTC_UNDERRUN_STATS", "1")
+            assert install() is True
+            assert t.RawAudioTrack.__name__ == "InstrumentedRawAudioTrack"
+            assert install() is False, "must not wrap the wrapper"
+        finally:
+            t.RawAudioTrack = original
+
+    def test_disabled_by_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pipecat.transports.smallwebrtc import transport as t
+
+        original = t.RawAudioTrack
+        monkeypatch.setenv("WEBRTC_UNDERRUN_STATS", "0")
+        assert install() is False
+        assert t.RawAudioTrack is original
+
+    def test_the_subclass_still_paces_and_emits_like_the_original(self) -> None:
+        """Observation only — the parent's pacing and frame shape must survive."""
+
+        async def run() -> None:
+            plain = RawAudioTrack(sample_rate=RATE)
+            inst = _track()
+            plain.add_audio_bytes(_audio())
+            inst.add_audio_bytes(_audio())
+            a, b = await plain.recv(), await inst.recv()
+            assert a.sample_rate == b.sample_rate
+            assert a.samples == b.samples
+            assert bytes(a.planes[0]) == bytes(b.planes[0])
+
+        asyncio.run(run())
+
+
+class TestItStaysQuiet:
+    """One line per call, and only at the end.
+
+    Degradation that is survivable but quality-impacting hits every concurrent
+    call at once. At ~50 events per call, a pod carrying a few dozen calls
+    through a bad minute would emit thousands of lines a second — burning the
+    CPU and log bandwidth that the degradation is already eating, which is the
+    last thing wanted at that moment.
+    """
+
+    def _capture(self):
+        from loguru import logger
+
+        lines: list[str] = []
+        sink = logger.add(lines.append, format="{message}", level="DEBUG")
+        return lines, (lambda: logger.remove(sink))
+
+    def _starve_and_refill(self, t) -> None:
+        async def run() -> None:
+            for _ in range(4):
+                await t.recv()
+            t.add_audio_bytes(_audio())
+
+        asyncio.run(run())
+
+    def test_no_per_event_line_by_default(self) -> None:
+        lines, stop = self._capture()
+        try:
+            t = _track()
+            self._starve_and_refill(t)
+            assert t.underrun.events == 1, "the event must still be COUNTED"
+            assert not [l for l in lines if "output underrun:" in l], lines
+        finally:
+            stop()
+
+    def test_per_event_logging_can_be_switched_back_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kept for a deliberate debugging session, not for normal running."""
+        monkeypatch.setenv("WEBRTC_UNDERRUN_LOG_MS", "20")
+        lines, stop = self._capture()
+        try:
+            self._starve_and_refill(_track())
+            assert [l for l in lines if "output underrun:" in l], lines
+        finally:
+            stop()
+
+    def test_the_summary_carries_the_gap_distribution(self) -> None:
+        """Since the per-event lines are gone, the one summary has to say what
+        the gaps looked like or the detail is simply lost."""
+        t = _track()
+        self._starve_and_refill(t)
+        assert "gaps" in t.underrun.summary()
+        assert "<=20 ms" in t.underrun.summary() or "21-50 ms" in t.underrun.summary()
+
+    def test_the_summary_fires_even_with_nothing_to_report(self) -> None:
+        """The depth histogram is the diagnostic, and it is meaningful whether
+        or not anything starved."""
+
+        async def run() -> None:
+            t = _track()
+            t.add_audio_bytes(_audio(3))
+            for _ in range(3):
+                await t.recv()
+            assert t.underrun.events == 0
+            lines, stop = self._capture()
+            try:
+                t.stop()
+                assert [l for l in lines if "track finished" in l], lines
+            finally:
+                stop()
+
+        asyncio.run(run())

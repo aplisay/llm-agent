@@ -7,40 +7,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// JitterBuffer reorders incoming RTP packets by sequence number and
-// releases them on a fixed 20 ms cadence to smooth out network jitter
-// and absorb small amounts of reordering.
-//
-// Design notes:
-//
-//   - Target depth: ~60 ms (3 packets at 20 ms ptime). Chosen as a
-//     trade-off between latency added to the bot's response (lower is
-//     better for conversational flow) and tolerance for late/reordered
-//     packets (higher is better). 60 ms is on the low end of what's
-//     typically used in VoIP; we can dial it up via the Depth knob if
-//     production traffic shows audible gaps.
-//
-//   - PLC strategy: when a sequence-number gap is detected at release
-//     time, emit a zero-payload (silence) packet of the same length
-//     to the consumer. The codec layer treats a missing PCMU/PCMA
-//     payload as 20 ms of silence and the consumer gets a clean,
-//     consistent stream. A fancier PLC (G.711 packet-loss concealment
-//     algorithm) could repeat / pitch-shift the last good packet but
-//     20 ms of silence is plenty for occasional carrier hiccups.
-//
-//   - Sequence-number rollover: handled by treating the running
-//     ``next`` cursor modulo 2^16 and using the signed 16-bit diff
-//     (``int16(a - b)``) for ordering. Standard RTP trick.
-//
-//   - Late packets (older than the current cursor) are dropped — by
-//     the time we've moved past their slot the consumer has already
-//     received either the packet that arrived in time or the silence
-//     stub.
-//
-// The buffer is not used in relay mode (Phase C bridged transfer) —
-// the relay forwards packets immediately without ordering, since both
-// legs see whatever jitter the bridge sees and there's no benefit to
-// reordering twice.
+// resyncWindow bounds discontinuities before signed 16-bit sequence comparisons alias; ordinary jitter stays
+// buffered. Re-prime on large jumps or excess depth to avoid permanent silence and unbounded growth; see PR #285.
+const resyncWindow = 3000
+
+// maxDepth bounds audio retained when the consumer stalls; resync instead of accumulating latency. See PR #285.
+const maxDepth = 250
+
 type JitterBuffer struct {
 	// Depth is the target queue length in packets. Filled at
 	// construction; consumed each Tick.
@@ -77,7 +50,16 @@ func (j *JitterBuffer) Push(seq uint16, payload []byte) {
 	if !j.primed {
 		j.next = seq
 		j.primed = true
-	} else if int16(seq-j.next) < 0 {
+	} else if d := int16(seq - j.next); d > resyncWindow || d < -resyncWindow || len(j.packets) >= maxDepth {
+		// Re-prime after discontinuity or a stalled consumer: advancing one slot per tick cannot catch up. See PR #285.
+		log.Warn().
+			Uint16("seq", seq).
+			Uint16("next", j.next).
+			Int("depth", len(j.packets)).
+			Msg("rtp: jitter buffer discontinuity — resyncing")
+		j.packets = map[uint16][]byte{}
+		j.next = seq
+	} else if d < 0 {
 		// Already-released slot — drop. Logging at debug because over
 		// a reordered network this is normal.
 		log.Debug().
@@ -112,6 +94,17 @@ func (j *JitterBuffer) Pop() ([]byte, bool) {
 	// Gap: synthesise silence and advance.
 	j.next++
 	return make([]byte, j.PayloadSize), true
+}
+
+// Len returns the number of packets currently buffered (the field
+// ``Depth`` is the *target*, not the current occupancy). Used by the
+// release loop to detect a buffer that has run above target (a stalled
+// consumer or a burst) so it can drain the excess rather than carry it
+// as permanent added latency.
+func (j *JitterBuffer) Len() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.packets)
 }
 
 // Flush drains the buffer in sequence order, returning everything

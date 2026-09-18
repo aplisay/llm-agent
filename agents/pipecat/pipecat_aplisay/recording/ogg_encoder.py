@@ -21,6 +21,12 @@ import shutil
 from dataclasses import dataclass
 
 
+# Ceiling on one recording's encode. ffmpeg transcoding an hour of
+# 16 kHz stereo PCM to Opus takes seconds; anything approaching this is
+# a stuck process, and it runs on the call's teardown path.
+ENCODE_TIMEOUT_SECS = 60.0
+
+
 class OggEncoderError(RuntimeError):
     """Raised when ffmpeg is missing or the encode subprocess fails."""
 
@@ -76,7 +82,27 @@ class OggEncoder:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            # Bounded (P5). This runs inside the segment teardown, ahead
+            # of the invocation-log flush and the MCP close, so a wedged
+            # ffmpeg — full disk, hung filesystem — blocked that call's
+            # teardown, and its WebSocket handler, indefinitely.
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=ENCODE_TIMEOUT_SECS
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            # Reap it so the child doesn't linger as a zombie.
+            try:
+                await proc.wait()
+            except Exception:  # noqa: BLE001
+                pass
+            raise OggEncoderError(
+                f"ffmpeg encode timed out after {ENCODE_TIMEOUT_SECS:g}s"
+            ) from None
         if proc.returncode != 0:
             raise OggEncoderError(
                 f"ffmpeg encode failed (rc={proc.returncode}): "

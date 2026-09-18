@@ -72,3 +72,29 @@ func TestSRTPAvoidCacheRememberAndExpire(t *testing.T) {
 		t.Fatal("expired entry must be pruned on read")
 	}
 }
+
+// Per-trunk SRTP opt-out (Trunk.flags.srtp -> X-Aplisay-Srtp: off). This is the
+// case the reject-driven downgrade cannot reach: a carrier that answers SAVP
+// and then sends plain RTP never rejects anything.
+func TestSRTPOptedOut(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		custom map[string]string
+		want   bool
+	}{
+		{"absent header keeps offering", map[string]string{}, false},
+		{"nil map keeps offering", nil, false},
+		{"off opts out", map[string]string{"X-Aplisay-Srtp": "off"}, true},
+		{"case insensitive", map[string]string{"X-Aplisay-Srtp": "OFF"}, true},
+		{"surrounding space tolerated", map[string]string{"X-Aplisay-Srtp": " off "}, true},
+		{"on keeps offering", map[string]string{"X-Aplisay-Srtp": "on"}, false},
+		{"unrecognised value keeps offering", map[string]string{"X-Aplisay-Srtp": "false"}, false},
+		{"empty value keeps offering", map[string]string{"X-Aplisay-Srtp": ""}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := srtpOptedOut(tc.custom); got != tc.want {
+				t.Errorf("srtpOptedOut(%v) = %v, want %v", tc.custom, got, tc.want)
+			}
+		})
+	}
+}

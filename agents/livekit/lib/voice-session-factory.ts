@@ -22,15 +22,28 @@ import {
   buildProviderPipelineTts,
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
+import { textOutputEnabled } from "./realtime-tts.js";
+import { openingFirstSpeakerSettings } from "./handover-opening.js";
+import type { UltravoxInactivityMessage } from "../plugins/ultravox/src/realtime/api_proto.js";
 
 /**
- * How many times the inactivity prompt is spoken before the call is considered
- * abandoned. Shared so the two enforcement paths agree: the Ultravox native
- * `inactivityMessages` list length, and our own repeat-kick counter in
- * voice-agent-runtime. Only acted on when `options.inactivity.hangup` is set —
- * otherwise Ultravox stops prompting after this many and we keep prompting.
+ * Share the hangup threshold across native Ultravox prompts and the inactivity kick. See PR #340.
+ * Without hangup enabled, only the kick repeats indefinitely; Ultravox exhausts its configured messages.
  */
 export const INACTIVITY_PROMPT_COUNT = 3;
+
+// Default Ultravox vadSettings, applied when the agent supplies no explicit
+// `vendorSpecific.ultravox.vadSettings`. Ultravox's stock
+// minimumInterruptionDuration is 0.09s — any ~90ms sound (a breath, a
+// backchannel "mm-hm", handset rustle) cancels agent speech mid-turn and the
+// truncated text is finalised, with nothing re-offering the lost answer. 0.48s
+// (15 × the VAD's 32ms frames) requires deliberate speech to barge in, at the
+// cost of ~0.4s extra latency on a deliberate interruption. Must stay in step
+// with DEFAULT_VAD_SETTINGS in lib/models/ultravox.js and
+// ULTRAVOX_DEFAULT_VAD_SETTINGS in the pipecat worker's voice_session.py.
+export const ULTRAVOX_DEFAULT_VAD_SETTINGS = Object.freeze({
+  minimumInterruptionDuration: "0.48s",
+});
 
 /**
  * Whether `options.inactivity.hangup` opts this agent into ending the call once the
@@ -53,7 +66,7 @@ export function inactivityHangupEnabled(agent: Agent): boolean {
  * Returns `undefined` when `options.inactivity` is absent or malformed (no
  * usable timeout, or no non-empty `message`). In that case the caller omits
  * `userAwayTimeout` entirely, so the session keeps the SDK default
- * (`15s`) but no kick handler is wired — behaviour is unchanged.
+ * (`15s`) and the inactivity kick ignores its "away" events.
  */
 export function inactivityAwayTimeoutSecs(agent: Agent): number | undefined {
   const inactivity = agent?.options?.inactivity;
@@ -71,6 +84,47 @@ export function inactivityAwayTimeoutSecs(agent: Agent): number | undefined {
   }
   if (secs === undefined || !(secs > 0)) return undefined;
   return secs;
+}
+
+/**
+ * The Ultravox `inactivityMessages` for `agent`: a native
+ * `vendorSpecific.ultravox.inactivityMessages` when set, else
+ * `options.inactivity` mapped to native messages, else undefined.
+ */
+export function ultravoxInactivityMessages(
+  agent: Agent,
+): UltravoxInactivityMessage[] | undefined {
+  const native = agent?.options?.vendorSpecific?.ultravox?.inactivityMessages;
+  if (native) return native;
+  const inactivitySecs = inactivityAwayTimeoutSecs(agent);
+  if (inactivitySecs === undefined) return undefined;
+  const entry: UltravoxInactivityMessage = {
+    duration: `${inactivitySecs}s`,
+    message: agent.options!.inactivity!.message.trim(),
+  };
+  // Ultravox consumes each entry once; repeated entries supply the repeated inactivity prompts. See PR #342.
+  const messages = Array.from({ length: INACTIVITY_PROMPT_COUNT }, () => ({ ...entry }));
+  // Use HANG_UP_SOFT only when opted in so the last prompt finishes before disconnecting. See PR #342.
+  if (inactivityHangupEnabled(agent)) {
+    messages[messages.length - 1] = { ...entry, endBehavior: "END_BEHAVIOR_HANG_UP_SOFT" };
+  }
+  return messages;
+}
+
+/**
+ * Override inactivity for the next session: in-place handovers reuse a model built for the outgoing agent.
+ * Return false for models without the override; see PR #342.
+ */
+export function armHandoverInactivity(realtimeModel: unknown, agent: Agent): boolean {
+  const model = realtimeModel as
+    | { setNextSessionInactivityMessages?: (m: UltravoxInactivityMessage[] | undefined) => void }
+    | null
+    | undefined;
+  if (typeof model?.setNextSessionInactivityMessages !== "function") {
+    return false;
+  }
+  model.setNextSessionInactivityMessages(ultravoxInactivityMessages(agent));
+  return true;
 }
 
 /**
@@ -115,7 +169,7 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
 }
 
 /** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
-function buildPipelineTts(agent: Agent) {
+export function buildPipelineTts(agent: Agent) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;
@@ -155,18 +209,20 @@ export const realtimePluginModules: Record<string, unknown> = {
   google,
 };
 
+type RealtimeNamespace = {
+  RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel;
+};
+
 export function getRealtimePlugin(modelName: string): {
   plugin: string | undefined;
-  realtime:
-    | { RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel }
-    | undefined;
+  realtime: RealtimeNamespace | undefined;
 } {
   const plugin = modelName.match(/livekit:(\w+)\//)?.[1];
-  const mod = plugin ? realtimePluginModules[plugin] : undefined;
-  const realtime = mod as
-    | { realtime?: { RealtimeModel: new (opts: Record<string, unknown>) => llm.RealtimeModel } }
+  const mod = (plugin ? realtimePluginModules[plugin] : undefined) as
+    | { realtime?: RealtimeNamespace; beta?: { realtime?: RealtimeNamespace } }
     | undefined;
-  return { plugin, realtime: realtime?.realtime };
+  // @livekit/agents-plugin-google 1.0.x exports its Gemini Live model only as beta.realtime.
+  return { plugin, realtime: mod?.realtime ?? mod?.beta?.realtime };
 }
 
 /** Provider segment after `livekit:<plugin>/` (e.g. gpt-4o, fixie-ai/ultravox-70B). */
@@ -196,16 +252,29 @@ class PipelineVoiceAgent extends voice.Agent {
  * into provider-native ones (Ultravox firstSpeakerSettings / inactivityMessages,
  * maxDuration / timeExceededMessage), so the mapping and its precedence rules
  * are testable without constructing plugin models or an AgentSession.
+ *
+ * `opening` is set on the first session of a call already in progress, where
+ * the caller has been greeted. It is the platform's first-turn instruction,
+ * used in place of the agent's greeting: HANDOVER_OPENING_INSTRUCTION after a
+ * `transfer_agent` full-stack handover, TAKEOVER_OPENING_INSTRUCTION after a
+ * human hand-back (see handover-opening.ts). On Ultravox that session then
+ * opens from it.
  */
 export function buildRealtimeLlmOptions(
   modelName: string,
   agent: Agent,
   callId: string,
+  { opening }: { opening?: string } = {},
 ): Record<string, unknown> {
   const providerModelName = parseProviderModelName(modelName);
   const maxDurationString: string = agent?.options?.maxDuration || "305s";
+  // Text-output mode (realtime-tts.ts): the agent names a TTS vendor other than
+  // the model's own, so the model emits text only and the session's TTS speaks
+  // it. `options.tts.voice` then names the TTS voice, never the model's.
+  const textOutput = textOutputEnabled(agent, modelName);
   const llmOptions: Record<string, unknown> = {
-    voice: agent?.options?.tts?.voice,
+    voice: textOutput ? undefined : agent?.options?.tts?.voice,
+    ...(textOutput ? { modalities: ["text"] } : {}),
     maxDuration: maxDurationString,
     // Only the Ultravox plugin consumes timeExceededMessage — its native
     // wind-down line at maxDuration (empty ⇒ plugin default, matching the
@@ -234,7 +303,19 @@ export function buildRealtimeLlmOptions(
       vendorSpecific?.ultravox?.firstSpeakerSettings?.agent?.prompt ||
       vendorSpecific?.ultravox?.firstSpeakerSettings?.user;
 
-    if (hasGreeting && !existingFirstSpeaker) {
+    if (opening) {
+      // A handover or hand-back leg: the caller was greeted when the call
+      // started, so the leg opens from the platform's instruction. It replaces
+      // the portable greeting and any caller-supplied firstSpeakerSettings (a
+      // native greeting, or a user-first opening that waits for the caller).
+      llmOptions.vendorSpecific = {
+        ...(vendorSpecific || {}),
+        ultravox: {
+          ...(vendorSpecific?.ultravox || {}),
+          firstSpeakerSettings: openingFirstSpeakerSettings(opening),
+        },
+      };
+    } else if (hasGreeting && !existingFirstSpeaker) {
       llmOptions.vendorSpecific = {
         ...(vendorSpecific || {}),
         ultravox: {
@@ -253,57 +334,40 @@ export function buildRealtimeLlmOptions(
     llmOptions.vendorSpecific = vendorSpecific;
   }
 
-  // Ultravox realtime: map portable `options.inactivity` → provider-native
-  // `inactivityMessages` so Ultravox itself does the idle detection and speaks
-  // the phrase in-model. Ultravox is speech-to-speech with no separate TTS, so
-  // the JS-side say()/generateReply kick is unreliable for it; the generic SDK
-  // user-away kick (voice-agent-runtime.ts) is gated to NON-ultravox models, and
-  // the Ultravox session omits `userAwayTimeout`. A native
-  // `vendorSpecific.ultravox.inactivityMessages` supplied by the caller wins.
+  // Ultravox handles inactivity natively; its sessions must skip the generic SDK away timer.
+  // Explicit vendorSpecific messages take precedence; see PR #342.
   if (modelName.includes("livekit:ultravox/")) {
-    const inactivitySecs = inactivityAwayTimeoutSecs(agent);
-    const inactivityMsg =
-      typeof agent?.options?.inactivity?.message === "string"
-        ? agent.options.inactivity.message.trim()
-        : "";
-    const base =
-      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
-      vendorSpecific ||
-      undefined;
-    const alreadyNative = (base as any)?.ultravox?.inactivityMessages;
-    if (inactivitySecs !== undefined && inactivityMsg && !alreadyNative) {
-      // Ultravox fires each entry once, in sequence, after `duration` of further
-      // user inactivity — so a short run of identical entries gives the
-      // "re-fire every `timeout` of continued silence" behaviour (here up to
-      // INACTIVITY_PROMPT_COUNT nudges).
-      type InactivityEntry = {
-        duration: string;
-        message: string;
-        endBehavior?: string;
-      };
-      const entry: InactivityEntry = {
-        duration: `${inactivitySecs}s`,
-        message: inactivityMsg,
-      };
-      const messages: InactivityEntry[] = Array.from(
-        { length: INACTIVITY_PROMPT_COUNT },
-        () => ({ ...entry }),
-      );
-      // endBehavior stays default (keep prompting, never hang up) unless the agent
-      // opted in. HANG_UP_SOFT rather than STRICT so the model still delivers the
-      // last prompt before ending, which is what the other end hears as
-      // "hello? ... ok, goodbye" rather than a mid-word cut.
-      if (inactivityHangupEnabled(agent)) {
-        messages[messages.length - 1] = {
-          ...entry,
-          endBehavior: "END_BEHAVIOR_HANG_UP_SOFT",
-        };
-      }
+    const inactivityMessages = ultravoxInactivityMessages(agent);
+    if (inactivityMessages) {
+      const base =
+        (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+        vendorSpecific ||
+        undefined;
       llmOptions.vendorSpecific = {
         ...(base || {}),
         ultravox: {
           ...((base && base.ultravox) || {}),
-          inactivityMessages: messages,
+          inactivityMessages,
+        },
+      };
+    }
+  }
+
+  // Ultravox realtime: default vadSettings unless the caller supplied their
+  // own (which wins wholesale, same contract as the other native blocks) —
+  // see ULTRAVOX_DEFAULT_VAD_SETTINGS for why the stock 0.09s interruption
+  // threshold is unusable on live calls.
+  if (modelName.includes("livekit:ultravox/")) {
+    const base =
+      (llmOptions.vendorSpecific as Record<string, any> | undefined) ||
+      vendorSpecific ||
+      undefined;
+    if (!(base as any)?.ultravox?.vadSettings) {
+      llmOptions.vendorSpecific = {
+        ...(base || {}),
+        ultravox: {
+          ...((base && (base as any).ultravox) || {}),
+          vadSettings: { ...ULTRAVOX_DEFAULT_VAD_SETTINGS },
         },
       };
     }
@@ -334,12 +398,19 @@ export interface CreateVoiceModelAndSessionParams {
   tools: llm.ToolContext;
   /** Required for pipeline mode (Silero VAD from prewarm). */
   vad?: VAD;
+  /**
+   * The platform's first-turn instruction when the session continues a call in
+   * progress: after a `transfer_agent` full-stack handover or a human
+   * hand-back. On Ultravox the session opens from it (see
+   * buildRealtimeLlmOptions); on other stacks the runtime asks for the opening.
+   */
+  opening?: string;
 }
 
 export function createVoiceModelAndSession(
   params: CreateVoiceModelAndSessionParams,
 ): { session: voice.AgentSession; model: voice.Agent } {
-  const { voiceMode, modelName, agent: agentDef, call, tools, vad } = params;
+  const { voiceMode, modelName, agent: agentDef, call, tools, vad, opening } = params;
 
   // Resolve the agent's `promptMetadata` declaration ONCE, here: every session
   // passes through this factory — the initial run and each transfer_agent
@@ -363,11 +434,7 @@ export function createVoiceModelAndSession(
       ? new PipelineVoiceAgent(agentOptions)
       : new voice.Agent(agentOptions);
 
-  // Inactivity "kick": when options.inactivity is configured, set LiveKit's
-  // user-away timeout so the session emits a `user_state_changed` → "away"
-  // event after `timeout` of silence. The runtime (voice-agent-runtime.ts)
-  // listens for that and speaks options.inactivity.message. Omitted entirely
-  // when unset, so the default behaviour is unchanged.
+  // Set userAwayTimeout only for a configured kick; otherwise preserve the SDK default. See PR #340.
   const userAwayTimeout = inactivityAwayTimeoutSecs(agent);
   const inactivityVoiceOptions =
     userAwayTimeout !== undefined ? { voiceOptions: { userAwayTimeout } } : {};
@@ -413,7 +480,7 @@ export function createVoiceModelAndSession(
     );
   }
 
-  const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id);
+  const llmOptions = buildRealtimeLlmOptions(modelName, agent, call.id, { opening });
 
   // Ultravox does idle natively (mapped to provider inactivityMessages in
   // buildRealtimeLlmOptions); only NON-ultravox realtime uses the SDK
@@ -422,8 +489,16 @@ export function createVoiceModelAndSession(
     ? {}
     : inactivityVoiceOptions;
 
+  // Text-output mode: the same TTS the pipeline path uses, built from
+  // `options.tts`. The SDK tees a text-only realtime generation into it
+  // (AgentActivity: "text response received from realtime API, falling back to
+  // use a TTS model") and the realtime session's `input_speech_started` events
+  // interrupt its playout.
+  const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
+
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),
+    ...externalTts,
     // Drop early user audio while agent speech is uninterruptible (greeting mode).
     turnHandling: {
       interruption: {

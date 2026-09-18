@@ -1,8 +1,10 @@
-import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, Op } from '../../lib/database.js';
+import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Agent, Instance, NumberReservation, Op } from '../../lib/database.js';
 import { getTelephonyHandler, HANDLER_NAMES, TELEPHONY_HANDLER_NAMES } from '../../lib/handlers/index.js';
-import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi } from '../../lib/validation.js';
+import { validateE164, normalizeE164, validateSipUri, validatePhoneRegistration, validateE164Ddi, validateRegistrationTrunkFields } from '../../lib/validation.js';
 import { scopeWhereForOrganisation } from '../../lib/scope.js';
-import { requirePermission } from '../../lib/auth/permissions.js';
+import { requirePermission, can } from '../../lib/auth/permissions.js';
+import { mintRegistrarUsername, mintRegistrarPassword } from '../../lib/utils/credentials.js';
+import { registrarRealm, REGISTRAR_PORT, REGISTRAR_TRANSPORT } from '../../lib/registrar-accounts.js';
 
 let appParameters, log;
 
@@ -147,7 +149,11 @@ const phoneEndpointList = (async (req, res) => {
         status: r.status,
         state: r.state,
         handler: r.handler,
-        outbound: !!r.outbound
+        outbound: !!r.outbound,
+        trunkId: r.trunkId || null,
+        trunk: !!r.trunkId,
+        mode: r.mode || 'client',
+        kind: r.kind || null
       }));
       const nextOffset = rows.length === size ? startOffset + size : null;
       return res.send({ items, nextOffset });
@@ -183,7 +189,7 @@ const phoneEndpointList = (async (req, res) => {
       regWhere
         ? PhoneRegistration.findAll({
             where: regWhere,
-            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt'],
+            attributes: ['id', 'name', 'registrar', 'username', 'b2buaId', 'status', 'state', 'handler', 'outbound', 'callReceived', 'createdAt', 'trunkId', 'mode', 'kind'],
             limit: size,
             offset: startOffset
           })
@@ -212,6 +218,10 @@ const phoneEndpointList = (async (req, res) => {
       registrar: r.registrar,
       username: r.username,
       b2buaId: r.b2buaId || null,
+      trunkId: r.trunkId || null,
+      trunk: !!r.trunkId,
+      mode: r.mode || 'client',
+      kind: r.kind || null,
       status: r.status,
       state: r.state,
       handler: r.handler,
@@ -259,11 +269,24 @@ const createPhoneEndpoint = async (req, res) => {
 
       const normalizedNumber = normalizeE164(data.phoneNumber);
       
-      // Check if number already exists
-      const existingNumber = await PhoneNumber.findByPk(normalizedNumber);
+      // A number is unique per organisation and per trunk (schema 61), not
+      // platform-wide: another organisation holding the same number on its
+      // own trunk is not a conflict. The unique indexes are the backstop for
+      // the race this pre-check cannot close.
+      const existingNumber = await PhoneNumber.findOne({
+        where: {
+          number: normalizedNumber,
+          [Op.or]: [
+            { organisationId: organisationId ?? null },
+            { aplisayId: data.trunkId },
+          ],
+        },
+      });
       if (existingNumber) {
         return res.status(409).send({
-          error: 'Phone number already exists'
+          error: existingNumber.aplisayId === data.trunkId && existingNumber.organisationId !== (organisationId ?? null)
+            ? 'Phone number already exists on this trunk'
+            : 'Phone number already exists'
         });
       }
 
@@ -295,6 +318,39 @@ const createPhoneEndpoint = async (req, res) => {
         return res.status(400).send({
           error: 'Outbound calling is not enabled on the selected trunk'
         });
+      }
+
+      // A number on a chargeable trunk is one the platform pays the carrier
+      // for, so a claim must show that the carrier seam agreed to it: a
+      // reservation minted under phoneEndpoint:reserve for this exact number,
+      // trunk and organisation, still live and not yet used. Platform
+      // operators (trunk:create) may claim without one, which is how a
+      // number already routed at the carrier is attached by hand. A
+      // reservation that IS presented is always checked and consumed.
+      let reservation = null;
+      if (trunk.chargeable) {
+        const ref = typeof data.reservationRef === 'string' ? data.reservationRef.trim() : '';
+        if (!ref && !can(res.locals.user, 'trunk', 'create')) {
+          return res.status(403).send({
+            error: 'Claiming a number on a chargeable trunk requires a carrier reservation reference',
+            code: 'reservation_required'
+          });
+        }
+        if (ref) {
+          reservation = /^[0-9a-f-]{36}$/i.test(ref) ? await NumberReservation.findByPk(ref) : null;
+          const matches = reservation
+            && !reservation.consumedAt
+            && reservation.expiresAt > new Date()
+            && reservation.number === normalizedNumber
+            && reservation.trunkId === data.trunkId
+            && reservation.organisationId === (organisationId ?? null);
+          if (!matches) {
+            return res.status(403).send({
+              error: 'The carrier reservation reference is missing, expired, already used, or names a different number, trunk or organisation',
+              code: 'reservation_invalid'
+            });
+          }
+        }
       }
 
       // Numbers on chargeable trunks (carrier trunks shared into the org, i.e.
@@ -333,7 +389,7 @@ const createPhoneEndpoint = async (req, res) => {
               }
             }
           }
-          return PhoneNumber.create({
+          const created = await PhoneNumber.create({
             number: normalizedNumber,
             // Handler is always derived from the trunk (or defaulted) and cannot be chosen by the caller for DDI endpoints
             handler: trunk.handler || 'livekit',
@@ -342,8 +398,29 @@ const createPhoneEndpoint = async (req, res) => {
             // Internally store the trunk association using the aplisayId foreign key
             aplisayId: data.trunkId
           }, { transaction });
+          if (reservation) {
+            // Consume it here, under the same transaction, with the liveness
+            // conditions repeated in the WHERE: two claims racing on one ticket
+            // both pass the read above, and only one of them updates a row.
+            const [consumed] = await NumberReservation.update(
+              { consumedAt: new Date(), phoneNumberId: created.id },
+              {
+                where: { id: reservation.id, consumedAt: null, expiresAt: { [Op.gt]: new Date() } },
+                transaction,
+              },
+            );
+            if (consumed !== 1) {
+              const err = new Error('The carrier reservation reference has already been used or has expired');
+              err.code = 'reservation_invalid';
+              throw err;
+            }
+          }
+          return created;
         });
       } catch (err) {
+        if (err.code === 'reservation_invalid') {
+          return res.status(403).send({ error: err.message, code: err.code });
+        }
         if (err.code === 'chargeable_number_limit') {
           return res.status(403).send({
             error: err.message,
@@ -352,8 +429,8 @@ const createPhoneEndpoint = async (req, res) => {
             used: err.used
           });
         }
-        // The pre-check above races exact simultaneous claims; the PK constraint
-        // is the backstop — report it as the same conflict.
+        // The pre-check above races exact simultaneous claims; the unique
+        // indexes are the backstop — report it as the same conflict.
         if (err.name === 'SequelizeUniqueConstraintError') {
           return res.status(409).send({
             error: 'Phone number already exists'
@@ -376,47 +453,140 @@ const createPhoneEndpoint = async (req, res) => {
         });
       }
 
+      // Direction of service. A client row registers out to the customer's
+      // registrar; a registrar row is an account the customer's PBX registers
+      // to us with, served by regserver. Fixed at creation.
+      const mode = data.mode === 'registrar' ? 'registrar' : 'client';
       const validation = validatePhoneRegistration(data);
-      if (!validation.isValid) {
+      const trunkErrors = validateRegistrationTrunkFields(data);
+      if (!validation.isValid || trunkErrors.length) {
         return res.status(400).send({
           error: 'Validation failed',
-          details: validation.errors
+          details: [...validation.errors, ...trunkErrors]
         });
       }
+      // A registration trunk owns a trunks row. Its id defaults to reg-<uuid>;
+      // naming it is a super's privilege (an SBC trunk being migrated keeps its
+      // id, and with it its numbers).
+      const wantsTrunk = data.trunk === true;
+      const requestedTrunkId = typeof data.trunkId === 'string' ? data.trunkId.trim() : '';
+      if (requestedTrunkId && !wantsTrunk) {
+        return res.status(400).send({ error: 'trunkId is only meaningful with trunk: true' });
+      }
+      if (requestedTrunkId && !can(res.locals.user, 'trunk', 'create')) {
+        return res.status(403).send({ error: 'Naming the trunk requires trunk:create' });
+      }
+      if (requestedTrunkId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requestedTrunkId)) {
+        return res.status(400).send({ error: 'trunkId must be 1–128 chars, letters/digits/._- and start alphanumeric' });
+      }
+      if (requestedTrunkId && (await Trunk.findByPk(requestedTrunkId))) {
+        return res.status(409).send({ error: `Trunk ${requestedTrunkId} already exists` });
+      }
 
-      // Strip sip:/sips: prefix from registrar if present before saving
-      const normalizedRegistrar = data.registrar?.replace(/^sips?:/i, '') || data.registrar;
-
-      // Check for duplicate registration (same registrar and username)
-      const existingRegistration = await PhoneRegistration.findOne({
-        where: {
-          registrar: normalizedRegistrar,
-          username: data.username,
-          organisationId: organisationId
+      // The account's identity. A client row carries the credentials the
+      // customer gave us for their registrar. A registrar row is an identity we
+      // issue: the deployment's balancer name as realm, and a minted username
+      // and password the customer copies into their PBX. The password is
+      // returned once, here; after that only the audited credentials routes
+      // reveal or rotate it.
+      let normalizedRegistrar;
+      let username;
+      let password;
+      if (mode === 'registrar') {
+        normalizedRegistrar = registrarRealm();
+        if (!normalizedRegistrar) {
+          return res.status(503).send({
+            error: 'Registrar accounts are not available on this deployment (REGSERVER_REGISTRAR is not configured)',
+            code: 'registrar_unavailable'
+          });
         }
-      });
+        username = mintRegistrarUsername();
+        password = mintRegistrarPassword();
+      } else {
+        // Strip sip:/sips: prefix from registrar if present before saving
+        normalizedRegistrar = data.registrar?.replace(/^sips?:/i, '') || data.registrar;
+        username = data.username;
+        password = data.password;
 
-      if (existingRegistration) {
-        return res.status(409).send({
-          error: 'Phone registration with the same registrar and username already exists'
+        // Check for duplicate registration (same registrar and username)
+        const existingRegistration = await PhoneRegistration.findOne({
+          where: {
+            registrar: normalizedRegistrar,
+            username,
+            organisationId: organisationId
+          }
         });
+
+        if (existingRegistration) {
+          return res.status(409).send({
+            error: 'Phone registration with the same registrar and username already exists'
+          });
+        }
       }
 
-      const record = await PhoneRegistration.create({
-        name: data.name,
-        handler: data.handler ?? 'livekit',
-        outbound: data.outbound ?? false,
-        registrar: normalizedRegistrar,
-        username: data.username,
-        password: data.password,
-        b2buaId: data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
-        options: data.options || null,
-        organisationId,
-        status: 'disabled',
-        state: 'initial'
+      const createRow = (usernameToUse) => PhoneRegistration.sequelize.transaction(async (transaction) => {
+        const reg = await PhoneRegistration.create({
+          name: data.name,
+          handler: data.handler ?? 'livekit',
+          outbound: data.outbound ?? false,
+          registrar: normalizedRegistrar,
+          username: usernameToUse,
+          password,
+          mode,
+          kind: mode === 'registrar' ? 'pbx' : null,
+          // A registrar row's owner is whichever node accepts its REGISTER;
+          // validation has already refused a supplied b2buaId for one.
+          b2buaId: mode === 'client' && data.b2buaId != null && String(data.b2buaId).trim() ? String(data.b2buaId).trim() : null,
+          options: data.options || null,
+          organisationId,
+          status: 'disabled',
+          state: 'initial',
+          didSource: data.didSource ?? null,
+          didCountry: data.didCountry ? String(data.didCountry).toUpperCase() : null,
+        }, { transaction });
+        if (wantsTrunk) {
+          const trunk = await createRegistrationTrunk(reg, requestedTrunkId || null, organisationId, transaction);
+          await reg.update({ trunkId: trunk.id }, { transaction });
+        }
+        return reg;
       });
 
-      return res.status(201).send({ success: true, id: record.id });
+      let record;
+      if (mode === 'registrar') {
+        // A minted username carries 50 bits of randomness, so a collision on
+        // the partial unique index is a retry with a fresh one — never a 409
+        // to a caller who chose nothing.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            record = await createRow(username);
+            break;
+          } catch (err) {
+            if (err.name !== 'SequelizeUniqueConstraintError' || attempt >= 2) throw err;
+            username = mintRegistrarUsername();
+          }
+        }
+        req.log?.info({
+          audit: 'registrar-account-created',
+          registrationId: record.id,
+          organisationId,
+          userId: res.locals.user?.id,
+          username
+        }, 'registrar account created; credentials issued once');
+        return res.status(201).send({
+          success: true,
+          id: record.id,
+          trunkId: record.trunkId || null,
+          mode,
+          registrar: normalizedRegistrar,
+          port: REGISTRAR_PORT,
+          transport: REGISTRAR_TRANSPORT,
+          username,
+          password
+        });
+      }
+      record = await createRow(username);
+
+      return res.status(201).send({ success: true, id: record.id, trunkId: record.trunkId || null });
     }
   } catch (err) {
     req.log.error(err, 'Error creating phone endpoint');
@@ -425,6 +595,25 @@ const createPhoneEndpoint = async (req, res) => {
     });
   }
 };
+
+/**
+ * The trunks row a registration trunk owns: id reg-<uuid> unless named, the
+ * registration's handler and outbound, never chargeable, flagged so the
+ * reverse lookup (number → trunk → registration) works, and assigned to the
+ * organisation so the e164-ddi create path accepts numbers on it.
+ */
+export async function createRegistrationTrunk(registration, trunkId, organisationId, transaction) {
+  const trunk = await Trunk.create({
+    id: trunkId || `reg-${registration.id}`,
+    name: registration.name || registration.registrar,
+    handler: registration.handler,
+    outbound: !!registration.outbound,
+    chargeable: false,
+    flags: { provider: 'registration', registrationId: registration.id },
+  }, { transaction });
+  await trunk.addOrganisation(organisationId, { transaction });
+  return trunk;
+}
 
 phoneEndpointList.apiDoc = {
   summary: 'Returns a list of all phone endpoints for the organisation of the requestor. Optionally filter to only certain endpoint types.',
@@ -617,7 +806,14 @@ createPhoneEndpoint.apiDoc = {
                     description: 'Response when type is phone-registration',
                     required: ['id'],
                     properties: {
-                      id: { type: 'string', description: 'Registration id for the created phone registration' }
+                      id: { type: 'string', description: 'Registration id for the created phone registration' },
+                      trunkId: { type: 'string', nullable: true, description: 'The trunk created for a registration trunk, else null' },
+                      mode: { type: 'string', enum: ['registrar'], description: 'Present for a registrar account only' },
+                      registrar: { type: 'string', description: 'Registrar accounts only: the name the PBX registers to, also the digest realm' },
+                      port: { type: 'integer', description: 'Registrar accounts only: always 5061' },
+                      transport: { type: 'string', enum: ['tls'], description: 'Registrar accounts only' },
+                      username: { type: 'string', description: 'Registrar accounts only: the minted account username' },
+                      password: { type: 'string', description: 'Registrar accounts only: the minted password, shown here once; GET /phone-endpoints/{id}/credentials reveals it again, audited' }
                     }
                   }
                 ]

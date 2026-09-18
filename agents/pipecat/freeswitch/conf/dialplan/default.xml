@@ -37,6 +37,7 @@
              section 6 verbatim. -->
         <action application="set" data="aplisay_trunk=${sip_h_X-Aplisay-Trunk}"/>
         <action application="set" data="aplisay_phone_registration=${sip_h_X-Aplisay-PhoneRegistration}"/>
+        <action application="set" data="aplisay_called=${sip_h_X-Aplisay-Called}"/>
         <action application="set" data="aplisay_call_id=${sip_h_X-Aplisay-Call-Id}"/>
         <action application="set" data="aplisay_b2bua_ip=${sip_h_X-Lk-RealIp}"/>
         <action application="set" data="aplisay_b2bua_transport=${sip_h_X-Lk-Transport}"/>

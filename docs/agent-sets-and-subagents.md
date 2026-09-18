@@ -219,6 +219,9 @@ Semantics:
   still replaces the stored one, and listing a name in the member's
   `removeFunctions` array deletes it explicitly (`removeFunctions` also works
   without resending `functions` at all — a remove-only patch).
+  The exception is a GPT-Live voice member whose in-set `delegate` target
+  declares the same name: the voice member's copy is dropped, so a document
+  can move a keyed function to the delegate ([gpt-live.md](gpt-live.md#tools)).
 * `DELETE /agent-sets/{id}` removes the set and all member agents.
 
 Endpoints: `POST /agent-sets`, `GET /agent-sets`, `GET /agent-sets/{id}`,
@@ -238,7 +241,7 @@ A new agent type for headless work:
   a text agent.
 * Text agents use `text:<provider>/<model>` model names
   (e.g. `text:openai/gpt-4o`, `text:anthropic/claude-3-5-sonnet-20240620`,
-  `text:gemini/gemini-1.5-pro`, `text:kimi/...`) — the same provider
+  `text:gemini/gemini-1.5-pro`, `text:kimi/...`, `text:xai/...`) — the same provider
   implementations as the Jambonz pipeline, with no audio leg.
 * They cannot `listen`; they are invoked:
   * by a voice agent through a builtin `subagent` platform function — the

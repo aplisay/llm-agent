@@ -158,10 +158,31 @@ export interface Agent {
        * e.g. `deepgram/nova-3:en` (defaults to language derived from `stt.language`).
        */
       vendor?: string;
+      /**
+       * Auxiliary ("second opinion") STT: a second engine run over the caller's
+       * audio alongside the agent's own recognition, logged as `user-aux` and
+       * metered as `stt-aux`. Same shape as `stt`; `enabled: false` switches it
+       * off without removing the block. See lib/aux-stt.ts.
+       */
+      aux?: {
+        enabled?: boolean;
+        language?: string;
+        vendor?: string;
+      };
     };
     tts?: {
     
       language?: string;
+      /**
+       * Output audit STT: an independent engine run over the agent's OWN audio,
+       * logged as `agent-speech` and metered as `stt-output`. Same shape as
+       * `stt`; `enabled: false` switches it off. See lib/output-stt.ts.
+       */
+      output?: {
+        enabled?: boolean;
+        language?: string;
+        vendor?: string;
+      };
       /**
        * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
        * `google` uses Gemini TTS on Node (`@livekit/agents-plugin-google`), not Google Cloud
@@ -195,9 +216,10 @@ export interface Agent {
      * how to recover when the primary model fails to connect or run.
      *
      * Precedence:
-     *  1. agent  - restart with a different agent (not yet implemented in worker).
-     *  2. model  - restart the session with a different modelName.
-     *  3. number - transfer the call to this number using the builtin transfer function.
+     *  1. agent   - restart with a different agent.
+     *  2. model   - restart the session with a different modelName.
+     *  3. message - play a fixed TTS announcement at the caller.
+     *  4. number  - transfer the call to this number using the builtin transfer function.
      */
     fallback?: {
       /**
@@ -208,6 +230,23 @@ export interface Agent {
        * Fallback model name to use if the primary model fails.
        */
       model?: string;
+      /**
+       * Fixed announcement played at the caller when no agent could be started.
+       * Always an object — there is no bare-string shorthand.
+       *
+       * `vendor`/`voice`/`language` may be overridden so the announcement is
+       * spoken by a stack that is known-good even when the agent's own is what
+       * failed. A pipeline agent defaults them from its `options.tts`; a
+       * realtime agent inherits only `language`, since its `tts.voice` names a
+       * timbre of the model that no TTS can render. See
+       * lib/fallback-message/CONTRACT.md.
+       */
+      message?: {
+        text?: string;
+        vendor?: string;
+        voice?: string;
+        language?: string;
+      };
       /**
        * Fallback transfer destination (phone number or endpoint ID).
        */
@@ -545,18 +584,8 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     //logger.debug({ url, status: response.status }, 'API request successful');
     return data;
   } catch (error) {
-    // `err`, NOT `error` — do not "tidy" this to match the `error: errorText` above.
-    // pino only applies its error serialiser to the key `err`; an Error logged under
-    // any other key serialises to `{}`, because `message` and `stack` are
-    // non-enumerable. That is not theoretical: a consult-leg createCall failed here on
-    // staging and logged `{"error":{}}`, so establishing whether it was a 5xx, a DNS
-    // failure or a reset needed the Cloud Run logs to rule out a server round trip
-    // entirely. Under `err`, pino reports type, message and stack — and folds in
-    // `cause`, which is where fetch puts ECONNRESET / EAI_AGAIN.
-    //
-    // This branch is reached ONLY for non-ApiRequestError failures, i.e. never for an
-    // HTTP response: `fetch` itself rejecting, or a 2xx body that would not parse. So
-    // whatever it logs is by definition the interesting case.
+    // Log Error objects under err so pino includes message, stack and cause; other keys serialize them as {}. See PR
+    // #188.
     if (!(error instanceof ApiRequestError)) {
       logger.error({ url, err: error }, 'API request error');
     }
@@ -564,14 +593,57 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
   }
 }
 
+/** Decision returned by the platform's outbound destination authorisation. */
+export interface OutboundAuthorisation {
+  allowed: boolean;
+  code:
+    | "ok"
+    | "agent_filter"
+    | "default_filter"
+    | "trunk_filter"
+    | "not_rateable"
+    | "invalid_destination";
+  reason: string | null;
+  /** True when the leg egresses one of the platform's own (carrier-cost) trunks. */
+  chargeable: boolean;
+  trunkId: string | null;
+  /** Canonical +E.164 form of the destination, when it is a dialable number. */
+  destination: string | null;
+  tariff?: string;
+  prefix?: string;
+}
+
+/**
+ * Ask the platform whether this destination may be dialled on this leg.
+ *
+ * The policy is SERVER-side (lib/outbound-authorisation.js) because only the API
+ * server can see the trunk's operator filter and the organisation's rating deck:
+ * on a chargeable (our-carrier) trunk the agent's own `options.outboundCallFilter`
+ * may only narrow the operator policy, never widen it. The worker must therefore
+ * never re-implement this check, and must fail CLOSED if the call throws — the
+ * caller treats a transport failure as a refusal.
+ */
+export async function authoriseOutboundDestination(params: {
+  calledId: string;
+  /** Caller-ID for the leg; lets the platform resolve the egress trunk when aplisayId isn't known. */
+  callerId?: string | null;
+  agentId?: string;
+  agentOptions?: Record<string, any> | null;
+  organisationId?: string | null;
+  userId?: string | null;
+  aplisayId?: string | null;
+  outboundTrunkId?: string | null;
+  registrationOriginated?: boolean;
+}): Promise<OutboundAuthorisation> {
+  return makeApiRequest<OutboundAuthorisation>(`/api/agent-db/outbound-authorisation`, {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
 // Get instance by ID from the API
 export async function getInstanceById(instanceId: string): Promise<any> {
   return makeApiRequest(`/api/agent-db/instance?instanceId=${instanceId}`);
-}
-
-// Get instance by phone number from the API
-export async function getInstanceByNumber(number: string): Promise<any> {
-  return makeApiRequest(`/api/agent-db/instance?number=${encodeURIComponent(number)}`);
 }
 
 // Get phone numbers from the API
@@ -614,11 +686,6 @@ export async function getPhoneEndpointByNumber(
     logger.error({ number, trunkId, err: error }, 'Failed to get phone endpoint by number');
     return null;
   }
-}
-
-// Legacy function - kept for backward compatibility, now uses phone-endpoints endpoint
-export async function getPhoneNumberByNumber(number: string): Promise<PhoneNumberInfo | null> {
-  return getPhoneEndpointByNumber(number);
 }
 
 // Mark a phone number as provisioned (or not) in the platform after LiveKit sync

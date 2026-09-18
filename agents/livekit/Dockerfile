@@ -1,9 +1,6 @@
 FROM node:24-slim
-# No SECRETENV_* build args: this image contains no secrets. The pair is read
-# from Secret Manager at container start (entrypoint.sh -> load-secretenv.js),
-# which is also where credentials/google.json now comes from — it used to be
-# decrypted here at build time, putting a live service-account private key in a
-# registry layer for anyone with pull access.
+# Load credentials at container start via entrypoint.sh; build-time decryption puts private keys in image layers.
+# See agents/livekit/deploy/gcp/README.md.
 EXPOSE $PORT
 WORKDIR /usr/src/app
 RUN apt-get -y update 
@@ -11,7 +8,8 @@ RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
 COPY lib/* ./agent-lib/
 RUN npm install -g pnpm@latest-10
-RUN yarn install --development
+# Fail on lockfile drift so image builds cannot silently change dependency versions. See PR #229.
+RUN yarn install --development --frozen-lockfile
 RUN yarn build
 ENV NODE_ENV production
 RUN chmod +x entrypoint.sh

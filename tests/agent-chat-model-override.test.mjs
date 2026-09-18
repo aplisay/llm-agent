@@ -1,7 +1,8 @@
 // POST /agents/{agentId}/chat `model` override: a per-SESSION model choice
 // (e.g. a user's builder-model preference) validated against the text
 // catalogue and the caller's model allow-list, then applied in-memory to the
-// resolved agent so the LLM build and the persisted session both reflect it.
+// resolved agent and recorded on the session row, which is what the process
+// that later receives the websocket builds the LLM from.
 import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 
 // Provider keys must exist BEFORE the endpoint (and its driver imports)
@@ -16,8 +17,7 @@ process.env.OPENROUTER_KEY ||= 'test-key';
 import { randomUUID } from 'node:crypto';
 
 const chatModule = (await import('../api/paths/agents/{agentId}/chat.js')).default;
-const { getChatSession } = await import('../lib/text-chat.js');
-const { Agent, Organisation } = await import('../lib/database.js');
+const { Agent, Organisation, ChatSession } = await import('../lib/database.js');
 
 const mockLogger = {
   info() {}, warn() {}, error() {}, debug() {},
@@ -87,9 +87,10 @@ describe('POST /agents/{agentId}/chat model override', () => {
     }), res);
     expect(res._status).toBeNull(); // 200 via plain send
     expect(res._body.id).toBeDefined();
-    const session = getChatSession(res._body.id);
-    expect(session.agent.modelName).toBe('text:kimi/kimi-k2.6');
-    session.teardown();
+    const sessionRow = await ChatSession.findByPk(res._body.id);
+    expect(sessionRow.modelName).toBe('text:kimi/kimi-k2.6');
+    expect(sessionRow.owner).toBeNull(); // nothing built until a socket arrives
+    await ChatSession.destroy({ where: { id: sessionRow.id } });
   });
 
   test('no model key leaves the builder default untouched', async () => {
@@ -100,9 +101,9 @@ describe('POST /agents/{agentId}/chat model override', () => {
       body: {},
     }), res);
     expect(res._body.id).toBeDefined();
-    const session = getChatSession(res._body.id);
-    expect(session.agent.modelName).toBe(SET_BUILDER_MODEL);
-    session.teardown();
+    const sessionRow = await ChatSession.findByPk(res._body.id);
+    expect(sessionRow.modelName).toBe(SET_BUILDER_MODEL);
+    await ChatSession.destroy({ where: { id: sessionRow.id } });
   });
 
   test('a stored (DB-row) agent takes the override in-memory and the ROW is never saved', async () => {
@@ -122,10 +123,10 @@ describe('POST /agents/{agentId}/chat model override', () => {
         body: { model: 'text:kimi/kimi-k2.6' },
       }), res);
       expect(res._body.id).toBeDefined();
-      const session = getChatSession(res._body.id);
+      const sessionRow = await ChatSession.findByPk(res._body.id);
       // The session runs the override…
-      expect(session.agent.modelName).toBe('text:kimi/kimi-k2.6');
-      session.teardown();
+      expect(sessionRow.modelName).toBe('text:kimi/kimi-k2.6');
+      await ChatSession.destroy({ where: { id: sessionRow.id } });
       // …but the stored definition is untouched (the mutation is in-memory only).
       const reloaded = await Agent.findByPk(row.id);
       expect(reloaded.modelName).toBe('text:anthropic/claude-sonnet-5');

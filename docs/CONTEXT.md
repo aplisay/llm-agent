@@ -57,7 +57,7 @@ build available. Keep it deterministic.
 - `api/` — `api-doc.yaml` (the OpenAPI surface) + `paths/` (operation handlers).
 - `lib/` — the core services:
   - `models/*` — LLM/gateway adapters: `anthropic, openai, openai-compatible, deepseek,
-    kimi, openrouter, gemini, google-vertexai, ultravox, livekit, pipecat` + `llm.js`,
+    kimi, openrouter, xai, gemini, google-vertexai, ultravox, livekit, pipecat` + `llm.js`,
     `mcp-tools.js`.
   - `database.js`, `database-models/*` — persistence.
   - `handlers/`, `ws-handler.js` — request/WebSocket lifecycle.

@@ -64,3 +64,66 @@ def test_subagent_platform_classified_as_subagent_kind():
     # implementation check, or a subagent would fall through to `builtin`.
     assert kinds["transfer_agent"] == "builtin"
     assert kinds["check_availability"] == "function"
+
+
+# --- the result cap reaches the handler -----------------------------------------
+#
+# A cap the wiring drops on the floor would pass every unit test in
+# test_tool_result.py, so this drives a real descriptor and checks what the
+# model would actually be handed.
+
+
+def _descriptor_returning(value, *, max_result_bytes=None):
+    """One descriptor over a builtin that returns `value`."""
+    import asyncio
+
+    from pipecat_aplisay import tool_result
+
+    async def _big_builtin(_args, _metadata, _options):
+        return value
+
+    kwargs = {}
+    if max_result_bytes is not None:
+        kwargs["max_result_bytes"] = max_result_bytes
+    descriptors = build_agent_tools(
+        agent={
+            "functions": [
+                {
+                    "name": "fetch_page",
+                    "implementation": "builtin",
+                    "platform": "fetch_page",
+                    "input_schema": {"properties": {}},
+                }
+            ],
+            "keys": [],
+        },
+        metadata={},
+        send_message=_noop,
+        on_hangup=_noop,
+        on_transfer=_noop,
+        get_transfer_state=lambda: {},
+        extra_builtins={"fetch_page": _big_builtin},
+        **kwargs,
+    )
+    [desc] = descriptors
+    return asyncio.run(desc["execute"]({})), tool_result
+
+
+def test_the_default_cap_reaches_a_real_tool_call():
+    out, tool_result = _descriptor_returning("y" * 40000)
+    assert isinstance(out, str)
+    body = out.split("\n\n[", 1)[0]
+    assert len(body.encode("utf-8")) <= tool_result.MAX_RESULT_BYTES
+    assert "truncated here" in out
+
+
+def test_an_explicit_cap_reaches_a_real_tool_call():
+    out, _ = _descriptor_returning("y" * 40000, max_result_bytes=1500)
+    body = out.split("\n\n[", 1)[0]
+    assert len(body.encode("utf-8")) <= 1500
+
+
+def test_an_ordinary_result_is_handed_over_untouched():
+    value = {"page": "ok"}
+    out, _ = _descriptor_returning(value)
+    assert out == value

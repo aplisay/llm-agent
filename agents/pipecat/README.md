@@ -117,6 +117,20 @@ export PIPECAT_JOIN_SECRET=<matches worker env>
 `PIPECAT_PUBLIC_URL` should be the public origin (ngrok URL, LAN IP, etc.)
 when the browser isn't on the same machine as the worker.
 
+## Tests
+
+```bash
+cd agents/pipecat
+uv run --frozen -p 3.12 --with pytest python -m pytest tests -q
+```
+
+Pin `-p 3.12`. Nothing runs these in CI, and the image is
+`python:3.12-slim`, but `uv sync` on its own picks the newest interpreter it
+can find. The versions disagree: asyncio's implicit default event loop, which
+grpc.aio relies on when a channel is built outside a running loop, is gone on
+3.12 after any `asyncio.run()` and still there on 3.14. See
+`tests/conftest.py`.
+
 ## Layout
 
 ```

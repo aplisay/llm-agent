@@ -1,8 +1,14 @@
 /**
- * Provision the least-privilege billing-service identity for the polite-ai Stripe
- * → balance/credit seam (Phase 4). Idempotently creates a synthetic user with role
- * `billingService` (which grants ONLY organisation:credit) and an AuthKey, then
- * prints the bearer token for polite-ai's LLM_AGENT_BILLING_TOKEN.
+ * Provision the least-privilege billing-service identity for the polite-ai
+ * billing seam (Phase 4). Idempotently creates a synthetic user with role
+ * `billingService` — balance credits, billing controls, call-artifact pruning
+ * and rate-card assignment, and nothing else; lib/auth/permissions.js holds the
+ * exact vocabulary — plus an AuthKey, then prints the bearer token for
+ * polite-ai's LLM_AGENT_BILLING_TOKEN.
+ *
+ * To CHECK (or repair) an environment's existing credential, use
+ * scripts/verify-billing-service.mjs instead: re-running THIS script mints a new
+ * token, which means a secret-store update on the client side.
  *
  *   node scripts/provision-billing-service.mjs                       # repo-root .env
  *   node scripts/provision-billing-service.mjs -p /path/to/staging.env  # per environment
@@ -65,8 +71,12 @@ async function main() {
     console.log(`created billingService user ${userId} (${EMAIL})`);
   }
 
-  // Upsert the AuthKey. role_restriction='billingService' pins the key to
-  // organisation:credit even if the user's role ever changes (defence in depth).
+  // Upsert the AuthKey. role_restriction='billingService' pins the key to the
+  // billingService vocabulary even if the user's role ever changes (defence in
+  // depth). Stored as the role NAME, never as a literal statement map: a name
+  // resolves against the CURRENT vocabulary, so a later widening of the role
+  // reaches this key on the next deploy with no re-mint; a frozen map would
+  // silently miss it (verify-billing-service.mjs reports and repairs that).
   await client.query(
     `INSERT INTO auth_keys (key, user_id, role_restriction, expires, created_at, updated_at)
      VALUES ($1, $2, $3::jsonb, $4, now(), now())

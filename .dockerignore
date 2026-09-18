@@ -1,1 +1,13 @@
-node_modules
+# Keep the build context small. A bare `node_modules` only matches the top
+# level, so the nested trees under agents/ need the ** form: without it a local
+# build ships gigabytes of the developer's checkout to the daemon.
+**/node_modules
+.git
+.claude
+coverage
+*.log
+
+# Never bake a local environment file into an image. Cloud Build works from a
+# clean clone and has none, so excluding these also keeps local builds honest.
+.env
+.env.*

@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
+import * as google from "@livekit/agents-plugin-google";
+import * as openai from "@livekit/agents-plugin-openai";
+import * as ultravox from "../plugins/ultravox/src/index.js";
+import { buildRealtimeLlmOptions, getRealtimePlugin } from "../lib/voice-session-factory.js";
+import { LIVEKIT_REALTIME_MODEL_ROWS } from "../lib/livekit-model-registry.js";
+import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
 // maxDuration/timeExceededMessage passthrough and the Ultravox-specific
@@ -21,7 +26,11 @@ test("basic shape: model, voice, instructions, callId and defaults", () => {
   assert.equal(opts.callId, "call-1");
   assert.equal(opts.maxDuration, "305s");
   assert.equal(opts.timeExceededMessage, undefined);
-  assert.equal(opts.vendorSpecific, undefined);
+  // The platform's default interruption threshold is the only vendorSpecific
+  // content when the agent supplies none (see ultravox-vad-default.test.ts).
+  assert.deepEqual(opts.vendorSpecific, {
+    ultravox: { vadSettings: { minimumInterruptionDuration: "0.48s" } },
+  });
 });
 
 test("custom maxDuration and timeExceededMessage pass through to the plugin", () => {
@@ -181,4 +190,170 @@ test("non-specific language sentinels do not produce a languageHint", () => {
 test("non-ultravox realtime gets no languageHint", () => {
   const opts = buildRealtimeLlmOptions(OPENAI, makeAgent({ tts: { language: "en-GB" } }), "call-1");
   assert.equal(opts.languageHint, undefined);
+});
+
+
+// --- text-output mode (external TTS) -------------------------------------------
+// docs/realtime-external-tts.md: a TTS vendor other than the model's own makes the
+// model emit text only; options.tts.voice then names the TTS voice, never the
+// model's, so it must not reach the plugin.
+
+test("ultravox: an external TTS vendor switches the model to text-only output with no voice", () => {
+  const opts = buildRealtimeLlmOptions(
+    ULTRAVOX,
+    makeAgent({ tts: { vendor: "deepgram", voice: "aura-athena-en", language: "en-GB" } }),
+    "call-1",
+  ) as any;
+  assert.deepEqual(opts.modalities, ["text"]);
+  assert.equal(opts.voice, undefined);
+  // The language still guides Ultravox's own recognition.
+  assert.equal(opts.languageHint, "en-GB");
+});
+
+test("ultravox: the model's own vendor keeps its voice and its audio", () => {
+  const opts = buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ tts: { vendor: "ultravox", voice: "Mark" } }), "call-1") as any;
+  assert.equal(opts.modalities, undefined);
+  assert.equal(opts.voice, "Mark");
+});
+
+test("openai realtime: an external TTS vendor switches the model to text-only output", () => {
+  const opts = buildRealtimeLlmOptions(
+    "livekit:openai/gpt-realtime",
+    makeAgent({ tts: { vendor: "elevenlabs", voice: "Rachel" } }),
+    "call-1",
+  ) as any;
+  assert.deepEqual(opts.modalities, ["text"]);
+  assert.equal(opts.voice, undefined);
+});
+
+test("gemini: an external vendor is not honoured (no text-capable Live model), voice passes through", () => {
+  const opts = buildRealtimeLlmOptions(
+    "livekit:google/gemini-2.0-flash-exp",
+    makeAgent({ tts: { vendor: "elevenlabs", voice: "Kore" } }),
+    "call-1",
+  ) as any;
+  assert.equal(opts.modalities, undefined);
+  assert.equal(opts.voice, "Kore");
+});
+
+// --- handover and hand-back legs -------------------------------------------------
+// The first session after a transfer_agent full-stack handover or a human
+// hand-back. The caller was greeted when the call started, so on Ultravox the
+// opening is the platform's instruction, never the incoming agent's greeting
+// (lib/handover-opening.ts).
+
+const HANDOVER_OPENING = { agent: { prompt: HANDOVER_OPENING_INSTRUCTION } };
+const HAND_BACK_OPENING = { agent: { prompt: TAKEOVER_OPENING_INSTRUCTION } };
+
+const handoverLeg = (modelName: string, agent: any, opening = HANDOVER_OPENING_INSTRUCTION) =>
+  buildRealtimeLlmOptions(modelName, agent, "call-2", { opening }) as any;
+
+test("first legs are unchanged: no opening by default", () => {
+  const agent = makeAgent({ greeting: { text: "Hello!" } });
+  assert.deepEqual(
+    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1", { opening: undefined }),
+    buildRealtimeLlmOptions(ULTRAVOX, agent, "call-1"),
+  );
+});
+
+test("ultravox handover leg: opens from the handover instruction when the agent has no greeting", () => {
+  assert.deepEqual(
+    handoverLeg(ULTRAVOX, makeAgent()).vendorSpecific.ultravox.firstSpeakerSettings,
+    HANDOVER_OPENING,
+  );
+});
+
+test("ultravox handover leg: the portable greeting is not used", () => {
+  for (const greeting of [{ text: "Hello, how can I help?" }, { instructions: "Greet the caller briefly." }]) {
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, makeAgent({ greeting })).vendorSpecific.ultravox.firstSpeakerSettings,
+      HANDOVER_OPENING,
+      `greeting ${JSON.stringify(greeting)} must not open a handover leg`,
+    );
+  }
+});
+
+test("ultravox handover leg: caller-supplied firstSpeakerSettings are replaced, not merged", () => {
+  const natives = [
+    { agent: { text: "Native greeting", uninterruptible: true } },
+    { user: { fallback: { delay: "3s", prompt: "Say hello." } } },
+  ];
+  for (const native of natives) {
+    const agent = makeAgent({ vendorSpecific: { ultravox: { firstSpeakerSettings: native } } });
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, agent).vendorSpecific.ultravox.firstSpeakerSettings,
+      HANDOVER_OPENING,
+    );
+    // The agent's own options are left as they were.
+    assert.deepEqual(agent.options.vendorSpecific.ultravox.firstSpeakerSettings, native);
+  }
+});
+
+test("ultravox handover leg: the other Ultravox mappings still apply", () => {
+  const opts = handoverLeg(
+    ULTRAVOX,
+    makeAgent({
+      greeting: { text: "Hello!" },
+      inactivity: { timeout: "20s", message: "Hello?" },
+      tts: { voice: "Mark", language: "en-GB" },
+      vendorSpecific: { ultravox: { experimentalSettings: { transcriptionProvider: "deepgram-nova-3" } } },
+    }),
+  );
+  const ultravox = opts.vendorSpecific.ultravox;
+  assert.deepEqual(ultravox.firstSpeakerSettings, HANDOVER_OPENING);
+  assert.equal(ultravox.inactivityMessages.length, 3);
+  assert.deepEqual(ultravox.vadSettings, { minimumInterruptionDuration: "0.48s" });
+  assert.deepEqual(ultravox.experimentalSettings, { transcriptionProvider: "deepgram-nova-3" });
+  assert.equal(opts.voice, "Mark");
+  assert.equal(opts.languageHint, "en-GB");
+});
+
+test("ultravox hand-back leg: opens from the hand-back instruction, never the greeting or native settings", () => {
+  const agents = [
+    makeAgent(),
+    makeAgent({ greeting: { text: "Hello, how can I help?" } }),
+    makeAgent({ greeting: { instructions: "Greet the caller briefly." } }),
+    ...[
+      { agent: { text: "Native greeting", uninterruptible: true } },
+      { user: { fallback: { delay: "3s", prompt: "Say hello." } } },
+    ].map((native) => makeAgent({ vendorSpecific: { ultravox: { firstSpeakerSettings: native } } })),
+  ];
+  for (const agent of agents) {
+    assert.deepEqual(
+      handoverLeg(ULTRAVOX, agent, TAKEOVER_OPENING_INSTRUCTION).vendorSpecific.ultravox.firstSpeakerSettings,
+      HAND_BACK_OPENING,
+      `options ${JSON.stringify(agent.options)} must not change a hand-back leg's opening`,
+    );
+  }
+});
+
+test("non-ultravox realtime: the options are the same on a handover or hand-back leg (the runtime asks for the opening)", () => {
+  const agent = makeAgent({ greeting: { text: "Hello!" }, vendorSpecific: { openai: { something: true } } });
+  for (const opening of [HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION]) {
+    assert.deepEqual(handoverLeg(OPENAI, agent, opening), buildRealtimeLlmOptions(OPENAI, agent, "call-2"));
+  }
+});
+
+// Every advertised realtime row must resolve a plugin before call setup. See PR #335.
+
+test("google: the Gemini Live row resolves to the plugin's RealtimeModel", () => {
+  const { plugin, realtime } = getRealtimePlugin("livekit:google/gemini-2.0-flash-exp");
+  assert.equal(plugin, "google");
+  assert.equal(realtime?.RealtimeModel, google.beta.realtime.RealtimeModel);
+});
+
+test("openai and ultravox rows still resolve to their plugin's RealtimeModel", () => {
+  assert.equal(getRealtimePlugin(OPENAI).realtime?.RealtimeModel, openai.realtime.RealtimeModel);
+  assert.equal(getRealtimePlugin(ULTRAVOX).realtime?.RealtimeModel, ultravox.realtime.RealtimeModel);
+});
+
+test("every realtime row in the registry resolves to a RealtimeModel", () => {
+  for (const [vendor, model] of LIVEKIT_REALTIME_MODEL_ROWS) {
+    const modelName = `livekit:${vendor}/${model}`;
+    assert.equal(
+      typeof getRealtimePlugin(modelName).realtime?.RealtimeModel,
+      "function",
+      `${modelName} has no RealtimeModel`,
+    );
+  }
 });

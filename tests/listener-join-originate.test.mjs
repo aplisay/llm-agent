@@ -441,6 +441,56 @@ describe('Listener Join and Originate Endpoints Test', () => {
 
   });
 
+  // A number on a REGISTRATION trunk egresses through the registration's
+  // B2BUA. Until a SIP node holds that registration there is no B2BUA to
+  // dial, and the originate says so rather than falling back to our carrier.
+  test('should refuse originate from a registration-trunk number until a SIP node holds the registration', async () => {
+    await createTestAgent();
+    const regReq = createMockRequest({
+      body: {
+        type: 'phone-registration',
+        name: 'Trunk registration',
+        handler: 'livekit',
+        outbound: true,
+        trunk: true,
+        registrar: 'sip:trunk.example.com:5060',
+        username: 'trunkacct',
+        password: 'testpass'
+      }
+    });
+    const regRes = createMockResponse();
+    regRes.locals.user = { role: 'owner', organisationId: testOrgId };
+    await createPhoneEndpoint(regReq, regRes);
+    expect(regRes._status).toBe(201);
+    expect(regRes._body.trunkId).toBe(`reg-${regRes._body.id}`);
+
+    const numberReq = createMockRequest({
+      body: { type: 'e164-ddi', number: '+442079460555', trunkId: regRes._body.trunkId, outbound: true }
+    });
+    const numberRes = createMockResponse();
+    numberRes.locals.user = { role: 'owner', organisationId: testOrgId };
+    await createPhoneEndpoint(numberReq, numberRes);
+    expect(numberRes._status).toBe(201);
+
+    const listenerReq = createMockRequest({ params: { agentId: testAgentId }, body: { number: '442079460555' } });
+    const listenerRes = createMockResponse();
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
+    await createListener(listenerReq, listenerRes);
+    expect(listenerRes._body).toHaveProperty('id');
+
+    const originateReq = createMockRequest({
+      params: { listenerId: listenerRes._body.id },
+      body: { calledId: '+447911123456', callerId: '+442079460555', metadata: {} }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
+    await originateCall(originateReq, originateRes);
+    expect(originateRes._status).toBe(400);
+    expect(originateRes._body.error).toContain('not currently held by a SIP node');
+
+    await PhoneNumber.destroy({ where: { number: '442079460555', organisationId: testOrgId } });
+  });
+
   test('should reject originate when registration is not enabled for outbound', async () => {
     await createTestAgent();
     const registrationReq = createMockRequest({

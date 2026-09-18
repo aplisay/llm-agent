@@ -2,12 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { foldTranscriptFrame } from "../plugins/ultravox/src/realtime/realtime_model.js";
 
-// Covers user-transcript accumulation in the Ultravox realtime plugin. Before this,
-// the user branch of #handleTranscript read `event.text` only, so a turn Ultravox
-// delivered as `delta` fragments with no `text` on the final frame was dropped
-// outright — no ConversationItemAdded, so the turn reached neither the transcript nor
-// the agent's own history. The agent branch has buffered deltas from the start.
-// run: npx tsx --test test/ultravox-user-transcript.test.ts
+// Accumulate user-transcript deltas even when the final frame has no text snapshot. See PR #182.
 
 /** Replay a turn's frames the way #handleTranscript does, returning the final text. */
 const replay = (frames: Array<{ text?: string; delta?: string }>) =>

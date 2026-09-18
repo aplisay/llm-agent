@@ -647,6 +647,7 @@ Each key is a DTMF sequence of 1–8 characters from `0-9`, `*` and `#`. Each va
 - **Transfers are forced onto the bridged path while the option is set.** A SIP REFER hands the call off-platform, where the target's DTMF can no longer be observed, so the option overrides `forceRefer`, `forceReferTransfer`, and the registration-origin REFER default, for both blind transfers and the consultative finalise. The usual bridged-mode consequences apply (the platform continues to carry — and bill — the call).
 - **Multi-digit matching** uses the same inter-digit timeout as ordinary DTMF input (`options.dtmfTimeout`, default 1500 ms): a sequence that exactly matches a key fires immediately unless a longer key could still match, in which case it fires after the timeout; unmatched digits age out and do not poison a following valid sequence.
 - **On a match** the transfer target's leg is dropped, the bridged call segment ends, and the mapped agent answers the caller on a **new child call record** (`parentId` linking back to the original call). The incoming agent's prompt is composed like a `transfer_agent` handover: its own prompt, a note that it has just taken over from a human hand-back, and (by default) the original agent↔caller transcript.
+- **The incoming agent's first turn.** The agent's greeting is not used, because the caller was greeted when the call started. The platform tells the agent to introduce itself in one sentence and continue from what the caller discussed (or ask how it can help, when it has no history). The caller can interrupt that turn.
 - **If the takeover cannot start** (target agent at its concurrency limit, misconfigured target, wrong model family), the bridge is left intact — the humans stay connected — and the target can retry.
 - **If the transfer target simply hangs up** without pressing a key, the call ends normally.
 - **Carried context is always seeded into metadata.** The takeover call's metadata carries `aplisay.transfer.{parentTranscript, bridgeTranscript, consultTranscript, key, targetNumber}` (transcripts tail-truncated at 32k chars; absent values omitted) regardless of `includeHistory` — addressable by [`promptMetadata`](./prompt-metadata.md), the `get_metadata` builtin, and `source: "metadata"` function parameters. The last of these is the important one: it carries transcripts **out-of-band** of the model's context, e.g. straight into a summariser subagent or a CRM write. `includeHistory` governs the *prompt* only; if the human segment must not exist anywhere, leave `bridgedTransferTranscribe` unset.
@@ -763,6 +764,23 @@ Add the `outboundCallFilter` option to your agent definition:
 - The regexp is anchored with `^` and `$` to match the complete phone number
 - Only outbound calls (via `transfer` or `originate`) where the destination number matches this pattern will be allowed
 - If a transfer is attempted to a number that doesn't match the filter, the transfer will fail with an error
+- It is enforced identically on the originate API and on both voice workers (LiveKit and Pipecat), across blind, consultative and WebRTC-origin transfers, and on an agent's `fallback.number`
+
+### On a chargeable (platform carrier) trunk, the filter can only narrow
+
+This filter is **your** control over **your** agent, and on a leg that leaves via
+your own PBX registration or your own BYO trunk it is the whole of the policy.
+
+When a call goes out on one of Aplisay's own carrier trunks — where Aplisay pays
+the carrier for the minutes — the platform applies its own policy *first*: the
+trunk's operator allow-pattern (UK geographic/mobile by default) and a destination
+the organisation actually has a rate for. Your `outboundCallFilter` is then applied
+on top and can only remove destinations, never add them. A wide filter therefore
+does not open up international or premium-rate dialling on a platform trunk;
+refusals come back to the agent as a `transfer` failure with a reason.
+
+See [outbound call authorisation](outbound-call-authorisation.md) for the full
+policy, refusal codes and trunk configuration.
 
 ### Example Patterns
 

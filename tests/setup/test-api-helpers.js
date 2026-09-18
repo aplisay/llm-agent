@@ -123,7 +123,7 @@ export function createTestGetPhoneEndpoint(models) {
       let record = null;
       if (identifier.match(/^\+?[0-9]+$/)) {
         // E.164 number lookup
-        record = await PhoneNumber.findByPk(identifier);
+        record = await PhoneNumber.findOne({ where: { number: identifier } });
       } else {
         // Registration ID lookup - validate UUID format first
         if (!identifier.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
@@ -191,7 +191,7 @@ export function createTestCreatePhoneEndpoint(models) {
         }
 
         // Check for duplicates
-        const existing = await PhoneNumber.findByPk(number);
+        const existing = await PhoneNumber.findOne({ where: { number: number } });
         if (existing) {
           return res.status(409).send({ error: 'Phone number already exists' });
         }
@@ -259,7 +259,7 @@ export function createTestUpdatePhoneEndpoint(models) {
 
       if (identifier.match(/^\+?[0-9]+$/)) {
         // E.164 number update
-        const phoneNumber = await PhoneNumber.findByPk(identifier);
+        const phoneNumber = await PhoneNumber.findOne({ where: { number: identifier } });
         if (!phoneNumber) {
           return res.status(404).send({ error: 'Phone number not found' });
         }
@@ -341,7 +341,7 @@ export function createTestDeletePhoneEndpoint(models) {
 
       if (identifier.match(/^\+?[0-9]+$/)) {
         // E.164 number deletion
-        const phoneNumber = await PhoneNumber.findByPk(identifier);
+        const phoneNumber = await PhoneNumber.findOne({ where: { number: identifier } });
         if (!phoneNumber) {
           return res.status(404).send({ error: 'Phone number not found' });
         }

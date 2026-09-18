@@ -70,10 +70,10 @@ server.use(cors({
 const { auth: betterAuth } = await import('./lib/auth/index.js');
 if (betterAuth) {
   const { toNodeHandler } = await import('better-auth/node');
-  const { createClientIpGate } = await import('./lib/auth/client-ip-gate.js');
+  const { createAuthProxyGate } = await import('./lib/auth/auth-proxy-gate.js');
   server.all(
     '/api/auth/*',
-    createClientIpGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
+    createAuthProxyGate({ secret: process.env.AUTH_PROXY_SECRET, logger }),
     toNodeHandler(betterAuth),
   );
   logger.info('mounted better-auth at /api/auth/*');
@@ -153,12 +153,24 @@ httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
 });
 
+// Start the reaper only in the server: importing database code from a CLI must not alter chat liveness. See PR #291.
+const { startChatSessionReaper, startChatOwnershipListener, releaseAllChatSessions } = await import('./lib/text-chat.js');
+startChatSessionReaper({ log: logger });
+// Answer other processes asking for a chat session this one holds (a client
+// reconnected through the load balancer to a different pod). Server only,
+// for the same reason as the reaper.
+startChatOwnershipListener({ log: logger });
+
 process.on('SIGINT', cleanupAndExit);
 process.once('SIGTERM', cleanupAndExit);
 process.on('SIGUSR2', cleanupAndExit);
 
 async function cleanup() {
   logger.debug({}, `beforeExit: applications running`);
+  // Hand every chat session this process holds back to the database first, so
+  // the clients whose sockets die with this process re-attach on another one
+  // and carry on, instead of starting over.
+  await releaseAllChatSessions({ log: logger });
   await cleanHandlers();
   logger.debug({}, `cleanup: applications cleaned`);
 }

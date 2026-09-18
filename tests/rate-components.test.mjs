@@ -1,5 +1,5 @@
 import { setupRealDatabase, teardownRealDatabase, databaseStarted } from './setup/database-test-wrapper.js';
-import { buildRateComponents, TTS_ENGINES } from '../lib/rate-components.js';
+import { buildRateComponents, STT_ENGINES, TTS_ENGINES, BUNDLED_TTS_PROVIDERS } from '../lib/rate-components.js';
 import { resolveRowCost } from '../lib/rates.js';
 
 // Phase-3 catalogue: the priceable-component roster /api/rate-components advertises,
@@ -19,6 +19,7 @@ const implementations = [
 const models = [
   { name: 'livekit:ultravox/ultravox-v0.6', description: 'Ultravox' },
   { name: 'livekit:openai/gpt-4o', description: 'GPT-4o' },
+  { name: 'pipecat:xai/grok-voice-think-fast-2.0', description: 'Grok Voice' },
 ];
 
 describe('rate-components catalogue', () => {
@@ -41,12 +42,86 @@ describe('rate-components catalogue', () => {
     const gpt = byKey('model:livekit:openai/gpt-4o');
     expect(gpt.units).toEqual(['token']);
     expect(gpt.match).toEqual({ technology: 'llm', provider: 'openai', detail: 'openai/gpt-4o', unit: 'output_tokens' });
+    // The Grok voice model bills per minute of audio too (docs/grok.md).
+    const grok = byKey('model:pipecat:xai/grok-voice-think-fast-2.0');
+    expect(grok.units).toEqual(['minute']);
+    expect(grok.match).toEqual({ technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' });
   });
 
   it('advertises tts/stt engines with their billing units', () => {
-    expect(comps.filter((c) => c.dim === 'tts').map((c) => c.match.provider).sort()).toEqual([...TTS_ENGINES].sort());
+    expect(comps.filter((c) => c.dim === 'tts' && !c.bundled).map((c) => c.match.provider).sort())
+      .toEqual([...TTS_ENGINES].sort());
     expect(byKey('tts:elevenlabs').units).toEqual(['character', 'minute']);
     expect(byKey('stt:deepgram').units).toEqual(['minute', 'character']);
+    // Every STT engine either worker can be pointed at, primary or auxiliary.
+    expect(comps.filter((c) => c.key.startsWith('stt:')).map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+  });
+
+  // A managed realtime bundle still meters the speech it synthesises, but that
+  // audio is already paid for by the model's per-minute line. Advertising the
+  // component is what lets a card carry an explicit ZERO for it — without one
+  // the rows match nothing and sit on the customer's usage screen as minutes of
+  // TTS marked "not priced", beside the call that already charged for them.
+  it('advertises bundled realtime speech as a zero-priceable tts component', () => {
+    // The Pipecat worker attributes a realtime model's own speech to the
+    // model's vendor; Gemini Live is absent because google is also a TTS engine.
+    expect([...BUNDLED_TTS_PROVIDERS].sort()).toEqual(['openai', 'ultravox', 'xai']);
+    for (const provider of BUNDLED_TTS_PROVIDERS) {
+      const c = byKey(`tts:${provider}`);
+      expect(c.dim).toBe('tts');
+      expect(c.bundled).toBe(true);
+      expect(c.match).toEqual({ technology: 'tts', provider });
+      // milliseconds is the unit the realtime workers actually emit (audio
+      // duration, not characters), so it must be offered first.
+      expect(c.units[0]).toBe('minute');
+    }
+    // A bundled provider is NOT one of the billable engines — listing it there
+    // would invite a card that charges twice for the same audio.
+    expect(TTS_ENGINES).not.toContain('ultravox');
+  });
+
+  it('advertises the auxiliary STT (options.stt.aux) as its own stt-aux component per engine', () => {
+    const aux = comps.filter((c) => c.key.startsWith('stt-aux:'));
+    expect(aux.map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+    expect(byKey('stt-aux:deepgram')).toEqual({
+      dim: 'stt', key: 'stt-aux:deepgram', label: 'Auxiliary STT · deepgram',
+      match: { technology: 'stt-aux', provider: 'deepgram' }, units: ['minute', 'character'], available: true,
+    });
+  });
+
+  it('advertises the output audit STT (options.tts.output) as its own stt-output component per engine', () => {
+    const out = comps.filter((c) => c.key.startsWith('stt-output:'));
+    expect(out.map((c) => c.match.provider).sort()).toEqual([...STT_ENGINES].sort());
+    expect(byKey('stt-output:deepgram')).toEqual({
+      dim: 'stt', key: 'stt-output:deepgram', label: 'Output audit STT · deepgram',
+      match: { technology: 'stt-output', provider: 'deepgram' }, units: ['minute', 'character'], available: true,
+    });
+    // …and it is priced only by its own line, never by the stt or stt-aux lines.
+    const line = (comp, unit, priceMicros) => ({ dim: comp.dim, match: comp.match, unit, priceMicros });
+    const row = { technology: 'stt-output', provider: 'deepgram', detail: 'deepgram/nova-3', unit: 'milliseconds', quantity: 60000 };
+    const others = { detail: { lines: [line(byKey('stt:deepgram'), 'minute', 100000), line(byKey('stt-aux:deepgram'), 'minute', 70000)] } };
+    expect(resolveRowCost(row, others).status).toBe('no_line');
+    const own = { detail: { lines: [...others.detail.lines, line(byKey('stt-output:deepgram'), 'minute', 50000)] } };
+    expect(resolveRowCost(row, own).costMicros).toBe(50000);
+  });
+
+  it('an stt-aux row is priced only by an stt-aux line, never by the primary stt line', () => {
+    const line = (comp, unit, priceMicros) => ({ dim: comp.dim, match: comp.match, unit, priceMicros });
+    const auxRow = { technology: 'stt-aux', provider: 'deepgram', detail: 'deepgram/nova-3', unit: 'milliseconds', quantity: 60000 };
+    const primaryOnly = { detail: { lines: [line(byKey('stt:deepgram'), 'minute', 100000)] } };
+    expect(resolveRowCost(auxRow, primaryOnly)).toEqual({ costMicros: null, status: 'no_line', breakdown: [] });
+    const both = { detail: { lines: [
+      line(byKey('stt:deepgram'), 'minute', 100000),
+      line(byKey('stt-aux:deepgram'), 'minute', 70000),
+    ] } };
+    const { costMicros, status, breakdown } = resolveRowCost(auxRow, both);
+    expect(status).toBe('matched');
+    expect(costMicros).toBe(70000);
+    expect(breakdown).toHaveLength(1);
+    expect(breakdown[0].match).toEqual({ technology: 'stt-aux', provider: 'deepgram' });
+    // …and the primary row is untouched by the aux line.
+    const primaryRow = { ...auxRow, technology: 'stt' };
+    expect(resolveRowCost(primaryRow, both).costMicros).toBe(100000);
   });
 
   it('the catalogue match templates resolve a real Ultravox voice row on BOTH dimensions', () => {

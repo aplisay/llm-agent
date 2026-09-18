@@ -255,6 +255,8 @@ export async function bridgeParticipant(
       participantIdentity: 'sip-outbound-call',
       headers: {
         "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
+        // A number on a registration trunk keeps its trunk identity too.
+        ...(aplisayId ? { "X-Aplisay-Trunk": aplisayId } : {}),
         "X-Aplisay-Origin-Caller-Id": originCallerId || 'unknown',
         ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
       },
@@ -383,6 +385,7 @@ export async function dialTransferTargetToConsultation(
         participantIdentity: transferTargetIdentity,
         headers: {
           "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
+          ...(effectiveAplisayId ? { "X-Aplisay-Trunk": effectiveAplisayId } : {}),
           "X-Aplisay-Origin-Caller-Id": callerId || 'unknown',
           ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
         },

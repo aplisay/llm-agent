@@ -1,4 +1,6 @@
-# Public ingress for the llm-agent API + websockets at api.aplisay.com.
+# Public ingress for the llm-agent API + websockets at api.polite.ai
+# (api.aplisay.com retired 2026-08-29: DNS removed, traffic fully on the
+# polite.ai name — a dead SAN would wedge the next multi-SAN cert renewal).
 # Long-lived connections: the builder chat websocket rides llm-agent's 15-min
 # reconnect grace, and agent SSE streams stay open for whole calls — lift
 # nginx's 60 s proxy timeouts or every quiet connection is cut mid-session.
@@ -18,10 +20,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - api.aplisay.com
+        - api.polite.ai
       secretName: llm-agent-tls
   rules:
-    - host: api.aplisay.com
+    - host: api.polite.ai
       http:
         paths:
           - path: /

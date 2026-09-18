@@ -1,5 +1,5 @@
 import logger from "./logger.js";
-import { roomService } from "./livekit-constants.js";
+import { getRoomService } from "./livekit-constants.js";
 
 /**
  * Delete a LiveKit room with retry on transient errors.
@@ -21,7 +21,7 @@ export async function deleteRoomWithRetry(roomName: string): Promise<void> {
   while (attempt < MAX_ATTEMPTS) {
     attempt++;
     try {
-      await roomService.deleteRoom(roomName);
+      await getRoomService().deleteRoom(roomName);
       if (attempt > 1) {
         logger.info({ roomName, attempt }, "deleteRoom succeeded after retry");
       }

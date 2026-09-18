@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   postgres:
     image: postgres:15
@@ -20,7 +19,17 @@ services:
   test-runner:
     build:
       context: .
-      dockerfile: Dockerfile.test
+      # The `test` target of the main Dockerfile, so the suite runs on the same
+      # base and the same node_modules layer as the deployed image.
+      dockerfile: Dockerfile
+      target: test
+      # CI points CACHE_IMAGE at the last pushed runtime image. Its `deps`
+      # layer is reused whenever package.json and yarn.lock are unchanged, so
+      # the test image does not reinstall the dependency tree on every build.
+      # The default is the base image, which carries no cache metadata and is
+      # therefore a harmless no-op for a local `yarn test:ci`.
+      cache_from:
+        - ${CACHE_IMAGE:-node:22}
       args:
         SECRETENV_BUNDLE: ${SECRETENV_BUNDLE}
         SECRETENV_KEY: ${SECRETENV_KEY}

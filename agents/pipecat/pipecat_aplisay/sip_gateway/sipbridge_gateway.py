@@ -54,6 +54,7 @@ import httpx
 from loguru import logger
 from pipecat.transports.base_transport import BaseTransport
 
+from .. import http_client
 from .base import (
     ConsultStateMixin,
     GatewaySession,
@@ -403,6 +404,9 @@ class _SbGatewaySession(GatewaySession):
 
     async def shutdown(self) -> None:
         await self.hangup("Session closed")
+        # Unregister outbound sessions here to release the parked WebSocket handler; peer close alone does not wake it.
+        # Repeated unregister is safe on inbound teardown; see PR #285.
+        self._gateway.unregister_session(self.session_id)
 
 
 class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
@@ -534,6 +538,11 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         """
         self._session_to_bridge_call.pop(session_id, None)
         self._sessions.pop(session_id, None)
+        # W6: ``hangup`` returns early once the leg is bridged, so a
+        # successfully completed warm transfer never cleared its consult
+        # id. One small string per transfer, forever — drop it here,
+        # which covers every exit path.
+        self.clear_consult_call_id(session_id)
         ev = self._leg_done_events.get(session_id)
         if ev is not None:
             ev.set()
@@ -651,8 +660,12 @@ class SipBridgeSipGateway(ConsultStateMixin, SipGateway):
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.api_token:
             headers["authorization"] = f"Bearer {self.api_token}"
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, headers=headers, json=body)
+        # Shared pooled client (W4) — the per-request deadline stays on
+        # the request so the 65 s originate can't stretch a 15 s hangup.
+        client = await http_client.get_client("sipbridge")
+        resp = await client.request(
+            method, url, headers=headers, json=body, timeout=timeout
+        )
         if resp.status_code >= 400:
             msg = f"sipbridge {method} {path} -> {resp.status_code} {resp.text}"
             if raise_on_error:
@@ -749,6 +762,12 @@ def _transfer_egress_headers(req: TransferRequest) -> dict[str, str]:
         h["X-Lk-Transport"] = req.b2bua_gateway_transport
     if req.origin_caller_id:
         h["X-Aplisay-Origin-Caller-Id"] = req.origin_caller_id
+    if req.srtp is False:
+        # Same per-trunk opt-out as the originate path — see
+        # ``_custom_headers_for``. A transfer leg egresses over a trunk too, so
+        # a carrier that advertises SAVP and then sends plain RTP breaks a
+        # transfer exactly as it breaks an originate.
+        h["X-Aplisay-Srtp"] = "off"
     return h
 
 
@@ -780,4 +799,9 @@ def _custom_headers_for(params: OutboundCallParams) -> dict[str, str]:
         h["X-Lk-RealIp"] = params.b2bua_gateway_ip
     if params.b2bua_gateway_transport:
         h["X-Lk-Transport"] = params.b2bua_gateway_transport
+    if params.srtp is False:
+        # Per-trunk opt-out (Trunk.flags.srtp). Only ever sent to say "don't":
+        # its ABSENCE means the historical behaviour, so a bridge that predates
+        # the header keeps offering SAVP exactly as it does today.
+        h["X-Aplisay-Srtp"] = "off"
     return h

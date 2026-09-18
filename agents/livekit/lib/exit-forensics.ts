@@ -1,32 +1,6 @@
 /**
- * Why did this process exit?
- *
- * Staging showed the supervisor exiting with RestartCount=2, ExitCode=0, not
- * OOM-killed — i.e. a *clean* exit, which `restart: always` then papered over.
- * Nothing in the logs said who decided to stop.
- *
- * ExitCode=0 narrows it to exactly two causes, because a process killed by a
- * signal reports 128+N, never 0:
- *
- *   1. someone called process.exit() / process.exit(0)
- *   2. the event loop drained — the worker simply ran out of work and returned
- *
- * This distinguishes them, and for (1) names the caller. Deliberately no
- * signal listeners: adding a SIGTERM/SIGINT listener suppresses Node's default
- * termination, which is the precise bug that made every deploy hang for 300s
- * (see realtime.ts). Signals are already identifiable from the container exit
- * code, so there is nothing to gain and a repeat of that bug to lose.
- *
- * Likewise `uncaughtExceptionMonitor` rather than `uncaughtException`: the
- * monitor variant observes without suppressing the default crash. An
- * `uncaughtException` listener would silently convert crashes into hangs, and
- * unhandled rejections surface through the same monitor under Node's default
- * --unhandled-rejections=throw, so both are covered without changing
- * behaviour.
- *
- * The final lines are written with fs.writeSync to fd 2 rather than through
- * pino: at exit time pino's stream may never flush, and the whole point is to
- * still have the message in `docker logs` afterwards.
+ * Observe exits without signal handlers or uncaughtException listeners, which suppress default termination. See PR
+ * #205. Write synchronously to stderr because buffered logs may not flush during exit.
  */
 import { writeSync } from "node:fs";
 import logger from "./logger.js";

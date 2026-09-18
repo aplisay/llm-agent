@@ -5,19 +5,20 @@
 // Set environment variables immediately when this module is imported
 // This ensures they are available when database.js is imported
 
-if (process.env.USE_CONTAINER_NETWORKING === 'true') {
-  process.env.POSTGRES_HOST = 'postgres';
-  process.env.POSTGRES_PORT = '5432';
-}
-else {
-  process.env.POSTGRES_HOST = 'localhost';
-  process.env.POSTGRES_PORT = '5433';
-}
+import { testDbConnection, workerDatabase } from './test-db-config.js';
 
+process.env.POSTGRES_HOST = testDbConnection.host;
+process.env.POSTGRES_PORT = String(testDbConnection.port);
 
-process.env.POSTGRES_DB = 'llmvoicetest';
-process.env.POSTGRES_USER = 'testuser';
-process.env.POSTGRES_PASSWORD = 'testpass';
+// Each jest worker gets its own database, which is what lets the suite run
+// with maxWorkers > 1. Every DB-backed suite boots lib/database.js under
+// DB_FORCE_SYNC, so it runs the whole schema upgrade chain; sharing one
+// database across workers would have those chains altering the same tables at
+// the same time. tests/setup/global-setup.js creates the databases, one per
+// worker, before any worker starts.
+process.env.POSTGRES_DB = workerDatabase();
+process.env.POSTGRES_USER = testDbConnection.user;
+process.env.POSTGRES_PASSWORD = testDbConnection.password;
 process.env.CREDENTIALS_KEY = process.env.CREDENTIALS_KEY || 'test-secret-key-for-encryption';
 
 // If environment variables are already set (e.g., in Docker), don't override them
@@ -73,6 +74,7 @@ export async function setupRealDatabase() {
       User: dbModule.User,
       PhoneNumber: dbModule.PhoneNumber,
       PhoneRegistration: dbModule.PhoneRegistration,
+      NumberReservation: dbModule.NumberReservation,
       Agent: dbModule.Agent,
       AgentSet: dbModule.AgentSet,
       Instance: dbModule.Instance,
@@ -99,6 +101,7 @@ export async function setupRealDatabase() {
   Instance = dbModule.Instance;
   PhoneNumber = dbModule.PhoneNumber;
   PhoneRegistration = dbModule.PhoneRegistration;
+  NumberReservation = dbModule.NumberReservation;
   Call = dbModule.Call;
   TransactionLog = dbModule.TransactionLog;
   InvocationLog = dbModule.InvocationLog;
@@ -135,6 +138,7 @@ export async function teardownRealDatabase() {
     Instance = undefined;
     PhoneNumber = undefined;
     PhoneRegistration = undefined;
+    NumberReservation = undefined;
     Call = undefined;
     TransactionLog = undefined;
     InvocationLog = undefined;
@@ -166,6 +170,6 @@ export function getRealDatabase() {
 
 // Export the same objects as database.js for drop-in replacement
 // These will be populated after setupRealDatabase() is called
-export let Metadata, Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, InvocationLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
+export let Metadata, Agent, AgentSet, Instance, PhoneNumber, PhoneRegistration, NumberReservation, Call, TransactionLog, InvocationLog, UsageRecord, RateCard, BalanceCredit, Tariff, TariffPrefix, User, Organisation, AuthKey, Trunk;
 export let Op, Sequelize;
 export let databaseStarted, stopDatabase;

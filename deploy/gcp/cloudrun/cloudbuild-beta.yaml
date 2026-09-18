@@ -15,21 +15,8 @@
 # deploy: whatever runs the beta channel pulls :beta (or pins :beta-n.n.n)
 # and is rolled separately.
 #
-# SKIP-OR-BUILD: when llm-agent:$COMMIT_SHA already exists (a previous beta
-# release of the same commit, or a per-commit main build), Check PROMOTES
-# server-side — a digest-pinned manifest copy (`docker buildx imagetools
-# create`) that adds :$TAG_NAME + :beta with no rebuild — and Build/Push
-# no-op via a /workspace skip marker. Deliberately NOT `gcloud artifacts
-# docker tags add` (cloudbuild-release.yaml's idiom): on Artifact Registry
-# that command needs artifactregistry.tags.delete to MOVE a tag that already
-# exists, which the Cloud Build service account lacks — the polite-ai
-# beta-0.9.56 promote died exactly there re-pointing :beta. A manifest PUT
-# (the same registry call `docker push` makes) moves floating tags with the
-# SA's ordinary push permissions. NB the staging lane publishes to a
-# DIFFERENT image path (llm-agent-staging), so a first beta tag on a
-# next-branch commit still builds from source here. No `images:` provenance
-# list: Cloud Build fails the build when a listed image wasn't produced
-# locally (the skip path).
+# Promote existing images by manifest copy: moving tags with gcloud needs delete permission. See PR #175.
+# Omit images: provenance because promoted images are not produced locally.
 #
 # Unlike the v-tag release flow (cloudbuild-release.yaml, which only promotes
 # and never builds), beta tags may land on commits with no llm-agent-repo

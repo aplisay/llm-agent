@@ -15,6 +15,8 @@ import httpx
 from loguru import logger
 from pydantic import BaseModel
 
+from . import http_client
+
 
 class ApiRequestError(Exception):
     def __init__(self, status: int, body: Any, message: str) -> None:
@@ -69,8 +71,13 @@ async def _request(
         headers["x-shared-token"] = token
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, params=params, json=body, headers=headers)
+        # Shared, pooled, keep-alive client (W4). The deadline goes on
+        # the request, not the client, so one caller's timeout can never
+        # apply to another's.
+        client = await http_client.get_client("agent-db")
+        resp = await client.request(
+            method, url, params=params, json=body, headers=headers, timeout=timeout
+        )
     except httpx.ConnectError as e:
         # DNS / TCP failure reaching the llm-agent REST server. Most common
         # cause in dev is SERVICE_BASE_URI unset, pointed at an unresolvable
@@ -114,10 +121,6 @@ async def _request(
 
 async def get_instance_by_id(instance_id: str) -> dict:
     return await _request("GET", "/api/agent-db/instance", params={"instanceId": instance_id})
-
-
-async def get_instance_by_number(number: str) -> dict:
-    return await _request("GET", "/api/agent-db/instance", params={"number": number})
 
 
 async def get_agent_by_id(agent_id: str) -> dict:
@@ -167,6 +170,41 @@ async def invoke_subagent(
         timeout=75.0,
     )
     return (data or {}).get("result") if isinstance(data, dict) else data
+
+
+async def authorise_outbound_destination(
+    *,
+    called_id: str,
+    caller_id: Optional[str] = None,
+    agent_options: Optional[dict] = None,
+    organisation_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    aplisay_id: Optional[str] = None,
+    outbound_trunk_id: Optional[str] = None,
+    registration_originated: bool = False,
+) -> dict:
+    """Authorise one outbound destination against the platform's policy.
+
+    Returns the decision dict (``allowed``, ``code``, ``reason``, ``chargeable``,
+    ``trunkId``, ``destination``). Raises on transport/server failure — the caller
+    (``outbound_filter.authorise_destination``) treats that as a REFUSAL, since the
+    policy it enforces (per-trunk operator filter + destination rating on our own
+    carrier trunks) cannot be evaluated here.
+    """
+    return await _request(
+        "POST",
+        "/api/agent-db/outbound-authorisation",
+        body={
+            "calledId": called_id,
+            "callerId": caller_id,
+            "agentOptions": agent_options or {},
+            "organisationId": organisation_id,
+            "userId": user_id,
+            "aplisayId": aplisay_id,
+            "outboundTrunkId": outbound_trunk_id,
+            "registrationOriginated": bool(registration_originated),
+        },
+    )
 
 
 async def get_phone_number(number: str) -> Optional[dict]:

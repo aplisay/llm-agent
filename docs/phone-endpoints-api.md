@@ -122,6 +122,17 @@ Creates a new phone endpoint. Supports E.164 DDI (number on a trunk) and phone-r
   limit returns `403 { "error": "…", "code": "chargeable_number_limit", "limit": n, "used": n }`.
   Numbers on the organisation's own (non-chargeable) trunks are never counted or limited.
   Current allowance is readable at [`GET /api/number-quota`](#get-apinumber-quota).
+- **Carrier reservation** (schema 63): a claim onto a chargeable trunk must also carry
+  `reservationRef`, the id of a reservation minted by
+  [`POST /api/number-reservations`](#post-apinumber-reservations) for the same number, trunk
+  and organisation. Chargeable numbers are ones the platform buys and pays for, so the claim
+  has to show that the seam which does the buying agreed to it. Missing returns
+  `403 { "code": "reservation_required" }`; expired, already used, or naming a different
+  number, trunk or organisation returns `403 { "code": "reservation_invalid" }`. The claim
+  consumes the reservation in its own transaction, so one reservation yields at most one
+  number. Callers holding `trunk:create` (platform operators) may claim without one, which is
+  how a number already routed at the carrier is attached by hand; a reference they do present
+  is still checked. Numbers on the organisation's own trunks never need one.
 - **Response (201)**: `{ "success": true, "number": "1234567890" }` (number without `+`).
 
 **Example:**
@@ -179,18 +190,54 @@ The `options` object carries provider-specific and behavioural settings for the 
 
 > **Trunk counterpart:** SIP trunks default to **bridging** for transfers. To make a trunk default to **SIP REFER** instead, set `forceReferTransfer: true` in the trunk's `flags` (trunk configuration, not this endpoint API). The same per-transfer `forceRefer` / `forceBridged` parameters override either default. See [call-transfers.md](./call-transfers.md#transfer-mode-selection).
 
+#### Registrar accounts (`mode: registrar`)
+
+A phone registration normally has the platform register *out* to the customer's registrar (`mode: client`, the default). A **registrar account** inverts it: the customer's PBX registers *to* the platform, at the deployment's registrar name, with a username and password the platform mints. This is what a PBX whose trunk model is "register to your provider" (3CX, Yeastar and Grandstream register trunks, Avaya IP Office SIP Line, and most NATted PBXes) needs. Accounts are served by the `regserver` binary of aplisay-b2bua, never by regclient.
+
+- **Request body**: `type: "phone-registration"`, `mode: "registrar"`, optionally `kind: "pbx"` (the only kind; `device` is reserved), and any of `name`, `outbound`, `handler`, `options`, `trunk`, `trunkId`, `didSource`, `didCountry` exactly as for a client-mode registration. `registrar`, `username`, `password` and `b2buaId` must **not** be supplied (400).
+- **Response (201)**: the credentials, shown here once:
+
+```json
+{
+  "success": true,
+  "id": "<registration-uuid>",
+  "trunkId": null,
+  "mode": "registrar",
+  "registrar": "sip.polite.ai",
+  "port": 5061,
+  "transport": "tls",
+  "username": "pbx-k7m2x9q4wz",
+  "password": "…24 characters…"
+}
+```
+
+- `registrar` is `REGSERVER_REGISTRAR` on the deployment (503 code `registrar_unavailable` when it is unset), and is also the digest realm. `username` is unique across every organisation, since one realm serves them all.
+- `GET /api/phone-endpoints/{id}` returns `mode`, `kind`, and for a registrar account `bindings` (the PBX sockets the owning node last mirrored onto the row: `contact`, `received`, `transport`, `userAgent`, `registeredAt`, `expiresAt`, `node`) and `bindingsUpdatedAt`. Never the password.
+- `PUT` refuses `registrar`, `username`, `password` and `b2buaId` on a registrar account (400 code `registrar_identity_immutable`) and refuses a change of `mode` on any registration (400 code `mode_immutable`).
+- `GET /api/phone-endpoints/{id}/credentials` reveals the credentials again (`phoneEndpoint:update`; every call is audit-logged). `POST /api/phone-endpoints/{id}/credentials` mints a new password, returns the credentials once and resets the state to `initial`; the PBX's next REGISTER with the old password is refused. Both answer 404 for a client-mode registration.
+- `GET /api/phone-endpoints/{id}/bindings` returns the mirror; `?live=1` asks the owning node through the node API (same proxying and status codes as the trace routes).
+
+Design record: `aplisay-strategy/implementation/regserver-tactical-spec.md`.
+
 ---
 
 ### PUT /api/phone-endpoints/{identifier}
 
 Updates an existing phone endpoint.
 
-- **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration.
+- **Path**: `identifier` is the E.164 number (with or without `+`) for DDI, or the registration ID for phone-registration. A number resolves to the caller's organisation's own row, else the unallocated pool's; a number another organisation holds is not visible.
 - **Body**: Only send fields you want to change. For E.164 DDI, `outbound`, `handler` and
   `provisioned` are updatable (`provisioned` marks carrier-side provisioning complete — the
   dashboard Buy-number flow sets it once the provider has activated the number and pointed it
   at the platform); for phone-registration, `name`, `outbound`, `handler`, `registrar`,
   `username`, `password`, and `options` can be updated. Updating credentials resets registration state.
+- **Moving a number** (`phoneEndpoint:assign`, platform operators): send `organisationId` (the
+  target organisation, or `null` for the unallocated pool), and `fromOrganisationId` when the
+  number is held by an organisation other than the caller's. The move is exclusive of the other
+  fields. It is **refused with `409 { "code": "number_in_use" }` while the number is attached to
+  an agent**: detach it first, then move it. Also `409` when the target already holds the number
+  or the number's customer trunk is not assigned to the target; `404` for an unknown source row
+  or organisation.
 - **Response (200)**: `{ "success": true }`.
 
 ---
@@ -220,6 +267,24 @@ organisation membership.
 - The limit itself is `Organisation.chargeableNumberLimit` (default 3), editable via the
   organisations API under `organisation:setRate` (super admin billing policy — deliberately
   not orgAdmin's `setLimits`).
+
+---
+
+### POST /api/number-reservations
+
+Mint the reservation a claim onto a **chargeable** trunk must present. Requires
+`phoneEndpoint:reserve`, held by the platform's number-purchase seam (`billingService`) and
+super admins; organisation roles cannot mint one.
+
+- **Request body**: `number` (E.164), `trunkId` (must be a chargeable trunk), `organisationId`
+  (the organisation that will claim it), optionally `provider` and `carrierRef` (an object,
+  stored verbatim for audit).
+- **Response (201)**: `{ "id": "<uuid>", "number": "442079460100", "trunkId": "…",
+  "organisationId": "…", "expiresAt": "<ISO 8601>" }`. Pass `id` as `reservationRef` on the
+  claim within the expiry window (15 minutes).
+- A non-chargeable or unknown trunk returns `400`; an unknown organisation `404`.
+- Reservations are never deleted: a consumed one records when it was used and which number
+  row it produced.
 
 ---
 
@@ -254,7 +319,20 @@ Trunks are a curated platform resource. Ordinary callers get the org-scoped list
 
 - **Single number**: POST with `type`, `number`, `trunkId`, and `outbound`. Default `outbound` from the trunk when possible so the UI matches trunk capabilities.
 - **Multiple numbers**: The API creates one number per request. To add a range or list, your client can loop over normalized E.164 values and POST each (with optional client-side limit, e.g. max 40 per batch) and surface errors per number if needed.
-- **Validation**: Numbers are validated as E.164 (7–15 digits, optional leading `+`). Duplicate number returns 409.
+- **Validation**: Numbers are validated as E.164 (7–15 digits, optional leading `+`). A number is unique per organisation and per trunk, not platform-wide: creating one your organisation already holds, or one already on the same trunk, returns 409. Another organisation holding the same number on its own trunk is not a conflict.
+
+### Registration trunks
+
+A phone-registration created with `"trunk": true` is a **registration trunk**: it owns a trunk
+(`trunkId` in the response, `reg-<id>` unless a super names it with `trunkId`), numbers attach to
+that trunk with `POST /api/phone-endpoints` `type: e164-ddi`, and each number is given its own
+agent. The registration itself is never attached to an agent. Outbound calls and transfers that
+present one of the trunk's numbers as caller id egress through the registration's B2BUA (the
+trunk is never destination-billed), so the registration must be held by a SIP node. `didSource` says where the dialled
+number is found on an inbound INVITE (`request-uri` default, `to`, `header:<Name>`, `none`), and
+`didCountry` normalises a national-format number. `PUT` with `trunk: true` turns a line into a
+trunk (detaching it from any agent); `trunk: false` and `DELETE` are refused with 409 while numbers
+still sit on the trunk.
 
 ### Agent assignment (inUse, agentId, agentName)
 

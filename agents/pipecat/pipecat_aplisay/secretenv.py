@@ -77,24 +77,8 @@ def load() -> None:
 
 
 def _materialise_google_credential() -> None:
-    """Write the Google service-account JSON out to the file named by
-    ``GOOGLE_APPLICATION_CREDENTIALS``.
-
-    :func:`load` only ever populates ``os.environ`` — but the
-    google-cloud-storage client used for recording uploads
-    (``recording/upload.py`` calls a bare ``storage.Client()``) authenticates
-    via Application Default Credentials, i.e. it opens the *file* pointed to by
-    ``GOOGLE_APPLICATION_CREDENTIALS`` and fails with "File credentials/google.json
-    was not found" when it is absent. The Node containers write that file at
-    image-build time (``npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json``);
-    the Python worker decrypts its bundle at runtime, so this is the exact
-    runtime analogue.
-
-    Best-effort and idempotent: a no-op when the path is unset, the source
-    secret is absent, or a real file already exists at the path (e.g. one
-    supplied by a mounted Secret). Never raises — materialising a credential
-    must not crash boot.
-    """
+    """ADC needs a credential file, not just environment variables; materialise it at runtime without replacing mounted
+    files. Failure must not abort boot; see PR #142."""
     path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not path:
         return

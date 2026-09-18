@@ -1,59 +1,6 @@
 /**
- * V8 CPU profile hook, loaded with `node --import` so that it runs BEFORE the
- * agent's module graph is evaluated.
- *
- *   NODE_OPTIONS=--import /usr/src/app/dist/lib/profile-hook.js
- *   PROFILE_MS=90000
- *
- * The `--import` placement is the point. `--cpu-prof` is rejected inside
- * NODE_OPTIONS, and anything started from realtime.ts is already too late:
- * ESM imports are hoisted, so `lib/worker.js` and its dependency graph
- * (sequelize, pg, @google-cloud/*, five livekit plugins, rtc-node's native
- * module) have all been evaluated and JIT-compiled before the first statement
- * of realtime.ts runs. A profile that starts here sees that work; one started
- * from inside the app never can.
- *
- * That matters because the pool keeps NUM_IDLE_PROCESSES spare job processes
- * and forks a replacement every time one is consumed, so module load is paid
- * per call, not just at boot.
- *
- * Env:
- *   PROFILE_ON_EXIT      "1" profiles the whole life of the process and writes
- *                        when it exits. This is the mode for "profile every
- *                        call until the next restart": job processes are
- *                        one-shot (the pool forks one, parks it, runs exactly
- *                        one job in it, discards it), so one file per process
- *                        is one file per call, covering the call end to end.
- *                        A PROFILE_MS window cannot do that — a job process
- *                        exits with the window still open and writes nothing.
- *   PROFILE_ROLE         all (default) | job | supervisor. Which processes to
- *                        profile at all. "job" is the useful one for call
- *                        work: the supervisor handles no calls, and a profile
- *                        of it grows until the container stops.
- *   PROFILE_MS           window in ms to profile from process start, then
- *                        write and stop. 0/unset = do not auto-profile.
- *   PROFILE_SIGNAL       "1" installs a SIGUSR2 toggle for ad-hoc capture.
- *                        Off by default because nodemon uses SIGUSR2 to
- *                        restart, which would make `yarn develop` unusable.
- *   PROFILE_DIR          output directory (default /prof).
- *   PROFILE_INTERVAL_US  V8 sampling interval (default 1000, V8's own
- *                        default). 200 gives more detail at more overhead;
- *                        raise it for long PROFILE_ON_EXIT runs, where file
- *                        size grows with the number of samples taken.
- *
- * With none of PROFILE_ON_EXIT, PROFILE_MS or PROFILE_SIGNAL set the hook
- * attaches nothing and costs one module load, so the --import can be left in
- * place permanently and profiling toggled with the other variables alone.
- *
- * The file imports nothing but node builtins, so it does not have to live in
- * the image: mounting it into the container (the compose file already binds
- * ./profiles to /prof) and pointing --import at it there works identically,
- * which is how it can be enabled without a rebuild.
- *
- * Nothing here writes to stdout. entrypoint.sh runs `eval $(node
- * load-secretenv.js)`, so a stray stdout line from a hook applied to that
- * process would be eval'd by the shell; this hook both restricts itself to
- * stderr and declines to attach to that process at all.
+ * Load with --import to capture module startup; keep stdout clear because the secret loader shell-evaluates it.
+ * See agents/livekit/deploy/gcp/README.md and PR #205 for profiling controls.
  */
 import { Session } from "node:inspector";
 import { mkdirSync, writeFileSync } from "node:fs";

@@ -1,9 +1,10 @@
 /**
  * Provision the least-privilege onboarding-service identity for the polite-ai
  * waitlist → invite → account-setup seam. Idempotently creates a synthetic user
- * with role `onboardingService` (user:read/readAll/update + organisation:create —
- * just enough to create the new org and activate the freshly-signed-up user when
- * an invite is completed) and an AuthKey, then prints the bearer token for
+ * with role `onboardingService` (user:read/readAll/update +
+ * organisation:create/read/readAll/update — just enough to create the new org,
+ * read it back or rename it, and activate the freshly-signed-up user when an
+ * invite is completed) and an AuthKey, then prints the bearer token for
  * polite-ai's LLM_AGENT_ONBOARDING_TOKEN.
  *
  *   node scripts/provision-onboarding-service.mjs                       # repo-root .env

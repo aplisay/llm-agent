@@ -41,10 +41,8 @@ test("primary session: the callback fires with the close info", () => {
   assert.deepEqual(seen, [{ code: 1000, reason: "Time limit reached" }]);
 });
 
-test("consult/handover sessions must NOT fire it", () => {
-  // The consult TransferAgent session and post-handover sessions share the model
-  // instance. Their ending is routine; tearing down the primary call would be a
-  // catastrophic false positive.
+test("a consult session on the same model must NOT fire it", () => {
+  // Consult sessions share the primary model but their termination must not end the caller's call. See PR #342.
   const model = makeModel();
   let calls = 0;
   model.setProviderEndedCallback(() => {
@@ -53,14 +51,14 @@ test("consult/handover sessions must NOT fire it", () => {
 
   model.session(); // primary
   const consult = model.session(); // consult TransferAgent
-  const handover = model.session(); // later full-stack handover
+  const another = model.session(); // a second consult
 
   notify(model, consult);
-  notify(model, handover);
+  notify(model, another);
   assert.equal(calls, 0, "only the primary session may end the call");
 });
 
-test("primary stays the FIRST session even after later sessions exist", () => {
+test("without a mark, primary stays the FIRST session even after later sessions exist", () => {
   const model = makeModel();
   const seen: unknown[] = [];
   model.setProviderEndedCallback((i: unknown) => seen.push(i));
@@ -71,6 +69,80 @@ test("primary stays the FIRST session even after later sessions exist", () => {
 
   notify(model, primary, { code: 1006 } as any);
   assert.deepEqual(seen, [{ code: 1006 }]);
+});
+
+// An in-place handover creates a new session on the same model; that session must become primary. See PR #342.
+
+test("in place: the marked session becomes primary and the one it replaced stops firing", () => {
+  const model = makeModel();
+  const seen: unknown[] = [];
+  model.setProviderEndedCallback((i: unknown) => seen.push(i));
+
+  const outgoing = model.session();
+  model.setNextSessionPrimary(); // onAgentTransfer, before llm.handoff()
+  const incoming = model.session(); // the SDK's new activity
+
+  notify(model, outgoing, { code: 1000 } as any);
+  assert.deepEqual(seen, [], "the caller no longer hears the replaced session");
+
+  notify(model, incoming, { code: 1000, reason: "Time limit reached" } as any);
+  assert.deepEqual(seen, [{ code: 1000, reason: "Time limit reached" }]);
+});
+
+test("in place: the mark is one-shot, so a later consult session does not take over", () => {
+  const model = makeModel();
+  let calls = 0;
+  model.setProviderEndedCallback(() => {
+    calls += 1;
+  });
+
+  model.session();
+  model.setNextSessionPrimary();
+  const incoming = model.session();
+  const consult = model.session();
+
+  notify(model, consult);
+  assert.equal(calls, 0);
+  notify(model, incoming);
+  assert.equal(calls, 1);
+});
+
+test("in place, chained: the primary follows each handover", () => {
+  const model = makeModel();
+  const fired: unknown[] = [];
+  model.setProviderEndedCallback((i: unknown) => fired.push(i));
+
+  const first = model.session();
+  model.setNextSessionPrimary();
+  const second = model.session();
+  model.session(); // a consult between the two handovers
+  model.setNextSessionPrimary();
+  const third = model.session();
+
+  notify(model, first, { code: 1 } as any);
+  notify(model, second, { code: 2 } as any);
+  notify(model, third, { code: 3 } as any);
+  assert.deepEqual(fired, [{ code: 3 }]);
+});
+
+test("a cleared mark leaves the primary where it was", () => {
+  // A consult leg clears the mark before it starts, in case a handover the SDK
+  // never started left one behind.
+  const model = makeModel();
+  let calls = 0;
+  model.setProviderEndedCallback(() => {
+    calls += 1;
+  });
+
+  const primary = model.session();
+  model.setNextSessionPrimary();
+  model.clearNextSessionPrimary();
+  const consult = model.session();
+
+  notify(model, consult);
+  assert.equal(calls, 0);
+  notify(model, primary);
+  assert.equal(calls, 1);
 });
 
 test("an unknown session object is ignored", () => {
@@ -98,13 +170,8 @@ test("callback is replaceable and only the latest fires", () => {
   assert.equal(second.length, 1);
 });
 
-// --- the wiring contract ---------------------------------------------------
-// This is the test that was missing. The hook shipped once bound to the wrong
-// object: createVoiceModelAndSession returns `model` as the voice.Agent (behaviour),
-// while the RealtimeModel is constructed inline and reachable ONLY via session.llm.
-// The runtime called setProviderEndedCallback on the Agent through an optional call,
-// so it silently no-opped and the defect looked unfixed in production. Assert the
-// exact object the runtime reaches for.
+// Check session.llm, not the returned voice.Agent: an optional hook call on the wrong object silently does nothing.
+// See PR #187.
 
 const evalAgent = () =>
   ({

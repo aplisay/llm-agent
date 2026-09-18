@@ -84,6 +84,17 @@ EMAIL_SEND_KEY=<SMTP2GO API KEY>
 EMAIL_FROM_ADDRESS=hello@aplisay.com
 EMAIL_FROM_NAME="polite.ai"
 
+# Sender personas for the verification/reset emails (lib/auth/email-brands.js).
+# The caller names one per request with `x-email-brand`; the persona supplies the
+# sender, the product name, the tagline and — optionally — the whole copy, so a
+# front end can speak in its own voice without a change in this repo. Unset =
+# the addresses above plus the built-in product-neutral wording. Either a path to
+# a JSON document (mounted Secret/ConfigMap, preferred) or the same JSON inline;
+# a persona without a `from` is ignored, and any parse error degrades to the
+# built-ins rather than failing the boot.
+# EMAIL_BRANDS_FILE=/etc/llm-agent/email-brands.json
+# EMAIL_BRANDS={"default":"aplisay","brands":{"aplisay":{"from":"hello@aplisay.com"},"example":{"from":"hello@example.com","fromName":"Example","productName":"Example","tagline":"Your tagline here."}}}
+
 # ── Core service ─────────────────────────────────────────────────────────────
 # HTTP/WS listen port for this API service (also the better-auth baseURL
 # fallback port when BETTER_AUTH_URL is unset).
@@ -121,6 +132,12 @@ CREDENTIALS_KEY=<RANDOM SECRET>
 ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # ULTRAVOX_API_KEY=
 # ELEVENLABS_API_KEY=
+# DEEPSEEK_KEY=
+# KIMI_KEY=
+# OPENROUTER_KEY=
+# xAI Grok text models and the Grok voice model (docs/grok.md). The older
+# GROK_API_KEY name is accepted as a fallback.
+# XAI_API_KEY=
 
 # ── LiveKit handler ──────────────────────────────────────────────────────────
 LIVEKIT_URL=wss://<your-livekit-host>
@@ -132,7 +149,9 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # PIPECAT_DISPATCH_TOKEN=      # bearer token for dispatch calls
 # PIPECAT_JOIN_SECRET=         # shared secret for join callbacks
 # PIPECAT_PUBLIC_URL=          # public URL handed to the worker for callbacks
-# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution):
+# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution AND
+# outbound destination authorisation — docs/outbound-call-authorisation.md). Set the
+# same value here and on both voice workers.
 # APLISAY_OUTBOUND_TRUNK_ID=
 
 # ── Call recordings ──────────────────────────────────────────────────────────
@@ -157,6 +176,47 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # TEXT_CHAT_MAX_TOOL_HOPS=        # text-chat tool-call recursion cap
 # TEXT_CHAT_PENDING_TTL_MS=       # pending text-chat session TTL
 # SUBAGENT_TIMEOUT=60000          # agent-invoke/subagent timeout (ms)
+
+# ── b2bua node API (SIP traces and registration probes) ─────────────────────
+# The regclient b2bua exposes a small authenticated HTTPS API per node. The API
+# proxies to it for GET /phone-endpoints/{id}/trace and the probe routes, using
+# phone_registrations.b2bua_id to find the node that owns each registration.
+# Leave REGCLIENT_API_TOKEN unset to disable those routes (they answer 503).
+# REGCLIENT_API_TOKEN=<shared with the node secretenv bundle>
+# REGCLIENT_API_PORT=8443
+# Public certificate of the private CA that signs node certificates. PEM, or
+# base64 of a PEM. Required unless REGCLIENT_API_INSECURE=1.
+# REGCLIENT_CA_CERT=
+# TRACE_PROXY_TIMEOUT_MS=2000     # hard per-request timeout; no retries
+# Which node runs which stack is normally known rather than discovered: each
+# regclient node reports itself to POST /api/agent-db/b2bua-nodes once a minute
+# (authenticated with SHARED_API_TOKEN above). A node that has never announced
+# itself is classified from the request instead — only regclient can present a
+# certificate our CA signed — reported as 501 rather than 504, and cached, so it
+# costs one short attempt per node rather than a timeout per call.
+# REGCLIENT_DISCOVERY_TIMEOUT_MS=750    # bound on the first try to an unknown node
+# REGCLIENT_CAPABILITY_TTL_MS=600000    # how long "serves traces" is remembered
+# REGCLIENT_UNSUPPORTED_TTL_MS=60000    # how long "does not" is remembered
+# Nodes able to run a probe for a registration no node has claimed yet.
+# Optional override; by default an unclaimed registration is probed on the least loaded
+# regclient node that has heartbeated recently (b2bua_nodes).
+# REGCLIENT_PROBE_NODES=
+# Optional pin: only these node addresses may be contacted at all.
+# REGCLIENT_NODE_ALLOWLIST=
+# Allow node addresses in private ranges (compose/kind); public IPs only by
+# default. Link-local is never allowed.
+# REGCLIENT_ALLOW_PRIVATE_NODES=0
+# Dev only: skip TLS verification (and, with REGCLIENT_API_SCHEME=http, TLS).
+# REGCLIENT_API_INSECURE=0
+
+# ── Registrar accounts (regserver) ──────────────────────────────────────────
+# The name customers' PBXes register to, which is also the digest realm on every
+# registrar-mode phone registration this deployment issues (a bare hostname; the
+# port is always 5061, TLS). Unset, registrar accounts cannot be created (503,
+# code registrar_unavailable). Permanent once the first account exists: the
+# realm is what every PBX hashes its password against. Design:
+# aplisay-strategy implementation/regserver-tactical-spec.md.
+# REGSERVER_REGISTRAR=sip.polite.ai
 
 # ── Number administration (tools/number.js — manual admin script only) ──────
 # Magrathea carrier credentials + SIP ingress hosts for bulk/manual number

@@ -14,13 +14,7 @@ import { type ParticipantInfo } from "livekit-server-sdk";
 export { ParticipantInfo };
 
 /**
- * Result of the `hangup` builtin, as handed back to the model.
- *
- * The model MUST get a non-empty result. `onHangup` previously returned void,
- * which serialises to an empty tool result; a realtime model reads that as "my
- * request went nowhere" and retries immediately — the mechanism behind the
- * observed 337-call hangup loop. `detail` also tells the model not to keep
- * talking, since the call is on its way down.
+ * Return a non-empty hangup result so the model does not retry while teardown is in progress. See PR #181.
  */
 export interface HangupResult {
   status: "OK";
@@ -90,6 +84,12 @@ export interface CallScenario {
 }
 
 export interface JobMetadata {
+  /** Outbound from a number on a REGISTRATION trunk: the B2BUA leg to dial,
+   *  set by the originate route. The caller id stays the number. */
+  registrationEndpointId?: string | null;
+  b2buaGatewayIp?: string | null;
+  b2buaGatewayTransport?: string | null;
+  srtp?: boolean | null;
   callId?: string;
   callerId?: string;
   calledId?: string;

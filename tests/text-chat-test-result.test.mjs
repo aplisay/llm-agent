@@ -38,8 +38,8 @@ afterAll(async () => {
   await teardownRealDatabase();
 });
 
-function makeSession() {
-  const session = createChatSession({ agent, logger });
+async function makeSession() {
+  const session = await createChatSession({ agent, logger });
   const turns = [];
   // turn() claims the pending and enqueues runTurn — stub the run itself so
   // the claim semantics are exercised without an LLM.
@@ -52,7 +52,7 @@ function makeSession() {
 
 describe('text-chat test_result frame', () => {
   test('matching id claims the pending at enqueue and resumes as a hidden turn', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'test_agent' };
     await session.testResult({ type: 'test_result', id: 'toolu_1', result: '{"ok":true,"legs":[]}' }, () => {});
     expect(turns).toEqual([
@@ -68,7 +68,7 @@ describe('text-chat test_result frame', () => {
   });
 
   test('mismatched id is ignored (a stale frame cannot hijack another turn)', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'test_agent' };
     await session.testResult({ type: 'test_result', id: 'toolu_2', result: '{"ok":true}' }, () => {});
     expect(turns).toEqual([]);
@@ -76,20 +76,20 @@ describe('text-chat test_result frame', () => {
   });
 
   test('missing id is ignored', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'test_agent' };
     await session.testResult({ type: 'test_result', result: '{"ok":true}' }, () => {});
     expect(turns).toEqual([]);
   });
 
   test('no pending tool call is a no-op', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     await session.testResult({ type: 'test_result', id: 'toolu_1', result: '{"ok":false}' }, () => {});
     expect(turns).toEqual([]);
   });
 
   test('duplicate frame after the claim is ignored', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_1', otherResults: [], platform: 'test_agent' };
     await session.testResult({ type: 'test_result', id: 'toolu_1', result: '{"ok":true}' }, () => {});
     await session.testResult({ type: 'test_result', id: 'toolu_1', result: '{"ok":true}' }, () => {});
@@ -97,7 +97,7 @@ describe('text-chat test_result frame', () => {
   });
 
   test('legacy protocol: a plain user turn claims the pending at enqueue', async () => {
-    const { session, turns } = makeSession();
+    const { session, turns } = await makeSession();
     session.pending = { toolUseId: 'toolu_9', otherResults: [], platform: 'ask_user' };
     await session.turn('the answer', () => {});
     expect(turns).toEqual([
@@ -124,13 +124,16 @@ describe('text-chat slimResults', () => {
     name: 'Team',
     description: 'a team',
     agents: [
-      { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000), functions: [] },
+      { id: 'a-1', label: 'main', name: 'Main', prompt: 'x'.repeat(4000),
+        functions: [{ name: 'end_call' }, { name: 'to_sales' }],
+        options: { transferTone: true, maxDuration: 900 },
+        mcpServers: [{ name: 'knowledge', url: 'https://k.example.com/mcp' }] },
       { id: 'a-2', label: 'sales', name: 'Sales', prompt: 'y'.repeat(4000), functions: [] },
     ],
   });
 
-  test('a save result is replaced with a stub carrying the post-save identities', () => {
-    const session = createChatSession({ agent: setAgent, logger });
+  test('a save result is replaced with a stub carrying the post-save identities', async () => {
+    const session = await createChatSession({ agent: setAgent, logger });
     const [slim] = session.slimResults([{ name: 'create_agent_set', result: fullSet }]);
     const parsed = JSON.parse(slim.result);
     expect(parsed).toEqual({
@@ -138,15 +141,18 @@ describe('text-chat slimResults', () => {
       id: 'set-1',
       name: 'Team',
       members: [
-        { label: 'main', id: 'a-1', name: 'Main' },
-        { label: 'sales', id: 'a-2', name: 'Sales' },
+        // The function and option NAMES ride along: a save is the only view the
+        // model gets of what its own write left on each member.
+        { label: 'main', id: 'a-1', name: 'Main', functions: ['end_call', 'to_sales'],
+          options: ['maxDuration', 'transferTone'], mcpServers: ['knowledge'] },
+        { label: 'sales', id: 'a-2', name: 'Sales', functions: [], options: [], mcpServers: [] },
       ],
     });
     expect(slim.result.length).toBeLessThan(fullSet.length / 10);
   });
 
-  test('save FAILURES and non-set tools pass through verbatim', () => {
-    const session = createChatSession({ agent: setAgent, logger });
+  test('save FAILURES and non-set tools pass through verbatim', async () => {
+    const session = await createChatSession({ agent: setAgent, logger });
     const error = JSON.stringify({ error: 'validation failed: agents[0].functions[0] …' });
     const voices = JSON.stringify({ locales: ['en-GB'] });
     const results = session.slimResults([

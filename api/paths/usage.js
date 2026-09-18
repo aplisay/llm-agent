@@ -13,6 +13,7 @@ const DIMENSIONS = {
   media: 'media',
   currency: 'currency',
   rateName: 'rateName',
+  costStatus: 'costStatus',
   agent: 'agentId',
   user: 'userId',
   call: 'callId',
@@ -29,7 +30,7 @@ export default function (logger) {
 const getUsage = async (req, res) => {
   if (!requirePermission(res, 'usage', 'read')) return;
   try {
-    let { startDate, endDate, groupBy, period, technology, provider, unit, callId } = req.query;
+    let { startDate, endDate, groupBy, period, technology, provider, unit, callId, finalised } = req.query;
 
     const requested = (groupBy ? String(groupBy).split(',') : DEFAULT_GROUP_BY)
       .map((d) => d.trim())
@@ -53,6 +54,22 @@ const getUsage = async (req, res) => {
       // "free" — a partial total is visibly partial.
       [Sequelize.fn('SUM', Sequelize.col('cost_micros')), 'costMicros'],
       [Sequelize.literal('COUNT(*) FILTER (WHERE cost_micros IS NULL)'), 'uncostedMeters'],
+      // The quantity `costMicros` is actually the price OF. Without this a
+      // bucket mixing costed and uncosted rows reports a total quantity beside a
+      // cost that only covers part of it, and the two silently disagree — e.g.
+      // "238,897 input tokens · £0.05" where 21,451 of those tokens are on a
+      // row that has never been valued.
+      [Sequelize.literal('COALESCE(SUM(quantity) FILTER (WHERE cost_micros IS NOT NULL), 0)'), 'costedQuantity'],
+      // Rows still being metered (an open call, a live builder session — or a
+      // session abandoned before its teardown ran). Their totals are PROVISIONAL
+      // and by design not yet costed, which is a different fact from "we have no
+      // price for this" and must not be presented as the same thing.
+      [Sequelize.literal('COUNT(*) FILTER (WHERE NOT finalised)'), 'provisionalMeters'],
+      [Sequelize.literal('COALESCE(SUM(quantity) FILTER (WHERE NOT finalised), 0)'), 'provisionalQuantity'],
+      // Priced deliberately at zero — a bundled/included meter (realtime speech
+      // charged by the model minute), NOT an unpriced one. Counted so a consumer
+      // can present it as "included" instead of listing £0.00 lines.
+      [Sequelize.literal('COUNT(*) FILTER (WHERE cost_micros = 0)'), 'zeroRatedMeters'],
     ];
     const group = [...dimensions, ...(periodBucket ? [periodBucket] : [])];
 
@@ -69,6 +86,12 @@ const getUsage = async (req, res) => {
     if (provider) where.provider = provider;
     if (unit) where.unit = unit;
     if (callId) where.callId = callId;
+    // Default is UNCHANGED (every row, provisional included) so existing callers
+    // keep the totals they have; `finalised=true` is how a caller asks for only
+    // the settled ledger.
+    if (finalised !== undefined && finalised !== null && finalised !== '') {
+      where.finalised = finalised === true || finalised === 'true';
+    }
 
     const rows = await UsageRecord.findAll({
       attributes,
@@ -86,6 +109,10 @@ const getUsage = async (req, res) => {
       // consumer can distinguish "priced at zero" from "not yet priced".
       costMicros: row.costMicros == null ? null : Number(row.costMicros),
       uncostedMeters: Number(row.uncostedMeters) || 0,
+      costedQuantity: Number(row.costedQuantity) || 0,
+      provisionalMeters: Number(row.provisionalMeters) || 0,
+      provisionalQuantity: Number(row.provisionalQuantity) || 0,
+      zeroRatedMeters: Number(row.zeroRatedMeters) || 0,
     }));
 
     res.send({ usage });
@@ -120,9 +147,10 @@ getUsage.apiDoc = {
       schema: { type: 'string' },
       description:
         'Comma-separated dimensions to group by: technology, provider, detail, unit, '
-        + 'media, currency, rateName, agent, user, call. Defaults to '
+        + 'media, currency, rateName, costStatus, agent, user, call. Defaults to '
         + '"technology,provider,detail,unit". media (webrtc/telephony) is the audio '
-        + 'transport on voice rows; rateName/currency identify the card that valued the row.',
+        + 'transport on voice rows; rateName/currency identify the card that valued the row; '
+        + 'costStatus says WHY a row is unpriced (matched | no_rate | no_line | errored | null).',
     },
     {
       name: 'period', in: 'query', required: false,
@@ -146,6 +174,14 @@ getUsage.apiDoc = {
       name: 'callId', in: 'query', required: false,
       schema: { type: 'string' },
       description: 'Filter to a single call id (the per-call usage breakdown).',
+    },
+    {
+      name: 'finalised', in: 'query', required: false,
+      schema: { type: 'boolean' },
+      description:
+        'Filter on meter completeness. Omitted (the default) returns EVERY row, '
+        + 'provisional ones included, which is the historical behaviour. Pass true for '
+        + 'the settled ledger only — the totals that can be reconciled against a cost.',
     },
   ],
   responses: {
@@ -174,7 +210,12 @@ getUsage.apiDoc = {
                     quantity: { type: 'number' },
                     meters: { type: 'number', description: 'Number of ledger rows aggregated.' },
                     costMicros: { type: 'number', nullable: true, description: 'Summed frozen cost in micro-pence; null when no row in the bucket is yet costed.' },
+                    costStatus: { type: 'string', nullable: true, description: 'Costing outcome, when grouped by it: matched | no_rate (no card covered the billing instant) | no_line (the card priced no dimension of this row) | errored | null (never costed).' },
                     uncostedMeters: { type: 'number', description: 'Rows in the bucket with no cost yet (cost_micros IS NULL) — a partial total is visibly partial.' },
+                    costedQuantity: { type: 'number', description: 'The quantity costMicros is the price OF. Equals quantity only when every row in the bucket is costed; the gap is what the cost does not cover.' },
+                    provisionalMeters: { type: 'number', description: 'Rows still being metered (finalised = false): an open call or live session. Their totals are provisional and not yet costed BY DESIGN — distinct from having no price.' },
+                    provisionalQuantity: { type: 'number', description: 'Quantity carried by those provisional rows.' },
+                    zeroRatedMeters: { type: 'number', description: 'Rows priced deliberately at zero (cost_micros = 0) — a bundled/included meter, not an unpriced one.' },
                   },
                 },
               },

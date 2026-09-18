@@ -647,7 +647,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organisation', async () => {
+    test('should not find an endpoint held by a different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         headers: {}
@@ -657,7 +657,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await getPhoneEndpoint(req, res);
 
-      expect(res._status).toBe(403);
+      expect(res._status).toBe(404);
       expect(res._body).toHaveProperty('error');
     });
 
@@ -876,7 +876,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         await createPhoneEndpoint(createReq1, res1);
         expect(res1._status).toBe(201);
 
-        const created = await PhoneNumber.findByPk('15556667777');
+        const created = await PhoneNumber.findOne({ where: { number: '15556667777' } });
         expect(created).not.toBeNull();
         expect(created.handler).toBe('jambonz');
         expect(created.outbound).toBe(false);
@@ -1398,7 +1398,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organisation', async () => {
+    test('should not find an endpoint held by a different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         body: {
@@ -1411,7 +1411,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await updatePhoneEndpoint(req, res);
 
-      expect(res._status).toBe(403);
+      expect(res._status).toBe(404);
       expect(res._body).toHaveProperty('error');
     });
 
@@ -1546,7 +1546,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
       expect(res._body).toHaveProperty('error');
     });
 
-    test('should return 403 for endpoint from different organisation', async () => {
+    test('should not find an endpoint held by a different organisation', async () => {
       const req = createMockRequest({
         params: { identifier: testPhoneId },
         query: {},
@@ -1557,7 +1557,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       await deletePhoneEndpoint(req, res);
 
-      expect(res._status).toBe(403);
+      expect(res._status).toBe(404);
       expect(res._body).toHaveProperty('error');
     });
 
@@ -2172,11 +2172,8 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         expect(reg.status).toBe('active');
         expect(reg.state).toBe('initial');
 
-        // Poll for a final state rather than sampling once after a fixed sleep.
-        // The simulator schedules its 'registering' and final transitions from the
-        // same instant (3-60s and 3-10s), so 'registering' frequently lands AFTER
-        // the final state: a single late sample can legitimately observe
-        // 'registering' and fail. Real (unscaled) sleeps keep the budget honest.
+        // Poll transitions: the simulator may emit registering after its final state, so a single late sample is unreliable.
+        // See PR #205.
         const deadline = Date.now() + 15000;
         while (!['registered', 'failed'].includes(reg.state) && Date.now() < deadline) {
           await new Promise(resolve => originalSetTimeout(resolve, 50));

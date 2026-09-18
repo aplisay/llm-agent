@@ -79,14 +79,19 @@ import('dotenv').then(dotenv => {
   })
   .then(({ PhoneNumber, stopDatabase }) => {
     logger.info({ options }, 'options');
-    (options.add ? PhoneNumber.upsert({
-      number: options.number.replace(/^0/, '44').replace(/^\+/, ''),
+    // Identity is (number, organisation) since schema 61, so an upsert on the
+    // primary key would create a second row rather than update the first.
+    const number = options.number.replace(/^0/, '44').replace(/^\+/, '');
+    const values = {
+      number,
       handler: options.handler,
       reservation: options.reservation,
-      organisationId: options.organisation,
+      organisationId: options.organisation ?? null,
       outbound: options.outbound,
       aplisayId: options.trunk
-    }) : PhoneNumber.destroy({
+    };
+    (options.add ? PhoneNumber.findOne({ where: { number, organisationId: options.organisation ?? null } })
+      .then((row) => (row ? row.update(values) : PhoneNumber.create(values))) : PhoneNumber.destroy({
       where: {
         number: options.number.replace(/^0/, '44').replace(/^\+/, ''),
         handler: options.handler,

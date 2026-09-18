@@ -1,4 +1,4 @@
-import { RoomServiceClient, AccessToken, VideoGrant } from "livekit-server-sdk";
+import { AccessToken, VideoGrant } from "livekit-server-sdk";
 import { Room, RoomEvent } from "@livekit/rtc-node";
 import { voice, llm } from "@livekit/agents";
 import logger from "./logger.js";
@@ -14,6 +14,8 @@ import {
   createCall,
   createTransactionLog,
   saveUsage,
+  authoriseOutboundDestination,
+  type OutboundAuthorisation,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
@@ -30,7 +32,9 @@ import {
 } from "./voice-session-resources.js";
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
+import { getRoomService } from "./livekit-constants.js";
 import { closeSessionBounded } from "./utils.js";
+import { clearNextSessionPrimary } from "./provider-ended.js";
 import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
   parseBridgedTransferMap,
@@ -44,12 +48,6 @@ import {
 } from "./bridge-transcription.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = process.env;
-
-const roomService = new RoomServiceClient(
-  LIVEKIT_URL!,
-  LIVEKIT_API_KEY!,
-  LIVEKIT_API_SECRET!
-);
 
 export type TransferState =
   | "none"
@@ -293,30 +291,14 @@ async function validateTransferArgs(
   args: TransferArgs,
   agent: Agent,
   calledId: string,
-  aplisayId: string
+  aplisayId: string,
+  registrationOriginated?: boolean
 ): Promise<{
   effectiveCallerId: string;
   effectiveAplisayId: string;
   /** Set when the caller-ID is a phone_registration: the B-leg must egress via its B2BUA gateway. */
   registrationEgress?: RegistrationEgress;
 }> {
-  // Validate that transfer number matches the agent's outboundCallFilter if specified
-  if (agent.options?.outboundCallFilter) {
-    const filterRegexp = new RegExp(agent.options.outboundCallFilter);
-    if (!filterRegexp.test(args.number)) {
-      throw new Error(
-        `Invalid number: transfer target ${args.number} does not match the agent's outbound call filter pattern`
-      );
-    }
-  } else {
-    // Fallback to default UK validation if no filter is specified
-    if (!args.number.match(/^(\+44|44|0)[1237]\d{6,15}$/)) {
-      throw new Error(
-        "Invalid number: only UK geographic and mobile numbers are supported currently as transfer targets"
-      );
-    }
-  }
-
   let effectiveCallerId = args.callerId || calledId;
   let effectiveAplisayId = aplisayId;
   let registrationEgress: RegistrationEgress | undefined;
@@ -349,6 +331,26 @@ async function validateTransferArgs(
       }
       if (!pn.outbound) {
         throw new Error("Invalid callerId: outbound not enabled on this number");
+      }
+      // A number on a REGISTRATION trunk egresses through that registration's
+      // B2BUA, presenting the number, exactly like a registration caller id
+      // — the trunk row names the registration (flags.registrationId).
+      const trunkFlags = (pn.trunk?.flags ?? {}) as { provider?: unknown; registrationId?: unknown };
+      if (trunkFlags.provider === "registration" && typeof trunkFlags.registrationId === "string" && trunkFlags.registrationId) {
+        const reg: PhoneRegistrationInfo | null = await getPhoneEndpointById(trunkFlags.registrationId);
+        if (!reg) {
+          throw new Error("Invalid callerId: the number's registration trunk has no registration");
+        }
+        const b2buaGatewayIp = String(reg.b2buaId ?? "").trim();
+        if (!b2buaGatewayIp) {
+          throw new Error("Invalid callerId: the number's registration trunk is not held by a SIP node");
+        }
+        registrationEgress = {
+          registrationEndpointId: trunkFlags.registrationId,
+          b2buaGatewayIp,
+          b2buaGatewayTransport: String((reg.options as { transport?: string } | undefined)?.transport || "tcp"),
+          registrationUsername: pn.number,
+        };
       }
       // If inbound has aplisayId, require match
       if (aplisayId) {
@@ -419,6 +421,44 @@ async function validateTransferArgs(
     }
   }
 
+  // Destination authorisation — deliberately AFTER the caller-ID resolution above,
+  // because whether this leg egresses one of OUR chargeable carrier trunks (and so
+  // whether the operator's per-trunk filter + the org's rating deck are the
+  // authority, rather than the agent's own outboundCallFilter) depends on the
+  // resolved egress. A registration caller-ID leaves via the customer's own B2BUA,
+  // which is never our carrier. The policy lives server-side; see
+  // lib/outbound-authorisation.js and api/paths/agent-db/outbound-authorisation.js.
+  //
+  // Fail CLOSED: an unreachable/erroring platform means "not authorised", never
+  // "allowed by default".
+  let decision: OutboundAuthorisation;
+  try {
+    decision = await authoriseOutboundDestination({
+      calledId: args.number,
+      callerId: registrationEgress ? null : effectiveCallerId,
+      agentOptions: agent.options ?? null,
+      organisationId: agent.organisationId,
+      userId: agent.userId,
+      aplisayId: effectiveAplisayId || aplisayId || null,
+      registrationOriginated: !!registrationEgress || registrationOriginated === true,
+    });
+  } catch (err) {
+    logger.error(
+      { number: args.number, err },
+      "outbound destination authorisation failed; refusing transfer"
+    );
+    throw new Error(
+      `Invalid number: transfer target ${args.number} could not be authorised`
+    );
+  }
+  if (!decision.allowed) {
+    logger.warn(
+      { number: args.number, code: decision.code, trunkId: decision.trunkId, chargeable: decision.chargeable },
+      "transfer refused: destination not authorised"
+    );
+    throw new Error(`Invalid number: ${decision.reason}`);
+  }
+
   return {
     effectiveCallerId,
     effectiveAplisayId,
@@ -469,7 +509,7 @@ async function finaliseBridgedCall(
         `Agent left call, new bridged call: ${bridgedCallRecord.id}`
       );
       await bridgedCallRecord.start();
-      await roomService.updateRoomMetadata(
+      await getRoomService().updateRoomMetadata(
         room.name!,
         JSON.stringify({ bridgedCallId: bridgedCallRecord.id })
       );
@@ -579,7 +619,7 @@ function armBridgedTransferToAgentWatch(
     setBridgedParticipant: context.setBridgedParticipant,
     setBridgedCallRecord: context.setBridgedCallRecord,
     removeParticipant: (name, identity) =>
-      roomService.removeParticipant(name, identity),
+      getRoomService().removeParticipant(name, identity),
   });
 }
 
@@ -885,11 +925,7 @@ async function startConsultativeTransfer(
 
     logger.info({ consultRoomName }, "consultation room created and connected");
 
-    // Step 4: Move to "dialling" BEFORE placing the SIP call. This is the
-    // dead-air gap the confidence tone must cover, and transfer_status should
-    // report an in-progress dial rather than "none" while the target rings.
-    // (Previously this was only set after the target answered, so the tone
-    // never covered the dial — and never played at all when the dial failed.)
+    // Set dialling before placing the SIP call so the confidence tone covers ringing. See docs/call-transfers.md.
     context.setTransferState("dialling", "Dialling transfer target...");
 
     // Holds the consult target across the attribute-sync listener below and the
@@ -1174,6 +1210,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
         },
       },
     });
+    // If a handover's primary mark were left on the model, this session would take
+    // it, and its end would end the caller's call (provider-ended.ts).
+    clearNextSessionPrimary(consultLlm);
 
     try {
       await transferSession.start({
@@ -1381,14 +1420,8 @@ async function finaliseConsultativeTransfer(
   );
 
   /**
-   * End the consult CALL RECORD. Hoisted out of the try below so the error path can
-   * reach it too: every other terminal path ends the record, and if this one does not
-   * the row is stranded `live=true` forever — its agent-concurrency slot never
-   * released and the transcript `end()` flushes never written.
-   *
-   * `call.end()` is idempotent (its `_endCalled` latch returns the original promise),
-   * so calling this on a record another path already ended is a no-op, as is the
-   * meter flush.
+   * End the consult record on every terminal path to release its concurrency slot; repeated cleanup is safe. See PR
+   * #183.
    */
   const endConsultRecord = async (reason: string): Promise<void> => {
     const consultCall = getConsultCall();
@@ -1439,17 +1472,8 @@ async function finaliseConsultativeTransfer(
     };
 
     if (useRefer) {
-      // Case 4: SIP REFER the original caller to the transfer target (attended
-      // transfer when a Replaces token is available).
-      //
-      // End the consult call RECORD BEFORE the (blocking) REFER — transferParticipant
-      // does not return until the caller's SIP leg leaves the room, and the
-      // caller-disconnect graceful shutdown then races the record teardown
-      // (destroyInProgressTransfer no-ops because setConsultInProgress(false) ran
-      // above), which previously orphaned the consult record. BUT keep the consult
-      // SIP dialog ALIVE: the REFER carries ?Replaces naming the B2BUA<->carrier
-      // consult dialog, which the carrier can only honour while that dialog still
-      // exists — so the room is deleted AFTER the REFER, not before.
+      // End the consult record before REFER races caller teardown, but keep its SIP dialog alive for Replaces.
+      // Delete the room only after REFER completes; see docs/call-transfers.md.
       await endConsultationRecord();
 
       // Determine registrar and transport for the transfer
@@ -1501,10 +1525,7 @@ async function finaliseConsultativeTransfer(
         );
       }
 
-      // Use SIP REFER to transfer the original participant to the transfer target.
-      // LiveKit can report a spurious failure even when the REFER actually
-      // completed (same race as handleBlindReferTransfer); swallow the known
-      // false-failures so a successful transfer is not marked as failed.
+      // A completed REFER can report a disconnect error; accept only the known false failures. See docs/call-transfers.md.
       try {
         await transferParticipant(
           room.name!,
@@ -1546,7 +1567,7 @@ async function finaliseConsultativeTransfer(
       // caller room. The target must still be present, so move FIRST, then tear
       // the consultation down and emit the telephony:bridged-call child for the
       // in-room caller<->target bridge.
-      await roomService.moveParticipant(
+      await getRoomService().moveParticipant(
         consultRoomName,
         transferTargetIdentity,
         room.name!
@@ -1589,7 +1610,7 @@ async function finaliseConsultativeTransfer(
     // setConsultInProgress(false) above disarms destroyInProgressTransfer, and the
     // background reject handler is gated on the same flag — so if the consult record
     // is not ended here it is never ended at all. Reachable in practice on the
-    // bridged branch, where roomService.moveParticipant runs before the record is
+    // bridged branch, where moveParticipant runs before the record is
     // ended and can throw when the target has already gone.
     try {
       await endConsultRecord(`Transfer finalisation failed: ${error.message}`);
@@ -1682,10 +1703,7 @@ export async function destroyInProgressTransfer(
       }
     }
 
-    // Step 3: End consultation call and create transaction logs for transcript.
-    // Gated on the CALL only: the record must be ended even when there is no transfer
-    // session to read a transcript from, or it is stranded live=true with its
-    // concurrency slot held.
+    // End the consult record even without a transfer session, or its concurrency slot remains held. See PR #183.
     if (consultCall) {
       try {
         const transcript = transferSession
@@ -1844,7 +1862,10 @@ export async function rejectConsultativeTransfer(
     // Step 1: Remove transfer target from consultation room (hangs up call)
     if (consultRoomName) {
       try {
-        await roomService.removeParticipant(consultRoomName, "transfer-target");
+        await getRoomService().removeParticipant(
+          consultRoomName,
+          "transfer-target",
+        );
         logger.debug({}, "removed transfer target from consultation room");
       } catch (e) {
         logger.error(
@@ -2111,7 +2132,7 @@ export async function handleTransfer(
 
   // Validate and resolve transfer arguments
   const { effectiveCallerId, effectiveAplisayId, registrationEgress } =
-    await validateTransferArgs(args, agent, calledId, aplisayId);
+    await validateTransferArgs(args, agent, calledId, aplisayId, registrationOriginated);
 
   // A registration caller-ID must egress via the registration's B2BUA gateway
   // (X-Aplisay-PhoneRegistration header + the registration username as the
@@ -2181,6 +2202,15 @@ export async function handleTransfer(
   // Helper to finalize bridged call
   const finaliseBridgedCallFn = async (): Promise<Call | null> => {
     const session = sessionRef(null);
+    // The agent is leaving the conversation: let the runtime stop what it runs
+    // over the caller's audio alongside the agent (the auxiliary STT), so the
+    // human↔human segment is not transcribed onto the agent call —
+    // bridgedTransferTranscribe covers that segment on its own record.
+    try {
+      context.getBridgedTakeover?.()?.onPrimaryAgentDetached?.();
+    } catch (e) {
+      logger.debug({ e }, "onPrimaryAgentDetached hook failed");
+    }
     return finaliseBridgedCall(
       call,
       instance,

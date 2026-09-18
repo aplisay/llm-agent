@@ -31,7 +31,7 @@
  *
  * Speaking detection rides the AgentSession's `AgentStateChanged` /
  * `UserStateChanged` events (same source the inactivity kick uses in
- * voice-agent-runtime.ts). A configurable quiet "grace" window after the
+ * inactivity-kick.ts). A configurable quiet "grace" window after the
  * last speech keeps the tone from blipping into normal turn-taking pauses.
  *
  * Mirrors agents/pipecat/pipecat_aplisay/confidence_tone.py — keep the
@@ -93,10 +93,7 @@ const DEFAULTS: ToneConfig = {
   graceMs: 1200,
 };
 
-// Telephony-standard rate; LiveKit resamples per-subscriber as needed. (48 kHz
-// was tried to "fix" SIP delivery and made it worse — total silence on the
-// telephony leg vs the partial tone at 16 kHz — so keep ONE generator for both
-// WebRTC and SIP. The suppression is downstream of the track, not the rate.)
+// Keep the shared SIP/WebRTC tone at 16 kHz; LiveKit resamples for each subscriber. See PR #205.
 const SAMPLE_RATE = 16000;
 const CHUNK_SAMPLES = (SAMPLE_RATE * 20) / 1000; // 20 ms
 // Small internal AudioSource queue so a stop decision reaches the caller's

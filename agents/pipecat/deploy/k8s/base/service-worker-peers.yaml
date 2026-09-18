@@ -1,0 +1,20 @@
+# Use headless DNS to enumerate ready peers; the ordinary Service resolves only to a load-balanced address.
+# Host-network pods also need ClusterFirstWithHostNet; see PR #247.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipecat-worker-peers
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+  ports:
+    - name: worker-http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP

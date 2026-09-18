@@ -27,10 +27,29 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from loguru import logger as _logger
+
+from .tool_result import MAX_RESULT_BYTES, MAX_RESULT_BYTES_DELEGATED, clip_result
+
+# How long the worker waits for an MCP server to complete its handshake
+# and list its tools. Servers are connected serially during call setup,
+# with the caller already answered and holding a concurrency slot, so
+# this is a call-quality budget rather than a connectivity one — a
+# server that needs longer is one the call is better off without.
+MCP_CONNECT_TIMEOUT = 10.0
+
+# Per-tool-call read deadline. The mcp client's own default is 300 s;
+# nothing conversational survives a five-minute pause, and a hung tool
+# call otherwise pins the bot mid-turn.
+MCP_TOOL_TIMEOUT = 30.0
+
+# Share caps with REST functions; retain the MCP aliases used by existing callers. See PR #322.
+MCP_MAX_RESULT_BYTES = MAX_RESULT_BYTES
+MCP_MAX_RESULT_BYTES_DELEGATED = MAX_RESULT_BYTES_DELEGATED
 
 
 def _namespace_tool_name(server_name: str, tool_name: str) -> str:
@@ -45,6 +64,17 @@ def _namespace_tool_name(server_name: str, tool_name: str) -> str:
     raw = f"{server_name}_{tool_name}" if server_name else tool_name
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     return cleaned[:64] or "mcp_tool"
+
+
+@asynccontextmanager
+async def _streamable_http_streams(url: str, headers: dict[str, str] | None):
+    """Own and close the HTTP client: mcp 2 accepts HTTP settings through the client, not headers on the transport.
+    Use the SDK factory to preserve its timeout defaults; see PR #327."""
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+    async with create_mcp_http_client(headers=headers) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as streams:
+            yield streams
 
 
 def _result_text(results: Any) -> str:
@@ -85,9 +115,12 @@ def _make_descriptor(
     session: Any,
     tool: Any,
     log: Any,
+    max_result_bytes: int = MCP_MAX_RESULT_BYTES,
 ) -> dict:
     """Build a ``{"schema", "execute"}`` descriptor for one MCP tool."""
-    input_schema = getattr(tool, "inputSchema", None) or {}
+    # Read mcp 2's snake_case attributes directly: defaults would hide SDK drift as empty schemas or successful errors.
+    # See PR #327.
+    input_schema = tool.input_schema or {}
     schema = {
         "name": _namespace_tool_name(server_name, tool.name),
         "description": getattr(tool, "description", "") or "",
@@ -102,17 +135,31 @@ def _make_descriptor(
             "proxying MCP tool call"
         )
         try:
-            results = await _session.call_tool(_name, arguments=args or {})
+            results = await _session.call_tool(
+                _name,
+                arguments=args or {},
+                read_timeout_seconds=MCP_TOOL_TIMEOUT,
+            )
         except Exception as e:  # noqa: BLE001
             detail = _error_summary(e)
             log.bind(server=server_name, tool=_name, error=detail).warning(
                 f"MCP tool call {_name} failed: {detail}"
             )
             raise RuntimeError(f"MCP tool {_name} failed: {detail}") from e
-        is_error = getattr(results, "isError", False)
+        is_error = results.is_error
         text = _result_text(results)
         if is_error:
             raise RuntimeError(text or f"MCP tool {_name} returned an error")
+        text, dropped = clip_result(text, max_result_bytes, tool=_name)
+        if dropped:
+            # Warn with byte counts: the tool log also clips results and cannot show their original size.
+            # See PR #321.
+            log.bind(
+                server=server_name, tool=_name, dropped_bytes=dropped, cap=max_result_bytes
+            ).warning(
+                f"MCP tool {_name} returned more than {max_result_bytes} bytes; "
+                f"dropped {dropped} and told the model to narrow the request"
+            )
         return text
 
     # ``kind: "mcp"`` is surfaced in the InvocationLog tool logs so MCP
@@ -180,24 +227,10 @@ def _resolve_key_auth(
 
 
 async def _connect_one(
-    server: dict, keys: list[dict], log: Any
+    server: dict, keys: list[dict], log: Any, max_result_bytes: int = MCP_MAX_RESULT_BYTES
 ) -> tuple[list[dict], Callable[[], Awaitable[None]]] | None:
-    """Open a session to one MCP server and return its descriptors + a closer.
-
-    Returns ``None`` (and logs a warning) if the server is misconfigured or
-    unreachable, so one bad server never takes the whole call down.
-
-    The MCP transport clients (``streamablehttp_client`` / ``sse_client``) and
-    ``ClientSession`` are anyio context managers that spawn a task group — its
-    cancel scope **must** be entered and exited in the same task. Connect runs
-    during ``prepare_run`` and the closer fires in ``run_prepared``'s finally,
-    which can be different tasks; closing across tasks raises anyio's
-    "exit cancel scope in a different task" error. So we hold the whole
-    ``async with`` open inside one dedicated task for the connection's lifetime
-    and signal it to unwind via ``close_event`` — open and close then happen in
-    the same task. The live ``session`` is safe to call from other tasks (that's
-    the normal MCP usage); only the scope enter/exit is task-bound.
-    """
+    """Keep each MCP connection in one task: anyio's cancel scope must enter and exit there. See PR #327.
+    Signal close_event for teardown; log and return None when a server cannot connect."""
     name = server.get("name") or ""
     url = server.get("url")
     if not url:
@@ -232,9 +265,7 @@ async def _connect_one(
 
                 client_cm = sse_client(url, headers=headers)
             else:  # streamable_http (default)
-                from mcp.client.streamable_http import streamablehttp_client
-
-                client_cm = streamablehttp_client(url, headers=headers)
+                client_cm = _streamable_http_streams(url, headers)
 
             async with client_cm as streams:
                 read_stream, write_stream = streams[0], streams[1]
@@ -243,7 +274,8 @@ async def _connect_one(
                     listed = await session.list_tools()
                     descriptors = [
                         _make_descriptor(
-                            server_name=name, session=session, tool=tool, log=log
+                            server_name=name, session=session, tool=tool, log=log,
+                            max_result_bytes=max_result_bytes,
                         )
                         for tool in listed.tools
                     ]
@@ -265,11 +297,29 @@ async def _connect_one(
 
     task = asyncio.create_task(_run(), name=f"mcp-{name or url}")
     try:
-        descriptors = await ready
-    except Exception as e:  # noqa: BLE001
+        # P2: a worker-side deadline. Without it the only limits are the
+        # mcp client's own (30 s connect, 300 s read), and servers are
+        # connected serially — so one configured server that accepts the
+        # POST and then never answers stalls call setup for minutes with
+        # the caller answered, silent, and holding a concurrency slot
+        # (on the WebRTC path it hangs /webrtc/offer outright). A server
+        # that cannot complete a handshake in MCP_CONNECT_TIMEOUT is not
+        # going to be useful on this call.
+        descriptors = await asyncio.wait_for(ready, timeout=MCP_CONNECT_TIMEOUT)
+    except BaseException as e:
+        # BaseException, not Exception: a CancelledError here (call torn
+        # down mid-connect, or worker shutdown) otherwise left ``_run``
+        # parked on ``close_event.wait()`` holding its httpx client and
+        # MCP session open for the life of the process.
         close_event.set()
         await asyncio.gather(task, return_exceptions=True)
-        detail = _error_summary(e)
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        detail = (
+            f"timed out after {MCP_CONNECT_TIMEOUT:g}s"
+            if isinstance(e, asyncio.TimeoutError)
+            else _error_summary(e)
+        )
         log.bind(server=name, url=url, error=detail).warning(
             f"failed to connect MCP server '{name}' at {url}: {detail}; "
             "skipping — its tools will be unavailable for this call"
@@ -289,7 +339,7 @@ async def _connect_one(
 
 
 async def connect_mcp_servers(
-    agent: dict, *, log: Any = _logger
+    agent: dict, *, log: Any = _logger, max_result_bytes: int = MCP_MAX_RESULT_BYTES
 ) -> tuple[list[dict], list[Callable[[], Awaitable[None]]]]:
     """Connect to every server in ``agent["mcpServers"]``.
 
@@ -299,13 +349,17 @@ async def connect_mcp_servers(
       ready to ``extend`` onto the session's ``tools`` list.
     * ``closers`` — async callables; the caller must ``await`` each at teardown
       to release the MCP connections.
+
+    ``max_result_bytes`` bounds each tool result (see MCP_MAX_RESULT_BYTES).
+    Pass MCP_MAX_RESULT_BYTES_DELEGATED for a tool set behind a responses
+    delegation, whose input budget is spent per session rather than per turn.
     """
     servers = agent.get("mcpServers") or []
     keys = agent.get("keys") or []
     descriptors: list[dict] = []
     closers: list[Callable[[], Awaitable[None]]] = []
     for server in servers:
-        result = await _connect_one(server, keys, log)
+        result = await _connect_one(server, keys, log, max_result_bytes)
         if result is None:
             continue
         server_descriptors, closer = result

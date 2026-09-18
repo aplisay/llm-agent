@@ -12,6 +12,7 @@ import {
   keyRestrictionStatements,
   validateRbacFields,
 } from '../lib/auth/permissions.js';
+import { targetInScope } from '../lib/auth/admin-scope.js';
 
 function mockRes(user) {
   const res = { locals: { user }, statusCode: null, body: null };
@@ -53,28 +54,66 @@ describe('permissions — roles vocabulary', () => {
     expect(can({ role: 'orgAdmin' }, 'rate', 'create')).toBe(false);
     expect(can({ role: 'orgAdmin' }, 'organisation', 'setRate')).toBe(false);
   });
-  test('billingService can ONLY credit balance (least privilege)', () => {
+  test('billingService can credit balance and assign an org its rate card', () => {
     expect(can({ role: 'billingService' }, 'organisation', 'credit')).toBe(true);
-    // Nothing else — not setRate, not read, not product.
-    expect(can({ role: 'billingService' }, 'organisation', 'setRate')).toBe(false);
-    expect(can({ role: 'billingService' }, 'organisation', 'read')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'billing')).toBe(true);
+    expect(can({ role: 'billingService' }, 'call', 'prune')).toBe(true);
+    // Rate assignment: the client's billing service puts an org on the card its
+    // subscription package implies. All four are needed for ONE operation —
+    // list the cards, read the org's existing timeline, write the new one — so
+    // any of them missing silently leaves orgs unrated.
+    expect(can({ role: 'billingService' }, 'rate', 'read')).toBe(true);
+    expect(can({ role: 'billingService' }, 'organisation', 'read')).toBe(true);
+    expect(can({ role: 'billingService' }, 'organisation', 'setRate')).toBe(true);
+    // readAll, because this principal has no organisation of its own: without
+    // the cross-tenant capability targetInScope 404s every org it is asked about.
+    expect(can({ role: 'billingService' }, 'organisation', 'readAll')).toBe(true);
+    expect(targetInScope({ role: 'billingService' }, 'organisation', { id: 'org-1' })).toBe(true);
+    // Number purchases: it reserves the number it bought at the carrier so the
+    // org's own key can claim it, and holds nothing else over numbers.
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'reserve')).toBe(true);
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'claim')).toBe(false);
+    expect(can({ role: 'owner' }, 'phoneEndpoint', 'reserve')).toBe(false);
+    expect(can({ role: 'orgAdmin' }, 'phoneEndpoint', 'reserve')).toBe(false);
+    expect(can({ role: 'superAdmin' }, 'phoneEndpoint', 'reserve')).toBe(true);
+    // Moving a number between organisations is platform administration.
+    expect(can({ role: 'superAdmin' }, 'phoneEndpoint', 'assign')).toBe(true);
+    expect(can({ role: 'owner' }, 'phoneEndpoint', 'assign')).toBe(false);
+    expect(can({ role: 'billingService' }, 'phoneEndpoint', 'assign')).toBe(false);
+  });
+  test('billingService holds no product access and cannot administer rates or users', () => {
+    // Still least-privilege: it prices ITS OWN tenants against cards someone
+    // else authors, and it never reads or changes the product.
+    expect(can({ role: 'billingService' }, 'rate', 'create')).toBe(false);
+    expect(can({ role: 'billingService' }, 'rate', 'update')).toBe(false);
+    expect(can({ role: 'billingService' }, 'rate', 'delete')).toBe(false);
+    expect(can({ role: 'billingService' }, 'tariff', 'update')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'delete')).toBe(false);
+    expect(can({ role: 'billingService' }, 'organisation', 'update')).toBe(false);
+    expect(can({ role: 'billingService' }, 'user', 'read')).toBe(false);
     expect(can({ role: 'billingService' }, 'agent', 'read')).toBe(false);
-    expect(can({ role: 'billingService' }, 'rate', 'read')).toBe(false);
+    expect(can({ role: 'billingService' }, 'call', 'read')).toBe(false);
+    expect(can({ role: 'billingService' }, 'usage', 'read')).toBe(false);
     // superAdmin still holds credit (superset).
     expect(can({ role: 'superAdmin' }, 'organisation', 'credit')).toBe(true);
   });
-  test('onboardingService can ONLY manage users + create orgs (least privilege)', () => {
-    // Enough to activate an invite-completion: find the user, flip status, attach an org.
+  test('onboardingService can ONLY manage users + create/read/update orgs (least privilege)', () => {
+    // Enough to activate an invite-completion: find the user, flip status, attach an org,
+    // then read the org back or rename it.
     expect(can({ role: 'onboardingService' }, 'user', 'read')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'user', 'readAll')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'user', 'update')).toBe(true);
     expect(can({ role: 'onboardingService' }, 'organisation', 'create')).toBe(true);
-    // Nothing else — no deletes, no grants, no org read/update, no product, no billing.
+    expect(can({ role: 'onboardingService' }, 'organisation', 'read')).toBe(true);
+    // readAll is load-bearing: an org-less principal is out of scope without it.
+    expect(can({ role: 'onboardingService' }, 'organisation', 'readAll')).toBe(true);
+    expect(can({ role: 'onboardingService' }, 'organisation', 'update')).toBe(true);
+    expect(targetInScope({ role: 'onboardingService' }, 'organisation', { id: 'org-1' })).toBe(true);
+    // Nothing else — no deletes, no grants, no billing, no product.
     expect(can({ role: 'onboardingService' }, 'user', 'delete')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'user', 'setRole')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'user', 'setPermissions')).toBe(false);
-    expect(can({ role: 'onboardingService' }, 'organisation', 'read')).toBe(false);
-    expect(can({ role: 'onboardingService' }, 'organisation', 'update')).toBe(false);
+    expect(can({ role: 'onboardingService' }, 'organisation', 'delete')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'organisation', 'credit')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'agent', 'read')).toBe(false);
     expect(can({ role: 'onboardingService' }, 'rate', 'read')).toBe(false);

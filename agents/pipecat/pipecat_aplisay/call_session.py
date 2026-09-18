@@ -8,8 +8,9 @@ contract:
 - Run the Pipecat ``PipelineTask``.
 - On any disconnect / error, end the call with the right reason from the
   taxonomy in section 7.3 and flush invocation logs.
-- Fallback loop per section 9.1: try ``modelName`` → ``fallback.model`` →
-  ``fallback.agent`` → ``fallback.number`` (last-resort blind transfer).
+- Fallback loop per section 9.1: try ``modelName`` → ``fallback.agent`` →
+  ``fallback.model`` → ``fallback.message`` (fixed TTS announcement) →
+  ``fallback.number`` (last-resort blind transfer).
 
 The :class:`SipGateway` indirection means this module does not know whether the
 SIP leg is a Daily room, a FreeSWITCH bridge, or anything else.
@@ -29,9 +30,28 @@ from pipecat.pipeline.runner import PipelineRunner
 from . import api_client
 from . import invocation_log
 from .agent_tools import build_agent_tools
-from .mcp_tools import close_mcp_servers, connect_mcp_servers
+from .gpt_live import (
+    GptLiveSession,
+    backend_settings,
+    compose_backend_instructions,
+    compose_voice_instructions,
+    greeting_opening_instruction,
+    has_greeting,
+    history_from_messages,
+    is_gpt_live_model_id,
+    language_line,
+    live_overrides,
+    merge_tools,
+    resolve_delegate,
+)
+from .grok import is_xai_voice_model_id
+from .mcp_tools import (
+    MCP_MAX_RESULT_BYTES, MCP_MAX_RESULT_BYTES_DELEGATED,
+    close_mcp_servers, connect_mcp_servers,
+)
 from .prompt_metadata import prompt_with_metadata
 from .constants import DISCONNECT_REASONS, PLATFORM
+from .pipeline_error_alarm import PipelineErrorAlarm
 from .recording import RecordingSession
 from .sip_gateway.base import (
     GatewaySession,
@@ -92,6 +112,10 @@ class _WebrtcEgress:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+    # Trunk media-security contract (``Trunk.flags.srtp``), surfaced on the
+    # phone-number row. None = unchanged; False = do not offer SRTP on legs
+    # egressing this trunk. See ``OutboundCallParams.srtp``.
+    srtp: Optional[bool] = None
 
 
 def _chargeable_outbound_trunk_id(egress: "_WebrtcEgress") -> Optional[str]:
@@ -126,6 +150,23 @@ class _RelayLeg:
     runner: Any  # PipelineRunner driving ``task``
     call: api_client.CallRecord
     endpoint: Any  # media_relay.RelayEndpoint for the leg
+
+
+def _result_cap_for(model_name: str) -> int:
+    """The tool-result cap for a model, in UTF-8 bytes.
+
+    GPT-Live runs its tools through a responses delegation, and EVERY result —
+    the voice agent's own included — goes back to the backend as delegation
+    input, charged against its 32768-byte per-session budget. The merged tool
+    set is one surface there, not two, so the tighter cap has to govern the
+    whole set rather than only the delegate's half. Every other model spends
+    its context per turn and gets the ordinary cap. See tool_result.py.
+    """
+    from .voice_mode import model_id_from_name
+
+    if is_gpt_live_model_id(model_id_from_name(model_name or "")):
+        return MCP_MAX_RESULT_BYTES_DELEGATED
+    return MCP_MAX_RESULT_BYTES
 
 
 @dataclass
@@ -182,6 +223,17 @@ class CallSession:
     registration_endpoint_id: Optional[str] = None
     b2bua_gateway_ip: Optional[str] = None
     b2bua_gateway_transport: Optional[str] = None
+    # Media-security contract of that egress trunk (``Trunk.flags.srtp``),
+    # threaded the same way so a transfer leg offers what the trunk can
+    # actually do. None = unchanged. See ``OutboundCallParams.srtp``.
+    srtp: Optional[bool] = None
+    # Set by ``setup_inbound_call`` when the agent concurrency limit refused
+    # this call and the agent has an ``options.fallback.message`` to play
+    # instead of a busy tone. Such a session exists ONLY to play that
+    # announcement: ``run`` plays it and returns without ever building a
+    # pipeline, and ``self.call`` was deliberately never started, so no
+    # concurrency slot is held while it plays. See ``fixed_message.py``.
+    fixed_message_only: bool = False
     # Resolved REFER-vs-bridge decision for the in-flight consultative
     # transfer, recorded when ``_on_transfer`` starts the consult leg so the
     # accept tool finalises via the same mode (attended REFER vs media bridge).
@@ -255,14 +307,29 @@ class CallSession:
     # Rebuilt transport awaiting a manual client-connected kick (SmallWebRTC
     # only — its connected event has already fired for the old client).
     _handover_webrtc_kick: Optional[Any] = None
+    # True while building/running the continuation pipeline of a full-stack
+    # agent handover, so errors on that generation are reported as handover
+    # failures — the case where dead air is most likely and least visible.
+    # It also gives that generation the handover opening (``_platform_opening``).
+    _is_handover_generation: bool = False
+    # Escalates this generation's ErrorFrames (see pipeline_error_alarm).
+    _error_alarm: Optional[Any] = None
     # Closers for any MCP server connections opened in ``prepare_run`` (the
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
     _mcp_closers: list = field(default_factory=list)
+    # Strong references to fire-and-forget background tasks (W10) — see
+    # ``_hold_task``.
+    _background_tasks: set = field(default_factory=set)
     # Hand-back take-over sessions only: future resolving to the pre-fired
     # summaryAgent result, collected by the ``transfer_summary`` builtin
     # (bridged_transfer.prefire_summary). None everywhere else.
     _pending_summary: Optional[Any] = None
+    # Hand-back take-over sessions only (``setup_takeover_call``): a person
+    # handed the caller back after a bridged transfer, so the leg opens with
+    # TAKEOVER_OPENING_INSTRUCTION rather than the agent's greeting (see
+    # ``_platform_opening``).
+    _is_takeover: bool = False
 
     def __post_init__(self):
         # Listener-level transfer overrides (instance columns) wholesale-replace
@@ -280,11 +347,32 @@ class CallSession:
         transport + child call record and runs the incoming agent's pipeline
         on the same live media connection.
         """
+        if self.fixed_message_only:
+            # Refused by the concurrency limiter before this session was even
+            # constructed. There is no agent to run and nothing to fall back
+            # through: play the announcement and let the caller go. Crucially
+            # this holds no concurrency slot — ``self.call`` was never started,
+            # and a cached announcement calls no vendor, so there is nothing to
+            # meter and nothing to reserve. Were it otherwise, playing "we are
+            # busy" would itself consume the capacity it is apologising for.
+            from .fixed_message import run_fixed_message
+
+            await run_fixed_message(self.gateway_session.transport, self.agent)
+            return
+
         active_agent = self.agent
         active_model = active_agent["modelName"]
         active_prompt = system_prompt
         used_fallback_model = False
         used_fallback_agent = False
+        # W8: the retry arms below re-enter prepare_run on the SAME
+        # transport, and pipecat's add_event_handler appends. Snapshot
+        # the handler registry once, and roll back to it before each
+        # retry so a failed attempt's closures don't fire alongside the
+        # replacement's.
+        transport_handlers = self._snapshot_transport_handlers(
+            getattr(self.gateway_session, "transport", None)
+        )
 
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
@@ -295,7 +383,8 @@ class CallSession:
                 await self._run_once(active_agent, active_model, active_prompt)
                 return
             except api_client.AgentConcurrencyLimitExceededBusyError:
-                # Map upstream — caller signals SIP busy / 429 to its caller.
+                # Child-call concurrency failures must propagate as busy; the initial arrival handles announcements in
+                # setup_inbound_call. See docs/agent-failover.md.
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.error(f"voice session failed: {e}; evaluating fallback")
@@ -314,6 +403,9 @@ class CallSession:
                         active_model = next_agent["modelName"]
                         used_fallback_agent = True
                         used_fallback_model = False
+                        self._restore_transport_handlers(
+                            self.gateway_session.transport, transport_handlers
+                        )
                         continue
                     except Exception as inner:  # noqa: BLE001
                         logger.warning(f"fallback agent failed: {inner}")
@@ -326,10 +418,42 @@ class CallSession:
                 ):
                     used_fallback_model = True
                     active_model = fallback_cfg["model"]
+                    self._restore_transport_handlers(
+                        self.gateway_session.transport, transport_handlers
+                    )
                     continue
 
-                # 3. Number-level fallback (blind transfer)
+                # Successful announcement playout still re-raises the setup error for teardown and the original failure reason. See
+                # PR #236.
+                if fallback_cfg.get("message"):
+                    from .fixed_message import run_fixed_message
+
+                    if await run_fixed_message(self.gateway_session.transport, active_agent):
+                        raise
+                    logger.warning(
+                        "fixed fallback message unavailable; continuing down the fallback chain"
+                    )
+
+                # 4. Number-level fallback (blind transfer). Configured on the agent
+                #    rather than chosen by the model, but it still puts a leg out on
+                #    (possibly) our carrier, so it clears the same gate as a tool-call
+                #    transfer — see _on_transfer / outbound_filter.py.
                 if fallback_cfg.get("number"):
+                    from .outbound_filter import authorise_destination
+
+                    fallback_decision = await authorise_destination(
+                        number=str(fallback_cfg["number"]),
+                        agent=active_agent,
+                        aplisay_id=self.aplisay_id,
+                        registration_endpoint_id=self.registration_endpoint_id,
+                        registration_originated=self.registration_originated,
+                    )
+                    if not fallback_decision.allowed:
+                        logger.error(
+                            "fallback transfer refused: "
+                            f"{fallback_decision.failure_message}"
+                        )
+                        raise
                     try:
                         await self.gateway_session.transfer(
                             TransferRequest(
@@ -337,6 +461,11 @@ class CallSession:
                                 operation="blind",
                                 can_refer=False,
                                 force_bridged=True,
+                                srtp=(
+                                    fallback_decision.srtp
+                                    if fallback_decision.srtp is not None
+                                    else self.srtp
+                                ),
                             )
                         )
                         return
@@ -346,19 +475,90 @@ class CallSession:
 
                 raise
 
+    @staticmethod
+    def _snapshot_transport_handlers(transport: Any) -> Optional[dict]:
+        """Snapshot handlers before fallback setup: retries reuse the transport and would otherwise retain stale task
+        closures. Restore only when the registry is exposed; see PR #285."""
+        registry = getattr(transport, "_event_handlers", None)
+        if not isinstance(registry, dict):
+            return None
+        return {
+            name: list(entry.handlers)
+            for name, entry in registry.items()
+            if hasattr(entry, "handlers")
+        }
+
+    @staticmethod
+    def _restore_transport_handlers(transport: Any, snapshot: Optional[dict]) -> None:
+        """Roll the transport's handlers back to a snapshot — see above."""
+        if not snapshot:
+            return
+        registry = getattr(transport, "_event_handlers", None)
+        if not isinstance(registry, dict):
+            return
+        for name, saved in snapshot.items():
+            entry = registry.get(name)
+            if entry is not None and hasattr(entry, "handlers"):
+                entry.handlers[:] = saved
+
+    def _hold_task(self, task: "asyncio.Task") -> "asyncio.Task":
+        """Retain detached tasks until completion; asyncio only holds weak references. See PR #285."""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def prepare_run(
-        self, agent: dict, model_name: str, system_prompt: str
+        self, agent: dict, model_name: str, system_prompt: str, *, history: Optional[list] = None
     ):
         """Build the voice session synchronously up to (but not including)
         ``runner.run(task)``. Returns the configured PipelineTask + the
         ``maxDuration`` window so ``run_prepared`` knows what to enforce.
+
+        ``history`` seeds the new session's context with prior ``user`` /
+        ``assistant`` turns (a full handover onto GPT-Live carries the
+        transcript this way, see ``_on_agent_transfer``).
 
         Splitting `_run_once` this way lets the ``/webrtc/offer`` handler
         do the failable build *before* answering the SDP, so config errors
         (missing API key, unsupported provider, etc.) propagate as a real
         HTTP error to the browser instead of a stalled-spinner silent
         failure.
+
+        Failure handling (W5): the MCP servers are connected part-way
+        through the build, but their closers are only awaited in
+        ``_run_prepared_once``'s finally — which never runs if the build
+        raises after that point. With a fallback configured, ``run()``
+        re-enters here and overwrites ``_mcp_closers``, orphaning the
+        previous connections; without one, the exception escapes and
+        nothing closes them at all. Trigger: any agent with MCP servers
+        whose model/voice config fails to build. So the whole build runs
+        under a guard that closes them.
+
+        The guard deliberately does NOT flush the invocation log: a
+        failed attempt may be followed by a fallback retry that succeeds,
+        and the agent-db endpoint creates a ROW PER POST, so flushing
+        here would split one call's log in two. The records stay in that
+        call's own buffer (they are keyed by callId) until either the
+        runner's finally or — for a terminal setup failure, where the
+        runner never runs — ``worker._run_session``.
         """
+        try:
+            return await self._prepare_run_inner(agent, model_name, system_prompt, history=history)
+        except BaseException:
+            closers, self._mcp_closers = self._mcp_closers, []
+            if closers:
+                try:
+                    await close_mcp_servers(closers)
+                except Exception as e:  # noqa: BLE001
+                    logger.bind(call_id=self.call.id).warning(
+                        f"closing MCP servers after failed build raised: {e}"
+                    )
+            raise
+
+    async def _prepare_run_inner(
+        self, agent: dict, model_name: str, system_prompt: str, *, history: Optional[list] = None
+    ):
+        """The body of :meth:`prepare_run` — see its docstring."""
         # Handover paths pass their own agent dict; make sure listener-level
         # transfer overrides apply to it exactly as they did to the original
         # (idempotent when __post_init__ already merged this dict).
@@ -383,7 +583,10 @@ class CallSession:
                 "reject_transfer": _builtin_consult_reject(self),
             }
 
-        tools = self._build_tools_for(agent, extra_builtins=extra_builtins)
+        result_cap = _result_cap_for(model_name)
+        tools = self._build_tools_for(
+            agent, extra_builtins=extra_builtins, max_result_bytes=result_cap
+        )
 
         # Worker-as-MCP-client: connect to any remote MCP servers configured on
         # the agent and append their tools to the SAME ``tools`` list, so they
@@ -396,11 +599,22 @@ class CallSession:
         # debug log (a silent tool drop reads as "the model won't call tools").
         with logger.contextualize(callId=self.call.id):
             mcp_descriptors, mcp_closers = await connect_mcp_servers(
-                agent, log=logger
+                agent, log=logger, max_result_bytes=result_cap
             )
         self._mcp_closers = mcp_closers
         if mcp_descriptors:
             tools.extend(mcp_descriptors)
+
+        # GPT-Live (docs/gpt-live.md): resolve the backend text agent, build its
+        # tools with its own keys, merge them with this agent's, and compose the
+        # two instruction sets. ``tools`` becomes the backend's tool set.
+        gpt_live_session: Optional[GptLiveSession] = None
+        from .voice_mode import model_id_from_name as _model_id_from_name
+
+        if is_gpt_live_model_id(_model_id_from_name(model_name)):
+            gpt_live_session, tools = await self._compose_gpt_live(
+                agent, system_prompt, tools, metadata
+            )
 
         # WebRTC-origin sessions (and consult-leg TransferAgents whose parent is
         # a browser session) get a relay endpoint spliced into their pipeline so
@@ -439,6 +653,15 @@ class CallSession:
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
             on_inactivity_hangup=self._on_inactivity_hangup,
+            on_aux_transcript=self._on_aux_transcript,
+            on_aux_usage=self._on_aux_usage,
+            on_output_transcript=self._on_output_transcript,
+            on_output_usage=self._on_output_usage,
+            gpt_live=gpt_live_session,
+            history=history,
+            opening=self._platform_opening(),
+            on_provider_session_ended=self._on_provider_session_ended,
+            on_injected_dtmf=self._on_injected_dtmf,
         )
         # Stash the context handle so ``get_parent_transcript`` (used by
         # the consultative-transfer flow) can walk the chat history.
@@ -483,10 +706,23 @@ class CallSession:
         # Observer needs to know the voice mode so it picks the right
         # source for bot text. Pipeline emits via TTSTextFrame; realtime
         # via LLMTextFrame. Listening to both produces duplicated content
-        # because LLM and TTS carry the same words.
+        # because LLM and TTS carry the same words. A text-output realtime
+        # session (realtime_tts.py) has both, and logs the TTS side: that is
+        # what the caller heard, and a barge-in truncates it honestly.
+        from .realtime_tts import external_tts_enabled
+        from .voice_mode import model_id_from_name
+
         mode = resolve_voice_mode(model_name, agent.get("options"))
+        bot_text_from = (
+            "tts"
+            if mode == "realtime"
+            and external_tts_enabled(agent, model_id_from_name(model_name))
+            else None
+        )
         task.add_observer(
-            TranscriptForwardingObserver(self._send_message, mode=mode)
+            TranscriptForwardingObserver(
+                self._send_message, mode=mode, bot_text_from=bot_text_from
+            )
         )
 
         # Meter LLM token + TTS character usage into the platform usage ledger.
@@ -494,8 +730,13 @@ class CallSession:
         # to be enabled (see voice_session.py PipelineParams).
         from .usage import UsageMeteringObserver, usage_vendors
 
+        # On GPT-Live the LLM tokens belong to the backend model (the service
+        # labels its metrics ``gpt-live-1``): the factory pins the backend on
+        # the service so the rows land on the delegate model's rate line.
         self._usage_observer = UsageMeteringObserver(
-            services=usage_vendors(agent, model_name)
+            services=usage_vendors(
+                agent, model_name, backend=getattr(llm_service, "aplisay_backend", None)
+            )
         )
         task.add_observer(self._usage_observer)
 
@@ -535,13 +776,50 @@ class CallSession:
         # TODO if the playground UX needs uninterruptible greetings.
         await self._wire_greeting(transport, task, agent, mode, model_name)
 
+        # Listen for this generation's ErrorFrames. Nothing did before, which
+        # is why 1283 of them went unnoticed while a caller sat in silence.
+        self._error_alarm = PipelineErrorAlarm(
+            call_id=self.call.id, handover=self._is_handover_generation
+        )
+        self._error_alarm.attach(task)
+
         max_duration_secs = _parse_duration((agent.get("options") or {}).get("maxDuration"))
         return task, max_duration_secs
+
+    def _platform_opening(self) -> Optional[str]:
+        """The platform's opening instruction for this generation, or None.
+
+        A generation that continues a call already in progress does not use
+        the agent's greeting, because the caller was greeted when the call
+        started. It opens with an instruction instead:
+        ``HANDOVER_OPENING_INSTRUCTION`` on the first generation after a
+        ``transfer_agent`` full-stack handover, and
+        ``TAKEOVER_OPENING_INSTRUCTION`` on a human-to-agent takeover leg
+        (``_is_takeover``). A handover from a takeover leg opens as a handover.
+        None means a new call, where the agent's greeting applies.
+        """
+        from .transfer_prompts import (
+            HANDOVER_OPENING_INSTRUCTION,
+            TAKEOVER_OPENING_INSTRUCTION,
+        )
+
+        if self._is_handover_generation:
+            return HANDOVER_OPENING_INSTRUCTION
+        if self._is_takeover:
+            return TAKEOVER_OPENING_INSTRUCTION
+        return None
 
     async def _wire_greeting(
         self, transport, task, agent: dict, mode: str, model_name: str
     ) -> None:
-        """Register ``on_client_connected`` to emit the opening greeting."""
+        """Register ``on_client_connected`` to emit the opening greeting.
+
+        When the generation continues a call already in progress (an agent
+        handover or a human-to-agent takeover) the agent's greeting is not
+        used, because the caller was greeted when the call started. The agent
+        opens with the platform's instruction from ``_platform_opening``
+        instead, which tells it to introduce itself and continue the call.
+        """
         # Ultravox handles greetings natively via the /calls API's
         # ``firstSpeakerSettings.agent`` parameter — see the Ultravox
         # branch of ``voice_session._build_realtime``. The model-agnostic
@@ -549,10 +827,39 @@ class CallSession:
         # ``LLMRunFrame`` / ``TTSSpeakFrame``, none of which Ultravox's
         # ``process_frame`` consumes (they'd just pass through as
         # no-ops). Skip wiring on Ultravox so we don't queue dead frames
-        # at connect time.
+        # at connect time. The platform opening is native there too
+        # (``voice_session._ultravox_one_shot_params``).
         from .voice_mode import model_id_from_name
 
         if model_id_from_name(model_name).startswith("ultravox/"):
+            return
+        from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
+        from pipecat.frames.frames import LLMRunFrame as _RunFrame
+
+        platform_opening = self._platform_opening()
+
+        if is_gpt_live_model_id(model_id_from_name(model_name)):
+            # GPT-Live: the ``LLMRunFrame`` starts the session from the context,
+            # and the service lifts a TRAILING developer message out of the
+            # startup history into the opening instruction it appends once the
+            # session has started (the API's way of making the model speak
+            # first). The wording is best-effort: the model paraphrases. With
+            # no greeting configured the platform instruction keeps the
+            # "agent speaks first" contract.
+            opening = platform_opening or greeting_opening_instruction(agent)
+
+            @transport.event_handler("on_client_connected")
+            async def _on_client_connected_gpt_live(*_args, **_kwargs) -> None:
+                try:
+                    await task.queue_frames(
+                        [
+                            _AppendFrame([{"role": "developer", "content": opening}], run_llm=False),
+                            _RunFrame(),
+                        ]
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"GPT-Live greeting handler failed: {e}")
+
             return
         greeting = (agent.get("options") or {}).get("greeting") or {}
         greeting_text = greeting.get("text") if isinstance(greeting.get("text"), str) else ""
@@ -561,6 +868,21 @@ class CallSession:
             greeting.get("instructions") if isinstance(greeting.get("instructions"), str) else ""
         )
         greeting_instructions = (greeting_instructions or "").strip()
+
+        if is_xai_voice_model_id(model_id_from_name(model_name)) and greeting_text and not platform_opening:
+            # Seed Grok's context and tools without a first response: the forced greeting already speaks. See docs/grok.md.
+            llm = self._llm_service
+
+            @transport.event_handler("on_client_connected")
+            async def _on_client_connected_grok(*_args, **_kwargs) -> None:
+                try:
+                    llm.hold_first_response()
+                    await task.queue_frames([_RunFrame()])
+                    await llm.speak_verbatim(greeting_text)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Grok greeting handler failed: {e}")
+
+            return
 
         # `text` and `instructions` are mutually exclusive per the API
         # contract; the server should reject configurations that set both,
@@ -575,7 +897,20 @@ class CallSession:
         @transport.event_handler("on_client_connected")
         async def _on_client_connected(*_args, **_kwargs) -> None:
             try:
-                if greeting_text:
+                if platform_opening:
+                    # A handover or a takeover: the caller was already
+                    # greeted. Run the agent's first turn from the platform's
+                    # instruction; its greeting is for a new call.
+                    await task.queue_frames(
+                        [
+                            LLMMessagesAppendFrame(
+                                [{"role": "developer", "content": platform_opening}],
+                                run_llm=False,
+                            ),
+                            LLMRunFrame(),
+                        ]
+                    )
+                elif greeting_text:
                     if mode == "pipeline" and TTSSpeakFrame is not None:
                         # Pipeline: push the text to TTS directly so the
                         # exact words are spoken — no LLM in the loop.
@@ -673,8 +1008,12 @@ class CallSession:
                 agent_id=self.agent.get("id"),
                 model=self.agent.get("modelName"),
             ).info("agent handover: starting new agent stack on the live transport")
+            self._is_handover_generation = True
             task, max_duration_secs = await self.prepare_run(
-                self.agent, self.agent["modelName"], pending["system_prompt"]
+                self.agent,
+                self.agent["modelName"],
+                pending["system_prompt"],
+                history=pending.get("history"),
             )
             # Cover the dead-air gap until the incoming agent first speaks. The
             # injector is spliced into the new pipeline's caller leg; arm it in
@@ -725,6 +1064,13 @@ class CallSession:
                     kick_task.cancel()
                 if timeout_task and not timeout_task.done():
                     timeout_task.cancel()
+                # Before the InvocationLog is flushed, so a generation that
+                # errored says so IN the call's own debug log rather than only
+                # in pod logs. Silent on a clean generation.
+                alarm = self._error_alarm
+                self._error_alarm = None
+                if alarm is not None:
+                    alarm.log_final_summary()
                 # Tear down any WebRTC-origin relay leg / consult leg this session
                 # was bridged to, so the telephony side and its Call record don't
                 # outlive the browser caller.
@@ -791,6 +1137,13 @@ class CallSession:
         leg = self._relay_leg
         if leg is not None:
             self._relay_leg = None
+            from . import media_relay
+
+            # P7: disengage BOTH ends first. Otherwise the surviving
+            # leg's tap keeps feeding the dead leg's unbounded injector
+            # queue (~96 KB/s from a 48 kHz browser peer) until the
+            # survivor is itself hung up — which is best-effort.
+            media_relay.unbridge(self.relay_endpoint, getattr(leg, "endpoint", None))
             try:
                 await leg.task.cancel()
             except Exception as e:  # noqa: BLE001
@@ -803,6 +1156,9 @@ class CallSession:
         consult = self._consult_session
         if consult is not None:
             self._consult_session = None
+            from . import media_relay
+
+            media_relay.unbridge(self.relay_endpoint, consult.relay_endpoint)
             try:
                 await consult.gateway_session.shutdown()
             except Exception as e:  # noqa: BLE001
@@ -881,6 +1237,56 @@ class CallSession:
         else:
             self.call.batched_transaction_logs.append(entry)
 
+    async def _on_aux_transcript(self, text: str) -> None:
+        """A final transcript from the auxiliary STT (``options.stt.aux``),
+        logged as ``user-aux`` next to the primary ``user`` entry through the
+        same transaction-log path (streamLog/batch convention included)."""
+        from .aux_stt import AUX_STT_LOG_TYPE
+
+        await self._send_message({AUX_STT_LOG_TYPE: text}, is_final=True)
+
+    def _on_aux_usage(self, unit: str, quantity: int, vendor: dict) -> None:
+        """Auxiliary STT usage (audio ms streamed / transcript chars) into the
+        call's usage observer as ``stt-aux`` rows, so it flushes with every
+        other meter at ``_end``. The engine runs in a side pipeline the
+        observer cannot see, hence the explicit hand-off."""
+        from .aux_stt import AUX_STT_TECHNOLOGY
+
+        observer = getattr(self, "_usage_observer", None)
+        if observer is None:
+            return
+        observer.add_meter(
+            AUX_STT_TECHNOLOGY,
+            unit,
+            quantity,
+            provider=vendor.get("vendor"),
+            detail=vendor.get("model"),
+        )
+
+    async def _on_output_transcript(self, text: str) -> None:
+        """A final transcript from the output audit STT (``options.tts.output``)
+        — what the agent's audio actually said — logged as ``agent-speech``
+        next to the ``agent`` turn the model produced."""
+        from .aux_stt import OUTPUT_STT_LOG_TYPE
+
+        await self._send_message({OUTPUT_STT_LOG_TYPE: text}, is_final=True)
+
+    def _on_output_usage(self, unit: str, quantity: int, vendor: dict) -> None:
+        """Output audit STT usage into the call's usage observer as
+        ``stt-output`` rows (see ``_on_aux_usage``)."""
+        from .aux_stt import OUTPUT_STT_TECHNOLOGY
+
+        observer = getattr(self, "_usage_observer", None)
+        if observer is None:
+            return
+        observer.add_meter(
+            OUTPUT_STT_TECHNOLOGY,
+            unit,
+            quantity,
+            provider=vendor.get("vendor"),
+            detail=vendor.get("model"),
+        )
+
     async def _on_hangup(self) -> None:
         self._wants_hangup = True
         await self._end(DISCONNECT_REASONS["AGENT_INITIATED_HANGUP"])
@@ -911,7 +1317,8 @@ class CallSession:
         await self.gateway_session.shutdown()
 
     def _build_tools_for(
-        self, agent: dict, *, extra_builtins: Optional[dict] = None
+        self, agent: dict, *, extra_builtins: Optional[dict] = None,
+        max_result_bytes: int = MCP_MAX_RESULT_BYTES,
     ) -> list[dict]:
         """Build the tool descriptor list for an agent definition with this
         session's callbacks wired in. Used both at pipeline construction
@@ -932,6 +1339,7 @@ class CallSession:
             on_send_dtmf=self._on_send_dtmf,
             on_transfer_summary=self._on_transfer_summary,
             extra_builtins=extra_builtins,
+            max_result_bytes=max_result_bytes,
         )
 
     async def _on_transfer_summary(self, args: dict) -> dict:
@@ -1061,7 +1469,15 @@ class CallSession:
         target_model = new_agent.get("modelName") or current_model
         if target_model != current_model:
             return True
-        return model_id_from_name(current_model).startswith("ultravox/")
+        current_id = model_id_from_name(current_model)
+        # GPT-Live fixes instructions, voice and delegation mode at session
+        # start, so a handover is always a restart (docs/gpt-live.md). Grok
+        # fixes the model and voice per connection (docs/grok.md).
+        return (
+            current_id.startswith("ultravox/")
+            or is_gpt_live_model_id(current_id)
+            or is_xai_voice_model_id(current_id)
+        )
 
     async def _on_agent_transfer(self, args: dict) -> dict:
         """Builtin ``transfer_agent`` platform function: hand the live call
@@ -1110,13 +1526,24 @@ class CallSession:
         )
         if isinstance(summary, str) and summary.strip():
             prompt += f"\n\n# Handover summary from the previous agent\n{summary.strip()}"
-        if include_history:
+        # A GPT-Live target takes the transcript as the session's startup
+        # history (its own budget) rather than inside the instructions.
+        from .voice_mode import model_id_from_name as _model_id_from_name
+
+        history: Optional[list] = None
+        target_model_id = _model_id_from_name(new_agent.get("modelName") or "")
+        # GPT-Live and the Grok voice row seed the new session with the turns
+        # themselves (the Grok adapter packs them into one item).
+        target_seeds_history = is_gpt_live_model_id(target_model_id) or is_xai_voice_model_id(target_model_id)
+        if include_history and target_seeds_history:
+            history = self._history_for_handover()
+        elif include_history:
             transcript = self.get_parent_transcript()
             if transcript:
                 prompt += f"\n\n# Conversation so far\n{transcript}"
 
         if self._needs_full_handover(new_agent):
-            result = await self._begin_agent_handover(new_agent, prompt)
+            result = await self._begin_agent_handover(new_agent, prompt, history=history)
             if result.get("status") == "OK":
                 await self._send_message(
                     {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
@@ -1201,7 +1628,9 @@ class CallSession:
 
         client.disconnect = _noop_disconnect
 
-    async def _begin_agent_handover(self, new_agent: dict, system_prompt: str) -> dict:
+    async def _begin_agent_handover(
+        self, new_agent: dict, system_prompt: str, history: Optional[list] = None
+    ) -> dict:
         """Start a FULL agent-stack handover to ``new_agent``.
 
         Creates the child call record (``parentId`` = current call) and
@@ -1270,6 +1699,7 @@ class CallSession:
             "system_prompt": system_prompt,
             "call": child,
             "transport": new_transport,
+            "history": history,
         }
         self._suppress_transport_disconnect(old_transport)
         try:
@@ -1372,6 +1802,7 @@ class CallSession:
             )
             from pipecat.services.settings import LLMSettings
 
+            from .transfer_prompts import HANDOVER_OPENING_INSTRUCTION
             from .voice_session import _register_tools_on_llm
 
             tools = self._build_tools_for(new_agent)
@@ -1396,9 +1827,14 @@ class CallSession:
                     ),
                     # Replace the context wholesale: history is carried (when
                     # requested) inside the prompt itself, so the incoming
-                    # agent starts from a clean message list either way.
+                    # agent starts from a clean message list either way. The
+                    # second message makes its first turn a handover opening
+                    # rather than a greeting.
                     LLMMessagesUpdateFrame(
-                        [{"role": "developer", "content": system_prompt}],
+                        [
+                            {"role": "developer", "content": system_prompt},
+                            {"role": "developer", "content": HANDOVER_OPENING_INSTRUCTION},
+                        ],
                         run_llm=False,
                     ),
                     # New tool surface on the context (and forwarded to
@@ -1414,6 +1850,161 @@ class CallSession:
             )
         except Exception as e:  # noqa: BLE001
             logger.bind(error=str(e)).error("agent transfer: swap failed")
+
+    def _history_for_handover(self) -> list[dict]:
+        """The session's ``user`` / ``assistant`` turns as startup history for a
+        GPT-Live continuation (most recent 128 kept)."""
+        if self._llm_context is None:
+            return []
+        try:
+            messages = list(self._llm_context.get_messages())
+        except Exception as e:  # noqa: BLE001
+            logger.bind(error=str(e)).debug("history_for_handover: get_messages() failed")
+            return []
+        return history_from_messages(messages)
+
+    # ---- GPT-Live (docs/gpt-live.md) ----
+
+    async def _compose_gpt_live(
+        self, agent: dict, system_prompt: str, voice_tools: list[dict], metadata: dict
+    ) -> tuple[GptLiveSession, list[dict]]:
+        """Resolve the backend of a GPT-Live session and compose both layers.
+
+        Steps 1 to 4 of plan section 5.3: fetch the declared delegate (or
+        synthesise one from this agent), build the delegate's tools with the
+        delegate's keys and connect its MCP servers, merge them with the voice
+        agent's tools (delegate wins a name clash), and compose the voice and
+        backend instructions. Returns the composition and the merged tool
+        list, which is what the pipeline registers.
+        """
+        spec = await resolve_delegate(
+            agent,
+            metadata,
+            self.call.organisationId,
+            fetch_agent=api_client.get_internal_agent_by_id,
+        )
+        delegate_tools: list[dict] = []
+        backend_prompt = system_prompt
+        if not spec.synthetic:
+            # The delegate's REST functions run behind the delegation too, so
+            # they share the tighter cap with its MCP tools below.
+            delegate_tools = self._build_tools_for(
+                spec.agent, max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED)
+            with logger.contextualize(callId=self.call.id):
+                # Cap results against the delegation's session-wide budget, not a per-turn budget. See PR #321.
+                delegate_mcp, delegate_closers = await connect_mcp_servers(
+                    spec.agent, log=logger,
+                    max_result_bytes=MCP_MAX_RESULT_BYTES_DELEGATED,
+                )
+            self._mcp_closers.extend(delegate_closers)
+            delegate_tools.extend(delegate_mcp)
+            backend_prompt = prompt_with_metadata(
+                spec.agent.get("prompt") or "", spec.agent.get("promptMetadata"), metadata
+            )
+        merged = merge_tools(voice_tools, delegate_tools, log=logger)
+        tool_names = [t["schema"]["name"] for t in merged]
+        session = GptLiveSession(
+            delegate=spec,
+            voice_instructions=compose_voice_instructions(system_prompt, language=language_line(agent)),
+            backend_instructions=compose_backend_instructions(backend_prompt, tool_names=tool_names),
+            tools=merged,
+            settings=backend_settings(spec.agent),
+            overrides=live_overrides(agent),
+            client_delegate=self._gpt_live_client_delegate(spec) if spec.mode == "client" else None,
+            on_session_ended=self._on_provider_session_ended,
+            on_dtmf=self._on_injected_dtmf,
+            # When the platform opens the call (a handover or a takeover), the
+            # greeting does not play, so the caller is not made inaudible.
+            deaf_during_greeting=has_greeting(agent) and self._platform_opening() is None,
+        )
+        logger.bind(
+            event="delegation_config",
+            mode=spec.mode,
+            synthetic=spec.synthetic,
+            delegate=spec.agent.get("id"),
+            backend_model=spec.model_name,
+            tools=tool_names,
+            settings=session.settings,
+            overrides=sorted(session.overrides),
+        ).info(
+            f"GPT-Live backend: {spec.model_name} ({spec.mode} delegation, "
+            f"{'synthetic' if spec.synthetic else 'delegate ' + str(spec.agent.get('id'))}), "
+            f"{len(tool_names)} tools"
+        )
+        return session, merged
+
+    def _gpt_live_client_delegate(self, spec) -> Callable[[list[dict], bool], Awaitable[str]]:
+        """The client-mode backend: each delegation becomes a synthetic
+        subagent call through the internal subagent endpoint, the transcript
+        since the previous delegation as its task, and the answer text comes
+        back for the voice model to speak as commentary."""
+        import json as _json
+
+        from pipecat.workers.llm.backend_llm_worker import _render_transcript_request
+
+        from .tool_log import log_tool_call, log_tool_result
+
+        delegate_id = str(spec.agent.get("id"))
+        delegate_name = spec.agent.get("name") or delegate_id
+
+        async def delegate(messages: list[dict], first: bool) -> str:
+            request = _render_transcript_request(messages, first=first)
+            started = asyncio.get_running_loop().time()
+            log_tool_call(tool=delegate_name, kind="delegate", arguments={"task": request})
+            try:
+                result = await api_client.invoke_subagent(
+                    delegate_id,
+                    {"task": request},
+                    self.call.metadata,
+                    organisation_id=self.call.organisationId,
+                    call_id=self.call.id,
+                )
+            except Exception as e:  # noqa: BLE001
+                log_tool_result(
+                    tool=delegate_name,
+                    kind="delegate",
+                    ok=False,
+                    duration_ms=int((asyncio.get_running_loop().time() - started) * 1000),
+                    error=str(e),
+                )
+                raise
+            log_tool_result(
+                tool=delegate_name,
+                kind="delegate",
+                ok=True,
+                duration_ms=int((asyncio.get_running_loop().time() - started) * 1000),
+                result=result,
+            )
+            if isinstance(result, dict):
+                for key in ("text", "answer", "result", "summary"):
+                    if isinstance(result.get(key), str) and result[key].strip():
+                        return result[key]
+                return _json.dumps(result, ensure_ascii=False, default=str)
+            return "" if result is None else str(result)
+
+        return delegate
+
+    async def _on_injected_dtmf(self, digits: str) -> None:
+        """Aggregated keypad digits on a session whose service never sees a
+        context frame after it starts (GPT-Live, the Grok voice row): a
+        ``user`` transcript row (as the DTMF aggregator's TranscriptionFrame
+        would have produced) and the service's own injection path."""
+        await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
+        llm = self._llm_service
+        inject = getattr(llm, "inject_dtmf", None)
+        if inject is None:
+            return
+        await inject(digits)
+
+    async def _on_provider_session_ended(self, reason: str) -> None:
+        """The provider closed the realtime session (GPT-Live: expiry, a
+        content policy close, a lost connection; Grok: a server close, a fatal
+        error, the concurrent-session limit): end the call cleanly with that
+        reason."""
+        logger.bind(reason=reason).warning("realtime session ended by the provider; ending the call")
+        self._wants_hangup = True
+        await self._end(f"{DISCONNECT_REASONS['SESSION_CLOSED']}: provider {reason}")
+        await self.gateway_session.shutdown()
 
     def get_parent_transcript(self) -> str:
         """Render this session's chat history in the LiveKit-parity
@@ -1510,7 +2101,38 @@ class CallSession:
         tools on the consult bot drive subsequent state changes
         (talking / rejected / none).
         """
+        from .outbound_filter import authorise_destination
         from .transfer_prompts import resolve_transfer_prompt
+
+        # Destination authorisation — the FIRST thing every transfer path does, so
+        # blind, consultative and both WebRTC (media-relay) flows are gated by the
+        # one check. The policy is server-side (lib/outbound-authorisation.js): the
+        # agent's own options.outboundCallFilter on a customer-owned egress, and the
+        # operator's per-trunk filter + a rateable destination on one of OUR
+        # chargeable carrier trunks, where the agent's filter may only narrow it.
+        # Fails CLOSED — an unreachable platform is a refusal.
+        #
+        # A callerId that is a registration-endpoint UUID means the leg egresses
+        # THAT registration's B2BUA (the customer's own PBX, never our carrier) —
+        # the discriminator _resolve_webrtc_egress uses. Ownership of the
+        # registration is validated there; here it only decides whose minutes are
+        # at risk, so a bogus UUID buys nothing: egress resolution still fails.
+        caller_id_arg = str(args.get("callerId") or "")
+        egress_is_registration = (
+            bool(self.registration_endpoint_id)
+            or self.registration_originated
+            or bool(_UUID_RE.match(caller_id_arg))
+        )
+        decision = await authorise_destination(
+            number=str(args.get("number") or ""),
+            agent=self.agent,
+            caller_id=(None if egress_is_registration else caller_id_arg or None),
+            aplisay_id=self.aplisay_id,
+            registration_endpoint_id=self.registration_endpoint_id,
+            registration_originated=egress_is_registration,
+        )
+        if not decision.allowed:
+            return self._transfer_failed(decision.failure_message)
 
         op = args.get("operation", "blind")
         # Legacy callers may pass "consult" or "bridged"; normalize for
@@ -1585,6 +2207,10 @@ class CallSession:
             registration_endpoint_id=self.registration_endpoint_id,
             b2bua_gateway_ip=self.b2bua_gateway_ip,
             b2bua_gateway_transport=self.b2bua_gateway_transport,
+            # The authorisation decision resolved the egress trunk for THIS
+            # destination, so its contract is the authoritative one; the
+            # session's own value is the fallback for callers that skip it.
+            srtp=decision.srtp if decision.srtp is not None else self.srtp,
         )
 
         if op == "consultative":
@@ -1711,7 +2337,7 @@ class CallSession:
 
     def _transfer_failed(self, reason: str) -> dict:
         """Record a failed transfer_state and return the tool-result dict."""
-        logger.bind(session_id=self.session_id).warning(f"webrtc transfer failed: {reason}")
+        logger.bind(session_id=self.session_id).warning(f"transfer failed: {reason}")
         self.transfer_state = TransferState("failed", reason)
         return {"error": reason, "status": "FAILED", "reason": reason}
 
@@ -1777,7 +2403,15 @@ class CallSession:
             )
 
         # --- Trunk (E.164 number callerId) ---
-        row = await api_client.get_phone_number(caller_id)
+        # The endpoint lookup rather than the bare number list: it carries the
+        # number's trunk (id, outbound, flags), which says whether the trunk
+        # is a registration trunk, and the srtp contract when there is one.
+        try:
+            row = await api_client.get_phone_endpoint_by_number(caller_id)
+        except api_client.ApiRequestError as e:
+            if e.status != 404:
+                raise
+            row = None
         if not row:
             raise _WebrtcEgressError(f"callerId {caller_id!r} is not a known number")
         if not row.get("outbound"):
@@ -1805,12 +2439,39 @@ class CallSession:
                 "organisation"
             )
         aplisay_id = row.get("aplisayId")
+        trunk_flags = ((row.get("trunk") or {}).get("flags")) or {}
+        if trunk_flags.get("provider") == "registration" and trunk_flags.get("registrationId"):
+            # A number on a registration trunk: dial through that registration's
+            # B2BUA, presenting the number, and keep the trunk id for the header.
+            reg_id = str(trunk_flags["registrationId"])
+            reg = await api_client.get_phone_endpoint_by_id(reg_id)
+            b2bua = str((reg or {}).get("b2buaId") or "").strip()
+            if not b2bua:
+                raise _WebrtcEgressError(
+                    f"caller-ID {caller_id!r} is on a registration trunk that is not held by a SIP node"
+                )
+            opts = (reg or {}).get("options") or {}
+            return _WebrtcEgress(
+                caller_id=caller_id,
+                aplisay_id=aplisay_id,
+                registration_endpoint_id=reg_id,
+                b2bua_gateway_ip=b2bua,
+                b2bua_gateway_transport=str(opts.get("transport") or "tcp"),
+            )
         if not aplisay_id:
             logger.bind(caller_id=caller_id).warning(
                 "webrtc egress: number has no aplisayId (egress trunk); "
                 "the gateway will need a default outbound SBC route"
             )
-        return _WebrtcEgress(caller_id=caller_id, aplisay_id=aplisay_id)
+        # ``srtp`` is the egress trunk's media-security contract, surfaced on
+        # the row by the agent-db phone-numbers route. Absent (older API) reads
+        # as None = unchanged.
+        srtp = row.get("srtp")
+        return _WebrtcEgress(
+            caller_id=caller_id,
+            aplisay_id=aplisay_id,
+            srtp=srtp if isinstance(srtp, bool) else None,
+        )
 
     def _reject_daily(self) -> Optional[dict]:
         """WebRTC relay needs a bare ``originate``; the Daily gateway requires
@@ -1974,7 +2635,7 @@ class CallSession:
         )
         # Run the relay leg, then engage the bridge. The browser bot pipeline is
         # already running; engaging mutes it and starts the media relay.
-        asyncio.create_task(self._run_relay_leg())
+        self._hold_task(asyncio.create_task(self._run_relay_leg()))
         media_relay.bridge(self.relay_endpoint, leg_endpoint)
         self.transfer_state = TransferState("talking", "Transfer connected")
         logger.bind(call_id=self.call.id, leg_call_id=leg_call.id).info(
@@ -2101,7 +2762,7 @@ class CallSession:
         self._consult_session = consult_session
         # Run the TransferAgent bot on the consult leg. accept/reject tools on it
         # drive our transfer_state and, on accept, bridge the relay endpoints.
-        asyncio.create_task(self._run_consult_session(consult_session))
+        self._hold_task(asyncio.create_task(self._run_consult_session(consult_session)))
         self.transfer_state = TransferState("talking", "Speaking with transfer target...")
 
     async def _run_consult_session(self, consult_session: "CallSession") -> None:
@@ -2352,6 +3013,14 @@ def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions
     instance level; the instance value wins when set, otherwise the agent
     default applies. ``enabled`` is the gate; ``key`` (when present) selects
     client-side decryption per section 9.2.
+
+    The engine records only when it is ASKED to: an absent ``recording`` option
+    means no recording, full stop. This is deliberately not a product policy —
+    "record everything unless the customer opts out" is a statement a given
+    client application makes about its own users, and it belongs to that client
+    (polite-ai materialises it at its API boundary; see its
+    ``withRecordingPolicy``). An engine that recorded by default would record
+    for every API consumer, including ones whose users never agreed to it.
     """
     agent_opts = (agent.get("options") or {}).get("recording") or {}
     instance_opts = (instance.get("recording") if isinstance(instance, dict) else None) or {}
@@ -2402,6 +3071,20 @@ def _json_dumps_safe(value: Any) -> str:
 # ---- Constructors ----
 
 
+async def _end_unstarted_call(call, reason: str) -> None:
+    """Close a Call record that was created but never started.
+
+    Best-effort: the caller is already unwinding on an error, and a
+    failure to tidy the row must not mask it.
+    """
+    try:
+        await api_client.end_call(call, reason)
+    except Exception as e:  # noqa: BLE001
+        logger.bind(call_id=getattr(call, "id", None)).warning(
+            f"could not end unstarted call record: {e}"
+        )
+
+
 async def setup_inbound_call(
     sip_gateway: SipGateway,
     inbound: InboundCallContext,
@@ -2442,7 +3125,32 @@ async def setup_inbound_call(
             },
         }
     )
-    await api_client.start_call(call)
+    # Play busy announcements without starting a Call or reserving a slot; otherwise keep the busy response.
+    # See docs/agent-failover.md.
+    fixed_message_only = False
+    try:
+        await api_client.start_call(call)
+    except api_client.AgentConcurrencyLimitExceededBusyError:
+        from .fixed_message import fixed_message_for
+
+        if not fixed_message_for(agent):
+            # W2: the Call record above was created but will never be
+            # started, and nothing downstream reaches ``end_call`` on
+            # this path — so the busy case (the expected one, at exactly
+            # the moment the node is busiest) left an open call row per
+            # refusal. End it before the refusal propagates.
+            await _end_unstarted_call(call, "concurrency limit exceeded")
+            raise
+        logger.bind(call_id=call.id, agent_id=agent.get("id")).warning(
+            "agent concurrency limit reached; playing fixed fallback message instead of busy"
+        )
+        fixed_message_only = True
+    except Exception:
+        # Any other start failure (agent-db 5xx or timeout) leaves the
+        # same orphaned row.
+        await _end_unstarted_call(call, "call start failed")
+        raise
+
     return CallSession(
         session_id=inbound.session_id,
         agent=agent,
@@ -2450,6 +3158,7 @@ async def setup_inbound_call(
         sip_gateway=sip_gateway,
         gateway_session=gw_session,
         call=call,
+        fixed_message_only=fixed_message_only,
         registration_originated=inbound.registration_originated,
         force_refer_transfer=inbound.force_refer_transfer,
         force_bridged_transfer=inbound.force_bridged_transfer,
@@ -2644,7 +3353,9 @@ async def setup_takeover_call(
     ``payload.call`` is a started child call record (parentId = the
     original call). Here we just wire the freshly re-attached media leg
     to a standard CallSession — the incoming agent gets its own full
-    tool surface, unlike a consult-side TransferAgent.
+    tool surface, unlike a consult-side TransferAgent. The session is
+    marked as a takeover, so the agent opens with
+    ``TAKEOVER_OPENING_INSTRUCTION`` rather than its greeting.
     """
     session_params = GatewaySessionParams(session_id=inbound.session_id)
     gw_session = await sip_gateway.setup_inbound(inbound, session_params)
@@ -2656,6 +3367,7 @@ async def setup_takeover_call(
         gateway_session=gw_session,
         call=payload.call,
         _pending_summary=payload.summary_future,
+        _is_takeover=True,
     )
 
 
@@ -2718,6 +3430,10 @@ async def setup_outbound_call(
     caller_id: str,
     called_id: str,
     aplisay_id: Optional[str],
+    srtp: Optional[bool] = None,
+    registration_endpoint_id: Optional[str] = None,
+    b2bua_gateway_ip: Optional[str] = None,
+    b2bua_gateway_transport: Optional[str] = None,
     extra_session_params: Optional[dict] = None,
 ) -> CallSession:
     """Note: the originate side reserves the concurrency slot at the JS layer.
@@ -2725,12 +3441,23 @@ async def setup_outbound_call(
     The JS handler creates the Call record and calls ``call.start()`` before
     dispatching, so we re-fetch the existing Call here rather than creating a
     new one.
+
+    ``srtp`` is the egress trunk's media-security contract; see
+    ``OutboundCallParams.srtp``.
     """
+    # A registration-trunk number: the gateway dials the registration's B2BUA
+    # (registration header + X-Lk-RealIp) instead of the SBC. The caller id
+    # stays the number; the trunk id rides along as X-Aplisay-Trunk.
+    via_registration = bool(registration_endpoint_id and b2bua_gateway_ip)
     params = OutboundCallParams(
         caller_id=caller_id,
         called_id=called_id,
         call_id=call_id,
         aplisay_id=aplisay_id,
+        srtp=srtp,
+        registration_endpoint_id=registration_endpoint_id if via_registration else None,
+        b2bua_gateway_ip=b2bua_gateway_ip if via_registration else None,
+        b2bua_gateway_transport=(b2bua_gateway_transport or "tcp") if via_registration else None,
     )
     session_params = GatewaySessionParams(session_id=session_id)
     if extra_session_params:
@@ -2763,4 +3490,14 @@ async def setup_outbound_call(
         call=call,
         origin_caller_id=caller_id,
         aplisay_id=aplisay_id,
+        # Carry the originate's trunk contract onto the session so a transfer
+        # off this call egresses under the same rules.
+        srtp=srtp,
+        # ...and its egress: a transfer off a registration-trunk call goes
+        # back through the same B2BUA, presenting the same number.
+        registration_originated=via_registration,
+        registration_endpoint_id=registration_endpoint_id if via_registration else None,
+        b2bua_gateway_ip=b2bua_gateway_ip if via_registration else None,
+        b2bua_gateway_transport=(b2bua_gateway_transport or "tcp") if via_registration else None,
+        registration_username=caller_id if via_registration else None,
     )

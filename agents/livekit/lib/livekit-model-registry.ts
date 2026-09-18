@@ -25,6 +25,28 @@ export const LIVEKIT_PIPELINE_MODEL_ROWS = [
   ["google", "gemini-2.0-flash", "Google Gemini 2.0 Flash (LiveKit pipeline)"],
 ] as const;
 
+/**
+ * Deprecated model ids kept RESOLVABLE for agents already saved on them, mapped
+ * to the id they actually run as.
+ *
+ * `plugins/ultravox/src/realtime/realtime_model.ts` rewrites `ultravox-70b` to
+ * `ultravox-v0.6` at session start ("Hack to catch all attempts to use a llama
+ * 70b model"), so the alias has always *run*. But that mapping lived only in the
+ * plugin, so the roster went on advertising `ultravox-70b` as an ordinary,
+ * selectable model — which is how agents keep acquiring a name that is not an
+ * Ultravox model at all, long after it was deprecated.
+ *
+ * Declaring the target here lets `buildLivekitHandlerAllModels` drop an alias
+ * whose target is not offered, rather than advertise a name that resolves to
+ * nothing. Resolution is unaffected either way: a saved agent finds its handler
+ * by the `livekit:` PREFIX (`Handler.getHandler` → `Handler.parseName`), never
+ * by looking its model up in this roster, so an unlisted alias still runs and
+ * still passes the `Unknown model name` check on save.
+ */
+export const LIVEKIT_MODEL_ALIASES: Record<string, string> = {
+  "ultravox/ultravox-70b": "ultravox/ultravox-v0.6",
+};
+
 const pipelineFlag = {
   voiceStack: "pipeline" as const,
   audioModel: false,
@@ -37,13 +59,25 @@ const realtimeFlag = {
 };
 
 /**
+ * Realtime plugins the worker can run in text-output mode with an external TTS:
+ * `options.tts.vendor` set to a vendor other than the plugin's own makes the model
+ * emit text and a discrete TTS speak it (docs/realtime-external-tts.md). Surfaced
+ * per row as the `externalTts` flag (`hasExternalTts` on GET /models). Must match
+ * TEXT_OUTPUT_PLUGINS in lib/realtime-tts.ts. Gemini is absent: no Live model the
+ * API still serves accepts a TEXT response modality.
+ */
+const EXTERNAL_TTS_PLUGINS: ReadonlySet<string> = new Set(["ultravox", "openai"]);
+const realtimeFlagsFor = (vendor: string) =>
+  EXTERNAL_TTS_PLUGINS.has(vendor) ? { ...realtimeFlag, externalTts: true as const } : realtimeFlag;
+
+/**
  * Map of `provider/modelId` (segment after `livekit:`) -> flags for routing (realtime vs pipeline).
  */
 export const livekitModelIdFlags: Record<
   string,
-  { voiceStack: "pipeline" | "realtime"; audioModel: boolean; pipeline: boolean }
+  { voiceStack: "pipeline" | "realtime"; audioModel: boolean; pipeline: boolean; externalTts?: boolean }
 > = Object.fromEntries([
-  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, realtimeFlag]),
+  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, realtimeFlagsFor(a)]),
   ...LIVEKIT_PIPELINE_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, pipelineFlag]),
 ]);
 
@@ -51,19 +85,34 @@ export function isLivekitPipelineModelId(modelId: string): boolean {
   return livekitModelIdFlags[modelId]?.voiceStack === "pipeline";
 }
 
+/** The row may pair the realtime model with an external TTS (text-output mode). */
+export function livekitModelSupportsExternalTts(modelId: string): boolean {
+  return livekitModelIdFlags[modelId]?.externalTts === true;
+}
+
 /**
  * Shape expected by `lib/handlers/handler.js` for GET /models: each entry is
  * [`${vendor}/${name}`, description, flags].
  */
 export function buildLivekitHandlerAllModels() {
-  return [
+  const rows = [
     ...LIVEKIT_REALTIME_MODEL_ROWS.map((r) => {
       const [vendor, name, description] = r;
-      return [`${vendor}/${name}`, description, realtimeFlag] as const;
+      return [`${vendor}/${name}`, description, realtimeFlagsFor(vendor)] as const;
     }),
     ...LIVEKIT_PIPELINE_MODEL_ROWS.map((r) => {
       const [vendor, name, description] = r;
       return [`${vendor}/${name}`, description, pipelineFlag] as const;
     }),
   ];
+  // An alias is only worth offering while the model it resolves to is itself
+  // offered. Drop one whose target has gone, so retiring a model cannot leave
+  // its alias behind advertising a session that could never start. Targets are
+  // matched against the NON-alias rows, so an alias can never satisfy another
+  // alias and a cycle cannot keep a dead pair alive.
+  const offered = new Set(rows.map(([id]) => id).filter((id) => !(id in LIVEKIT_MODEL_ALIASES)));
+  return rows.filter(([id]) => {
+    const target = LIVEKIT_MODEL_ALIASES[id];
+    return target === undefined || offered.has(target);
+  });
 }

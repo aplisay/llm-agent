@@ -5,9 +5,11 @@ import {
   validateSetLabels,
   fixupLabelReferences,
   validateAgentTargets,
+  validateDelegateToolCollisions,
+  keyedCopiesShadowedByDelegate,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
-import { mergeMemberFunctions } from '../../lib/agent-set-functions.js';
+import { mergeMemberFunctions, functionNames } from '../../lib/agent-set-functions.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../lib/deployment-guard.js';
 
 let log;
@@ -144,6 +146,34 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
       await validateAgentTargets(agent.functions || [], { membersById, lookupAgent, owningLabel: label, options: agent.options });
     }
   }
+  // A GPT-Live member's `delegate` target inside the set must not declare a
+  // function the voice member also declares (docs/gpt-live.md). Untouched
+  // members of a patched set take part too: either side of the pair may be
+  // the one left alone.
+  const resulting = members.map(({ label, def, agent }) => ({
+    label,
+    id: agent.id,
+    functions: agent.functions,
+    sentNames: def.functions === undefined ? undefined : new Set(functionNames(def.functions)),
+  }));
+  if (patch) {
+    const written = new Set(members.map(({ agent }) => agent.id));
+    for (const agent of existing) {
+      if (removedIds.has(agent.id) || written.has(agent.id)) continue;
+      resulting.push({ label: agent.label, id: agent.id, functions: agent.functions });
+    }
+  }
+  // Drop keyed copies the delegate shadows, so a document can move a keyed function to it. See PR #344.
+  const shadowed = keyedCopiesShadowedByDelegate(resulting);
+  for (const entry of resulting) {
+    const names = shadowed.get(entry.id);
+    if (names) {
+      const { agent } = members.find((m) => m.agent.id === entry.id);
+      agent.functions = mergeMemberFunctions(agent.functions, undefined, names);
+      entry.functions = agent.functions;
+    }
+  }
+  validateDelegateToolCollisions(resulting);
   for (const { agent } of members) {
     await agent.save({ transaction });
   }

@@ -115,6 +115,9 @@ Common to both modes:
 
 - The audio connection is uninterrupted — the caller stays on the same call throughout.
 - The new agent speaks next, so write its prompt to introduce itself on taking over.
+  The new agent's greeting is not used, because the caller has already been greeted.
+  The platform tells the agent to introduce itself briefly and continue from the
+  handover summary and the conversation so far. The caller can interrupt that first turn.
 - The progress log (websocket / transaction log) records an `inject` entry of the form
   `Call transferred to agent <name>` so monitoring UIs can show the handover.
 - Transfers chain: the incoming agent's own `transfer_agent` functions work, so a caller
@@ -188,7 +191,7 @@ POST /api/agents
 
 Key points:
 
-- **Model names**: `text:openai/…`, `text:anthropic/…`, `text:gemini/…`, `text:kimi/…`. `GET /models` lists the text models available on your deployment.
+- **Model names**: `text:openai/…`, `text:anthropic/…`, `text:gemini/…`, `text:kimi/…`, `text:xai/…`. `GET /models` lists the text models available on your deployment.
 - **No audio options**: `tts`, `stt`, voices and greetings are meaningless for text agents and should be omitted. Text agents cannot be activated with `listen`.
 - **The `result` function** (builtin, `platform: "result"`) is the agent's *output contract*: its `input_schema` describes the structure you want back, and the arguments the agent passes when it calls it become the invocation result. An agent with no `result` function falls back to returning its first plain-text reply as `{ "text": "…" }` — fine for casual use, but defining a `result` schema gives you reliable, structured output.
 - Text agents can use `rest` and `stub` functions, the `metadata` builtin, and may even call their own `subagent` functions (nesting is limited to 3 levels).

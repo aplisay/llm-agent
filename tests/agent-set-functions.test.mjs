@@ -1,4 +1,4 @@
-import { mergeMemberFunctions, isKeyedFunction } from '../lib/agent-set-functions.js';
+import { mergeMemberFunctions, isKeyedFunction, functionNames } from '../lib/agent-set-functions.js';
 
 /**
  * Pure merge semantics for keyed (platform-wired) function preservation on
@@ -99,5 +99,26 @@ describe('mergeMemberFunctions', () => {
   test('tolerates junk entries without throwing', () => {
     const merged = mergeMemberFunctions([null, 'bogus', keyed('b')], [undefined, plain('t')]);
     expect(merged.filter((f) => f && f.name).map((f) => f.name)).toEqual(['t', 'b']);
+  });
+});
+
+describe('functionNames', () => {
+  test('reads an array, keeping document order', () => {
+    expect(functionNames([plain('end_call'), plain('to_engineer')])).toEqual(['end_call', 'to_engineer']);
+  });
+
+  test('reads the object shape, falling back to the object key for an unnamed entry', () => {
+    expect(functionNames({ end_call: { platform: 'hangup' }, to_sales: plain('to_sales') }))
+      .toEqual(['end_call', 'to_sales']);
+  });
+
+  test('an absent or empty tool set is an empty list, never a throw', () => {
+    for (const value of [undefined, null, [], {}, 'bogus', 42]) {
+      expect(functionNames(value)).toEqual([]);
+    }
+  });
+
+  test('skips junk entries and unnamed array members', () => {
+    expect(functionNames([null, 'bogus', { implementation: 'rest' }, plain('b')])).toEqual(['b']);
   });
 });
