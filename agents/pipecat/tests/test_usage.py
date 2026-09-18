@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from pipecat.frames.frames import (
     MetricsFrame,
     TranscriptionFrame,
@@ -70,7 +71,7 @@ def test_usage_vendors_resolves_configured_vendors():
         {"options": {"stt": {"vendor": "deepgram"}, "tts": {"vendor": "elevenlabs"}}},
         "pipecat:openai/gpt-4o",
     )
-    assert v["llm"] == {"vendor": "openai", "model": "gpt-4o"}
+    assert v["llm"] == {"vendor": "openai", "model": "openai/gpt-4o", "authoritative": True}
     assert v["stt"]["vendor"] == "deepgram"
     assert v["tts"]["vendor"] == "elevenlabs"
 
@@ -92,12 +93,73 @@ def test_llm_metrics_use_canonical_provider_per_unit():
         cache_read_input_tokens=5, cache_creation_input_tokens=0,
     )
     _push(obs, MetricsFrame(data=[LLMUsageMetricsData(processor="llm", model="gpt-4o", value=usage)]))
-    assert _meter(obs, "llm", "input_tokens")["quantity"] == 100
+    assert _meter(obs, "llm", "input_tokens")["quantity"] == 95
     assert _meter(obs, "llm", "output_tokens")["quantity"] == 20
     assert _meter(obs, "llm", "cache_read_tokens")["quantity"] == 5
     # cache_write 0 -> no row
     assert _meter(obs, "llm", "cache_write_tokens") is None
     assert _meter(obs, "llm", "input_tokens")["provider"] == "openai"
+
+
+# Token counts from live requests on 2026-09-16 that sent the same 4.6k to 5.3k token prompt more than once.
+@pytest.mark.parametrize(
+    ("model_name", "usage", "expected"),
+    [
+        (
+            "pipecat:openai/gpt-4o-mini",
+            {"prompt_tokens": 4638, "completion_tokens": 1, "total_tokens": 4639, "cache_read_input_tokens": 4608},
+            {"input_tokens": 30, "output_tokens": 1, "cache_read_tokens": 4608},
+        ),
+        (
+            "pipecat:google/gemini-2.5-flash",
+            {"prompt_tokens": 5329, "completion_tokens": 1, "total_tokens": 5330, "cache_read_input_tokens": 5108},
+            {"input_tokens": 221, "output_tokens": 1, "cache_read_tokens": 5108},
+        ),
+        (
+            "pipecat:xai/grok-4.20-0309-non-reasoning",
+            {"prompt_tokens": 4814, "completion_tokens": 5, "total_tokens": 4819, "cache_read_input_tokens": 4800},
+            {"input_tokens": 14, "output_tokens": 5, "cache_read_tokens": 4800},
+        ),
+        (
+            "pipecat:openai/gpt-realtime",
+            {"prompt_tokens": 4648, "completion_tokens": 4, "total_tokens": 4652, "cache_read_input_tokens": 4608},
+            {"input_tokens": 40, "output_tokens": 4, "cache_read_tokens": 4608},
+        ),
+        (
+            "pipecat:anthropic/claude-sonnet-4-5",
+            {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 5197, "cache_creation_input_tokens": 5190, "cache_read_input_tokens": 0},
+            {"input_tokens": 3, "output_tokens": 4, "cache_write_tokens": 5190},
+        ),
+        (
+            "pipecat:anthropic/claude-sonnet-4-5",
+            {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 5197, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 5190},
+            {"input_tokens": 3, "output_tokens": 4, "cache_read_tokens": 5190},
+        ),
+    ],
+)
+def test_llm_input_tokens_exclude_the_prompt_cache(model_name, usage, expected):
+    obs = UsageMeteringObserver(services=usage_vendors({}, model_name))
+    _push(obs, MetricsFrame(data=[LLMUsageMetricsData(processor="llm", model="m", value=LLMTokenUsage(**usage))]))
+    assert {m["unit"]: m["quantity"] for m in obs._meters.values() if m["technology"] == "llm"} == expected
+
+
+# Metric labels as the Pipecat 1.10 services report them. Rate lines match the roster id, so a row with the bare
+# label bills nothing: the xAI cards carry only xai/ lines, and Gemini Live labels Pipecat's default model.
+@pytest.mark.parametrize(
+    ("model_name", "metric_model"),
+    [
+        ("pipecat:xai/grok-4.3", "grok-4.3"),
+        ("pipecat:google/gemini-2.0-flash-exp", "models/gemini-2.5-flash-native-audio-preview-12-2025"),
+        ("pipecat:openai/gpt-4o-mini", "gpt-4o-mini"),
+        ("pipecat:anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"),
+    ],
+)
+def test_llm_rows_carry_the_roster_model_id(model_name, metric_model):
+    obs = UsageMeteringObserver(services=usage_vendors({}, model_name))
+    usage = LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12)
+    _push(obs, MetricsFrame(data=[LLMUsageMetricsData(processor="llm", model=metric_model, value=usage)]))
+    model_id = model_name.split(":", 1)[1]
+    assert {(m["provider"], m["detail"]) for m in obs._meters.values()} == {(model_id.split("/")[0], model_id)}
 
 
 def test_tts_provider_is_canonical_not_label():

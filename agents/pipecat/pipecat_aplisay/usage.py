@@ -52,20 +52,20 @@ def usage_vendors(
     defaults aligned with that build (stt=deepgram, tts=cartesia). Realtime mode
     has no separate STT/TTS stage, so only ``llm`` is meaningful there.
 
-    ``backend`` (GPT-Live) names the delegate model the LLM tokens belong to:
-    the live service labels its token metrics ``gpt-live-1`` although the
-    backend text model billed them, so the configured backend is authoritative
-    over the metric label (``_resolve``) and the rows land on the delegate
+    The ``llm`` model is authoritative over the metric label (``_resolve``): it
+    is the roster id (``xai/grok-4.3``), which is what the rate lines match
+    (lib/rate-components.js) and what LiveKit rows carry. The metric label is
+    the service's own model name, bare, and on Gemini Live it is Pipecat's
+    default model rather than the row's. ``backend`` (GPT-Live) names the
+    delegate model the LLM tokens belong to, so the rows land on the delegate
     model's own rate line (docs/gpt-live.md).
     """
     options = agent.get("options") or {}
     model_id = model_id_from_name(model_name)
     if backend and backend.get("model"):
         llm_vendor, llm_model = backend.get("vendor"), backend.get("model")
-    elif "/" in model_id:
-        llm_vendor, llm_model = model_id.split("/", 1)
     else:
-        llm_vendor, llm_model = None, model_id
+        llm_vendor, llm_model = (model_id.split("/", 1)[0] if "/" in model_id else None), model_id
     stt_opts = options.get("stt") or {}
     tts_opts = options.get("tts") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
@@ -82,7 +82,7 @@ def usage_vendors(
         # for its speech, as the LiveKit worker does for every realtime row.
         tts["skip"] = True
     return {
-        "llm": {"vendor": llm_vendor, "model": llm_model, **({"authoritative": True} if backend else {})},
+        "llm": {"vendor": llm_vendor, "model": llm_model, "authoritative": True},
         "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
         "tts": tts,
     }
@@ -125,6 +125,22 @@ def _bundled_speech_is_unmeterable(agent: dict, model_id: str) -> bool:
         _speaks_with_own_voice(agent, model_id)
         and REALTIME_NATIVE_TTS_VENDORS[realtime_provider(model_id)] in UNMETERED_BUNDLED_SPEECH_VENDORS
     )
+
+
+#: LLM vendors whose Pipecat service reports ``prompt_tokens`` net of the prompt cache. Every other service the worker
+#: builds reports it gross, with the cache counts inside it (see ``LLMTokenUsage``). See PR #346.
+PROMPT_TOKENS_NET_OF_CACHE_VENDORS: frozenset[str] = frozenset({"anthropic"})
+
+
+def uncached_input_tokens(tokens: Any, vendor: str | None) -> int:
+    """The prompt tokens neither read from nor written to the prompt cache: the
+    ledger prices ``input_tokens`` apart from the two cache units."""
+    prompt = getattr(tokens, "prompt_tokens", 0) or 0
+    if vendor in PROMPT_TOKENS_NET_OF_CACHE_VENDORS:
+        return prompt
+    cached = getattr(tokens, "cache_read_input_tokens", 0) or 0
+    written = getattr(tokens, "cache_creation_input_tokens", 0) or 0
+    return max(0, prompt - cached - written)
 
 
 class UsageMeteringObserver(BaseObserver):
@@ -175,8 +191,8 @@ class UsageMeteringObserver(BaseObserver):
         Falls back to the old label-split only when the technology is unmapped."""
         svc = self._services.get(technology) or {}
         provider = svc.get("vendor")
-        # An authoritative service (a GPT-Live backend) names the model billed
-        # regardless of what the metric says.
+        # An authoritative service (the llm, see usage_vendors) names the model
+        # billed regardless of what the metric says.
         detail = svc.get("model") if svc.get("authoritative") else (model or svc.get("model"))
         if provider is None and model and "/" in model:
             provider = model.split("/", 1)[0]
@@ -223,7 +239,7 @@ class UsageMeteringObserver(BaseObserver):
                     if isinstance(m, LLMUsageMetricsData):
                         provider, detail = self._resolve("llm", m.model)
                         tokens = m.value
-                        self._add("llm", "input_tokens", getattr(tokens, "prompt_tokens", 0), provider=provider, detail=detail)
+                        self._add("llm", "input_tokens", uncached_input_tokens(tokens, provider), provider=provider, detail=detail)
                         self._add("llm", "output_tokens", getattr(tokens, "completion_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_read_tokens", getattr(tokens, "cache_read_input_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_write_tokens", getattr(tokens, "cache_creation_input_tokens", 0), provider=provider, detail=detail)
