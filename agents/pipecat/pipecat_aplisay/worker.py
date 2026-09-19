@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import uuid
 
 # The ``websockets`` library logs every frame it sends/receives as a hex dump
@@ -49,6 +50,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from aiortc.sdp import candidate_from_sdp
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
@@ -521,6 +523,33 @@ app.add_middleware(
     allow_methods=["POST", "PATCH", "OPTIONS", "GET"],
     allow_headers=["*"],
 )
+
+
+# Fixed-window per-client rate limit, env-overridable (CWE-770): bearer-token
+# auth alone does not stop an authenticated caller from flooding /dispatch,
+# /daily/dialin or /webrtc/offer fast enough to exhaust threads/connections.
+RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX_REQUESTS", "120"))
+RATE_LIMIT_WINDOW_SECS = float(os.environ.get("RATE_LIMIT_WINDOW_SECS", "60"))
+_rate_limit_hits: dict[str, list[float]] = {}
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Caps requests per client IP per window to bound resource consumption."""
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        hits = _rate_limit_hits.setdefault(client_ip, [])
+        window_start = now - RATE_LIMIT_WINDOW_SECS
+        while hits and hits[0] < window_start:
+            hits.pop(0)
+        if len(hits) >= RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
+        hits.append(now)
+        return await call_next(request)
+
+
+app.add_middleware(RateLimitMiddleware)
 
 
 # Watermarks for /healthz, env-overridable. The canary below is the decisive
