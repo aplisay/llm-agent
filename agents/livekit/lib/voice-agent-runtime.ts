@@ -22,7 +22,11 @@ import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { isOpenAIRealtime, speakGreetingText } from "./speak-text.js";
-import { armHandoverInactivity, createVoiceModelAndSession } from "./voice-session-factory.js";
+import {
+  armHandoverInactivity,
+  armHandoverToolReactions,
+  createVoiceModelAndSession,
+} from "./voice-session-factory.js";
 import { createInactivityKick } from "./inactivity-kick.js";
 import { createProviderEndedTeardown, markNextSessionPrimary } from "./provider-ended.js";
 import {
@@ -1504,6 +1508,14 @@ export async function runAgentWorker({
         logger.warn(
           { agentId: newAgentDef.id },
           "agent handover: could not arm the incoming agent's Ultravox inactivity messages",
+        );
+      }
+      // Likewise the tool reactions: the incoming agent can name its hangup
+      // builtin differently, or have none.
+      if (onUltravox && !armHandoverToolReactions(session?.llm, newAgentDef)) {
+        logger.warn(
+          { agentId: newAgentDef.id },
+          "agent handover: could not arm the incoming agent's Ultravox tool reactions",
         );
       }
       const handoffAgent = new HandoverAgent(

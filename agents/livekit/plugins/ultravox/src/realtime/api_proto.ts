@@ -181,12 +181,15 @@ export interface UltravoxFunctionCallMessage {
   invocationId: string;
 }
 
+/** What the agent does once a tool result arrives. Ultravox defaults to `speaks`. */
+export type UltravoxAgentReaction = 'speaks' | 'listens' | 'speaks-once';
+
 export interface UltravoxFunctionResultMessage {
   type: 'client_tool_result';
   invocationId: string;
-  agentReaction?: 'speaks' | 'listens' | 'speaks-once';
+  agentReaction?: UltravoxAgentReaction;
   result?: string;
-  responseType?: 'tool-reponse' | 'tool-error';
+  responseType?: 'tool-response' | 'hang-up' | 'new-stage';
   errorType?: 'implementation-error' | undefined;
   errorMessage?: string;
 }
