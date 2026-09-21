@@ -24,7 +24,10 @@ import {
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
-import type { UltravoxInactivityMessage } from "../plugins/ultravox/src/realtime/api_proto.js";
+import type {
+  UltravoxAgentReaction,
+  UltravoxInactivityMessage,
+} from "../plugins/ultravox/src/realtime/api_proto.js";
 
 /**
  * Share the hangup threshold across native Ultravox prompts and the inactivity kick. See PR #340.
@@ -124,6 +127,41 @@ export function armHandoverInactivity(realtimeModel: unknown, agent: Agent): boo
     return false;
   }
   model.setNextSessionInactivityMessages(ultravoxInactivityMessages(agent));
+  return true;
+}
+
+/**
+ * The Ultravox `agentReaction` per tool for `agent`. The hangup builtin must `listens`: on the
+ * default the model takes another turn after the result and calls hangup again, in a loop.
+ * Keyed by the function's own name, which the customer chooses. See PR #354.
+ */
+export function ultravoxToolReactions(
+  agent: Agent,
+): Record<string, UltravoxAgentReaction> | undefined {
+  const names = (agent?.functions || [])
+    .filter((fnc) => fnc.implementation === "builtin" && fnc.platform === "hangup")
+    .map((fnc) => fnc.name);
+  if (!names.length) return undefined;
+  return Object.fromEntries(names.map((name) => [name, "listens" as const]));
+}
+
+/**
+ * Override tool reactions for the next session: in-place handovers reuse a model built
+ * for the outgoing agent. Return false for models without the override.
+ */
+export function armHandoverToolReactions(realtimeModel: unknown, agent: Agent): boolean {
+  const model = realtimeModel as
+    | {
+        setNextSessionToolReactions?: (
+          r: Record<string, UltravoxAgentReaction> | undefined,
+        ) => void;
+      }
+    | null
+    | undefined;
+  if (typeof model?.setNextSessionToolReactions !== "function") {
+    return false;
+  }
+  model.setNextSessionToolReactions(ultravoxToolReactions(agent));
   return true;
 }
 
@@ -384,6 +422,13 @@ export function buildRealtimeLlmOptions(
     const language = agentLanguageTag(agent);
     if (language) {
       llmOptions.languageHint = language;
+    }
+  }
+
+  if (modelName.includes("livekit:ultravox/")) {
+    const toolReactions = ultravoxToolReactions(agent);
+    if (toolReactions) {
+      llmOptions.toolReactions = toolReactions;
     }
   }
 

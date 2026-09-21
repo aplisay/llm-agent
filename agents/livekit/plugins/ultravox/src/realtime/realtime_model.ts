@@ -38,6 +38,8 @@ interface ModelOptions {
   timeExceededMessage: string;
   transcriptOptional: boolean;
   firstSpeaker: string;
+  /** `agentReaction` per tool name, sent with that tool's result. See PR #354. */
+  toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
   vendorSpecific?: {
     ultravox?: {
       experimentalSettings?: {
@@ -297,6 +299,18 @@ export function withInactivityMessagesOverride(
   return opts;
 }
 
+/** Replace toolReactions without changing model defaults; an override with no reactions clears them. */
+export function withToolReactionsOverride(
+  base: ModelOptions,
+  override?: { reactions?: Record<string, api_proto.UltravoxAgentReaction> }
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (override) {
+    opts.toolReactions = override.reactions;
+  }
+  return opts;
+}
+
 /**
  * Fold one transcript frame into the turn accumulated so far.
  *
@@ -348,6 +362,23 @@ export function agentTextChunk(
   return { chunk: "", streamed };
 }
 
+/**
+ * The `client_tool_result` frame for a successful tool call. `agentReaction` is sent only
+ * when set: left off, Ultravox applies `speaks` and the model takes a new turn. See PR #354.
+ */
+export function clientToolResultMessage(
+  invocationId: string,
+  result: string,
+  agentReaction?: api_proto.UltravoxAgentReaction
+): api_proto.UltravoxFunctionResultMessage {
+  return {
+    type: "client_tool_result",
+    invocationId,
+    result,
+    ...(agentReaction ? { agentReaction } : {}),
+  };
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -366,6 +397,8 @@ export class RealtimeModel extends llm.RealtimeModel {
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
   /** See {@link setNextSessionInactivityMessages}. */
   #nextSessionInactivity?: { messages?: api_proto.UltravoxInactivityMessage[] };
+  /** See {@link setNextSessionToolReactions}. */
+  #nextSessionToolReactions?: { reactions?: Record<string, api_proto.UltravoxAgentReaction> };
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
   /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
@@ -389,6 +422,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage = "It has been great chatting with you, but we have exceeded our time now.",
     transcriptOptional = false,
     firstSpeaker = "FIRST_SPEAKER_AGENT",
+    toolReactions,
     vendorSpecific,
   }: {
     modalities?: ["text", "audio"] | ["text"];
@@ -407,6 +441,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage?: string;
     transcriptOptional?: boolean;
     firstSpeaker?: string;
+    toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
     vendorSpecific?: {
       ultravox?: {
         experimentalSettings?: {
@@ -459,6 +494,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       timeExceededMessage,
       transcriptOptional,
       firstSpeaker,
+      toolReactions,
       vendorSpecific,
     };
 
@@ -500,6 +536,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     messages: api_proto.UltravoxInactivityMessage[] | undefined
   ): void {
     this.#nextSessionInactivity = { messages };
+  }
+
+  /**
+   * Override toolReactions for the next handover session only: the incoming agent can
+   * register its hangup builtin under another name. Consumed in session().
+   */
+  setNextSessionToolReactions(
+    reactions: Record<string, api_proto.UltravoxAgentReaction> | undefined
+  ): void {
+    this.#nextSessionToolReactions = { reactions };
   }
 
   /**
@@ -554,9 +600,14 @@ export class RealtimeModel extends llm.RealtimeModel {
     this.#nextSessionFirstSpeaker = undefined;
     const inactivityOverride = this.#nextSessionInactivity;
     this.#nextSessionInactivity = undefined;
-    const opts: ModelOptions = withInactivityMessagesOverride(
-      withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
-      inactivityOverride
+    const toolReactionsOverride = this.#nextSessionToolReactions;
+    this.#nextSessionToolReactions = undefined;
+    const opts: ModelOptions = withToolReactionsOverride(
+      withInactivityMessagesOverride(
+        withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
+        inactivityOverride
+      ),
+      toolReactionsOverride
     );
     if (firstSpeakerOverride) {
       // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
@@ -2209,11 +2260,11 @@ export class RealtimeSession extends llm.RealtimeSession {
     } as any).then((result: any) => {
       // Send result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-        const functionResult: api_proto.UltravoxFunctionResultMessage = {
-          type: "client_tool_result",
-          invocationId: event.invocationId,
-          result
-        };
+        const functionResult = clientToolResultMessage(
+          event.invocationId,
+          result,
+          this.#opts.toolReactions?.[event.toolName]
+        );
         this.#ws.send(JSON.stringify(functionResult));
       }
     }).catch((e: any) => {
