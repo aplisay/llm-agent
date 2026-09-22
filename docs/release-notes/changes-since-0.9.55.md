@@ -38,6 +38,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Neuphonic billing**: `tts|neuphonic` usage, in characters and
   milliseconds, and a `tts:neuphonic` rate component.
   `scripts/add-neuphonic-rate-lines.mjs` adds the lines to existing cards.
+- **[livekit+pipecat] Neuphonic leading silence** is trimmed from each sentence,
+  so replies start sooner and the pauses between sentences are shorter. Silence
+  inside a sentence is kept.
 - **[core] Documentation**: new [neuphonic.md](../neuphonic.md).
 
 ## Upgrade notes
