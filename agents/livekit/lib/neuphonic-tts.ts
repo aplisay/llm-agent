@@ -29,6 +29,10 @@ export const NEUPHONIC_BASE_URL = "https://api.neuphonic.com";
 export const NEUPHONIC_SAMPLE_RATE = 22050;
 /** Sentence requests in flight per reply. Neuphonic has per-account concurrency limits. */
 const LOOKAHEAD = 2;
+/** Samples no louder than this are silence (about -44 dBFS). The hiss on the noisiest stock voices peaks near 180. */
+export const SILENCE_THRESHOLD = 200;
+/** Audio kept before the first sample above the threshold, so a soft onset (s, f, h) is not clipped. */
+export const SILENCE_MARGIN_MS = 50;
 
 export interface NeuphonicOptions {
   apiKey: string;
@@ -227,6 +231,37 @@ export async function* neuphonicAudio(
   }
 }
 
+/**
+ * One utterance's `pcm` without the silence Neuphonic starts it with (up to 1.7 s). Audio is held until a sample
+ * is louder than `SILENCE_THRESHOLD`, then passed on from `SILENCE_MARGIN_MS` before it. Later silence is kept,
+ * and audio that never gets that loud is passed on at the end.
+ */
+export async function* trimLeadingSilence(
+  pcm: AsyncIterable<Uint8Array>,
+  sampleRate: number,
+): AsyncGenerator<Uint8Array> {
+  const marginBytes = 2 * Math.floor((sampleRate * SILENCE_MARGIN_MS) / 1000);
+  let held = Buffer.alloc(0);
+  let scanned = 0;
+  let passing = false;
+  for await (const chunk of pcm) {
+    if (passing) {
+      yield chunk;
+      continue;
+    }
+    // A chunk can end inside a sample; the scan waits for its second byte.
+    held = Buffer.concat([held, chunk]);
+    for (; scanned + 2 <= held.length; scanned += 2) {
+      if (Math.abs(held.readInt16LE(scanned)) > SILENCE_THRESHOLD) {
+        passing = true;
+        yield held.subarray(Math.max(0, scanned - marginBytes));
+        break;
+      }
+    }
+  }
+  if (!passing && held.length) yield held;
+}
+
 /** One request for the whole text: the fallback message and other direct `synthesize()` callers. */
 class NeuphonicChunkedStream extends tts.ChunkedStream {
   label = "neuphonic.ChunkedStream";
@@ -255,10 +290,11 @@ class NeuphonicChunkedStream extends tts.ChunkedStream {
       queued = true;
     };
     try {
-      for await (const pcm of neuphonicAudio(this.#opts, this.inputText, {
+      const audio = neuphonicAudio(this.#opts, this.inputText, {
         signal: this.abortSignal,
         timeoutMs: this.#timeoutMs,
-      })) {
+      });
+      for await (const pcm of trimLeadingSilence(audio, this.#opts.sampleRate)) {
         bstream.write(toArrayBuffer(pcm)).forEach(put);
       }
     } catch (e) {
@@ -333,10 +369,8 @@ class NeuphonicSynthesizeStream extends tts.SynthesizeStream {
         const bstream = new AudioByteStream(this.#opts.sampleRate, 1);
         let queued = false;
         try {
-          for await (const pcm of neuphonicAudio(this.#opts, text, {
-            signal,
-            timeoutMs: this.connOptions.timeoutMs,
-          })) {
+          const audio = neuphonicAudio(this.#opts, text, { signal, timeoutMs: this.connOptions.timeoutMs });
+          for await (const pcm of trimLeadingSilence(audio, this.#opts.sampleRate)) {
             for (const frame of bstream.write(toArrayBuffer(pcm))) {
               frames.put(frame);
               queued = true;

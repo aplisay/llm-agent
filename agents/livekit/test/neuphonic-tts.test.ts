@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { APIError, APIStatusError, APITimeoutError, initializeLogger, tts } from "@livekit/agents";
-import { NeuphonicTTS, buildNeuphonicTts } from "../lib/neuphonic-tts.js";
+import {
+  NeuphonicTTS,
+  SILENCE_MARGIN_MS,
+  SILENCE_THRESHOLD,
+  buildNeuphonicTts,
+  trimLeadingSilence,
+} from "../lib/neuphonic-tts.js";
 import { buildPipelineTts } from "../lib/voice-session-factory.js";
 import { resolvePipelineTts } from "../lib/pipeline-inference-options.js";
 import { resolveUsageVendors } from "../lib/usage-vendors.js";
@@ -49,6 +55,11 @@ function sse(res: ServerResponse, chunks: string[]) {
   for (const c of chunks) res.write(c);
   res.end();
 }
+
+/** `ms` of digital silence at 22050 Hz. */
+const silence = (ms: number) => Buffer.alloc(2 * Math.round((22050 * ms) / 1000));
+/** Samples kept before the first loud one at 22050 Hz. */
+const MARGIN = Math.floor((22050 * SILENCE_MARGIN_MS) / 1000);
 
 const frameBytes = (frames: { data: Int16Array }[]) =>
   Buffer.concat(frames.map((f) => Buffer.from(f.data.buffer, f.data.byteOffset, f.data.byteLength)));
@@ -253,6 +264,106 @@ test("closing a stream mid-reply stops it quietly", async () => {
   await new Promise((r) => setTimeout(r, 700));
   assert.equal(requests.length, 1);
   assert.deepEqual(errors, []);
+});
+
+async function trimmed(chunks: Uint8Array[]) {
+  async function* source() {
+    yield* chunks;
+  }
+  const out: Uint8Array[] = [];
+  for await (const c of trimLeadingSilence(source(), 22050)) out.push(c);
+  return Buffer.concat(out);
+}
+
+/** Buffer comparison that fails with a short message: deepEqual's diff of large buffers exhausts the heap. */
+function sameBytes(actual: Buffer, expected: Buffer, what = "audio") {
+  assert.equal(actual.length / 2, expected.length / 2, `${what}: samples`);
+  assert.ok(actual.equals(expected), `${what}: sample values differ`);
+}
+
+/** `bytes` in chunks of the given sizes, the last size repeating. */
+function split(bytes: Buffer, ...sizes: number[]) {
+  const chunks: Buffer[] = [];
+  for (let at = 0, i = 0; at < bytes.length; i++) {
+    const n = sizes[Math.min(i, sizes.length - 1)]!;
+    chunks.push(bytes.subarray(at, at + n));
+    at += n;
+  }
+  return chunks;
+}
+
+const hiss = (samples: number) =>
+  Array.from({ length: samples }, (_, i) => (i % 2 ? SILENCE_THRESHOLD : -SILENCE_THRESHOLD));
+
+/**
+ * 400 ms of hiss at the threshold, a soft onset whose first sample over the threshold is negative,
+ * 300 ms of silence, then more speech. `onset` indexes the first sample over the threshold.
+ */
+function utterance() {
+  const lead = hiss(8820);
+  const soft = [40, -80, 120, -160, 200, -(SILENCE_THRESHOLD + 1), 3000, -3000];
+  const loud = Array.from({ length: 2205 }, (_, i) => (i % 2 ? 5000 : -5000));
+  const values = [...lead, ...soft, ...new Array(6615).fill(0), ...loud];
+  return { bytes: Buffer.from(Int16Array.from(values).buffer), onset: lead.length + 5 };
+}
+
+test("trimLeadingSilence keeps 50 ms before the first sample over the threshold, and all that follows", async () => {
+  const { bytes, onset } = utterance();
+  sameBytes(await trimmed(split(bytes, 4410)), bytes.subarray(2 * (onset - MARGIN)));
+});
+
+test("a chunk boundary inside a sample does not move the cut", async () => {
+  const { bytes, onset } = utterance();
+  for (const sizes of [[1], [3], [17601, 1, 4410], [bytes.length]]) {
+    sameBytes(await trimmed(split(bytes, ...sizes)), bytes.subarray(2 * (onset - MARGIN)), `chunks of ${sizes}`);
+  }
+});
+
+test("audio that starts loud, gets loud within the margin, or never gets loud passes through whole", async () => {
+  sameBytes(await trimmed(split(pcm(1), 1000)), pcm(1), "loud from the start");
+  const early = Buffer.concat([silence(30), pcm(1)]);
+  sameBytes(await trimmed(split(early, 1000)), early, "loud after 30 ms");
+  const quiet = Buffer.from(Int16Array.from(hiss(22050)).buffer);
+  sameBytes(await trimmed(split(quiet, 4410)), quiet, "never loud");
+  sameBytes(await trimmed([]), Buffer.alloc(0), "empty");
+});
+
+test("synthesize drops the silence Neuphonic starts with, and keeps later pauses and the tail", async () => {
+  scenario = (_req, res) =>
+    sse(res, [audioEvent(silence(400)), audioEvent(pcm(1)), audioEvent(silence(100)), audioEvent(pcm(2)), audioEvent(silence(200))]);
+  const frames = await collect(makeTts().synthesize("Guten Tag. Wie geht es Ihnen?"));
+  sameBytes(frameBytes(frames), Buffer.concat([Buffer.alloc(2 * MARGIN), pcm(1), silence(100), pcm(2), silence(200)]));
+});
+
+test("stream() trims each sentence on its own and keeps the silence inside it", async () => {
+  const leads = [300, 800, 0];
+  let n = 0;
+  scenario = (_req, res) => {
+    const i = n++;
+    const body = [silence(leads[i]!), pcm(i + 1), silence(150), pcm(i + 11), silence(250)];
+    sse(res, body.map(audioEvent));
+  };
+  const t = makeTts({ langCode: "en" });
+  const s = t.stream({ connOptions: fastRetry });
+  const text = ["Thanks for calling today. ", "Could you tell me your booking reference? ", "It is on the email."];
+  s.updateInputStream(new ReadableStream({ start(c) { text.forEach((t) => c.enqueue(t)); c.close(); } }));
+  const frames = await collect(s);
+  const kept = (ms: number) => Buffer.alloc(Math.min(silence(ms).length, 2 * MARGIN));
+  const expected = leads.flatMap((ms, i) => [kept(ms), pcm(i + 1), silence(150), pcm(i + 11), silence(250)]);
+  sameBytes(frameBytes(frames), Buffer.concat(expected));
+});
+
+test("a sentence that fails while only silence has arrived is retried, and none of it plays twice", async () => {
+  requests.length = 0;
+  let n = 0;
+  scenario = (_req, res) =>
+    sse(res, n++ === 0 ? [audioEvent(silence(300)), errorEvent] : [audioEvent(silence(300)), audioEvent(pcm(1))]);
+  const t = makeTts({ langCode: "en" });
+  const s = t.stream({ connOptions: fastRetry });
+  s.updateInputStream(new ReadableStream({ start(c) { c.enqueue("Just the one sentence."); c.close(); } }));
+  const frames = await collect(s);
+  assert.equal(requests.length, 2);
+  sameBytes(frameBytes(frames), Buffer.concat([Buffer.alloc(2 * MARGIN), pcm(1)]));
 });
 
 test("a missing key is refused at construction", () => {
