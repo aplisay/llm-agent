@@ -1287,6 +1287,25 @@ components:
           type: string
           description: ID of the listener/instance associated with the call (if available).
           example: "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777"
+        organisationId:
+          type: string
+          nullable: true
+          description: The organisation that owns the call. Not covered by `hash`.
+          example: "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f"
+        parentId:
+          type: string
+          nullable: true
+          description: |-
+            The parent call when this call is one leg of a transfer, hand-back or bridged transfer;
+            `null` on a root call. Not covered by `hash`.
+          example: null
+        modelName:
+          type: string
+          nullable: true
+          description: |-
+            The model this leg ran on. A bridged human-to-human segment is its own leg with the
+            sentinel `telephony:bridged-call`. Not covered by `hash`.
+          example: "livekit:openai/gpt-4o"
         callerId:
           type: string
           description: Caller number for the call.

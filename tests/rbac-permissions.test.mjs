@@ -97,6 +97,28 @@ describe('permissions — roles vocabulary', () => {
     // superAdmin still holds credit (superset).
     expect(can({ role: 'superAdmin' }, 'organisation', 'credit')).toBe(true);
   });
+  test('analysisService can invoke agents on behalf of any organisation and nothing else', () => {
+    // The polite-ai post-call analysis seam: invoke, plus the cross-tenant
+    // marker that lets POST /agents/{id}/invoke take an organisationId.
+    expect(can({ role: 'analysisService' }, 'agent', 'invoke')).toBe(true);
+    expect(can({ role: 'analysisService' }, 'agent', 'readAll')).toBe(true);
+    expect(containsCrossTenant(statementsFor('analysisService'))).toBe(true);
+    // No reading, writing or deploying of agents, no calls, usage, billing or users.
+    for (const action of ['create', 'read', 'update', 'delete', 'deploy', 'listen', 'originate']) {
+      expect(can({ role: 'analysisService' }, 'agent', action)).toBe(false);
+    }
+    for (const resource of ['agentSet', 'call', 'recording', 'usage', 'rate', 'organisation', 'user', 'phoneEndpoint', 'system']) {
+      expect(statementsFor('analysisService')[resource]).toBeUndefined();
+    }
+    // No person's role holds agent:readAll, so an orgAdmin cannot grant it.
+    for (const role of ['owner', 'member', 'orgAdmin', 'support', 'textOnly', 'audioOnly']) {
+      expect(can({ role }, 'agent', 'readAll')).toBe(false);
+    }
+    expect(actorCanGrant({ role: 'orgAdmin' }, { role: 'analysisService' })).toBe(false);
+    // superAdmin is a superset of every role, so it can grant this one.
+    expect(can({ role: 'superAdmin' }, 'agent', 'readAll')).toBe(true);
+    expect(actorCanGrant({ role: 'superAdmin' }, { role: 'analysisService' })).toBe(true);
+  });
   test('onboardingService can ONLY manage users + create/read/update orgs (least privilege)', () => {
     // Enough to activate an invite-completion: find the user, flip status, attach an org,
     // then read the org back or rename it.

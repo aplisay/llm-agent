@@ -146,6 +146,9 @@ When a call hook is triggered, a POST request is sent to the configured URL with
   "callId": "648aa45d-204a-4c0c-a1e1-419406254134",
   "agentId": "648aa45d-204a-4c0c-a1e1-419406252234",
   "listenerId": "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777",
+  "organisationId": "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f",
+  "parentId": null,
+  "modelName": "livekit:openai/gpt-4o",
   "callerId": "+443300889471",
   "calledId": "+442080996945",
   "timestamp": "2025-06-04T12:00:00.000Z",
@@ -161,6 +164,9 @@ When a call hook is triggered, a POST request is sent to the configured URL with
   "callId": "648aa45d-204a-4c0c-a1e1-419406254134",
   "agentId": "648aa45d-204a-4c0c-a1e1-419406252234",
   "listenerId": "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777",
+  "organisationId": "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f",
+  "parentId": null,
+  "modelName": "livekit:openai/gpt-4o",
   "callerId": "+443300889471",
   "calledId": "+442080996945",
   "timestamp": "2025-06-04T12:01:00.000Z",
@@ -194,6 +200,9 @@ All payloads include:
 - **`callId`**: Unique identifier for the call
 - **`agentId`**: ID of the agent handling the call (if available)
 - **`listenerId`**: ID of the listener/instance (if available)
+- **`organisationId`**: The organisation that owns the call, so a receiver serving several organisations can check the payload against the URL or secret it was configured with
+- **`parentId`**: The parent call when this call is one leg of a transfer, hand-back or bridged transfer; `null` on a root call. Lineage needs no lookup: follow `parentId` to the root, or use `GET /calls/{id}/linked`
+- **`modelName`**: The model this leg ran on. A bridged human-to-human segment is its own leg with the sentinel `telephony:bridged-call`, so a receiver that only wants agent conversations can skip it
 - **`callerId`**: Phone number or identifier of the caller
 - **`calledId`**: Phone number or identifier that was called
 - **`timestamp`**: ISO 8601 timestamp when the callback was generated
@@ -246,6 +255,8 @@ The hash is computed as HMAC-SHA256 over the canonical string:
 ```
 hashKey|callId|listenerId|agentId
 ```
+
+It covers those identifiers only, not the rest of the body: `organisationId`, `parentId`, `modelName`, the reason and the transcript are unsigned data. A receiver that serves several organisations should resolve the organisation from its own URL or secret and check that `organisationId` agrees, rather than trusting the payload alone.
 
 Where:
 - `hashKey` is your configured secret key
@@ -459,6 +470,34 @@ app.listen(PORT, () => {
 1. **Check Configuration**: Ensure `includeTranscript` is set to `true`
 2. **Check Event Type**: Transcripts are only included in `end` events
 3. **Check Availability**: Transcripts may not be available for all call types or if the call ended before any conversation occurred
+
+## Analysing calls with a service key
+
+A system that receives `end` hooks with transcripts and analyses them (for example with a
+[decision model](typesafe-jev.md) agent) can invoke an agent on behalf of the organisation the
+hook came from, with no user session:
+
+1. Provision the `analysisService` identity with `scripts/provision-analysis-service.mjs`. It
+   holds `agent:invoke` and the cross-tenant `agent:readAll` and nothing else; the printed
+   token is the receiver's `LLM_AGENT_ANALYSIS_TOKEN`.
+2. `POST /agents/{agentId}/invoke` with the service token and two extra body fields:
+
+```json
+{
+  "organisationId": "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f",
+  "callId": "648aa45d-204a-4c0c-a1e1-419406254134",
+  "input": { "transcript": [ { "role": "user", "text": "..." } ], "durationSeconds": 60, "reason": "normal_hangup" }
+}
+```
+
+- `organisationId` is accepted only from a principal with no organisation of its own that holds
+  `agent:readAll`. The agent is looked up in that organisation, the organisation's model
+  allow-list applies as it does for subagent dispatch, and the invocation's usage rows are
+  attributed to that organisation with no user. A principal that belongs to an organisation
+  and sends `organisationId` gets a 400.
+- `callId` is accepted from any principal. The call must exist in the organisation the usage is
+  attributed to (404 otherwise). The usage rows carry it, so the spend shows per call in
+  `GET /usage?callId=...`.
 
 ## Related Documentation
 

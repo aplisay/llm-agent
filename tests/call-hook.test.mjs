@@ -58,6 +58,42 @@ describe('call-hook helper', () => {
     expect(payload.callerId).toBe('+1000');
     expect(payload.calledId).toBe('+2000');
     expect(typeof payload.timestamp).toBe('string');
+    // The three lineage fields are always present, null when the row has none.
+    expect(payload.organisationId).toBeNull();
+    expect(payload.parentId).toBeNull();
+    expect(payload.modelName).toBeNull();
+  });
+
+  test('buildCallHookPayload carries organisationId, parentId and modelName from the call row on both events', () => {
+    const call = {
+      id: 'call-2',
+      agentId: 'agent-1',
+      instanceId: 'inst-1',
+      organisationId: 'org-1',
+      parentId: 'call-1',
+      modelName: 'telephony:bridged-call',
+      callerId: '+1000',
+      calledId: '+2000',
+      duration: 61400,
+    };
+    const start = buildCallHookPayload({ event: 'start', call, agent: null, listenerOrInstance: null });
+    expect(start).toMatchObject({ event: 'start', callId: 'call-2', organisationId: 'org-1', parentId: 'call-1', modelName: 'telephony:bridged-call' });
+    expect(start).not.toHaveProperty('durationSeconds');
+    const end = buildCallHookPayload({ event: 'end', call, agent: null, listenerOrInstance: null, reason: 'normal_hangup' });
+    expect(end).toMatchObject({
+      event: 'end', callId: 'call-2', organisationId: 'org-1', parentId: 'call-1', modelName: 'telephony:bridged-call',
+      reason: 'normal_hangup', durationSeconds: 61,
+    });
+  });
+
+  test('buildCallHookPayload falls back to the agent for organisationId and modelName', () => {
+    const call = { id: 'call-3', agentId: 'agent-1' };
+    const agent = { id: 'agent-1', organisationId: 'org-9', modelName: 'livekit:openai/gpt-4o' };
+    const payload = buildCallHookPayload({ event: 'end', call, agent, listenerOrInstance: null });
+    expect(payload).toMatchObject({ organisationId: 'org-9', modelName: 'livekit:openai/gpt-4o', parentId: null });
+    // The hash never covers the new fields: same inputs, same hash.
+    expect(signCallHookPayload({ hashKey: 'k', callId: 'call-3', listenerId: '', agentId: 'agent-1' }))
+      .toBe(signCallHookPayload({ hashKey: 'k', callId: 'call-3', listenerId: '', agentId: 'agent-1' }));
   });
 
   test('signCallHookPayload produces deterministic hash', () => {
