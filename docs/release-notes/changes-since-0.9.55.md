@@ -15,6 +15,9 @@ Pipecat), and **ci** (build and release pipeline).
   Ultravox to listen (`agentReaction: "listens"`), including after an in-place
   handover. The model no longer calls `hangup` again, and the call ends without
   a silent gap. Other tools keep Ultravox's default.
+- **[livekit] Gemini TTS usage** is recorded once per reply. Agents with
+  `options.tts.vendor: "google"` had each reply's `tts` characters recorded
+  twice, and its milliseconds over-counted.
 
 ## Voices - core+livekit+pipecat
 
