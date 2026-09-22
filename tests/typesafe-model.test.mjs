@@ -302,12 +302,19 @@ describe('answers to the result', () => {
     const floor = Math.min(answers.outcome.confidence, answers.caller_sentiment.confidence) - 0.001;
     const clear = resultFromAnswers(answers, questions, { minConfidence: floor });
     expect(clear).toEqual({ ...expected, decision: 'auto' });
-    // Noul is never gated.
-    const all = resultFromAnswers(answers, questions, { minConfidence: 1 });
+    // Above every confidence: both are gated, and Noul is never gated.
+    const top = Math.max(answers.outcome.confidence, answers.caller_sentiment.confidence);
+    const all = resultFromAnswers(answers, questions, { minConfidence: top + 0.001 });
     expect(all.escalation_missed).toBe(answers.escalation_missed.noul);
     expect(all.outcome).toBeNull();
     expect(all.caller_sentiment).toBeNull();
     expect(all.decision).toBe('review');
+    // The comparison is strict: an answer at exactly the threshold is kept, so a
+    // confidence of 1 survives minConfidence: 1.
+    const exact = resultFromAnswers(answers, questions, { minConfidence: answers.outcome.confidence });
+    expect(exact.outcome).toBe(answers.outcome.choice);
+    expect(resultFromAnswers({ ...answers, outcome: { ...answers.outcome, confidence: 1 } }, questions, { minConfidence: 1 }).outcome)
+      .toBe(answers.outcome.choice);
   });
 
   test('a body that does not fit the questions is a 502-class error', () => {
@@ -423,6 +430,26 @@ describe('decide()', () => {
     expect(err.message).toMatch(/HTTP 422: .*Field required/);
   });
 
+  test('an OpenRouter 400 validation envelope is surfaced from its error field and never retried', async () => {
+    const envelope = fixture('openrouter-error-400');
+    const { impl, calls } = fakeFetch([{ status: envelope.status, body: envelope.body, headers: envelope.headers }]);
+    const err = await new Typesafe(driverArgs({ fetchImpl: impl })).decide().catch((e) => e);
+    expect(calls).toHaveLength(1);
+    expect(err).toMatchObject({ status: 502, vendorStatus: 400, detail: envelope.body.error, requestId: envelope.headers['x-generation-id'] });
+    expect(err.message).toMatch(/HTTP 400: .*expected record, received null/);
+  });
+
+  test('on the OpenRouter route the generation id stands in for the vendor request id', async () => {
+    const { impl } = fakeFetch([{ status: 200, body: SIX.response, headers: { 'x-generation-id': 'gen-header' } }]);
+    const { requestId } = await new Typesafe(driverArgs({ fetchImpl: impl })).decide();
+    // The recorded body carries OpenRouter's generation id; the header is the fallback.
+    expect(requestId).toBe(SIX.response.id || 'gen-header');
+    const { impl: headerOnly } = fakeFetch([{ status: 200, body: { ...SIX.response, id: undefined }, headers: { 'x-generation-id': 'gen-header' } }]);
+    expect((await new Typesafe(driverArgs({ fetchImpl: headerOnly })).decide()).requestId).toBe('gen-header');
+    const { impl: vendor } = fakeFetch([{ status: 200, body: SIX.response, headers: { 'x-typesafe-request-id': 'req_v', 'x-generation-id': 'gen-header' } }]);
+    expect((await new Typesafe(driverArgs({ fetchImpl: vendor })).decide()).requestId).toBe('req_v');
+  });
+
   test('an OpenRouter error envelope is surfaced from its error field', async () => {
     const envelope = fixture('openrouter-error-401');
     const { impl } = fakeFetch([{ status: envelope.status, body: envelope.body }]);
@@ -449,10 +476,14 @@ describe('decide()', () => {
 
   test('minConfidence from options.decision reaches the result', async () => {
     const { impl } = fakeFetch([{ status: 200, body: SIX.response }]);
-    const { result } = await new Typesafe(driverArgs({ fetchImpl: impl, options: { decision: { minConfidence: 1 } } })).decide();
-    expect(result.outcome).toBeNull();
-    expect(result.caller_sentiment).toBeNull();
+    const answers = SIX.response.answers;
+    // Just above the lower of the two confidences: that answer is gated, the review flag is set.
+    const low = Math.min(answers.outcome.confidence, answers.caller_sentiment.confidence);
+    const gated = answers.outcome.confidence <= answers.caller_sentiment.confidence ? 'outcome' : 'caller_sentiment';
+    const { result } = await new Typesafe(driverArgs({ fetchImpl: impl, options: { decision: { minConfidence: low + 0.001 } } })).decide();
+    expect(result[gated]).toBeNull();
     expect(result.decision).toBe('review');
+    expect(result.probabilities[gated]).toBeDefined();
   });
 
   test('the static fetchImpl hook stands in for global fetch', async () => {
