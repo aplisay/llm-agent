@@ -1,0 +1,6 @@
+{
+  "source": "recorded",
+  "note": "OpenRouter route, 2026-09-22, POST https://openrouter.ai/api/v1/systemone with no Authorization header. OpenRouter's envelope is {error:{message,code}}, not the vendor's detail array.",
+  "status": 401,
+  "body": { "error": { "message": "No cookie auth credentials found", "code": 401 } }
+}

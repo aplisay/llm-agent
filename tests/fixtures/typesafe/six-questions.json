@@ -1,0 +1,75 @@
+{
+  "source": "schema",
+  "note": "Hand-built to the vendor OpenAPI document (v0.2.0, 2026-09-22); replace with the spike recording.",
+  "request": {
+    "model": "typesafe/jev-1.13",
+    "state": {
+      "instructions": "You review calls handled by an AI phone agent for a UK business. Judge only from the transcript.",
+      "input": {
+        "transcript": [
+          { "role": "agent", "text": "Thank you for calling Northwind Energy. How can I help today?" },
+          { "role": "user", "text": "My bill is double what it was last month and I want to talk to someone about it." },
+          { "role": "agent", "text": "I can help with that. Can you give me your account number?" },
+          { "role": "user", "text": "I do not have it to hand. I just want to speak to a person." },
+          { "role": "agent", "text": "I am sorry, I am not able to transfer you right now. You can call back with your account number." },
+          { "role": "user", "text": "This is ridiculous. Forget it." }
+        ],
+        "durationSeconds": 48,
+        "reason": "caller_hangup",
+        "agent": { "id": "11111111-2222-3333-4444-555555555555", "name": "Sam" }
+      }
+    },
+    "questions": {
+      "outcome": {
+        "type": "choice",
+        "instructions": "How did the call end for the caller?",
+        "criteria": {
+          "resolved": "The caller got what they called for",
+          "partially_resolved": null,
+          "unresolved": null,
+          "transferred": "The call was handed to a person or another agent",
+          "abandoned": "The caller gave up or hung up before the matter was dealt with",
+          "wrong_number": null
+        }
+      },
+      "needs_followup": { "type": "noul", "instructions": "Does someone need to contact this caller again?" },
+      "caller_sentiment": {
+        "type": "score",
+        "instructions": "The caller's tone by the end of the call",
+        "criteria": ["angry", "frustrated", "neutral", "satisfied", "delighted"]
+      },
+      "agent_error": { "type": "noul", "instructions": "Did the agent give wrong or misleading information?" },
+      "policy_breach": { "type": "noul", "instructions": "Did the agent do something its instructions forbid?" },
+      "escalation_missed": {
+        "type": "noul",
+        "instructions": "Did the caller ask for a human and not get one?",
+        "criteria": { "true": "The caller asked for a person and the call ended without a transfer", "false": "No request for a person, or the caller was transferred" }
+      }
+    }
+  },
+  "response": {
+    "id": "gen-schema-fixture",
+    "provider": "TypeSafe",
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+      "outcome": {
+        "type": "choice",
+        "choice": "abandoned",
+        "confidence": 0.81,
+        "probabilities": { "resolved": 0.01, "partially_resolved": 0.02, "unresolved": 0.14, "transferred": 0.01, "abandoned": 0.81, "wrong_number": 0.01 }
+      },
+      "needs_followup": { "type": "noul", "noul": 0.91 },
+      "caller_sentiment": {
+        "type": "score",
+        "score": 0.93,
+        "confidence": 0.88,
+        "legend": { "0": "angry", "1": "frustrated", "2": "neutral", "3": "satisfied", "4": "delighted" },
+        "probabilities": { "0": 0.12, "1": 0.83, "2": 0.05, "3": 0.0, "4": 0.0 }
+      },
+      "agent_error": { "type": "noul", "noul": 0.08 },
+      "policy_breach": { "type": "noul", "noul": 0.04 },
+      "escalation_missed": { "type": "noul", "noul": 0.96 }
+    },
+    "usage": { "input_tokens": 412, "output_tokens": 34, "cost": 0.0000173 }
+  }
+}

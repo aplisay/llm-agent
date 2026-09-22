@@ -1,0 +1,28 @@
+{
+  "source": "schema",
+  "note": "Hand-built to the vendor OpenAPI document (v0.2.0, 2026-09-22); replace with the spike recording.",
+  "request": {
+    "model": "typesafe/jev-1.13",
+    "state": "This is ridiculous. Forget it.",
+    "questions": {
+      "sentiment": {
+        "type": "score",
+        "instructions": "The caller's tone",
+        "criteria": ["furious", "angry", "annoyed", "frustrated", "neutral", "content", "pleased", "satisfied", "happy", "delighted"]
+      }
+    }
+  },
+  "response": {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+      "sentiment": {
+        "type": "score",
+        "score": 2.31,
+        "confidence": 0.52,
+        "legend": { "0": "furious", "1": "angry", "2": "annoyed", "3": "frustrated", "4": "neutral", "5": "content", "6": "pleased", "7": "satisfied", "8": "happy", "9": "delighted" },
+        "probabilities": { "0": 0.02, "1": 0.18, "2": 0.35, "3": 0.35, "4": 0.08, "5": 0.01, "6": 0.01, "7": 0.0, "8": 0.0, "9": 0.0 }
+      }
+    },
+    "usage": { "input_tokens": 44, "output_tokens": 14 }
+  }
+}

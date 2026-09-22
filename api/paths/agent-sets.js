@@ -113,11 +113,12 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
     for (const agent of existing) {
       if (removedIds.has(agent.id)) continue;
       labelMap.set(agent.label, agent.id);
-      membersById.set(agent.id, { type: agent.type || 'interactive-audio' });
+      membersById.set(agent.id, { type: agent.type || 'interactive-audio', modelName: agent.modelName });
     }
   }
   for (const { label, agent } of members) labelMap.set(label, agent.id);
-  for (const { agent, def } of members) membersById.set(agent.id, { type: defaultType(def) });
+  // modelName lets the target check refuse a decision-kind member as a delegate or summariser.
+  for (const { agent, def } of members) membersById.set(agent.id, { type: defaultType(def), modelName: def.modelName ?? agent.modelName });
 
   const lookupAgent = (agentId) => Agent.findOne({
     where: { id: agentId, ...scopeWhereForUser(user) },

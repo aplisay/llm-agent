@@ -150,6 +150,18 @@ components:
             accept a `delegate` function. See docs/gpt-live.md.
           type: boolean
           example: false
+        kind:
+          type: string
+          enum: [generative, decision]
+          default: generative
+          description: |-
+            `generative` rows hold a conversation and run a tool loop. `decision` rows (the
+            `text:typesafe/` models) answer the agent's `result` function schema in one exchange: they
+            accept only a single builtin `result` function whose properties are an enum (Choice), a
+            boolean (Noul) or `x-levels` (Score), take no other functions, MCP servers or voice
+            options, cannot chat, and cannot be a `delegate` or `summaryAgent` target. Pickers for
+            voice agents should hide them. See docs/typesafe-jev.md.
+          example: generative
       required:
         - name
         - description
@@ -471,6 +483,20 @@ components:
           example: 0.2
         callHook:
           $ref: "#/components/schemas/CallHookConfig"
+        decision:
+          type: object
+          description: |-
+            Accepted only on `decision`-kind models (`text:typesafe/...`, see docs/typesafe-jev.md);
+            rejected on every other model. `minConfidence` (0 to 1) turns on confidence gating: a
+            Choice or Score answer whose confidence is below it is returned as `null` with its
+            distribution still in `result.probabilities`, and `result.decision` is `"review"`
+            (else `"auto"`). Without this option `result.decision` is absent.
+          properties:
+            minConfidence:
+              type: number
+              minimum: 0
+              maximum: 1
+              example: 0.7
         recording:
           type: object
           description: |-

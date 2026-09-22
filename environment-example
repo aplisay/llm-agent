@@ -141,6 +141,14 @@ ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # Neuphonic TTS (docs/neuphonic.md): the server lists voices with it and the
 # LiveKit worker speaks with it.
 # NEUPHONIC_API_KEY=
+# TypeSafe Jev decision model (docs/typesafe-jev.md), the text:typesafe/ rows.
+# Direct route: TYPESAFE_API_KEY. OpenRouter route: set TYPESAFE_BASE_URL to
+# https://openrouter.ai/api and the driver uses OPENROUTER_KEY when
+# TYPESAFE_API_KEY is unset. The row is not advertised without a usable key.
+# TYPESAFE_API_KEY=
+# TYPESAFE_BASE_URL=https://api.typesafe.ai
+# Whole budget of one decision, including its one retry, in milliseconds.
+# TYPESAFE_TIMEOUT_MS=5000
 
 # ── LiveKit handler ──────────────────────────────────────────────────────────
 LIVEKIT_URL=wss://<your-livekit-host>
