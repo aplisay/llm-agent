@@ -4,14 +4,22 @@ puts on the websocket URL, and the realtime, usage and fallback paths that reuse
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from urllib.parse import parse_qs, urlsplit
 
+import numpy as np
 import pytest
 from pipecat.transcriptions.language import Language
 
 from pipecat_aplisay.fallback_message import ResolvedFallbackMessage
 from pipecat_aplisay.fixed_message import _build_message_tts
-from pipecat_aplisay.neuphonic_tts import AplisayNeuphonicTTSService
+from pipecat_aplisay.neuphonic_tts import (
+    SILENCE_MARGIN_MS,
+    SILENCE_THRESHOLD,
+    AplisayNeuphonicTTSService,
+    LeadingSilenceTrimmer,
+)
 from pipecat_aplisay.realtime_tts import external_tts_enabled, text_output_enabled
 from pipecat_aplisay.usage import usage_vendors
 from pipecat_aplisay.voice_session import NEUPHONIC_SAMPLE_RATE, build_tts_service
@@ -139,3 +147,140 @@ def test_the_fallback_message_can_be_spoken_by_neuphonic(neuphonic_key):
     tts = _build_message_tts(_agent(), resolved)
     assert isinstance(tts, AplisayNeuphonicTTSService)
     assert (tts._settings.voice, tts._settings.language) == (VOICE, "en")
+
+
+RATE = NEUPHONIC_SAMPLE_RATE
+#: Samples kept before the first loud one.
+MARGIN = RATE * SILENCE_MARGIN_MS // 1000
+
+
+def _pcm(values) -> bytes:
+    return np.asarray(values, dtype="<i2").tobytes()
+
+
+def _silence(ms: int) -> bytes:
+    return bytes(2 * (RATE * ms // 1000))
+
+
+def _speech(seed: int, ms: int = 100) -> bytes:
+    """Distinct samples that start loud, so a comparison shows what moved."""
+    i = np.arange(RATE * ms // 1000)
+    return _pcm((i * 7 + seed * 131) % 2000 - 1000)
+
+
+def _hiss(samples: int) -> list[int]:
+    return [SILENCE_THRESHOLD if i % 2 else -SILENCE_THRESHOLD for i in range(samples)]
+
+
+def _utterance() -> tuple[bytes, int]:
+    """400 ms of hiss at the threshold, a soft onset whose first sample over the threshold is
+    negative, 300 ms of silence, then more speech; and the index of that first sample."""
+    lead = _hiss(6400)
+    soft = [40, -80, 120, -160, 200, -(SILENCE_THRESHOLD + 1), 3000, -3000]
+    loud = [5000 if i % 2 else -5000 for i in range(1600)]
+    return _pcm(lead + soft + [0] * 4800 + loud), len(lead) + 5
+
+
+def _split(audio: bytes, *sizes: int) -> list[bytes]:
+    """``audio`` in chunks of the given sizes, the last size repeating."""
+    chunks, at = [], 0
+    while at < len(audio):
+        n = sizes[min(len(chunks), len(sizes) - 1)]
+        chunks.append(audio[at : at + n])
+        at += n
+    return chunks
+
+
+def _trimmed(chunks) -> bytes:
+    trimmer = LeadingSilenceTrimmer(RATE)
+    return b"".join(trimmer.push(c) for c in chunks) + trimmer.end()
+
+
+def _same_samples(actual: bytes, expected: bytes) -> None:
+    # Compared as arrays: when == fails on long byte strings, pytest builds a very large diff.
+    got, want = np.frombuffer(actual, dtype="<i2"), np.frombuffer(expected, dtype="<i2")
+    assert got.size == want.size
+    differ = np.flatnonzero(got != want)
+    assert differ.size == 0, f"{differ.size} samples differ, the first at {differ[:1]}"
+
+
+def test_the_trim_keeps_50_ms_before_the_first_loud_sample_and_all_that_follows():
+    audio, onset = _utterance()
+    _same_samples(_trimmed(_split(audio, 3200)), audio[2 * (onset - MARGIN) :])
+
+
+@pytest.mark.parametrize("sizes", [(1,), (3,), (12801, 1, 3200), (10**6,)])
+def test_a_chunk_boundary_inside_a_sample_does_not_move_the_cut(sizes):
+    audio, onset = _utterance()
+    _same_samples(_trimmed(_split(audio, *sizes)), audio[2 * (onset - MARGIN) :])
+
+
+def test_audio_that_starts_loud_gets_loud_within_the_margin_or_never_gets_loud_passes_whole():
+    _same_samples(_trimmed(_split(_speech(1), 1000)), _speech(1))
+    early = _silence(30) + _speech(1)
+    _same_samples(_trimmed(_split(early, 1000)), early)
+    quiet = _pcm(_hiss(RATE))
+    _same_samples(_trimmed(_split(quiet, 3200)), quiet)
+    assert _trimmed([]) == b""
+
+
+def test_end_starts_afresh_for_the_next_utterance():
+    trimmer = LeadingSilenceTrimmer(RATE)
+    first = trimmer.push(_silence(300) + _speech(1)) + trimmer.push(_silence(200)) + trimmer.end()
+    second = trimmer.push(_silence(500)) + trimmer.push(_speech(2)) + trimmer.end()
+    _same_samples(first, _silence(300)[-2 * MARGIN :] + _speech(1) + _silence(200))
+    _same_samples(second, _silence(500)[-2 * MARGIN :] + _speech(2))
+
+
+class _Socket:
+    """Stands in for the websocket: yields ``messages``, then closes."""
+
+    def __init__(self, messages):
+        self._messages = messages
+
+    async def __aiter__(self):
+        for message in self._messages:
+            yield message
+
+
+def _message(audio: bytes = b"", stop: bool = False) -> str:
+    data = {"text": "Some text.", "sampling_rate": str(RATE), "stop": stop, "context_id": None}
+    if audio:
+        data["audio"] = base64.b64encode(audio).decode()
+    return json.dumps({"data": data})
+
+
+def test_the_service_trims_each_utterance_and_keeps_the_pauses_inside_it(neuphonic_key):
+    tts = build_tts_service(_agent(tts={"vendor": "neuphonic", "voice": VOICE}))
+    # setup() sets the rate in a pipeline.
+    tts._sample_rate = RATE
+    frames = []
+
+    async def append(context_id, frame):
+        frames.append((context_id, frame))
+
+    tts.append_to_audio_context = append
+    tts.get_active_audio_context_id = lambda: "turn-1"
+    tts._websocket = _Socket(
+        [
+            _message(_silence(400)),
+            _message(_speech(1)),
+            _message(),
+            _message(_silence(100)),
+            _message(_speech(2) + _silence(200), stop=True),
+            _message(_silence(250) + _speech(3)),
+            _message(_silence(50), stop=True),
+            # An utterance that never gets loud is sent whole at its end.
+            _message(_pcm(_hiss(1600)), stop=True),
+        ]
+    )
+    asyncio.run(tts._receive_messages())
+
+    assert {context_id for context_id, _ in frames} == {"turn-1"}
+    assert all((f.sample_rate, f.num_channels) == (RATE, 1) for _, f in frames)
+    expected = (
+        _silence(400)[-2 * MARGIN :] + _speech(1) + _silence(100) + _speech(2) + _silence(200)
+        + _silence(250)[-2 * MARGIN :] + _speech(3) + _silence(50)
+        + _pcm(_hiss(1600))
+    )
+    _same_samples(b"".join(f.audio for _, f in frames), expected)
