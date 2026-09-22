@@ -39,7 +39,7 @@ import {
 } from "./handover-opening.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
-import { meterMetrics } from "./usage-meter.js";
+import { makeMetricsMeter } from "./usage-meter.js";
 import {
   armAuxStt,
   parseAuxSttOption,
@@ -602,9 +602,10 @@ export async function runAgentWorker({
     meter.units[unit] = (meter.units[unit] || 0) + quantity;
     usageMeters.set(key, meter);
   };
+  const meterOnce = makeMetricsMeter(addMeter);
   const onMetrics = (m: any): void => {
     try {
-      meterMetrics(m, addMeter);
+      meterOnce(m);
     } catch (e) {
       logger.debug({ e }, "usage metrics accumulation failed");
     }
