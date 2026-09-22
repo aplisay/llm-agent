@@ -59,6 +59,32 @@ test("accumulates llm/tts/stt and flushes vendor-correct per-call records", asyn
   assert.ok(saved.every((r) => r.mode === "set" && r.finalised === true));
 });
 
+test("a metrics object reported more than once is metered once; an equal one is metered again", async () => {
+  const saved: any[] = [];
+  const meter = makeUsageMeter({
+    getCall: () => ({ id: "call-1", organisationId: "o1", userId: "u1", agentId: "a1" }),
+    usageVendors: vendors,
+    saveUsageFn: async (records) => {
+      saved.push(...(records as any[]));
+    },
+  });
+  const s = fakeSession();
+  meter.wire(s);
+
+  // After an in-place handover the session reports each event once per agent activity.
+  // See test/handover-metering.test.ts.
+  const reply = { type: "tts_metrics", label: "cartesia.TTS", charactersCount: 42, audioDurationMs: 1500 };
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, { metrics: reply });
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, { metrics: reply });
+  // The same text spoken again is a second reply.
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, { metrics: { ...reply } });
+
+  await meter.flush(true);
+  const row = (unit: string) => saved.find((r) => r.technology === "tts" && r.unit === unit);
+  assert.equal(row("characters").quantity, 84);
+  assert.equal(row("milliseconds").quantity, 3000);
+});
+
 async function llmRows(voiceMode: "pipeline" | "realtime", ...metrics: any[]) {
   const saved: any[] = [];
   const meter = makeUsageMeter({

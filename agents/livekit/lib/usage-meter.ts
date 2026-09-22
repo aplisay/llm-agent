@@ -55,10 +55,9 @@ export type AddMeter = (
 ) => void;
 
 /**
- * Add one LiveKit metrics event to the meters through `addMeter`. Shared by
- * makeUsageMeter and the main metering closure in voice-agent-runtime.ts.
+ * Add one LiveKit metrics event to the meters through `addMeter`.
  */
-export function meterMetrics(m: any, addMeter: AddMeter): void {
+function meterMetrics(m: any, addMeter: AddMeter): void {
   switch (m?.type) {
     case "llm_metrics":
       addMeter("llm", m.label, "input_tokens", uncachedTokens(m.promptTokens, m.promptCachedTokens));
@@ -80,6 +79,23 @@ export function meterMetrics(m: any, addMeter: AddMeter): void {
     default:
       break;
   }
+}
+
+/**
+ * {@link meterMetrics} for each metrics object once. Shared by makeUsageMeter and the main
+ * metering closure in voice-agent-runtime.ts.
+ *
+ * agents-js 1.0.46 never removes an agent activity's listeners, so after an in-place handover
+ * each event reaches the session once per activity, as one object. Fixed upstream in 1.0.47
+ * (livekit/agents-js#1045).
+ */
+export function makeMetricsMeter(addMeter: AddMeter): (m: any) => void {
+  const metered = new WeakSet<object>();
+  return (m) => {
+    if (typeof m !== "object" || m === null || metered.has(m)) return;
+    metered.add(m);
+    meterMetrics(m, addMeter);
+  };
 }
 
 // Every LLM this worker runs reports input tokens gross of the prompt cache, but the ledger prices
@@ -129,9 +145,10 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
     meters.set(key, meter);
   };
 
+  const meterOnce = makeMetricsMeter(addMeter);
   const onMetrics = (m: any): void => {
     try {
-      meterMetrics(m, addMeter);
+      meterOnce(m);
     } catch (e) {
       log.debug({ e }, "usage metrics accumulation failed");
     }
