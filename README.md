@@ -26,7 +26,7 @@ This is not a demo framework: it is the code Aplisay operates in production, del
 | Voice runtimes | LiveKit (WebRTC + SIP) · Pipecat (SIP + WebRTC) · Jambonz (SIP) · Ultravox cloud (managed realtime) · headless text channel |
 | Speech-to-speech models | OpenAI Realtime · Google Gemini Live · Ultravox v0.6/v0.7 (Llama, Gemma and GLM backends) |
 | Pipeline LLMs | OpenAI GPT-4o / GPT-5 mini · Google Gemini 2.x · Anthropic Claude · xAI Grok 4.x · Moonshot Kimi · DeepSeek · OpenRouter |
-| Speech recognition & synthesis | Deepgram · ElevenLabs · Google · Cartesia (+ Silero VAD) |
+| Speech recognition & synthesis | Deepgram · ElevenLabs · Google · Cartesia · Neuphonic (+ Silero VAD) |
 | SIP connectivity | Jambonz · LiveKit SIP · bundled Go [`sipbridge`](docs/sipbridge-integration.md) · FreeSWITCH · [Voiceblender](docs/voiceblender-integration.md) · Daily |
 
 Which models run on which runtime varies as providers evolve; `GET /models` on any running instance is the authoritative catalogue.
