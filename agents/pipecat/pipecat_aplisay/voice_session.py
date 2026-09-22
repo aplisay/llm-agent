@@ -535,6 +535,10 @@ def build_stt_service(agent: dict) -> Any:
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
 
+#: The rate every transport runs at; OutputRateGuard resamples if one ever differs.
+NEUPHONIC_SAMPLE_RATE = 16000
+
+
 def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
     (defaulting to Cartesia).
@@ -609,6 +613,19 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
         return DeepgramTTSService(
             api_key=_require_env("DEEPGRAM_API_KEY"),
             voice=voice or "aura-asteria-en",
+        )
+    if tts_vendor == "neuphonic":
+        from .neuphonic_tts import AplisayNeuphonicTTSService
+
+        # Given no rate, the service asks Neuphonic for its default but tags frames with the
+        # pipeline rate, so pass one. No voice means Neuphonic's default for the language.
+        return AplisayNeuphonicTTSService(
+            api_key=_require_env("NEUPHONIC_API_KEY"),
+            sample_rate=NEUPHONIC_SAMPLE_RATE,
+            settings=AplisayNeuphonicTTSService.Settings(
+                voice=voice or None,
+                **({"language": language} if language is not None else {}),
+            ),
         )
     raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
 
