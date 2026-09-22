@@ -526,7 +526,7 @@ components:
             vendor:
               type: string
               description: |-
-                TTS provider (e.g. cartesia, google, elevenlabs, deepgram). On pipeline models it selects the
+                TTS provider (e.g. cartesia, google, elevenlabs, deepgram, neuphonic). On pipeline models it selects the
                 TTS stage. On a realtime model flagged `hasExternalTts` in GET /models, a vendor other than the
                 model's own provider switches the model to text output and the named TTS speaks its text, with
                 `voice` and `language` applying to that TTS (see docs/realtime-external-tts.md). Other realtime

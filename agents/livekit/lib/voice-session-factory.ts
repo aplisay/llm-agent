@@ -13,6 +13,7 @@ import type { VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
   inferTtsVendor,
+  pipelineTtsVendor,
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
@@ -23,6 +24,7 @@ import {
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
+import { buildNeuphonicTts } from "./neuphonic-tts.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
 import type {
   UltravoxAgentReaction,
@@ -206,12 +208,17 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
   });
 }
 
-/** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
+/** LiveKit Inference TTS model string, Deepgram `inference.TTS`, Google Gemini TTS plugin, or Neuphonic. */
 export function buildPipelineTts(agent: Agent) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;
   const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
+
+  // Not on LiveKit Inference, so always a direct key, whatever LIVEKIT_PIPELINE_USE_PROVIDER_KEYS says.
+  if (pipelineTtsVendor(agent) === "neuphonic") {
+    return buildNeuphonicTts(agent);
+  }
 
   if (vendor === "google") {
     const custom = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS?.trim();

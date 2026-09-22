@@ -138,6 +138,9 @@ ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # xAI Grok text models and the Grok voice model (docs/grok.md). The older
 # GROK_API_KEY name is accepted as a fallback.
 # XAI_API_KEY=
+# Neuphonic TTS (docs/neuphonic.md): the server lists voices with it and the
+# LiveKit worker speaks with it.
+# NEUPHONIC_API_KEY=
 
 # ── LiveKit handler ──────────────────────────────────────────────────────────
 LIVEKIT_URL=wss://<your-livekit-host>
