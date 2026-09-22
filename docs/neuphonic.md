@@ -68,6 +68,27 @@ time.
   reports an error, which ends the job process. The class also does not use the
   agents-js sentence adapter, which in 1.0.46 meters each reply twice.
 
+### Leading silence
+
+Neuphonic starts each utterance with silence. The length changes with the voice
+and the text: from none to 1.7 s across the stock voices, measured in September
+2026. Because the workers send one sentence at a time, every sentence would start
+with it.
+
+Both workers drop it, per utterance (one SSE request on LiveKit, one `<STOP>` on
+Pipecat). They hold the audio until a sample is louder than 200 (about -44 dBFS,
+just above the hiss on the noisiest voices), then play it from 50 ms before that
+sample, so a soft start such as s, f or h is kept. Silence later in the utterance
+is kept, and an utterance that never gets that loud is played whole. A breath or
+click louder than 200 before the silence ends the trim there, and the silence
+after it stays. In the September 2026 sample, this left more than 250 ms before
+speech in about one utterance in ten.
+
+On Pipecat, TTFB ends at the first frame the service plays, so the TTFA metric
+includes the time the audio is held.
+
+### Errors
+
 Neuphonic reports a bad voice, language or key, and an account with no credit
 left, as `event: error` with status 500 inside an HTTP 200 SSE stream; the
 websocket handshake fails with 403. The voice list still works in all these
