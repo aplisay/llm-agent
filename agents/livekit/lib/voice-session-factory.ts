@@ -8,6 +8,7 @@ import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import { SentenceStreamTTS } from "./sentence-stream-tts.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
@@ -228,13 +229,15 @@ export function buildPipelineTts(agent: Agent) {
     }
     const model =
       process.env.LIVEKIT_PIPELINE_GEMINI_TTS_MODEL?.trim() || "gemini-2.5-flash-preview-tts";
-    return new google.beta.TTS({
-      model,
-      voiceName: geminiVoiceNameForGoogleTtsOption(agent),
-      vertexai: process.env.GOOGLE_GENAI_USE_VERTEXAI === "true",
-      project: process.env.GOOGLE_CLOUD_PROJECT,
-      location: process.env.GOOGLE_CLOUD_LOCATION,
-    });
+    return new SentenceStreamTTS(
+      new google.beta.TTS({
+        model,
+        voiceName: geminiVoiceNameForGoogleTtsOption(agent),
+        vertexai: process.env.GOOGLE_GENAI_USE_VERTEXAI === "true",
+        project: process.env.GOOGLE_CLOUD_PROJECT,
+        location: process.env.GOOGLE_CLOUD_LOCATION,
+      }),
+    );
   }
 
   if (useKeys) {
