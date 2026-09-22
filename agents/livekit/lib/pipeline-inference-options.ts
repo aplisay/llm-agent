@@ -122,6 +122,15 @@ export function pipelineTtsVendor(agent: Agent): string {
 }
 
 /**
+ * Whether buildPipelineTts gives this agent Google TTS (Gemini, or `LIVEKIT_PIPELINE_GOOGLE_TTS`).
+ * Not {@link pipelineTtsVendor}: buildPipelineTts sends a `google/<model>` vendor to Inference.
+ */
+export function pipelineUsesGoogleTts(agent: Agent): boolean {
+  const t = agent.options?.tts;
+  return (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase() === "google";
+}
+
+/**
  * TTS inference id, e.g. `cartesia/sonic-3:<voice-uuid>`
  */
 export function resolvePipelineTts(agent: Agent): string {
@@ -137,7 +146,8 @@ export function resolvePipelineTts(agent: Agent): string {
   }
 
   if (!t?.voice) {
-    return env.tts;
+    // buildPipelineTts gives a google agent Google TTS even without a voice, so do not bill the default TTS.
+    return pipelineUsesGoogleTts(agent) ? googlePipelineTts("") : env.tts;
   }
 
   const voice = String(t.voice).trim();
@@ -173,16 +183,24 @@ export function resolvePipelineTts(agent: Agent): string {
     return `deepgram/aura-2:${deepgramCatalogToInferenceVoice(id)}`;
   }
   if (vendor === "google") {
-    const full = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS;
-    if (full) {
-      return full.includes("{voice}") ? full.replace("{voice}", voice) : full;
-    }
-    throw new Error(
-      "resolvePipelineTts: vendor google requires LIVEKIT_PIPELINE_GOOGLE_TTS, or use voice-session-factory Gemini TTS path",
-    );
+    return googlePipelineTts(voice);
   }
 
   return env.tts;
+}
+
+/**
+ * The `LIVEKIT_PIPELINE_GOOGLE_TTS` id for this voice. Without it this throws: Gemini TTS has no Inference id,
+ * so resolveUsageVendors leaves google usage to the plugin's `google.gemini.TTS` label.
+ */
+function googlePipelineTts(voice: string): string {
+  const full = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS;
+  if (full) {
+    return full.includes("{voice}") ? full.replace("{voice}", voice) : full;
+  }
+  throw new Error(
+    "resolvePipelineTts: vendor google requires LIVEKIT_PIPELINE_GOOGLE_TTS, or use voice-session-factory Gemini TTS path",
+  );
 }
 
 export function inferTtsVendor(voice: string): string {

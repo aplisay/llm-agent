@@ -18,6 +18,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[livekit] Gemini TTS usage** is recorded once per reply. Agents with
   `options.tts.vendor: "google"` had each reply's `tts` characters recorded
   twice, and its milliseconds over-counted.
+- **[livekit] Google TTS billing**: agents with `options.tts.vendor: "google"`
+  and no `voice` now have their `tts` usage recorded under `google`. It was
+  recorded under `cartesia`.
 
 ## Voices - core+livekit+pipecat
 

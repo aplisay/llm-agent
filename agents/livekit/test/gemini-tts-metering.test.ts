@@ -14,6 +14,8 @@ import {
 import * as google from "@livekit/agents-plugin-google";
 import type { AudioFrame } from "@livekit/rtc-node";
 import { makeUsageMeter } from "../lib/usage-meter.js";
+import { resolveUsageVendors, type UsageVendors } from "../lib/usage-vendors.js";
+import { resolvePipelineTts } from "../lib/pipeline-inference-options.js";
 import { SentenceStreamTTS } from "../lib/sentence-stream-tts.js";
 import { buildPipelineTts, createVoiceModelAndSession } from "../lib/voice-session-factory.js";
 
@@ -86,10 +88,15 @@ function withEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
 }
 
 /** The Gemini TTS a google pipeline agent gets on this worker, with its API stubbed. */
-function builtGemini(stub: Stub = {}) {
+function builtGemini(stub: Stub = {}, ttsOptions: Record<string, unknown> = { vendor: "google", voice: "Kore" }) {
   const built = withEnv(
-    { GOOGLE_API_KEY: "test-key", GOOGLE_GENAI_USE_VERTEXAI: undefined, LIVEKIT_PIPELINE_GOOGLE_TTS: undefined },
-    () => buildPipelineTts(agent({ vendor: "google", voice: "Kore" })),
+    {
+      GOOGLE_API_KEY: "test-key",
+      GOOGLE_GENAI_USE_VERTEXAI: undefined,
+      LIVEKIT_PIPELINE_GOOGLE_TTS: undefined,
+      LIVEKIT_PIPELINE_GEMINI_TTS_VOICE: undefined,
+    },
+    () => buildPipelineTts(agent(ttsOptions)),
   ) as SentenceStreamTTS;
   const requests = stubGemini(built.inner as google.beta.TTS, stub);
   return { built, requests };
@@ -157,7 +164,12 @@ const settle = () => new Promise((r) => setTimeout(r, 50));
 async function onSession(
   ttsInstance: tts.TTS,
   drive: (session: voice.AgentSession, ttsMetrics: any[]) => Promise<void>,
-  { sink = new FakeAudioOutput(), llm: model }: { sink?: FakeAudioOutput; llm?: llm.LLM } = {},
+  {
+    sink = new FakeAudioOutput(),
+    llm: model,
+    // resolvePipelineTts throws for google, so a Gemini row resolves no vendor and takes the SDK label.
+    usageVendors = { llm: {}, tts: {}, stt: {} },
+  }: { sink?: FakeAudioOutput; llm?: llm.LLM; usageVendors?: UsageVendors } = {},
 ) {
   const session = new voice.AgentSession({ tts: ttsInstance, ...(model ? { llm: model } : {}) } as any);
   session.output.audio = sink as any;
@@ -168,8 +180,7 @@ async function onSession(
   const saved: any[] = [];
   const meter = makeUsageMeter({
     getCall: () => ({ id: "call-1", organisationId: "o1", userId: "u1", agentId: "a1" }),
-    // resolvePipelineTts throws for google, so a Gemini row resolves no vendor and takes the SDK label.
-    usageVendors: { llm: {}, tts: {}, stt: {} },
+    usageVendors,
     voiceMode: "pipeline",
     saveUsageFn: async (records) => void saved.push(...(records as any[])),
   });
@@ -190,13 +201,21 @@ async function onSession(
   return { sink, ttsMetrics, ledger };
 }
 
-const speakOnSession = (ttsInstance: tts.TTS, text: string, { replies = 1, sink = new FakeAudioOutput() } = {}) =>
+const speakOnSession = (
+  ttsInstance: tts.TTS,
+  text: string,
+  {
+    replies = 1,
+    sink = new FakeAudioOutput(),
+    usageVendors,
+  }: { replies?: number; sink?: FakeAudioOutput; usageVendors?: UsageVendors } = {},
+) =>
   onSession(
     ttsInstance,
     async (session) => {
       for (let i = 0; i < replies; i++) await session.say(text).waitForPlayout();
     },
-    { sink },
+    { sink, usageVendors },
   );
 
 /** Streams REPLY a word at a time, as a voice LLM's reply arrives. */
@@ -316,6 +335,41 @@ test("a Gemini TTS session meters each reply once, with its characters and all i
   assert.deepEqual(await ledger(), {
     characters: { quantity: 2 * REPLY.length, provider: "google", detail: "google.gemini.TTS" },
     milliseconds: { quantity: 2 * REPLY_AUDIO_MS, provider: "google", detail: "google.gemini.TTS" },
+  });
+});
+
+test("Gemini TTS usage is billed to google with or without a voice, never to the Cartesia default", async () => {
+  for (const ttsOptions of [{ vendor: "google" }, { vendor: "google", voice: "Kore" }]) {
+    const { built } = builtGemini({}, ttsOptions);
+    assert.equal((built.inner as google.beta.TTS).opts.voiceName, "Kore");
+    const usageVendors = withEnv({ LIVEKIT_PIPELINE_GOOGLE_TTS: undefined }, () =>
+      resolveUsageVendors(agent(ttsOptions), "livekit:openai/gpt-4o-mini"),
+    );
+
+    const { ttsMetrics, ledger } = await speakOnSession(built, REPLY, { usageVendors });
+    await until(() => ttsMetrics.length >= 1, "the metrics");
+    await settle();
+
+    assert.deepEqual(
+      await ledger(),
+      {
+        characters: { quantity: REPLY.length, provider: "google", detail: "google.gemini.TTS" },
+        milliseconds: { quantity: REPLY_AUDIO_MS, provider: "google", detail: "google.gemini.TTS" },
+      },
+      JSON.stringify(ttsOptions),
+    );
+  }
+});
+
+test("with LIVEKIT_PIPELINE_GOOGLE_TTS, a google agent without a voice is billed for the TTS it is built with", () => {
+  const voiceless = agent({ vendor: "google" });
+  withEnv({ LIVEKIT_PIPELINE_GOOGLE_TTS: "google/custom-tts:narrator" }, () => {
+    assert.equal(buildPipelineTts(voiceless), "google/custom-tts:narrator");
+    assert.equal(resolvePipelineTts(voiceless), "google/custom-tts:narrator");
+    assert.deepEqual(resolveUsageVendors(voiceless, "livekit:openai/gpt-4o-mini").tts, {
+      vendor: "google",
+      detail: "google/custom-tts",
+    });
   });
 });
 

@@ -13,8 +13,8 @@ import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
-  inferTtsVendor,
   pipelineTtsVendor,
+  pipelineUsesGoogleTts,
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
@@ -214,14 +214,13 @@ export function buildPipelineTts(agent: Agent) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;
-  const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
 
   // Not on LiveKit Inference, so always a direct key, whatever LIVEKIT_PIPELINE_USE_PROVIDER_KEYS says.
   if (pipelineTtsVendor(agent) === "neuphonic") {
     return buildNeuphonicTts(agent);
   }
 
-  if (vendor === "google") {
+  if (pipelineUsesGoogleTts(agent)) {
     const custom = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS?.trim();
     if (custom) {
       const voice = String(t?.voice || "").trim();
