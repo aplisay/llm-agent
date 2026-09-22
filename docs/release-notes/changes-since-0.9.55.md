@@ -21,6 +21,10 @@ Pipecat), and **ci** (build and release pipeline).
 - **[livekit] Google TTS billing**: agents with `options.tts.vendor: "google"`
   and no `voice` now have their `tts` usage recorded under `google`. It was
   recorded under `cartesia`.
+- **[livekit] Handover usage** is recorded once. After an in-place
+  `transfer_agent` handover, pipeline agents recorded later `llm` tokens, `tts`
+  characters and milliseconds, and `stt` milliseconds once for every agent that
+  had held the call. On realtime models only an external TTS was affected.
 
 ## Voices - core+livekit+pipecat
 
