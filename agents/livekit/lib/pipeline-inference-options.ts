@@ -114,12 +114,27 @@ function normalizeTtsVendorString(
   return { vendor: s.toLowerCase() };
 }
 
+/** The configured TTS vendor (or the one a voice id implies), lowercased, without `/model` scoping. */
+export function pipelineTtsVendor(agent: Agent): string {
+  const t = agent.options?.tts;
+  const voice = String(t?.voice || "").trim();
+  return normalizeTtsVendorString(t?.vendor).vendor || (voice ? inferTtsVendor(voice) : "");
+}
+
 /**
  * TTS inference id, e.g. `cartesia/sonic-3:<voice-uuid>`
  */
 export function resolvePipelineTts(agent: Agent): string {
   const t = agent.options?.tts;
   const env = defaultPipelineEnv();
+
+  // Built by neuphonic-tts.ts, never through Inference; the string only names the billing vendor.
+  // Checked before the no-voice default, which would bill a voiceless Neuphonic agent as Cartesia.
+  if (pipelineTtsVendor(agent) === "neuphonic") {
+    const voice = String(t?.voice || "").trim();
+    const id = voice.includes(":") ? voice.split(":").pop()!.trim() : voice;
+    return id ? `neuphonic:${id}` : "neuphonic";
+  }
 
   if (!t?.voice) {
     return env.tts;
@@ -182,7 +197,7 @@ export function inferTtsVendor(voice: string): string {
   }
   if (voice.includes(":")) {
     const [v] = voice.split(":");
-    if (["cartesia", "elevenlabs", "google", "deepgram"].includes(v.toLowerCase())) {
+    if (["cartesia", "elevenlabs", "google", "deepgram", "neuphonic"].includes(v.toLowerCase())) {
       return v.toLowerCase();
     }
   }
