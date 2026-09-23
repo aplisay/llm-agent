@@ -1,26 +1,19 @@
 import {
   setupRealDatabase, teardownRealDatabase,
-  Agent, AgentSet, User, Organisation, UsageRecord,
+  Agent, AgentSet, Instance, User, Organisation, UsageRecord,
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
-import { readFileSync } from 'node:fs';
+import openapiRequestValidator from 'openapi-request-validator';
+
+// A CommonJS module compiled from TypeScript: the class sits on `default`.
+const OpenAPIRequestValidator = openapiRequestValidator.default ?? openapiRequestValidator;
 
 // The key makes the row load; the driver never reaches the network here (fetch is stubbed).
 process.env.TYPESAFE_API_KEY ||= 'test-key';
 const { default: Typesafe } = await import('../lib/models/typesafe.js');
+const { SIX, SIX_PROPERTIES, resultFunction } = await import('./fixtures/typesafe/six-questions.mjs');
 
-/**
- * The decision row at agent save time (docs/typesafe-jev.md): a pinned id
- * with one answerable `result` function saves as a text agent; every other
- * shape, tool, MCP server and voice option is refused with the fix in the
- * message; `options.decision` is refused elsewhere; a decision agent is
- * refused as a `delegate` target and as a hand-back `summaryAgent`, and by
- * the chat route; `GET /models` carries `kind`; and `/invoke` returns the
- * documented result and meters it under provider typesafe. The pure rules are
- * tests/typesafe-model.test.mjs.
- */
-
-const SIX = JSON.parse(readFileSync(new URL('./fixtures/typesafe/six-questions.json', import.meta.url), 'utf8'));
+// The decision row through the API (docs/typesafe-jev.md). The pure rules are tests/typesafe-model.test.mjs.
 
 const mockLogger = {
   info: () => { }, warn: () => { }, error: () => { }, debug: () => { }, child: () => mockLogger,
@@ -46,30 +39,6 @@ const TEXT_MODEL = 'text:openai/gpt-5.6-luna';
 const GPT_LIVE = 'pipecat:openai/gpt-live-1';
 const PIPELINE = 'pipecat:openai/gpt-4o';
 
-const SIX_PROPERTIES = {
-  outcome: {
-    type: 'string', description: 'How did the call end for the caller?',
-    enum: ['resolved', 'partially_resolved', 'unresolved', 'transferred', 'abandoned', 'wrong_number'],
-    'x-descriptions': {
-      resolved: 'The caller got what they called for',
-      transferred: 'The call was handed to a person or another agent',
-      abandoned: 'The caller gave up or hung up before the matter was dealt with',
-    },
-  },
-  needs_followup: { type: 'boolean', description: 'Does someone need to contact this caller again?' },
-  caller_sentiment: { type: 'string', description: "The caller's tone by the end of the call", 'x-levels': ['angry', 'frustrated', 'neutral', 'satisfied', 'delighted'] },
-  agent_error: { type: 'boolean', description: 'Did the agent give wrong or misleading information?' },
-  policy_breach: { type: 'boolean', description: 'Did the agent do something its instructions forbid?' },
-  escalation_missed: {
-    type: 'boolean', description: 'Did the caller ask for a human and not get one?',
-    'x-criteria': { true: 'The caller asked for a person and the call ended without a transfer', false: 'No request for a person, or the caller was transferred' },
-  },
-};
-
-const resultFunction = (properties = SIX_PROPERTIES, name = 'analyse') => ({
-  name, implementation: 'builtin', platform: 'result', description: 'The answers',
-  input_schema: { type: 'object', properties },
-});
 const restFunction = (name) => ({
   name, implementation: 'rest', url: 'https://example.com/hook', description: name,
   input_schema: { type: 'object', properties: {} },
@@ -89,16 +58,19 @@ async function waitFor(check, { attempts = 50, delayMs = 20 } = {}) {
 }
 
 describe('decision models at agent save time', () => {
-  let createAgent, agentChat, agentInvoke, modelList, createAgentSet;
+  let createAgent, updateAgent, agentChat, agentInvoke, modelList, createAgentSet, patchAgentSetForAgent, TextHandler;
   let user, org, decisionAgent, textAgent, voiceAgent;
 
   beforeAll(async () => {
     await setupRealDatabase();
     createAgent = (await import('../api/paths/agents.js')).default(mockLogger, {}, {}).POST;
+    updateAgent = (await import('../api/paths/agents/{agentId}.js')).default(mockLogger).PUT;
     agentChat = (await import('../api/paths/agents/{agentId}/chat.js')).default(mockLogger).POST;
     agentInvoke = (await import('../api/paths/agents/{agentId}/invoke.js')).default(mockLogger).POST;
     modelList = (await import('../api/paths/models.js')).default(mockLogger).GET;
     createAgentSet = (await import('../api/paths/agent-sets.js')).default(mockLogger, {}, {}).POST;
+    ({ patchAgentSetForAgent } = await import('../lib/agent-set-service.js'));
+    TextHandler = (await import('../lib/handlers/text.js')).default;
     org = await Organisation.create({ id: randomUUID(), name: 'Jev Test Org' });
     const dbUser = await User.create({
       id: randomUUID(),
@@ -124,6 +96,7 @@ describe('decision models at agent save time', () => {
 
   afterAll(async () => {
     await UsageRecord.destroy({ where: { organisationId: org.id } });
+    await Instance.destroy({ where: { organisationId: org.id } });
     await Agent.destroy({ where: { organisationId: org.id } });
     await AgentSet.destroy({ where: { organisationId: org.id } });
     await User.destroy({ where: { organisationId: org.id } });
@@ -218,6 +191,118 @@ describe('decision models at agent save time', () => {
       }],
     });
     expect(subagent.statusCode).toBe(200);
+  });
+
+  test('every decision driver in the text roster is recognised by the save-time rules', async () => {
+    const { isDecisionModelName } = await import('../lib/decision-limits.js');
+    const decisionClasses = TextHandler.models.filter((m) => m.kind === 'decision');
+    expect(decisionClasses.map((m) => m.name)).toEqual(['Typesafe']);
+    for (const Implementation of decisionClasses) {
+      expect(isDecisionModelName(`text:${Implementation.name.toLowerCase()}/${Implementation.allModels[0][0].split('/')[1]}`)).toBe(true);
+    }
+  });
+
+  describe('a target that later becomes a decision model', () => {
+    const update = async (agentId, body) => {
+      const res = makeRes(user);
+      await updateAgent(makeReq(body, { agentId }), res);
+      return res;
+    };
+    const jevBody = { modelName: JEV, functions: [resultFunction()], mcpServers: [] };
+    const mkText = () => Agent.create({
+      name: 'Backend', modelName: TEXT_MODEL, type: 'text', prompt: 'You are the backend.', userId: user.id, organisationId: org.id,
+    });
+
+    test('PUT refuses the switch while a delegate points at the agent, and allows it once the reference is gone', async () => {
+      const target = await mkText();
+      const voice = await create({ name: 'Sam', modelName: GPT_LIVE, prompt: 'You are Sam.', functions: [delegateFunction(target.id)] });
+      expect(voice.statusCode).toBe(200);
+      const refused = await update(target.id, jevBody);
+      expect(refused.statusCode).toBe(400);
+      expect(errorText(refused)).toMatch(/cannot run a decision model while Sam targets it with function brain \(delegate\)/);
+      expect((await Agent.findByPk(target.id)).modelName).toBe(TEXT_MODEL);
+      // An instance update: the model validator needs the whole row.
+      await (await Agent.findByPk(voice.body.id)).update({ functions: [] });
+      const allowed = await update(target.id, jevBody);
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.body.modelName).toBe(JEV);
+    });
+
+    test('PUT refuses the switch while a hand-back summaryAgent or a listener override names the agent', async () => {
+      const summariser = await mkText();
+      const handback = await create({
+        modelName: PIPELINE, prompt: 'You are Sam.',
+        options: { bridgedTransferToAgent: { 1: { agent: voiceAgent.id, summaryAgent: summariser.id } } },
+      });
+      expect(handback.statusCode).toBe(200);
+      const refused = await update(summariser.id, jevBody);
+      expect(refused.statusCode).toBe(400);
+      expect(errorText(refused)).toMatch(/summaryAgent/);
+      await (await Agent.findByPk(handback.body.id)).update({ options: {} });
+
+      const instance = await Instance.create({
+        agentId: voiceAgent.id, userId: user.id, organisationId: org.id, type: 'pipecat', key: 'k',
+        bridgedTransferToAgent: { 2: { agent: voiceAgent.id, summaryAgent: summariser.id } },
+      });
+      const viaListener = await update(summariser.id, jevBody);
+      expect(viaListener.statusCode).toBe(400);
+      expect(errorText(viaListener)).toMatch(new RegExp(`listener ${instance.id} targets it`));
+      await instance.destroy();
+      expect((await update(summariser.id, jevBody)).statusCode).toBe(200);
+    });
+
+    test('a patch-mode set save refuses a member switch while an untouched member delegates to it', async () => {
+      const res = makeRes(user);
+      await createAgentSet(makeReq({
+        name: 'Reception',
+        agents: [
+          { label: 'voice', name: 'Sam', modelName: GPT_LIVE, prompt: 'You are Sam.', functions: [{ ...delegateFunction('label:brain') }] },
+          { label: 'brain', name: 'Brain', type: 'text', modelName: TEXT_MODEL, prompt: 'You book appointments.' },
+        ],
+      }), res);
+      expect(res.statusCode).toBe(200);
+      const setId = res.body.id;
+      // The set's voice member is named Sam, so the message names it.
+      const patch = (agents) => patchAgentSetForAgent(setId, { agents }, user);
+      await expect(patch([{ label: 'brain', modelName: JEV, functions: [resultFunction()] }]))
+        .rejects.toMatchObject({ name: 'AgentSetValidationError', message: /Agent "brain" cannot run a decision model while Sam targets it/ });
+      // Rewriting the referrer in the same document lifts the block.
+      const patched = await patch([
+        { label: 'voice', functions: [], removeFunctions: ['brain'] },
+        { label: 'brain', modelName: JEV, functions: [resultFunction()] },
+      ]);
+      expect(patched.agents.find((a) => a.label === 'brain').modelName).toBe(JEV);
+    });
+
+    test('a patch that omits type and modelName keeps a text member a text member for its siblings', async () => {
+      const res = makeRes(user);
+      await createAgentSet(makeReq({
+        name: 'Triage',
+        agents: [
+          {
+            label: 'main', name: 'Main', modelName: PIPELINE, prompt: 'You are main.',
+            functions: [{
+              name: 'ask_judge', implementation: 'builtin', platform: 'subagent', description: 'Ask',
+              input_schema: { type: 'object', properties: { agent: { type: 'string', source: 'static', from: 'label:judge' }, q: { type: 'string', description: 'q' } } },
+            }],
+          },
+          { label: 'judge', name: 'Judge', type: 'text', modelName: TEXT_MODEL, prompt: 'You judge.' },
+        ],
+      }), res);
+      expect(res.statusCode).toBe(200);
+      const patched = await patchAgentSetForAgent(res.body.id, { agents: [{ label: 'judge', prompt: 'You judge kindly.' }, { label: 'main', prompt: 'Main v2.' }] }, user);
+      expect(patched.agents.find((a) => a.label === 'judge').type).toBe('text');
+    });
+  });
+
+  test('the invoke route accepts an object, a string or an array as input', () => {
+    const { apiDoc } = agentInvoke;
+    const validator = new OpenAPIRequestValidator({ requestBody: apiDoc.requestBody, parameters: [] });
+    const check = (input) => validator.validateRequest({ headers: { 'content-type': 'application/json' }, body: { input }, params: {}, query: {} });
+    expect(check({ transcript: [] })).toBeUndefined();
+    expect(check('Caller: I want a refund')).toBeUndefined();
+    expect(check([{ role: 'user', text: 'hi' }])).toBeUndefined();
+    expect(check(42)?.status).toBe(400);
   });
 
   test('inside an agent set a decision member is refused as a delegate target by label', async () => {

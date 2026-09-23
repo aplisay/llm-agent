@@ -76,7 +76,8 @@ Pipecat), and **ci** (build and release pipeline).
   including its single retry; no fallback to a generative model.
 - **[core] Jev billing**: `llm|typesafe|jev-1.13.0` usage in `input_tokens`
   and `output_tokens`. `scripts/add-typesafe-rate-lines.mjs` adds the input
-  line at 3.5 micro-pence per token and a zero output line to existing cards.
+  line at 0.035 micros (1e-6 GBP) per token and a zero output line to existing
+  cards.
 - **[core] Documentation**: new [typesafe-jev.md](../typesafe-jev.md).
 
 ## Upgrade notes

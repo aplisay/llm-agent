@@ -485,6 +485,7 @@ components:
           $ref: "#/components/schemas/CallHookConfig"
         decision:
           type: object
+          nullable: true
           description: |-
             Accepted only on `decision`-kind models (`text:typesafe/...`, see docs/typesafe-jev.md);
             rejected on every other model. `minConfidence` (0 to 1) turns on confidence gating: a
@@ -494,6 +495,7 @@ components:
           properties:
             minConfidence:
               type: number
+              nullable: true
               minimum: 0
               maximum: 1
               example: 0.7

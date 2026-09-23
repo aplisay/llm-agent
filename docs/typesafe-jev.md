@@ -53,10 +53,11 @@ whether it carried 6 or 20 questions; 30 concurrent requests answered in
 under 1.3 s each.
 
 A request the route refuses (a malformed body, an unknown model, a bad key)
-fails with a 502 whose message carries the route's own error: the vendor's
-`detail` on the direct route, OpenRouter's `error` envelope with HTTP 400 on
-the OpenRouter route. The vendor's `x-typesafe-request-id` is logged when
-present; OpenRouter sends none, so its generation id is logged instead.
+fails with a 502 whose message carries the first 500 characters of the
+route's own error: the vendor's `detail` on the direct route, OpenRouter's
+`error` envelope with HTTP 400 on the OpenRouter route. Every failure is
+logged with the vendor status and the request id: the vendor's
+`x-typesafe-request-id` when present, else OpenRouter's generation id.
 
 ## Defining questions
 
@@ -149,7 +150,7 @@ POST /api/agents/{agentId}/invoke
 }
 ```
 
-`input` may be a string, an object or an array; it is sent as the state as it
+`input` may be an object, a string or an array; it is sent as the state as it
 is, not stringified. `metadata` is not sent to the model: a decision agent has
 no functions to feed it to, so put what the model should see in `input`. The
 state is not treated as hostile by the model, so keep caller speech and other
@@ -185,7 +186,9 @@ viewers render it unchanged. `result`:
 - A Choice property carries the chosen option. A Score property carries the
   most probable level name; on a tie the lower level wins. The vendor's
   expected-value float for a Score is not returned; it can be computed from
-  `probabilities`.
+  `probabilities` by looking each level up by name in the order of the
+  schema's `x-levels`. Key order in the JSON maps carries no meaning: a level
+  named like a number is serialised first whatever its position.
 - `confidence` and `probabilities` hold the Choice and Score detail, keyed by
   property. Noul properties carry their probability as the value and have no
   entry in either map.
@@ -217,15 +220,17 @@ unset and read `confidence`.
 Each invocation records `llm` usage under provider `typesafe`, detail
 `jev-1.13.0`, in `input_tokens` and `output_tokens` as the vendor reports
 them. Output tokens are reported but free. `scripts/add-typesafe-rate-lines.mjs`
-adds an `input_tokens` line at 3.5 micro-pence per token (USD 0.042 per
+adds an `input_tokens` line at 0.035 micros per token (USD 0.042 per
 million at 1.20 USD per GBP; `TYPESAFE_INPUT_PRICE_MICROS` overrides) and a
 zero `output_tokens` line to the default card and to every card that prices a
-text model, so the rows settle matched rather than "not priced". A
-3,000-token state with six questions costs about 10,000 micro-pence (a
-hundredth of a penny). Output tokens run to about 28 per question. Budget
-about 2.5 characters per token for a JSON-shaped input: keys, quotes and
-timestamps are tokens too, so a transcript sent as `{ role, text, at }`
-objects costs about twice what its words alone would.
+text model, so the rows settle matched rather than "not priced". Rate-card
+prices are in micros (1e-6 GBP) per token, so the Jev input line is 0.035,
+against about 3 for a frontier text model. A 3,000-token state with six
+questions costs about 105 micros, a hundredth of a penny. Output tokens run
+to about 28 per question. Budget about 2.5 characters per token for a
+JSON-shaped input: keys, quotes and timestamps are tokens too, so a
+transcript sent as `{ role, text, at }` objects costs about twice what its
+words alone would.
 
 ## Limits and caveats
 

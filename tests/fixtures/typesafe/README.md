@@ -9,9 +9,7 @@ Each file records its provenance in a `source` field:
 - `recorded` files are verbatim bodies from a live exchange, with the date
   and route in `note`. `six-questions.json`, `score-two-levels.json` and
   `score-ten-levels.json` were recorded on 2026-09-22 on the OpenRouter
-  route by the P0 spike (`aplisay-strategy/research/jev-spike.mjs`, which
-  rewrites them with `RECORD_FIXTURES=<this directory>`).
-  `openrouter-error-400.json` and `openrouter-error-401.json` are
+  route. `openrouter-error-400.json` and `openrouter-error-401.json` are
   OpenRouter's error envelope, which is not the vendor's `detail` array.
 - `schema` files follow the vendor's published OpenAPI document
   (`https://api.typesafe.ai/openapi.json`, version 0.2.0, read on

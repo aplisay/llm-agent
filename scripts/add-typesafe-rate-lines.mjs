@@ -18,8 +18,10 @@
  * driver records (lib/models/llm.js) and lib/rates.js matches by exact equality.
  *
  * Pricing: the vendor lists USD 0.042 per million input tokens, output free.
- * At 1.20 USD per GBP that is 3.5 micro-pence per token, the default.
- * TYPESAFE_INPUT_PRICE_MICROS sets the input price for every card instead.
+ * priceMicros is in micros (1e-6 GBP, see lib/rates.js), so at 1.20 USD per
+ * GBP that is 0.035 micros per token (GBP 0.035 per million tokens), the
+ * default. TYPESAFE_INPUT_PRICE_MICROS sets the input price for every card
+ * instead.
  *
  * Target cards: the default card ($RATE_NAME, else the `defaultRateName`
  * Metadata singleton, else 'default') plus every other card whose covering
@@ -35,12 +37,12 @@ import { hasLine } from './add-xai-rate-lines.mjs';
 
 export const PROVIDER = 'typesafe';
 export const MODEL = 'jev-1.13.0';
-/** USD 0.042 per million input tokens at 1.20 USD per GBP, in micro-pence per token. */
-export const DEFAULT_INPUT_PRICE_MICROS = 3.5;
+/** USD 0.042 per million input tokens at 1.20 USD per GBP, in micros (1e-6 GBP) per token. */
+export const DEFAULT_INPUT_PRICE_MICROS = 0.035;
 
 /** The two Jev lines: input priced per token, output free. */
-export function typesafeLines(inputPriceMicros = DEFAULT_INPUT_PRICE_MICROS, model = MODEL) {
-  const match = (unit) => ({ technology: 'llm', provider: PROVIDER, detail: model, unit });
+export function typesafeLines(inputPriceMicros = DEFAULT_INPUT_PRICE_MICROS) {
+  const match = (unit) => ({ technology: 'llm', provider: PROVIDER, detail: MODEL, unit });
   return [
     { dim: 'model', match: match('input_tokens'), unit: 'token', priceMicros: inputPriceMicros },
     { dim: 'model', match: match('output_tokens'), unit: 'token', priceMicros: 0 },
@@ -59,8 +61,8 @@ export function pricesTextModels(lines) {
 }
 
 /** The lines to add to one card, minus those already present. Pure, for tests. */
-export function typesafeAdditions(lines, inputPriceMicros = DEFAULT_INPUT_PRICE_MICROS, model = MODEL) {
-  return typesafeLines(inputPriceMicros, model).filter((l) => !hasLine(lines, l));
+export function typesafeAdditions(lines, inputPriceMicros = DEFAULT_INPUT_PRICE_MICROS) {
+  return typesafeLines(inputPriceMicros).filter((l) => !hasLine(lines, l));
 }
 
 async function main() {
@@ -72,7 +74,7 @@ async function main() {
   }
   const dryRun = Boolean(process.env.DRY_RUN);
   if (process.env.TYPESAFE_INPUT_PRICE_MICROS && !Number.isFinite(Number(process.env.TYPESAFE_INPUT_PRICE_MICROS))) {
-    throw new Error('TYPESAFE_INPUT_PRICE_MICROS must be a number (micro-pence per token)');
+    throw new Error('TYPESAFE_INPUT_PRICE_MICROS must be a number (micros, 1e-6 GBP, per token)');
   }
   const price = inputPriceFor();
 
@@ -151,7 +153,7 @@ async function main() {
           throw e;
         }
       }
-      additions.forEach((l) => console.log(`  + llm|${l.match.provider}|${l.match.detail} ${l.match.unit} @ ${l.priceMicros} micro-pence/${l.unit}`));
+      additions.forEach((l) => console.log(`  + llm|${l.match.provider}|${l.match.detail} ${l.match.unit} @ ${l.priceMicros} micros/${l.unit}`));
     }
   } finally {
     await client.end();
