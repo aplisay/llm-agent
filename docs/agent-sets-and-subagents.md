@@ -245,7 +245,10 @@ A new agent type for headless work:
 * Text agents use `text:<provider>/<model>` model names
   (e.g. `text:openai/gpt-4o`, `text:anthropic/claude-3-5-sonnet-20240620`,
   `text:gemini/gemini-1.5-pro`, `text:kimi/...`, `text:xai/...`) — the same provider
-  implementations as the Jambonz pipeline, with no audio leg.
+  implementations as the Jambonz pipeline, with no audio leg. The `decision`-kind
+  row `text:typesafe/jev-1.13.0` ([typesafe-jev.md](typesafe-jev.md)) is a text
+  agent that answers typed questions instead of conversing; it is a valid
+  `subagent` target and nothing else.
 * They cannot `listen`; they are invoked:
   * by a voice agent through a builtin `subagent` platform function — the
     function's `generated` parameters become the subagent's task input, and

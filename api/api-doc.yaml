@@ -150,6 +150,18 @@ components:
             accept a `delegate` function. See docs/gpt-live.md.
           type: boolean
           example: false
+        kind:
+          type: string
+          enum: [generative, decision]
+          default: generative
+          description: |-
+            `generative` rows hold a conversation and run a tool loop. `decision` rows (the
+            `text:typesafe/` models) answer the agent's `result` function schema in one exchange: they
+            accept only a single builtin `result` function whose properties are an enum (Choice), a
+            boolean (Noul) or `x-levels` (Score), take no other functions, MCP servers or voice
+            options, cannot chat, and cannot be a `delegate` or `summaryAgent` target. Pickers for
+            voice agents should hide them. See docs/typesafe-jev.md.
+          example: generative
       required:
         - name
         - description
@@ -471,6 +483,22 @@ components:
           example: 0.2
         callHook:
           $ref: "#/components/schemas/CallHookConfig"
+        decision:
+          type: object
+          nullable: true
+          description: |-
+            Accepted only on `decision`-kind models (`text:typesafe/...`, see docs/typesafe-jev.md);
+            rejected on every other model. `minConfidence` (0 to 1) turns on confidence gating: a
+            Choice or Score answer whose confidence is below it is returned as `null` with its
+            distribution still in `result.probabilities`, and `result.decision` is `"review"`
+            (else `"auto"`). Without this option `result.decision` is absent.
+          properties:
+            minConfidence:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 1
+              example: 0.7
         recording:
           type: object
           description: |-
@@ -1259,6 +1287,26 @@ components:
           type: string
           description: ID of the listener/instance associated with the call (if available).
           example: "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777"
+        organisationId:
+          type: string
+          nullable: true
+          description: The organisation that owns the call. Not covered by `hash`.
+          example: "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f"
+        parentId:
+          type: string
+          nullable: true
+          description: |-
+            The parent call when this call is one leg of a transfer, hand-back or bridged transfer;
+            `null` on a root call. Not covered by `hash`.
+          example: null
+        modelName:
+          type: string
+          nullable: true
+          description: |-
+            The model this leg ran on, from the call record. A telephony bridged transfer creates its
+            human-to-human segment as its own leg with the sentinel `telephony:bridged-call`; a WebRTC
+            relay leg carries the agent's model. Not covered by `hash`.
+          example: "livekit:openai/gpt-4o"
         callerId:
           type: string
           description: Caller number for the call.

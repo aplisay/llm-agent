@@ -1,0 +1,119 @@
+{
+  "source": "recorded",
+  "note": "openrouter route, 2026-09-22, POST https://openrouter.ai/api/v1/systemone",
+  "request": {
+    "model": "typesafe/jev-1.13",
+    "state": {
+      "instructions": "You review calls handled by an AI phone agent for a UK business. Judge only from the transcript. The agent is forbidden from taking card details over the phone and from promising refunds.",
+      "input": {
+        "transcript": [
+          {
+            "role": "agent",
+            "text": "Thank you for calling Northwind Energy. How can I help today?",
+            "at": "2025-09-22T11:20:00.000Z"
+          },
+          {
+            "role": "user",
+            "text": "My bill is double what it was last month and I want to talk to someone about it.",
+            "at": "2025-09-22T11:20:08.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I can help with that. Can you give me your account number?",
+            "at": "2025-09-22T11:20:16.000Z"
+          },
+          {
+            "role": "user",
+            "text": "I do not have it to hand. I just want to speak to a person.",
+            "at": "2025-09-22T11:20:24.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I understand. Without the account number I cannot look at the bill. Do you have a recent bill nearby?",
+            "at": "2025-09-22T11:20:32.000Z"
+          },
+          {
+            "role": "user",
+            "text": "No. Put me through to a human please.",
+            "at": "2025-09-22T11:20:40.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I am sorry, I am not able to transfer you right now. You can call back with your account number and I will look into it.",
+            "at": "2025-09-22T11:20:48.000Z"
+          },
+          {
+            "role": "user",
+            "text": "This is ridiculous. Forget it.",
+            "at": "2025-09-22T11:20:56.000Z"
+          }
+        ],
+        "durationSeconds": 64,
+        "reason": "caller_hangup",
+        "agent": {
+          "id": "11111111-2222-3333-4444-555555555555",
+          "name": "Sam"
+        }
+      }
+    },
+    "questions": {
+      "sentiment": {
+        "type": "score",
+        "instructions": "The caller's tone by the end of the call",
+        "criteria": [
+          "furious",
+          "angry",
+          "annoyed",
+          "frustrated",
+          "neutral",
+          "content",
+          "pleased",
+          "satisfied",
+          "happy",
+          "delighted"
+        ]
+      }
+    }
+  },
+  "response": {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+      "sentiment": {
+        "type": "score",
+        "score": 1.43,
+        "legend": {
+          "0": "furious",
+          "1": "angry",
+          "2": "annoyed",
+          "3": "frustrated",
+          "4": "neutral",
+          "5": "content",
+          "6": "pleased",
+          "7": "satisfied",
+          "8": "happy",
+          "9": "delighted"
+        },
+        "probabilities": {
+          "0": 0.05,
+          "1": 0.62,
+          "2": 0.19,
+          "3": 0.14,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0
+        },
+        "confidence": 0.79
+      }
+    },
+    "usage": {
+      "input_tokens": 1004,
+      "output_tokens": 18,
+      "cost": 0.000042168
+    },
+    "id": "gen-dec-1790099000-Jj1zT50PExpt1iAYV6vg",
+    "provider": "TypeSafe"
+  }
+}
