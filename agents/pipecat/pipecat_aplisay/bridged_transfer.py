@@ -50,6 +50,7 @@ from typing import Any, Awaitable, Callable, Optional
 from loguru import logger
 
 from . import api_client
+from .constants import BRIDGED_CALL_MODEL
 
 # Matches the server-side validation in lib/database.js — 1-8 chars of
 # the keypad symbols RFC 4733 carries (A-D are unsupported end-to-end).
@@ -312,13 +313,13 @@ async def prepare_bridge_monitor(ctx: BtaContext, *, platform: str) -> BtaContex
                 "platformCallId": f"bridge-{ctx.parent_call_id}",
                 "calledId": ctx.destination or ctx.called_id,
                 "callerId": ctx.caller_id,
-                "modelName": "telephony:bridged-call",
+                "modelName": BRIDGED_CALL_MODEL,
                 "options": {},
                 "metadata": {
                     **(ctx.metadata or {}),
                     "aplisay": {
                         **aplisay_meta,
-                        "model": "telephony:bridged-call",
+                        "model": BRIDGED_CALL_MODEL,
                         "bridgeOf": ctx.parent_call_id,
                     },
                 },

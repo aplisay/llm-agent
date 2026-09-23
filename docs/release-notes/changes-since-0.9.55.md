@@ -43,6 +43,15 @@ Pipecat), and **ci** (build and release pipeline).
   inside a sentence is kept.
 - **[core] Documentation**: new [neuphonic.md](../neuphonic.md).
 
+## Transfers - pipecat
+
+- **[pipecat] WebRTC blind transfers** record the telephony leg with
+  `modelName: "telephony:bridged-call"`, as LiveKit does. The leg is no longer
+  billed as voice minutes on the agent's model.
+- **[pipecat] WebRTC consultative transfers** end the consultation call record
+  on `accept_transfer`, and a new `telephony:bridged-call` record covers the
+  rest of the leg. The whole leg was recorded on the agent's model.
+
 ## Upgrade notes
 
 - **[core] Database schema** stays at v66.

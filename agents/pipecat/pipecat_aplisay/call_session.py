@@ -50,7 +50,7 @@ from .mcp_tools import (
     close_mcp_servers, connect_mcp_servers,
 )
 from .prompt_metadata import prompt_with_metadata
-from .constants import DISCONNECT_REASONS, PLATFORM
+from .constants import BRIDGED_CALL_MODEL, DISCONNECT_REASONS, PLATFORM
 from .pipeline_error_alarm import PipelineErrorAlarm
 from .recording import RecordingSession
 from .sip_gateway.base import (
@@ -272,6 +272,11 @@ class CallSession:
     # Set on a WebRTC-origin parent while a consultative leg is live (the
     # TransferAgent bot session), so teardown can stop it with the parent.
     _consult_session: Optional["CallSession"] = None
+    # On a consult leg dialled from a WebRTC parent: the routing its record was
+    # created with, and the task that moves the leg onto a bridged-call record
+    # once ``accept_transfer`` fires (see ``_start_consult_bridged_segment``).
+    _bridged_route: Optional[dict] = None
+    _bridged_handover: Optional[Any] = None
     # consultFeedback flag from the parent's transfer tool call. When False
     # (default), a rejected consult returns only a generic "Transfer failed" to
     # the parent agent; when True, the target's detailed reason is shared.
@@ -1163,6 +1168,7 @@ class CallSession:
                 await consult.gateway_session.shutdown()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"consult leg gateway shutdown raised: {e}")
+            await self._end_consult_bridged_segment(consult)
 
     async def _finalise_recording(self) -> None:
         recording = self._recording
@@ -2492,15 +2498,36 @@ class CallSession:
         outbound_trunk_id: Optional[str] = None
     ) -> tuple[api_client.CallRecord, str]:
         """Create + start the telephony-leg Call record (child of the browser
-        call) and return it with its session id."""
+        call) and return it with its session id.
+
+        A blind leg has no bot on it, so its record is a bridged call from the
+        start. A consult leg runs the TransferAgent on the agent's model until
+        ``accept_transfer`` moves the rest of it onto a bridged-call record."""
         import uuid as _uuid
 
         leg_session_id = f"wrtc-{'consult' if consult else 'bridge'}-{_uuid.uuid4()}"
+        leg_call = await self._create_leg_record(
+            session_id=leg_session_id,
+            caller_id=caller_id,
+            destination=destination,
+            model_name=self.agent["modelName"] if consult else BRIDGED_CALL_MODEL,
+            consult=consult,
+            outbound_trunk_id=outbound_trunk_id,
+        )
+        await api_client.start_call(leg_call)
+        return leg_call, leg_session_id
+
+    async def _create_leg_record(
+        self, *, session_id: str, caller_id: str, destination: str,
+        model_name: str, consult: bool, outbound_trunk_id: Optional[str],
+    ) -> api_client.CallRecord:
+        """Create (but do not start) a telephony-leg Call record, child of the
+        browser call."""
         metadata: dict = {
             "aplisay": {
                 "callerId": caller_id,
                 "calledId": destination,
-                "model": self.agent["modelName"],
+                "model": model_name,
             },
             "outbound": True,
             "bridgeOf": self.call.id,
@@ -2508,18 +2535,18 @@ class CallSession:
         if consult:
             metadata["aplisay"]["transferConsultation"] = True
             metadata["aplisay"]["originalCallId"] = self.call.id
-        leg_call = await api_client.create_call(
+        return await api_client.create_call(
             {
                 "userId": self.agent["userId"],
                 "organisationId": self.agent["organisationId"],
                 "instanceId": self.instance["id"],
                 "agentId": self.agent["id"],
                 "platform": PLATFORM,
-                "platformCallId": leg_session_id,
+                "platformCallId": session_id,
                 "parentId": self.call.id,
                 "calledId": destination,
                 "callerId": caller_id,
-                "modelName": self.agent["modelName"],
+                "modelName": model_name,
                 # Destination billing (D3): the carried dial to the transfer target is
                 # chargeable when it egresses our public trunk (set by the caller from
                 # the resolved egress); a registration B2BUA leg leaves this None.
@@ -2528,8 +2555,6 @@ class CallSession:
                 "metadata": metadata,
             }
         )
-        await api_client.start_call(leg_call)
-        return leg_call, leg_session_id
 
     async def _do_webrtc_bridge(self, args: dict) -> dict:
         """Blind WebRTC→telephony transfer entry point.
@@ -2730,10 +2755,11 @@ class CallSession:
             self._transfer_failed(f"egress resolution failed: {e}")
             return
 
+        outbound_trunk_id = _chargeable_outbound_trunk_id(egress)
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
                 caller_id=egress.caller_id, destination=destination, consult=True,
-                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
+                outbound_trunk_id=outbound_trunk_id,
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create consult call record: {e}")
@@ -2759,6 +2785,12 @@ class CallSession:
             self._transfer_failed(f"could not reach transfer target: {e}")
             return
 
+        consult_session._bridged_route = {
+            "session_id": leg_session_id,
+            "caller_id": egress.caller_id,
+            "destination": destination,
+            "outbound_trunk_id": outbound_trunk_id,
+        }
         self._consult_session = consult_session
         # Run the TransferAgent bot on the consult leg. accept/reject tools on it
         # drive our transfer_state and, on accept, bridge the relay endpoints.
@@ -2775,6 +2807,7 @@ class CallSession:
                 await consult_session.gateway_session.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+            await self._end_consult_bridged_segment(consult_session)
             # If the bridge was already engaged (accept_transfer fired) and the
             # target leg has now ended, the caller has no agent to fall back
             # to — drop them too. Before accept (consultation in progress, or a
@@ -2790,6 +2823,64 @@ class CallSession:
             await api_client.end_call(call, reason=reason)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"end_call failed for {getattr(call, 'id', '?')}: {e}")
+
+    async def _start_consult_bridged_segment(self, consult: "CallSession") -> None:
+        """``accept_transfer`` on a WebRTC consult: the TransferAgent steps aside
+        and the two humans talk over the relay. End the consultation record and
+        carry the rest of the leg on a ``telephony:bridged-call`` record, as the
+        LiveKit worker's ``finaliseBridgedCall`` does. Best-effort: the relay is
+        already up and stays up whatever happens here."""
+        handover = self._hold_task(
+            asyncio.create_task(self._consult_to_bridged_record(consult))
+        )
+        # Teardown waits for this task before ending the record, so a leg that
+        # drops mid-hand-over cannot leave a started record that is never ended.
+        consult._bridged_handover = handover
+        await asyncio.shield(handover)
+
+    async def _consult_to_bridged_record(
+        self, consult: "CallSession"
+    ) -> Optional[api_client.CallRecord]:
+        route = consult._bridged_route
+        # An ended consultation record means the leg is already going away, so
+        # there is no bridged segment to record.
+        if route is None or consult.call.end_called:
+            return None
+        try:
+            bridged = await self._create_leg_record(
+                **route, model_name=BRIDGED_CALL_MODEL, consult=False
+            )
+        except Exception as e:  # noqa: BLE001
+            # The consultation record stays open and covers the whole leg.
+            logger.warning(f"webrtc consult: bridged call record creation failed: {e}")
+            return None
+        # End before start: the concurrency limiter counts every live record,
+        # so the other order could refuse the bridged record at the limit.
+        await self._safe_end_call(
+            consult.call, f"Transfer accepted, continued as bridged call {bridged.id}"
+        )
+        try:
+            await api_client.start_call(bridged)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"webrtc consult: bridged call record start failed: {e}")
+            return None
+        logger.bind(consult_call_id=consult.call.id, bridged_call_id=bridged.id).info(
+            "webrtc consult: bridged segment continues on its own call record"
+        )
+        return bridged
+
+    async def _end_consult_bridged_segment(self, consult: "CallSession") -> None:
+        """End the bridged record an accepted WebRTC consult moved onto, once
+        the hand-over has settled. Idempotent."""
+        handover, consult._bridged_handover = consult._bridged_handover, None
+        if handover is None:
+            return
+        await asyncio.wait({handover})
+        if handover.cancelled() or handover.exception() is not None:
+            return
+        bridged = handover.result()
+        if bridged is not None:
+            await self._safe_end_call(bridged, DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
 
     # ---- Lifecycle ----
 
@@ -2855,6 +2946,7 @@ def _builtin_consult_accept(consult_session: CallSession):
                 media_relay.bridge(
                     parent.relay_endpoint, consult_session.relay_endpoint
                 )
+                await parent._start_consult_bridged_segment(consult_session)
             elif parent._consult_use_refer:
                 try:
                     await parent.gateway_session.attended_refer_with(
