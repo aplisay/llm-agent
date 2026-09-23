@@ -132,7 +132,7 @@ describe('decision models at agent save time', () => {
   test('a free-string property is refused with the message', async () => {
     await expectRejected({ modelName: JEV, functions: [resultFunction({ ...SIX_PROPERTIES, notes: { type: 'string', description: 'Notes' } })] },
       /notes: a decision model can answer an enum \(Choice\), a boolean \(Noul\) or x-levels \(Score\); a free string is not answerable/);
-    await expectRejected({ modelName: JEV, functions: [resultFunction({ score: { type: 'number', description: 'n' } })] }, /type "number" is not answerable/);
+    await expectRejected({ modelName: JEV, functions: [resultFunction({ rating: { type: 'number', description: 'n' } })] }, /type "number" is not answerable/);
     await expectRejected({ modelName: JEV, functions: [resultFunction({ mood: { type: 'string', description: 'm', enum: ['a', 'b'], 'x-levels': ['a', 'b'] } })] }, /cannot both be set/);
     await expectRejected({ modelName: JEV, functions: [resultFunction({ mood: { type: 'string', description: 'm', enum: ['only'] } })] }, /between 2 and 255/);
     await expectRejected({ modelName: JEV, functions: [resultFunction({ mood: { type: 'string', description: 'm', 'x-levels': Array.from({ length: 11 }, (_, i) => `l${i}`) } })] }, /between 2 and 10/);
