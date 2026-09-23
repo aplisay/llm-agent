@@ -84,21 +84,27 @@ Pipecat), and **ci** (build and release pipeline).
 ## Call hooks and invocation - core
 
 - **[core] Call hook payload** carries `organisationId`, `parentId` and
-  `modelName` on `start` and `end` events. `parentId` is `null` on a root
-  call; a bridged human leg reports `modelName: "telephony:bridged-call"`.
-  Additive; the hash is unchanged and does not cover them.
+  `modelName` on `start` and `end` events, from the call record. `parentId`
+  is `null` on a root call; a telephony bridged human leg reports
+  `modelName: "telephony:bridged-call"`. Additive; the hash is unchanged and
+  does not cover them.
 - **[core] `analysisService` role**: `agent:invoke` and the cross-tenant
-  `agent:readAll`, nothing else, for a server-to-server credential that
-  analyses calls with no user session. `scripts/provision-analysis-service.mjs`
-  mints it as `LLM_AGENT_ANALYSIS_TOKEN`. `agent:readAll` joins the agent
-  vocabulary; no role for a person holds it.
+  `agent:readAll`, nothing else, with a model list of `text:typesafe/` only,
+  for a server-to-server credential that analyses calls with no user session.
+  `scripts/provision-analysis-service.mjs` mints it as
+  `LLM_AGENT_ANALYSIS_TOKEN` and rotates it on a re-run. `agent:readAll` joins
+  the agent vocabulary; no role for a person holds it.
 - **[core] `POST /agents/{id}/invoke` `callId`**: accepted from any principal,
-  must be a call in the attributed organisation, and is stamped on the
-  invocation's usage rows so the spend shows in `GET /usage?callId=`.
+  must be a call in the organisation the usage is charged to, and is stamped
+  on the invocation's usage rows so the spend shows in `GET /usage?callId=`.
+  The rows are priced when the invocation runs, not at the call's start.
 - **[core] `POST /agents/{id}/invoke` `organisationId`**: accepted only from a
   principal with no organisation that holds `agent:readAll`. The agent is
-  looked up in that organisation, its model allow-list applies, and the usage
-  is attributed to it with no user. A principal with an organisation gets 400.
+  looked up in that organisation, which must be active and not billing
+  blocked; its model allow-list applies, and the usage is attributed to it
+  with no user. A principal with an organisation gets 400.
+- **[core] `POST /agents/{id}/invoke` metering** records a run that outlives
+  `SUBAGENT_TIMEOUT` when it ends, instead of dropping its tokens.
 - **[core] Documentation**: [call-hooks.md](../call-hooks.md) gains the fields
   and the service-key section.
 

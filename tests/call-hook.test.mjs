@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { resolveCallHook, buildCallHookPayload, signCallHookPayload } from '../lib/call-hook.js';
 
 describe('call-hook helper', () => {
@@ -86,14 +87,21 @@ describe('call-hook helper', () => {
     });
   });
 
-  test('buildCallHookPayload falls back to the agent for organisationId and modelName', () => {
+  test('buildCallHookPayload takes the lineage fields from the call row only, never from the agent', () => {
     const call = { id: 'call-3', agentId: 'agent-1' };
     const agent = { id: 'agent-1', organisationId: 'org-9', modelName: 'livekit:openai/gpt-4o' };
     const payload = buildCallHookPayload({ event: 'end', call, agent, listenerOrInstance: null });
-    expect(payload).toMatchObject({ organisationId: 'org-9', modelName: 'livekit:openai/gpt-4o', parentId: null });
-    // The hash never covers the new fields: same inputs, same hash.
-    expect(signCallHookPayload({ hashKey: 'k', callId: 'call-3', listenerId: '', agentId: 'agent-1' }))
-      .toBe(signCallHookPayload({ hashKey: 'k', callId: 'call-3', listenerId: '', agentId: 'agent-1' }));
+    expect(payload).toMatchObject({ organisationId: null, modelName: null, parentId: null });
+  });
+
+  test('the hash covers hashKey, callId, listenerId and agentId and nothing else', () => {
+    const call = { id: 'call-3', agentId: 'agent-1', instanceId: 'inst-1', organisationId: 'org-1', parentId: 'call-1', modelName: 'x' };
+    const payload = buildCallHookPayload({ event: 'end', call, agent: null, listenerOrInstance: null, reason: 'r' });
+    const hash = signCallHookPayload({ hashKey: 'k', ...payload });
+    // HMAC-SHA256 of "k|call-3|inst-1|agent-1" with key "k", computed independently.
+    const expected = createHmac('sha256', 'k').update('k|call-3|inst-1|agent-1').digest('hex');
+    expect(hash).toBe(expected);
+    expect(signCallHookPayload({ hashKey: 'k', ...payload, organisationId: 'other', modelName: 'other', parentId: 'other' })).toBe(expected);
   });
 
   test('signCallHookPayload produces deterministic hash', () => {

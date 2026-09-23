@@ -1303,8 +1303,9 @@ components:
           type: string
           nullable: true
           description: |-
-            The model this leg ran on. A bridged human-to-human segment is its own leg with the
-            sentinel `telephony:bridged-call`. Not covered by `hash`.
+            The model this leg ran on, from the call record. A telephony bridged transfer creates its
+            human-to-human segment as its own leg with the sentinel `telephony:bridged-call`; a WebRTC
+            relay leg carries the agent's model. Not covered by `hash`.
           example: "livekit:openai/gpt-4o"
         callerId:
           type: string

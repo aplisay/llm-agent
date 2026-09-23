@@ -1,10 +1,10 @@
 import crypto from 'crypto';
 import { Agent, Call, Organisation } from '../../../../lib/database.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
-import { runSubagent, SubagentError } from '../../../../lib/subagent.js';
+import { runSubagent, organisationAllowsModel, SubagentError } from '../../../../lib/subagent.js';
 import { recordSubagentUsage } from '../../../../lib/usage.js';
-import { requirePermission, can, ORGANISATION_RBAC_ATTRIBUTES } from '../../../../lib/auth/permissions.js';
-import { isModelAllowed, effectiveAllowedModels } from '../../../../lib/auth/model-access.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { isModelAllowed } from '../../../../lib/auth/model-access.js';
 
 let log;
 
@@ -24,41 +24,38 @@ const agentInvoke = async (req, res) => {
   if (!requirePermission(res, 'agent', 'invoke')) return;
   const principal = res.locals.user;
 
-  // Who the usage rows belong to: the principal's own organisation, or the
-  // organisation an organisation-less service principal names in the body
-  // (the polite-ai call-analysis seam, docs/call-hooks.md). On that path the
-  // rows carry no user: the actor is not a member of the organisation.
-  let attribution = { organisationId: principal?.organisationId || null, userId: principal?.id || null };
-  let where = { id: agentId, ...scopeWhereForUser(principal) };
-  let onBehalfOf = null;
+  // The tenant the usage is charged to: the principal's own organisation, or the one an
+  // organisation-less service principal names in the body (docs/call-hooks.md).
   if (organisationId !== undefined && organisationId !== null) {
     if (principal?.organisationId) {
       return res.status(400).send({ message: 'organisationId is accepted only from a principal with no organisation of its own' });
     }
-    if (!can(principal, 'agent', 'readAll')) {
-      return res.status(403).send({ message: 'forbidden', detail: 'Requires agent:readAll to invoke on behalf of an organisation' });
-    }
+    if (!requirePermission(res, 'agent', 'readAll')) return;
     if (!UUID_RE.test(String(organisationId))) {
       return res.status(400).send({ message: 'organisationId must be an organisation UUID' });
     }
-    where = { id: agentId, organisationId };
-    attribution = { organisationId, userId: null };
-    onBehalfOf = organisationId;
   }
   if (callId !== undefined && callId !== null && !UUID_RE.test(String(callId))) {
     return res.status(400).send({ message: 'callId must be a call UUID' });
   }
+  const onBehalf = organisationId !== undefined && organisationId !== null;
+  const scope = onBehalf ? { organisationId } : scopeWhereForUser(principal);
+  const attribution = onBehalf
+    ? { organisationId, userId: null }
+    : { organisationId: principal?.organisationId || null, userId: principal?.id || null };
   const recordUsage = (usage) => recordSubagentUsage({
     sessionId: crypto.randomUUID(),
     callId: callId || null,
     ...attribution,
     usage,
     finalised: true,
+    // Priced when it runs: a cited call must not pull the rows onto that call's older rate card.
+    billedAt: callId ? new Date() : null,
     log: req.log,
   });
 
   try {
-    const agent = await Agent.findOne({ where });
+    const agent = await Agent.findOne({ where: { id: agentId, ...scope } });
     if (!agent) {
       return res.status(404).send({ message: `Agent with ID ${agentId} not found` });
     }
@@ -69,20 +66,25 @@ const agentInvoke = async (req, res) => {
     if (!isModelAllowed(agent.modelName, principal?._allowedModels)) {
       return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for your account.` });
     }
-    if (onBehalfOf) {
-      // The organisation's own model floor, as runSubagentById applies it: no
-      // member principal is present, so the organisation's list is the gate.
-      const org = await Organisation.findByPk(onBehalfOf, { attributes: ORGANISATION_RBAC_ATTRIBUTES });
-      const orgAllowed = effectiveAllowedModels(null, org);
-      if (orgAllowed && !isModelAllowed(agent.modelName, orgAllowed)) {
+    if (onBehalf) {
+      // No member principal carries the organisation's state here, so apply what the account gate
+      // and Call.start would: an inactive or billing-blocked organisation runs nothing.
+      const org = await Organisation.findByPk(organisationId, { attributes: ['id', 'status', 'billingBlocked'] });
+      if (!org || org.status !== 'active') {
+        return res.status(403).send({ message: 'organisation_inactive', detail: 'The organisation is not active.' });
+      }
+      if (org.billingBlocked) {
+        return res.status(403).send({ message: 'billing_blocked', detail: 'Billing is blocked for the organisation.' });
+      }
+      if (!(await organisationAllowsModel(agent))) {
         return res.status(403).send({ message: 'model_not_permitted', detail: `Model ${agent.modelName} is not permitted for this organisation.` });
       }
     }
     if (callId) {
-      // The usage rows reference the call, so it must exist and be visible to
-      // the organisation the rows are attributed to.
-      const callWhere = onBehalfOf ? { id: callId, organisationId: onBehalfOf } : { id: callId, ...scopeWhereForUser(principal) };
-      const call = await Call.findOne({ where: callWhere, attributes: ['id'] });
+      // The usage rows reference the call, so it must exist in the tenant they are charged to
+      // (the organisation, or the user when the principal has none).
+      const callScope = attribution.organisationId ? { organisationId: attribution.organisationId } : { userId: attribution.userId };
+      const call = await Call.findOne({ where: { id: callId, ...callScope }, attributes: ['id'] });
       if (!call) {
         return res.status(404).send({ message: `Call ${callId} not found` });
       }
@@ -91,25 +93,21 @@ const agentInvoke = async (req, res) => {
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new SubagentError(`Subagent invocation timed out after ${SUBAGENT_TIMEOUT}ms`, 504)), SUBAGENT_TIMEOUT);
     });
+    // The run is metered when it settles, whichever way the race goes: a run that
+    // outlives the timeout still spends tokens, and they are recorded when it ends.
+    const run = runSubagent({ agent, input, metadata, logger: req.log });
+    run.then(
+      ({ usage }) => recordUsage(usage),
+      (err) => { if (Array.isArray(err?.usage)) recordUsage(err.usage); },
+    );
     try {
-      const { result, complete, transcript, usage } = await Promise.race([
-        runSubagent({ agent, input, metadata, logger: req.log }),
-        timeout
-      ]);
+      const { result, complete, transcript } = await Promise.race([run, timeout]);
       res.send({ result, complete, transcript });
-      // Record token usage for this one-shot invocation (best-effort; never
-      //  blocks the response and never throws).
-      recordUsage(usage);
     } finally {
       clearTimeout(timer);
     }
   }
   catch (err) {
-    // A failed invocation still billed the tokens of its completed turns —
-    // runSubagent rides them on the error (best-effort; never throws).
-    if (Array.isArray(err?.usage)) {
-      recordUsage(err.usage);
-    }
     if (err instanceof SubagentError) {
       return res.status(err.status || 400).send({ message: err.message });
     }
@@ -164,16 +162,17 @@ agentInvoke.apiDoc = {
               nullable: true,
               description: 'A call this invocation is about. Stamped on the invocation\'s usage rows, so the spend '
                 + 'shows per call in `GET /usage?callId=`. The call must exist in the organisation the usage is '
-                + 'attributed to (404 otherwise).'
+                + 'charged to (404 otherwise). The rows are priced when the invocation runs, not at the call\'s start.'
             },
             organisationId: {
               type: 'string',
               format: 'uuid',
               nullable: true,
               description: 'Invoke on behalf of an organisation. Accepted only from a principal with no organisation '
-                + 'of its own that holds `agent:readAll` (the `analysisService` role); the agent is looked up in that '
-                + 'organisation, the organisation\'s model allow-list applies, and the usage rows are attributed to it '
-                + 'with no user. A principal that belongs to an organisation gets a 400.'
+                + 'of its own that holds `agent:readAll` (the `analysisService` role, whose model list allows decision '
+                + 'models only); the agent is looked up in that organisation, which must be active and not billing '
+                + 'blocked, the organisation\'s model allow-list applies, and the usage rows are attributed to it with '
+                + 'no user. A principal that belongs to an organisation gets a 400.'
             }
           }
         }

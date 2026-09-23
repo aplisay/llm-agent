@@ -202,7 +202,7 @@ All payloads include:
 - **`listenerId`**: ID of the listener/instance (if available)
 - **`organisationId`**: The organisation that owns the call, so a receiver serving several organisations can check the payload against the URL or secret it was configured with
 - **`parentId`**: The parent call when this call is one leg of a transfer, hand-back or bridged transfer; `null` on a root call. Lineage needs no lookup: follow `parentId` to the root, or use `GET /calls/{id}/linked`
-- **`modelName`**: The model this leg ran on. A bridged human-to-human segment is its own leg with the sentinel `telephony:bridged-call`, so a receiver that only wants agent conversations can skip it
+- **`modelName`**: The model this leg ran on, from the call record. A telephony bridged transfer creates its human-to-human segment as its own leg with the sentinel `telephony:bridged-call`, so a receiver that only wants agent conversations can skip it; a WebRTC relay leg carries the agent's model, so check `parentId` and the transcript as well
 - **`callerId`**: Phone number or identifier of the caller
 - **`calledId`**: Phone number or identifier that was called
 - **`timestamp`**: ISO 8601 timestamp when the callback was generated
@@ -478,8 +478,11 @@ A system that receives `end` hooks with transcripts and analyses them (for examp
 hook came from, with no user session:
 
 1. Provision the `analysisService` identity with `scripts/provision-analysis-service.mjs`. It
-   holds `agent:invoke` and the cross-tenant `agent:readAll` and nothing else; the printed
-   token is the receiver's `LLM_AGENT_ANALYSIS_TOKEN`.
+   holds `agent:invoke` and the cross-tenant `agent:readAll` and nothing else, and its model
+   list allows decision models (`text:typesafe/`) only, so the key cannot drive a generative
+   agent's tools or the built-in chat agents. The printed token is the receiver's
+   `LLM_AGENT_ANALYSIS_TOKEN`. Re-running the script rotates the token: the new key is minted
+   and every earlier key of the service user is revoked.
 2. `POST /agents/{agentId}/invoke` with the service token and two extra body fields:
 
 ```json
@@ -491,13 +494,15 @@ hook came from, with no user session:
 ```
 
 - `organisationId` is accepted only from a principal with no organisation of its own that holds
-  `agent:readAll`. The agent is looked up in that organisation, the organisation's model
-  allow-list applies as it does for subagent dispatch, and the invocation's usage rows are
-  attributed to that organisation with no user. A principal that belongs to an organisation
-  and sends `organisationId` gets a 400.
+  `agent:readAll`. The agent is looked up in that organisation, which must be active and not
+  billing blocked (403 `organisation_inactive` or `billing_blocked` otherwise); the
+  organisation's model allow-list applies as it does for subagent dispatch, and the
+  invocation's usage rows are attributed to that organisation with no user. A principal that
+  belongs to an organisation and sends `organisationId` gets a 400.
 - `callId` is accepted from any principal. The call must exist in the organisation the usage is
-  attributed to (404 otherwise). The usage rows carry it, so the spend shows per call in
-  `GET /usage?callId=...`.
+  charged to (404 otherwise). The usage rows carry it, so the spend shows per call in
+  `GET /usage?callId=...`, and they are priced when the invocation runs, not at the call's
+  start, so a backfill of old calls is charged on today's rate card.
 
 ## Related Documentation
 
