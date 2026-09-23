@@ -58,8 +58,9 @@ Pipecat), and **ci** (build and release pipeline).
   model. A decision agent's one builtin `result` function is its question set:
   an `enum` property is a Choice, a `boolean` is a Noul (probability of yes),
   and a string with `x-levels` is a Score. `POST /agents/{id}/invoke` and the
-  `subagent` builtin return the typed answers with `confidence` and
-  `probabilities`. Pinned id only; `jev-latest` is refused at save.
+  `subagent` builtin return the typed answers with `confidence`,
+  `probabilities` and, per Score, the expected value in `score`. Pinned id
+  only; `jev-latest` is refused at save.
 - **[core] Decision agent rules**: no other functions, no `mcpServers`, no
   `tts`, `stt`, `greeting`, `fallback`, `inactivity` or `callHook` options;
   a free-string, `number`, `array` or `object` result property is refused

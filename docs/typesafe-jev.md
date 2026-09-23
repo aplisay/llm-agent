@@ -76,7 +76,7 @@ shape picks the question type:
 
 Further rules: 1 to 32 properties; every property needs a `description`;
 `source` must be `generated` or omitted; and the names `confidence`,
-`probabilities` and `decision` are reserved for the result.
+`probabilities`, `score` and `decision` are reserved for the result.
 
 The agent's `prompt` is optional. When set it is sent as the state's
 `instructions`, so it is the place for what the model should know about the
@@ -179,19 +179,21 @@ viewers render it unchanged. `result`:
     "outcome": { "resolved": 0.01, "partially_resolved": 0.02, "unresolved": 0.14, "transferred": 0.01, "abandoned": 0.81, "wrong_number": 0.01 },
     "caller_sentiment": { "angry": 0.12, "frustrated": 0.83, "neutral": 0.05, "satisfied": 0.0, "delighted": 0.0 }
   },
+  "score": { "caller_sentiment": 0.93 },
   "decision": "auto"
 }
 ```
 
 - A Choice property carries the chosen option. A Score property carries the
-  most probable level name; on a tie the lower level wins. The vendor's
-  expected-value float for a Score is not returned; it can be computed from
-  `probabilities` by looking each level up by name in the order of the
-  schema's `x-levels`. Key order in the JSON maps carries no meaning: a level
-  named like a number is serialised first whatever its position.
-- `confidence` and `probabilities` hold the Choice and Score detail, keyed by
-  property. Noul properties carry their probability as the value and have no
-  entry in either map.
+  most probable level name; on a tie the lower level wins. `score` carries
+  the vendor's expected value for each Score property: the
+  probability-weighted position on the levels, from 0 for the first level to
+  one less than the number of levels (0.93 above sits between `angry` and
+  `frustrated`). Key order in the JSON maps carries no meaning: a level named
+  like a number is serialised first whatever its position.
+- `confidence`, `probabilities` and `score` hold the Choice and Score detail,
+  keyed by property; `score` has Score properties only. Noul properties carry
+  their probability as the value and have no entry in any map.
 - `decision` is present only when `options.decision.minConfidence` is set.
 
 ### `options.decision.minConfidence`

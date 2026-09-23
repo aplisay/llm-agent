@@ -39,6 +39,7 @@ const expectedSix = (answers = SIX.response.answers) => ({
   escalation_missed: answers.escalation_missed.noul,
   confidence: { outcome: answers.outcome.confidence, caller_sentiment: answers.caller_sentiment.confidence },
   probabilities: { outcome: answers.outcome.probabilities, caller_sentiment: byLevelName(answers.caller_sentiment, LEVELS) },
+  score: { caller_sentiment: answers.caller_sentiment.score },
 });
 
 const logged = { warn: [], info: [] };
@@ -230,7 +231,7 @@ describe('result properties to questions', () => {
     reject({ type: 'boolean', description: 'Is it?', source: 'static', from: 'x' }, /source must be "generated" or omitted/);
     reject({ type: 'boolean', description: 'Is it?', source: 'metadata', from: 'x' }, /source must be "generated"/);
     expect(q({ type: 'boolean', description: 'Is it?', source: 'generated' }).type).toBe('noul');
-    for (const name of ['confidence', 'probabilities', 'decision']) {
+    for (const name of ['confidence', 'probabilities', 'score', 'decision']) {
       reject({ type: 'boolean', description: 'Is it?' }, /reserved for the result/, name);
     }
     reject({ type: 'boolean', description: 'Is it?' }, /not allowed as a property name/, '__proto__');
@@ -276,8 +277,8 @@ describe('answers to the result', () => {
     expect(Object.keys(result.probabilities.caller_sentiment)).toEqual(LEVELS);
     expect(Object.keys(result.probabilities.outcome)).toEqual(SIX_PROPERTIES.outcome.enum);
     expect(result).not.toHaveProperty('decision');
-    // Answers come first, in question order, then the two maps.
-    expect(Object.keys(result)).toEqual([...Object.keys(SIX_PROPERTIES), 'confidence', 'probabilities']);
+    // Answers come first, in question order, then the three maps.
+    expect(Object.keys(result)).toEqual([...Object.keys(SIX_PROPERTIES), 'confidence', 'probabilities', 'score']);
   });
 
   test('Score re-keys the distribution by the declared level names at 2 and 10 levels and takes the argmax', () => {
@@ -290,8 +291,8 @@ describe('answers to the result', () => {
       expect(out.probabilities.sentiment).toEqual(byLevelName(answer, levels));
       expect(Object.keys(out.probabilities.sentiment)).toEqual(levels);
       expect(out.confidence.sentiment).toBe(answer.confidence);
-      // The vendor's expected-value float is not returned.
-      expect(out).not.toHaveProperty('score');
+      // The vendor's expected value, the probability-weighted level index, rides along per Score.
+      expect(out.score).toEqual({ sentiment: answer.score });
       // The vendor's legend is not used for naming: a missing or odd legend changes nothing.
       const oddLegend = { sentiment: { ...answer, legend: Object.fromEntries(levels.map((_, i) => [String(i), 'same'])) } };
       expect(resultFromAnswers(oddLegend, fx.request.questions).probabilities.sentiment).toEqual(byLevelName(answer, levels));
@@ -306,6 +307,9 @@ describe('answers to the result', () => {
     const out = resultFromAnswers(answers, question);
     expect(out.mood).toBe('mid');
     expect(out.probabilities.mood).toEqual({ low: 0.1, mid: 0.45, high: 0.45 });
+    expect(out.score.mood).toBe(1.5);
+    // A Score answer without its float is malformed.
+    expect(() => resultFromAnswers({ mood: { ...answers.mood, score: undefined } }, question)).toThrow(/no numeric score for "mood"/);
   });
 
   test('a Choice distribution is restricted to the options and must cover every one', () => {
@@ -330,6 +334,7 @@ describe('answers to the result', () => {
     expect(gated.probabilities.outcome).toEqual(answers.outcome.probabilities);
     expect(gated.confidence.outcome).toBe(answers.outcome.confidence);
     expect(gated.needs_followup).toBe(answers.needs_followup.noul);
+    expect(gated.score).toEqual({ caller_sentiment: answers.caller_sentiment.score });
     expect(gated.decision).toBe('review');
     // Below every confidence: nothing is gated.
     const floor = Math.min(answers.outcome.confidence, answers.caller_sentiment.confidence) - 0.001;
