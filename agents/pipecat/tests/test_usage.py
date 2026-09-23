@@ -143,8 +143,8 @@ def test_llm_input_tokens_exclude_the_prompt_cache(model_name, usage, expected):
     assert {m["unit"]: m["quantity"] for m in obs._meters.values() if m["technology"] == "llm"} == expected
 
 
-# Metric labels as the Pipecat 1.10 services report them. Rate lines match the roster id, so a row with the bare
-# label bills nothing: the xAI cards carry only xai/ lines, and Gemini Live labels Pipecat's default model.
+# Metric labels as the Pipecat 1.10 services report them. Rows carry the roster id, as LiveKit rows do, because the
+# label can name another model: Gemini Live labels Pipecat's default model.
 @pytest.mark.parametrize(
     ("model_name", "metric_model"),
     [
