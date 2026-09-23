@@ -5,6 +5,8 @@
 import { jest } from '@jest/globals';
 import { setupRealDatabase, teardownRealDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'node:crypto';
+// A decision agent must carry its one `result` function to save (lib/decision-limits.js).
+import { resultFunction } from './fixtures/typesafe/six-questions.mjs';
 
 // Short enough for the timeout test, long enough for every other stubbed run.
 process.env.SUBAGENT_TIMEOUT = '300';
@@ -75,9 +77,9 @@ beforeAll(async () => {
   });
   userA = await mkUser({ name: 'Org A owner', email: `a-${randomUUID()}@example.com`, role: 'owner', organisationId: orgA.id });
   serviceUser = await mkUser({ name: 'Call Analysis Service', email: `svc-${randomUUID()}@aplisay.internal`, role: 'analysisService', organisationId: null });
-  jevAgentA = await Agent.create({ name: 'Analyst A', type: 'text', modelName: JEV, prompt: 'Judge.', organisationId: orgA.id, userId: userA.id });
+  jevAgentA = await Agent.create({ name: 'Analyst A', type: 'text', modelName: JEV, prompt: 'Judge.', functions: [resultFunction()], organisationId: orgA.id, userId: userA.id });
   textAgentA = await Agent.create({ name: 'Writer A', type: 'text', modelName: GENERATIVE, prompt: 'Write.', organisationId: orgA.id, userId: userA.id });
-  jevAgentB = await Agent.create({ name: 'Analyst B', type: 'text', modelName: JEV, prompt: 'Judge.', organisationId: orgB.id });
+  jevAgentB = await Agent.create({ name: 'Analyst B', type: 'text', modelName: JEV, prompt: 'Judge.', functions: [resultFunction()], organisationId: orgB.id });
   // A call that started a month ago: its start must not become the billing instant.
   callA = await mkCall(orgA.id, userA.id, 1, { startedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000) });
   callB = await mkCall(orgB.id, null, 1);
