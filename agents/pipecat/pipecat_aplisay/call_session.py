@@ -1991,10 +1991,11 @@ class CallSession:
         return delegate
 
     async def _on_injected_dtmf(self, digits: str) -> None:
-        """Aggregated keypad digits on a session whose service never sees a
-        context frame after it starts (GPT-Live, the Grok voice row): a
-        ``user`` transcript row (as the DTMF aggregator's TranscriptionFrame
-        would have produced) and the service's own injection path."""
+        """Aggregated keypad digits on a session whose service never sends a
+        user message added to the context (GPT-Live, the Grok voice row,
+        OpenAI Realtime): a ``user`` transcript row (as the DTMF aggregator's
+        TranscriptionFrame would have produced) and the service's own
+        injection path."""
         await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
         llm = self._llm_service
         inject = getattr(llm, "inject_dtmf", None)

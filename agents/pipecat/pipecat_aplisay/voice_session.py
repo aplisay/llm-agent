@@ -412,9 +412,10 @@ def _dtmf_aggregator_for(
     turn, honouring per-agent ``options.dtmfTimeout`` and
     ``options.dtmfTerminator``.
 
-    ``on_digits`` (GPT-Live) swaps the ``TranscriptionFrame`` delivery for a
-    callback: the live session ignores context frames after it has started,
-    so the digits go to the injection shim instead (see gpt_live_service.py).
+    ``on_digits`` (GPT-Live, the Grok voice row, OpenAI Realtime) swaps the
+    ``TranscriptionFrame`` delivery for a callback: those services never send
+    a user message added to the context, so the digits go through the
+    service instead (see gpt_live_service.py and the realtime subclasses).
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -1032,8 +1033,9 @@ async def build_voice_session(
     ``on_provider_session_ended`` is called with the provider's reason when a
     Grok voice session ends on xAI's side (a server close, a fatal error, the
     concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
-    receives the aggregated keypad digits on a Grok voice row, where they
-    reach the model through the service rather than a transcription frame.
+    receives the aggregated keypad digits on a Grok voice row and on OpenAI
+    Realtime, where they reach the model through the service rather than a
+    transcription frame.
 
     ``opening`` is set when this generation continues a call already in
     progress, so the caller has been greeted: it is the platform's first-turn
@@ -1429,6 +1431,7 @@ async def _build_realtime(
     options = agent.get("options") or {}
     gpt_live_model = is_gpt_live_model_id(model_id)
     grok_voice_model = is_xai_voice_model_id(model_id)
+    openai_realtime_model = not gpt_live_model and model_id.startswith("openai/")
 
     # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
     # than the model's own, so the model emits text and a discrete TTS stage
@@ -1475,7 +1478,7 @@ async def _build_realtime(
             session=gpt_live,
             transcript_tts=transcript_tts,
         )
-    elif model_id.startswith("openai/"):
+    elif openai_realtime_model:
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
         # output, not directly on Settings. The Settings class only accepts
         # `session_properties` (plus inherited `model` / `system_instruction`).
@@ -1484,17 +1487,19 @@ async def _build_realtime(
         # `audio.input.transcription` set, OpenAI Realtime never emits
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
-        from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
+        #
+        # The subclass sends the platform's mid-call context messages (the
+        # inactivity kick, the in-place handover opening) and keypad digits,
+        # which the stock service drops. See openai_realtime_service.py.
+        from .openai_realtime_service import build_openai_realtime_service
 
         _, openai_model = model_id.split("/", 1)
-        llm = OpenAIRealtimeLLMService(
+        llm = build_openai_realtime_service(
             api_key=_require_env("OPENAI_API_KEY"),
-            settings=OpenAIRealtimeLLMService.Settings(
-                model=openai_model,
-                system_instruction=system_prompt,
-                session_properties=_openai_realtime_session_properties(
-                    agent, text_output=text_output
-                ),
+            model=openai_model,
+            system_prompt=system_prompt,
+            session_properties=_openai_realtime_session_properties(
+                agent, text_output=text_output
             ),
         )
     elif model_id.startswith("google/"):
@@ -1658,7 +1663,7 @@ async def _build_realtime(
     # the injection shim instead of a TranscriptionFrame.
     if gpt_live_model and gpt_live is not None:
         on_digits = gpt_live.on_dtmf
-    elif grok_voice_model:
+    elif grok_voice_model or openai_realtime_model:
         # Same reason as GPT-Live: a TranscriptionFrame would become a user
         # message the service never sends; the digits go through the service.
         on_digits = on_injected_dtmf
