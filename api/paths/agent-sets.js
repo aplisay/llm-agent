@@ -7,8 +7,11 @@ import {
   validateAgentTargets,
   validateDelegateToolCollisions,
   keyedCopiesShadowedByDelegate,
+  findConversingReferrers,
+  assertNotConversingTarget,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
+import { isDecisionModelName } from '../../lib/decision-limits.js';
 import { mergeMemberFunctions, functionNames } from '../../lib/agent-set-functions.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../lib/deployment-guard.js';
 
@@ -113,11 +116,18 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
     for (const agent of existing) {
       if (removedIds.has(agent.id)) continue;
       labelMap.set(agent.label, agent.id);
-      membersById.set(agent.id, { type: agent.type || 'interactive-audio' });
+      membersById.set(agent.id, { type: agent.type || 'interactive-audio', modelName: agent.modelName });
     }
   }
   for (const { label, agent } of members) labelMap.set(label, agent.id);
-  for (const { agent, def } of members) membersById.set(agent.id, { type: defaultType(def) });
+  // modelName lets the target check refuse a decision-kind member as a delegate or summariser. The
+  // type follows what the copy loop below saves: only an explicit `type` changes a stored member's.
+  for (const { agent, def } of members) {
+    membersById.set(agent.id, {
+      type: def.type !== undefined ? defaultType(def) : (agent.type || 'interactive-audio'),
+      modelName: def.modelName ?? agent.modelName,
+    });
+  }
 
   const lookupAgent = (agentId) => Agent.findOne({
     where: { id: agentId, ...scopeWhereForUser(user) },
@@ -145,6 +155,14 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
       agent.options?.bridgedTransferToAgent && agent.changed('options', true);
       await validateAgentTargets(agent.functions || [], { membersById, lookupAgent, owningLabel: label, options: agent.options });
     }
+  }
+  // A member that becomes a decision model may not be the delegate or the
+  // summariser of an agent this document does not rewrite (docs/typesafe-jev.md).
+  const writtenIds = new Set(members.map(({ agent }) => agent.id));
+  for (const { label, agent } of members) {
+    if (!isDecisionModelName(agent.modelName)) continue;
+    const referrers = await findConversingReferrers(agent.id, { where: scopeWhereForUser(user), transaction, excludeAgentIds: writtenIds });
+    assertNotConversingTarget({ label, referrers });
   }
   // A GPT-Live member's `delegate` target inside the set must not declare a
   // function the voice member also declares (docs/gpt-live.md). Untouched

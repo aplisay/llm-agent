@@ -1,6 +1,7 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
-import { validateAgentTargets, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import { validateAgentTargets, findConversingReferrers, assertNotConversingTarget, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import { isDecisionModelName } from '../../../lib/decision-limits.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
 import { isModelAllowed } from '../../../lib/auth/model-access.js';
@@ -180,6 +181,11 @@ const agentUpdate = async (req, res) => {
       lookupAgent: (targetId) => Agent.findOne({ where: { id: targetId, ...scopeWhereForUser(res.locals.user) } }),
       options
     });
+    if (modelName !== undefined && isDecisionModelName(modelName)) {
+      // Nothing may delegate to, or summarise with, an agent that becomes a decision model (docs/typesafe-jev.md).
+      const referrers = await findConversingReferrers(agentId, { where: scopeWhereForUser(res.locals.user) });
+      assertNotConversingTarget({ label: agent.name || agentId, referrers });
+    }
     await agent.update({ name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
     res.send({ ...agent.dataValues, keys: undefined });

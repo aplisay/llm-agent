@@ -106,9 +106,13 @@ agentInvoke.apiDoc = {
           type: 'object',
           properties: {
             input: {
-              type: 'object',
-              description: 'Task input for the agent, passed as the opening user message',
-              additionalProperties: true
+              description: 'Task input for the agent: an object (passed as the opening user message), or a string or array, '
+                + 'which a generative agent receives as text and a decision model receives as its state',
+              anyOf: [
+                { type: 'object', additionalProperties: true },
+                { type: 'string' },
+                { type: 'array', items: {} },
+              ],
             },
             metadata: {
               type: 'object',
