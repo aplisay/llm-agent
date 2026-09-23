@@ -80,6 +80,8 @@ Because the relay carries decoded PCM, the browser's Opus/48 kHz audio and the t
 
 `forceRefer` is meaningless for a WebRTC origin (there is no SIP dialog to REFER) and is ignored. Consultative transfers from a WebRTC caller use the **same** relay for their finalise step: the consultation runs a TransferAgent on the outbound leg as usual, and on `accept_transfer` the worker engages the browser↔target relay instead of an in-gateway bridge.
 
+**Call records (WebRTC origin):** the telephony leg is a child of the browser call. A blind transfer records it as a bridged call (`modelName: "telephony:bridged-call"`) from the start. A consultative transfer records the consultation on the agent's model; `accept_transfer` ends that record, and a new `telephony:bridged-call` record covers the rest of the leg, as on LiveKit.
+
 **Caller ID behaviour (WebRTC origin):** a browser call has no inbound trunk, so the outbound leg dials out on the egress trunk belonging to the supplied `callerId` number. The `callerId` is therefore **required** for transfers from a browser session, and must be a number known to the platform with outbound calling enabled (its trunk becomes the egress path). This mirrors LiveKit's caller-ID resolution.
 
 ### Transfer mode selection
