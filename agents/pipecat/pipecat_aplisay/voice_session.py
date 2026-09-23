@@ -40,6 +40,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .gemini import is_gemini_live_model_id
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
 from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
@@ -412,9 +413,11 @@ def _dtmf_aggregator_for(
     turn, honouring per-agent ``options.dtmfTimeout`` and
     ``options.dtmfTerminator``.
 
-    ``on_digits`` (GPT-Live) swaps the ``TranscriptionFrame`` delivery for a
-    callback: the live session ignores context frames after it has started,
-    so the digits go to the injection shim instead (see gpt_live_service.py).
+    ``on_digits`` (GPT-Live, the Grok voice row, Gemini Live) swaps the
+    ``TranscriptionFrame`` delivery for a callback: those services never send
+    a user message added to the context after the session has started, so the
+    digits go to the service's own injection path instead (gpt_live_service.py,
+    grok_service.py, gemini_service.py).
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -1666,7 +1669,7 @@ async def _build_realtime(
     # the injection shim instead of a TranscriptionFrame.
     if gpt_live_model and gpt_live is not None:
         on_digits = gpt_live.on_dtmf
-    elif grok_voice_model:
+    elif grok_voice_model or is_gemini_live_model_id(model_id):
         # Same reason as GPT-Live: a TranscriptionFrame would become a user
         # message the service never sends; the digits go through the service.
         on_digits = on_injected_dtmf

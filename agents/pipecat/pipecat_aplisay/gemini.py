@@ -22,6 +22,9 @@ MODEL_ALIASES: dict[str, str] = {"google/gemini-2.0-flash-exp": GEMINI_LIVE_MODE
 #: Pipecat's own default, kept as the platform default for the row.
 GEMINI_LIVE_DEFAULT_VOICE = "Charon"
 
+#: Keypad digits as the model hears them (the wording the Grok row uses).
+DTMF_MESSAGE = "The caller pressed the keypad digits: {digits}"
+
 
 def is_gemini_live_model_id(model_id: Optional[str]) -> bool:
     """A ``google/`` realtime row (segment after ``pipecat:``)."""

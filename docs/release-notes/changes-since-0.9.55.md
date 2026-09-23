@@ -44,6 +44,10 @@ Pipecat), and **ci** (build and release pipeline).
 - **[pipecat] Gemini Live inactivity prompt**: `options.inactivity.message` is
   now spoken on Gemini Live. The prompt reached the worker's own context but
   was never sent to the model.
+- **[pipecat] Gemini Live keypad digits**: DTMF digits now reach the model, as
+  a user turn it answers (`options.dtmfTimeout` and `options.dtmfTerminator`
+  apply as before). They were buffered into a user message the model never
+  received.
 - **[pipecat] Gemini Live handover**: `transfer_agent` between two agents on the
   same Gemini Live model now restarts the agent stack, as it already did for
   Ultravox, GPT-Live and Grok. The in-place swap left the outgoing agent's

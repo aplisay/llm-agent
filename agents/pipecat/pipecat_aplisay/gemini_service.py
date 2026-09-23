@@ -14,6 +14,10 @@ A client-content message interrupts a running generation, so an instruction
 that arrives while the model is speaking is held until its turn completes. A
 caller interruption drops it: the held instruction is the inactivity prompt,
 and the caller is no longer idle.
+
+Keypad digits take the same path (``inject_dtmf``): as a ``TranscriptionFrame``
+they became a user message the service never sends, so the DTMF aggregator
+hands them to the service instead, as on GPT-Live and Grok.
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ from typing import Any
 from loguru import logger
 from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+
+from .gemini import DTMF_MESSAGE
 
 
 def _instruction_text(message: Any) -> str | None:
@@ -89,6 +95,15 @@ class AplisayGeminiLiveLLMService(GeminiLiveLLMService):
         # Upstream's single-response path: client content with turn_complete=True,
         # plus the realtime nudge Gemini 3.x needs before it will answer.
         await self._create_single_response([{"role": "user", "content": text} for text in texts])
+
+    async def inject_dtmf(self, digits: str) -> None:
+        """Keypad digits: a user turn the model answers now. The DTMF aggregator
+        broadcast the interruption on the first digit, so nothing is held."""
+        if self._disconnecting or not self._session:
+            logger.debug(f"{self}: dropping DTMF {digits!r}; the session is not ready")
+            return
+        logger.bind(digits=digits).debug("Gemini Live: sending keypad digits as a user turn")
+        await self._create_single_response([{"role": "user", "content": DTMF_MESSAGE.format(digits=digits)}])
 
     async def _handle_msg_turn_complete(self, message: Any) -> None:
         await super()._handle_msg_turn_complete(message)

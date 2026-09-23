@@ -13,6 +13,9 @@ session (no network):
 * A same-model ``transfer_agent`` took the in-place route, whose frames the
   service stores or ignores: the old prompt and tools stayed and the new agent
   never opened. Gemini rows now restart, as Ultravox, GPT-Live and Grok do.
+* Keypad digits became a ``TranscriptionFrame``, then a user message the
+  service never sends. The DTMF aggregator now hands them to the service, which
+  sends them as a user turn (``inject_dtmf``), as on GPT-Live and Grok.
 """
 
 from __future__ import annotations
@@ -25,7 +28,9 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
     EndFrame,
+    InputDTMFFrame,
     InterruptionFrame,
+    KeypadEntry,
     LLMMessagesAppendFrame,
     LLMMessagesUpdateFrame,
     LLMRunFrame,
@@ -36,6 +41,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
@@ -49,6 +55,7 @@ gemini_live = pytest.importorskip("pipecat.services.google.gemini_live.llm")
 
 from pipecat_aplisay import gemini_service, voice_session  # noqa: E402
 from pipecat_aplisay.gemini import (  # noqa: E402
+    DTMF_MESSAGE,
     GEMINI_LIVE_DEFAULT_VOICE,
     GEMINI_LIVE_MODEL_ID,
     MODEL_ALIASES,
@@ -200,11 +207,13 @@ async def _until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
 
 
 class _Call:
-    """A pipeline of a real aggregator pair around ``llm``, the way the worker
-    builds one, on the fake Live session. The greeting seeds it: the first
-    context frame carries the system prompt and the greeting instruction."""
+    """A pipeline of the worker's DTMF aggregator, a real aggregator pair and
+    ``llm``, the way the worker builds one, on the fake Live session. The
+    greeting seeds it: the first context frame carries the system prompt and
+    the greeting instruction. ``digits_through_service`` wires the DTMF
+    aggregator to the service (the fix) instead of a ``TranscriptionFrame``."""
 
-    def __init__(self, cls) -> None:
+    def __init__(self, cls, *, digits_through_service: bool = False) -> None:
         self.context = LLMContext([{"role": "developer", "content": SYSTEM}], tools=ToolsSchema(standard_tools=[]))
         # Light strategies: the default stop strategy loads the smart-turn model.
         user, assistant = LLMContextAggregatorPair(
@@ -217,7 +226,12 @@ class _Call:
         )
         self.llm = _service(cls)
         self.session, self.connects = _offline(self.llm)
-        self.task = PipelineTask(Pipeline([user, self.llm, assistant]), params=PipelineParams(), idle_timeout_secs=None)
+        dtmf = voice_session._dtmf_aggregator_for(
+            {}, on_digits=self.llm.inject_dtmf if digits_through_service else None
+        )
+        self.task = PipelineTask(
+            Pipeline([dtmf, user, self.llm, assistant]), params=PipelineParams(), idle_timeout_secs=None
+        )
         self.run: asyncio.Task | None = None
 
     async def __aenter__(self) -> "_Call":
@@ -239,11 +253,11 @@ class _Call:
             raise
 
 
-def _after(cls, frames: list) -> _Call:
+def _after(cls, frames: list, **call_options) -> _Call:
     """Run ``frames`` after the seed and return the call for inspection."""
 
     async def scenario() -> _Call:
-        async with _Call(cls) as call:
+        async with _Call(cls, **call_options) as call:
             await call.task.queue_frames(frames)
         return call
 
@@ -325,6 +339,102 @@ def test_a_caller_interruption_drops_a_held_instruction():
 
     call = asyncio.run(asyncio.wait_for(scenario(), 20))
     assert len(call.session.client_content) == 1
+
+
+# --- keypad digits --------------------------------------------------------------------
+
+
+def _keys(*buttons: KeypadEntry) -> list:
+    return [InputDTMFFrame(button=button) for button in buttons]
+
+
+@pytest.mark.parametrize("cls", [STOCK, AplisayGeminiLiveLLMService], ids=["pipecat", "aplisay"])
+def test_digits_as_a_transcription_never_reach_the_live_session(cls):
+    # The stock wiring: the aggregator turns the digits into a TranscriptionFrame,
+    # then a user message, which the service never sends (the server holds
+    # audio for the real user turns, and these have none).
+    call = _after(cls, _keys(KeypadEntry.ONE, KeypadEntry.POUND))
+    assert len(call.session.client_content) == 1
+
+
+def test_digits_through_the_service_are_a_user_turn_that_completes():
+    call = _after(
+        AplisayGeminiLiveLLMService,
+        _keys(KeypadEntry.ONE, KeypadEntry.TWO, KeypadEntry.POUND),
+        digits_through_service=True,
+    )
+    assert len(call.session.client_content) == 2
+    assert _turns(call.session.client_content[1]) == [("user", DTMF_MESSAGE.format(digits="12#"))]
+    assert call.session.client_content[1][1] is True
+    # the digits are not a context message, so the next run does not resend them
+    assert call.llm._sent_messages == len(call.context.get_messages())
+
+
+def test_digits_before_the_session_is_ready_are_dropped():
+    llm = _service(AplisayGeminiLiveLLMService)
+    asyncio.run(llm.inject_dtmf("1"))
+    session = _Session()
+    llm._session = session
+    asyncio.run(llm.inject_dtmf("5"))
+    assert [_turns(sent) for sent in session.client_content] == [[("user", DTMF_MESSAGE.format(digits="5"))]]
+
+
+def test_build_voice_session_hands_the_digits_to_the_session_callback(monkeypatch):
+    """The whole realtime build for the row, offline: the DTMF aggregator is
+    wired to the call session's injected-digits callback, and the service is
+    the subclass with the row's model and the agent's voice."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    # The default stop strategy loads the smart-turn model; keep it light.
+    monkeypatch.setattr(voice_session, "_user_aggregator_params_for", lambda *_a, **_k: _light_params())
+    seen: dict = {}
+    real = voice_session._dtmf_aggregator_for
+
+    def recording(agent, *, on_digits=None):
+        seen["on_digits"] = on_digits
+        return real(agent, on_digits=on_digits)
+
+    monkeypatch.setattr(voice_session, "_dtmf_aggregator_for", recording)
+
+    async def on_injected_dtmf(_digits: str) -> None:
+        return None
+
+    async def build():
+        return await voice_session.build_voice_session(
+            transport=_FakeTransport(),
+            model_name=GEMINI,
+            agent={"options": {"tts": {"voice": "Kore"}}},
+            metadata={},
+            tools=[],
+            system_prompt=SYSTEM,
+            on_injected_dtmf=on_injected_dtmf,
+        )
+
+    _task, _audio_buffer, _context, llm = asyncio.run(build())
+    assert seen["on_digits"] is on_injected_dtmf
+    assert isinstance(llm, AplisayGeminiLiveLLMService)
+    assert llm._settings.model == f"models/{BARE}" and llm._settings.voice == "Kore"
+
+
+def _light_params() -> LLMUserAggregatorParams:
+    return LLMUserAggregatorParams(
+        user_turn_strategies=UserTurnStrategies(
+            start=[VADUserTurnStartStrategy()], stop=[SpeechTimeoutUserTurnStopStrategy()]
+        )
+    )
+
+
+class _FakeTransport:
+    """Enough of a transport for the realtime build: one input and one output processor."""
+
+    def __init__(self) -> None:
+        self._input = FrameProcessor(name="fake-input")
+        self._output = FrameProcessor(name="fake-output")
+
+    def input(self) -> FrameProcessor:
+        return self._input
+
+    def output(self) -> FrameProcessor:
+        return self._output
 
 
 # --- handover -------------------------------------------------------------------------
