@@ -1,0 +1,165 @@
+{
+  "source": "recorded",
+  "note": "openrouter route, 2026-09-22, POST https://openrouter.ai/api/v1/systemone",
+  "request": {
+    "model": "typesafe/jev-1.13",
+    "state": {
+      "instructions": "You review calls handled by an AI phone agent for a UK business. Judge only from the transcript. The agent is forbidden from taking card details over the phone and from promising refunds.",
+      "input": {
+        "transcript": [
+          {
+            "role": "agent",
+            "text": "Thank you for calling Northwind Energy. How can I help today?",
+            "at": "2025-09-22T11:20:00.000Z"
+          },
+          {
+            "role": "user",
+            "text": "My bill is double what it was last month and I want to talk to someone about it.",
+            "at": "2025-09-22T11:20:08.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I can help with that. Can you give me your account number?",
+            "at": "2025-09-22T11:20:16.000Z"
+          },
+          {
+            "role": "user",
+            "text": "I do not have it to hand. I just want to speak to a person.",
+            "at": "2025-09-22T11:20:24.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I understand. Without the account number I cannot look at the bill. Do you have a recent bill nearby?",
+            "at": "2025-09-22T11:20:32.000Z"
+          },
+          {
+            "role": "user",
+            "text": "No. Put me through to a human please.",
+            "at": "2025-09-22T11:20:40.000Z"
+          },
+          {
+            "role": "agent",
+            "text": "I am sorry, I am not able to transfer you right now. You can call back with your account number and I will look into it.",
+            "at": "2025-09-22T11:20:48.000Z"
+          },
+          {
+            "role": "user",
+            "text": "This is ridiculous. Forget it.",
+            "at": "2025-09-22T11:20:56.000Z"
+          }
+        ],
+        "durationSeconds": 64,
+        "reason": "caller_hangup",
+        "agent": {
+          "id": "11111111-2222-3333-4444-555555555555",
+          "name": "Sam"
+        }
+      }
+    },
+    "questions": {
+      "outcome": {
+        "type": "choice",
+        "instructions": "How did the call end for the caller?",
+        "criteria": {
+          "resolved": "The caller got what they called for",
+          "partially_resolved": null,
+          "unresolved": null,
+          "transferred": "The call was handed to a person or another agent",
+          "abandoned": "The caller gave up or hung up before the matter was dealt with",
+          "wrong_number": null
+        }
+      },
+      "needs_followup": {
+        "type": "noul",
+        "instructions": "Does someone need to contact this caller again?"
+      },
+      "caller_sentiment": {
+        "type": "score",
+        "instructions": "The caller's tone by the end of the call",
+        "criteria": [
+          "angry",
+          "frustrated",
+          "neutral",
+          "satisfied",
+          "delighted"
+        ]
+      },
+      "agent_error": {
+        "type": "noul",
+        "instructions": "Did the agent give wrong or misleading information?"
+      },
+      "policy_breach": {
+        "type": "noul",
+        "instructions": "Did the agent do something its instructions forbid?"
+      },
+      "escalation_missed": {
+        "type": "noul",
+        "instructions": "Did the caller ask for a human and not get one?",
+        "criteria": {
+          "true": "The caller asked for a person and the call ended without a transfer",
+          "false": "No request for a person, or the caller was transferred"
+        }
+      }
+    }
+  },
+  "response": {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+      "outcome": {
+        "type": "choice",
+        "choice": "abandoned",
+        "probabilities": {
+          "transferred": 0,
+          "resolved": 0,
+          "unresolved": 0,
+          "partially_resolved": 0,
+          "abandoned": 1,
+          "wrong_number": 0
+        },
+        "confidence": 1
+      },
+      "needs_followup": {
+        "type": "noul",
+        "noul": 0.33
+      },
+      "caller_sentiment": {
+        "type": "score",
+        "score": 0.4,
+        "legend": {
+          "0": "angry",
+          "1": "frustrated",
+          "2": "neutral",
+          "3": "satisfied",
+          "4": "delighted"
+        },
+        "probabilities": {
+          "0": 0.6,
+          "1": 0.4,
+          "2": 0,
+          "3": 0,
+          "4": 0
+        },
+        "confidence": 0.66
+      },
+      "agent_error": {
+        "type": "noul",
+        "noul": 0.22
+      },
+      "policy_breach": {
+        "type": "noul",
+        "noul": 0.05
+      },
+      "escalation_missed": {
+        "type": "noul",
+        "noul": 0.99
+      }
+    },
+    "usage": {
+      "input_tokens": 1197,
+      "output_tokens": 168,
+      "cost": 0.000050274
+    },
+    "id": "gen-dec-1790098987-UcwFRz4F0D8TrcVsewyo",
+    "provider": "TypeSafe"
+  }
+}

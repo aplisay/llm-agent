@@ -97,6 +97,20 @@ describe('permissions — roles vocabulary', () => {
     // superAdmin still holds credit (superset).
     expect(can({ role: 'superAdmin' }, 'organisation', 'credit')).toBe(true);
   });
+  test('analysisService can invoke decision-model agents on behalf of any organisation and nothing else', () => {
+    // The polite-ai post-call analysis seam: invoke, plus the cross-tenant
+    // marker that lets POST /agents/{id}/invoke take an organisationId.
+    expect(statementsFor('analysisService')).toEqual({ agent: ['invoke', 'readAll'] });
+    expect(containsCrossTenant(statementsFor('analysisService'))).toBe(true);
+    // Confined to decision models: a leaked key drives no generative agent's tools and no built-in chat.
+    expect(modelsFor('analysisService')).toEqual(['text:typesafe/']);
+    // No person's role holds agent:readAll, superAdmin included: the identity is minted by script only.
+    for (const role of ['owner', 'member', 'orgAdmin', 'support', 'superAdmin', 'textOnly', 'audioOnly']) {
+      expect(can({ role }, 'agent', 'readAll')).toBe(false);
+    }
+    expect(actorCanGrant({ role: 'orgAdmin' }, { role: 'analysisService' })).toBe(false);
+    expect(actorCanGrant({ role: 'superAdmin' }, { role: 'analysisService' })).toBe(false);
+  });
   test('onboardingService can ONLY manage users + create/read/update orgs (least privilege)', () => {
     // Enough to activate an invite-completion: find the user, flip status, attach an org,
     // then read the org back or rename it.
