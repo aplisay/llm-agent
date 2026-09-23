@@ -44,6 +44,7 @@ from .gpt_live import (
     merge_tools,
     resolve_delegate,
 )
+from .gemini import is_gemini_live_model_id
 from .grok import is_xai_voice_model_id
 from .mcp_tools import (
     MCP_MAX_RESULT_BYTES, MCP_MAX_RESULT_BYTES_DELEGATED,
@@ -1467,7 +1468,9 @@ class CallSession:
         In place is only valid when the model string is unchanged AND the
         running stack can apply the swap. Ultravox realtime is a one-shot
         /calls session — neither prompt nor tools can change after creation —
-        so it always restarts.
+        so it always restarts. Gemini Live keeps a settings change local,
+        ignores ``LLMSetToolsFrame`` and never hears a replaced context
+        (tests/test_gemini_live.py), so it restarts too.
         """
         from .voice_mode import model_id_from_name
 
@@ -1483,6 +1486,7 @@ class CallSession:
             current_id.startswith("ultravox/")
             or is_gpt_live_model_id(current_id)
             or is_xai_voice_model_id(current_id)
+            or is_gemini_live_model_id(current_id)
         )
 
     async def _on_agent_transfer(self, args: dict) -> dict:

@@ -1,4 +1,5 @@
 import PipecatModel, {
+  PIPECAT_MODEL_ALIASES,
   pipecatModelIdFlags,
   pipecatModelSupportsExternalTts,
 } from '../lib/models/pipecat.js';
@@ -30,7 +31,7 @@ describe('external TTS on realtime models', () => {
       expect(pipecatModelSupportsExternalTts('ultravox/ultravox-v0.6-gemma3-27b')).toBe(true);
       expect(pipecatModelSupportsExternalTts('openai/gpt-realtime')).toBe(true);
       // No Gemini Live model the API still serves accepts a TEXT modality.
-      expect(pipecatModelSupportsExternalTts('google/gemini-2.0-flash-exp')).toBe(false);
+      expect(pipecatModelSupportsExternalTts('google/gemini-2.5-flash-native-audio-preview-12-2025')).toBe(false);
       // The Grok Voice Agent API has no text-only output either (docs/grok.md).
       expect(pipecatModelSupportsExternalTts('xai/grok-voice-think-fast-2.0')).toBe(false);
       expect(pipecatModelSupportsExternalTts('openai/gpt-4o-mini')).toBe(false);
@@ -38,7 +39,16 @@ describe('external TTS on realtime models', () => {
         voiceStack: 'realtime',
         externalTts: true,
       });
-      expect(pipecatModelIdFlags['google/gemini-2.0-flash-exp'].externalTts).toBeUndefined();
+      expect(pipecatModelIdFlags['google/gemini-2.5-flash-native-audio-preview-12-2025'].externalTts).toBeUndefined();
+      // The retired id an agent may still be saved on is an alias row, listed
+      // while its target is, with the same flags.
+      expect(PIPECAT_MODEL_ALIASES['google/gemini-2.0-flash-exp']).toBe('google/gemini-2.5-flash-native-audio-preview-12-2025');
+      expect(pipecatModelIdFlags['google/gemini-2.0-flash-exp']).toEqual(
+        pipecatModelIdFlags['google/gemini-2.5-flash-native-audio-preview-12-2025'],
+      );
+      const listed = PipecatModel.allModels.map(([id]) => id);
+      expect(listed).toContain('google/gemini-2.5-flash-native-audio-preview-12-2025');
+      expect(listed).toContain('google/gemini-2.0-flash-exp');
     });
 
     test('the allModels rows carry the flag the handler exposes as hasExternalTts', () => {
@@ -56,10 +66,10 @@ describe('external TTS on realtime models', () => {
     test('modelSupportsExternalTts resolves by handler and row', () => {
       expect(modelSupportsExternalTts(ULTRAVOX)).toBe(true);
       expect(modelSupportsExternalTts('pipecat:openai/gpt-realtime')).toBe(true);
-      expect(modelSupportsExternalTts('pipecat:google/gemini-2.0-flash-exp')).toBe(false);
+      expect(modelSupportsExternalTts('pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025')).toBe(false);
       expect(modelSupportsExternalTts('livekit:ultravox/ultravox-v0.7')).toBe(true);
       expect(modelSupportsExternalTts('livekit:openai/gpt-realtime')).toBe(true);
-      expect(modelSupportsExternalTts('livekit:google/gemini-2.0-flash-exp')).toBe(false);
+      expect(modelSupportsExternalTts('livekit:google/gemini-2.5-flash-native-audio-preview-12-2025')).toBe(false);
       expect(modelSupportsExternalTts('livekit:openai/gpt-4o-mini')).toBe(false);
       // The native handler has no worker in the media path to host a TTS.
       expect(modelSupportsExternalTts('ultravox:ultravox/ultravox-v0.7')).toBe(false);
@@ -71,7 +81,7 @@ describe('external TTS on realtime models', () => {
     test('the native vendor is the provider segment of the model id', () => {
       expect(nativeTtsVendorForModel(ULTRAVOX)).toBe('ultravox');
       expect(nativeTtsVendorForModel('livekit:openai/gpt-realtime')).toBe('openai');
-      expect(nativeTtsVendorForModel('pipecat:google/gemini-2.0-flash-exp')).toBe('google');
+      expect(nativeTtsVendorForModel('pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025')).toBe('google');
       expect(nativeTtsVendorForModel('pipecat:')).toBe('');
     });
 
@@ -82,7 +92,7 @@ describe('external TTS on realtime models', () => {
       expect(isExternalTtsForModel({ modelName: ULTRAVOX, vendor: 'Ultravox' })).toBe(false);
       expect(isExternalTtsForModel({ modelName: 'pipecat:openai/gpt-realtime', vendor: 'openai' })).toBe(false);
       // google is a TTS vendor too, but on a Gemini row it is the model's own voice.
-      expect(isExternalTtsForModel({ modelName: 'pipecat:google/gemini-2.0-flash-exp', vendor: 'google' })).toBe(false);
+      expect(isExternalTtsForModel({ modelName: 'pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025', vendor: 'google' })).toBe(false);
     });
 
     test('any other vendor is external, with scoping and case ignored', () => {

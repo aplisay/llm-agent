@@ -144,12 +144,12 @@ def test_llm_input_tokens_exclude_the_prompt_cache(model_name, usage, expected):
 
 
 # Metric labels as the Pipecat 1.10 services report them. Rate lines match the roster id, so a row with the bare
-# label bills nothing: the xAI cards carry only xai/ lines, and Gemini Live labels Pipecat's default model.
+# label bills nothing: the xAI cards carry only xai/ lines, and Gemini Live labels its model with a models/ prefix.
 @pytest.mark.parametrize(
     ("model_name", "metric_model"),
     [
         ("pipecat:xai/grok-4.3", "grok-4.3"),
-        ("pipecat:google/gemini-2.0-flash-exp", "models/gemini-2.5-flash-native-audio-preview-12-2025"),
+        ("pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025", "models/gemini-2.5-flash-native-audio-preview-12-2025"),
         ("pipecat:openai/gpt-4o-mini", "gpt-4o-mini"),
         ("pipecat:anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"),
     ],
@@ -309,7 +309,7 @@ def test_gemini_live_speech_is_not_metered():
     from pipecat.frames.frames import TTSAudioRawFrame
     from pipecat.metrics.metrics import TTSUsageMetricsData
 
-    services = usage_vendors({}, "pipecat:google/gemini-2.0-flash-exp")
+    services = usage_vendors({}, "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025")
     assert services["tts"]["skip"] is True
     obs = UsageMeteringObserver(services=services)
     _push(obs, TTSAudioRawFrame(audio=b"\x00" * 48000, sample_rate=24000, num_channels=1))
@@ -317,7 +317,7 @@ def test_gemini_live_speech_is_not_metered():
     assert _meter(obs, "tts", "milliseconds") is None
     assert _meter(obs, "tts", "characters") is None
     # with an external TTS the speech is that vendor's and is metered
-    external = usage_vendors({"options": {"tts": {"vendor": "elevenlabs", "voice": "Rachel"}}}, "pipecat:google/gemini-2.0-flash-exp")
+    external = usage_vendors({"options": {"tts": {"vendor": "elevenlabs", "voice": "Rachel"}}}, "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025")
     assert "skip" not in external["tts"] and external["tts"]["vendor"] == "elevenlabs"
     obs2 = UsageMeteringObserver(services=external)
     _push(obs2, TTSAudioRawFrame(audio=b"\x00" * 48000, sample_rate=24000, num_channels=1))

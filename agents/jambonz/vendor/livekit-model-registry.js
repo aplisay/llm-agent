@@ -10,7 +10,8 @@ const LIVEKIT_REALTIME_MODEL_ROWS = [
   ["ultravox", "ultravox-v0.6", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.6-gemma3-27b", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.7", "Ultravox 0.7 (GLM 4.6) (Livekit realtime)"],
-  ["google", "gemini-2.0-flash-exp", "Google Gemini 2.0 (Livekit realtime)"],
+  ["google", "gemini-2.5-flash-native-audio-preview-12-2025", "Google Gemini 2.5 Flash Live (Livekit realtime)"],
+  ["google", "gemini-2.0-flash-exp", "Google Gemini 2.0 Live (Livekit realtime, retired: runs Gemini 2.5 Flash Live)"],
 ];
 
 /** STT–LLM–TTS via LiveKit Inference. */

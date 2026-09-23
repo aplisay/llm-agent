@@ -691,7 +691,8 @@ def _wire_inactivity_kick(
     - **realtime, non-Ultravox** (OpenAI Realtime / Gemini Live): these
       services don't consume ``TTSSpeakFrame``. Mirror the greeting's realtime
       path — append a developer message instructing the model to read the
-      phrase verbatim, then run the LLM.
+      phrase verbatim, then run the LLM. Pipecat's Gemini service ignores a
+      message appended after the seed; ``gemini_service.py`` sends it.
     - **realtime, Ultravox**: Ultravox's ``process_frame`` only acts on
       ``LLMContextFrame`` / ``InterruptionFrame`` / ``InputTextRawFrame`` /
       ``InputAudioRawFrame`` / ``VADUserStoppedSpeakingFrame`` (see
@@ -1498,11 +1499,18 @@ async def _build_realtime(
             ),
         )
     elif model_id.startswith("google/"):
-        from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+        # Gemini Live: the row's model and voice, on the subclass that sends
+        # appended instructions (the inactivity kick) to the live session. No
+        # language on purpose, see build_gemini_live_service.
+        from .gemini import gemini_live_voice
+        from .gemini_service import build_gemini_live_service
 
-        llm = GeminiLiveLLMService(
+        _, gemini_model = model_id.split("/", 1)
+        llm = build_gemini_live_service(
             api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
-            system_instruction=system_prompt,
+            model=gemini_model,
+            system_prompt=system_prompt,
+            voice=gemini_live_voice(agent),
         )
     elif grok_voice_model:
         # Use the Grok subclass for platform injection, vendor overrides and provider-close handling. See docs/grok.md.

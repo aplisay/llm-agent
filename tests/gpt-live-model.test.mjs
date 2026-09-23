@@ -50,7 +50,7 @@ describe('GPT-Live roster row', () => {
   test('transcript TTS requires an explicit opt-in and an external vendor on Pipecat GPT-Live', () => {
     const options = { tts: { experimentalTranscript: true, vendor: 'deepgram' } };
     expect(gptLiveTranscriptTtsEnabled({ modelName: GPT_LIVE, options })).toBe(true);
-    for (const modelName of ['livekit:openai/gpt-live-1', 'pipecat:openai/gpt-realtime', 'pipecat:google/gemini-2.0-flash-exp']) {
+    for (const modelName of ['livekit:openai/gpt-live-1', 'pipecat:openai/gpt-realtime', 'pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025']) {
       expect(gptLiveTranscriptTtsEnabled({ modelName, options })).toBe(false);
     }
     for (const experimentalTranscript of [undefined, false, 'true', 1]) {

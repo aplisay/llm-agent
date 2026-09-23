@@ -26,6 +26,29 @@ Pipecat), and **ci** (build and release pipeline).
   characters and milliseconds, and `stt` milliseconds once for every agent that
   had held the call. On realtime models only an external TTS was affected.
 
+## Gemini Live - core+livekit+pipecat
+
+- **[core+livekit+pipecat] Gemini Live model**: the Gemini Live rows are now
+  `pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025` and
+  `livekit:google/gemini-2.5-flash-native-audio-preview-12-2025`, labelled
+  "Google Gemini 2.5 Flash Live". Google shut down `gemini-2.0-flash-exp`, the
+  model the rows were named after, on 9 December 2025. Neither worker passed
+  the row's id to its library, so both ran the library's default Live model,
+  which is the model the rows now name. Agents saved on the old id keep working
+  and run this model, and the old id stays listed as a retired alias while the
+  new row is offered. Usage on the Pipecat worker is recorded under the new id.
+- **[pipecat] Gemini Live voice**: `options.tts.voice` now reaches the model.
+  It was ignored, and every call spoke with Pipecat's default voice (Charon).
+  No language is sent: Google's Live API guide says native-audio models choose
+  the language themselves, so the system prompt is the way to pin one.
+- **[pipecat] Gemini Live inactivity prompt**: `options.inactivity.message` is
+  now spoken on Gemini Live. The prompt reached the worker's own context but
+  was never sent to the model.
+- **[pipecat] Gemini Live handover**: `transfer_agent` between two agents on the
+  same Gemini Live model now restarts the agent stack, as it already did for
+  Ultravox, GPT-Live and Grok. The in-place swap left the outgoing agent's
+  prompt and tools in place, and the incoming agent never spoke.
+
 ## Voices - core+livekit+pipecat
 
 - **[core+livekit+pipecat] Neuphonic TTS**: `options.tts.vendor: "neuphonic"` on
@@ -55,6 +78,12 @@ Pipecat), and **ci** (build and release pipeline).
 ## Upgrade notes
 
 - **[core] Database schema** stays at v66.
+- **[core] Gemini Live rate lines**: run `scripts/add-gemini-live-rate-lines.mjs`
+  against each environment, or Gemini Live usage settles `no_line`. It adds
+  the three token lines for `google/gemini-2.5-flash-native-audio-preview-12-2025`
+  at Google's audio list prices scaled by the card's factor (the header
+  documents the overrides). Existing `gemini-2.0-flash-exp` lines are left
+  in place.
 - **[core+livekit+pipecat] New environment**: `NEUPHONIC_API_KEY`.
 - **[core] Neuphonic rate lines**: run `scripts/add-neuphonic-rate-lines.mjs`
   against each environment, or Neuphonic usage settles `no_line`. It copies each
