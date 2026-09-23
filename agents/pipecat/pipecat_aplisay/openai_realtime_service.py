@@ -1,40 +1,29 @@
-"""OpenAI Realtime with the platform's mid-call context injection.
+"""OpenAI Realtime with the platform's mid-call context injection. See PR #364.
 
 Pipecat's ``OpenAIRealtimeLLMService`` seeds the server conversation once, from
-the first context frame, and after that only sends newly completed tool
-results. Its ``_handle_messages_append`` is a stub. So on the
-``pipecat:openai/gpt-realtime`` row nothing the worker appended to the context
-after the first reply reached OpenAI: the inactivity kick's developer message,
-the in-place handover opening, and a following ``LLMRunFrame`` produced no
-``response.create``. Keypad digits only reached the local context.
+the first context frame. After that it only sends newly completed tool
+results, and its ``_handle_messages_append`` is a stub. So nothing the worker
+appends to the context later reaches OpenAI.
 
-This subclass follows ``grok_service.AplisayGrokRealtimeLLMService``: each new
+This subclass follows ``grok_service.AplisayGrokRealtimeLLMService``. Each new
 developer or system context message goes out as a ``system`` conversation item
-and a response is requested. The seed still packs the history the stock way.
+and a response is requested. A replaced context (the in-place handover) starts
+a new server conversation.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from loguru import logger
-from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
+from pipecat.frames.frames import LLMFullResponseEndFrame, TTSStoppedFrame
 from pipecat.services.openai.realtime import events
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
-from .grok import DTMF_MESSAGE
+from .realtime_context import DTMF_MESSAGE, platform_message_text, text_of
 
-
-def _text_of(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            part.get("text", "") for part in content
-            if isinstance(part, dict) and part.get("type") in ("text", "input_text") and isinstance(part.get("text"), str)
-        ]
-        return "".join(parts).strip()
-    return ""
+#: OpenAI's refusal of a response.create while a response is active.
+ACTIVE_RESPONSE_ERROR = "conversation_already_has_active_response"
 
 
 class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
@@ -42,133 +31,158 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        # Context messages the server already has, in order. The seed packs
-        # everything up to the first run into one item; later developer and
-        # system messages are sent as they appear (see _handle_context).
+        # Context messages the server already has, in order (see _handle_context).
         self._seen_messages: list = []
-        # Items that arrived before the session was ready; sent on session.updated.
-        self._pending_items: list[events.ConversationItem] = []
+        # Keypad digits pressed before the seed; sent after it (see inject_dtmf).
+        self._held_items: list[events.ConversationItem] = []
         self._responses_requested = 0
+        self._seeding = False
+        # A response.create owed once the active response is done.
+        self._response_pending = False
+        # Function calls the current server conversation has issued.
+        self._session_call_ids: set[str] = set()
 
     # ---- items ------------------------------------------------------------
 
     @staticmethod
-    def _text_item(role: str, text: str) -> events.ConversationItem:
+    def _text_item(role: Literal["user", "system"], text: str) -> events.ConversationItem:
         return events.ConversationItem(
-            type="message",
-            role="user" if role == "user" else "system",
-            content=[events.ItemContent(type="input_text", text=text)],
+            type="message", role=role, content=[events.ItemContent(type="input_text", text=text)]
         )
 
     async def _send_item(self, item: events.ConversationItem) -> None:
-        # Marked as ours so the server's conversation.item.added echo is not
-        # taken for the start of an assistant turn (see the stock service).
+        # Marked like the stock's own seed items; the server's echo is then dropped.
         self._messages_added_manually[item.id] = True
         await self.send_client_event(events.ConversationItemCreateEvent(item=item))
-
-    async def _send_or_hold(self, item: events.ConversationItem) -> None:
-        if self._api_session_ready:
-            await self._send_item(item)
-        else:
-            self._pending_items.append(item)
-
-    async def _handle_evt_session_updated(self, evt) -> None:  # noqa: ANN001
-        # Held items go first, so the run they asked for follows them.
-        pending, self._pending_items = self._pending_items, []
-        for item in pending:
-            await self._send_item(item)
-        await super()._handle_evt_session_updated(evt)
 
     async def inject_dtmf(self, digits: str) -> None:
         """Keypad digits: a user message and a new response. The DTMF
         aggregator's TranscriptionFrame would only reach the local context."""
         item = self._text_item("user", DTMF_MESSAGE.format(digits=digits))
-        if not self._api_session_ready:
-            # Sent on session.updated. The first run, or the run below, answers it.
-            self._pending_items.append(item)
-            if self._context is not None:
-                self._run_llm_when_api_session_ready = True
+        if self._llm_needs_conversation_setup:
+            # The seed's packed history tells the model to act on its last
+            # saved message, so digits sent before it would go unanswered.
+            self._held_items.append(item)
             return
         await self._send_item(item)
-        if self._context is None:
-            # No first turn yet: the digits are on the server and the first
-            # run will answer them.
-            return
         await self._create_response()
 
-    # ---- conversation -----------------------------------------------------
+    # ---- responses --------------------------------------------------------
 
     async def _create_response(self) -> None:
         self._responses_requested += 1
-        seeding = self._llm_needs_conversation_setup
-        await super()._create_response()
-        if seeding and not self._llm_needs_conversation_setup:
-            # The seed packed every message so far into the first item.
-            assert self._context is not None
-            self._seen_messages = list(self._context.get_messages())
+        if self._seeding or self._current_assistant_response is not None:
+            # OpenAI refuses a response.create while a response is active; it
+            # is sent after that response's response.done instead.
+            self._response_pending = True
+            return
+        seeding = (
+            self._llm_needs_conversation_setup and self._api_session_ready and self._context is not None
+        )
+        # The seed packs the context as it is now; a message added during its
+        # sends goes out on the next context frame.
+        snapshot = list(self._context.get_messages()) if seeding else []
+        self._seeding = seeding
+        try:
+            await super()._create_response()
+        finally:
+            self._seeding = False
+        if not seeding or self._llm_needs_conversation_setup:
+            return
+        self._seen_messages = snapshot
+        held, self._held_items = self._held_items, []
+        for item in held:
+            await self._send_item(item)
+        if held:
+            self._response_pending = True
 
-    async def _handle_messages_append(self, frame) -> None:  # noqa: ANN001
-        # The user aggregator has already added the messages to the context
-        # and, when the frame runs the LLM, pushed the context frame that
-        # _handle_context turns into items and a response.
-        return
+    async def _handle_evt_response_done(self, evt) -> None:  # noqa: ANN001
+        await super()._handle_evt_response_done(evt)
+        if self._response_pending:
+            self._response_pending = False
+            await self._create_response()
 
-    def _item_for(self, message: Any) -> Optional[events.ConversationItem]:
-        """A system item for an appended developer or system message. User
-        messages are never resent: the aggregator adds one per transcribed
-        user turn, and the server already holds that audio item. A message
-        that repeats the session instructions (the in-place handover replaces
-        the context with the new prompt first) is already on the server."""
-        if isinstance(message, LLMSpecificMessage) or not isinstance(message, dict):
-            return None
-        if message.get("role") not in ("developer", "system") or message.get("tool_call_id"):
-            return None
-        text = _text_of(message.get("content"))
-        if not text or text == (self._settings.system_instruction or "").strip():
-            return None
-        return self._text_item("system", text)
+    async def _maybe_handle_evt_retrieve_conversation_item_error(self, evt) -> bool:  # noqa: ANN001
+        if getattr(evt.error, "code", None) == ACTIVE_RESPONSE_ERROR:
+            # Our response.create lost the race with a server-VAD reply.
+            self._response_pending = True
+            logger.debug(f"{self}: response.create refused while a response is active; asking again after it")
+            return True
+        return await super()._maybe_handle_evt_retrieve_conversation_item_error(evt)
 
-    def _new_messages(self, messages: list) -> list:
+    async def _handle_evt_function_call_arguments_done(self, evt) -> None:  # noqa: ANN001
+        self._session_call_ids.add(evt.call_id)
+        await super()._handle_evt_function_call_arguments_done(evt)
+
+    # ---- conversation -----------------------------------------------------
+
+    def _new_messages(self, messages: list) -> Optional[list]:
+        """The messages after the ones the server has, or None when the seen
+        prefix no longer matches: the context was replaced."""
         seen = self._seen_messages
-        if len(messages) >= len(seen) and all(a == b for a, b in zip(seen, messages)):
+        if messages[: len(seen)] == seen:
             return messages[len(seen):]
-        # The context was replaced wholesale (the in-place handover): what is
-        # there now is the new history.
-        return list(messages)
+        return None
+
+    def _settings_behind(self, messages: list) -> bool:
+        """The handover queues its settings update before the context
+        replacement, but a transcript flush frame queued just before both can
+        read the replaced context first. Its leading prompt is then not yet
+        the session instructions; the run frame's own context frame follows."""
+        first = messages[0] if messages else None
+        if not isinstance(first, dict) or first.get("role") not in ("developer", "system"):
+            return False
+        return text_of(first.get("content")) != (self._settings.system_instruction or "").strip()
 
     async def _handle_context(self, context) -> None:  # noqa: ANN001
-        if self._context is None:
+        if self._context is None or self._llm_needs_conversation_setup:
+            # The first run seeds the server from the whole context; until
+            # then the stock path only sends tool results.
             await super()._handle_context(context)
-            return
-        self._context = context
-        if self._llm_needs_conversation_setup:
-            # The first run has not seeded the server yet; it packs the whole
-            # context when it does.
-            await self._process_completed_function_calls(send_new_results=True)
             return
         messages = list(context.get_messages())
         new = self._new_messages(messages)
-        self._seen_messages = list(messages)
+        if new is None:
+            if self._settings_behind(messages):
+                return
+            await self._restart_conversation(context)
+            return
+        self._context = context
+        self._seen_messages = messages
         sent = False
-        caller_turn = False
         for message in new:
-            if isinstance(message, dict) and message.get("role") == "user":
-                caller_turn = True
+            text = platform_message_text(message)
+            if text is None:
                 continue
-            item = self._item_for(message)
-            if item is None:
-                continue
-            await self._send_or_hold(item)
+            await self._send_item(self._text_item("system", text))
             sent = True
         before = self._responses_requested
         await self._process_completed_function_calls(send_new_results=True)
-        # A context frame that carries the caller's own turn is answered by the
-        # server VAD; asking again would collide with that response. Only a
-        # platform-only update (the kick, the handover opening) asks for one.
-        if sent and not caller_turn and self._responses_requested == before:
+        if sent and self._responses_requested == before:
             await self._create_response()
-        elif sent and caller_turn:
-            logger.debug(f"{self}: platform message sent alongside a caller turn; the server's response covers it")
+
+    async def _restart_conversation(self, context) -> None:  # noqa: ANN001
+        """A new server conversation for a replaced context (the in-place
+        handover). The outgoing agent's turns and open tool calls stay
+        behind, so ``includeHistory`` holds, and the first run packs the new
+        prompt and the opening the way a new call's greeting is packed."""
+        if self._current_assistant_response is not None:
+            # Close the outgoing agent's turn for the aggregators; its socket goes next.
+            await self.push_frame(LLMFullResponseEndFrame())
+            if self._is_modality_enabled("audio"):
+                await self.push_frame(TTSStoppedFrame())
+        old_calls, self._session_call_ids = self._session_call_ids, set()
+        self._context = context
+        self._seen_messages = []
+        self._held_items = []
+        self._response_pending = False
+        self._current_assistant_response = None
+        self._current_audio_response = None
+        logger.info(f"{self}: context replaced; starting a new server conversation")
+        await self.reset_conversation()
+        # A late result for one of the old agent's calls belongs to the old conversation.
+        self._completed_tool_calls |= old_calls
+        await self._create_response()
 
 
 def build_openai_realtime_service(

@@ -33,7 +33,6 @@ from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame
-from pipecat.processors.aggregators.dtmf_aggregator import DTMFAggregator
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.services.openai.live import events
 from pipecat.services.openai.live.llm import (
@@ -48,6 +47,7 @@ from pipecat.services.openai.responses.llm import (
 )
 
 from . import gpt_live
+from .dtmf import CallbackDtmfAggregator as GptLiveDtmfAggregator  # noqa: F401  (its old home)
 from .gpt_live import GptLiveSession, deep_merge
 
 #: ``session.closed`` reasons that mean the provider ended the session on its
@@ -487,26 +487,6 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
                 f"delegation {delegation.id} answered ({len(text)} chars)"
             )
         await self.append_commentary(text, delegation_id=delegation.id)
-
-
-class GptLiveDtmfAggregator(DTMFAggregator):
-    """The platform's DTMF aggregator for GPT-Live: an aggregated digit
-    string goes to ``on_digits`` (the injection shim and the transcript log)
-    instead of becoming a ``TranscriptionFrame`` the live session would never
-    see."""
-
-    def __init__(self, *, on_digits: Callable[[str], Awaitable[None]], **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._on_digits = on_digits
-
-    async def _flush_aggregation(self) -> None:
-        if not self._aggregation:
-            return
-        sequence, self._aggregation = self._aggregation, ""
-        try:
-            await self._on_digits(sequence)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"DTMF injection failed: {e}")
 
 
 def build_gpt_live_service(

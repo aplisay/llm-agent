@@ -16,6 +16,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from . import grok
 from .grok import merged_session, strip_server_tools
+from .realtime_context import text_of as _text_of
 
 #: Longest an injection waits for ``session.updated`` before giving up.
 SESSION_READY_TIMEOUT_SECS = 10.0
@@ -30,18 +31,6 @@ class _TranscriptionCompleted(events.ConversationItemInputAudioTranscriptionComp
 # Widen the parser's model for this one event so the subclass can tell the
 # interim ``completed`` events (status in_progress) from the final one.
 events._server_event_types["conversation.item.input_audio_transcription.completed"] = _TranscriptionCompleted
-
-
-def _text_of(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            part.get("text", "") for part in content
-            if isinstance(part, dict) and part.get("type") in ("text", "input_text") and isinstance(part.get("text"), str)
-        ]
-        return "".join(parts).strip()
-    return ""
 
 
 class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):

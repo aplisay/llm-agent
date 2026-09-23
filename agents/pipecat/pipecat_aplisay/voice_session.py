@@ -40,6 +40,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .dtmf import CallbackDtmfAggregator
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
 from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
@@ -406,7 +407,10 @@ _DEFAULT_DTMF_TIMEOUT_MS = 1500
 
 
 def _dtmf_aggregator_for(
-    agent: dict, *, on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None
+    agent: dict,
+    *,
+    on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    mute_until_bot_complete: bool = False,
 ) -> DTMFAggregator:
     """Build the DTMF aggregator that buffers keypad digits into a single user
     turn, honouring per-agent ``options.dtmfTimeout`` and
@@ -415,7 +419,8 @@ def _dtmf_aggregator_for(
     ``on_digits`` (GPT-Live, the Grok voice row, OpenAI Realtime) swaps the
     ``TranscriptionFrame`` delivery for a callback: those services never send
     a user message added to the context, so the digits go through the
-    service instead (see gpt_live_service.py and the realtime subclasses).
+    service instead (see dtmf.py). ``mute_until_bot_complete`` drops digits
+    while the greeting mute holds the caller's speech.
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -466,12 +471,11 @@ def _dtmf_aggregator_for(
     # termination_digit may be None to disable the terminator (see above); the
     # base class type-hints KeypadEntry but only does an equality comparison.
     if on_digits is not None:
-        from .gpt_live_service import GptLiveDtmfAggregator
-
-        return GptLiveDtmfAggregator(
+        return CallbackDtmfAggregator(
             timeout=timeout_s,
             termination_digit=termination_digit,  # type: ignore[arg-type]
             on_digits=on_digits,
+            mute_until_bot_complete=mute_until_bot_complete,
         )
     return DTMFAggregator(
         timeout=timeout_s,
@@ -666,8 +670,10 @@ def _wire_inactivity_kick(
     relay_endpoint: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     inject: "Optional[Callable[[str], Awaitable[None]]]" = None,
-) -> None:
-    """Register the inactivity "kick" handler on the user aggregator.
+) -> "Optional[Callable[[], None]]":
+    """Register the inactivity "kick" handler on the user aggregator. Returns
+    a function that resets the unanswered-prompt count (a keypad answer never
+    starts a user turn, see dtmf.py), or None when nothing was wired.
 
     ``inject`` replaces the frame-based delivery for a service that ignores
     context frames after it has started (GPT-Live): it is awaited with the
@@ -713,14 +719,14 @@ def _wire_inactivity_kick(
     """
     message = _inactivity_message(agent)
     if message is None:
-        return
+        return None
 
     # Ultravox handles inactivity NATIVELY via ``inactivityMessages`` in the
     # /calls request body (see ``_ultravox_inactivity_extra``) — it has no
     # separate TTS, so a synthesised kick is unreliable. Skip the generic kick
     # for it to avoid a double nudge.
     if is_ultravox:
-        return
+        return None
 
     from loguru import logger as _logger
 
@@ -747,12 +753,15 @@ def _wire_inactivity_kick(
     hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
     idle_prompts = 0
 
+    def reset() -> None:
+        nonlocal idle_prompts
+        idle_prompts = 0
+
     # Pipecat calls this with (aggregator, strategy). If the signature does not
     # accept both, the call raises and pipecat only logs it, so no reset happens.
     @user_aggregator.event_handler("on_user_turn_started")
     async def _on_user_turn_started(_aggregator, _strategy=None) -> None:  # noqa: ANN001
-        nonlocal idle_prompts
-        idle_prompts = 0
+        reset()
 
     @user_aggregator.event_handler("on_user_turn_idle")
     async def _on_user_turn_idle(_aggregator) -> None:  # noqa: ANN001
@@ -796,6 +805,8 @@ def _wire_inactivity_kick(
             await on_inactivity_hangup()  # type: ignore[misc]
         except Exception as e:  # noqa: BLE001
             _logger.warning(f"inactivity hangup failed: {e}")
+
+    return reset
 
 
 def _properties_to_function_schema(name: str, description: str, properties: dict, required: list[str]) -> FunctionSchema:
@@ -1431,7 +1442,6 @@ async def _build_realtime(
     options = agent.get("options") or {}
     gpt_live_model = is_gpt_live_model_id(model_id)
     grok_voice_model = is_xai_voice_model_id(model_id)
-    openai_realtime_model = not gpt_live_model and model_id.startswith("openai/")
 
     # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
     # than the model's own, so the model emits text and a discrete TTS stage
@@ -1478,7 +1488,7 @@ async def _build_realtime(
             session=gpt_live,
             transcript_tts=transcript_tts,
         )
-    elif openai_realtime_model:
+    elif model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
         # output, not directly on Settings. The Settings class only accepts
         # `session_properties` (plus inherited `model` / `system_instruction`).
@@ -1488,9 +1498,8 @@ async def _build_realtime(
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
         #
-        # The subclass sends the platform's mid-call context messages (the
-        # inactivity kick, the in-place handover opening) and keypad digits,
-        # which the stock service drops. See openai_realtime_service.py.
+        # The stock service drops the platform's mid-call context messages
+        # and keypad digits; the subclass sends them. See openai_realtime_service.py.
         from .openai_realtime_service import build_openai_realtime_service
 
         _, openai_model = model_id.split("/", 1)
@@ -1662,14 +1671,28 @@ async def _build_realtime(
     # never consumed and digits are dropped. GPT-Live routes the digits through
     # the injection shim instead of a TranscriptionFrame.
     if gpt_live_model and gpt_live is not None:
-        on_digits = gpt_live.on_dtmf
-    elif grok_voice_model or openai_realtime_model:
+        digits_to_service = gpt_live.on_dtmf
+    elif callable(getattr(llm, "inject_dtmf", None)):
         # Same reason as GPT-Live: a TranscriptionFrame would become a user
         # message the service never sends; the digits go through the service.
-        on_digits = on_injected_dtmf
+        digits_to_service = on_injected_dtmf
     else:
-        on_digits = None
-    dtmf_aggregator = _dtmf_aggregator_for(agent, on_digits=on_digits)
+        digits_to_service = None
+    kick_reset: "Optional[Callable[[], None]]" = None
+
+    async def route_digits(digits: str) -> None:
+        # A bridged leg's bot is muted, so its digits go nowhere, as with the kick.
+        if relay_endpoint is not None and getattr(relay_endpoint, "engaged", False):
+            return
+        if kick_reset is not None:
+            kick_reset()
+        await digits_to_service(digits)  # type: ignore[misc]
+
+    dtmf_aggregator = _dtmf_aggregator_for(
+        agent,
+        on_digits=route_digits if digits_to_service is not None else None,
+        mute_until_bot_complete=bool(user_params and user_params.user_mute_strategies),
+    )
     # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
     # engaged relay silences the caller's audio for the aux engine too, and the
     # tap copies audio out to a side pipeline — nothing of the second engine
@@ -1715,7 +1738,7 @@ async def _build_realtime(
     # window. Inert unless options.inactivity is configured (the user
     # aggregator's user_idle_timeout stays 0 otherwise). Ultravox needs the
     # InputTextRawFrame path — see _wire_inactivity_kick.
-    _wire_inactivity_kick(
+    kick_reset = _wire_inactivity_kick(
         user_aggregator=user_aggregator,
         task_ref_getter=lambda: task,
         agent=agent,
