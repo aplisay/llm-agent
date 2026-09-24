@@ -26,6 +26,16 @@ Pipecat), and **ci** (build and release pipeline).
   characters and milliseconds, and `stt` milliseconds once for every agent that
   had held the call. On realtime models only an external TTS was affected.
 
+## Agents and models - pipecat
+
+- **[pipecat] OpenAI Realtime mid-call prompts**: on `pipecat:openai/gpt-realtime`
+  the inactivity prompt, keypad digits and the opening line of an in-place
+  `transfer_agent` handover now reach the model. They were dropped after the
+  first reply, and with `options.inactivity.hangup` set the call could end
+  after three prompts the caller never heard. The handover now starts a fresh
+  model conversation, so `includeHistory: false` is honoured, and a keypad
+  press counts as an answer to the inactivity prompt.
+
 ## Gemini Live - core+livekit+pipecat
 
 - **[core+livekit+pipecat] Gemini Live model**: the Gemini Live rows are now

@@ -1995,17 +1995,18 @@ class CallSession:
         return delegate
 
     async def _on_injected_dtmf(self, digits: str) -> None:
-        """Aggregated keypad digits on a session whose service never sends a
-        user message added to the context after it starts (GPT-Live, the Grok
-        voice row, Gemini Live): a ``user`` transcript row (as the DTMF
-        aggregator's TranscriptionFrame would have produced) and the service's
-        own injection path."""
-        await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
-        llm = self._llm_service
-        inject = getattr(llm, "inject_dtmf", None)
-        if inject is None:
-            return
-        await inject(digits)
+        """Aggregated keypad digits for a service that injects them itself
+        (GPT-Live, the Grok voice row, OpenAI Realtime, Gemini Live). The
+        service gets them first. The context gets the user turn the DTMF
+        aggregator would have added, so transcripts and handover history keep
+        them. The log row is posted off the frame path: it must not hold the
+        caller's audio."""
+        inject = getattr(self._llm_service, "inject_dtmf", None)
+        if inject is not None:
+            await inject(digits)
+        if self._llm_context is not None:
+            self._llm_context.add_message({"role": "user", "content": f"DTMF: {digits}"})
+        self._hold_task(asyncio.create_task(self._send_message({"user": f"DTMF: {digits}"}, is_final=True)))
 
     async def _on_provider_session_ended(self, reason: str) -> None:
         """The provider closed the realtime session (GPT-Live: expiry, a

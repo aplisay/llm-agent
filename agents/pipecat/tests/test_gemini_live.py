@@ -405,14 +405,16 @@ def test_build_voice_session_hands_the_digits_to_the_session_callback(monkeypatc
     seen: dict = {}
     real = voice_session._dtmf_aggregator_for
 
-    def recording(agent, *, on_digits=None):
+    def recording(agent, *, on_digits=None, **kwargs):
         seen["on_digits"] = on_digits
-        return real(agent, on_digits=on_digits)
+        return real(agent, on_digits=on_digits, **kwargs)
 
     monkeypatch.setattr(voice_session, "_dtmf_aggregator_for", recording)
 
-    async def on_injected_dtmf(_digits: str) -> None:
-        return None
+    received: list[str] = []
+
+    async def on_injected_dtmf(digits: str) -> None:
+        received.append(digits)
 
     async def build():
         return await voice_session.build_voice_session(
@@ -426,7 +428,11 @@ def test_build_voice_session_hands_the_digits_to_the_session_callback(monkeypatc
         )
 
     _task, _audio_buffer, _context, llm = asyncio.run(build())
-    assert seen["on_digits"] is on_injected_dtmf
+    # the aggregator's callback forwards to the call session's (through the
+    # relay and inactivity-count wrapper the build adds)
+    assert seen["on_digits"] is not None
+    asyncio.run(seen["on_digits"]("12"))
+    assert received == ["12"]
     assert isinstance(llm, AplisayGeminiLiveLLMService)
     assert llm._settings.model == f"models/{BARE}" and llm._settings.voice == "Kore"
 
