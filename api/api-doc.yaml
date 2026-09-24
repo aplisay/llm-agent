@@ -1486,13 +1486,25 @@ components:
                 has explicitly allowed it to which is a security feature to control the risk of data leakage.
 
           redact:
-            type: boolean
+            oneOf:
+              - type: boolean
+              - type: array
+                minItems: 1
+                items:
+                  type: string
+                  minLength: 1
             description: >-
-              When set to `true`, the function still executes normally and the real result is stored in
-              `metadata.toolsCalls.<function>.result`. However, the LLM receives only a redacted acknowledgement:
-              `"OK - function completed"` on success, or `"FAILED - invocation failed"` on error (with the `error`
-              object still present, but the result payload redacted). This is intended for handlers with dynamic
-              metadata support (e.g. LiveKit agents).
+              Hide some or all of the function's result from the model while the real result is still stored in
+              `metadata.toolsCalls.<function>.result` for later tools to chain (e.g. a transfer number).
+              `true`: the LLM receives only a redacted acknowledgement, `"OK - function completed"` on success or
+              `"FAILED - invocation failed"` on error (with the `error` object still present, but the result
+              payload redacted). A list of property names, e.g. `["extension", "direct", "mobile"]`: the LLM
+              receives the result with every property of those names removed, wherever it occurs in the result
+              (objects and arrays, any depth; names are matched exactly), so a lookup can disambiguate with the
+              caller ("did you mean Sue Sinclair?") while the numbers ride metadata only. A result that is not
+              JSON has nothing to strip and is returned unchanged; on error the behaviour of `true` applies. An
+              empty list is rejected. Either form is only allowed on handlers with dynamic metadata support
+              (LiveKit and Pipecat agents).
             example: true
           result:
             type: string
