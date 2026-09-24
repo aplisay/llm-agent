@@ -22,9 +22,11 @@ import {
   DEFAULT_TEXT_MODELS,
   DEFAULT_VOICE_MODELS,
   bundledTtsLines,
+  cardTextPrice,
   hasLine,
   priceFactorFor,
   round2sf,
+  textModelDetails,
   textPricesFor,
   ultravoxMinutePrice,
   xaiAdditions,
@@ -246,9 +248,9 @@ describe('add-xai-rate-lines planning', () => {
     expect(TTS_ENGINES).not.toContain('xai');
   });
 
-  test('the additions are one minute line per voice row, a zero speech pair per bundled provider and three token lines per text model, minus what is present', () => {
+  test('the additions are one minute line per voice row, a zero speech pair per bundled provider and three token lines per text model and detail form, minus what is present', () => {
     const additions = xaiAdditions(card, { voicePrice: 5500000, env: {} });
-    expect(additions).toHaveLength(DEFAULT_VOICE_MODELS.length + BUNDLED_TTS_PROVIDERS.length * 2 + DEFAULT_TEXT_MODELS.length * 3);
+    expect(additions).toHaveLength(DEFAULT_VOICE_MODELS.length + BUNDLED_TTS_PROVIDERS.length * 2 + DEFAULT_TEXT_MODELS.length * 6);
     expect(additions[0]).toEqual({
       dim: 'model', match: { technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' }, unit: 'minute', priceMicros: 5500000,
     });
@@ -277,6 +279,33 @@ describe('add-xai-rate-lines planning', () => {
     expect(hasLine(card, additions[0])).toBe(false);
     // a narrower run still respects what is there
     const narrow = xaiAdditions(seeded, { textModels: ['grok-4.5'], voiceModels: [], env: {} });
-    expect(narrow.map((l) => l.match.detail)).toEqual(['xai/grok-4.5', 'xai/grok-4.5', 'xai/grok-4.5']);
+    expect(narrow.map((l) => l.match.detail)).toEqual(['xai/grok-4.5', 'xai/grok-4.5', 'xai/grok-4.5', 'grok-4.5', 'grok-4.5', 'grok-4.5']);
+  });
+
+  test('each text model is priced under the roster id and the bare id, at one price', () => {
+    // Pipecat rows carry the roster id; a text:xai agent's rows carry the bare id (driver-upgrades.test.mjs).
+    expect(textModelDetails('grok-4.3')).toEqual(['xai/grok-4.3', 'grok-4.3']);
+    const additions = xaiAdditions(card, { voiceModels: [], env: {} });
+    const prices = (detail) => additions.filter((l) => l.match.detail === detail).map((l) => [l.match.unit, l.priceMicros]);
+    expect(prices('grok-4.3')).toEqual([['input_tokens', 1.25], ['output_tokens', 2.5], ['cache_read_tokens', 0.2]]);
+    expect(prices('xai/grok-4.3')).toEqual(prices('grok-4.3'));
+  });
+
+  test('a card that prices only the roster ids gains the bare ids at the prices it already charges', () => {
+    // The cards as first seeded, with one price edited by hand after seeding.
+    const seeded = [...card, ...xaiAdditions(card, { voicePrice: 5500000, env: {} })
+      .filter((l) => !String(l.match.detail).startsWith('grok-'))]
+      .map((l) => (l.match.detail === 'xai/grok-4.6' && l.match.unit === 'input_tokens' ? { ...l, priceMicros: 1.6 } : l));
+    const additions = xaiAdditions(seeded, { voicePrice: 5500000, env: { XAI_INPUT_PRICE_MICROS: '9' } });
+    expect(additions.map((l) => l.match.detail)).toEqual(DEFAULT_TEXT_MODELS.flatMap((m) => [m, m, m]));
+    // The card's price wins over the list price, the factor and an override.
+    expect(additions.filter((l) => l.match.detail === 'grok-4.6').map((l) => l.priceMicros)).toEqual([1.6, 6, 0.5]);
+    expect(additions.filter((l) => l.match.detail === 'grok-4.3').map((l) => l.priceMicros)).toEqual([1.25, 2.5, 0.2]);
+    expect(xaiAdditions([...seeded, ...additions], { voicePrice: 5500000, env: {} })).toEqual([]);
+    expect(cardTextPrice(seeded, 'grok-4.6', 'input_tokens')).toBe(1.6);
+    expect(cardTextPrice(seeded, 'grok-4.5', 'input_tokens')).toBeUndefined();
+    // Another provider's line for the same id lends no price.
+    const other = [{ dim: 'model', match: { technology: 'llm', provider: 'openrouter', detail: 'grok-4.6', unit: 'input_tokens' }, unit: 'token', priceMicros: 7 }];
+    expect(cardTextPrice(other, 'grok-4.6', 'input_tokens')).toBeUndefined();
   });
 });
