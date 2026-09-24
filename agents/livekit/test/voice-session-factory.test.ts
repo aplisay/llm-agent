@@ -4,7 +4,11 @@ import * as google from "@livekit/agents-plugin-google";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import { buildRealtimeLlmOptions, getRealtimePlugin } from "../lib/voice-session-factory.js";
-import { LIVEKIT_REALTIME_MODEL_ROWS } from "../lib/livekit-model-registry.js";
+import {
+  LIVEKIT_REALTIME_MODEL_ROWS,
+  livekitModelIdFlags,
+  resolveLivekitModelId,
+} from "../lib/livekit-model-registry.js";
 import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
@@ -228,7 +232,7 @@ test("openai realtime: an external TTS vendor switches the model to text-only ou
 
 test("gemini: an external vendor is not honoured (no text-capable Live model), voice passes through", () => {
   const opts = buildRealtimeLlmOptions(
-    "livekit:google/gemini-2.0-flash-exp",
+    "livekit:google/gemini-2.5-flash-native-audio-preview-12-2025",
     makeAgent({ tts: { vendor: "elevenlabs", voice: "Kore" } }),
     "call-1",
   ) as any;
@@ -337,9 +341,21 @@ test("non-ultravox realtime: the options are the same on a handover or hand-back
 // Every advertised realtime row must resolve a plugin before call setup. See PR #335.
 
 test("google: the Gemini Live row resolves to the plugin's RealtimeModel", () => {
-  const { plugin, realtime } = getRealtimePlugin("livekit:google/gemini-2.0-flash-exp");
+  const { plugin, realtime } = getRealtimePlugin("livekit:google/gemini-2.5-flash-native-audio-preview-12-2025");
   assert.equal(plugin, "google");
   assert.equal(realtime?.RealtimeModel, google.beta.realtime.RealtimeModel);
+});
+
+test("google: an agent saved on the retired gemini-2.0-flash-exp id runs the row's model", () => {
+  const opts = buildRealtimeLlmOptions("livekit:google/gemini-2.0-flash-exp", makeAgent({ tts: { voice: "Kore" } }), "call-1") as any;
+  assert.equal(opts.model, "gemini-2.5-flash-native-audio-preview-12-2025");
+  assert.equal(opts.voice, "Kore");
+  assert.equal(getRealtimePlugin("livekit:google/gemini-2.0-flash-exp").plugin, "google");
+  // the retired id stays an alias row (listed while its target is) with the row's flags
+  assert.ok(LIVEKIT_REALTIME_MODEL_ROWS.some(([, model]) => model === "gemini-2.0-flash-exp"));
+  assert.deepEqual(livekitModelIdFlags["google/gemini-2.0-flash-exp"], livekitModelIdFlags["google/gemini-2.5-flash-native-audio-preview-12-2025"]);
+  assert.equal(resolveLivekitModelId("google/gemini-2.0-flash-exp"), "google/gemini-2.5-flash-native-audio-preview-12-2025");
+  assert.equal(resolveLivekitModelId("openai/gpt-realtime"), "openai/gpt-realtime");
 });
 
 test("openai and ultravox rows still resolve to their plugin's RealtimeModel", () => {

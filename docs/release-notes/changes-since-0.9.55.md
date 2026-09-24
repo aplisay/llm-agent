@@ -36,6 +36,36 @@ Pipecat), and **ci** (build and release pipeline).
   model conversation, so `includeHistory: false` is honoured, and a keypad
   press counts as an answer to the inactivity prompt.
 
+## Gemini Live - core+livekit+pipecat
+
+- **[core+livekit+pipecat] Gemini Live model**: the Gemini Live rows are now
+  `pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025` and
+  `livekit:google/gemini-2.5-flash-native-audio-preview-12-2025`, labelled
+  "Google Gemini 2.5 Flash Live". Google shut down `gemini-2.0-flash-exp`, the
+  model the rows were named after, on 9 December 2025. Neither worker passed
+  the row's id to its library, so both ran the library's default Live model,
+  which is the model the rows now name. Agents saved on the old id keep working
+  and run this model, and the old id stays listed as a retired alias while the
+  new row is offered. Usage on the Pipecat worker is recorded under the new id.
+- **[pipecat] Gemini Live voice**: `options.tts.voice` now reaches the model.
+  It was ignored, and every call spoke with Pipecat's default voice (Charon).
+  No language is sent: Google's Live API guide says native-audio models choose
+  the language themselves, so the system prompt is the way to pin one.
+- **[pipecat] Gemini Live inactivity prompt**: `options.inactivity.message` is
+  now spoken on Gemini Live. The prompt reached the worker's own context but
+  was never sent to the model.
+- **[pipecat] Gemini Live keypad digits**: DTMF digits now reach the model, as
+  a user turn it answers (`options.dtmfTimeout` and `options.dtmfTerminator`
+  apply as before). They were buffered into a user message the model never
+  received.
+- **[pipecat] Gemini Live transcript**: each caller turn is now one `user`
+  transcript row, with interim rows while the caller speaks, as on the other
+  models. Each sentence was recorded as a turn of its own.
+- **[pipecat] Gemini Live handover**: `transfer_agent` between two agents on the
+  same Gemini Live model now restarts the agent stack, as it already did for
+  Ultravox, GPT-Live and Grok. The in-place swap left the outgoing agent's
+  prompt and tools in place, and the incoming agent never spoke.
+
 ## Voices - core+livekit+pipecat
 
 - **[core+livekit+pipecat] Neuphonic TTS**: `options.tts.vendor: "neuphonic"` on
@@ -123,6 +153,12 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Database schema** stays at v66.
 - **[core] Analysis service key**: a receiver that analyses calls needs a key
   from `scripts/provision-analysis-service.mjs` in each environment.
+- **[core] Gemini Live rate lines**: run `scripts/add-gemini-live-rate-lines.mjs`
+  against each environment, or Gemini Live usage settles `no_line`. It adds
+  the three token lines for `google/gemini-2.5-flash-native-audio-preview-12-2025`
+  at Google's audio list prices scaled by the card's factor (the header
+  documents the overrides). Existing `gemini-2.0-flash-exp` lines are left
+  in place.
 - **[core+livekit+pipecat] New environment**: `NEUPHONIC_API_KEY`.
 - **[core] New environment**: `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL`,
   `TYPESAFE_TIMEOUT_MS`. The Jev row is not advertised without a usable key.

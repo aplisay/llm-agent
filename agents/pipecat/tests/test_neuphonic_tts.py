@@ -132,7 +132,7 @@ def test_an_external_tts_on_the_text_output_rows():
     for model_id in ("ultravox/ultravox-v0.7", "openai/gpt-realtime"):
         assert text_output_enabled(agent, model_id)
         assert external_tts_enabled(agent, model_id)
-    assert not external_tts_enabled(agent, "google/gemini-2.0-flash-exp")
+    assert not external_tts_enabled(agent, "google/gemini-2.5-flash-native-audio-preview-12-2025")
     assert not external_tts_enabled(agent, "xai/grok-voice-think-fast-2.0")
 
 

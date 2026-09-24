@@ -74,7 +74,7 @@ def test_the_providers_own_vendor_is_native():
     assert external_tts_vendor(_agent(tts={"vendor": "ultravox"}), "ultravox/ultravox-v0.7") is None
     assert external_tts_vendor(_agent(tts={"vendor": "openai"}), "openai/gpt-realtime") is None
     # google is a TTS vendor too, but on a Gemini row it is the model's own voice.
-    assert external_tts_vendor(_agent(tts={"vendor": "google"}), "google/gemini-2.0-flash-exp") is None
+    assert external_tts_vendor(_agent(tts={"vendor": "google"}), "google/gemini-2.5-flash-native-audio-preview-12-2025") is None
 
 
 def test_any_other_vendor_is_external():
@@ -96,7 +96,7 @@ def test_text_output_only_where_this_worker_supports_it():
     assert text_output_enabled(ext, "openai/gpt-realtime") is True
     # No Gemini Live model the API still serves accepts a TEXT modality, so the
     # same request on a Gemini row stays native (and the server rejects it).
-    assert text_output_enabled(ext, "google/gemini-2.0-flash-exp") is False
+    assert text_output_enabled(ext, "google/gemini-2.5-flash-native-audio-preview-12-2025") is False
     assert text_output_enabled(_agent(tts={"vendor": "ultravox"}), "ultravox/ultravox-v0.7") is False
     # A pipeline row's TTS is always discrete; the rule never applies there.
     assert text_output_enabled(ext, "openai/gpt-4o-mini") is False

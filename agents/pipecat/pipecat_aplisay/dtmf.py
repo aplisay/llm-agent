@@ -1,6 +1,6 @@
 """Keypad digits for services that inject them themselves (GPT-Live, the Grok
-voice row, OpenAI Realtime). Kept light: voice_session imports it on every
-realtime call, so nothing provider-specific belongs here."""
+voice row, OpenAI Realtime, Gemini Live). Kept light: voice_session imports it
+on every realtime call, so nothing provider-specific belongs here."""
 
 from __future__ import annotations
 

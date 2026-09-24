@@ -430,5 +430,5 @@ test("Neuphonic is an external TTS on the text-output realtime rows", () => {
   const ext = agent({ vendor: "neuphonic", voice: "abc-123" });
   assert.equal(textOutputEnabled(ext, "livekit:ultravox/ultravox-v0.7"), true);
   assert.equal(textOutputEnabled(ext, "livekit:openai/gpt-realtime"), true);
-  assert.equal(textOutputEnabled(ext, "livekit:google/gemini-2.0-flash-exp"), false);
+  assert.equal(textOutputEnabled(ext, "livekit:google/gemini-2.5-flash-native-audio-preview-12-2025"), false);
 });

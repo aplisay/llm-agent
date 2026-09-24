@@ -38,7 +38,7 @@ const FLAGGED_LIVEKIT = 'livekit:ultravox/ultravox-v0.7';
 const FLAGGED_OPENAI = 'livekit:openai/gpt-realtime';
 // No Gemini Live model the API still serves accepts a TEXT modality, so its rows
 // keep their own voice only.
-const UNFLAGGED_REALTIME = 'pipecat:google/gemini-2.0-flash-exp';
+const UNFLAGGED_REALTIME = 'pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025';
 
 describe('options.tts.vendor on realtime models (external TTS)', () => {
   let createAgent, getAgent;
