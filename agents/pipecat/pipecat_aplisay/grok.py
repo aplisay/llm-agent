@@ -17,6 +17,7 @@ from typing import Any, Optional
 from loguru import logger
 
 from .gpt_live import deep_merge
+from .realtime_context import DTMF_MESSAGE  # noqa: F401  (every realtime row uses it)
 
 #: The voice the session uses when the agent sets none. Must match
 #: XAI_DEFAULT_VOICE in lib/voices/xai.js.
@@ -27,9 +28,6 @@ XAI_TRANSCRIPTION_MODEL = "grok-transcribe"
 
 #: Reject xAI server-side tools and strip them from legacy rows; keep XAI_SERVER_TOOL_TYPES in sync. See docs/grok.md.
 XAI_SERVER_TOOL_TYPES = frozenset({"mcp", "web_search", "x_search", "file_search"})
-
-#: What the model is told when the caller presses keypad digits.
-DTMF_MESSAGE = "The caller pressed the keypad digits: {digits}"
 
 
 def is_xai_model_id(model_id: Optional[str]) -> bool:
