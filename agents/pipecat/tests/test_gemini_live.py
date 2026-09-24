@@ -16,6 +16,9 @@ session (no network):
 * Keypad digits became a ``TranscriptionFrame``, then a user message the
   service never sends. The DTMF aggregator now hands them to the service, which
   sends them as a user turn (``inject_dtmf``), as on GPT-Live and Grok.
+* Each spoken caller turn was logged as several final ``user`` transcript rows,
+  one per sentence, because the service pushed a final frame per sentence. It
+  now pushes cumulative interim frames and one final frame per turn.
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ from pipecat_aplisay.gemini_service import (  # noqa: E402
     AplisayGeminiLiveLLMService,
     build_gemini_live_service,
 )
+from pipecat_aplisay.transcript_observer import TranscriptForwardingObserver  # noqa: E402
 from pipecat_aplisay.transfer_prompts import HANDOVER_OPENING_INSTRUCTION  # noqa: E402
 from pipecat_aplisay.usage import usage_vendors  # noqa: E402
 from pipecat_aplisay.voice_mode import model_id_from_name  # noqa: E402
@@ -229,10 +233,22 @@ class _Call:
         dtmf = voice_session._dtmf_aggregator_for(
             {}, on_digits=self.llm.inject_dtmf if digits_through_service else None
         )
+        # The worker's transcript observer, recording what it would log.
+        self.rows: list[tuple[dict, bool]] = []
+
+        async def record(payload: dict, *, is_final: bool) -> None:
+            self.rows.append((payload, is_final))
+
         self.task = PipelineTask(
-            Pipeline([dtmf, user, self.llm, assistant]), params=PipelineParams(), idle_timeout_secs=None
+            Pipeline([dtmf, user, self.llm, assistant]),
+            params=PipelineParams(),
+            idle_timeout_secs=None,
+            observers=[TranscriptForwardingObserver(record, mode="realtime")],
         )
         self.run: asyncio.Task | None = None
+
+    def user_rows(self) -> list[tuple[str, bool]]:
+        return [(payload["user"], is_final) for payload, is_final in self.rows if "user" in payload]
 
     async def __aenter__(self) -> "_Call":
         self.run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(self.task))
@@ -435,6 +451,93 @@ class _FakeTransport:
 
     def output(self) -> FrameProcessor:
         return self._output
+
+
+# --- the caller's transcription ----------------------------------------------------------
+
+
+def _heard(text: str):
+    """An input transcription piece, as the Live API sends them."""
+    from google.genai.types import LiveServerContent, LiveServerMessage, Transcription
+
+    return LiveServerMessage(server_content=LiveServerContent(input_transcription=Transcription(text=text)))
+
+
+def _model_audio():
+    from google.genai.types import Blob, Content, LiveServerContent, LiveServerMessage, Part
+
+    part = Part(inline_data=Blob(mime_type="audio/pcm;rate=24000", data=b"\x00" * 480))
+    return LiveServerMessage(server_content=LiveServerContent(model_turn=Content(role="model", parts=[part])))
+
+
+def _turn_complete():
+    from google.genai.types import LiveServerContent, LiveServerMessage
+
+    return LiveServerMessage(server_content=LiveServerContent(turn_complete=True))
+
+
+FIRST = "Hi, I'd like to book an appointment."
+SECOND = "Tomorrow if possible."
+TURN = f"{FIRST} {SECOND}"
+
+
+def _user_messages(call: _Call) -> list[str]:
+    return [m["content"] for m in call.context.get_messages() if m.get("role") == "user"]
+
+
+def _spoken_turn(cls) -> _Call:
+    """The caller says two sentences, the model answers, its turn completes."""
+
+    async def scenario() -> _Call:
+        async with _Call(cls) as call:
+            await call.llm._handle_msg_input_transcription(_heard(FIRST))
+            await call.llm._handle_msg_input_transcription(_heard(f" {SECOND}"))
+            await call.llm._handle_msg_model_turn(_model_audio())
+            await call.llm._handle_msg_turn_complete(_turn_complete())
+            # the aggregator writes the user message when the answer completes
+            await _until(lambda: _user_messages(call) != [])
+        return call
+
+    return asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_pipecat_service_logs_a_user_row_per_sentence():
+    call = _spoken_turn(STOCK)
+    # two final rows for one turn, which the transcript reads as two turns
+    assert call.user_rows() == [(FIRST, True), (SECOND, True)]
+    # the context was never the problem: the aggregator joins the pieces
+    assert _user_messages(call) == [TURN]
+
+
+def test_one_user_row_per_turn_with_live_interims():
+    call = _spoken_turn(AplisayGeminiLiveLLMService)
+    # cumulative interim rows while the caller speaks, one final row when the
+    # model answers, which is when the turn is over
+    assert call.user_rows() == [(FIRST, False), (TURN, False), (TURN, True)]
+    assert _user_messages(call) == [TURN]
+
+
+def test_a_quiet_caller_turn_closes_without_an_answer(monkeypatch):
+    monkeypatch.setattr(gemini_service, "USER_TRANSCRIPTION_IDLE_SECS", 0.05)
+
+    async def scenario() -> _Call:
+        async with _Call(AplisayGeminiLiveLLMService) as call:
+            await call.llm._handle_msg_input_transcription(_heard(FIRST))
+            await _until(lambda: (FIRST, True) in call.user_rows())
+        return call
+
+    call = asyncio.run(asyncio.wait_for(scenario(), 20))
+    assert call.user_rows() == [(FIRST, False), (FIRST, True)]
+
+
+def test_words_before_the_call_ends_get_their_row():
+    async def scenario() -> _Call:
+        async with _Call(AplisayGeminiLiveLLMService) as call:
+            await call.llm._handle_msg_input_transcription(_heard(FIRST))
+        return call
+
+    call = asyncio.run(asyncio.wait_for(scenario(), 20))
+    assert call.user_rows() == [(FIRST, False), (FIRST, True)]
 
 
 # --- handover -------------------------------------------------------------------------

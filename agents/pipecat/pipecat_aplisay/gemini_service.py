@@ -18,17 +18,33 @@ and the caller is no longer idle.
 Keypad digits take the same path (``inject_dtmf``): as a ``TranscriptionFrame``
 they became a user message the service never sends, so the DTMF aggregator
 hands them to the service instead, as on GPT-Live and Grok.
+
+The caller's transcription is reported per turn, as the STT and OpenAI paths
+report it: a cumulative ``InterimTranscriptionFrame`` as each piece arrives and
+one final ``TranscriptionFrame`` when the turn ends, which is when the model
+starts answering, else after ``USER_TRANSCRIPTION_IDLE_SECS`` of quiet, else at
+stop. Upstream pushes a final frame per sentence, and the transcript log
+recorded each as a user turn of its own.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loguru import logger
+from pipecat.frames.frames import InterimTranscriptionFrame
 from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+from pipecat.utils.time import time_now_iso8601
 
 from .gemini import DTMF_MESSAGE
+
+#: How long the caller's transcription may go quiet before the turn is closed
+#: without a model answer. Longer than the server's end-of-speech window, so
+#: the answer normally closes the turn first.
+USER_TRANSCRIPTION_IDLE_SECS = 2.0
 
 
 def _instruction_text(message: Any) -> str | None:
@@ -110,6 +126,57 @@ class AplisayGeminiLiveLLMService(GeminiLiveLLMService):
         if self._held_instructions and not self._bot_is_responding:
             texts, self._held_instructions = self._held_instructions, []
             await self._send_instructions(texts)
+
+    # ---- the caller's transcription, one turn at a time -----------------------
+
+    async def _handle_msg_input_transcription(self, message: Any) -> None:
+        content = getattr(message, "server_content", None)
+        text = getattr(getattr(content, "input_transcription", None), "text", None)
+        if not text:
+            return
+        await self._cancel_transcription_timeout()
+        if text.startswith(" ") and not self._user_transcription_buffer:
+            text = text.lstrip()
+        self._user_transcription_buffer += text
+        await self.push_frame(
+            InterimTranscriptionFrame(
+                self._user_transcription_buffer, "", time_now_iso8601(), result=message
+            ),
+            FrameDirection.UPSTREAM,
+        )
+        self._transcription_timeout_task = self.create_task(self._transcription_timeout_handler())
+
+    async def _transcription_timeout_handler(self) -> None:
+        await asyncio.sleep(USER_TRANSCRIPTION_IDLE_SECS)
+        self._transcription_timeout_task = None
+        await self._close_user_turn("quiet")
+
+    async def _cancel_transcription_timeout(self) -> None:
+        task, self._transcription_timeout_task = self._transcription_timeout_task, None
+        if task is not None and task is not asyncio.current_task():
+            await self.cancel_task(task)
+
+    async def _close_user_turn(self, reason: str) -> None:
+        """One final frame for everything the caller said this turn."""
+        text = self._user_transcription_buffer.strip()
+        self._user_transcription_buffer = ""
+        if not text:
+            return
+        logger.bind(reason=reason, chars=len(text)).debug("Gemini Live: caller turn transcribed")
+        await self._push_user_transcription(text, result=None)
+
+    async def _set_bot_is_responding(self, responding: bool) -> None:
+        if responding and not self._bot_is_responding:
+            # The model's answer is the end of the caller's turn.
+            await self._cancel_transcription_timeout()
+            await self._close_user_turn("model turn")
+        await super()._set_bot_is_responding(responding)
+
+    async def stop(self, frame: Any) -> None:
+        # Words the caller said just before the call ended still get their row.
+        await self._cancel_transcription_timeout()
+        await self._close_user_turn("stop")
+        await super().stop(frame)
 
     async def _handle_interruption(self) -> None:
         await super()._handle_interruption()

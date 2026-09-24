@@ -48,6 +48,9 @@ Pipecat), and **ci** (build and release pipeline).
   a user turn it answers (`options.dtmfTimeout` and `options.dtmfTerminator`
   apply as before). They were buffered into a user message the model never
   received.
+- **[pipecat] Gemini Live transcript**: each caller turn is now one `user`
+  transcript row, with interim rows while the caller speaks, as on the other
+  models. Each sentence was recorded as a turn of its own.
 - **[pipecat] Gemini Live handover**: `transfer_agent` between two agents on the
   same Gemini Live model now restarts the agent stack, as it already did for
   Ultravox, GPT-Live and Grok. The in-place swap left the outgoing agent's
