@@ -26,6 +26,7 @@ import {
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import { buildNeuphonicTts } from "./neuphonic-tts.js";
+import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
 import type {
   UltravoxAgentReaction,
@@ -198,6 +199,7 @@ function geminiVoiceNameForGoogleTtsOption(agent: Agent): string {
 function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
   const idx = ttsStr.lastIndexOf(":");
   const voice = ttsStr.slice(idx + 1);
+  warnTtsSpeedUnsupported(agent, "LiveKit Inference deepgram/aura-2");
   const language =
     agent.options?.tts?.language?.trim() ||
     agent.options?.stt?.language?.trim() ||
@@ -221,6 +223,7 @@ export function buildPipelineTts(agent: Agent) {
   }
 
   if (pipelineUsesGoogleTts(agent)) {
+    warnTtsSpeedUnsupported(agent, "google TTS");
     const custom = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS?.trim();
     if (custom) {
       const voice = String(t?.voice || "").trim();
@@ -247,6 +250,20 @@ export function buildPipelineTts(agent: Agent) {
   if (ttsStr.startsWith("deepgram/aura-2:")) {
     return inferenceTtsForDeepgramAura2(ttsStr, agent);
   }
+  if (requestedTtsSpeed(agent) === undefined) {
+    return ttsStr;
+  }
+  if (ttsStr.startsWith("cartesia/")) {
+    const [model, voice] = inference.parseTTSModelString(ttsStr);
+    // The 1.0.46 types allow only 'slow' | 'normal' | 'fast', but the gateway
+    // forwards a number to Cartesia's generation_config.speed (typed in later agents-js).
+    return new inference.TTS({
+      model,
+      voice,
+      modelOptions: { speed: ttsSpeedFor(agent, "cartesia") as never },
+    });
+  }
+  warnTtsSpeedUnsupported(agent, `LiveKit Inference ${ttsStr.split(":")[0]}`);
   return ttsStr;
 }
 
@@ -334,6 +351,17 @@ export function buildRealtimeLlmOptions(
   };
   if (providerModelName) {
     llmOptions.model = providerModelName;
+  }
+  // `options.tts.speed` belongs to the external TTS in text-output mode.
+  if (!textOutput && requestedTtsSpeed(agent) !== undefined) {
+    if (modelName.includes("livekit:openai/")) {
+      llmOptions.speed = ttsSpeedFor(agent, "openai");
+    } else if (modelName.includes("livekit:ultravox/")) {
+      // The plugin clamps it to the range of the provider behind the voice.
+      llmOptions.ttsSpeed = requestedTtsSpeed(agent);
+    } else {
+      warnTtsSpeedUnsupported(agent, modelName);
+    }
   }
   const vendorSpecific = (agent?.options?.vendorSpecific ||
     undefined) as Record<string, any> | undefined;

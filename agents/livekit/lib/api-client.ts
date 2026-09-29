@@ -173,6 +173,8 @@ export interface Agent {
     tts?: {
     
       language?: string;
+      /** Speaking-rate multiplier, 1 = the vendor's normal rate. See lib/tts-speed.ts. */
+      speed?: number;
       /**
        * Output audit STT: an independent engine run over the agent's OWN audio,
        * logged as `agent-speech` and metered as `stt-output`. Same shape as

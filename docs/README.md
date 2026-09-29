@@ -24,6 +24,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |
 | [uninterruptible-greetings.md](uninterruptible-greetings.md) | Barge-in control for opening prompts |
 | [auxiliary-stt.md](auxiliary-stt.md) | Side STT engines: a second opinion on the caller (`options.stt.aux` → `user-aux`, `stt-aux`) and an audit of what the agent actually said (`options.tts.output` → `agent-speech`, `stt-output`) |
+| [tts-speed.md](tts-speed.md) | Speaking rate (`options.tts.speed`): the multiplier, and how each vendor and model applies it |
 | [ultravox-vendor-specific-options.md](ultravox-vendor-specific-options.md) | Ultravox model variants and tuning options |
 | [agent-concurrency-limits.md](agent-concurrency-limits.md) | Per-agent/user/organisation concurrency caps |
 | [chat-session-ownership.md](chat-session-ownership.md) | How an interactive chat session is held by one server process and moves to another on reconnect or shutdown |

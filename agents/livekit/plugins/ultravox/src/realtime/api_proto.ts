@@ -121,6 +121,8 @@ export interface UltravoxModelData {
    * session whose TTS is external (docs/realtime-external-tts.md).
    */
   initialOutputMedium?: 'MESSAGE_MEDIUM_VOICE' | 'MESSAGE_MEDIUM_TEXT';
+  /** Per-provider settings for the selected `voice`; the provider must match the voice's. */
+  voiceOverrides?: Record<string, unknown>;
   vadSettings?: UltravoxVadSettings;
   firstSpeakerSettings?: UltravoxFirstSpeakerSettings;
   inactivityMessages?: UltravoxInactivityMessage[];
@@ -217,8 +219,11 @@ export interface UltravoxCallResponse {
 }
 
 export interface UltravoxVoice {
+  voiceId?: string;
   name: string;
   description: string;
+  /** Backing TTS provider, e.g. `eleven_labs`, `cartesia`. */
+  provider?: string | null;
 }
 
 export interface UltravoxVoicesResponse {

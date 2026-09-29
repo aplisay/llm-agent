@@ -16,6 +16,7 @@ import {
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
+import { ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 
 function truthyEnv(v: string | undefined): boolean {
   const s = (v || "").trim().toLowerCase();
@@ -161,10 +162,13 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       : voiceRaw;
     const model =
       process.env.LIVEKIT_PIPELINE_ELEVENLABS_MODEL?.trim() || "eleven_turbo_v2_5";
+    const speed = ttsSpeedFor(agent, "elevenlabs");
     return new elevenlabs.TTS({
       voiceId: id,
       model: model as never,
       language: ttsPrimaryLanguage(agent),
+      // The plugin's type requires stability and similarity_boost; ElevenLabs does not.
+      ...(speed !== undefined ? { voiceSettings: { speed } as elevenlabs.VoiceSettings } : {}),
     });
   }
   if (vendor === "cartesia") {
@@ -174,6 +178,8 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       : voiceRaw;
     const model =
       process.env.LIVEKIT_PIPELINE_CARTESIA_TTS_MODEL?.trim() || "sonic-3";
+    // plugin-cartesia 1.0.46 sends speed only in the sonic-2 __experimental_controls field.
+    warnTtsSpeedUnsupported(agent, "cartesia plugin 1.0.46");
     return new cartesia.TTS({
       voice: id,
       model,
@@ -183,6 +189,8 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
   if (vendor === "deepgram") {
     const ttsStr = resolvePipelineTts(agent);
     if (ttsStr.startsWith("deepgram/aura-2:")) {
+      // plugin-deepgram gains `speed` in 1.3.2.
+      warnTtsSpeedUnsupported(agent, "deepgram plugin 1.0.46");
       return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr);
     }
     throw new Error(

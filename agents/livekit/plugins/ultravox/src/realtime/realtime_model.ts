@@ -17,6 +17,7 @@ import { WebSocket } from "ws";
 import * as api_proto from "./api_proto.js";
 import { FrameAccumulator } from "./frame_accumulator.js";
 import { UltravoxClient } from "./ultravox_client.js";
+import { ultravoxSpeedOverrides } from "./voice_speed.js";
 import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
@@ -27,6 +28,8 @@ interface ModelOptions {
   callId?: string;
   voice?: api_proto.Voice;
   languageHint?: string;
+  /** Portable `options.tts.speed`; see voice_speed.ts. */
+  ttsSpeed?: number;
   inputAudioFormat: api_proto.AudioFormat;
   outputAudioFormat: api_proto.AudioFormat;
   temperature: number;
@@ -411,6 +414,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     callId,
     voice,
     languageHint,
+    ttsSpeed,
     inputAudioFormat = "pcm16",
     outputAudioFormat = "pcm16",
     temperature = 0.8,
@@ -430,6 +434,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     callId?: string;
     voice?: api_proto.Voice;
     languageHint?: string;
+    ttsSpeed?: number;
     inputAudioFormat?: api_proto.AudioFormat;
     outputAudioFormat?: api_proto.AudioFormat;
     temperature?: number;
@@ -483,6 +488,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       callId,
       voice,
       languageHint,
+      ttsSpeed,
       inputAudioFormat,
       outputAudioFormat,
       temperature,
@@ -1158,6 +1164,42 @@ export class RealtimeSession extends llm.RealtimeSession {
     return { response, output, content };
   }
 
+  /**
+   * `voiceOverrides`: a native vendorSpecific value wins; otherwise the portable
+   * `ttsSpeed`, placed under the voice's provider. A failed lookup costs the
+   * speed, never the call.
+   */
+  async #applyVoiceOverrides(
+    modelData: api_proto.UltravoxModelData,
+    uv: NonNullable<ModelOptions["vendorSpecific"]>["ultravox"],
+  ): Promise<void> {
+    if (uv?.voiceOverrides != null) {
+      modelData.voiceOverrides = uv.voiceOverrides;
+      return;
+    }
+    const speed = this.#opts.ttsSpeed;
+    if (speed === undefined) return;
+    const voice = typeof modelData.voice === "string" ? modelData.voice : undefined;
+    if (!voice) {
+      this.#logger.warn({ speed }, "options.tts.speed ignored: Ultravox needs an explicit voice to place it");
+      return;
+    }
+    let provider: string | undefined;
+    try {
+      provider = await this.#client.voiceProvider(voice);
+    } catch (error) {
+      this.#logger.warn({ error, voice, speed }, "options.tts.speed ignored: Ultravox voice lookup failed");
+      return;
+    }
+    const overrides = ultravoxSpeedOverrides(provider, speed);
+    if (!overrides) {
+      this.#logger.warn({ voice, provider, speed }, "options.tts.speed ignored: this Ultravox voice has no speed control");
+      return;
+    }
+    modelData.voiceOverrides = overrides.voiceOverrides;
+    this.#logger.debug({ voice, provider, speed: overrides.speed }, "Added Ultravox voice speed");
+  }
+
   #generateEventId(): string {
     return `ultravox-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
@@ -1281,6 +1323,9 @@ export class RealtimeSession extends llm.RealtimeSession {
         if (languageHint) {
           modelData.languageHint = languageHint;
           this.#logger.debug({ languageHint }, "Added Ultravox languageHint");
+        }
+        if (!textOnly) {
+          await this.#applyVoiceOverrides(modelData, uv);
         }
         if (uv?.vadSettings != null) {
           modelData.vadSettings = uv.vadSettings;
