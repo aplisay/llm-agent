@@ -23,6 +23,7 @@ import {
 import type { AudioFrame } from "@livekit/rtc-node";
 import type { Agent } from "./api-client.js";
 import { agentLanguageTag } from "./pipeline-inference-options.js";
+import { ttsSpeedFor } from "./tts-speed.js";
 
 export const NEUPHONIC_BASE_URL = "https://api.neuphonic.com";
 /** The rate both upstream Neuphonic plugins ask for. */
@@ -42,6 +43,8 @@ export interface NeuphonicOptions {
   langCode: string;
   sampleRate: number;
   baseURL: string;
+  /** Unset lets Neuphonic use its normal rate. */
+  speed?: number;
 }
 
 export class NeuphonicTTS extends tts.TTS {
@@ -54,6 +57,7 @@ export class NeuphonicTTS extends tts.TTS {
     langCode?: string;
     sampleRate?: number;
     baseURL?: string;
+    speed?: number;
   }) {
     const sampleRate = opts.sampleRate ?? NEUPHONIC_SAMPLE_RATE;
     super(sampleRate, 1, { streaming: true });
@@ -66,6 +70,7 @@ export class NeuphonicTTS extends tts.TTS {
       langCode: (opts.langCode || "en").toLowerCase(),
       sampleRate,
       baseURL: (opts.baseURL || NEUPHONIC_BASE_URL).replace(/\/+$/, ""),
+      ...(opts.speed !== undefined ? { speed: opts.speed } : {}),
     };
   }
 
@@ -100,6 +105,7 @@ export function buildNeuphonicTts(agent: Agent): NeuphonicTTS {
     apiKey,
     voiceId: voice.includes(":") ? voice.split(":").pop()!.trim() : voice,
     langCode: tag ? tag.split(/[-_]/)[0]!.toLowerCase() : "en",
+    speed: ttsSpeedFor(agent, "neuphonic"),
   });
 }
 
@@ -180,6 +186,7 @@ export async function* neuphonicAudio(
           sampling_rate: opts.sampleRate,
           encoding: "pcm_linear",
           ...(opts.voiceId ? { voice_id: opts.voiceId } : {}),
+          ...(opts.speed !== undefined ? { speed: opts.speed } : {}),
         }),
         signal: controller.signal,
       });

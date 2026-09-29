@@ -567,6 +567,19 @@ components:
                 Must be a supported voice language as returned from a get on the `voices` api
               type: string
               example: en-GB-Wavenet-A
+            speed:
+              type: number
+              minimum: 0.25
+              maximum: 2
+              example: 1.2
+              description: |-
+                Speaking rate as a multiple of the voice's normal rate: `1` is normal, `1.2` is 20% faster,
+                `0.9` is 10% slower. Unset or `1` leaves the vendor's own rate alone.
+
+                Each vendor accepts a narrower range, and the worker clamps the value to it (for example
+                ElevenLabs 0.7 to 1.2, Cartesia 0.6 to 1.5). It applies to whatever speaks: the pipeline
+                or external TTS, or the realtime model's own voice. Vendors with no speed control ignore it
+                and the worker logs a warning. See docs/tts-speed.md for the support table.
             output:
               type: object
               description: |-

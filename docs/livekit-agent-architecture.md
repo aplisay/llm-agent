@@ -738,6 +738,7 @@ The catalog below covers every option that affects runtime behavior. The "Level"
 | `stt.aux` | Agent | Auxiliary ("second opinion") STT over the caller's audio, logged as `user-aux` and metered as `stt-aux` (vendor, language, enabled) | [auxiliary-stt.md](auxiliary-stt.md) |
 | `tts.output` | Agent | Output audit STT over the agent's own audio, logged as `agent-speech` and metered as `stt-output` (vendor, language, enabled) | [auxiliary-stt.md](auxiliary-stt.md) |
 | `tts` | Agent | TTS configuration (vendor, voice, language) | 4.3, 4.4 |
+| `tts.speed` | Agent | Speaking-rate multiplier, 1 = normal, clamped per vendor | [tts-speed.md](tts-speed.md) |
 | `vendorSpecific` | Agent | Free-form provider passthrough | 4.6 |
 | `greeting` | Agent | Uninterruptible opening greeting (text or instructions) | 4.5 |
 | `maxDuration` | Agent | Maximum call duration (mandatory enforcement) | 7.2 |

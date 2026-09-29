@@ -66,6 +66,11 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
             audio.input.format = events.PCMAudioFormat(
                 rate=cast(events.SUPPORTED_SAMPLE_RATES, input_sample_rate)
             )
+        # An output block set only for options.tts.speed has no format yet.
+        if audio is not None and audio.output is not None and audio.output.format is None:
+            audio.output.format = events.PCMAudioFormat(
+                rate=cast(events.SUPPORTED_SAMPLE_RATES, output_sample_rate)
+            )
 
     async def send_client_event(self, event: events.ClientEvent) -> None:
         """Upstream's send, with ``vendorSpecific.xai.session`` merged into

@@ -53,6 +53,11 @@ from .realtime_tts import (
     transcript_tts_enabled,
 )
 from .tool_log import log_tool_call, log_tool_result
+from .tts_speed import (
+    tts_speed_for,
+    ultravox_speed_extra,
+    warn_tts_speed_unsupported,
+)
 
 
 # Recording capture rate. The sipbridge WS carries 16 kHz in both
@@ -568,14 +573,21 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     # and ElevenLabs both want base codes, not regional tags) is handled for us —
     # we only choose WHICH tag to hand over.
     language = _language_setting(agent, "tts")
+    # ``options.tts.speed``, clamped per vendor; None leaves the vendor's rate alone.
+    speed = tts_speed_for(agent, tts_vendor)
     if tts_vendor == "cartesia":
-        from pipecat.services.cartesia.tts import CartesiaTTSService
+        from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 
         return CartesiaTTSService(
             api_key=_require_env("CARTESIA_API_KEY"),
             settings=CartesiaTTSService.Settings(
                 voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121",
                 **({"language": language} if language is not None else {}),
+                **(
+                    {"generation_config": GenerationConfig(speed=speed)}
+                    if speed is not None
+                    else {}
+                ),
             ),
         )
     if tts_vendor == "elevenlabs":
@@ -601,6 +613,7 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
                 **({"language": language} if language is not None else {}),
+                **({"speed": speed} if speed is not None else {}),
             ),
         )
     if tts_vendor == "deepgram":
@@ -618,6 +631,11 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
         return DeepgramTTSService(
             api_key=_require_env("DEEPGRAM_API_KEY"),
             voice=voice or "aura-asteria-en",
+            **(
+                {"settings": DeepgramTTSService.Settings(speed=speed)}
+                if speed is not None
+                else {}
+            ),
         )
     if tts_vendor == "neuphonic":
         from .neuphonic_tts import AplisayNeuphonicTTSService
@@ -630,6 +648,7 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
             settings=AplisayNeuphonicTTSService.Settings(
                 voice=voice or None,
                 **({"language": language} if language is not None else {}),
+                **({"speed": speed} if speed is not None else {}),
             ),
         )
     raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
@@ -1220,7 +1239,10 @@ def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> An
         )
     voice = (options.get("tts") or {}).get("voice") or "alloy"
     return SessionProperties(
-        audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+        audio=AudioConfiguration(
+            input=audio_input,
+            output=AudioOutput(voice=voice, speed=tts_speed_for(agent, "openai")),
+        ),
     )
 
 
@@ -1237,6 +1259,7 @@ def _xai_session_properties(agent: dict) -> Any:
     from pipecat.services.xai.realtime.events import (
         AudioConfiguration,
         AudioInput,
+        AudioOutput,
         InputAudioTranscription,
         Reasoning,
         SessionProperties,
@@ -1247,6 +1270,7 @@ def _xai_session_properties(agent: dict) -> Any:
 
     options = agent.get("options") or {}
     effort = voice_effort(options)
+    speed = tts_speed_for(agent, "xai")
     return SessionProperties(
         voice=(options.get("tts") or {}).get("voice") or XAI_DEFAULT_VOICE,
         turn_detection=TurnDetection(type="server_vad"),
@@ -1255,7 +1279,9 @@ def _xai_session_properties(agent: dict) -> Any:
                 transcription=InputAudioTranscription(
                     model=XAI_TRANSCRIPTION_MODEL, language_hint=language_hint(agent)
                 )
-            )
+            ),
+            # The subclass fills the format; see grok_service._ensure_audio_config.
+            output=AudioOutput(speed=speed) if speed is not None else None,
         ),
         reasoning=Reasoning(effort=effort) if effort else None,
     )
@@ -1268,6 +1294,7 @@ def _ultravox_one_shot_params(
     *,
     text_output: bool,
     opening: Optional[str] = None,
+    voice_overrides: Optional[dict] = None,
 ) -> Any:
     """The ``OneShotInputParams`` for one Ultravox /calls request.
 
@@ -1278,6 +1305,8 @@ def _ultravox_one_shot_params(
     ``opening`` is the platform's first-turn instruction when the generation
     continues a call already in progress (see ``build_voice_session``); the
     opening turn is then that instruction, not the agent's greeting.
+    ``voice_overrides`` is :func:`tts_speed.ultravox_speed_extra`, resolved by the
+    caller because it needs a voice lookup.
     """
     import uuid as _uuid
 
@@ -1404,6 +1433,7 @@ def _ultravox_one_shot_params(
             # Interruption sensitivity: platform default unless the agent
             # carries an explicit vendorSpecific override.
             **_ultravox_vad_extra(agent),
+            **(voice_overrides or {}),
         },
     )
     if voice:
@@ -1482,6 +1512,9 @@ async def _build_realtime(
             )
         from .gpt_live_service import build_gpt_live_service
 
+        if not transcript_tts:
+            warn_tts_speed_unsupported(agent, model_id)
+
         llm = build_gpt_live_service(
             api_key=_require_env("OPENAI_API_KEY"),
             voice=(options.get("tts") or {}).get("voice"),
@@ -1513,6 +1546,8 @@ async def _build_realtime(
         )
     elif model_id.startswith("google/"):
         from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+
+        warn_tts_speed_unsupported(agent, model_id)
 
         llm = GeminiLiveLLMService(
             api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
@@ -1559,8 +1594,19 @@ async def _build_realtime(
         # the last ``/`` before sending — mirroring the native handler
         # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
         ultravox_model = model_id.rsplit("/", 1)[-1]
+        # In text-output mode the speed belongs to the external TTS.
+        voice_overrides = (
+            {}
+            if text_output
+            else await ultravox_speed_extra(agent, (options.get("tts") or {}).get("voice"))
+        )
         params = _ultravox_one_shot_params(
-            agent, system_prompt, ultravox_model, text_output=text_output, opening=opening
+            agent,
+            system_prompt,
+            ultravox_model,
+            text_output=text_output,
+            opening=opening,
+            voice_overrides=voice_overrides,
         )
 
         # Ultravox needs the function schemas at construction time:
