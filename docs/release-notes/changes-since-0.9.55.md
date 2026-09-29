@@ -118,6 +118,13 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Documentation**: [call-hooks.md](../call-hooks.md) gains the fields
   and the service-key section.
 
+## Billing - core
+
+- **[core] Grok text-agent billing**: `scripts/add-xai-rate-lines.mjs` now adds
+  token lines for the model ids that `text:xai/*` agents record, such as
+  `grok-4.3`, beside the `xai/grok-4.3` lines that Pipecat pipelines use. Each
+  new line takes the price the card already charges for that model.
+
 ## Upgrade notes
 
 - **[core] Database schema** stays at v66.
@@ -132,3 +139,6 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Neuphonic rate lines**: run `scripts/add-neuphonic-rate-lines.mjs`
   against each environment, or Neuphonic usage settles `no_line`. It copies each
   card's Cartesia character price unless `NEUPHONIC_CHARACTER_PRICE_MICROS` is set.
+- **[core] Grok text rate lines**: run `scripts/add-xai-rate-lines.mjs` again
+  against each environment, or `text:xai/*` agent usage settles `no_line`.
+  `--dry-run` or `DRY_RUN=1` prints the plan and writes nothing.
