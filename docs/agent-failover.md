@@ -4,14 +4,14 @@ This document describes how to configure and use agent failover, a feature that 
 
 ## Overview
 
-Agent failover provides resilience by automatically switching to backup options when the primary agent encounters setup failures (such as model connection timeouts, unsupported models, or initialization errors). The failover system supports four levels of fallback, applied in a strict precedence order:
+Agent failover provides resilience by automatically switching to backup options when the primary agent fails to start (such as a model provider refusing the session, a connection timeout, an unsupported model, or an initialization error). The failover system supports four levels of fallback, applied in a strict precedence order:
 
 1. **Agent-level fallback**: Switch to a completely different agent configuration
 2. **Model-level fallback**: Retry with a different model using the same agent configuration
 3. **Message-level fallback**: Speak a fixed announcement to the caller, then end the call
 4. **Number-level fallback**: Transfer the call to a phone number or endpoint
 
-Failover is only triggered for **setup-time failures** (before the call starts). Runtime errors during an active call do not trigger failover, as the agent is already running and handling the conversation.
+Failover is only triggered while the agent is **starting**: from the start of an attempt until the agent first speaks, for at most 15 seconds (see [The start-up window](#the-start-up-window)). Errors after that do not trigger failover, as the agent is already running and handling the conversation.
 
 The chain stops at the first level that works. A level that is not configured, or that fails, falls through to the next.
 
@@ -50,19 +50,37 @@ When an agent fails to start (e.g., model connection timeout, unsupported model,
 
 ### When Failover is Triggered
 
-Failover is **only** triggered for errors that occur during agent setup, before the call starts:
+Failover is **only** triggered for failures while the agent is starting, within [the start-up window](#the-start-up-window):
 
-- Model connection timeouts
-- Unsupported model errors
-- Model initialization failures
-- Session creation failures
-- Any error during `runAgentWorker` setup phase
+- Unsupported model errors and other errors while building the agent (model, voice and tool set-up)
+- A concurrency limit refusal, which goes straight to the message step (see [Concurrency limits](#concurrency-limits))
+- The model provider refusing the session or failing to open it, for example an Ultravox call that cannot be created, or a Grok account at its concurrent-session limit
+- The model provider ending the session before the agent has spoken
+- Any other unrecoverable model, speech-to-text or text-to-speech error before the agent has spoken. On Pipecat this is a pipeline error that is fatal, or that leaves a service unable to work, such as a rejected API key
+- On LiveKit, the agent session not starting within 15 seconds
 
 Failover is **not** triggered for:
-- Runtime errors during an active conversation
+- Failures after the agent has spoken, or after the start-up window has closed
+- Failures after a transfer or an agent handover has started
 - Function call failures
 - Transfer failures (these are handled by the transfer system)
 - Normal call completion
+
+### The start-up window
+
+Each attempt, the first one and each fallback retry, has its own start-up window. It opens when the attempt starts and closes when the agent first speaks, or after 15 seconds, whichever comes first. It also closes as soon as the call is handed to a transfer or to another agent.
+
+Most provider failures only show once the session is running. A realtime provider, for example, is contacted as the session starts, and its refusal arrives a moment later. By then the caller's line has been answered, so what happens next is different from a failure while the agent is being built:
+
+- **The caller hears a short silence** while the next fallback step starts on the same call. There is no ringing or re-dial.
+- **It is still one call.** The call keeps one record, one start time, one transcript and one debug log (InvocationLog) across all its attempts.
+- **The duration counts from when the call was answered**, including the failed attempt. Model usage by a failed attempt is not billed.
+- **The recording covers the attempt that runs the call.** Audio from a failed attempt is discarded.
+- **A call that is not rescued ends as a failure**, not as if the caller had hung up (`Original participant disconnected`) or the session had closed. On LiveKit the reason names the error, for example `Agent setup failed: Failed to create Ultravox call: 503 Service Unavailable`. On Pipecat it is `UNCAUGHT ERROR: running agent worker`, with the error in the call's debug log.
+
+An agent that waits for the caller to speak first may not speak within 15 seconds even when it is working, so for it the window ends on the time limit. A failure after that ends the call as before.
+
+On Pipecat, a failure in the window can only be followed by another attempt on the websocket SIP gateways (sipbridge, FreeSWITCH and voiceblender), where the call can move to a fresh pipeline. On Daily, a failure once the pipeline has started ends the call as before; failures while the agent is being built still trigger failover.
 
 ### Limitations
 
@@ -346,7 +364,7 @@ If the announcement cannot be played (synthesis fails and there is no cached cop
 
 ### What is recorded
 
-The message fallback does not change how the underlying failure is recorded. The call keeps its real failure reason and remains diagnosable; the announcement is a courtesy played on the way out, not a different outcome. The seconds spent playing it are not recorded as call duration, because the call was never started.
+The message fallback does not change how the underlying failure is recorded. The call keeps its real failure reason and remains diagnosable; the announcement is a courtesy played on the way out, not a different outcome. After a concurrency refusal the seconds spent playing it are not recorded as call duration, because the call was never started. After a failure in [the start-up window](#the-start-up-window) the call had already been answered, so they are.
 
 ### Failure behaviour
 
@@ -361,7 +379,7 @@ Every step of this path is non-fatal by design, because it only ever runs when s
 
 ## Failover Scenarios
 
-### Scenario 1: Model Connection Timeout
+### Scenario 1: Model Provider Refuses the Session
 
 **Setup:**
 
@@ -370,10 +388,10 @@ Every step of this path is non-fatal by design, because it only ever runs when s
 - Fallback number: `+441234567890`
 
 **What happens:**
-1. Primary agent tries to connect to Ultravox 0.7 (GLM 4.6)
-2. Connection times out (setup failure)
-3. System retries with OpenAI realtime (model fallback)
-4. If OpenAI realtime also fails, call is transferred to `+441234567890`
+1. The call is answered and the agent session starts with Ultravox 0.7 (GLM 4.6)
+2. Ultravox refuses to create the call, or the connection fails, before the agent has spoken (a start failure)
+3. System retries with OpenAI realtime on the same call (model fallback); the caller hears a short silence
+4. If OpenAI realtime also fails to start, call is transferred to `+441234567890`
 
 ### Scenario 2: Unsupported Model
 
@@ -456,7 +474,8 @@ All properties are optional, but at least one should be specified for failover t
 
 ### Failover Not Triggering
 
-- **Check error type**: Failover only triggers for setup-time failures, not runtime errors
+- **Check when it failed**: Failover only triggers for failures before the agent first speaks, within 15 seconds of the attempt starting (see [The start-up window](#the-start-up-window)). A failure after the agent has spoken ends the call
+- **Check the runtime and gateway**: on Pipecat over Daily, a failure once the pipeline has started ends the call; only failures while the agent is being built fail over
 - **Verify configuration**: Ensure `options.fallback` is properly set in the agent configuration
 - **Check logs**: Look for "evaluating fallback options" messages in the logs
 
