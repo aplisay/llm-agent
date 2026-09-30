@@ -756,7 +756,7 @@ export class RealtimeSession extends llm.RealtimeSession {
 
     // Start the session immediately if tools are available, otherwise wait for updateTools
     if (Object.keys(functionToolsOf(fncCtx)).length > 0) {
-      this.#task = this.#start();
+      this.#startCall();
     } else {
       this.#logger.debug(
         "No tools provided at session creation, waiting for updateTools"
@@ -889,7 +889,7 @@ export class RealtimeSession extends llm.RealtimeSession {
     // If the session hasn't started yet, start it now that we have tools
     if (!this.#task && Object.keys(functionToolsOf(tools)).length > 0) {
       this.#logger.debug("Starting session now that tools are available");
-      this.#task = this.#start();
+      this.#startCall();
     } else if (this.#callId) {
       this.#logger.warn(
         "Tools updated after session started - Ultravox doesn't support updating tools after call creation"
@@ -1144,7 +1144,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#logger.debug(
           "No tools calls seem to have been pushed, but we are talking so starting the session anyway"
         );
-        this.#task = this.#start();
+        this.#startCall();
       }
 
       // Buffer the frame for later sending when WebSocket is ready
@@ -1230,6 +1230,12 @@ export class RealtimeSession extends llm.RealtimeSession {
       error,
       recoverable,
     } as llm.RealtimeModelError);
+  }
+
+  #startCall(): void {
+    this.#task = this.#start();
+    // Nothing awaits #task, and emitError has already reported the failure.
+    this.#task.catch(() => {});
   }
 
   #start(): Promise<void> {

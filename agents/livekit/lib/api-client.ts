@@ -732,7 +732,7 @@ export async function createCall(callData: {
   }) as any;
   
   // Add start() and end() methods to the call object
-  call.start = async () => {
+  const startOnce = async () => {
     logger.debug({ call }, "logging starting call");
     try {
       return await makeApiRequest(`/api/agent-db/call/${call.id}/start`, {
@@ -756,6 +756,17 @@ export async function createCall(callData: {
       }
       throw err;
     }
+  };
+  // A fallback retry starts the same call again. The API would reset startedAt
+  // and send the customer's start hook a second time, so a call starts once;
+  // a failed start (e.g. busy) can be tried again.
+  let started: Promise<unknown> | null = null;
+  call.start = () => {
+    started ??= startOnce().catch((err) => {
+      started = null;
+      throw err;
+    });
+    return started;
   };
   
   call.end = async (reason?: string, transactionLogs?: Array<{
