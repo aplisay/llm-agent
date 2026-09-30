@@ -4,7 +4,6 @@
  */
 import { inference, voice, type llm } from "@livekit/agents";
 import type { VAD } from "@livekit/agents";
-import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
@@ -28,6 +27,7 @@ import { textOutputEnabled } from "./realtime-tts.js";
 import { buildNeuphonicTts } from "./neuphonic-tts.js";
 import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
+import { OpenAIRealtimeModel } from "./openai-realtime.js";
 import type {
   UltravoxAgentReaction,
   UltravoxInactivityMessage,
@@ -266,7 +266,8 @@ export function buildPipelineTts(agent: Agent) {
 }
 
 export const realtimePluginModules: Record<string, unknown> = {
-  openai,
+  // Not the plugin module: the plugin's connect can end the job process. See openai-realtime.ts.
+  openai: { realtime: { RealtimeModel: OpenAIRealtimeModel } },
   ultravox,
   google,
 };
