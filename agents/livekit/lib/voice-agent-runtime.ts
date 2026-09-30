@@ -1889,6 +1889,7 @@ export async function runAgentWorker({
               return;
             }
             logger.info({ ev }, "session closed");
+            startup.close();
             // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
               DISCONNECT_REASONS.SESSION_CLOSED,

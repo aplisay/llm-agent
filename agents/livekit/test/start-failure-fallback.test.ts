@@ -1,7 +1,7 @@
 import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeLogger, JobContext, runWithJobContextAsync, voice } from "@livekit/agents";
-import { dispose, Room } from "@livekit/rtc-node";
+import { dispose, Room, RoomEvent } from "@livekit/rtc-node";
 import { WebSocketServer } from "ws";
 import { runAgentWorker } from "../lib/voice-agent-runtime.js";
 import { releaseFailedAttemptSession } from "../lib/primary-session.js";
@@ -195,6 +195,30 @@ test("the Ultravox socket closing before the agent speaks is a start failure", a
   } finally {
     await new Promise((resolve) => wss.close(resolve));
   }
+});
+
+test("a session closed for another reason during start-up ends the call as before", async () => {
+  ultravoxCalls = () => new Promise<Response>(() => {});
+  const ctx = fakeJobContext();
+  await runWithJobContextAsync(ctx, async () => {
+    const a = attempt(ctx);
+    const running = a.run();
+    while (!(a.session() as any)?.started) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const closedAt = Date.now();
+    // The SDK closes the session when the caller leaves...
+    await a.session()!.close();
+    await running;
+    assert.ok(Date.now() - closedAt < 5_000, "returned without waiting out the window");
+    assert.deepEqual(a.ends, ["Session closed"]);
+    assert.ok(teardownRequests().some((r) => r.includes("livekit.test")), "the room was deleted");
+    // ...and the room reports it, which runs the full teardown (and stops the attempt's timers).
+    ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: { sid: "PA_caller", identity: "caller" } } as any);
+    while (a.ends.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  });
 });
 
 test("only the latest attempt's shutdown callback saves the InvocationLog", async () => {
