@@ -429,9 +429,22 @@ class CallSession:
                     and fallback_cfg["agent"] != active_agent.get("id")
                 ):
                     try:
-                        next_agent = await api_client.get_agent_by_id(fallback_cfg["agent"])
-                        active_agent = next_agent
+                        # fallback.agent is not checked on save, so tenancy is enforced here.
+                        # GET /api/agents/{id} 404s for the worker's token and strips keys.
+                        next_agent = await api_client.get_internal_agent_by_id(
+                            fallback_cfg["agent"],
+                            expected_organisation_id=self.call.organisationId,
+                        )
+                        if not _org_owns(next_agent, self.call.organisationId):
+                            raise RuntimeError(
+                                f"agent {fallback_cfg['agent']} belongs to another organisation"
+                            )
+                        next_agent = apply_instance_transfer_overrides(next_agent, self.instance)
                         active_model = next_agent["modelName"]
+                        active_prompt = next_agent.get("prompt") or ""
+                        # Transfers and recording read self.agent, so it follows the
+                        # running agent, as it does after a transfer_agent handover.
+                        self.agent = active_agent = next_agent
                         used_fallback_agent = True
                         used_fallback_model = False
                         self._restore_transport_handlers(
