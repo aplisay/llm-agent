@@ -1,7 +1,7 @@
-# Release 0.9.56 (draft) - Ultravox hangup fix, Neuphonic TTS, TypeSafe Jev decision model
+# Release 0.9.56 (draft) - Neuphonic TTS, TypeSafe Jev decision model, speaking rate, LiveKit agents-js 1.9
 
 > Draft. Covers changes merged to `next` since the 0.9.55 release point
-> (3 pull requests, 19 - 22 September 2026). The version number is
+> (16 pull requests, 21 - 30 September 2026). The version number is
 > provisional.
 
 Each item is tagged by subsystem: **core** (API server, REST API, database,
@@ -11,6 +11,10 @@ Pipecat), and **ci** (build and release pipeline).
 
 ## Agents and models - livekit
 
+- **[livekit] LiveKit Agents SDK**: the worker runs `@livekit/agents` 1.9.0
+  and its plugins at 1.9.0, up from 1.0.46. Turn-taking is unchanged: the
+  SDK's new default VAD, turn detector, adaptive interruption, preemptive
+  generation and endpointing cap are turned off.
 - **[livekit] Ultravox hangup**: the `hangup` builtin's result now tells
   Ultravox to listen (`agentReaction: "listens"`), including after an in-place
   handover. The model no longer calls `hangup` again, and the call ends without
@@ -38,6 +42,17 @@ Pipecat), and **ci** (build and release pipeline).
 
 ## Voices - core+livekit+pipecat
 
+- **[core+livekit+pipecat] `options.tts.speed`** sets the speaking rate as a
+  multiple of the voice's normal rate, from 0.25 to 2. Unset or `1` sends
+  nothing. Each worker clamps the value to the vendor's range; where there is
+  no speed control the call goes ahead at normal speed.
+- **[livekit] Speed on LiveKit**: ElevenLabs takes a speed only in
+  provider-key mode, Cartesia only on LiveKit Inference, and Deepgram not at
+  all. Gemini TTS, Gemini Live and GPT-Live have no speed control on any stack.
+- **[core+livekit+pipecat] Ultravox speed** goes in the `voiceOverrides` of the
+  provider behind the voice, so it needs an explicit `options.tts.voice`.
+  `vendorSpecific.ultravox.voiceOverrides` wins over it.
+- **[core] Documentation**: new [tts-speed.md](../tts-speed.md).
 - **[core+livekit+pipecat] Neuphonic TTS**: `options.tts.vendor: "neuphonic"` on
   pipeline models on both workers, on the realtime rows flagged
   `hasExternalTts`, and for `options.fallback.message`. Not available on jambonz,
@@ -52,6 +67,18 @@ Pipecat), and **ci** (build and release pipeline).
   so replies start sooner and the pauses between sentences are shorter. Silence
   inside a sentence is kept.
 - **[core] Documentation**: new [neuphonic.md](../neuphonic.md).
+
+## Functions - core+livekit+pipecat
+
+- **[core+livekit+pipecat] Partial `redact`**: a function's `redact` also takes
+  a non-empty list of property names. The model gets the JSON result with every
+  property of those names removed, at any depth, and the full result stays in
+  `metadata.toolsCalls.<function>.result` for chaining. `redact: true` is unchanged.
+- **[core] `redact` validation**: an empty list or a non-string entry is refused
+  at save on every handler. Either form still needs LiveKit or Pipecat.
+- **[core] Documentation**:
+  [tool-call-chaining-metadata-priming.md](../tool-call-chaining-metadata-priming.md)
+  covers the list form.
 
 ## Transfers - pipecat
 
@@ -118,8 +145,18 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Documentation**: [call-hooks.md](../call-hooks.md) gains the fields
   and the service-key section.
 
-## Billing - core
+## Billing - core+livekit+pipecat
 
+- **[core] OpenAI cache writes**: OpenAI text agents record `cache_write_tokens`,
+  and on OpenAI and OpenRouter those tokens are no longer also counted in
+  `input_tokens`. `scripts/add-openai-cache-write-rate-lines.mjs` adds GPT-5.6
+  `cache_write_tokens` lines at 1.25 times each card's input price.
+- **[livekit+pipecat] Voice LLM input tokens** exclude cached tokens on both
+  workers, so a cached token is billed once, at the cache rate. Pipecat
+  Anthropic agents record each reply's tokens once.
+- **[pipecat] LLM usage detail**: every `llm` row's `detail` is the roster model
+  id, such as `xai/grok-4.3`, as on LiveKit. Grok pipeline and Gemini Live token
+  rows now match their rate lines.
 - **[core] Grok text-agent billing**: `scripts/add-xai-rate-lines.mjs` now adds
   token lines for the model ids that `text:xai/*` agents record, such as
   `grok-4.3`, beside the `xai/grok-4.3` lines that Pipecat pipelines use. Each
@@ -139,6 +176,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Neuphonic rate lines**: run `scripts/add-neuphonic-rate-lines.mjs`
   against each environment, or Neuphonic usage settles `no_line`. It copies each
   card's Cartesia character price unless `NEUPHONIC_CHARACTER_PRICE_MICROS` is set.
+- **[core] OpenAI cache-write rate lines**: run
+  `scripts/add-openai-cache-write-rate-lines.mjs` against each environment, or
+  GPT-5.6 cache-write usage settles `no_line`. `--dry-run` prints the plan.
 - **[core] Grok text rate lines**: run `scripts/add-xai-rate-lines.mjs` again
   against each environment, or `text:xai/*` agent usage settles `no_line`.
   `--dry-run` or `DRY_RUN=1` prints the plan and writes nothing.
