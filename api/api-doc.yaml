@@ -668,7 +668,7 @@ components:
             Fallbacks are applied in the following precedence order when there is a failure to invoke the primary model:
 
              1. `agent` – if specified, the current call/room will be torn down and restarted using the given fallback agent.
-             2. `model` – if specified and no `agent` fallback is configured, the session will be restarted using this fallback model name,
+             2. `model` – if specified and no `agent` fallback is configured, or it could not be used, the session will be restarted using this fallback model name,
                 keeping all other agent configuration the same.
              3. `message` – if no agent or model fallback is available (or those also failed), a fixed announcement is spoken
                 to the caller and the call then ends. The chain stops here when the announcement plays.
@@ -686,13 +686,19 @@ components:
 
                 When set, this is the first level of fallback: the current agent session will be completely restarted using the referenced
                 fallback agent, and any further fallback behaviour is then controlled by that agent's own `options.fallback` configuration.
+
+                The fallback agent must belong to the same organisation as this agent, and must be an agent the handler running the call
+                can run (on Pipecat, an `interactive-audio` agent with a `pipecat:` model). This is not checked when the agent is saved.
+                A fallback agent that is missing or cannot be used is skipped, and this agent's own `model`, `message` and `number`
+                fallbacks are tried next.
               type: string
               example: "support-fallback-agent"
             model:
               description: |-
-                Fallback model name to use if the primary `modelName` for this agent fails to connect and no `agent` fallback is defined.
+                Fallback model name to use if the primary `modelName` for this agent fails to connect and no `agent` fallback is defined,
+                or it could not be used.
 
-                When set (and `agent` is not set), the session will be restarted substituting only this model name, keeping the same agent
+                When set (and `agent` is not set, or could not be used), the session will be restarted substituting only this model name, keeping the same agent
                 definition (prompt, tools, options, etc).
               type: string
               example: "gpt-4.1-mini"

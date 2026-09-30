@@ -397,7 +397,8 @@ class CallSession:
             # Mirrors the steps the except clause below can still take.
             failover_available = bool(
                 (
-                    not used_fallback_agent
+                    self.parent_session is None
+                    and not used_fallback_agent
                     and fallback_cfg.get("agent")
                     and fallback_cfg["agent"] != active_agent.get("id")
                 )
@@ -429,16 +430,41 @@ class CallSession:
                         self.gateway_session.transport
                     )
 
-                # 1. Agent-level fallback
+                # 1. Agent-level fallback. A consult leg inherits the parent's options
+                #    (build_transfer_agent_dict) but must never become another agent.
                 if (
-                    not used_fallback_agent
+                    self.parent_session is None
+                    and not used_fallback_agent
                     and fallback_cfg.get("agent")
                     and fallback_cfg["agent"] != active_agent.get("id")
                 ):
                     try:
-                        next_agent = await api_client.get_agent_by_id(fallback_cfg["agent"])
-                        active_agent = next_agent
+                        # fallback.agent is not checked on save, so tenancy is enforced here.
+                        # GET /api/agents/{id} 404s for the worker's token and strips keys.
+                        next_agent = await api_client.get_internal_agent_by_id(
+                            fallback_cfg["agent"],
+                            expected_organisation_id=self.call.organisationId,
+                        )
+                        if not _org_owns(next_agent, self.call.organisationId):
+                            raise RuntimeError(
+                                f"agent {fallback_cfg['agent']} belongs to another organisation"
+                            )
+                        if (next_agent.get("type") or "interactive-audio") != "interactive-audio":
+                            raise RuntimeError(
+                                f"agent {fallback_cfg['agent']} is type {next_agent.get('type')} "
+                                "and cannot take a live call"
+                            )
+                        if not (next_agent.get("modelName") or "").startswith("pipecat:"):
+                            raise RuntimeError(
+                                f"agent {fallback_cfg['agent']} uses {next_agent.get('modelName')}; "
+                                "a pipecat call can only fall back to a pipecat: agent"
+                            )
+                        next_agent = apply_instance_transfer_overrides(next_agent, self.instance)
                         active_model = next_agent["modelName"]
+                        active_prompt = next_agent.get("prompt") or ""
+                        # Transfers and recording read self.agent, so it follows the
+                        # running agent, as it does after a transfer_agent handover.
+                        self.agent = active_agent = next_agent
                         used_fallback_agent = True
                         used_fallback_model = False
                         self._restore_transport_handlers(
