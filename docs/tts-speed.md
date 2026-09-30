@@ -30,7 +30,7 @@ logs `options.tts.speed ignored`.
 |---|---|---|---|---|
 | ElevenLabs TTS | 0.7 to 1.2 | Provider-key mode only (`voiceSettings.speed`). Not on LiveKit Inference. | Yes | – |
 | Cartesia TTS (sonic-3) | 0.6 to 1.5 | Yes (`modelOptions.speed` on LiveKit Inference, `generation_config.speed` in provider-key mode) | Yes (`generation_config.speed`) | – |
-| Deepgram Aura-2 TTS | 0.7 to 1.5 | Provider-key mode only, on English and Spanish voices (see below). Not on LiveKit Inference. | Yes. Deepgram supports it on English and Spanish voices. | – |
+| Deepgram Aura-2 TTS | 0.7 to 1.5 | Provider-key mode only, on English and Spanish voices (see below). Not on LiveKit Inference. | Aura-2 English and Spanish voices only. The catalogue lists only Aura-1 voices, so they get none (see below). | – |
 | Neuphonic TTS | 0.7 to 1.5 | Yes | Yes | – |
 | Google / Gemini TTS | – | No: Gemini TTS has no speed control | – | – |
 | OpenAI Realtime | 0.25 to 1.5 | Yes | Yes | – |
@@ -66,12 +66,13 @@ Notes:
 
 Deepgram takes a speed only on Aura-2 English and Spanish voices (`aura-2-<name>-en`,
 `aura-2-<name>-es`). On an Aura-1 model, or an Aura-2 voice in another language, it refuses the
-whole request with HTTP 400, even for a speed of 1. The LiveKit worker sends no speed to those
-models. It logs `options.tts.speed ignored` and speaks at normal speed.
+whole request with HTTP 400, even for a speed of 1. So both workers send a speed only to Aura-2
+English and Spanish voices.
 
-The platform's Deepgram catalogue voices (`aura-asteria-en` and so on) are Aura-1 ids. In LiveKit
-provider-key mode they build Aura-1 models, so they get no speed. To get one there, give the voice
-as a full Aura-2 id, such as `aura-2-thalia-en`.
+The platform's Deepgram catalogue lists only Aura-1 voices (`aura-asteria-en` and so on), and the
+API accepts only catalogue voices. The default voice, `aura-asteria-en`, is Aura-1 too. So a
+catalogue voice, including the default, never takes a speed on either worker. The worker logs
+`options.tts.speed ignored` and the agent speaks at normal speed.
 
 ### LiveKit gaps
 
