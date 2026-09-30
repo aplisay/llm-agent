@@ -47,8 +47,9 @@ Pipecat), and **ci** (build and release pipeline).
   nothing. Each worker clamps the value to the vendor's range; where there is
   no speed control the call goes ahead at normal speed.
 - **[livekit] Speed on LiveKit**: ElevenLabs takes a speed only in
-  provider-key mode, Cartesia only on LiveKit Inference, and Deepgram not at
-  all. Gemini TTS, Gemini Live and GPT-Live have no speed control on any stack.
+  provider-key mode, Cartesia on LiveKit Inference and in provider-key mode,
+  and Deepgram only in provider-key mode, on Aura-2 English and Spanish voices.
+  Gemini TTS, Gemini Live and GPT-Live have no speed control on any stack.
 - **[core+livekit+pipecat] Ultravox speed** goes in the `voiceOverrides` of the
   provider behind the voice, so it needs an explicit `options.tts.voice`.
   `vendorSpecific.ultravox.voiceOverrides` wins over it.

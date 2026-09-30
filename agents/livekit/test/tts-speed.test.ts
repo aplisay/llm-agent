@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
+import { WebSocketServer } from "ws";
 import { inference, initializeLogger } from "@livekit/agents";
-import { requestedTtsSpeed, ttsSpeedFor } from "../lib/tts-speed.js";
-import { buildPipelineTts, buildRealtimeLlmOptions } from "../lib/voice-session-factory.js";
+import type { TTS as CartesiaTTS } from "@livekit/agents-plugin-cartesia";
+import { deepgramTtsSpeed, requestedTtsSpeed, ttsSpeedFor } from "../lib/tts-speed.js";
 import { buildNeuphonicTts } from "../lib/neuphonic-tts.js";
-import { buildProviderPipelineTts } from "../lib/pipeline-provider-keys.js";
 import { ultravoxSpeedOverrides } from "../plugins/ultravox/src/realtime/voice_speed.js";
 
 // Portable options.tts.speed: the multiplier, its per-vendor clamp, and where each builder puts it.
@@ -12,6 +14,11 @@ import { ultravoxSpeedOverrides } from "../plugins/ultravox/src/realtime/voice_s
 // run: node --import tsx --test test/tts-speed.test.ts
 
 initializeLogger({ pretty: false, level: "fatal" });
+
+// The Cartesia plugin reads CARTESIA_API_KEY when first imported, so set it before loading the builders.
+process.env.CARTESIA_API_KEY ||= "test";
+const { buildPipelineTts, buildRealtimeLlmOptions } = await import("../lib/voice-session-factory.js");
+const { buildProviderPipelineTts } = await import("../lib/pipeline-provider-keys.js");
 
 const makeAgent = (tts: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
   ({ prompt: "You are a test agent.", options: { tts, ...extra } }) as any;
@@ -28,6 +35,15 @@ test("clamped to the vendor range; unknown vendors get nothing", () => {
   assert.equal(ttsSpeedFor(makeAgent({ speed: 0.5 }), "cartesia"), 0.6);
   assert.equal(ttsSpeedFor(makeAgent({ speed: 0.9 }), "openai"), 0.9);
   assert.equal(ttsSpeedFor(makeAgent({ speed: 1.2 }), "google"), undefined);
+});
+
+test("Deepgram: clamped on Aura-2 English and Spanish voices, none on other models", () => {
+  assert.equal(deepgramTtsSpeed(makeAgent({ speed: 2 }), "aura-2-thalia-en"), 1.5);
+  assert.equal(deepgramTtsSpeed(makeAgent({ speed: 0.5 }), "aura-2-celeste-es"), 0.7);
+  assert.equal(deepgramTtsSpeed(makeAgent(), "aura-2-thalia-en"), undefined);
+  // Deepgram answers 400 to any speed on these.
+  assert.equal(deepgramTtsSpeed(makeAgent({ speed: 1.2 }), "aura-asteria-en"), undefined);
+  assert.equal(deepgramTtsSpeed(makeAgent({ speed: 1.2 }), "aura-2-julius-de"), undefined);
 });
 
 test("OpenAI realtime: speed on the model, clamped", () => {
@@ -87,4 +103,50 @@ test("Provider keys ElevenLabs: builds with a speed-only voiceSettings", () => {
   // The plugin keeps its options private, so this only checks the build accepts it.
   process.env.ELEVEN_API_KEY = "test";
   assert.ok(buildProviderPipelineTts(makeAgent({ vendor: "elevenlabs", voice: "abc", speed: 0.8 })));
+});
+
+/** The first message the Cartesia plugin streams for `agent`, sent to a local stand-in for Cartesia. */
+async function firstCartesiaMessage(agent: unknown): Promise<Record<string, unknown>> {
+  const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(wss, "listening");
+  const message = new Promise<Record<string, unknown>>((resolve) =>
+    wss.once("connection", (ws) => ws.once("message", (data) => resolve(JSON.parse(String(data))))),
+  );
+  const tts = buildProviderPipelineTts(agent as any) as CartesiaTTS;
+  tts.updateOptions({ baseUrl: `http://127.0.0.1:${(wss.address() as AddressInfo).port}` });
+  const stream = tts.stream();
+  stream.pushText("Hello from the speed test, spoken at the requested rate.");
+  stream.flush();
+  try {
+    return await message;
+  } finally {
+    stream.close();
+    await tts.close();
+    for (const client of wss.clients) client.terminate();
+    wss.close();
+  }
+}
+
+test("Provider keys Cartesia: speed in generation_config, clamped", async () => {
+  // The plugin keeps its options private, so check what it sends.
+  const voice = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc";
+  const fast = await firstCartesiaMessage(makeAgent({ vendor: "cartesia", voice, speed: 1.8 }));
+  assert.deepEqual(fast.generation_config, { speed: 1.5 });
+  const plain = await firstCartesiaMessage(makeAgent({ vendor: "cartesia", voice }));
+  assert.equal("generation_config" in plain, false);
+});
+
+test("Provider keys Deepgram: clamped speed on Aura-2 English and Spanish, none elsewhere", () => {
+  process.env.DEEPGRAM_API_KEY = "test";
+  const built = (voice: string, speed?: number) => {
+    const { opts } = buildProviderPipelineTts(makeAgent({ vendor: "deepgram", voice, speed })) as any;
+    return { model: opts.model, speed: opts.speed };
+  };
+  // The plugin throws outside 0.7 to 1.5, so an unclamped speed would fail the build.
+  assert.deepEqual(built("aura-2-thalia-en", 1.8), { model: "aura-2-thalia-en", speed: 1.5 });
+  assert.deepEqual(built("aura-2-celeste-es", 0.5), { model: "aura-2-celeste-es", speed: 0.7 });
+  assert.deepEqual(built("aura-2-thalia-en"), { model: "aura-2-thalia-en", speed: undefined });
+  // Catalogue voices build Aura-1 models, which refuse any speed.
+  assert.deepEqual(built("aura-asteria-en", 1.2), { model: "aura-asteria-en", speed: undefined });
+  assert.deepEqual(built("aura-2-julius-de", 1.2), { model: "aura-2-julius-de", speed: undefined });
 });

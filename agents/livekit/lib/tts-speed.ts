@@ -45,6 +45,18 @@ export function ttsSpeedFor(agent: Agent | null | undefined, vendor: string): nu
   return clamped;
 }
 
+/**
+ * The speed for Deepgram TTS `model`. Deepgram refuses the whole request (400) when an Aura-1 model
+ * or an Aura-2 voice outside English and Spanish gets any speed, even 1, so those get none.
+ */
+export function deepgramTtsSpeed(agent: Agent | null | undefined, model: string): number | undefined {
+  if (!/^aura-2-.+-(en|es)$/i.test(model)) {
+    warnTtsSpeedUnsupported(agent, `deepgram ${model}`);
+    return undefined;
+  }
+  return ttsSpeedFor(agent, "deepgram");
+}
+
 /** Log that `speed` was asked for but this path cannot send it. */
 export function warnTtsSpeedUnsupported(agent: Agent | null | undefined, where: string): void {
   const speed = requestedTtsSpeed(agent);

@@ -29,8 +29,8 @@ logs `options.tts.speed ignored`.
 | Vendor or model | Range | LiveKit | Pipecat | Native (`ultravox:`) |
 |---|---|---|---|---|
 | ElevenLabs TTS | 0.7 to 1.2 | Provider-key mode only (`voiceSettings.speed`). Not on LiveKit Inference. | Yes | – |
-| Cartesia TTS (sonic-3) | 0.6 to 1.5 | LiveKit Inference only (`modelOptions.speed`). Not in provider-key mode (see below). | Yes (`generation_config.speed`) | – |
-| Deepgram Aura-2 TTS | 0.7 to 1.5 | No (see below) | Yes. Deepgram supports it on English and Spanish voices. | – |
+| Cartesia TTS (sonic-3) | 0.6 to 1.5 | Yes (`modelOptions.speed` on LiveKit Inference, `generation_config.speed` in provider-key mode) | Yes (`generation_config.speed`) | – |
+| Deepgram Aura-2 TTS | 0.7 to 1.5 | Provider-key mode only, on English and Spanish voices (see below). Not on LiveKit Inference. | Yes. Deepgram supports it on English and Spanish voices. | – |
 | Neuphonic TTS | 0.7 to 1.5 | Yes | Yes | – |
 | Google / Gemini TTS | – | No: Gemini TTS has no speed control | – | – |
 | OpenAI Realtime | 0.25 to 1.5 | Yes | Yes | – |
@@ -62,15 +62,21 @@ Notes:
 - `vendorSpecific.ultravox.voiceOverrides` wins over `options.tts.speed` on all three stacks.
 - See https://docs.ultravox.ai/api-reference/calls/calls-post.
 
+### Deepgram
+
+Deepgram takes a speed only on Aura-2 English and Spanish voices (`aura-2-<name>-en`,
+`aura-2-<name>-es`). On an Aura-1 model, or an Aura-2 voice in another language, it refuses the
+whole request with HTTP 400, even for a speed of 1. The LiveKit worker sends no speed to those
+models. It logs `options.tts.speed ignored` and speaks at normal speed.
+
+The platform's Deepgram catalogue voices (`aura-asteria-en` and so on) are Aura-1 ids. In LiveKit
+provider-key mode they build Aura-1 models, so they get no speed. To get one there, give the voice
+as a full Aura-2 id, such as `aura-2-thalia-en`.
+
 ### LiveKit gaps
 
-On the pinned agents-js 1.9.0:
-
-- `@livekit/agents-plugin-cartesia` and `@livekit/agents-plugin-deepgram` take a speed, but the
-  worker does not pass it to them yet.
-- LiveKit Inference has no speed option for ElevenLabs or Deepgram.
-
-Those paths log a warning and speak at normal speed.
+LiveKit Inference has no speed option for ElevenLabs or Deepgram. Those paths log a warning and
+speak at normal speed.
 
 ## Code
 
