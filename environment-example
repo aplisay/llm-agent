@@ -141,6 +141,8 @@ ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # Neuphonic TTS (docs/neuphonic.md): the server lists voices with it and the
 # LiveKit worker speaks with it.
 # NEUPHONIC_API_KEY=
+# Cartesia TTS: the server lists voices with it and both workers speak with it.
+# CARTESIA_API_KEY=
 # TypeSafe Jev decision model (docs/typesafe-jev.md), the text:typesafe/ rows.
 # Direct route: TYPESAFE_API_KEY. OpenRouter route: set TYPESAFE_BASE_URL to
 # https://openrouter.ai/api and the driver uses OPENROUTER_KEY when

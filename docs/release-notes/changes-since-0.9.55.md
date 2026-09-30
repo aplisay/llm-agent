@@ -68,6 +68,16 @@ Pipecat), and **ci** (build and release pipeline).
   so replies start sooner and the pauses between sentences are shorter. Silence
   inside a sentence is kept.
 - **[core] Documentation**: new [neuphonic.md](../neuphonic.md).
+- **[core] Cartesia voices**: `GET /models/{modelName}/voices/{locale}` lists
+  Cartesia's stock voices under `cartesia`, and `options.tts.voice` now takes a
+  Cartesia voice id wherever `options.tts.vendor: "cartesia"` is allowed,
+  including Ultravox and OpenAI Realtime with an external TTS. Only voices in
+  the 42 languages `sonic-3` speaks are listed. Needs `CARTESIA_API_KEY` on
+  the API server.
+- **[livekit] Cartesia language**: the agent's language now reaches Cartesia on
+  LiveKit Inference, and provider-key mode accepts every `sonic-3` language, not
+  seven. Before, Inference always asked Cartesia for English, and provider-key
+  mode did so for any language outside those seven.
 
 ## Functions - core+livekit+pipecat
 
