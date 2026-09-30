@@ -68,6 +68,9 @@ import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 /** Numbers this job's attempts; a job process runs one job, so the highest is the current attempt. */
 let latestAttempt = 0;
 
+/** How long a failed attempt waits for its session's start() to finish before the fallback retry. */
+const ABANDONED_START_SETTLE_MS = 5_000;
+
 export async function runAgentWorker({
   ctx,
   room,
@@ -1733,6 +1736,9 @@ export async function runAgentWorker({
   });
 
   let setupDone = false;
+  // The session's start(), and the close of the session if this attempt is
+  // given up first (see the catch below).
+  let sessionStarting: Promise<void> | null = null;
   try {
     // Wrap setup operations with timeout
     await withTimeout(
@@ -1959,6 +1965,15 @@ export async function runAgentWorker({
         // withTimeout does not cancel this setup: if the attempt was given up
         // while call.start() ran, a retry may already be starting its own session.
         if (attemptAbandoned) return;
+
+        // Join the room before the session starts. session.start() otherwise
+        // joins it itself, and a fallback retry that starts while that join is
+        // still in flight joins a second time: a second connect on the same
+        // room drops it (seen on staging).
+        operation = "connect";
+        await ctx.connect();
+        logger.info({ callId: call.id }, "Connected to LiveKit");
+        if (attemptAbandoned) return;
         logger.debug({ call }, "concurrency reserved, starting session");
 
         logger.info({ session: sessionModelsForLog(session) }, "Starting session");
@@ -1993,6 +2008,7 @@ export async function runAgentWorker({
           });
         // Observed here because the race below may already have settled on a start failure.
         sessionStarted.catch(() => {});
+        sessionStarting = sessionStarted;
         await Promise.race([sessionStarted, startup.failed]);
         if (attemptAbandoned) return;
         logger.info(
@@ -2041,10 +2057,6 @@ export async function runAgentWorker({
             logger.warn({ e }, "watchdog: error during check");
           }
         }, WATCHDOG_INTERVAL_MS);
-
-        operation = "connect";
-        await ctx.connect();
-        logger.info({ session: sessionModelsForLog(session) }, "Connected to LiveKit");
       },
       START_WINDOW_MS,
       new Error("Call setup timeout (runAgentWorker)"),
@@ -2514,6 +2526,16 @@ export async function runAgentWorker({
     if (!setupDone || startup.failure) {
       const failure = startup.failure ?? error;
       abandonAttempt();
+      // A start still running when the attempt failed would overlap the
+      // retry's own start, so let it finish (the session is then closed).
+      // Assigned inside the setup callback, which the compiler cannot see.
+      const starting = sessionStarting as Promise<void> | null;
+      if (starting) {
+        await Promise.race([
+          starting.catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, ABANDONED_START_SETTLE_MS).unref()),
+        ]);
+      }
       throw failure;
     }
 
