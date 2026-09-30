@@ -1,9 +1,9 @@
 /**
  * A streaming TTS over one that only synthesises whole texts: Gemini TTS (`google.beta.TTS`).
  *
- * Without it agents-js 1.0.46 wraps such a TTS in a new tts.StreamAdapter on every reply. The
- * adapter's stream and each sentence's ChunkedStream all emit metrics on the inner TTS, which is
- * the one the session listens to, so every reply is metered twice.
+ * Without it agents-js (1.0.46 and 1.9.0) wraps such a TTS in a tts.StreamAdapter. The adapter's
+ * stream and each sentence's ChunkedStream all emit metrics on the inner TTS, which is the one the
+ * session listens to, so every reply is metered twice.
  */
 import { AsyncIterableQueue, shortuuid, tokenize, tts, type APIConnectOptions } from "@livekit/agents";
 
@@ -68,6 +68,8 @@ class SentenceStream extends tts.SynthesizeStream {
       for await (const { token } of sentences) {
         // A ChunkedStream never hears an abort that happened before it was made.
         if (this.abortSignal.aborted) break;
+        // agents 1.9 emits no stream metrics until markStarted() is called.
+        this.markStarted();
         pending.put(this.#inner.synthesize(token, this.connOptions, this.abortSignal));
       }
       pending.close();

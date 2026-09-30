@@ -24,6 +24,7 @@ import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
+import { legacyTurnHandlingOptions } from "./voice-session-factory.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -1136,7 +1137,10 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const consultLlm = getLlmForTransferSession(session);
-    const transferSession = new voice.AgentSession({ llm: consultLlm });
+    const transferSession = new voice.AgentSession({
+      llm: consultLlm,
+      ...legacyTurnHandlingOptions({ turnDetection: null }),
+    });
     setTransferSession(transferSession);
 
     // Persist the consultation conversation onto the consult CALL RECORD.
@@ -1158,11 +1162,10 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     }> = [];
     transferSession.on(
       voice.AgentSessionEventTypes.ConversationItemAdded,
-      ({
-        item: { type, role, content },
-        createdAt,
-      }: voice.ConversationItemAddedEvent) => {
-        if (type !== "message") return;
+      ({ item, createdAt }: voice.ConversationItemAddedEvent) => {
+        // agent_handoff items carry no role or content.
+        if (item.type !== "message") return;
+        const { role, content } = item;
         const text = content.join("");
         if (!text) return;
         consultTranscriptLogs.push({

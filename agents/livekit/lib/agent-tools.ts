@@ -111,10 +111,9 @@ export function createTools({
   // session actually comes down must not re-fire it or spam the error log.
   let toolLoopKilled = false;
 
-  return (
-    functions &&
-    (functions.reduce(
-      (acc: llm.ToolContext, fnc: AgentFunction) => ({
+  return new llm.ToolContext(
+    (functions || []).reduce(
+      (acc: Record<string, llm.AnonFunctionTool>, fnc: AgentFunction) => ({
         ...acc,
         [fnc.name]: llm.tool({
           description: fnc.description,
@@ -357,6 +356,6 @@ export function createTools({
         }),
       }),
       {},
-    ) as llm.ToolContext)
+    ),
   );
 }

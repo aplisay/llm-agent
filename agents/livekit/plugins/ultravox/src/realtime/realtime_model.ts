@@ -22,6 +22,16 @@ import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
 
+// The SDK passes a ToolContext instance (a class since agents 1.5); tests still
+// pass a plain name-keyed record. Object.keys() on the instance lists its
+// private fields, not the tools.
+function functionToolsOf(
+  ctx: llm.ToolContext | Record<string, any> | undefined,
+): Record<string, any> {
+  if (!ctx) return {};
+  return "functionTools" in ctx ? ctx.functionTools : ctx;
+}
+
 interface ModelOptions {
   modalities: Modality[];
   instructions: string;
@@ -467,6 +477,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: false,
       userTranscription: true,
       autoToolReplyGeneration: false,
+      manualFunctionCalls: false,
       // Text-only modalities = text-output mode: Ultravox sends no audio and the
       // AgentSession's TTS speaks the text stream (docs/realtime-external-tts.md).
       audioOutput: modalities.includes("audio"),
@@ -744,7 +755,7 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#callCorrelationId = opts.callId ?? null;
 
     // Start the session immediately if tools are available, otherwise wait for updateTools
-    if (fncCtx && Object.keys(fncCtx).length > 0) {
+    if (Object.keys(functionToolsOf(fncCtx)).length > 0) {
       this.#task = this.#start();
     } else {
       this.#logger.debug(
@@ -781,7 +792,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   get tools(): llm.ToolContext {
-    return this.#fncCtx || {};
+    return this.#fncCtx ?? llm.ToolContext.empty();
   }
 
   async updateInstructions(instructions: string): Promise<void> {
@@ -876,7 +887,7 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#fncCtx = tools;
 
     // If the session hasn't started yet, start it now that we have tools
-    if (!this.#task && tools && Object.keys(tools).length > 0) {
+    if (!this.#task && Object.keys(functionToolsOf(tools)).length > 0) {
       this.#logger.debug("Starting session now that tools are available");
       this.#task = this.#start();
     } else if (this.#callId) {
@@ -1231,11 +1242,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         );
         const selectedTools: api_proto.UltravoxTool[] = [];
         if (this.#fncCtx) {
+          const functionTools = functionToolsOf(this.#fncCtx);
           this.#logger.debug(
-            { fncCtxKeys: Object.keys(this.#fncCtx) },
+            { fncCtxKeys: Object.keys(functionTools) },
             "Function context keys"
           );
-          for (const [name, func] of Object.entries(this.#fncCtx)) {
+          for (const [name, func] of Object.entries(functionTools)) {
             this.#logger.debug({ name, func }, "Processing function");
             const requiredList = Array.isArray(
               (func as any).parameters?.required
@@ -1953,7 +1965,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       return;
     }
 
-    const func = this.#fncCtx[toolCall.name];
+    const func = functionToolsOf(this.#fncCtx)[toolCall.name];
     if (!func) {
       this.#logger.error(
         `No function with name ${toolCall.name} in function context`
@@ -2271,7 +2283,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #executeFunctionFromEvent(
     event: api_proto.UltravoxFunctionCallMessage
   ): void {
-    const func = this.#fncCtx![event.toolName];
+    const func = functionToolsOf(this.#fncCtx)[event.toolName];
     if (!func) {
       this.#logger.error(
         `No function with name ${event.toolName} in function context`

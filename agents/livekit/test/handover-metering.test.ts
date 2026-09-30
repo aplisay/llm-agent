@@ -95,6 +95,8 @@ class FakeSynthesizeStream extends tts.SynthesizeStream {
         text += input;
       } else if (text) {
         this.#tts.segments.push(text);
+        // agents 1.9 emits no stream metrics until markStarted() is called.
+        this.markStarted();
         this.queue.put({ requestId: "r", segmentId: "s", frame: silence(audioMs(text)), final: true });
         text = "";
       }
@@ -136,6 +138,7 @@ class FakeRealtimeModel extends llm.RealtimeModel {
       userTranscription: false,
       autoToolReplyGeneration: false,
       audioOutput: false,
+      manualFunctionCalls: false,
     });
   }
   get model() {
@@ -156,7 +159,7 @@ class FakeRealtimeSession extends llm.RealtimeSession {
     return this.#chatCtx;
   }
   get tools() {
-    return {};
+    return llm.ToolContext.empty();
   }
   async updateInstructions() {}
   async updateChatCtx(chatCtx: llm.ChatContext) {
@@ -186,6 +189,7 @@ class FakeRealtimeSession extends llm.RealtimeSession {
       inputTokens: 300,
       outputTokens: 40,
       inputTokenDetails: { audioTokens: 0, textTokens: 300, imageTokens: 0, cachedTokens: 60 },
+      outputTokenDetails: { audioTokens: 0, textTokens: 40, imageTokens: 0 },
     });
   }
 }
@@ -345,7 +349,7 @@ async function receptionCall() {
   return { session, fakeLlm, fakeTts, fakeStt, reported, turn, handover, recognise, ledger, produced };
 }
 
-test("agents-js 1.0.46: after an in-place handover every metrics event reaches the session twice", async () => {
+test("agents-js 1.9.0: after an in-place handover every metrics event reaches the session once", async () => {
   const call = await receptionCall();
   try {
     await call.turn("Hello");
@@ -360,11 +364,11 @@ test("agents-js 1.0.46: after an in-place handover every metrics event reaches t
     await call.turn("What do I owe?");
     await call.recognise();
 
-    // The outgoing activity's listeners are still on the session's LLM, TTS and STT.
+    // 1.0.46 left the outgoing activity's listeners on the session's LLM, TTS and STT.
     for (const component of [call.fakeLlm, call.fakeTts, call.fakeStt]) {
-      assert.equal(component.listenerCount("metrics_collected"), 2);
+      assert.equal(component.listenerCount("metrics_collected"), 1);
     }
-    assert.deepEqual(copies(call.reported.slice(before)), [2, 2, 2]);
+    assert.deepEqual(copies(call.reported.slice(before)), [1, 1, 1]);
   } finally {
     await call.session.close();
   }
@@ -388,7 +392,7 @@ test("after an in-place handover the usage rows match what the LLM, TTS and STT 
   }
 });
 
-test("agents-js 1.0.46: after a second in-place handover each event arrives three times, and is metered once", async () => {
+test("agents-js 1.9.0: after a second in-place handover each event arrives once, and is metered once", async () => {
   const call = await receptionCall();
   try {
     await call.turn("Hello");
@@ -398,14 +402,14 @@ test("agents-js 1.0.46: after a second in-place handover each event arrives thre
     await call.turn("What do I owe?");
     await call.recognise();
 
-    assert.deepEqual(copies(call.reported.slice(before)), [3, 3, 3]);
+    assert.deepEqual(copies(call.reported.slice(before)), [1, 1, 1]);
     assert.deepEqual(await call.ledger(), call.produced());
   } finally {
     await call.session.close();
   }
 });
 
-test("agents-js 1.0.46, realtime: each activity has its own realtime session, so only the session TTS repeats", async () => {
+test("agents-js 1.9.0, realtime: each activity has its own realtime session, and nothing repeats", async () => {
   const model = new FakeRealtimeModel();
   const fakeTts = new FakeTTS();
   const session = new voice.AgentSession({ llm: model, tts: fakeTts });
@@ -444,7 +448,7 @@ test("agents-js 1.0.46, realtime: each activity has its own realtime session, so
       [...new Set(after)].map((m) => [m.type, after.filter((r) => r === m).length]),
       [
         ["realtime_model_metrics", 1],
-        ["tts_metrics", 2],
+        ["tts_metrics", 1],
       ],
     );
     assert.deepEqual(metered, {

@@ -1106,12 +1106,12 @@ export async function runAgentWorker({
       "";
     s.on(
       voice.AgentSessionEventTypes.ConversationItemAdded,
-      ({
-        item: { type, role, content },
-        createdAt,
-      }: voice.ConversationItemAddedEvent) => {
+      ({ item, createdAt }: voice.ConversationItemAddedEvent) => {
+        // agent_handoff items carry no role or content.
+        if (item.type !== "message") return;
+        const { role, content } = item;
         if (isStaleSession(s)) return;
-        if (type === "message" && getConsultInProgress() === false) {
+        if (getConsultInProgress() === false) {
           const text = content.join("");
           // A pipeline stack's opening after a handover or hand-back arrives
           // as user input (openingReply): a platform instruction, not the
@@ -1724,12 +1724,12 @@ export async function runAgentWorker({
         // Listen on the user input transcribed event
         session.on(
           voice.AgentSessionEventTypes.ConversationItemAdded,
-          ({
-            item: { type, role, content },
-            createdAt,
-          }: voice.ConversationItemAddedEvent) => {
+          ({ item, createdAt }: voice.ConversationItemAddedEvent) => {
+            // agent_handoff items carry no role or content.
+            if (item.type !== "message") return;
+            const { role, content } = item;
             if (isStaleSession(setupSession)) return;
-            if (type === "message" && getConsultInProgress() === false) {
+            if (getConsultInProgress() === false) {
               const text = content.join("");
               // An in-place handover's opening on a pipeline stack arrives as
               // user input (openingReply): a platform instruction, not the
@@ -2047,17 +2047,18 @@ export async function runAgentWorker({
 
         // For OpenAI realtime, LiveKit Agents currently forces `allowInterruptions=true` when passed explicitly
         // with server-side turn detection enabled. Work around this by:
-        // - temporarily flipping the session default `options.allowInterruptions=false` (so handles inherit it),
+        // - temporarily flipping the session default `turnHandling.interruption.enabled=false` (so handles inherit it),
         // - temporarily setting OpenAI server `turn_detection.interrupt_response=false` so the provider won't
         //   truncate on user VAD during the greeting,
         // then restoring both after playout.
         if (isOpenAIRealtime(voiceMode, modelName)) {
           try {
-            const prev = (session as any).options?.allowInterruptions;
-            if ((session as any).options) {
-              (session as any).options.allowInterruptions = false;
+            const interruption = (session as any).sessionOptions?.turnHandling?.interruption;
+            if (interruption) {
+              const prev = interruption.enabled;
+              interruption.enabled = false;
               restoreAfterGreeting.push(() => {
-                (session as any).options.allowInterruptions = prev ?? true;
+                interruption.enabled = prev ?? true;
               });
             }
 

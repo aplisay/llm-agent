@@ -14,7 +14,8 @@ import {
 
 /** The `voice.AgentSession` surface the kick uses. */
 export interface KickSession extends TextSpeaker {
-  options: { userAwayTimeout?: number | null };
+  // agents 1.9 reads the live value here; `options` is a deprecated copy.
+  sessionOptions: { userAwayTimeout?: number | null };
   on(
     event: voice.AgentSessionEventTypes.UserStateChanged,
     listener: (ev: voice.UserStateChangedEvent) => void,
@@ -126,7 +127,7 @@ export function createInactivityKick(params: InactivityKickParams): InactivityKi
     applyAwayTimeout() {
       const session = params.currentSession();
       const settings = kickSettings(params.activeAgent());
-      if (session && settings) session.options.userAwayTimeout = settings.timeoutSecs;
+      if (session && settings) session.sessionOptions.userAwayTimeout = settings.timeoutSecs;
     },
     stop,
   };
