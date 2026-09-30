@@ -136,18 +136,16 @@ function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string, agent: Age
   });
 }
 
+// Checked against Cartesia's /tts/bytes on 2026-09-30. Keep in step with SONIC_3_LANGUAGES in lib/voices/cartesia.js.
+const SONIC_3_LANGUAGES: ReadonlySet<string> = new Set([
+  "ar", "bg", "bn", "cs", "da", "de", "el", "en", "es", "fi", "fr", "gu", "he", "hi", "hr", "hu", "id",
+  "it", "ja", "ka", "kn", "ko", "ml", "mr", "ms", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sk", "sv",
+  "ta", "te", "th", "tl", "tr", "uk", "vi", "zh",
+]);
+
 function cartesiaLanguage(agent: Agent): string {
   const p = ttsPrimaryLanguage(agent) || "en";
-  const allowed = new Set([
-    "en",
-    "es",
-    "fr",
-    "de",
-    "pt",
-    "zh",
-    "ja",
-  ]);
-  return allowed.has(p) ? p : "en";
+  return SONIC_3_LANGUAGES.has(p) ? p : "en";
 }
 
 /**

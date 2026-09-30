@@ -250,16 +250,21 @@ export function buildPipelineTts(agent: Agent) {
   if (ttsStr.startsWith("deepgram/aura-2:")) {
     return inferenceTtsForDeepgramAura2(ttsStr, agent);
   }
-  if (requestedTtsSpeed(agent) === undefined) {
-    return ttsStr;
-  }
   if (ttsStr.startsWith("cartesia/")) {
+    // Inference TTS defaults the language to "en", which would drive a non-English voice as English.
+    const language = agentLanguageTag(agent)?.split("-")[0]?.toLowerCase();
+    const speed = ttsSpeedFor(agent, "cartesia");
+    if (!language && speed === undefined) return ttsStr;
     const [model, voice] = inference.parseTTSModelString(ttsStr);
     return new inference.TTS({
       model,
       voice,
-      modelOptions: { speed: ttsSpeedFor(agent, "cartesia") },
+      ...(language ? { language } : {}),
+      ...(speed !== undefined ? { modelOptions: { speed } } : {}),
     });
+  }
+  if (requestedTtsSpeed(agent) === undefined) {
+    return ttsStr;
   }
   warnTtsSpeedUnsupported(agent, `LiveKit Inference ${ttsStr.split(":")[0]}`);
   return ttsStr;
