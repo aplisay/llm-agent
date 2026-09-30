@@ -2,11 +2,16 @@ import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeLogger, JobContext, runWithJobContextAsync, voice } from "@livekit/agents";
 import { dispose, Room, RoomEvent } from "@livekit/rtc-node";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { WebSocketServer } from "ws";
 import { runAgentWorker } from "../lib/voice-agent-runtime.js";
 import { releaseFailedAttemptSession } from "../lib/primary-session.js";
 import { invocationLogs } from "../lib/invocation-log-buffer.js";
+import { finaliseJobBeforeExit } from "../lib/job-finaliser.js";
+import { closeSessionBounded } from "../lib/utils.js";
 import { AgentConcurrencyLimitExceededBusyError } from "../lib/api-client.js";
 import logger from "../lib/logger.js";
 
@@ -21,6 +26,8 @@ logger.level = "silent";
 
 const realFetch = globalThis.fetch;
 const requests: string[] = [];
+/** The `log` of each InvocationLog saved. */
+const savedLogs: { reason: string }[] = [];
 let ultravoxCalls: () => Promise<Response>;
 
 before(() => {
@@ -38,12 +45,16 @@ before(() => {
     if (method === "POST" && url === "https://api.ultravox.ai/api/calls") {
       return ultravoxCalls();
     }
+    if (method === "POST" && url === "http://aplisay.test/api/agent-db/invocation-log") {
+      savedLogs.push(JSON.parse(String(init?.body)).log);
+    }
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 });
 
 afterEach(() => {
   requests.length = 0;
+  savedLogs.length = 0;
 });
 
 after(async () => {
@@ -99,7 +110,13 @@ function attempt(
     start,
     agentDef = agent,
     failoverAvailable,
-  }: { start?: () => Promise<void>; agentDef?: typeof agent; failoverAvailable?: boolean } = {},
+    params,
+  }: {
+    start?: () => Promise<void>;
+    agentDef?: typeof agent;
+    failoverAvailable?: boolean;
+    params?: Partial<Parameters<typeof runAgentWorker>[0]>;
+  } = {},
 ) {
   let session: voice.AgentSession | null = null;
   const ends: string[] = [];
@@ -141,8 +158,29 @@ function attempt(
       registerBridgedTakeover: () => {},
       recordingOptions: { enabled: false },
       failoverAvailable,
+      ...params,
     });
   return { run, ends, messages, session: () => session, starts: () => starts };
+}
+
+const failAtCallStart = async () => {
+  throw new Error("call start failed");
+};
+
+async function waitFor(done: () => boolean, ms = 5_000) {
+  const deadline = Date.now() + ms;
+  while (!done()) {
+    assert.ok(Date.now() < deadline, "timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Counts logger.warn calls with `message` until restore(). */
+function countWarns(message: string) {
+  const warn = logger.warn;
+  let count = 0;
+  logger.warn = ((...args: unknown[]) => void (args.includes(message) && count++)) as typeof logger.warn;
+  return { count: () => count, restore: () => void (logger.warn = warn) };
 }
 
 const teardownRequests = () =>
@@ -336,7 +374,7 @@ test("a session closed for another reason during start-up ends the call as befor
   });
 });
 
-test("only the latest attempt's shutdown callback saves the InvocationLog", async () => {
+test("a job has one shutdown callback, so its failed attempts save one InvocationLog", async () => {
   ultravoxCalls = refuseAfter(20);
   const ctx = fakeJobContext();
   await runWithJobContextAsync(ctx, async () => {
@@ -346,10 +384,108 @@ test("only the latest attempt's shutdown callback saves the InvocationLog", asyn
       await releaseFailedAttemptSession(ctx, a.session());
     }
     invocationLogs.push({ time: Date.now(), msg: "test line" });
+    assert.equal(ctx.shutdownCallbacks.length, 1);
     for (const callback of ctx.shutdownCallbacks) {
-      await callback("test");
+      await callback();
     }
-    const saved = requests.filter((r) => r === "POST http://aplisay.test/api/agent-db/invocation-log");
-    assert.equal(saved.length, 1);
+    assert.equal(savedLogs.length, 1);
+  });
+});
+
+test("the attempt that runs the call uploads the recording and saves the InvocationLog, once", async () => {
+  const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+  const { port } = wss.address() as { port: number };
+  ultravoxCalls = async () =>
+    new Response(JSON.stringify({ callId: "uv-1", joinUrl: `ws://127.0.0.1:${port}/join` }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  const ctx = fakeJobContext();
+  // Offline, every upload fails, and each failure is logged.
+  const sessionDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "recording-once-"));
+  (ctx as any)._sessionDirectory = sessionDirectory;
+  const uploads = countWarns("RecorderIO OGG not found or upload failed in shutdown callback");
+  try {
+    await runWithJobContextAsync(ctx, async () => {
+      const recorded = { recordingOptions: { enabled: true } };
+      // Fails after it set up its recording.
+      const failed = attempt(ctx, { start: failAtCallStart, params: recorded });
+      await assert.rejects(failed.run(), /call start failed/);
+      await releaseFailedAttemptSession(ctx, failed.session());
+
+      const a = attempt(ctx, { failoverAvailable: false, params: recorded });
+      await a.run();
+      ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: { sid: "PA_caller", identity: "caller" } } as any);
+      await waitFor(() => a.ends.length > 0);
+      invocationLogs.push({ time: Date.now(), msg: "test line" });
+      for (const callback of ctx.shutdownCallbacks) {
+        await callback();
+      }
+      assert.equal(uploads.count(), 1);
+      assert.deepEqual(
+        savedLogs.map((l) => l.reason),
+        ["Unmatched participant disconnect, room empty"],
+      );
+      await closeSessionBounded(a.session(), 2_000);
+    });
+  } finally {
+    uploads.restore();
+    fs.rmSync(sessionDirectory, { recursive: true, force: true });
+    for (const client of wss.clients) client.terminate();
+    await new Promise((resolve) => wss.close(resolve));
+  }
+});
+
+test("a fallback transfer saves the InvocationLog, with its own reason, before it exits the process", async () => {
+  const ctx = fakeJobContext();
+  const exits: string[] = [];
+  const realExit = process.exit;
+  process.exit = ((code?: number) => void exits.push(`exit ${code} after ${savedLogs.length} save`)) as typeof process.exit;
+  try {
+    await runWithJobContextAsync(ctx, async () => {
+      const failed = attempt(ctx, { start: failAtCallStart });
+      await assert.rejects(failed.run(), /call start failed/);
+      await releaseFailedAttemptSession(ctx, failed.session());
+
+      const caller = { sid: "PA_caller", identity: "caller" };
+      const transfer = attempt(ctx, {
+        params: {
+          transferOnly: true,
+          transferArgs: { number: "+441234567892", operation: "blind" },
+          participant: caller as any,
+        },
+      });
+      await transfer.run();
+      invocationLogs.push({ time: Date.now(), msg: "test line" });
+      ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: caller } as any);
+      await waitFor(() => exits.length > 0);
+      assert.deepEqual(exits, ["exit 0 after 1 save"]);
+      assert.deepEqual(transfer.ends, ["Original participant disconnected"]);
+      assert.deepEqual(savedLogs.map((l) => l.reason), ["Original participant disconnected"]);
+      // agents-js may still reach its shutdown callbacks.
+      for (const callback of ctx.shutdownCallbacks) {
+        await callback();
+      }
+      assert.equal(savedLogs.length, 1);
+    });
+  } finally {
+    process.exit = realExit;
+  }
+});
+
+test("the setup-failure exit saves the failed attempt's InvocationLog, with the failure as its reason, once", async () => {
+  const ctx = fakeJobContext();
+  await runWithJobContextAsync(ctx, async () => {
+    const failed = attempt(ctx, { start: failAtCallStart });
+    await assert.rejects(failed.run(), /call start failed/);
+    invocationLogs.push({ time: Date.now(), msg: "test line" });
+    // What the worker's setup-failure path does before it ends the process.
+    await finaliseJobBeforeExit(ctx, "Agent setup failed: call start failed");
+    assert.deepEqual(savedLogs.map((l) => l.reason), ["Agent setup failed: call start failed"]);
+    for (const callback of ctx.shutdownCallbacks) {
+      await callback();
+    }
+    assert.equal(savedLogs.length, 1);
   });
 });
