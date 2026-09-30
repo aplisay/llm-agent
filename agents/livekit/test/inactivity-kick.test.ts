@@ -39,7 +39,7 @@ const agentWith = (inactivity?: Record<string, unknown>) =>
 
 /** A stand-in session that records what it is asked to say. */
 class FakeSession extends EventEmitter {
-  options: { userAwayTimeout?: number | null } = {};
+  sessionOptions: { userAwayTimeout?: number | null } = {};
   spoken: string[] = [];
 
   say(text: string) {
@@ -235,7 +235,7 @@ test("in-place handover: the running session takes the incoming agent's timeout 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { call, kick, start } = callWith(agentWith());
   const s = start(new FakeSession());
-  s.options.userAwayTimeout = 15;
+  s.sessionOptions.userAwayTimeout = 15;
   s.userState("away");
   elapse(t, 60_000);
   assert.deepEqual(s.spoken, []);
@@ -243,7 +243,7 @@ test("in-place handover: the running session takes the incoming agent's timeout 
 
   call.agent = agentWith({ timeout: "8s", message: B_PROMPT });
   kick.applyAwayTimeout();
-  assert.equal(s.options.userAwayTimeout, 8);
+  assert.equal(s.sessionOptions.userAwayTimeout, 8);
   s.userState("away");
   t.mock.timers.tick(8_000);
   assert.deepEqual(s.spoken, [B_PROMPT, B_PROMPT]);
@@ -252,7 +252,7 @@ test("in-place handover: the running session takes the incoming agent's timeout 
   // prompts stop.
   call.agent = agentWith();
   kick.applyAwayTimeout();
-  assert.equal(s.options.userAwayTimeout, 8);
+  assert.equal(s.sessionOptions.userAwayTimeout, 8);
   elapse(t, 60_000);
   assert.deepEqual(s.spoken, [B_PROMPT, B_PROMPT]);
 });
@@ -309,7 +309,7 @@ test("sdk: after an in-place handover the session goes away after the incoming a
   const first = agentWith();
   const { call, kick, start } = callWith(first, OPENAI);
   const s = start(factorySession(first));
-  assert.equal(s.options.userAwayTimeout, 15, "the SDK default");
+  assert.equal(s.sessionOptions.userAwayTimeout, 15, "the SDK default");
 
   call.agent = agentWith({ timeout: "3s", message: B_PROMPT });
   kick.applyAwayTimeout();

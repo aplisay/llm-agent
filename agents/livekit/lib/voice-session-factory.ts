@@ -255,12 +255,10 @@ export function buildPipelineTts(agent: Agent) {
   }
   if (ttsStr.startsWith("cartesia/")) {
     const [model, voice] = inference.parseTTSModelString(ttsStr);
-    // The 1.0.46 types allow only 'slow' | 'normal' | 'fast', but the gateway
-    // forwards a number to Cartesia's generation_config.speed (typed in later agents-js).
     return new inference.TTS({
       model,
       voice,
-      modelOptions: { speed: ttsSpeedFor(agent, "cartesia") as never },
+      modelOptions: { speed: ttsSpeedFor(agent, "cartesia") },
     });
   }
   warnTtsSpeedUnsupported(agent, `LiveKit Inference ${ttsStr.split(":")[0]}`);
@@ -472,6 +470,36 @@ export function buildRealtimeLlmOptions(
   return llmOptions;
 }
 
+/**
+ * Keep agents-js 1.0.46 turn-taking. 1.9 otherwise turns on a bundled VAD, an audio turn
+ * detector, adaptive interruption, preemptive generation, a 3 s AEC warm-up with no barge-in,
+ * false-interruption resume and a 3 s endpointing cap. Adopt each one on purpose.
+ */
+export function legacyTurnHandlingOptions({
+  vad,
+  turnDetection,
+}: {
+  vad?: VAD;
+  turnDetection: "vad" | "stt" | null;
+}) {
+  return {
+    vad: vad ?? null,
+    aecWarmupDuration: null,
+    turnHandling: {
+      turnDetection,
+      endpointing: { minDelay: 500, maxDelay: 6000 },
+      interruption: {
+        mode: "vad" as const,
+        // Drop early user audio while agent speech is uninterruptible (greeting mode).
+        // This matches the product decision to avoid buffering/replaying early speech.
+        discardAudioIfUninterruptible: true,
+        resumeFalseInterruption: false,
+      },
+      preemptiveGeneration: { enabled: false },
+    },
+  };
+}
+
 export interface CreateVoiceModelAndSessionParams {
   voiceMode: VoiceMode;
   modelName: string;
@@ -518,8 +546,7 @@ export function createVoiceModelAndSession(
 
   // Set userAwayTimeout only for a configured kick; otherwise preserve the SDK default. See PR #340.
   const userAwayTimeout = inactivityAwayTimeoutSecs(agent);
-  const inactivityVoiceOptions =
-    userAwayTimeout !== undefined ? { voiceOptions: { userAwayTimeout } } : {};
+  const inactivityVoiceOptions = userAwayTimeout !== undefined ? { userAwayTimeout } : {};
 
   if (voiceMode === "pipeline") {
     const providerSeg = parseProviderModelName(modelName);
@@ -537,16 +564,7 @@ export function createVoiceModelAndSession(
     // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
     // otherwise use STT-based turn detection (no extra native deps).
     const session = new voice.AgentSession({
-      ...(vad
-        ? { vad, turnDetection: "vad" as const }
-        : { turnDetection: "stt" as const }),
-      // Drop early user audio while agent speech is uninterruptible (greeting mode).
-      // This matches the product decision to avoid buffering/replaying early speech.
-      turnHandling: {
-        interruption: {
-          discardAudioIfUninterruptible: true,
-        },
-      },
+      ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
       stt: sttModel,
       llm: pipelineLlm,
       tts: ttsModel,
@@ -581,12 +599,7 @@ export function createVoiceModelAndSession(
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel(llmOptions),
     ...externalTts,
-    // Drop early user audio while agent speech is uninterruptible (greeting mode).
-    turnHandling: {
-      interruption: {
-        discardAudioIfUninterruptible: true,
-      },
-    },
+    ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeInactivityVoiceOptions,
   } as any);
   return { session, model };

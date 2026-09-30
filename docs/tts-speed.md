@@ -62,16 +62,15 @@ Notes:
 - `vendorSpecific.ultravox.voiceOverrides` wins over `options.tts.speed` on all three stacks.
 - See https://docs.ultravox.ai/api-reference/calls/calls-post.
 
-### LiveKit agents-js 1.0.46 gaps
+### LiveKit gaps
 
-On the pinned agents-js 1.0.46 plugins:
+On the pinned agents-js 1.9.0:
 
-- `@livekit/agents-plugin-cartesia` sends speed only in the sonic-2 `__experimental_controls` field, which sonic-3 ignores.
-- `@livekit/agents-plugin-deepgram` has no speed option. It arrives in 1.3.2.
+- `@livekit/agents-plugin-cartesia` and `@livekit/agents-plugin-deepgram` take a speed, but the
+  worker does not pass it to them yet.
 - LiveKit Inference has no speed option for ElevenLabs or Deepgram.
 
-Those paths log a warning and speak at normal speed. The agents-js bump fixes the Cartesia and
-Deepgram plugins.
+Those paths log a warning and speak at normal speed.
 
 ## Code
 

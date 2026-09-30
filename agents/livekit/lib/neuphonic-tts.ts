@@ -314,7 +314,7 @@ class NeuphonicChunkedStream extends tts.ChunkedStream {
 
 /**
  * One request per sentence, played in order, the next fetched while the current one plays. Not
- * tts.StreamAdapter: in agents-js 1.0.46 it meters each sentence and the whole reply, billing twice.
+ * tts.StreamAdapter: in agents-js 1.0.46 and 1.9.0 it meters each sentence and the whole reply, billing twice.
  */
 class NeuphonicSynthesizeStream extends tts.SynthesizeStream {
   label = "neuphonic.SynthesizeStream";
@@ -348,6 +348,8 @@ class NeuphonicSynthesizeStream extends tts.SynthesizeStream {
       for await (const { token } of sentences) {
         if (signal.aborted) break;
         while (inFlight.length >= LOOKAHEAD) await inFlight.shift();
+        // agents 1.9 emits no stream metrics until markStarted() is called.
+        this.markStarted();
         const sentence = this.#fetchSentence(token, signal);
         inFlight.push(sentence.done.catch(() => undefined));
         const previous = played;

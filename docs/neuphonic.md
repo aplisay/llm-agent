@@ -66,7 +66,7 @@ time.
   sends a single `<STOP>` after the whole reply, so a long reply stays silent until
   the LLM has finished. Its SSE path throws from a socket handler when Neuphonic
   reports an error, which ends the job process. The class also does not use the
-  agents-js sentence adapter, which in 1.0.46 meters each reply twice.
+  agents-js sentence adapter, which (at 1.0.46 and 1.9.0) meters each reply twice.
 
 ### Leading silence
 

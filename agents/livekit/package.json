@@ -30,14 +30,14 @@
     "@google-cloud/pino-logging-gcp-config": "^1.0.4",
     "@google-cloud/secret-manager": "^6.1.1",
     "@google-cloud/storage": "^7.13.0",
-    "@livekit/agents": "1.0.46",
-    "@livekit/agents-plugin-cartesia": "1.0.46",
-    "@livekit/agents-plugin-deepgram": "1.0.46",
-    "@livekit/agents-plugin-elevenlabs": "1.0.46",
-    "@livekit/agents-plugin-google": "1.0.46",
-    "@livekit/agents-plugin-openai": "1.0.46",
+    "@livekit/agents": "1.9.0",
+    "@livekit/agents-plugin-cartesia": "1.9.0",
+    "@livekit/agents-plugin-deepgram": "1.9.0",
+    "@livekit/agents-plugin-elevenlabs": "1.9.0",
+    "@livekit/agents-plugin-google": "1.9.0",
+    "@livekit/agents-plugin-openai": "1.9.0",
     "@livekit/noise-cancellation-node": "^0.1.9",
-    "@livekit/rtc-node": "^0.13.24",
+    "@livekit/rtc-node": "^0.13.34",
     "async-mutex": "^0.4.1",
     "axios": "^1.18.1",
     "command-line-args": "^6.0.1",
@@ -60,14 +60,12 @@
     "typescript": "^5.8.3"
   },
   "resolutions": {
-    "@opentelemetry/propagator-jaeger": "^2.10.0",
     "brace-expansion": "^5.0.8",
     "sharp": "^0.35.3",
     "uuid": "^11.1.1"
   },
   "pnpm": {
     "overrides": {
-      "@opentelemetry/propagator-jaeger": "^2.10.0",
       "sharp": "^0.35.3",
       "uuid": "^11.1.1"
     }

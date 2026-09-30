@@ -275,7 +275,7 @@ const textStream = (chunks: string[]) =>
     },
   });
 
-test("agents-js 1.0.46: the raw Gemini TTS on a session meters every reply twice", async () => {
+test("agents-js 1.9.0: the raw Gemini TTS on a session meters every reply twice", async () => {
   const gemini = rawGemini();
   const requests = stubGemini(gemini);
 
@@ -413,8 +413,8 @@ test("replies add no listeners to the Gemini TTS", async () => {
   const raw = rawGemini();
   stubGemini(raw);
   await speakOnSession(raw, REPLY, { replies: 3 });
-  // tts.StreamAdapter adds two per reply and never removes them.
-  assert.ok(raw.listenerCount("metrics_collected") >= 3);
+  // In agents-js 1.0.46 tts.StreamAdapter added two per reply and never removed them.
+  assert.equal(raw.listenerCount("metrics_collected"), 0);
 
   const { built } = builtGemini();
   await speakOnSession(built, REPLY, { replies: 3 });

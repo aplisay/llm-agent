@@ -178,8 +178,8 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       : voiceRaw;
     const model =
       process.env.LIVEKIT_PIPELINE_CARTESIA_TTS_MODEL?.trim() || "sonic-3";
-    // plugin-cartesia 1.0.46 sends speed only in the sonic-2 __experimental_controls field.
-    warnTtsSpeedUnsupported(agent, "cartesia plugin 1.0.46");
+    // plugin-cartesia 1.9 takes `speed` (0.6 to 2.0 on sonic-3), but it is not wired here yet.
+    warnTtsSpeedUnsupported(agent, "cartesia plugin");
     return new cartesia.TTS({
       voice: id,
       model,
@@ -189,8 +189,8 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
   if (vendor === "deepgram") {
     const ttsStr = resolvePipelineTts(agent);
     if (ttsStr.startsWith("deepgram/aura-2:")) {
-      // plugin-deepgram gains `speed` in 1.3.2.
-      warnTtsSpeedUnsupported(agent, "deepgram plugin 1.0.46");
+      // plugin-deepgram 1.9 takes `speed` (0.7 to 1.5), but it is not wired here yet.
+      warnTtsSpeedUnsupported(agent, "deepgram plugin");
       return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr);
     }
     throw new Error(
