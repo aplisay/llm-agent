@@ -11,7 +11,7 @@ Agent failover provides resilience by automatically switching to backup options 
 3. **Message-level fallback**: Speak a fixed announcement to the caller, then end the call
 4. **Number-level fallback**: Transfer the call to a phone number or endpoint
 
-Failover is only triggered while the agent is **starting**: from the start of an attempt until the agent first speaks, for at most 15 seconds (see [The start-up window](#the-start-up-window)). Errors after that do not trigger failover, as the agent is already running and handling the conversation.
+Failover is only triggered while the agent is **starting**: from when an attempt starts the agent's session until the agent first speaks, for at most 15 seconds (see [The start-up window](#the-start-up-window)). Errors after that do not trigger failover, as the agent is already running and handling the conversation.
 
 The chain stops at the first level that works. A level that is not configured, or that fails, falls through to the next.
 
@@ -68,7 +68,7 @@ Failover is **not** triggered for:
 
 ### The start-up window
 
-Each attempt, the first one and each fallback retry, has its own start-up window. It opens when the attempt starts and closes when the agent first speaks, or after 15 seconds, whichever comes first. It also closes as soon as the call is handed to a transfer or to another agent.
+Each attempt, the first one and each fallback retry, has its own start-up window. It opens when the attempt starts the agent's session and closes when the agent first speaks, or 15 seconds later, whichever comes first. It also closes as soon as the call is handed to a transfer or to another agent.
 
 Most provider failures only show once the session is running. A realtime provider, for example, is contacted as the session starts, and its refusal arrives a moment later. By then the caller's line has been answered, so what happens next is different from a failure while the agent is being built:
 
@@ -474,7 +474,7 @@ All properties are optional, but at least one should be specified for failover t
 
 ### Failover Not Triggering
 
-- **Check when it failed**: Failover only triggers for failures before the agent first speaks, within 15 seconds of the attempt starting (see [The start-up window](#the-start-up-window)). A failure after the agent has spoken ends the call
+- **Check when it failed**: Failover only triggers for failures before the agent first speaks, within 15 seconds of the attempt starting the agent's session (see [The start-up window](#the-start-up-window)). A failure after the agent has spoken ends the call
 - **Check the runtime and gateway**: on Pipecat over Daily, a failure once the pipeline has started ends the call; only failures while the agent is being built fail over
 - **Verify configuration**: Ensure `options.fallback` is properly set in the agent configuration
 - **Check logs**: Look for "evaluating fallback options" messages in the logs

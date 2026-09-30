@@ -1,8 +1,8 @@
 """Start-up window for one attempt of the fallback chain (docs/agent-failover.md).
 
 A pipeline failure before the bot first speaks, within ``START_WINDOW_SECS``
-of the attempt starting, goes to ``options.fallback`` instead of ending the
-call. Provider connections happen once the pipeline is running (Ultravox's
+of the attempt's pipeline starting, goes to ``options.fallback`` instead of
+ending the call. Provider connections happen once the pipeline is running (Ultravox's
 ``/calls`` request is made from the service's ``start()``), so such a failure
 arrives as an ``ErrorFrame``, not as an exception out of the build.
 """
@@ -25,7 +25,7 @@ class SessionStartFailed(Exception):
 
 
 class StartWindow:
-    """Open from the start of an attempt until the bot first speaks or the cap passes."""
+    """Open from when an attempt's pipeline starts until the bot first speaks or the cap passes."""
 
     def __init__(
         self,

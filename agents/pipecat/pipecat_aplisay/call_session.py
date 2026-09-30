@@ -535,8 +535,6 @@ class CallSession:
         None where a failed pipeline cannot be followed by another on the same
         call: a consult leg, or a transport that cannot be rebuilt (Daily).
         """
-        self._start_window = None
-        self._start_gate = None
         if self.parent_session is not None:
             return None
         if not self._transport_rebuildable(self.gateway_session.transport):
@@ -1294,8 +1292,12 @@ class CallSession:
             )
 
     async def _run_once(self, agent: dict, model_name: str, system_prompt: str) -> None:
-        window = self._open_start_window()
+        # A build failure falls over on its own, so the window opens once the
+        # build is done: a slow MCP connect must not use up its 15 s.
+        self._start_window = None
+        self._start_gate = None
         task, max_duration_secs = await self.prepare_run(agent, model_name, system_prompt)
+        window = self._open_start_window()
         if window is not None:
             watch_start_window(task, window, task.cancel)
             self._start_gate = DisconnectGate(self.gateway_session.transport, window)
