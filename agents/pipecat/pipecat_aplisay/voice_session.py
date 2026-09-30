@@ -54,6 +54,7 @@ from .realtime_tts import (
 )
 from .tool_log import log_tool_call, log_tool_result
 from .tts_speed import (
+    deepgram_tts_speed,
     tts_speed_for,
     ultravox_speed_extra,
     warn_tts_speed_unsupported,
@@ -574,7 +575,8 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     # we only choose WHICH tag to hand over.
     language = _language_setting(agent, "tts")
     # ``options.tts.speed``, clamped per vendor; None leaves the vendor's rate alone.
-    speed = tts_speed_for(agent, tts_vendor)
+    # Whether Deepgram takes one depends on the voice, so its branch works it out.
+    speed = None if tts_vendor == "deepgram" else tts_speed_for(agent, tts_vendor)
     if tts_vendor == "cartesia":
         from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 
@@ -628,9 +630,11 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
         # language for Deepgram TTS is chosen by picking the right voice.
         from pipecat.services.deepgram.tts import DeepgramTTSService
 
+        voice = voice or "aura-asteria-en"
+        speed = deepgram_tts_speed(agent, voice)
         return DeepgramTTSService(
             api_key=_require_env("DEEPGRAM_API_KEY"),
-            voice=voice or "aura-asteria-en",
+            voice=voice,
             **(
                 {"settings": DeepgramTTSService.Settings(speed=speed)}
                 if speed is not None
