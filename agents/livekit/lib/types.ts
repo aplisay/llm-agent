@@ -199,6 +199,12 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
    * Transfer arguments to use when transferOnly is true.
    */
   transferArgs?: TransferArgs;
+  /**
+   * Whether a failure of this attempt has a fallback step left to go to. Only
+   * then does the attempt have a start-up window (startup-window.ts). Defaults
+   * to whether the agent has any fallback step.
+   */
+  failoverAvailable?: boolean;
 }
 
 export interface TransferArgs {

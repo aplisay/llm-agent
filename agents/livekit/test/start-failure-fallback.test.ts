@@ -79,7 +79,8 @@ const agent = {
   organisationId: "org-1",
   modelName: "livekit:ultravox/ultravox-v0.7",
   prompt: "test",
-  options: {},
+  // Only an agent with a fallback step has a start-up window.
+  options: { fallback: { model: "livekit:ultravox/ultravox-v0.6" } } as Record<string, unknown>,
   // With a tool the plugin creates the Ultravox call as the session starts.
   functions: [
     {
@@ -94,7 +95,11 @@ const agent = {
 
 function attempt(
   ctx: JobContext,
-  { start, agentDef = agent }: { start?: () => Promise<void>; agentDef?: typeof agent } = {},
+  {
+    start,
+    agentDef = agent,
+    failoverAvailable,
+  }: { start?: () => Promise<void>; agentDef?: typeof agent; failoverAvailable?: boolean } = {},
 ) {
   let session: voice.AgentSession | null = null;
   const ends: string[] = [];
@@ -135,6 +140,7 @@ function attempt(
       registerHangupExecutor: () => {},
       registerBridgedTakeover: () => {},
       recordingOptions: { enabled: false },
+      failoverAvailable,
     });
   return { run, ends, messages, session: () => session, starts: () => starts };
 }
@@ -157,6 +163,29 @@ test("an Ultravox refusal after the session started goes to the fallback loop, n
     assert.deepEqual(a.ends, [], "the call was not ended");
     assert.deepEqual(teardownRequests(), [], "the room was not deleted");
     assert.equal(a.messages.some((m) => "call" in m), false, "no call entry for a failed start");
+  });
+});
+
+for (const [name, options] of [
+  ["without a fallback", { agentDef: { ...agent, options: {} } }],
+  ["on the last attempt of a chain", { failoverAvailable: false }],
+] as const) test(`${name}, a refusal after the session started ends the call as before`, async () => {
+  ultravoxCalls = refuseAfter(50);
+  const ctx = fakeJobContext();
+  await runWithJobContextAsync(ctx, async () => {
+    const a = attempt(ctx, options);
+    await a.run();
+    // The SDK closes the session on the refusal, and its Close handler tears down.
+    while (a.ends.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(a.ends, ["Session closed"]);
+    assert.ok(teardownRequests().some((r) => r.includes("livekit.test")), "the room was deleted");
+    // End the attempt as the job would, so its timers stop.
+    ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: { sid: "PA_caller", identity: "caller" } } as any);
+    while (a.ends.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   });
 });
 

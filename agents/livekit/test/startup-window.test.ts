@@ -12,6 +12,7 @@ import {
 import { dispose } from "@livekit/rtc-node";
 import { RealtimeModel } from "../plugins/ultravox/src/realtime/realtime_model.js";
 import {
+  fallbackConfigured,
   StartupWindow,
   startFailureFromError,
   watchStartup,
@@ -58,10 +59,13 @@ test("once closed, a failure is not a start failure", async () => {
   window.throwIfFailed();
 });
 
-test("the cap closes the window", async () => {
+test("the cap closes the window, counting from when the session starts", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const window = new StartupWindow(15_000);
+    mock.timers.tick(60_000);
+    assert.equal(window.open, true, "no countdown before the session starts");
+    window.beginCountdown();
     mock.timers.tick(14_999);
     assert.equal(window.open, true);
     mock.timers.tick(1);
@@ -71,6 +75,16 @@ test("the cap closes the window", async () => {
   } finally {
     mock.timers.reset();
   }
+});
+
+test("fallbackConfigured: only a configured step counts", () => {
+  assert.equal(fallbackConfigured(undefined), false);
+  assert.equal(fallbackConfigured({}), false);
+  assert.equal(fallbackConfigured({ fallback: {} }), false);
+  assert.equal(fallbackConfigured({ fallback: { model: "" } }), false);
+  assert.equal(fallbackConfigured({ fallback: { model: "livekit:openai/gpt-realtime" } }), true);
+  assert.equal(fallbackConfigured({ fallback: { message: { text: "Sorry" } } }), true);
+  assert.equal(fallbackConfigured({ fallback: { number: "+441234567890" } }), true);
 });
 
 test("startFailureFromError: recoverable errors are not start failures", () => {
