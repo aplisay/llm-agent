@@ -54,7 +54,7 @@ Failover is **only** triggered for failures while the agent is starting, within 
 
 - Unsupported model errors and other errors while building the agent (model, voice and tool set-up)
 - A concurrency limit refusal, which goes straight to the message step (see [Concurrency limits](#concurrency-limits))
-- The model provider refusing the session or failing to open it, for example an Ultravox call that cannot be created, or a Grok account at its concurrent-session limit
+- The model provider refusing the session or failing to open it, for example an Ultravox call that cannot be created, a refused OpenAI Realtime connection, or a Grok account at its concurrent-session limit. On Pipecat this covers Ultravox, OpenAI Realtime, Grok and GPT-Live; Gemini Live retries its own connection and is not covered
 - The model provider ending the session before the agent has spoken
 - Any other unrecoverable model, speech-to-text or text-to-speech error before the agent has spoken. On Pipecat this is a pipeline error that is fatal, or that leaves a service unable to work, such as a rejected API key
 - On LiveKit, the agent session not starting within 15 seconds
@@ -70,13 +70,16 @@ Failover is **not** triggered for:
 
 Each attempt, the first one and each fallback retry, has its own start-up window. It opens when the attempt starts the agent's session and closes when the agent first speaks, or 15 seconds later, whichever comes first. It also closes as soon as the call is handed to a transfer or to another agent.
 
+An attempt with no fallback step left to go to has no start-up window. That is an agent with no fallback configured, or the last attempt of a chain: for example the fallback model, when no message or number is set. A failure while such an attempt's session starts ends the call, as it always has. This matters because the window is stricter than the runtimes are on their own: the first unrecoverable model or text-to-speech error before the agent speaks fails the window, where a LiveKit session with nothing to fail over to tolerates a few.
+
 Most provider failures only show once the session is running. A realtime provider, for example, is contacted as the session starts, and its refusal arrives a moment later. By then the caller's line has been answered, so what happens next is different from a failure while the agent is being built:
 
 - **The caller hears a short silence** while the next fallback step starts on the same call. There is no ringing or re-dial.
 - **It is still one call.** The call keeps one record, one start time, one transcript and one debug log (InvocationLog) across all its attempts.
 - **The duration counts from when the call was answered**, including the failed attempt. Model usage by a failed attempt is not billed.
 - **The recording covers the attempt that runs the call.** Audio from a failed attempt is discarded.
-- **A call that is not rescued ends as a failure**, not as if the caller had hung up (`Original participant disconnected`) or the session had closed. On LiveKit the reason names the error, for example `Agent setup failed: Failed to create Ultravox call: 503 Service Unavailable`. On Pipecat it is `UNCAUGHT ERROR: running agent worker`, with the error in the call's debug log.
+- **If the caller has hung up by then, the chain stops** and the call ends. On LiveKit no further attempt starts; on Pipecat the next attempt sees the closed line straight away and ends the call.
+- **A call the fallback chain cannot rescue ends as a failure**, not as if the caller had hung up (`Original participant disconnected`) or the session had closed. On LiveKit the reason names the error, for example `Agent setup failed: Failed to create Ultravox call: 503 Service Unavailable`. On Pipecat it is `UNCAUGHT ERROR: running agent worker`, with the error in the call's debug log.
 
 An agent that waits for the caller to speak first may not speak within 15 seconds even when it is working, so for it the window ends on the time limit. A failure after that ends the call as before.
 
