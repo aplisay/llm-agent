@@ -3,6 +3,7 @@ import type { VAD } from "@livekit/agents";
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
 import logger, { getCaptureStats } from "./logger.js";
+import { sessionEventForLog, sessionModelsForLog } from "./log-fields.js";
 import { withTimeout } from "./utils.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
 import {
@@ -1168,7 +1169,7 @@ export async function runAgentWorker({
       },
     );
     s.on(voice.AgentSessionEventTypes.Error, (ev: voice.ErrorEvent) => {
-      logger.error({ ev }, "error (handover session)");
+      logger.error({ ev: sessionEventForLog(ev) }, "error (handover session)");
     });
     inactivityKick.attach(s);
     // Keep metering the post-handover session into the same usage accumulator.
@@ -1176,16 +1177,16 @@ export async function runAgentWorker({
     s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
       if (isStaleSession(s)) {
         logger.info(
-          { ev },
+          { ev: sessionEventForLog(ev) },
           "superseded session closed after handover; teardown suppressed",
         );
         return;
       }
       if (agentHandoverInProgress) {
-        logger.info({ ev }, "session closed during agent handover; teardown suppressed");
+        logger.info({ ev: sessionEventForLog(ev) }, "session closed during agent handover; teardown suppressed");
         return;
       }
-      logger.info({ ev }, "session closed");
+      logger.info({ ev: sessionEventForLog(ev) }, "session closed");
       void endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_CLOSED).catch(
         (transferError) => {
           logger.error(
@@ -1767,7 +1768,7 @@ export async function runAgentWorker({
             logger.debug({ ev, checkForHangup: checkForHangup(), roomName: room.name }, "agent state changed");
             sendMessage({ status: ev.newState });
             if (ev.newState === "listening" && checkForHangup() && room.name) {
-              logger.debug({ room }, "room close inititiated");
+              logger.debug({ roomName: room.name }, "room close inititiated");
               // End transfer activity if in progress (fire and forget)
               endTransferActivityIfNeeded(
                 DISCONNECT_REASONS.AGENT_INITIATED_HANGUP,
@@ -1785,7 +1786,7 @@ export async function runAgentWorker({
         session.on(
           voice.AgentSessionEventTypes.Error,
           (ev: voice.ErrorEvent) => {
-            logger.error({ ev }, "error");
+            logger.error({ ev: sessionEventForLog(ev) }, "error");
           },
         );
 
@@ -1873,7 +1874,7 @@ export async function runAgentWorker({
               // resolved. The replacement session owns the room and call; doing
               // teardown here would kill the live caller's continuation call.
               logger.info(
-                { ev },
+                { ev: sessionEventForLog(ev) },
                 "superseded session closed after handover; teardown suppressed",
               );
               return;
@@ -1882,12 +1883,12 @@ export async function runAgentWorker({
               // A full agent-stack handover is intentionally closing this
               // session; the replacement session owns the room and call now.
               logger.info(
-                { ev },
+                { ev: sessionEventForLog(ev) },
                 "session closed during agent handover; teardown suppressed",
               );
               return;
             }
-            logger.info({ ev }, "session closed");
+            logger.info({ ev: sessionEventForLog(ev) }, "session closed");
             // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
               DISCONNECT_REASONS.SESSION_CLOSED,
@@ -1940,7 +1941,7 @@ export async function runAgentWorker({
         callStarted = true;
         logger.debug({ call }, "concurrency reserved, starting session");
 
-        logger.info({ session }, "Starting session");
+        logger.info({ session: sessionModelsForLog(session) }, "Starting session");
         operation = "sessionStart";
         logger.info(
           { callId: call.id, record: recordingOptions?.enabled ?? false },
@@ -2017,18 +2018,18 @@ export async function runAgentWorker({
         (startupErrorUnsubscribe as (() => void) | null)?.();
         operation = "connect";
         await ctx.connect();
-        logger.info({ session }, "Connected to LiveKit");
+        logger.info({ session: sessionModelsForLog(session) }, "Connected to LiveKit");
       },
       15000,
       new Error("Call setup timeout (runAgentWorker)"),
       () =>
         logger.error(
-          { ctx, operation },
+          { jobId: ctx.job.id, operation },
           `info timeout during ${operation || "unknown"}`,
         ),
     );
 
-    logger.debug({ room }, "connected got room");
+    logger.debug({ roomName: room.name }, "connected got room");
 
     // Ultravox greetings run provider-side; other realtime models need generateReply when no TTS is present.
     // See PRs #166 and #336.
