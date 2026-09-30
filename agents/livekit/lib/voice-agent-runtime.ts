@@ -5,7 +5,12 @@ import { RoomEvent } from "@livekit/rtc-node";
 import logger, { getCaptureStats } from "./logger.js";
 import { sessionEventForLog, sessionModelsForLog } from "./log-fields.js";
 import { closeSessionBounded, withTimeout } from "./utils.js";
-import { START_WINDOW_MS, StartupWindow, watchStartup } from "./startup-window.js";
+import {
+  fallbackConfigured,
+  START_WINDOW_MS,
+  StartupWindow,
+  watchStartup,
+} from "./startup-window.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
 import {
   createCall,
@@ -94,6 +99,7 @@ export async function runAgentWorker({
   registerHangupExecutor,
   transferOnly = false,
   transferArgs,
+  failoverAvailable,
 }: RunAgentWorkerParams & {
   endTransferActivityIfNeeded: (reason: string) => Promise<void>;
   getTransferState: () => {
@@ -110,6 +116,9 @@ export async function runAgentWorker({
 }) {
   /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
   let useRecorderIO = false;
+  // Declared before the transfer-only branch, whose disconnect handler sets the reason.
+  let invocationLogPersisted = false;
+  let invocationLogReason: string | null = null;
 
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
@@ -295,6 +304,11 @@ export async function runAgentWorker({
   // over: every teardown path of this attempt must then do nothing.
   let attemptAbandoned = false;
   const startup = new StartupWindow();
+  if (!(failoverAvailable ?? fallbackConfigured(agent?.options))) {
+    // Nowhere to fail over to: failures end the call as they always did, and
+    // the SDK's own tolerance of model errors applies.
+    startup.close();
+  }
   // Guard to ensure RecorderIO finalization/upload runs only once per job
   let recorderFinalized = false;
   // Guard to make cleanupAndClose idempotent: the watchdog and the SDK's
@@ -356,9 +370,6 @@ export async function runAgentWorker({
   };
   const MAX_DTMF_DIGITS = 64;
   const DTMF_INTER_DIGIT_MS = 200;
-
-  let invocationLogPersisted = false;
-  let invocationLogReason: string | null = null;
 
   const finalizeRecorderRecording = async () => {
     if (!useRecorderIO || recorderFinalized) {
@@ -1957,6 +1968,7 @@ export async function runAgentWorker({
           "sessionStart with recording? enabled",
         );
         const tSessionStart = Date.now();
+        startup.beginCountdown();
         const sessionStarted = session
           .start({
             room: ctx.room,
@@ -2492,11 +2504,17 @@ export async function runAgentWorker({
       "error running agent worker",
     );
 
+    // This attempt is already ending the call, so there is nothing to rescue.
+    if (isCleaningUp) return;
+
     // A failure while starting goes back to the worker's fallback loop, which
-    // retries on the same room, so the call and room are left up here.
+    // retries on the same room, so the call and room are left up here. The
+    // window's failure is reported rather than whatever it led to (a setup
+    // timeout, a greeting error).
     if (!setupDone || startup.failure) {
+      const failure = startup.failure ?? error;
       abandonAttempt();
-      throw error;
+      throw failure;
     }
 
     await cleanupAndClose(DISCONNECT_REASONS.UNCAUGHT_ERROR_RUNNING_AGENT);

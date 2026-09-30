@@ -50,6 +50,7 @@ import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { runFallbackMessage } from "./fallback-message.js";
 import { releaseFailedAttemptSession } from "./primary-session.js";
+import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
 
 // Types
@@ -419,6 +420,17 @@ export default defineAgent({
       let activeModelName = modelName;
       let usedFallbackModel = false;
       let usedFallbackAgent = false;
+      // Mirrors the steps the catch below can still take.
+      const failoverAvailable = (): boolean => {
+        const f = activeAgent.options?.fallback;
+        return Boolean(
+          f &&
+            ((!usedFallbackAgent && f.agent && f.agent !== activeAgent.id) ||
+              (!usedFallbackModel && f.model && activeModelName !== f.model) ||
+              f.message ||
+              f.number),
+        );
+      };
 
       // Try primary and any configured model/agent fallbacks until we either succeed
       // or exhaust the configured options and fall back to a transfer/propagated error.
@@ -457,6 +469,7 @@ export default defineAgent({
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
+            failoverAvailable: failoverAvailable(),
           });
           // Successful run – break out of fallback loop
           break fallbackLoop;
@@ -480,6 +493,13 @@ export default defineAgent({
 
           // If there is no fallback configuration on the current agent, propagate the error
           if (!fallbackConfig) {
+            throw error;
+          }
+
+          // A caller who hung up during a failed start has no call left to rescue;
+          // a retry would run in an empty room until the watchdog noticed.
+          if (callerLeftRoom(ctx.room, participant)) {
+            logger.info({}, "caller left during the failed start; not running the fallback chain");
             throw error;
           }
 

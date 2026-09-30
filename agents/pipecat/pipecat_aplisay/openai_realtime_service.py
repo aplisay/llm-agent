@@ -9,11 +9,16 @@ This subclass follows ``grok_service.AplisayGrokRealtimeLLMService``. Each new
 developer or system context message goes out as a ``system`` conversation item
 and a response is requested. A replaced context (the in-place handover) starts
 a new server conversation.
+
+Like the Grok subclass it reports a session the provider ended, or never
+opened, through ``on_session_ended``: the stock service reports a failed
+connect, a server error and a closed socket only as ordinary errors, and each
+leaves it with no connection and no retry.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from loguru import logger
 from pipecat.frames.frames import LLMFullResponseEndFrame, TTSStoppedFrame
@@ -29,8 +34,15 @@ ACTIVE_RESPONSE_ERROR = "conversation_already_has_active_response"
 class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
     """``OpenAIRealtimeLLMService`` plus the platform's context injection."""
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
+        self._on_session_ended = on_session_ended
+        self._ended_reported = False
         # Context messages the server already has, in order (see _handle_context).
         self._seen_messages: list = []
         # Keypad digits pressed before the seed; sent after it (see inject_dtmf).
@@ -114,6 +126,38 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
         self._session_call_ids.add(evt.call_id)
         await super()._handle_evt_function_call_arguments_done(evt)
 
+    # ---- the provider ending the session ------------------------------------
+
+    async def _connect(self) -> None:
+        await super()._connect()
+        if self._websocket is None and not self._disconnecting:
+            await self._session_ended("connect failed")
+
+    async def _handle_evt_error(self, evt) -> None:  # noqa: ANN001
+        # The stock receive loop returns after an error: the session is over.
+        await super()._handle_evt_error(evt)
+        await self._session_ended(f"error: {getattr(evt.error, 'message', '')}")
+
+    async def _receive_task_handler(self) -> None:
+        # An abnormal close raises out of the loop rather than ending it.
+        try:
+            await super()._receive_task_handler()
+        finally:
+            if not self._disconnecting:
+                await self._session_ended("connection_closed")
+
+    async def _session_ended(self, reason: str) -> None:
+        if self._ended_reported or self._disconnecting or self._on_session_ended is None:
+            return
+        self._ended_reported = True
+        logger.bind(event="session_ended", reason=reason).warning(
+            f"OpenAI Realtime session ended by the provider ({reason})"
+        )
+        try:
+            await self._on_session_ended(reason)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"{self}: on_session_ended raised: {e}")
+
     # ---- conversation -----------------------------------------------------
 
     def _new_messages(self, messages: list) -> Optional[list]:
@@ -191,6 +235,7 @@ def build_openai_realtime_service(
     model: str,
     system_prompt: str,
     session_properties: Any,
+    on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> AplisayOpenAIRealtimeLLMService:
     """Construct the service for one session."""
     return AplisayOpenAIRealtimeLLMService(
@@ -200,4 +245,5 @@ def build_openai_realtime_service(
             system_instruction=system_prompt,
             session_properties=session_properties,
         ),
+        on_session_ended=on_session_ended,
     )

@@ -3,15 +3,22 @@ import { voice } from "@livekit/agents";
 /** Same budget as runAgentWorker's setup timeout. */
 export const START_WINDOW_MS = 15_000;
 
+/** Whether an agent has a fallback step, and so whether a start failure has anywhere to go. */
+export function fallbackConfigured(options: { fallback?: Record<string, unknown> } | undefined): boolean {
+  const fallback = options?.fallback;
+  return Boolean(fallback && (fallback.agent || fallback.model || fallback.message || fallback.number));
+}
+
 /**
  * One agent attempt's start-up window: a failure before the agent first speaks,
- * and within START_WINDOW_MS, sends the call down options.fallback instead of
- * ending it. See docs/agent-failover.md.
+ * within START_WINDOW_MS of the session starting, sends the call down
+ * options.fallback instead of ending it. See docs/agent-failover.md.
  */
 export class StartupWindow {
   #closed = false;
   #failure: Error | null = null;
-  #timer: NodeJS.Timeout | null;
+  #timer: NodeJS.Timeout | null = null;
+  readonly #capMs: number;
   #resolveSettled!: () => void;
   #rejectSettled!: (error: Error) => void;
   #rejectFailed!: (error: Error) => void;
@@ -32,7 +39,13 @@ export class StartupWindow {
     // Either may never be awaited, and an unobserved rejection would be reported as unhandled.
     this.settled.catch(() => {});
     this.failed.catch(() => {});
-    this.#timer = setTimeout(() => this.close(), capMs);
+    this.#capMs = capMs;
+  }
+
+  /** Starts the cap. Until then the window stays open. */
+  beginCountdown(): void {
+    if (this.#timer || !this.open) return;
+    this.#timer = setTimeout(() => this.close(), this.#capMs);
     this.#timer.unref?.();
   }
 
