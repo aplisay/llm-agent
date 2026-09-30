@@ -4,7 +4,8 @@ import type { RemoteParticipant, Room } from "@livekit/rtc-node";
 import { RoomEvent } from "@livekit/rtc-node";
 import logger, { getCaptureStats } from "./logger.js";
 import { sessionEventForLog, sessionModelsForLog } from "./log-fields.js";
-import { withTimeout } from "./utils.js";
+import { closeSessionBounded, withTimeout } from "./utils.js";
+import { START_WINDOW_MS, StartupWindow, watchStartup } from "./startup-window.js";
 import { uploadRecorderIOToGcs } from "./call-recording.js";
 import {
   createCall,
@@ -58,6 +59,9 @@ import {
   type OutputSttHandle,
 } from "./output-stt.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
+
+/** Numbers this job's attempts; a job process runs one job, so the highest is the current attempt. */
+let latestAttempt = 0;
 
 export async function runAgentWorker({
   ctx,
@@ -286,7 +290,11 @@ export async function runAgentWorker({
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
   let maxDuration: number = 305000; // Default value
-  let callStarted = false;
+  const attemptId = ++latestAttempt;
+  // Set when this attempt failed to start and the worker's fallback loop takes
+  // over: every teardown path of this attempt must then do nothing.
+  let attemptAbandoned = false;
+  const startup = new StartupWindow();
   // Guard to ensure RecorderIO finalization/upload runs only once per job
   let recorderFinalized = false;
   // Guard to make cleanupAndClose idempotent: the watchdog and the SDK's
@@ -509,6 +517,9 @@ export async function runAgentWorker({
 
   try {
     ctx.addShutdownCallback(async () => {
+      // Every attempt registers this callback. Only the latest one runs it, so a
+      // fallback retry saves one InvocationLog and uploads at most one recording.
+      if (attemptId !== latestAttempt) return;
       const reason = invocationLogReason || "shutdown";
       const captureStats = getCaptureStats();
       console.log(
@@ -522,7 +533,10 @@ export async function runAgentWorker({
         },
       );
 
-      await finalizeRecorderRecording();
+      // An abandoned attempt recorded only its failed start.
+      if (!attemptAbandoned) {
+        await finalizeRecorderRecording();
+      }
       console.log(
         "shutdown callback: recorder finalized, persisting InvocationLog",
         { reason },
@@ -745,11 +759,17 @@ export async function runAgentWorker({
     reason: string,
     logEndCall: boolean = false,
   ) => {
+    if (attemptAbandoned) {
+      logger.debug({ reason }, "cleanupAndClose: attempt abandoned for the fallback chain, skipping");
+      return;
+    }
     if (isCleaningUp) {
       logger.debug({ reason }, "cleanupAndClose: already in progress, skipping");
       return;
     }
     isCleaningUp = true;
+    // A call being torn down is not starting any more.
+    startup.close();
 
     // The call is coming down: no bridged human→agent takeover can start now.
     registerBridgedTakeover?.(null);
@@ -1035,8 +1055,50 @@ export async function runAgentWorker({
     handoverInProgress: () => agentHandoverInProgress,
     isBridged: () => Boolean(getBridgedParticipant()),
     consultInProgress: () => getConsultInProgress(),
-    endCall: () => cleanupAndClose(DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED),
+    endCall: (info?: unknown) => {
+      // Before the agent has spoken this is a start failure, for the fallback chain.
+      const reason = (info as { reason?: string } | undefined)?.reason;
+      if (
+        attemptAbandoned ||
+        startup.fail(
+          new Error(
+            `realtime provider ended the session during start-up${reason ? `: ${reason}` : ""}`,
+          ),
+        )
+      ) {
+        return Promise.resolve();
+      }
+      return cleanupAndClose(DISCONNECT_REASONS.REALTIME_PROVIDER_ENDED);
+    },
   });
+
+  /**
+   * Makes this attempt inert once it has failed to start, before the worker
+   * releases its session and runs the fallback chain on the same room.
+   */
+  const abandonAttempt = () => {
+    if (attemptAbandoned) return;
+    attemptAbandoned = true;
+    startup.close();
+    registerBridgedTakeover?.(null);
+    registerHangupExecutor?.(null);
+    clearHangupTimer();
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+    if (dtmfTimeout) {
+      clearTimeout(dtmfTimeout);
+      dtmfTimeout = null;
+    }
+    if (watchdogInterval) {
+      clearInterval(watchdogInterval);
+      watchdogInterval = null;
+    }
+    inactivityKick.stop();
+    void disposeAuxStt();
+    void disposeOutputStt();
+  };
 
   /**
    * Compose the incoming agent's system prompt for a handover: its own prompt
@@ -1260,6 +1322,8 @@ export async function runAgentWorker({
       },
     })) as Call;
     await newCall.start();
+    // The call is committed to the incoming agent, so a later failure is not a start failure.
+    startup.close();
     // Stop here, not at the session swap: a takeover's onReserved clears the
     // bridge that keeps the outgoing agent's prompts silent.
     inactivityKick.stop();
@@ -1516,6 +1580,7 @@ export async function runAgentWorker({
       sendMessage({
         inject: `Call transferred to agent ${newAgentDef.name || targetAgentId}`,
       });
+      startup.close();
       // Arm the incoming session last so a failed handover cannot leave a primary mark on the shared model. See PR #342.
       if (onUltravox && !markNextSessionPrimary(session?.llm)) {
         logger.warn(
@@ -1607,7 +1672,11 @@ export async function runAgentWorker({
       sendMessage,
       metadata,
       onHangup,
-      onTransfer,
+      // A transfer commits the call elsewhere, so a later failure is not a start failure.
+      onTransfer: (params) => {
+        startup.close();
+        return onTransfer(params);
+      },
       getTransferState,
       onAgentTransfer,
       onSendDtmf,
@@ -1652,6 +1721,7 @@ export async function runAgentWorker({
     },
   });
 
+  let setupDone = false;
   try {
     // Wrap setup operations with timeout
     await withTimeout(
@@ -1706,6 +1776,11 @@ export async function runAgentWorker({
         // full-stack handover replaces `session`, their late events must be
         // ignored (see isStaleSession).
         const setupSession = builtSession;
+
+        // Registered before the Close handler below, so a close with reason
+        // "error" during start-up has failed the window by the time that runs.
+        const unwatchStartup = watchStartup(setupSession, startup);
+        startup.settled.then(unwatchStartup, unwatchStartup);
 
         // Listen on all the things for now (debug)
         Object.keys(voice.AgentSessionEventTypes).forEach((event) => {
@@ -1787,77 +1862,6 @@ export async function runAgentWorker({
         // Re-arm provider-end handling after each handover; the active model belongs to the session. See PR #342.
         providerEnded.arm(setupSession, { callId: call.id, modelName });
 
-        // Watch for any non-recoverable model/STT/TTS errors that occur while
-        // the session is still starting. If we see one before callStarted is
-        // set, we treat it as a setup failure so the outer fallback loop can
-        // switch models/agents or perform a transfer.
-        let startupErrorUnsubscribe: (() => void) | null = null;
-        const startupErrorPromise = new Promise<never>((_, reject) => {
-          const sessionForStartup = session;
-          if (!sessionForStartup) {
-            // Should not happen, but fail fast if it does.
-            reject(
-              new Error(
-                "Agent session not available during startup error monitoring",
-              ),
-            );
-            return;
-          }
-
-          const handler = (ev: voice.ErrorEvent) => {
-            // If the call has already been marked as started, this is a
-            // runtime error and should not influence startup / fallback logic.
-            if (callStarted) {
-              return;
-            }
-
-            const errAny: any = ev.error;
-            const errType = errAny?.type;
-            const isRealtimeModelError = errType === "realtime_model_error";
-            const isRecoverable = !!errAny?.recoverable;
-
-            // Ignore explicitly recoverable realtime model errors during startup.
-            if (isRealtimeModelError && isRecoverable) {
-              return;
-            }
-
-            // For any other error type (or non‑recoverable realtime model
-            // error), treat this as a fatal startup failure.
-            if (startupErrorUnsubscribe) {
-              startupErrorUnsubscribe();
-            }
-
-            const underlyingError: Error =
-              isRealtimeModelError && errAny?.error instanceof Error
-                ? errAny.error
-                : errAny instanceof Error
-                  ? errAny
-                  : new Error(
-                      String(
-                        errAny?.message ||
-                          "Agent session startup error (realtime model / STT / TTS)",
-                      ),
-                    );
-
-            reject(underlyingError);
-          };
-
-          sessionForStartup.on(
-            voice.AgentSessionEventTypes.Error,
-            handler as any,
-          );
-          startupErrorUnsubscribe = () => {
-            const unsubscribeSession = sessionForStartup;
-            if (unsubscribeSession) {
-              unsubscribeSession.off(
-                voice.AgentSessionEventTypes.Error,
-                handler as any,
-              );
-            }
-            startupErrorUnsubscribe = null;
-          };
-        });
-
         session.on(
           voice.AgentSessionEventTypes.Close,
           (ev: voice.CloseEvent) => {
@@ -1882,7 +1886,16 @@ export async function runAgentWorker({
               );
               return;
             }
+            if (attemptAbandoned || startup.failure) {
+              // The worker's fallback loop owns the call and room now.
+              logger.info(
+                { ev: sessionEventForLog(ev) },
+                "session closed after a failed start; teardown left to the fallback chain",
+              );
+              return;
+            }
             logger.info({ ev: sessionEventForLog(ev) }, "session closed");
+            startup.close();
             // Fire-and-forget transfer activity teardown so this listener stays synchronous.
             void endTransferActivityIfNeeded(
               DISCONNECT_REASONS.SESSION_CLOSED,
@@ -1932,7 +1945,9 @@ export async function runAgentWorker({
           { ms: Date.now() - tCallStart, callId: call.id },
           "timing: call.start done",
         );
-        callStarted = true;
+        // withTimeout does not cancel this setup: if the attempt was given up
+        // while call.start() ran, a retry may already be starting its own session.
+        if (attemptAbandoned) return;
         logger.debug({ call }, "concurrency reserved, starting session");
 
         logger.info({ session: sessionModelsForLog(session) }, "Starting session");
@@ -1942,8 +1957,8 @@ export async function runAgentWorker({
           "sessionStart with recording? enabled",
         );
         const tSessionStart = Date.now();
-        await Promise.race([
-          session.start({
+        const sessionStarted = session
+          .start({
             room: ctx.room,
             agent: model,
             record: recordingOptions?.enabled ?? false,
@@ -1957,9 +1972,17 @@ export async function runAgentWorker({
             // participant.sid / bridged-participant identity) failed to fire,
             // causing concurrent session counts to climb over time.
             inputOptions: { closeOnDisconnect: true },
-          }),
-          startupErrorPromise,
-        ]);
+          })
+          .then(async () => {
+            // Given up while start() ran: close the session rather than leave it live beside the retry.
+            if (attemptAbandoned) {
+              await closeSessionBounded(setupSession, 8_000);
+            }
+          });
+        // Observed here because the race below may already have settled on a start failure.
+        sessionStarted.catch(() => {});
+        await Promise.race([sessionStarted, startup.failed]);
+        if (attemptAbandoned) return;
         logger.info(
           { ms: Date.now() - tSessionStart, callId: call.id, voiceMode: resolvedVoiceMode },
           "timing: session.start done",
@@ -2007,14 +2030,11 @@ export async function runAgentWorker({
           }
         }, WATCHDOG_INTERVAL_MS);
 
-        // Once startup has succeeded, we no longer need the startup-specific
-        // error watcher; subsequent errors are treated as runtime failures.
-        (startupErrorUnsubscribe as (() => void) | null)?.();
         operation = "connect";
         await ctx.connect();
         logger.info({ session: sessionModelsForLog(session) }, "Connected to LiveKit");
       },
-      15000,
+      START_WINDOW_MS,
       new Error("Call setup timeout (runAgentWorker)"),
       () =>
         logger.error(
@@ -2022,8 +2042,13 @@ export async function runAgentWorker({
           `info timeout during ${operation || "unknown"}`,
         ),
     );
+    setupDone = true;
 
     logger.debug({ roomName: room.name }, "connected got room");
+
+    // A session that dies during start-up can leave a greeting await pending for good.
+    const unlessStartFails = <T>(step: Promise<T>): Promise<T> =>
+      Promise.race([step, startup.failed]);
 
     // Ultravox greetings run provider-side; other realtime models need generateReply when no TTS is present.
     // See PRs #166 and #336.
@@ -2118,16 +2143,16 @@ export async function runAgentWorker({
             textOutput: resolvedTextOutput,
           });
           if (waitForPlayout && handle?.waitForPlayout) {
-            await handle.waitForPlayout();
+            await unlessStartFails(handle.waitForPlayout());
           }
           // `SpeechHandle.waitForPlayout()` can resolve before the audio sink finishes playing out.
           // Ensure the audio output has fully drained before proceeding.
           const audioOut = (session as any).output?.audio;
           if (waitForPlayout && audioOut?.waitForPlayout) {
-            await audioOut.waitForPlayout();
+            await unlessStartFails(audioOut.waitForPlayout());
           }
         } else if (instructions) {
-          const handle = await (session as any).generateReply(
+          const handle = await unlessStartFails<any>((session as any).generateReply(
             voiceMode === "pipeline"
               ? {
                   // Pipeline `generateReply({ instructions })` is not consistently honored by all LLM adapters.
@@ -2144,13 +2169,13 @@ export async function runAgentWorker({
                   instructions,
                   // See note above about OpenAI realtime: inherit session default instead of forcing.
                 },
-          );
+          ));
           if (waitForPlayout && handle?.waitForPlayout) {
-            await handle.waitForPlayout();
+            await unlessStartFails(handle.waitForPlayout());
           }
           const audioOut = (session as any).output?.audio;
           if (waitForPlayout && audioOut?.waitForPlayout) {
-            await audioOut.waitForPlayout();
+            await unlessStartFails(audioOut.waitForPlayout());
           }
         }
 
@@ -2171,8 +2196,10 @@ export async function runAgentWorker({
         );
       }
     } catch (e) {
+      if (startup.failure) throw e;
       logger.warn({ e }, "opening greeting failed; continuing");
     }
+    startup.throwIfFailed();
 
     const flushDtmfBuffer = () => {
       if (dtmfBuffer.length > 0 && session) {
@@ -2206,6 +2233,7 @@ export async function runAgentWorker({
     };
 
     ctx.room.on(RoomEvent.DtmfReceived, async (code, digit, participant) => {
+      if (attemptAbandoned) return;
       logger.debug(
         {
           identity: participant.identity,
@@ -2253,6 +2281,7 @@ export async function runAgentWorker({
     ctx.room.on(
       RoomEvent.ParticipantDisconnected,
       async (p: RemoteParticipant) => {
+        if (attemptAbandoned) return;
         const bp = getBridgedParticipant();
         // Logged at info so disconnect decisions are always visible — debug
         // was previously hiding silent-drop bugs in production.
@@ -2449,7 +2478,13 @@ export async function runAgentWorker({
 
     logger.debug("session started, generating reply");
 
-    sendMessage({ call: `${callerId} => ${calledId}` });
+    // Logged once the window settles, so an attempt the fallback chain replaces
+    // does not add a second entry; stamped with the time it used to be logged.
+    const connectedAt = new Date();
+    await startup.settled;
+    if (!isCleaningUp) {
+      sendMessage({ call: `${callerId} => ${calledId}` }, connectedAt);
+    }
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
     logger.error(
@@ -2457,11 +2492,10 @@ export async function runAgentWorker({
       "error running agent worker",
     );
 
-    // If the call has not yet started, treat this as a setup failure and let the
-    // caller decide whether to invoke fallback behaviour. We deliberately do NOT
-    // clean up the call/room here so that the outer loop can retry with a different
-    // model/agent on the same LiveKit room.
-    if (!callStarted) {
+    // A failure while starting goes back to the worker's fallback loop, which
+    // retries on the same room, so the call and room are left up here.
+    if (!setupDone || startup.failure) {
+      abandonAttempt();
       throw error;
     }
 

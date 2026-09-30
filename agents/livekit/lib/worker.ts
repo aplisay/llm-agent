@@ -400,7 +400,8 @@ export default defineAgent({
        *
        * Behaviour:
        *  - First attempt runs with the primary modelName from the agent.
-       *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
+       *  - On a start failure from runAgentWorker (setup, the setup timeout, or a
+       *    session failure before the agent first speaks; see startup-window.ts),
        *    we consult the current agent's options.fallback with precedence:
        *      1. fallback.agent   – fetch and substitute a different agent, then retry.
        *      2. fallback.model   – retry the same agent with a different modelName.
@@ -421,10 +422,7 @@ export default defineAgent({
 
       // Try primary and any configured model/agent fallbacks until we either succeed
       // or exhaust the configured options and fall back to a transfer/propagated error.
-      fallbackLoop: for (let attempt = 0; ; attempt++) {
-        if (attempt > 0) {
-          await releaseFailedAttemptSession(ctx, sessionRef(null));
-        }
+      fallbackLoop: for (;;) {
         const fallbackConfig = activeAgent.options?.fallback;
 
         const activeRecordingOptions =
@@ -472,6 +470,13 @@ export default defineAgent({
             { error, message: error.message, busy, fallbackConfig },
             "runAgentWorker failed, evaluating fallback options",
           );
+
+          // Before every fallback step, not only a retry: a session that started
+          // (and answered the caller) must not stay live while the message or
+          // number step uses the same room.
+          await releaseFailedAttemptSession(ctx, sessionRef(null));
+          session = null;
+          model = null;
 
           // If there is no fallback configuration on the current agent, propagate the error
           if (!fallbackConfig) {
@@ -672,7 +677,7 @@ export default defineAgent({
         try {
           if (recordedCall && !recordedCall._endCalled) {
             await recordedCall.end(
-              `Agent setup failed: ${(e as Error).message}`,
+              `Agent setup failed: ${endReasonFrom(e)}`,
             );
           }
         } catch (endErr) {
@@ -744,6 +749,16 @@ export default defineAgent({
 });
 
 // ---- Helpers ----
+
+/**
+ * The first line of an error, capped. It becomes the call's hangup entry and the
+ * call hook's reason, and some provider errors append their whole request (the
+ * Ultravox /calls body carries the system prompt).
+ */
+function endReasonFrom(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  return message.split("\n", 1)[0].slice(0, 300);
+}
 
 /**
  * Collect every X- header from an inbound SIP INVITE into a
