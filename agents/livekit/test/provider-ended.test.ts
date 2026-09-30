@@ -20,6 +20,7 @@ process.env.OPENAI_API_KEY ||= "test-key";
 
 const ULTRAVOX = "livekit:ultravox/ultravox-v0.7";
 const OPENAI = "livekit:openai/gpt-realtime";
+const GEMINI = "livekit:google/gemini-2.0-flash-exp";
 
 /** An AgentSession as the runtime builds it. */
 const agentSession = (modelName = ULTRAVOX) =>
@@ -151,11 +152,20 @@ test("consult leg: its session never ends the call, even with a handover mark le
 
 test("a model that does not report provider-ended: nothing is armed or marked", () => {
   const { teardown } = startCall();
-  const openai = agentSession(OPENAI);
-  assert.equal(teardown.arm(openai, { callId: "call-1", modelName: OPENAI }), false);
+  const gemini = agentSession(GEMINI);
+  assert.equal(teardown.arm(gemini, { callId: "call-1", modelName: GEMINI }), false);
   assert.equal(teardown.arm({}, { callId: "call-1", modelName: "none" }), false);
-  assert.equal(markNextSessionPrimary(openai.llm), false);
+  assert.equal(markNextSessionPrimary(gemini.llm), false);
   assert.equal(markNextSessionPrimary(undefined), false);
-  clearNextSessionPrimary(openai.llm);
+  clearNextSessionPrimary(gemini.llm);
   clearNextSessionPrimary(undefined);
+});
+
+test("openai: armed, with no mark to move, since the SDK keeps its session across an in-place handover", () => {
+  // The hook's behaviour on OpenAI is covered in openai-realtime-connect.test.ts.
+  const { teardown } = startCall();
+  const openai = agentSession(OPENAI);
+  assert.equal(teardown.arm(openai, { callId: "call-1", modelName: OPENAI }), true);
+  assert.equal(markNextSessionPrimary(openai.llm), false);
+  clearNextSessionPrimary(openai.llm);
 });
