@@ -136,7 +136,7 @@ export class OpenAIRealtimeModel extends openai.realtime.RealtimeModel {
     return session;
   }
 
-  /** The runtime logs this as the `source` of each AgentSession error event: keep its options out. */
+  /** What a log line gets if the model is ever logged whole: never its options. */
   toJSON(): { label: string; model: string; provider: string } {
     return { label: this.label(), model: this.model, provider: this.provider };
   }

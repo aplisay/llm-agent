@@ -13,6 +13,7 @@ import {
 
 // Internal modules
 import logger from "./logger.js";
+import { agentForLog, instanceForLog } from "./log-fields.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
@@ -136,7 +137,7 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const job = ctx.job;
     const room = job.room as unknown as Room;
-    logger.info({ ctx, job, room }, "new call");
+    logger.info({ job, room }, "new call");
 
     // Simulate standard Agents job environment so RecorderIO can write audio.ogg.
     // The SDK reads sessionDirectory from getJobContext().sessionDirectory (getter backed by _sessionDirectory).
@@ -889,13 +890,13 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       async () => {
         if (outbound) {
           if (!calledId || !callerId || !instanceId) {
-            logger.error({ ctx, calledId, callerId, aplisayId, instanceId }, "missing metadata for outbound call");
+            logger.error({ jobId: ctx.job.id, calledId, callerId, aplisayId, instanceId }, "missing metadata for outbound call");
             throw new Error("Missing metadata for outbound call");
           }
           instance = await getInstanceById(instanceId);
           if (!instance) {
             logger.error(
-              { ctx },
+              { jobId: ctx.job.id },
               `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`,
             );
             throw new Error("No instance found for outbound call");
@@ -1019,7 +1020,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
           if (identity) {
             logger.debug({ identity }, "getting instance by identity");
             instance = await getInstanceById(identity);
-            logger.debug({ instance }, "instance found?");
+            logger.debug({ instance: instanceForLog(instance) }, "instance found?");
           } else if (room.name && participant?.attributes) {
             logger.debug(
               { participants, attributes: participant.attributes },
@@ -1153,7 +1154,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
                 if (regInfo.instanceId) {
                   instance = await getInstanceById(regInfo.instanceId);
                   logger.info(
-                    { instanceId: regInfo.instanceId, instance },
+                    { instanceId: regInfo.instanceId, instance: instanceForLog(instance) },
                     "found instance from registration instanceId",
                   );
                 }
@@ -1202,7 +1203,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
       },
       5000,
       new Error("Call setup timeout (getCallInfo)"),
-      () => logger.error({ ctx }, "info timeout"),
+      () => logger.error({ jobId: ctx.job.id }, "info timeout"),
     );
   } catch (e) {
     logger.error({ e }, "error getting call info");
@@ -1370,7 +1371,7 @@ async function setupCallAndUtilities({
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
   const { fallback: { number: fallbackNumbers } = {} } = options || {};
   logger.info(
-    { agent, instance, aplisayId, calledId, callerId, ctx, room },
+    { agent: agentForLog(agent), instance: instanceForLog(instance), aplisayId, calledId, callerId, room },
     "new room instance",
   );
 
