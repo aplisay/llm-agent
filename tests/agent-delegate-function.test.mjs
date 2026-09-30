@@ -99,8 +99,8 @@ describe('delegate builtin validation', () => {
   };
   const errorText = (res) => (Array.isArray(res.body) ? res.body.join('; ') : `${res.body?.message ?? JSON.stringify(res.body)}`);
 
-  test('accepts one delegate targeting a text agent on a GPT-Live row', async () => {
-    const res = await create({ modelName: GPT_LIVE, functions: [delegateFunction(textAgent.id)] });
+  test.each([GPT_LIVE, 'livekit:openai/gpt-live-1'])('accepts one delegate targeting a text agent on %s', async (modelName) => {
+    const res = await create({ modelName, functions: [delegateFunction(textAgent.id)] });
     expect(res.statusCode).toBe(200);
     expect(res.body.id).toBeDefined();
   });

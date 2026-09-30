@@ -14,6 +14,7 @@ import {
 } from "./tool-loop-breaker.js";
 import { functionHandler } from "../agent-lib/function-handler.js";
 import { invokeSubagent } from "./api-client.js";
+import { isDelegateFunction } from "./gpt-live.js";
 import type { Agent, AgentFunction, Call, CallMetadata } from "./api-client.js";
 import type {
   MessageData,
@@ -115,7 +116,8 @@ export function createTools({
   let toolLoopKilled = false;
 
   return new llm.ToolContext(
-    (functions || []).reduce(
+    // A `delegate` builtin names a GPT-Live backend (gpt-live.ts); nothing ever calls it.
+    (functions || []).filter((fnc) => !isDelegateFunction(fnc)).reduce(
       (acc: Record<string, llm.AnonFunctionTool>, fnc: AgentFunction) => ({
         ...acc,
         [fnc.name]: llm.tool({

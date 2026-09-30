@@ -11,7 +11,7 @@
  * `externalTts` row flag in livekit-model-registry.ts. Keep them in step.
  */
 import type { Agent } from "./api-client.js";
-import { isLivekitPipelineModelId } from "./livekit-model-registry.js";
+import { isLivekitPipelineModelId, livekitModelIdFlags } from "./livekit-model-registry.js";
 import { livekitModelIdFromName } from "./voice-mode.js";
 
 /**
@@ -73,5 +73,7 @@ export function textOutputEnabled(agent: Agent | null | undefined, modelName: st
   // A pipeline row's TTS is always a discrete stage; the rule is for realtime rows.
   if (isLivekitPipelineModelId(livekitModelIdFromName(modelName))) return false;
   if (!TEXT_OUTPUT_PLUGINS.has(realtimePlugin(modelName))) return false;
+  // A row can opt out of its plugin's text output: GPT-Live has no text-only modality.
+  if (livekitModelIdFlags[livekitModelIdFromName(modelName)]?.externalTts === false) return false;
   return externalTtsVendor(agent, modelName) !== undefined;
 }

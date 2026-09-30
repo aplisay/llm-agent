@@ -3,14 +3,15 @@
 GPT-Live (`gpt-live-1`) is OpenAI's full-duplex voice model. It listens and
 speaks at the same time, decides its own turns and barge-in, and hands
 reasoning and tool use to a separate backend model while it keeps talking.
-The platform offers it as the realtime row `pipecat:openai/gpt-live-1`.
+The platform offers it as two realtime rows, `pipecat:openai/gpt-live-1` and
+`livekit:openai/gpt-live-1`. They behave the same except where
+[On the LiveKit worker](#on-the-livekit-worker) says otherwise.
 
 This page covers how to configure an agent on it, how the backend is
 expressed, and how that relates to the text subagents the platform already
 has. A worked guide that builds a complete set step by step, keeps specialist
 subagents and switches the backend between providers is
-[gpt-live-agent-sets.md](gpt-live-agent-sets.md). The LiveKit row
-(`livekit:openai/gpt-live-1`) follows when the upstream LiveKit plugin ships.
+[gpt-live-agent-sets.md](gpt-live-agent-sets.md).
 
 ## Two layers, two agents
 
@@ -28,7 +29,7 @@ answer when it arrives.
 
 The platform maps the two layers onto two agents:
 
-- The **voice agent** is the agent on `pipecat:openai/gpt-live-1`. Its
+- The **voice agent** is the agent on a GPT-Live row. Its
   `prompt` is the voice persona: who it is, how it speaks, when to delegate.
 - The **backend** is a `text` agent, named by one builtin function with
   `platform: "delegate"` on the voice agent. Its `prompt` is the backend
@@ -109,7 +110,7 @@ Rules the API enforces when the agent is saved:
 A GPT-Live agent with no `delegate` function still works. The platform
 synthesises the backend from the voice agent itself: the same prompt, the
 agent's own functions, MCP servers and builtins, on `openai/gpt-5.6-luna`.
-An existing agent moved onto `pipecat:openai/gpt-live-1` runs unchanged.
+An existing agent moved onto a GPT-Live row runs unchanged.
 Declare a `delegate` when you want a different model, a different prompt, or
 tools and keys that belong to the backend rather than the voice agent.
 
@@ -140,9 +141,9 @@ The delegate's `modelName` picks the mode. It is fixed for the session.
 
 **OpenAI-hosted (responses) delegation**, for `text:openai/*` delegates. OpenAI
 runs the backend model. The backend's function calls come back to the
-Pipecat worker, which executes them with the owning agent's keys and returns
-the results, so REST functions, MCP tools and the call-control builtins all
-work. This is the mode of the synthetic backend too.
+worker, which executes them with the owning agent's keys and returns the
+results, so REST functions, MCP tools (Pipecat only) and the call-control
+builtins all work. This is the mode of the synthetic backend too.
 
 **Client delegation**, for any other text model (Anthropic, Gemini, Kimi,
 OpenRouter, DeepSeek). Each delegation becomes a synthetic subagent call
@@ -238,7 +239,7 @@ being talked over itself, and a delegation keeps running while it does.
 
 ## Voices
 
-`GET /models/pipecat:openai/gpt-live-1/voices/any` lists the GPT-Live voices
+`GET /models/pipecat:openai/gpt-live-1/voices/any` (or the `livekit:` row) lists the GPT-Live voices
 under the `OpenAI` vendor: alloy, ash, ballad, beacon, bossa, cedar, cinder,
 coral, delta, echo, gleam, marin, meridian, quartz, ripple, sage, shimmer,
 stone, tempo, verse, vesper and willow. The default is `marin`. The list
@@ -413,8 +414,9 @@ or conversational quality.
 ## Usage and billing
 
 GPT-Live is billed per minute of session, like Ultravox. The minutes land on
-the call's `voice` row and are priced by the model's minute line
-(`model:pipecat:openai/gpt-live-1` in the rate-component catalogue). The
+the call's `voice` row and are priced by the row's minute line
+(`model:pipecat:openai/gpt-live-1` or `model:livekit:openai/gpt-live-1` in
+the rate-component catalogue). The
 backend's tokens are metered as `llm` rows against the delegate's model, so
 the existing token line for that text model prices them. In client
 delegation the tokens are attributed to the call by the subagent endpoint,
@@ -432,5 +434,21 @@ as for a `subagent` call today.
 - Concurrent session limits apply per OpenAI project tier.
 - A session the provider closes (expiry, a content policy close, a lost
   connection) ends the call cleanly with that reason.
-- The Pipecat worker's `OPENAI_API_KEY` must belong to a project with
-  GPT-Live access.
+- The worker's `OPENAI_API_KEY` must belong to a project with GPT-Live
+  access.
+
+## On the LiveKit worker
+
+`livekit:openai/gpt-live-1` differs from the Pipecat row in these ways:
+
+- **No MCP tools.** The LiveKit worker connects no MCP servers, so the
+  backend has the agents' functions and builtins only. A client-delegation
+  delegate runs on the platform and keeps its own MCP servers.
+- **Keypad digits** reach the voice model as typed input, which it passes on
+  when it delegates. They are not sent to the backend directly.
+- **Handover history.** With `includeHistory`, the transcript is carried in
+  the incoming agent's instructions rather than as startup history.
+- **No transcript TTS.** `options.tts.experimentalTranscript` is Pipecat
+  only.
+- **Barge-in.** The model stops talking when interrupted; audio already
+  queued plays out, as there is no VAD to stop it early.

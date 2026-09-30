@@ -858,7 +858,7 @@ components:
             indefinitely. Set `hangup` to end the call once the prompt has gone unanswered three
             times.
 
-            On GPT-Live (`pipecat:openai/gpt-live-1`) the prompt is delivered to the voice model as
+            On GPT-Live (`pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1`) the prompt is delivered to the voice model as
             spoken context, so it is paraphrased rather than read verbatim; timing, repeat count and
             `hangup` are unchanged.
 
@@ -1154,7 +1154,7 @@ components:
               }
               ```
             
-            `openai.live`: on a GPT-Live row (`pipecat:openai/gpt-live-1`) a free-form object merged into the
+            `openai.live`: on a GPT-Live row (`pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1`) a free-form object merged into the
             Live API `session.start` configuration after the platform's own mapping, so an explicit value here
             wins. Use it for fields the portable options do not cover, for example `store`, a custom voice id
             under `audio.output.voice`, `delegation.responses.model`, `service_tier`, `parallel_tool_calls`,
@@ -1213,7 +1213,7 @@ components:
         Note for LiveKit OpenAI realtime (`livekit:openai/...`):
           - Even with `text`, speech is produced through the realtime model; treat it as best-effort verbatim, not a guaranteed "speak exactly these characters" primitive.
 
-        Note for GPT-Live (`pipecat:openai/gpt-live-1`):
+        Note for GPT-Live (`pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1`):
           - The greeting is an opening instruction appended to the live session after it starts; the model
             paraphrases rather than reads, so `text` is best-effort wording. Caller audio is still dropped
             until the model's first turn completes. Without a greeting the platform asks the model to greet
@@ -1398,7 +1398,7 @@ components:
             description: >
                 For `builtin` functions, this is the name of a platform function as defined in the platform. The following platform functions are currently available:
                   * `delegate` names the backend of a two-layer voice model (models flagged `hasDelegation` in
-                    GET /models, today `pipecat:openai/gpt-live-1`). The voice model holds the conversation; the
+                    GET /models: `pipecat:openai/gpt-live-1` and `livekit:openai/gpt-live-1`). The voice model holds the conversation; the
                     named `text` agent is the backend that reasons and calls tools while the voice model keeps
                     talking. The text agent's prompt becomes the backend instructions, its `modelName` the backend
                     model, its `functions`, `mcpServers` and `keys` the backend tools, `options.effort` the

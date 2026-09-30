@@ -3,9 +3,22 @@
  * Emitted to `dist/lib/` by tsup/tsc; `lib/models/livekit.js` imports that output.
  */
 
+/**
+ * Per-row flag overrides, merged over the vendor's defaults. Same shape as the Pipecat rows'
+ * fourth element in lib/models/pipecat.js.
+ */
+interface RowFlags {
+  externalTts?: boolean;
+  delegation?: boolean;
+}
+
 /** Speech-to-speech (builtin STT/TTS in the realtime model). */
-export const LIVEKIT_REALTIME_MODEL_ROWS = [
+export const LIVEKIT_REALTIME_MODEL_ROWS: ReadonlyArray<
+  readonly [vendor: string, name: string, description: string, flags?: RowFlags]
+> = [
   ["openai", "gpt-realtime", "OpenAI (Livekit realtime)"],
+  // A full-duplex voice model with a text backend; see lib/gpt-live.ts and docs/gpt-live.md.
+  ["openai", "gpt-live-1", "OpenAI GPT-Live (Livekit realtime)", { externalTts: false, delegation: true }],
   ["ultravox", "ultravox-70b", "Ultravox 70B (Livekit realtime)"],
   ["ultravox", "ultravox-v0.6", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.6-gemma3-27b", "Ultravox 0.6 (Livekit realtime)"],
@@ -67,17 +80,26 @@ const realtimeFlag = {
  * API still serves accepts a TEXT response modality.
  */
 const EXTERNAL_TTS_PLUGINS: ReadonlySet<string> = new Set(["ultravox", "openai"]);
-const realtimeFlagsFor = (vendor: string) =>
-  EXTERNAL_TTS_PLUGINS.has(vendor) ? { ...realtimeFlag, externalTts: true as const } : realtimeFlag;
+const realtimeFlagsFor = (vendor: string, overrides?: RowFlags) => ({
+  ...realtimeFlag,
+  ...(EXTERNAL_TTS_PLUGINS.has(vendor) ? { externalTts: true } : {}),
+  ...overrides,
+});
 
 /**
  * Map of `provider/modelId` (segment after `livekit:`) -> flags for routing (realtime vs pipeline).
  */
 export const livekitModelIdFlags: Record<
   string,
-  { voiceStack: "pipeline" | "realtime"; audioModel: boolean; pipeline: boolean; externalTts?: boolean }
+  {
+    voiceStack: "pipeline" | "realtime";
+    audioModel: boolean;
+    pipeline: boolean;
+    externalTts?: boolean;
+    delegation?: boolean;
+  }
 > = Object.fromEntries([
-  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, realtimeFlagsFor(a)]),
+  ...LIVEKIT_REALTIME_MODEL_ROWS.map(([a, b, , flags]) => [`${a}/${b}`, realtimeFlagsFor(a, flags)]),
   ...LIVEKIT_PIPELINE_MODEL_ROWS.map(([a, b]) => [`${a}/${b}`, pipelineFlag]),
 ]);
 
@@ -90,6 +112,11 @@ export function livekitModelSupportsExternalTts(modelId: string): boolean {
   return livekitModelIdFlags[modelId]?.externalTts === true;
 }
 
+/** The row takes a `delegate` builtin (GPT-Live). */
+export function livekitModelSupportsDelegation(modelId: string): boolean {
+  return livekitModelIdFlags[modelId]?.delegation === true;
+}
+
 /**
  * Shape expected by `lib/handlers/handler.js` for GET /models: each entry is
  * [`${vendor}/${name}`, description, flags].
@@ -97,8 +124,8 @@ export function livekitModelSupportsExternalTts(modelId: string): boolean {
 export function buildLivekitHandlerAllModels() {
   const rows = [
     ...LIVEKIT_REALTIME_MODEL_ROWS.map((r) => {
-      const [vendor, name, description] = r;
-      return [`${vendor}/${name}`, description, realtimeFlagsFor(vendor)] as const;
+      const [vendor, name, description, flags] = r;
+      return [`${vendor}/${name}`, description, realtimeFlagsFor(vendor, flags)] as const;
     }),
     ...LIVEKIT_PIPELINE_MODEL_ROWS.map((r) => {
       const [vendor, name, description] = r;

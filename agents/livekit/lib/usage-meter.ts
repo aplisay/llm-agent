@@ -65,9 +65,16 @@ export type AddMeter = (
 function meterMetrics(m: any, addMeter: AddMeter): void {
   switch (m?.type) {
     case "llm_metrics":
-      addMeter("llm", m.label, "input_tokens", uncachedTokens(m.promptTokens, m.promptCachedTokens));
+      addMeter(
+        "llm",
+        m.label,
+        "input_tokens",
+        uncachedTokens(m.promptTokens, (m.promptCachedTokens || 0) + (m.cacheCreationTokens || 0)),
+      );
       addMeter("llm", m.label, "output_tokens", m.completionTokens);
       addMeter("llm", m.label, "cache_read_tokens", m.promptCachedTokens);
+      // Only GPT-Live's backend reports cache writes today; its rate lines price them apart. See PR #345.
+      addMeter("llm", m.label, "cache_write_tokens", m.cacheCreationTokens);
       break;
     case "realtime_model_metrics":
       addMeter("llm", m.label, "input_tokens", uncachedTokens(m.inputTokens, m.inputTokenDetails?.cachedTokens));

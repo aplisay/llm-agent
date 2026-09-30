@@ -3,6 +3,7 @@
  * See PR #336 and docs/realtime-external-tts.md.
  */
 import type { VoiceMode } from "./voice-mode.js";
+import { inactivityCommentary, isGptLiveModelName } from "./gpt-live.js";
 
 /** The part of the SDK's `SpeechHandle` the runtime uses. */
 export interface SpeechHandleLike {
@@ -30,8 +31,9 @@ export function sessionHasTts({ voiceMode, textOutput }: SpeechStack): boolean {
   return voiceMode === "pipeline" || textOutput;
 }
 
+/** OpenAI Realtime, not GPT-Live: the same `openai` segment, a different session. */
 export function isOpenAIRealtime(voiceMode: VoiceMode, modelName: string): boolean {
-  return voiceMode === "realtime" && modelName.includes("livekit:openai/");
+  return voiceMode === "realtime" && modelName.includes("livekit:openai/") && !isGptLiveModelName(modelName);
 }
 
 /**
@@ -71,10 +73,14 @@ export function speakGreetingText(
 export function speakInactivityMessage(
   session: TextSpeaker,
   message: string,
-  stack: SpeechStack,
+  stack: SpeechStack & { modelName?: string },
 ): SpeechHandleLike {
   if (sessionHasTts(stack)) {
     return session.say(message, { allowInterruptions: true });
+  }
+  // GPT-Live paraphrases its appends; this is the Pipecat worker's wording.
+  if (isGptLiveModelName(stack.modelName)) {
+    return session.generateReply({ instructions: inactivityCommentary(message), allowInterruptions: true });
   }
   // Not `userInput`: the model would answer the prompt as if the caller had
   // said it.

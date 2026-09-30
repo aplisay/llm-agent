@@ -2,9 +2,10 @@
  * Constructs {@link voice.Agent} + {@link voice.AgentSession} for realtime (speech-to-speech)
  * or STT–LLM–TTS pipeline (LiveKit Inference), per LiveKit Agents patterns.
  */
-import { inference, voice, type llm } from "@livekit/agents";
+import { inference, llm, voice } from "@livekit/agents";
 import type { VAD } from "@livekit/agents";
 import * as google from "@livekit/agents-plugin-google";
+import * as openai from "@livekit/agents-plugin-openai";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
 import type { VoiceAgent } from "./types.js";
@@ -30,6 +31,19 @@ import { buildNeuphonicTts } from "./neuphonic-tts.js";
 import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
 import { OpenAIRealtimeModel } from "./openai-realtime.js";
+import {
+  GPT_LIVE_DEFAULT_VOICE,
+  backendSettings,
+  composeBackendInstructions,
+  composeVoiceInstructions,
+  delegateBackend,
+  isGptLiveModelName,
+  languageLine,
+  liveOverrides,
+  syntheticBackend,
+  type GptLivePrepared,
+} from "./gpt-live.js";
+import { GptLiveRealtimeModel } from "./gpt-live-model.js";
 import type {
   UltravoxAgentReaction,
   UltravoxInactivityMessage,
@@ -571,6 +585,73 @@ export interface CreateVoiceModelAndSessionParams {
    * buildRealtimeLlmOptions); on other stacks the runtime asks for the opening.
    */
   opening?: string;
+  /** GPT-Live: the delegate and merged tools the runtime resolved (gpt-live.ts). */
+  gptLive?: GptLivePrepared;
+}
+
+/**
+ * GPT-Live: the voice agent's prompt is the persona, the delegate's is the backend's
+ * instructions (docs/gpt-live.md). Without `prepared` the backend is synthesised from the voice
+ * agent and its own tools.
+ */
+function createGptLiveSession(
+  modelName: string,
+  agent: Agent,
+  call: Call,
+  tools: llm.ToolContext,
+  prepared: GptLivePrepared | undefined,
+): { session: voice.AgentSession; model: voice.Agent } {
+  const spec = prepared?.spec ?? { agent: syntheticBackend(agent), synthetic: true, mode: "responses" as const };
+  const backendTools = prepared?.tools ?? tools;
+  const overrides = liveOverrides(agent);
+  const backend = delegateBackend(spec);
+  // `vendorSpecific.openai.live` may name another backend model; its tokens are that model's.
+  const overrideModel = (overrides as { delegation?: { responses?: { model?: unknown } } }).delegation?.responses
+    ?.model;
+  const backendModel = typeof overrideModel === "string" && overrideModel.trim() ? overrideModel.trim() : backend.model;
+  const backendPrompt = spec.synthetic
+    ? agent.prompt ?? ""
+    : promptWithMetadata(spec.agent.prompt ?? "", spec.agent.promptMetadata, call?.metadata);
+  const { effort, maxTokens } = backendSettings(spec.agent);
+  warnTtsSpeedUnsupported(agent, modelName);
+
+  const liveModel = new openai.realtime.GPTLiveModel({
+    model: parseProviderModelName(modelName)?.split("/").pop() || undefined,
+    voice: agent?.options?.tts?.voice?.trim() || GPT_LIVE_DEFAULT_VOICE,
+    delegation: spec.mode,
+    ...(spec.mode === "responses"
+      ? {
+          responsesOptions: {
+            model: backendModel,
+            instructions: composeBackendInstructions(backendPrompt, {
+              toolNames: Object.keys(backendTools.functionTools),
+            }),
+            ...(effort ? { reasoning: { effort } as openai.realtime.ResponsesDelegationOptions["reasoning"] } : {}),
+            ...(maxTokens ? { maxOutputTokens: maxTokens } : {}),
+          },
+        }
+      : {}),
+  });
+  const realtimeModel = new GptLiveRealtimeModel(liveModel, {
+    overrides,
+    usageBackend: {
+      vendor: backend.vendor,
+      detail: backend.vendor ? `${backend.vendor}/${backendModel}` : backendModel,
+    },
+    recovery: spec.mode === "responses",
+  });
+  const model = new voice.Agent({
+    instructions: composeVoiceInstructions(agent.prompt ?? "", { language: languageLine(agent) }),
+    // Client mode: the delegate runs its own tools behind the subagent endpoint.
+    tools: spec.mode === "client" ? llm.ToolContext.empty() : backendTools,
+  });
+  const userAwayTimeout = inactivityAwayTimeoutSecs(agent);
+  const session = new voice.AgentSession({
+    llm: realtimeModel,
+    ...legacyTurnHandlingOptions({ turnDetection: null }),
+    ...(userAwayTimeout !== undefined ? { userAwayTimeout } : {}),
+  } as any);
+  return { session, model };
 }
 
 export function createVoiceModelAndSession(
@@ -589,6 +670,10 @@ export function createVoiceModelAndSession(
   const composedPrompt = promptWithMetadata(basePrompt, agentDef?.promptMetadata, call?.metadata);
   const agent =
     composedPrompt === basePrompt ? agentDef : ({ ...agentDef, prompt: composedPrompt } as Agent);
+
+  if (isGptLiveModelName(modelName)) {
+    return createGptLiveSession(modelName, agent, call, tools, params.gptLive);
+  }
 
   const agentOptions = {
     instructions: agent?.prompt || "You are a helpful assistant.",
