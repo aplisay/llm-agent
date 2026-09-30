@@ -29,7 +29,8 @@ export interface ProviderEndedParams {
   isBridged(): boolean;
   /** The caller is on hold for a consultation. */
   consultInProgress(): boolean;
-  endCall(): Promise<void>;
+  /** `info` is what the model reported, e.g. `{ code, reason }`. */
+  endCall(info?: unknown): Promise<void>;
 }
 
 export interface ProviderEndedTeardown {
@@ -58,7 +59,7 @@ export function createProviderEndedTeardown(params: ProviderEndedParams): Provid
         if (params.isBridged() || params.consultInProgress()) return;
         logger.warn({ info, callId }, "realtime provider ended the session; ending call");
         void params
-          .endCall()
+          .endCall(info)
           .catch((e) => logger.error({ e }, "error ending call after provider end"));
       });
       // Keep registration at INFO: app-level debug is unavailable in job processes. See PR #187.

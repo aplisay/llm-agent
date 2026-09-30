@@ -1054,11 +1054,16 @@ export async function runAgentWorker({
     handoverInProgress: () => agentHandoverInProgress,
     isBridged: () => Boolean(getBridgedParticipant()),
     consultInProgress: () => getConsultInProgress(),
-    endCall: () => {
+    endCall: (info?: unknown) => {
       // Before the agent has spoken this is a start failure, for the fallback chain.
+      const reason = (info as { reason?: string } | undefined)?.reason;
       if (
         attemptAbandoned ||
-        startup.fail(new Error("realtime provider ended the session during start-up"))
+        startup.fail(
+          new Error(
+            `realtime provider ended the session during start-up${reason ? `: ${reason}` : ""}`,
+          ),
+        )
       ) {
         return Promise.resolve();
       }

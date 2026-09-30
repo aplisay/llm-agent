@@ -2,6 +2,7 @@ import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeLogger, JobContext, runWithJobContextAsync, voice } from "@livekit/agents";
 import { dispose, Room, RoomEvent } from "@livekit/rtc-node";
+import http from "node:http";
 import { WebSocketServer } from "ws";
 import { runAgentWorker } from "../lib/voice-agent-runtime.js";
 import { releaseFailedAttemptSession } from "../lib/primary-session.js";
@@ -91,7 +92,10 @@ const agent = {
   ],
 };
 
-function attempt(ctx: JobContext, { start }: { start?: () => Promise<void> } = {}) {
+function attempt(
+  ctx: JobContext,
+  { start, agentDef = agent }: { start?: () => Promise<void>; agentDef?: typeof agent } = {},
+) {
   let session: voice.AgentSession | null = null;
   const ends: string[] = [];
   const messages: Record<string, unknown>[] = [];
@@ -109,11 +113,11 @@ function attempt(ctx: JobContext, { start }: { start?: () => Promise<void> } = {
     runAgentWorker({
       ctx,
       room: { name: "room" },
-      agent: agent as any,
+      agent: agentDef as any,
       participant: null,
       callerId: "+441234567890",
       calledId: "+441234567891",
-      modelName: agent.modelName,
+      modelName: agentDef.modelName,
       metadata: {},
       sendMessage: async (m: Record<string, unknown>) => void messages.push(m),
       call,
@@ -195,6 +199,32 @@ test("the Ultravox socket closing before the agent speaks is a start failure", a
   } finally {
     await new Promise((resolve) => wss.close(resolve));
   }
+});
+
+test("an OpenAI Realtime connect failure before the agent speaks is a start failure", async () => {
+  // A port nothing listens on: the connect is refused. See lib/openai-realtime.ts.
+  const probe = http.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = probe.address() as { port: number };
+  await new Promise((resolve) => probe.close(resolve));
+  Object.assign(process.env, {
+    OPENAI_API_KEY: "sk-test",
+    OPENAI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+  });
+  const ctx = fakeJobContext();
+  await runWithJobContextAsync(ctx, async () => {
+    const a = attempt(ctx, {
+      agentDef: { ...agent, modelName: "livekit:openai/gpt-realtime", functions: [] as any },
+    });
+    await assert.rejects(
+      a.run(),
+      /provider ended the session during start-up: OpenAI Realtime API connection failed/,
+    );
+    await releaseFailedAttemptSession(ctx, a.session());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(a.ends, []);
+    assert.deepEqual(teardownRequests(), []);
+  });
 });
 
 test("a session closed for another reason during start-up ends the call as before", async () => {
