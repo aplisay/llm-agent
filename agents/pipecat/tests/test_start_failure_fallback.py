@@ -252,6 +252,12 @@ def _session(fallback: dict, transport: Any):
     from pipecat_aplisay.call_session import CallSession
 
     class _GatewaySession:
+        def __init__(self) -> None:
+            self.transfers: list = []
+
+        async def transfer(self, request) -> None:  # noqa: ANN001
+            self.transfers.append(request)
+
         async def shutdown(self) -> None:  # pragma: no cover
             return None
 
@@ -280,9 +286,27 @@ def _session(fallback: dict, transport: Any):
     )
 
 
-def _stub_run(monkeypatch, services: list[Callable[[Any], _Service]]) -> dict:
+class _Recording:
+    def __init__(self) -> None:
+        self.discarded = False
+        self.uploaded = False
+
+    async def discard(self) -> None:
+        self.discarded = True
+
+    async def stop_and_upload(self):  # noqa: ANN201
+        self.uploaded = True
+        return None
+
+
+def _stub_run(
+    monkeypatch,
+    services: list[Callable[[Any], _Service]],
+    recordings: Optional[list] = None,
+) -> dict:
     """Replace the build step with real pipelines of the given services, one per
-    attempt, and record what reaches the API."""
+    attempt, and record what reaches the API. ``recordings`` collects a stub
+    recording for each attempt."""
     from pipecat_aplisay import api_client, invocation_log
     from pipecat_aplisay.call_session import CallSession
 
@@ -292,6 +316,9 @@ def _stub_run(monkeypatch, services: list[Callable[[Any], _Service]]) -> dict:
         seen["models"].append(model_name)
         seen["transports"].append(self.gateway_session.transport)
         service = services[len(seen["models"]) - 1](self)
+        if recordings is not None:
+            self._recording = _Recording()
+            recordings.append(self._recording)
         task = PipelineTask(Pipeline([service]))
         if service._fail is None:
             await task.queue_frames([EndFrame()])
@@ -371,19 +398,66 @@ def test_the_message_step_plays_on_the_live_call_after_a_start_failure(monkeypat
     assert seen["ended"] == [], "the worker ends the call with the failure reason"
 
 
-def test_without_a_fallback_the_start_failure_propagates(monkeypatch) -> None:
+def test_without_a_fallback_there_is_no_window_and_the_call_ends_as_before(monkeypatch) -> None:
     seen = _stub_run(monkeypatch, [lambda _s: _Service(fail="fatal")])
     session = _session({}, _ws_transport())
 
-    async def run() -> Optional[BaseException]:
-        try:
-            await session.run(system_prompt="test")
-        except SessionStartFailed as e:
-            return e
-        return None
+    asyncio.run(session.run(system_prompt="test"))
 
-    assert isinstance(asyncio.run(run()), SessionStartFailed)
-    assert seen["ended"] == [], "not recorded as the caller hanging up"
+    assert session._start_window is None
+    assert seen["ended"] == [CALLER_LEFT]
+
+
+def test_on_the_last_attempt_of_a_chain_a_failure_ends_the_call_as_before(monkeypatch) -> None:
+    # The fallback model is the chain's only step: once it is used, nothing is left.
+    seen = _stub_run(
+        monkeypatch,
+        [lambda _s: _Service(fail="fatal"), lambda _s: _Service(fail="fatal")],
+    )
+    session = _session({"model": FALLBACK}, _ws_transport())
+
+    asyncio.run(session.run(system_prompt="test"))
+
+    assert seen["models"] == [PRIMARY, FALLBACK]
+    assert session._start_window is None
+    assert seen["ended"] == [CALLER_LEFT]
+
+
+def test_the_number_step_transfers_the_live_call_and_saves_one_log(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from pipecat_aplisay import outbound_filter
+
+    seen = _stub_run(monkeypatch, [lambda _s: _Service(fail="fatal")])
+
+    async def authorise_destination(**_kwargs):  # noqa: ANN003
+        return SimpleNamespace(allowed=True, srtp=None, failure_message=None)
+
+    monkeypatch.setattr(outbound_filter, "authorise_destination", authorise_destination)
+    session = _session({"number": "+441234567890"}, _ws_transport())
+
+    asyncio.run(session.run(system_prompt="test"))
+
+    [request] = session.gateway_session.transfers
+    assert request.destination == "+441234567890"
+    assert seen["ended"] == []
+    assert seen["flushed"] == ["call-1"], "the failed attempt's log is saved once, after the transfer"
+
+
+def test_a_failed_attempt_discards_its_recording_and_the_retry_keeps_its_own(monkeypatch) -> None:
+    recordings: list = []
+    _stub_run(
+        monkeypatch,
+        [lambda _s: _Service(fail="fatal"), lambda _s: _Service()],
+        recordings=recordings,
+    )
+    session = _session({"model": FALLBACK}, _ws_transport())
+
+    asyncio.run(session.run(system_prompt="test"))
+
+    failed, retry = recordings
+    assert (failed.discarded, failed.uploaded) == (True, False)
+    assert (retry.discarded, retry.uploaded) == (False, True)
 
 
 def test_after_the_bot_speaks_a_failure_ends_the_call_as_before(monkeypatch) -> None:
@@ -433,3 +507,202 @@ def test_discard_deletes_the_pcm_and_uploads_nothing(tmp_path, monkeypatch) -> N
 
     asyncio.run(run())
     assert list(tmp_path.iterdir()) == []
+
+
+# ---- Realtime services that fail to open a session -------------------------
+
+
+def _quiet(llm):  # noqa: ANN001, ANN202
+    """No pipeline behind the service: its frame and metric pushes are no-ops."""
+
+    async def noop(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        return None
+
+    for name in ("push_frame", "push_error", "stop_all_metrics"):
+        setattr(llm, name, noop)
+    return llm
+
+
+def _openai(on_session_ended):  # noqa: ANN001, ANN202
+    from pipecat_aplisay import voice_session
+    from pipecat_aplisay.openai_realtime_service import build_openai_realtime_service
+
+    return _quiet(
+        build_openai_realtime_service(
+            api_key="test-key",
+            model="gpt-realtime",
+            system_prompt="test",
+            session_properties=voice_session._openai_realtime_session_properties(
+                {"options": {}}, text_output=False
+            ),
+            on_session_ended=on_session_ended,
+        )
+    )
+
+
+def _grok(on_session_ended):  # noqa: ANN001, ANN202
+    from pipecat_aplisay import grok_service
+    from pipecat_aplisay.voice_session import _xai_session_properties
+
+    agent = {"options": {}}
+    return _quiet(
+        grok_service.build_grok_service(
+            api_key="xai-test",
+            model="grok-voice-think-fast-2.0",
+            system_prompt="test",
+            session_properties=_xai_session_properties(agent),
+            agent=agent,
+            on_session_ended=on_session_ended,
+        )
+    )
+
+
+async def _refused(*_args, **_kwargs):  # noqa: ANN002, ANN003
+    raise ConnectionRefusedError("connection refused")
+
+
+def test_openai_realtime_reports_a_failed_connect(monkeypatch) -> None:
+    from pipecat.services.openai.realtime import llm as openai_llm
+
+    monkeypatch.setattr(openai_llm, "websocket_connect", _refused)
+    ended: list[str] = []
+
+    async def run() -> None:
+        async def on_ended(reason: str) -> None:
+            ended.append(reason)
+
+        await _openai(on_ended)._connect()
+
+    asyncio.run(run())
+    assert ended == ["connect failed"]
+
+
+def test_grok_reports_a_failed_connect(monkeypatch) -> None:
+    from pipecat.services.xai.realtime import llm as xai_llm
+
+    monkeypatch.setattr(xai_llm, "websocket_connect", _refused)
+    ended: list[str] = []
+
+    async def run() -> None:
+        async def on_ended(reason: str) -> None:
+            ended.append(reason)
+
+        await _grok(on_ended)._connect()
+
+    asyncio.run(run())
+    assert ended == ["connect failed"]
+
+
+class _BrokenSocket:
+    """A connection that fails as soon as it is read: an abnormal close."""
+
+    def __aiter__(self):  # noqa: ANN204
+        return self
+
+    async def __anext__(self):  # noqa: ANN204
+        raise ConnectionResetError("connection reset")
+
+
+def test_openai_realtime_reports_an_abnormal_close_but_not_its_own() -> None:
+    async def run(disconnecting: bool) -> list[str]:
+        ended: list[str] = []
+
+        async def on_ended(reason: str) -> None:
+            ended.append(reason)
+
+        llm = _openai(on_ended)
+        llm._websocket = _BrokenSocket()
+        llm._disconnecting = disconnecting
+        try:
+            await llm._receive_task_handler()
+        except ConnectionResetError:
+            pass
+        return ended
+
+    assert asyncio.run(run(disconnecting=False)) == ["connection_closed"]
+    assert asyncio.run(run(disconnecting=True)) == [], "a close we asked for is not the provider ending it"
+
+
+def test_openai_realtime_reports_a_server_error_once() -> None:
+    from types import SimpleNamespace
+
+    async def run() -> list[str]:
+        ended: list[str] = []
+
+        async def on_ended(reason: str) -> None:
+            ended.append(reason)
+
+        llm = _openai(on_ended)
+        await llm._handle_evt_error(SimpleNamespace(error=SimpleNamespace(message="rate limited")))
+        await llm._session_ended("connection_closed")
+        return ended
+
+    assert asyncio.run(run()) == ["error: rate limited"]
+
+
+# ---- DisconnectGate on a real websocket transport --------------------------
+
+
+class _LiveWebsocket:
+    """A Starlette WebSocket stand-in that stays open until closed."""
+
+    def __init__(self) -> None:
+        from starlette.websockets import WebSocketState
+
+        self._state = WebSocketState
+        self.client_state = WebSocketState.CONNECTED
+        self.application_state = WebSocketState.CONNECTED
+        self.closes = 0
+        self._closed = asyncio.Event()
+
+    async def receive(self) -> dict:
+        await self._closed.wait()
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, _data: bytes) -> None:
+        return None
+
+    async def send_text(self, _data: str) -> None:
+        return None
+
+    async def close(self, code: int = 1000, reason: Optional[str] = None) -> None:
+        self.closes += 1
+        self.client_state = self._state.DISCONNECTED
+        self.application_state = self._state.DISCONNECTED
+        self._closed.set()
+
+
+def test_the_gate_keeps_the_socket_open_for_the_retry_then_the_retry_closes_it() -> None:
+    from pipecat.serializers.protobuf import ProtobufFrameSerializer
+    from pipecat.transports.websocket.fastapi import (
+        FastAPIWebsocketParams,
+        FastAPIWebsocketTransport,
+    )
+
+    from pipecat_aplisay.call_session import CallSession
+
+    async def run() -> tuple[int, int, Optional[str]]:
+        websocket = _LiveWebsocket()
+        failed_transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(serializer=ProtobufFrameSerializer()),
+        )
+        window = StartWindow()
+        DisconnectGate(failed_transport, window)
+        failed = PipelineTask(
+            Pipeline([failed_transport.input(), _Service(fail="fatal"), failed_transport.output()])
+        )
+        watch_start_window(failed, window, failed.cancel)
+        await _run_task(failed)
+        closes_after_failure = websocket.closes
+
+        retry_transport = CallSession._rebuild_transport_for_handover(failed_transport)
+        retry = PipelineTask(Pipeline([retry_transport.input(), _Service(), retry_transport.output()]))
+        await retry.queue_frames([EndFrame()])
+        await _run_task(retry)
+        return closes_after_failure, websocket.closes, window.failure
+
+    closes_after_failure, closes_after_retry, failure = asyncio.run(run())
+    assert failure == "provider refused the session"
+    assert closes_after_failure == 0, "the failed attempt's cancel did not close the socket"
+    assert closes_after_retry == 1, "the retry's own end closed it"

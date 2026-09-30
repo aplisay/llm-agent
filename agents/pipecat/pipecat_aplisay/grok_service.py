@@ -250,10 +250,19 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         await super()._handle_evt_error(evt)
         await self._session_ended(f"error: {getattr(evt.error, 'message', '')}")
 
+    async def _connect(self) -> None:
+        # The stock reports a failed connect only as an ordinary error, and leaves no socket and no retry.
+        await super()._connect()
+        if self._websocket is None and not self._disconnecting:
+            await self._session_ended("connect failed")
+
     async def _receive_task_handler(self) -> None:
-        await super()._receive_task_handler()
-        if not self._disconnecting:
-            await self._session_ended("connection_closed")
+        # An abnormal close raises out of the loop rather than ending it.
+        try:
+            await super()._receive_task_handler()
+        finally:
+            if not self._disconnecting:
+                await self._session_ended("connection_closed")
 
     async def _session_ended(self, reason: str) -> None:
         if self._ended_reported or self._disconnecting or self._on_session_ended is None:

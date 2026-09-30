@@ -387,11 +387,24 @@ class CallSession:
 
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
+            # Mirrors the steps the except clause below can still take.
+            failover_available = bool(
+                (
+                    not used_fallback_agent
+                    and fallback_cfg.get("agent")
+                    and fallback_cfg["agent"] != active_agent.get("id")
+                )
+                or (not used_fallback_model and fallback_cfg.get("model") and fallback_cfg["model"] != active_model)
+                or fallback_cfg.get("message")
+                or fallback_cfg.get("number")
+            )
             try:
                 # Full agent-stack handovers are consumed inside run_prepared
                 # (shared with the browser /webrtc/offer path, which drives
                 # run_prepared directly and never enters this loop).
-                await self._run_once(active_agent, active_model, active_prompt)
+                await self._run_once(
+                    active_agent, active_model, active_prompt, failover_available=failover_available
+                )
                 return
             except api_client.AgentConcurrencyLimitExceededBusyError:
                 # Child-call concurrency failures must propagate as busy; the initial arrival handles announcements in
@@ -1291,13 +1304,16 @@ class CallSession:
                 f"recording: set_call_recording_data failed: {e}"
             )
 
-    async def _run_once(self, agent: dict, model_name: str, system_prompt: str) -> None:
+    async def _run_once(
+        self, agent: dict, model_name: str, system_prompt: str, *, failover_available: bool = False
+    ) -> None:
         # A build failure falls over on its own, so the window opens once the
         # build is done: a slow MCP connect must not use up its 15 s.
         self._start_window = None
         self._start_gate = None
         task, max_duration_secs = await self.prepare_run(agent, model_name, system_prompt)
-        window = self._open_start_window()
+        # Nowhere to fail over to: failures end the call as they always did.
+        window = self._open_start_window() if failover_available else None
         if window is not None:
             watch_start_window(task, window, task.cancel)
             self._start_gate = DisconnectGate(self.gateway_session.transport, window)

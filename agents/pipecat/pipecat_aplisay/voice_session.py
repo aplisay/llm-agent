@@ -1543,6 +1543,7 @@ async def _build_realtime(
             session_properties=_openai_realtime_session_properties(
                 agent, text_output=text_output
             ),
+            on_session_ended=on_provider_session_ended,
         )
     elif model_id.startswith("google/"):
         from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
