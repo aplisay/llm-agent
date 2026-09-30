@@ -48,6 +48,7 @@ import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { runFallbackMessage } from "./fallback-message.js";
+import { releaseFailedAttemptSession } from "./primary-session.js";
 import { userOwnsRow } from "./scope.js";
 
 // Types
@@ -419,7 +420,10 @@ export default defineAgent({
 
       // Try primary and any configured model/agent fallbacks until we either succeed
       // or exhaust the configured options and fall back to a transfer/propagated error.
-      fallbackLoop: while (true) {
+      fallbackLoop: for (let attempt = 0; ; attempt++) {
+        if (attempt > 0) {
+          await releaseFailedAttemptSession(ctx, sessionRef(null));
+        }
         const fallbackConfig = activeAgent.options?.fallback;
 
         const activeRecordingOptions =
