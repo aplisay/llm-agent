@@ -189,6 +189,62 @@ for (const [name, options] of [
   });
 });
 
+test("the room is joined before the session starts, so a retry never joins it twice", async () => {
+  // On staging a retry started while the failed session's own join was in
+  // flight, joined the room again, and the second connect dropped the room.
+  ultravoxCalls = refuseAfter(20);
+  const ctx = fakeJobContext();
+  const order: string[] = [];
+  const connect = ctx.connect.bind(ctx);
+  ctx.connect = async (...args: Parameters<JobContext["connect"]>) => {
+    order.push("connect");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await connect(...args);
+    order.push("connected");
+  };
+  const start = voice.AgentSession.prototype.start;
+  voice.AgentSession.prototype.start = function (this: voice.AgentSession, ...args: Parameters<typeof start>) {
+    order.push("session.start");
+    return start.apply(this, args);
+  };
+  try {
+    await runWithJobContextAsync(ctx, async () => {
+      const a = attempt(ctx);
+      await assert.rejects(a.run(), /Failed to create Ultravox call/);
+      await releaseFailedAttemptSession(ctx, a.session());
+    });
+  } finally {
+    voice.AgentSession.prototype.start = start;
+  }
+  assert.deepEqual(order.slice(0, 3), ["connect", "connected", "session.start"]);
+});
+
+test("a failure while the session is still starting lets that start settle before the retry", async () => {
+  ultravoxCalls = refuseAfter(0);
+  const ctx = fakeJobContext();
+  let startSettledAt = 0;
+  const start = voice.AgentSession.prototype.start;
+  voice.AgentSession.prototype.start = function (this: voice.AgentSession, ...args: Parameters<typeof start>) {
+    // A start slower than the refusal.
+    return start.apply(this, args).then(async (value) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      startSettledAt = Date.now();
+      return value;
+    });
+  };
+  try {
+    await runWithJobContextAsync(ctx, async () => {
+      const a = attempt(ctx);
+      await assert.rejects(a.run(), /Failed to create Ultravox call/);
+      const rejectedAt = Date.now();
+      assert.ok(startSettledAt > 0 && startSettledAt <= rejectedAt, "the failed attempt's start settled first");
+      await releaseFailedAttemptSession(ctx, a.session());
+    });
+  } finally {
+    voice.AgentSession.prototype.start = start;
+  }
+});
+
 test("a busy refusal at call.start() still fails before the session starts", async () => {
   ultravoxCalls = refuseAfter(0);
   const ctx = fakeJobContext();
