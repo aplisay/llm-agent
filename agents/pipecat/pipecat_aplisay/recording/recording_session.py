@@ -234,6 +234,29 @@ class RecordingSession:
 
         return result
 
+    async def discard(self) -> None:
+        """Stop without encoding or uploading, and delete the PCM file.
+
+        For a generation that failed to start: the fallback attempt that
+        follows records the call instead.
+        """
+        async with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            sink = self._sink
+            self._sink = None
+            self._pending.clear()
+        if sink is None:
+            return
+        try:
+            sink.file.close()
+        except Exception as e:  # noqa: BLE001
+            logger.bind(call_id=self._call_id).warning(
+                f"recording: PCM close failed on discard: {e}"
+            )
+        self._safe_unlink(sink.path)
+
     @staticmethod
     def _safe_unlink(path: str) -> None:
         try:
