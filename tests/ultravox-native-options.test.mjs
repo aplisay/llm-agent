@@ -42,6 +42,15 @@ describe('Ultravox native driver option mapping', () => {
       expect(data.experimentalSettings).toBeUndefined();
     });
 
+    test('temperature: 0.2 by default, options.temperature when it is in 0..1', () => {
+      expect(makeModel().modelData.temperature).toBe(0.2);
+      expect(makeModel({ temperature: 0.7 }).modelData.temperature).toBe(0.7);
+      expect(makeModel({ temperature: 0 }).modelData.temperature).toBe(0);
+      for (const temperature of [1.5, -0.1, '0.5', null]) {
+        expect(makeModel({ temperature }).modelData.temperature).toBe(0.2);
+      }
+    });
+
     test('custom maxDuration and timeExceededMessage pass through', () => {
       const data = makeModel({
         maxDuration: '120s',

@@ -238,6 +238,20 @@ def _ultravox_vad_extra(agent: dict) -> dict:
     return {"vadSettings": dict(ULTRAVOX_DEFAULT_VAD_SETTINGS)}
 
 
+# Used when options.temperature is unset or outside 0..1. Must stay in step
+# with ULTRAVOX_DEFAULT_TEMPERATURE in agents/livekit/lib/voice-session-factory.ts
+# and DEFAULT_TEMPERATURE in lib/models/ultravox.js.
+ULTRAVOX_DEFAULT_TEMPERATURE = 0.2
+
+
+def _ultravox_temperature(options: dict) -> float:
+    """The /calls ``temperature``. Always set: Pipecat's own default is 0.0."""
+    temperature = options.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool) and 0 <= temperature <= 1:
+        return float(temperature)
+    return ULTRAVOX_DEFAULT_TEMPERATURE
+
+
 def _ultravox_language_extra(agent: dict) -> dict:
     """Native Ultravox ``languageHint`` derived from ``options.tts.language``.
 
@@ -1410,6 +1424,7 @@ def _ultravox_one_shot_params(
         # explicit id through verbatim.
         model=ultravox_model,
         voice=None,
+        temperature=_ultravox_temperature(options),
         # Text-output mode: ``initialOutputMedium: MESSAGE_MEDIUM_TEXT`` on the
         # /calls body. Ultravox then sends no audio and streams the agent's
         # text as ``medium: "text"`` transcripts, which ultravox_compat turns
