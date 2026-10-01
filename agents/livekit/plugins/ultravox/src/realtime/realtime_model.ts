@@ -333,6 +333,19 @@ export function withToolReactionsOverride(
  * that reason since inception — so a consumer that reads only `text` silently drops
  * any turn delivered purely as deltas.
  */
+/**
+ * True when a user transcript belongs to a turn that an agent turn with a higher
+ * ordinal already answers. Ultravox can send the user's final transcript after its
+ * reply to it has started (live, 2026-10-01: agent ordinal 6, then user ordinal 5),
+ * so treating that transcript as a barge-in would cancel the reply itself.
+ */
+export function userTranscriptAlreadyAnswered(
+  userOrdinal: number | undefined,
+  latestAgentOrdinal: number | undefined
+): boolean {
+  return userOrdinal !== undefined && latestAgentOrdinal !== undefined && userOrdinal < latestAgentOrdinal;
+}
+
 export function foldTranscriptFrame(
   buffer: string,
   frame: { text?: string; delta?: string }
@@ -732,6 +745,8 @@ export class RealtimeSession extends llm.RealtimeSession {
   // Ordinal of the user turn #userTranscriptBuffer belongs to, so a turn abandoned
   // without a final frame (barge-in, interruption) cannot prefix the next one.
   #userTranscriptOrdinal: number | undefined = undefined;
+  // Highest ordinal seen on an agent transcript; see userTranscriptAlreadyAnswered.
+  #agentTranscriptOrdinal: number | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
   // Track message IDs that have been sent to Ultravox (to avoid duplicates)
@@ -1393,6 +1408,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
         this.#logger.info({ joinUrl, ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "Connecting to Ultravox WebSocket");
+        // Ordinals are per Ultravox call.
+        this.#agentTranscriptOrdinal = undefined;
         this.#ws = new WebSocket(joinUrl.toString());
         this.#logger.info({ ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "WebSocket created");
 
@@ -1898,9 +1915,17 @@ export class RealtimeSession extends llm.RealtimeSession {
       // no earlier sign of the caller speaking than this transcript (measured
       // 2026-09-10: no playback_clear_buffer, no interim frames), while the TTS
       // may still be reading the turn out. Interrupt it now; Ultravox's reply
-      // to what the caller said follows as its own generation.
+      // to what the caller said follows as its own generation, unless it has
+      // already started, in which case interrupting would cancel that reply.
       if (this.#textOnly && event.final && transcript.trim().length > 0) {
-        this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+        if (userTranscriptAlreadyAnswered(event.ordinal, this.#agentTranscriptOrdinal)) {
+          this.#logger.debug(
+            { ordinal: event.ordinal, agentOrdinal: this.#agentTranscriptOrdinal },
+            "user transcript arrived after the reply to it started; not interrupting"
+          );
+        } else {
+          this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+        }
       }
 
       // Only emit transcription events when there's actual text content
@@ -2218,6 +2243,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    if (event.ordinal !== undefined
+      && (this.#agentTranscriptOrdinal === undefined || event.ordinal > this.#agentTranscriptOrdinal)) {
+      this.#agentTranscriptOrdinal = event.ordinal;
+    }
     if (event.medium === "text") {
       this.#handleAgentTextTranscript(event);
       return;

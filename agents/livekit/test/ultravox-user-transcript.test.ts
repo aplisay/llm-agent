@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldTranscriptFrame } from "../plugins/ultravox/src/realtime/realtime_model.js";
+import { foldTranscriptFrame, userTranscriptAlreadyAnswered } from "../plugins/ultravox/src/realtime/realtime_model.js";
 
 // Accumulate user-transcript deltas even when the final frame has no text snapshot. See PR #182.
 
@@ -93,4 +93,19 @@ test("consecutive complete turns are emitted independently", () => {
   ]);
   assert.deepEqual(emitted, ["James speaking.", "Yes, I will take the call."]);
   assert.equal(buffer, "", "buffer is drained after the last final");
+});
+
+// --- text-output barge-in ---------------------------------------------------
+// In text-output mode a final user transcript interrupts the TTS, unless Ultravox
+// already started its reply to that turn. Ordinals from the 2026-10-01 staging call.
+
+test("a user transcript sent after its reply started does not count as a barge-in", () => {
+  assert.equal(userTranscriptAlreadyAnswered(5, 6), true);
+  assert.equal(userTranscriptAlreadyAnswered(3, 4), true);
+});
+
+test("a user turn after the agent's latest turn still interrupts it", () => {
+  assert.equal(userTranscriptAlreadyAnswered(3, 2), false);
+  assert.equal(userTranscriptAlreadyAnswered(1, undefined), false);
+  assert.equal(userTranscriptAlreadyAnswered(undefined, 4), false);
 });
