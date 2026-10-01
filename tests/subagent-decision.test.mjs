@@ -6,6 +6,9 @@
 import { runSubagent, SubagentError } from '../lib/subagent.js';
 
 process.env.TYPESAFE_API_KEY ||= 'test-key';
+// CI decrypts the staging env, which points TYPESAFE_BASE_URL at OpenRouter;
+// these tests expect the direct route unless they set it themselves.
+delete process.env.TYPESAFE_BASE_URL;
 const { default: Typesafe } = await import('../lib/models/typesafe.js');
 const { SIX, SIX_PROPERTIES, resultFunction } = await import('./fixtures/typesafe/six-questions.mjs');
 
