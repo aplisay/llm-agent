@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import uuid
 from typing import Any, Optional
 
@@ -73,6 +74,16 @@ def tts_speed_for(agent: dict, vendor: str) -> Optional[float]:
             "options.tts.speed outside the vendor's range; clamped"
         )
     return clamped
+
+
+def deepgram_tts_speed(agent: dict, model: str) -> Optional[float]:
+    """The speed for Deepgram TTS ``model``. Deepgram refuses the whole request (400) when an
+    Aura-1 model or an Aura-2 voice outside English and Spanish gets any speed, even 1, so
+    those get none."""
+    if not re.fullmatch(r"aura-2-.+-(en|es)", model, re.IGNORECASE):
+        warn_tts_speed_unsupported(agent, f"deepgram {model}")
+        return None
+    return tts_speed_for(agent, "deepgram")
 
 
 def warn_tts_speed_unsupported(agent: dict, where: str) -> None:
