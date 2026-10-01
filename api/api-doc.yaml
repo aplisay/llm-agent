@@ -466,7 +466,9 @@ components:
             Agent LLM temperature. Ignored on GPT-Live rows (`hasDelegation`): the Live API does not
             accept a temperature for the voice model or for a delegated backend model. Ignored on the
             Grok voice rows (`xai/grok-voice-...`), which have no temperature, and on the xAI reasoning
-            text models; forwarded on `text:xai/grok-4.20-0309-non-reasoning` (docs/grok.md).
+            text models; forwarded on `text:xai/grok-4.20-0309-non-reasoning` (docs/grok.md). On
+            Ultravox models (every stack) the default is 0.2, and a value outside 0 to 1 is replaced
+            by that default.
           type: number
           example: 0.2
         callHook:

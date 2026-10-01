@@ -33,6 +33,17 @@ test("basic shape: model, voice, instructions, callId and defaults", () => {
   });
 });
 
+test("Ultravox temperature: 0.2 by default, options.temperature when it is in 0..1", () => {
+  assert.equal(buildRealtimeLlmOptions(ULTRAVOX, makeAgent(), "c").temperature, 0.2);
+  assert.equal(buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ temperature: 0.7 }), "c").temperature, 0.7);
+  assert.equal(buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ temperature: 0 }), "c").temperature, 0);
+  for (const temperature of [1.5, -0.1, "0.5", null]) {
+    assert.equal(buildRealtimeLlmOptions(ULTRAVOX, makeAgent({ temperature }), "c").temperature, 0.2);
+  }
+  // Other realtime providers are unchanged.
+  assert.equal("temperature" in buildRealtimeLlmOptions(OPENAI, makeAgent({ temperature: 0.7 }), "c"), false);
+});
+
 test("custom maxDuration and timeExceededMessage pass through to the plugin", () => {
   const opts = buildRealtimeLlmOptions(
     ULTRAVOX,
