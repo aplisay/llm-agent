@@ -1,7 +1,7 @@
 import Cartesia, {
   CARTESIA_VERSION,
   CARTESIA_VOICES_URL,
-  fetchCartesiaVoices,
+  loadCartesiaVoices,
   mapCartesiaVoices,
   resetCartesiaVoicesCache,
 } from '../lib/voices/cartesia.js';
@@ -50,37 +50,27 @@ describe('Cartesia voice catalogue', () => {
 
     test('no key, no request', async () => {
       const calls = [];
-      expect(await fetchCartesiaVoices({ key: '', fetchImpl: paged(calls), logger: quiet })).toEqual([]);
+      expect(await loadCartesiaVoices({ key: '', fetchImpl: paged(calls) })).toEqual([]);
       expect(calls).toHaveLength(0);
     });
 
-    test('follows the page cursor, sends the key and caches the catalogue for ten minutes', async () => {
+    test('follows the page cursor and sends the key', async () => {
       const calls = [];
-      const fetchImpl = paged(calls);
-      let t = 1_000_000;
-      const now = () => t;
-      const first = await fetchCartesiaVoices({ key: 'k', fetchImpl, now, logger: quiet });
-      await fetchCartesiaVoices({ key: 'k', fetchImpl, now, logger: quiet });
+      const rows = await loadCartesiaVoices({ key: 'k', fetchImpl: paged(calls) });
       expect(calls).toEqual([
         { url: `${CARTESIA_VOICES_URL}?limit=100`, auth: 'Bearer k', version: CARTESIA_VERSION },
         { url: `${CARTESIA_VOICES_URL}?limit=100&starting_after=c-katie`, auth: 'Bearer k', version: CARTESIA_VERSION },
       ]);
-      expect(first.map((v) => v.name).sort()).toEqual(['c-george', 'c-gerard', 'c-katie', 'c-luc', 'c-sam', 'c-skylar', 'c-varun']);
-      t += 10 * 60 * 1000 + 1;
-      await fetchCartesiaVoices({ key: 'k', fetchImpl, now, logger: quiet });
-      expect(calls).toHaveLength(4);
+      expect(rows.map((v) => v.name).sort()).toEqual(['c-george', 'c-gerard', 'c-katie', 'c-luc', 'c-sam', 'c-skylar', 'c-varun']);
     });
 
-    test('a failed page fails the fetch, and it is not cached', async () => {
-      let fail = true;
+    test('a failed page fails the load', async () => {
       const calls = [];
       const ok = paged(calls);
-      const fetchImpl = async (url, init) => (fail && url.includes('starting_after')
+      const fetchImpl = async (url, init) => (url.includes('starting_after')
         ? { ok: false, status: 503, json: async () => ({}) }
         : ok(url, init));
-      await expect(fetchCartesiaVoices({ key: 'k', fetchImpl, logger: quiet })).rejects.toThrow('HTTP 503');
-      fail = false;
-      await expect(fetchCartesiaVoices({ key: 'k', fetchImpl, logger: quiet })).resolves.toHaveLength(7);
+      await expect(loadCartesiaVoices({ key: 'k', fetchImpl })).rejects.toThrow('HTTP 503');
     });
 
     test('the service lists voices by locale, filtered by language, and {} on failure', async () => {

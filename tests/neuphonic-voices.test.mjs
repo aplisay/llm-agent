@@ -1,6 +1,6 @@
 import Neuphonic, {
   NEUPHONIC_VOICES_URL,
-  fetchNeuphonicVoices,
+  loadNeuphonicVoices,
   mapNeuphonicVoices,
   resetNeuphonicVoicesCache,
 } from '../lib/voices/neuphonic.js';
@@ -52,31 +52,22 @@ describe('Neuphonic voice catalogue', () => {
 
     test('no key, no request', async () => {
       const calls = [];
-      const rows = await fetchNeuphonicVoices({ key: '', fetchImpl: async (...a) => { calls.push(a); return ok(); }, logger: quiet });
+      const rows = await loadNeuphonicVoices({ key: '', fetchImpl: async (...a) => { calls.push(a); return ok(); } });
       expect(rows).toEqual([]);
       expect(calls).toHaveLength(0);
     });
 
-    test('sends the key and caches the catalogue for ten minutes', async () => {
+    test('sends the key', async () => {
       const calls = [];
       const fetchImpl = async (url, init) => { calls.push({ url, key: init.headers['X-API-KEY'] }); return ok(); };
-      let t = 1_000_000;
-      const now = () => t;
-      const first = await fetchNeuphonicVoices({ key: 'k', fetchImpl, now, logger: quiet });
-      await fetchNeuphonicVoices({ key: 'k', fetchImpl, now, logger: quiet });
+      const rows = await loadNeuphonicVoices({ key: 'k', fetchImpl });
       expect(calls).toEqual([{ url: NEUPHONIC_VOICES_URL, key: 'k' }]);
-      expect(first.length).toBeGreaterThan(10);
-      t += 10 * 60 * 1000 + 1;
-      await fetchNeuphonicVoices({ key: 'k', fetchImpl, now, logger: quiet });
-      expect(calls).toHaveLength(2);
+      expect(rows).toHaveLength(14);
     });
 
-    test('a failed fetch is not cached', async () => {
-      let fail = true;
-      const fetchImpl = async () => (fail ? { ok: false, status: 503, json: async () => ({}) } : ok());
-      await expect(fetchNeuphonicVoices({ key: 'k', fetchImpl, logger: quiet })).rejects.toThrow('HTTP 503');
-      fail = false;
-      await expect(fetchNeuphonicVoices({ key: 'k', fetchImpl, logger: quiet })).resolves.toHaveLength(14);
+    test('an HTTP error fails the load', async () => {
+      const fetchImpl = async () => ({ ok: false, status: 503, json: async () => ({}) });
+      await expect(loadNeuphonicVoices({ key: 'k', fetchImpl })).rejects.toThrow('HTTP 503');
     });
 
     test('the service lists voices by locale, filtered by language, and {} on failure', async () => {

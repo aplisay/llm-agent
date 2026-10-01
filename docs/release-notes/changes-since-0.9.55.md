@@ -82,6 +82,12 @@ Pipecat), and **ci** (build and release pipeline).
   including Ultravox and OpenAI Realtime with an external TTS. Only voices in
   the 42 languages `sonic-3` speaks are listed. Needs `CARTESIA_API_KEY` on
   the API server.
+- **[core] Voice lists** no longer hang. Every vendor's voice catalogue is
+  cached for ten minutes, refreshed in the background while the old one is
+  served, and given up on after 30 s. A vendor that is slow to answer is left
+  out of that one list after 8 s. Before, one stuck catalogue fetch could hold
+  every voice list, and every agent save that names a TTS voice, for ten
+  minutes. ElevenLabs and Google voices were also fetched on every request.
 - **[livekit] Cartesia language**: the agent's language now reaches Cartesia on
   LiveKit Inference, and provider-key mode accepts every `sonic-3` language, not
   seven. Before, Inference always asked Cartesia for English, and provider-key
