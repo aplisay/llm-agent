@@ -138,6 +138,17 @@ def test_native_params_keep_the_voice_and_the_default_medium(monkeypatch):
     assert params.extra["firstSpeakerSettings"] == {"agent": {}}
 
 
+@pytest.mark.parametrize(
+    ("temperature", "expected"),
+    [(None, 0.2), (0.7, 0.7), (0, 0.0), (1.5, 0.2), (-0.1, 0.2), ("0.5", 0.2), (True, 0.2)],
+)
+def test_ultravox_temperature_defaults_to_0_2(monkeypatch, temperature, expected):
+    monkeypatch.setenv("ULTRAVOX_API_KEY", "test-key")
+    agent = _agent() if temperature is None else _agent(temperature=temperature)
+    params = _ultravox_one_shot_params(agent, "sys", "ultravox-v0.7", text_output=False)
+    assert params.temperature == expected
+
+
 # --- OpenAI Realtime session properties ---------------------------------------
 
 
