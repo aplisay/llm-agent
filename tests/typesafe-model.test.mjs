@@ -6,6 +6,9 @@ import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 
 process.env.TYPESAFE_API_KEY ||= 'test-key';
+// CI decrypts the staging env, which points TYPESAFE_BASE_URL at OpenRouter;
+// these tests expect the direct route unless they set it themselves.
+delete process.env.TYPESAFE_BASE_URL;
 
 const { default: Typesafe, DecisionRequestError } = await import('../lib/models/typesafe.js');
 const {
