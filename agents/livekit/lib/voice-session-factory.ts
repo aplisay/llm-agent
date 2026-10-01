@@ -45,6 +45,11 @@ export const ULTRAVOX_DEFAULT_VAD_SETTINGS = Object.freeze({
   minimumInterruptionDuration: "0.48s",
 });
 
+// Used when options.temperature is unset or outside 0..1. Must stay in step
+// with DEFAULT_TEMPERATURE in lib/models/ultravox.js and
+// ULTRAVOX_DEFAULT_TEMPERATURE in the pipecat worker's voice_session.py.
+export const ULTRAVOX_DEFAULT_TEMPERATURE = 0.2;
+
 /**
  * Whether `options.inactivity.hangup` opts this agent into ending the call once the
  * inactivity prompt has gone unanswered {@link INACTIVITY_PROMPT_COUNT} times.
@@ -287,6 +292,14 @@ export function buildRealtimeLlmOptions(
   };
   if (providerModelName) {
     llmOptions.model = providerModelName;
+  }
+  // Always set: the plugin's own default is 0.8.
+  if (modelName.includes("livekit:ultravox/")) {
+    const temperature = agent?.options?.temperature;
+    llmOptions.temperature =
+      typeof temperature === "number" && temperature >= 0 && temperature <= 1
+        ? temperature
+        : ULTRAVOX_DEFAULT_TEMPERATURE;
   }
   const vendorSpecific = (agent?.options?.vendorSpecific ||
     undefined) as Record<string, any> | undefined;
