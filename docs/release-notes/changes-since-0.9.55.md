@@ -31,9 +31,12 @@ Pipecat), and **ci** (build and release pipeline).
   had held the call. On realtime models only an external TTS was affected.
 
 - **[livekit] Ultravox with an external TTS**: replies are no longer cut off
-  before they are spoken. Ultravox can send the caller's words after its reply
-  to them has started, and that was taken as the caller interrupting, so the
-  reply was cancelled. A caller who speaks over the agent still interrupts it.
+  before they are spoken, and the agent stops talking when the caller speaks
+  over it. Before, Ultravox could send the caller's words after its reply to
+  them had started, which cancelled the reply, and a caller could only
+  interrupt once they had finished speaking. The worker now listens for the
+  caller itself, for the agent's Ultravox `minimumInterruptionDuration`
+  (0.48 s unless set).
 
 ## Agents and models - pipecat
 

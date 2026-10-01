@@ -24,6 +24,7 @@ import {
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
+import logger from "./logger.js";
 import { buildNeuphonicTts } from "./neuphonic-tts.js";
 import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
@@ -333,6 +334,28 @@ class PipelineVoiceAgent extends voice.Agent {
  * human hand-back (see handover-opening.ts). On Ultravox that session then
  * opens from it.
  */
+/**
+ * Minimum caller speech (ms) before the local VAD in Ultravox text-output mode
+ * interrupts the TTS: the agent's Ultravox `minimumInterruptionDuration`, so
+ * barge-in needs the same deliberate speech as in voice mode.
+ */
+export function ultravoxBargeInMinSpeechMs(llmOptions: Record<string, unknown>): number {
+  const raw = (llmOptions.vendorSpecific as any)?.ultravox?.vadSettings?.minimumInterruptionDuration;
+  const m = /^(\d+(?:\.\d+)?)s$/.exec(String(raw ?? "").trim());
+  // Unset means Ultravox's own 0.09 s, far too twitchy for a local VAD.
+  return m ? Math.round(Number(m[1]) * 1000) : 480;
+}
+
+/** The local VAD the Ultravox plugin runs in text-output mode, or undefined if it cannot load. */
+function textOutputLocalVad(llmOptions: Record<string, unknown>) {
+  try {
+    return new inference.VAD({ minSpeechDuration: ultravoxBargeInMinSpeechMs(llmOptions) });
+  } catch (e) {
+    logger.warn({ e: e instanceof Error ? e.message : String(e) }, "local VAD unavailable; text-output barge-in falls back to transcripts");
+    return undefined;
+  }
+}
+
 export function buildRealtimeLlmOptions(
   modelName: string,
   agent: Agent,
@@ -615,8 +638,12 @@ export function createVoiceModelAndSession(
   // interrupt its playout.
   const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
 
+  const localVad = textOutputEnabled(agent, modelName) && modelName.includes("livekit:ultravox/")
+    ? textOutputLocalVad(llmOptions)
+    : undefined;
+
   const session = new voice.AgentSession({
-    llm: new realtime.RealtimeModel(llmOptions),
+    llm: new realtime.RealtimeModel({ ...llmOptions, ...(localVad ? { localVad } : {}) }),
     ...externalTts,
     ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeInactivityVoiceOptions,
