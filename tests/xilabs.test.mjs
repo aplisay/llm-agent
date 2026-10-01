@@ -1,12 +1,28 @@
 import { getAccent, mapXiLabsVoices } from '../lib/voices/xilabs.js';
 
 describe('XiLabs accent parsing', () => {
-  test('maps a complete accent name without a decorator', () => {
+  test('maps a country accent without a decorator', () => {
     expect(getAccent('british')).toEqual({ language: 'en-GB', decorator: '' });
+    expect(getAccent('en-british')).toEqual({ language: 'en-GB', decorator: '' });
   });
 
-  test('keeps the unmatched suffix as the decorator', () => {
-    expect(getAccent('brit')).toEqual({ language: 'en-GB', decorator: 'ish' });
+  test('keeps the rest of a compound accent as the decorator', () => {
+    // The map key was matched against the label the wrong way round, so these
+    // all fell back to en-US.
+    expect(getAccent('british-essex')).toEqual({ language: 'en-GB', decorator: 'essex' });
+    expect(getAccent('english-swedish')).toEqual({ language: 'en-GB', decorator: 'swedish' });
+    expect(getAccent('american-southern')).toEqual({ language: 'en-US', decorator: 'southern' });
+  });
+
+  test('places a regional accent but keeps it in the description', () => {
+    expect(getAccent('yorkshire')).toEqual({ language: 'en-GB', decorator: 'yorkshire' });
+    expect(getAccent('southern irish')).toEqual({ language: 'en-IE', decorator: 'southern' });
+  });
+
+  test('falls back to en-US for an unknown or missing accent', () => {
+    expect(getAccent('transatlantic')).toEqual({ language: 'en-US', decorator: 'transatlantic' });
+    expect(getAccent(undefined)).toEqual({ language: 'en-US', decorator: '' });
+    expect(getAccent('constructor')).toEqual({ language: 'en-US', decorator: 'constructor' });
   });
 
   test('treats regular-expression characters as plain input', () => {
@@ -34,7 +50,7 @@ describe('XiLabs voice rows', () => {
     const [row] = mapXiLabsVoices([{
       voice_id: 'clonedvoiceid0000001',
       name: 'My Clone',
-      labels: { gender: 'male', accent: 'british' },
+      labels: { gender: 'male', accent: 'en-british' },
     }]);
     expect(row.description).toBe('My Clone');
     expect(row.language).toBe('en-GB');
