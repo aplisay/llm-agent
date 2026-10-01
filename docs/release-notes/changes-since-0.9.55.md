@@ -30,6 +30,11 @@ Pipecat), and **ci** (build and release pipeline).
   characters and milliseconds, and `stt` milliseconds once for every agent that
   had held the call. On realtime models only an external TTS was affected.
 
+- **[livekit] Ultravox with an external TTS**: replies are no longer cut off
+  before they are spoken. Ultravox can send the caller's words after its reply
+  to them has started, and that was taken as the caller interrupting, so the
+  reply was cancelled. A caller who speaks over the agent still interrupts it.
+
 ## Agents and models - pipecat
 
 - **[pipecat] OpenAI Realtime mid-call prompts**: on `pipecat:openai/gpt-realtime`
