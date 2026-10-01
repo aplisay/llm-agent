@@ -9,6 +9,9 @@ import {
   log,
   stream,
   shortuuid,
+  VADEventType,
+  type VAD,
+  type VADStream,
 } from "@livekit/agents";
 import { AudioFrame } from "@livekit/rtc-node";
 import { once } from "node:events";
@@ -53,6 +56,8 @@ interface ModelOptions {
   firstSpeaker: string;
   /** `agentReaction` per tool name, sent with that tool's result. See PR #354. */
   toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
+  /** Text-output mode only: detects the caller speaking over the TTS. See #runLocalVad. */
+  localVad?: VAD;
   vendorSpecific?: {
     ultravox?: {
       experimentalSettings?: {
@@ -450,6 +455,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     transcriptOptional = false,
     firstSpeaker = "FIRST_SPEAKER_AGENT",
     toolReactions,
+    localVad,
     vendorSpecific,
   }: {
     modalities?: ["text", "audio"] | ["text"];
@@ -470,6 +476,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     transcriptOptional?: boolean;
     firstSpeaker?: string;
     toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
+    localVad?: VAD;
     vendorSpecific?: {
       ultravox?: {
         experimentalSettings?: {
@@ -525,6 +532,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       transcriptOptional,
       firstSpeaker,
       toolReactions,
+      localVad,
       vendorSpecific,
     };
 
@@ -747,6 +755,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #userTranscriptOrdinal: number | undefined = undefined;
   // Highest ordinal seen on an agent transcript; see userTranscriptAlreadyAnswered.
   #agentTranscriptOrdinal: number | undefined = undefined;
+  #vadStream: VADStream | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
   // Track message IDs that have been sent to Ultravox (to avoid duplicates)
@@ -768,6 +777,11 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#fncCtx = fncCtx;
     this.#chatCtx = chatCtx;
     this.#callCorrelationId = opts.callId ?? null;
+
+    if (this.#textOnly && opts.localVad) {
+      this.#vadStream = opts.localVad.stream();
+      void this.#runLocalVad(this.#vadStream);
+    }
 
     // Start the session immediately if tools are available, otherwise wait for updateTools
     if (Object.keys(functionToolsOf(fncCtx)).length > 0) {
@@ -921,6 +935,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   pushAudio(frame: AudioFrame): void {
+    this.#vadStream?.pushFrame(frame);
     // Process audio through resampling and buffering
     for (const f of this.resampleAudio(frame)) {
       // Type assertion: AudioByteStream.write() accepts ArrayBuffer, but f.data.buffer
@@ -1651,6 +1666,8 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   async close() {
     this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
+    this.#vadStream?.close();
+    this.#vadStream = undefined;
     if (!this.#ws) return;
     this.#closing = true;
     await this.#ws.close();
@@ -1699,6 +1716,29 @@ export class RealtimeSession extends llm.RealtimeSession {
   /** Text-output mode: Ultravox sends no audio, so its streams are text-only. */
   get #textOnly(): boolean {
     return !this.#opts.modalities.includes("audio");
+  }
+
+  /**
+   * Text-output mode: once a turn's text has arrived, Ultravox gives no sign of
+   * the caller speaking over the TTS until their final transcript, which comes
+   * after they stop and often after Ultravox's reply to them has started. So a
+   * local VAD on the caller's audio raises the barge-in instead, as the Pipecat
+   * worker does (LOCAL_VAD_PROVIDERS).
+   */
+  async #runLocalVad(vadStream: VADStream): Promise<void> {
+    try {
+      for await (const ev of vadStream) {
+        if (ev.type === VADEventType.START_OF_SPEECH) {
+          this.#logger.debug({ speechDuration: ev.speechDuration }, "local VAD: caller started speaking");
+          this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+        } else if (ev.type === VADEventType.END_OF_SPEECH) {
+          this.emit("input_speech_stopped", { userTranscriptionEnabled: false });
+        }
+      }
+    } catch (error: any) {
+      this.#logger.warn({ error: error?.message }, "local VAD stopped; barge-in falls back to transcripts");
+      if (this.#vadStream === vadStream) this.#vadStream = undefined;
+    }
   }
 
   /**
@@ -1917,7 +1957,8 @@ export class RealtimeSession extends llm.RealtimeSession {
       // may still be reading the turn out. Interrupt it now; Ultravox's reply
       // to what the caller said follows as its own generation, unless it has
       // already started, in which case interrupting would cancel that reply.
-      if (this.#textOnly && event.final && transcript.trim().length > 0) {
+      // Only a fallback: the local VAD (#runLocalVad) raises it much earlier.
+      if (this.#textOnly && !this.#vadStream && event.final && transcript.trim().length > 0) {
         if (userTranscriptAlreadyAnswered(event.ordinal, this.#agentTranscriptOrdinal)) {
           this.#logger.debug(
             { ordinal: event.ordinal, agentOrdinal: this.#agentTranscriptOrdinal },
@@ -1925,6 +1966,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           );
         } else {
           this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+          // The caller has already stopped, and without this the session keeps them "speaking".
+          this.emit("input_speech_stopped", { userTranscriptionEnabled: false });
         }
       }
 
