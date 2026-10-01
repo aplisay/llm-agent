@@ -25,6 +25,7 @@ import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
+import { finaliseJobBeforeExit, setJobFinaliser } from "./job-finaliser.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
@@ -65,11 +66,88 @@ import {
 } from "./output-stt.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 
-/** Numbers this job's attempts; a job process runs one job, so the highest is the current attempt. */
-let latestAttempt = 0;
-
 /** How long a failed attempt waits for its session's start() to finish before the fallback retry. */
 const ABANDONED_START_SETTLE_MS = 5_000;
+
+async function persistInvocationLogIfAvailable(
+  call: Pick<Call, "id" | "userId" | "organisationId">,
+  reason: string,
+): Promise<void> {
+  console.log(
+    "persistInvocationLogIfAvailable: checking if invocation logs are available",
+    { reason, length: invocationLogs.length },
+  );
+  if (!invocationLogs.length) {
+    console.log("No invocation logs to persist", {
+      reason,
+      length: invocationLogs.length,
+    });
+    logger.warn(
+      { reason, length: invocationLogs.length },
+      "Invocation log already persisted",
+    );
+    return;
+  }
+
+  try {
+    // Debug snapshot of what we've actually captured before sorting/persisting
+    const captureStats = getCaptureStats();
+    logger.info(
+      {
+        reason,
+        invocationLogsLength: invocationLogs.length,
+        captureStats,
+        invocationLogHeadSample: invocationLogs.slice(0, 3),
+        invocationLogTailSample: invocationLogs.slice(-3),
+      },
+      "persistInvocationLogIfAvailable: debug snapshot before sort",
+    );
+
+    const ts = (e: unknown) => {
+      const t = (e as { time?: number | string })?.time;
+      if (typeof t === "number") return t;
+      if (typeof t === "string") return new Date(t).getTime();
+      return 0;
+    };
+    const sorted = [...invocationLogs].sort((a, b) => ts(a) - ts(b));
+    console.log(
+      { length: sorted.length },
+      "persistInvocationLogIfAvailable: sorted invocation logs",
+    );
+    await saveInvocationLog({
+      userId: call.userId,
+      organisationId: call.organisationId,
+      callId: call.id,
+      subsystem: "livekit-agent",
+      log: {
+        reason,
+        logs: sorted,
+      },
+    });
+    console.log("InvocationLog persisted for call", {
+      callId: call.id,
+      entryCount: sorted.length,
+    });
+    logger.info(
+      {
+        callId: call.id,
+        entryCount: invocationLogs.length,
+      },
+      "InvocationLog persisted for call",
+    );
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    console.error("Failed to persist InvocationLog; continuing cleanup", {
+      message: error.message,
+      error,
+      reason,
+    });
+    logger.warn(
+      { message: error.message, error, reason },
+      "Failed to persist InvocationLog; continuing cleanup",
+    );
+  }
+}
 
 export async function runAgentWorker({
   ctx,
@@ -120,7 +198,6 @@ export async function runAgentWorker({
   /** When true, recording uses SDK RecorderIO (pipeline tee); we upload OGG in cleanup. */
   let useRecorderIO = false;
   // Declared before the transfer-only branch, whose disconnect handler sets the reason.
-  let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
 
   // If transferOnly mode, skip agent setup and go straight to transfer handling
@@ -128,6 +205,12 @@ export async function runAgentWorker({
     logger.info(
       { transferArgs, fallbackTransfer: true },
       "Running in transfer-only mode for fallback transfer",
+    );
+
+    // The handler below sets its reason before it deletes the room: the
+    // deletion can start the job's shutdown, which runs this finaliser.
+    setJobFinaliser(ctx, (endReason) =>
+      persistInvocationLogIfAvailable(call, invocationLogReason || endReason || "shutdown"),
     );
 
     // Set up participant disconnect handlers BEFORE transfer to ensure they're ready
@@ -159,6 +242,7 @@ export async function runAgentWorker({
         logger.info(
           "bridged participant disconnected, shutting down (transfer-only mode)",
         );
+        invocationLogReason = DISCONNECT_REASONS.BRIDGED_PARTICIPANT;
         try {
           await endTransferActivityIfNeeded(
             DISCONNECT_REASONS.BRIDGED_PARTICIPANT,
@@ -173,7 +257,7 @@ export async function runAgentWorker({
         await deleteRoomWithRetry(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
-        invocationLogReason = DISCONNECT_REASONS.BRIDGED_PARTICIPANT;
+        await finaliseJobBeforeExit(ctx);
         await ctx.shutdown(DISCONNECT_REASONS.BRIDGED_PARTICIPANT);
         process.exit(0);
       }
@@ -185,6 +269,7 @@ export async function runAgentWorker({
         logger.info(
           "original participant disconnected, shutting down (transfer-only mode)",
         );
+        invocationLogReason = DISCONNECT_REASONS.ORIGINAL_PARTICIPANT;
         try {
           await endTransferActivityIfNeeded(
             DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
@@ -199,7 +284,7 @@ export async function runAgentWorker({
         await deleteRoomWithRetry(room.name).catch((e) => {
           logger.error({ e }, "error deleting room");
         });
-        invocationLogReason = DISCONNECT_REASONS.ORIGINAL_PARTICIPANT;
+        await finaliseJobBeforeExit(ctx);
         await ctx.shutdown(DISCONNECT_REASONS.ORIGINAL_PARTICIPANT);
         process.exit(0);
       } else {
@@ -302,7 +387,6 @@ export async function runAgentWorker({
   /** Recording + invocation logs must stay on the inbound agent call, not the bridged child call. */
   const primaryRecordingCallId = call.id;
   let maxDuration: number = 305000; // Default value
-  const attemptId = ++latestAttempt;
   // Set when this attempt failed to start and the worker's fallback loop takes
   // over: every teardown path of this attempt must then do nothing.
   let attemptAbandoned = false;
@@ -451,122 +535,35 @@ export async function runAgentWorker({
     }
   };
 
-  const persistInvocationLogIfAvailable = async (reason: string) => {
+  // A later fallback attempt's finaliser replaces this one (job-finaliser.ts).
+  setJobFinaliser(ctx, async (endReason) => {
+    const reason = invocationLogReason || endReason || "shutdown";
+    const captureStats = getCaptureStats();
     console.log(
-      "persistInvocationLogIfAvailable: checking if invocation logs are available",
-      { reason, length: invocationLogs.length },
+      "shutdown callback: starting finalization and InvocationLog persistence",
+      {
+        reason,
+        captureStats,
+        invocationLogsLength: invocationLogs.length,
+        invocationLogHeadSample: invocationLogs.slice(0, 3),
+        invocationLogTailSample: invocationLogs.slice(-3),
+      },
     );
-    if (!invocationLogs.length) {
-      console.log("No invocation logs to persist", {
-        reason,
-        length: invocationLogs.length,
-      });
-      logger.warn(
-        { reason, length: invocationLogs.length },
-        "Invocation log already persisted",
-      );
-      return;
+
+    // An abandoned attempt recorded only its failed start.
+    if (!attemptAbandoned) {
+      await finalizeRecorderRecording();
     }
-    invocationLogPersisted = true;
+    console.log(
+      "shutdown callback: recorder finalized, persisting InvocationLog",
+      { reason },
+    );
 
-    try {
-      // Debug snapshot of what we've actually captured before sorting/persisting
-      const captureStats = getCaptureStats();
-      logger.info(
-        {
-          reason,
-          invocationLogsLength: invocationLogs.length,
-          captureStats,
-          invocationLogHeadSample: invocationLogs.slice(0, 3),
-          invocationLogTailSample: invocationLogs.slice(-3),
-        },
-        "persistInvocationLogIfAvailable: debug snapshot before sort",
-      );
-
-      const ts = (e: unknown) => {
-        const t = (e as { time?: number | string })?.time;
-        if (typeof t === "number") return t;
-        if (typeof t === "string") return new Date(t).getTime();
-        return 0;
-      };
-      const sorted = [...invocationLogs].sort((a, b) => ts(a) - ts(b));
-      console.log(
-        { length: sorted.length },
-        "persistInvocationLogIfAvailable: sorted invocation logs",
-      );
-      await saveInvocationLog({
-        userId: call.userId,
-        organisationId: call.organisationId,
-        callId: primaryRecordingCallId,
-        subsystem: "livekit-agent",
-        log: {
-          reason,
-          logs: sorted,
-        },
-      });
-      console.log("InvocationLog persisted for call", {
-        callId: primaryRecordingCallId,
-        entryCount: sorted.length,
-      });
-      logger.info(
-        {
-          callId: primaryRecordingCallId,
-          entryCount: invocationLogs.length,
-        },
-        "InvocationLog persisted for call",
-      );
-    } catch (e) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      console.error("Failed to persist InvocationLog; continuing cleanup", {
-        message: error.message,
-        error,
-        reason,
-      });
-      logger.warn(
-        { message: error.message, error, reason },
-        "Failed to persist InvocationLog; continuing cleanup",
-      );
-    }
-  };
-
-  try {
-    ctx.addShutdownCallback(async () => {
-      // Every attempt registers this callback. Only the latest one runs it, so a
-      // fallback retry saves one InvocationLog and uploads at most one recording.
-      if (attemptId !== latestAttempt) return;
-      const reason = invocationLogReason || "shutdown";
-      const captureStats = getCaptureStats();
-      console.log(
-        "shutdown callback: starting finalization and InvocationLog persistence",
-        {
-          reason,
-          captureStats,
-          invocationLogsLength: invocationLogs.length,
-          invocationLogHeadSample: invocationLogs.slice(0, 3),
-          invocationLogTailSample: invocationLogs.slice(-3),
-        },
-      );
-
-      // An abandoned attempt recorded only its failed start.
-      if (!attemptAbandoned) {
-        await finalizeRecorderRecording();
-      }
-      console.log(
-        "shutdown callback: recorder finalized, persisting InvocationLog",
-        { reason },
-      );
-
-      await persistInvocationLogIfAvailable(reason);
-      console.log("shutdown callback: InvocationLog persistence complete", {
-        reason,
-      });
+    await persistInvocationLogIfAvailable(call, reason);
+    console.log("shutdown callback: InvocationLog persistence complete", {
+      reason,
     });
-  } catch (e) {
-    console.log(
-      "shutdown callback: failed to register; RecorderIO upload or InvocationLog persistence may be skipped",
-      { error: e },
-    );
-  }
+  });
 
   // ---- Usage metering ----
   // Accumulate token / character / audio-duration counts emitted by the LiveKit
@@ -782,6 +779,9 @@ export async function runAgentWorker({
       return;
     }
     isCleaningUp = true;
+    // Set before the room is deleted: the deletion can start the job's
+    // shutdown, which saves the InvocationLog with this reason.
+    invocationLogReason = reason;
     // A call being torn down is not starting any more.
     startup.close();
 
@@ -870,7 +870,6 @@ export async function runAgentWorker({
       });
       exitStatus.roomDeleted = true;
 
-      invocationLogReason = reason;
       exitStatus.contextShutdown = true;
       logger.info(
         { exitStatus, reason },

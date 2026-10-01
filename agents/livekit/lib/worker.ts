@@ -50,6 +50,7 @@ import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { runFallbackMessage } from "./fallback-message.js";
 import { releaseFailedAttemptSession } from "./primary-session.js";
+import { finaliseJobBeforeExit } from "./job-finaliser.js";
 import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
 
@@ -693,7 +694,7 @@ export default defineAgent({
       const cleanup = async (): Promise<void> => {
         // Mark the call failed so it isn't left orphaned (no endedAt/reason):
         // this records the failure reason on the call and lets the diagnosis
-        // loop find it. The InvocationLog is persisted by ctx.shutdown() below.
+        // loop find it. The InvocationLog is saved below, before the exit.
         try {
           if (recordedCall && !recordedCall._endCalled) {
             await recordedCall.end(
@@ -720,8 +721,8 @@ export default defineAgent({
         } catch (err) {
           logger.error({ err }, "error deleting room");
         }
-        // Best-effort shutdown; invocation logs are only persisted when the agent
-        // session has started and the shutdown callback has been registered.
+        await finaliseJobBeforeExit(ctx, `Agent setup failed: ${endReasonFrom(e)}`);
+        // Best-effort shutdown.
         try {
           await ctx.shutdown((e as Error).message);
         } catch (err) {
