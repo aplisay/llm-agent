@@ -133,7 +133,9 @@ To configure an agent-level fallback, specify the ID of another agent:
 }
 ```
 
-The fallback agent must already exist. When the primary agent fails, the system will:
+The fallback agent must already exist, and it must belong to the same organisation as the agent that falls back to it. Neither is checked when the agent is saved. A fallback agent that is missing, or that belongs to another organisation, is skipped when the call fails over, and the chain moves on to the next step.
+
+When the primary agent fails, the system will:
 - Fetch the fallback agent by ID
 - Restart the session with the fallback agent's configuration
 - Use the fallback agent's own `options.fallback` for any further fallback decisions
@@ -485,7 +487,8 @@ All properties are optional, but at least one should be specified for failover t
 ### Fallback Agent Not Found
 
 - **Verify agent exists**: The fallback agent ID must reference an existing agent
-- **Check permissions**: Ensure the fallback agent is accessible to the same user/organization
+- **Check the organisation**: The fallback agent must belong to the same organisation as the agent that falls back to it. An agent in another organisation is treated as not found
+- **Check logs**: Look for `fallback agent failed` (Pipecat) or `Failed to fetch or use fallback agent` (LiveKit). The chain then moves on to the model, message or number step
 
 ### Message Fallback Not Playing
 
