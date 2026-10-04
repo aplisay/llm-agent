@@ -8,7 +8,8 @@ let testNumber = "442080996999";
 
 let testApplication = {
   name: "Test Application",
-  url: "wss://aplisay.net/a/b",
+  // jambonz.cloud rejects an application whose hook host does not resolve in DNS.
+  url: "wss://aplisay.uk/a/b",
   tts: {
     vendor: "google",
     language: "en-GB",
@@ -21,7 +22,7 @@ let testApplication = {
 
 };
 
-let carriers, numbers, makeNumbers;
+let carriers, carrierSid, credentials, numbers, makeNumbers;
 
 let needNumbers = (fs.existsSync('../credentials/numbers.js') && (await import('../credentials/numbers.js')).default) || [];
 
@@ -68,24 +69,28 @@ describe('Jambonz', () => {
       }
       expect(carriers).toBeInstanceOf(Array);
       expect(carriers.length).toBeGreaterThan(0);
+      // Same pick as Application.loadCarrier(). jambonz.cloud also lists shared carriers, and
+      // it refuses a number with no carrier.
+      carrierSid = (carriers.length == 1 ? carriers[0] : carriers.find(c => c.name === 'Aplisay'))?.voip_carrier_sid;
+      expect(carrierSid).toContain('-');
     });
 
     test('List Credentials', async () => {
       try {
-        carriers = await jambonz.getCredentials();
+        credentials = await jambonz.getCredentials();
       }
       catch (e) {
-        console.log({ message: e.message, request: e.request.path }, 'List carriers');
+        console.log({ message: e.message, request: e.request.path }, 'List credentials');
       }
-      expect(carriers).toBeInstanceOf(Array);
-      expect(carriers.length).toBe(3);
+      expect(credentials).toBeInstanceOf(Array);
+      expect(credentials.length).toBe(3);
     });
 
 
     test('Add missing numbers', async () => {
       // `expect(promise).resolves` with no matcher chained never awaits, so the
       // adds would be fire-and-forget. Await the real promises instead.
-      await Promise.all((makeNumbers || []).map(n => jambonz.addNumber({ number: n, voip_carrier_sid: carriers[0]?.voip_carrier_sid })));
+      await Promise.all((makeNumbers || []).map(n => jambonz.addNumber({ number: n, carrier: carrierSid })));
     });
 
     test('List applications', async () => {
@@ -137,7 +142,7 @@ describe('Jambonz', () => {
     });
 
     test('Add number', () => {
-      return expect(jambonz.addNumber({ number: testNumber }).then(n => ((numberSid = n.sid), n))).resolves.toHaveProperty('sid');
+      return expect(jambonz.addNumber({ number: testNumber, carrier: carrierSid }).then(n => ((numberSid = n.sid), n))).resolves.toHaveProperty('sid');
     });
 
     test('Get number', () => {
