@@ -1967,7 +1967,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=2,<3" },
-    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "mcp", "openai", "silero", "ultravox", "webrtc"], specifier = "==1.10.0" },
+    { name = "pipecat-ai", extras = ["anthropic", "cartesia", "daily", "deepgram", "google", "mcp", "neuphonic", "openai", "silero", "ultravox", "webrtc"], specifier = "==1.10.0" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },

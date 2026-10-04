@@ -1,0 +1,11 @@
+{
+  "source": "schema",
+  "note": "The direct route's HTTPValidationError body from the vendor OpenAPI document (v0.2.0, 2026-09-22).",
+  "status": 422,
+  "headers": { "x-typesafe-request-id": "req_schema_fixture_422" },
+  "body": {
+    "detail": [
+      { "loc": ["body", "questions", "urgency", "score", "criteria"], "msg": "Field required", "type": "missing", "input": { "type": "score" } }
+    ]
+  }
+}

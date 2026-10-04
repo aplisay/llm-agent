@@ -132,11 +132,13 @@ describe('Models Endpoint Test', () => {
     
     // All models should have the same structure
     for (const [modelName, modelInfo] of modelEntries) {
-      const requiredKeys = ['description', 'supportsFunctions', 'audioModel', 'hasTelephony', 'hasWebRTC', 'hasAuxStt', 'hasOutputStt'];
+      const requiredKeys = ['description', 'supportsFunctions', 'audioModel', 'hasTelephony', 'hasWebRTC', 'hasAuxStt', 'hasOutputStt', 'kind'];
       
       for (const key of requiredKeys) {
         expect(modelInfo).toHaveProperty(key);
       }
+      // Every row says whether it converses or decides (docs/typesafe-jev.md).
+      expect(['generative', 'decision']).toContain(modelInfo.kind);
 
       // Should not have extra unexpected keys
       const actualKeys = Object.keys(modelInfo);

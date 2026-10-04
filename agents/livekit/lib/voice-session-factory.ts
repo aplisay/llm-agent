@@ -4,15 +4,16 @@
  */
 import { inference, voice, type llm } from "@livekit/agents";
 import type { VAD } from "@livekit/agents";
-import * as openai from "@livekit/agents-plugin-openai";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import { SentenceStreamTTS } from "./sentence-stream-tts.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import type { VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
-  inferTtsVendor,
+  pipelineTtsVendor,
+  pipelineUsesGoogleTts,
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
@@ -23,8 +24,15 @@ import {
   pipelineUsesProviderApiKeys,
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
+import logger from "./logger.js";
+import { buildNeuphonicTts } from "./neuphonic-tts.js";
+import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
-import type { UltravoxInactivityMessage } from "../plugins/ultravox/src/realtime/api_proto.js";
+import { OpenAIRealtimeModel } from "./openai-realtime.js";
+import type {
+  UltravoxAgentReaction,
+  UltravoxInactivityMessage,
+} from "../plugins/ultravox/src/realtime/api_proto.js";
 
 /**
  * Share the hangup threshold across native Ultravox prompts and the inactivity kick. See PR #340.
@@ -133,6 +141,41 @@ export function armHandoverInactivity(realtimeModel: unknown, agent: Agent): boo
 }
 
 /**
+ * The Ultravox `agentReaction` per tool for `agent`. The hangup builtin must `listens`: on the
+ * default the model takes another turn after the result and calls hangup again, in a loop.
+ * Keyed by the function's own name, which the customer chooses. See PR #354.
+ */
+export function ultravoxToolReactions(
+  agent: Agent,
+): Record<string, UltravoxAgentReaction> | undefined {
+  const names = (agent?.functions || [])
+    .filter((fnc) => fnc.implementation === "builtin" && fnc.platform === "hangup")
+    .map((fnc) => fnc.name);
+  if (!names.length) return undefined;
+  return Object.fromEntries(names.map((name) => [name, "listens" as const]));
+}
+
+/**
+ * Override tool reactions for the next session: in-place handovers reuse a model built
+ * for the outgoing agent. Return false for models without the override.
+ */
+export function armHandoverToolReactions(realtimeModel: unknown, agent: Agent): boolean {
+  const model = realtimeModel as
+    | {
+        setNextSessionToolReactions?: (
+          r: Record<string, UltravoxAgentReaction> | undefined,
+        ) => void;
+      }
+    | null
+    | undefined;
+  if (typeof model?.setNextSessionToolReactions !== "function") {
+    return false;
+  }
+  model.setNextSessionToolReactions(ultravoxToolReactions(agent));
+  return true;
+}
+
+/**
  * Google Cloud voice ids (e.g. en-GB-Wavenet-N) are not LiveKit Inference models.
  * Node agents use Gemini TTS (`@livekit/agents-plugin-google` beta); map Cloud ids to a Gemini prebuilt voice.
  */
@@ -162,6 +205,7 @@ function geminiVoiceNameForGoogleTtsOption(agent: Agent): string {
 function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
   const idx = ttsStr.lastIndexOf(":");
   const voice = ttsStr.slice(idx + 1);
+  warnTtsSpeedUnsupported(agent, "LiveKit Inference deepgram/aura-2");
   const language =
     agent.options?.tts?.language?.trim() ||
     agent.options?.stt?.language?.trim() ||
@@ -173,14 +217,19 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
   });
 }
 
-/** LiveKit Inference TTS model string, Deepgram `inference.TTS`, or Google Gemini TTS plugin. */
+/** LiveKit Inference TTS model string, Deepgram `inference.TTS`, Google Gemini TTS plugin, or Neuphonic. */
 export function buildPipelineTts(agent: Agent) {
   const useKeys = pipelineUsesProviderApiKeys();
 
   const t = agent.options?.tts;
-  const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
 
-  if (vendor === "google") {
+  // Not on LiveKit Inference, so always a direct key, whatever LIVEKIT_PIPELINE_USE_PROVIDER_KEYS says.
+  if (pipelineTtsVendor(agent) === "neuphonic") {
+    return buildNeuphonicTts(agent);
+  }
+
+  if (pipelineUsesGoogleTts(agent)) {
+    warnTtsSpeedUnsupported(agent, "google TTS");
     const custom = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS?.trim();
     if (custom) {
       const voice = String(t?.voice || "").trim();
@@ -188,13 +237,15 @@ export function buildPipelineTts(agent: Agent) {
     }
     const model =
       process.env.LIVEKIT_PIPELINE_GEMINI_TTS_MODEL?.trim() || "gemini-2.5-flash-preview-tts";
-    return new google.beta.TTS({
-      model,
-      voiceName: geminiVoiceNameForGoogleTtsOption(agent),
-      vertexai: process.env.GOOGLE_GENAI_USE_VERTEXAI === "true",
-      project: process.env.GOOGLE_CLOUD_PROJECT,
-      location: process.env.GOOGLE_CLOUD_LOCATION,
-    });
+    return new SentenceStreamTTS(
+      new google.beta.TTS({
+        model,
+        voiceName: geminiVoiceNameForGoogleTtsOption(agent),
+        vertexai: process.env.GOOGLE_GENAI_USE_VERTEXAI === "true",
+        project: process.env.GOOGLE_CLOUD_PROJECT,
+        location: process.env.GOOGLE_CLOUD_LOCATION,
+      }),
+    );
   }
 
   if (useKeys) {
@@ -205,11 +256,29 @@ export function buildPipelineTts(agent: Agent) {
   if (ttsStr.startsWith("deepgram/aura-2:")) {
     return inferenceTtsForDeepgramAura2(ttsStr, agent);
   }
+  if (ttsStr.startsWith("cartesia/")) {
+    // Inference TTS defaults the language to "en", which would drive a non-English voice as English.
+    const language = agentLanguageTag(agent)?.split("-")[0]?.toLowerCase();
+    const speed = ttsSpeedFor(agent, "cartesia");
+    if (!language && speed === undefined) return ttsStr;
+    const [model, voice] = inference.parseTTSModelString(ttsStr);
+    return new inference.TTS({
+      model,
+      voice,
+      ...(language ? { language } : {}),
+      ...(speed !== undefined ? { modelOptions: { speed } } : {}),
+    });
+  }
+  if (requestedTtsSpeed(agent) === undefined) {
+    return ttsStr;
+  }
+  warnTtsSpeedUnsupported(agent, `LiveKit Inference ${ttsStr.split(":")[0]}`);
   return ttsStr;
 }
 
 export const realtimePluginModules: Record<string, unknown> = {
-  openai,
+  // Not the plugin module: the plugin's connect can end the job process. See openai-realtime.ts.
+  openai: { realtime: { RealtimeModel: OpenAIRealtimeModel } },
   ultravox,
   google,
 };
@@ -265,6 +334,28 @@ class PipelineVoiceAgent extends voice.Agent {
  * human hand-back (see handover-opening.ts). On Ultravox that session then
  * opens from it.
  */
+/**
+ * Minimum caller speech (ms) before the local VAD in Ultravox text-output mode
+ * interrupts the TTS: the agent's Ultravox `minimumInterruptionDuration`, so
+ * barge-in needs the same deliberate speech as in voice mode.
+ */
+export function ultravoxBargeInMinSpeechMs(llmOptions: Record<string, unknown>): number {
+  const raw = (llmOptions.vendorSpecific as any)?.ultravox?.vadSettings?.minimumInterruptionDuration;
+  const m = /^(\d+(?:\.\d+)?)s$/.exec(String(raw ?? "").trim());
+  // Unset means Ultravox's own 0.09 s, far too twitchy for a local VAD.
+  return m ? Math.round(Number(m[1]) * 1000) : 480;
+}
+
+/** The local VAD the Ultravox plugin runs in text-output mode, or undefined if it cannot load. */
+function textOutputLocalVad(llmOptions: Record<string, unknown>) {
+  try {
+    return new inference.VAD({ minSpeechDuration: ultravoxBargeInMinSpeechMs(llmOptions) });
+  } catch (e) {
+    logger.warn({ e: e instanceof Error ? e.message : String(e) }, "local VAD unavailable; text-output barge-in falls back to transcripts");
+    return undefined;
+  }
+}
+
 export function buildRealtimeLlmOptions(
   modelName: string,
   agent: Agent,
@@ -300,6 +391,17 @@ export function buildRealtimeLlmOptions(
       typeof temperature === "number" && temperature >= 0 && temperature <= 1
         ? temperature
         : ULTRAVOX_DEFAULT_TEMPERATURE;
+  }
+  // `options.tts.speed` belongs to the external TTS in text-output mode.
+  if (!textOutput && requestedTtsSpeed(agent) !== undefined) {
+    if (modelName.includes("livekit:openai/")) {
+      llmOptions.speed = ttsSpeedFor(agent, "openai");
+    } else if (modelName.includes("livekit:ultravox/")) {
+      // The plugin clamps it to the range of the provider behind the voice.
+      llmOptions.ttsSpeed = requestedTtsSpeed(agent);
+    } else {
+      warnTtsSpeedUnsupported(agent, modelName);
+    }
   }
   const vendorSpecific = (agent?.options?.vendorSpecific ||
     undefined) as Record<string, any> | undefined;
@@ -400,7 +502,44 @@ export function buildRealtimeLlmOptions(
     }
   }
 
+  if (modelName.includes("livekit:ultravox/")) {
+    const toolReactions = ultravoxToolReactions(agent);
+    if (toolReactions) {
+      llmOptions.toolReactions = toolReactions;
+    }
+  }
+
   return llmOptions;
+}
+
+/**
+ * Keep agents-js 1.0.46 turn-taking. 1.9 otherwise turns on a bundled VAD, an audio turn
+ * detector, adaptive interruption, preemptive generation, a 3 s AEC warm-up with no barge-in,
+ * false-interruption resume and a 3 s endpointing cap. Adopt each one on purpose.
+ */
+export function legacyTurnHandlingOptions({
+  vad,
+  turnDetection,
+}: {
+  vad?: VAD;
+  turnDetection: "vad" | "stt" | null;
+}) {
+  return {
+    vad: vad ?? null,
+    aecWarmupDuration: null,
+    turnHandling: {
+      turnDetection,
+      endpointing: { minDelay: 500, maxDelay: 6000 },
+      interruption: {
+        mode: "vad" as const,
+        // Drop early user audio while agent speech is uninterruptible (greeting mode).
+        // This matches the product decision to avoid buffering/replaying early speech.
+        discardAudioIfUninterruptible: true,
+        resumeFalseInterruption: false,
+      },
+      preemptiveGeneration: { enabled: false },
+    },
+  };
 }
 
 export interface CreateVoiceModelAndSessionParams {
@@ -449,8 +588,7 @@ export function createVoiceModelAndSession(
 
   // Set userAwayTimeout only for a configured kick; otherwise preserve the SDK default. See PR #340.
   const userAwayTimeout = inactivityAwayTimeoutSecs(agent);
-  const inactivityVoiceOptions =
-    userAwayTimeout !== undefined ? { voiceOptions: { userAwayTimeout } } : {};
+  const inactivityVoiceOptions = userAwayTimeout !== undefined ? { userAwayTimeout } : {};
 
   if (voiceMode === "pipeline") {
     const providerSeg = parseProviderModelName(modelName);
@@ -468,16 +606,7 @@ export function createVoiceModelAndSession(
     // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
     // otherwise use STT-based turn detection (no extra native deps).
     const session = new voice.AgentSession({
-      ...(vad
-        ? { vad, turnDetection: "vad" as const }
-        : { turnDetection: "stt" as const }),
-      // Drop early user audio while agent speech is uninterruptible (greeting mode).
-      // This matches the product decision to avoid buffering/replaying early speech.
-      turnHandling: {
-        interruption: {
-          discardAudioIfUninterruptible: true,
-        },
-      },
+      ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
       stt: sttModel,
       llm: pipelineLlm,
       tts: ttsModel,
@@ -509,15 +638,14 @@ export function createVoiceModelAndSession(
   // interrupt its playout.
   const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
 
+  const localVad = textOutputEnabled(agent, modelName) && modelName.includes("livekit:ultravox/")
+    ? textOutputLocalVad(llmOptions)
+    : undefined;
+
   const session = new voice.AgentSession({
-    llm: new realtime.RealtimeModel(llmOptions),
+    llm: new realtime.RealtimeModel({ ...llmOptions, ...(localVad ? { localVad } : {}) }),
     ...externalTts,
-    // Drop early user audio while agent speech is uninterruptible (greeting mode).
-    turnHandling: {
-      interruption: {
-        discardAudioIfUninterruptible: true,
-      },
-    },
+    ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeInactivityVoiceOptions,
   } as any);
   return { session, model };

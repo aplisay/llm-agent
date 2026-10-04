@@ -16,6 +16,7 @@ const ENV = {
   CARTESIA_API_KEY: standIn("cartesia"),
   ELEVEN_API_KEY: standIn("elevenlabs"),
   ULTRAVOX_API_KEY: standIn("ultravox"),
+  NEUPHONIC_API_KEY: standIn("neuphonic"),
   LIVEKIT_API_KEY: standIn("livekit-key"),
   LIVEKIT_API_SECRET: standIn("livekit-secret"),
 };
@@ -33,6 +34,9 @@ const deepgram = await import("@livekit/agents-plugin-deepgram");
 const cartesia = await import("@livekit/agents-plugin-cartesia");
 const elevenlabs = await import("@livekit/agents-plugin-elevenlabs");
 const ultravox = await import("../plugins/ultravox/src/index.js");
+const { OpenAIRealtimeModel } = await import("../lib/openai-realtime.js");
+const { SentenceStreamTTS } = await import("../lib/sentence-stream-tts.js");
+const { NeuphonicTTS } = await import("../lib/neuphonic-tts.js");
 const { logOptions, setInvocationLogBuffer } = await import("../lib/logger.js");
 const { agentForLog, instanceForLog, labelOf, sessionEventForLog, sessionModelsForLog } = await import(
   "../lib/log-fields.js"
@@ -79,14 +83,13 @@ class PublicOptionsModel {
   }
 }
 
-/**
- * Every class the worker builds a session from, bar inference.LLM: agents-js 1.0.46 cannot construct
- * it with openai 6.49 (this branch's lockfile). inference.STT and inference.TTS hold the same options.
- */
+/** Every class the worker builds a session from, plus the plugin's own OpenAI Realtime model. */
 const SOURCES: Record<string, () => object> = {
+  OpenAIRealtimeModel: () => new OpenAIRealtimeModel({}),
   "openai.realtime.RealtimeModel": () => new openai.realtime.RealtimeModel({}),
   "google.beta.realtime.RealtimeModel": () => new google.beta.realtime.RealtimeModel({}),
   "ultravox.realtime.RealtimeModel": () => new ultravox.realtime.RealtimeModel({}),
+  "inference.LLM": () => new inference.LLM({ model: "openai/gpt-4o-mini" }),
   "inference.STT": () => new inference.STT({ model: "deepgram/nova-3" }),
   "inference.TTS": () => new inference.TTS({ model: "cartesia/sonic-3", voice: "voice" }),
   "deepgram.STT": () => new deepgram.STT({ apiKey: ENV.DEEPGRAM_API_KEY }),
@@ -95,7 +98,8 @@ const SOURCES: Record<string, () => object> = {
   "elevenlabs.TTS": () => new elevenlabs.TTS({ voiceId: "voice" }),
   "openai.LLM": () => new openai.LLM({}),
   "google.LLM": () => new google.LLM({ model: "gemini-2.5-flash" }),
-  "google.beta.TTS": () => new google.beta.TTS({}),
+  SentenceStreamTTS: () => new SentenceStreamTTS(new google.beta.TTS({})),
+  NeuphonicTTS: () => new NeuphonicTTS({ apiKey: ENV.NEUPHONIC_API_KEY }),
   PublicOptionsModel: () => new PublicOptionsModel(),
 };
 
@@ -162,12 +166,12 @@ test("a close event logs its reason and error the same way", () => {
 
 test("a session logs its models by label", () => {
   const sessions: Record<string, ConstructorParameters<typeof voice.AgentSession>[0]> = {
-    "OpenAI Realtime": { llm: new openai.realtime.RealtimeModel({}) },
+    "OpenAI Realtime (plugin model)": { llm: new openai.realtime.RealtimeModel({}) },
     "Gemini Live": { llm: new google.beta.realtime.RealtimeModel({}) },
     Ultravox: { llm: new ultravox.realtime.RealtimeModel({}) },
     "LiveKit Inference pipeline": {
       stt: "deepgram/nova-3",
-      llm: new openai.LLM({}),
+      llm: "openai/gpt-4o-mini",
       tts: "cartesia/sonic-3:voice",
     },
   };

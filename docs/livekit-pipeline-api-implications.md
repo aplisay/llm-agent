@@ -81,7 +81,7 @@ Supported shape:
 - `options.tts.voice`: the voice identifier (provider-specific)
 - `options.tts.vendor`:
   - plain vendor name
-    - examples: `cartesia`, `elevenlabs`, `deepgram`, `google`
+    - examples: `cartesia`, `elevenlabs`, `deepgram`, `google`, `neuphonic` (see [neuphonic.md](neuphonic.md))
   - optional scoped model selection using `vendor/model`
     - examples:
       - `cartesia/sonic-3`

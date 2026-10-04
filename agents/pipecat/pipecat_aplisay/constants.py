@@ -22,3 +22,7 @@ DISCONNECT_REASONS = {
 }
 
 PLATFORM = "pipecat"
+
+# modelName for a leg with no bot on it (two humans bridged). The server keys
+# billing on it (lib/rate-components.js, lib/database.js); LiveKit uses the same.
+BRIDGED_CALL_MODEL = "telephony:bridged-call"

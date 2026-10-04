@@ -4,6 +4,7 @@ import * as google from "@livekit/agents-plugin-google";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import { buildRealtimeLlmOptions, getRealtimePlugin } from "../lib/voice-session-factory.js";
+import { OpenAIRealtimeModel } from "../lib/openai-realtime.js";
 import { LIVEKIT_REALTIME_MODEL_ROWS } from "../lib/livekit-model-registry.js";
 import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
@@ -354,7 +355,9 @@ test("google: the Gemini Live row resolves to the plugin's RealtimeModel", () =>
 });
 
 test("openai and ultravox rows still resolve to their plugin's RealtimeModel", () => {
-  assert.equal(getRealtimePlugin(OPENAI).realtime?.RealtimeModel, openai.realtime.RealtimeModel);
+  // OpenAI through a subclass that guards the socket connect (openai-realtime.ts).
+  assert.equal(getRealtimePlugin(OPENAI).realtime?.RealtimeModel, OpenAIRealtimeModel);
+  assert.ok(OpenAIRealtimeModel.prototype instanceof openai.realtime.RealtimeModel);
   assert.equal(getRealtimePlugin(ULTRAVOX).realtime?.RealtimeModel, ultravox.realtime.RealtimeModel);
 });
 

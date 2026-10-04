@@ -288,3 +288,57 @@ class TestResultCap:
         _FakeClient.response = _FakeResponse(body=big)
         out = _run(_rest_fn(), [], options={"maxResultBytes": 0})
         assert out["function_results"][0]["result"] == big
+
+
+class TestFieldListRedaction:
+    """``redact: ["name", ...]`` hides only those properties from the model;
+    the full result still reaches metadata for chaining (mirrors the JS
+    handler's contract)."""
+
+    BODY = {
+        "status": "resolved",
+        "match": {"name": "Sue Sinclair", "extension": "201", "direct": "+441234567890", "mobile": None},
+        "candidates": [{"name": "Sue Smith", "department": "Sales", "extension": "202"}],
+    }
+
+    def test_named_properties_are_stripped_at_any_depth(self) -> None:
+        _FakeClient.response = _FakeResponse(body=self.BODY)
+        md: dict = {}
+        out = _run(
+            _rest_fn(redact=["extension", "direct", "mobile"]), [],
+            options={"allowRedactedFunctionResults": True}, metadata=md,
+        )
+        first = out["function_results"][0]
+        assert first["error"] is None
+        assert first["result"] == {
+            "status": "resolved",
+            "match": {"name": "Sue Sinclair"},
+            "candidates": [{"name": "Sue Smith", "department": "Sales"}],
+        }
+        assert md["toolsCalls"]["booking_get_slots"]["result"] == self.BODY
+
+    def test_an_error_is_fully_redacted(self) -> None:
+        _FakeClient.response = _FakeResponse(status_code=500, body={"error": "boom", "extension": "201"})
+        out = _run(_rest_fn(redact=["extension"]), [], options={"allowRedactedFunctionResults": True})
+        first = out["function_results"][0]
+        assert first["result"] == "OK"
+        assert first["error"]
+
+    def test_a_result_that_is_not_json_is_unchanged(self) -> None:
+        _FakeClient.response = _FakeResponse(body="no such person", json_body=False)
+        out = _run(_rest_fn(redact=["extension"]), [], options={"allowRedactedFunctionResults": True})
+        assert out["function_results"][0]["result"] == "no such person"
+
+    def test_ignored_without_the_handler_option(self) -> None:
+        _FakeClient.response = _FakeResponse(body=self.BODY)
+        out = _run(_rest_fn(redact=["extension"]), [])
+        assert out["function_results"][0]["result"] == self.BODY
+
+    def test_helper_strips_a_json_string_result_and_returns_a_string(self) -> None:
+        visible = fh.redact_visible_result(json.dumps(self.BODY), ["extension", "direct", "mobile"], None)
+        assert isinstance(visible, str)
+        assert json.loads(visible) == {
+            "status": "resolved",
+            "match": {"name": "Sue Sinclair"},
+            "candidates": [{"name": "Sue Smith", "department": "Sales"}],
+        }

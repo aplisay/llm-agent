@@ -1,0 +1,14 @@
+{
+  "source": "recorded",
+  "note": "OpenRouter route, 2026-09-22, POST https://openrouter.ai/api/v1/systemone with a Choice whose criteria was null. OpenRouter validates the request itself and answers 400 with its envelope; the message is a JSON array of issues as a string. The account id field was removed.",
+  "status": 400,
+  "headers": {
+    "x-generation-id": "gen-dec-1790098990-recorded"
+  },
+  "body": {
+    "error": {
+      "message": "[\n  {\n    \"expected\": \"record\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      \"outcome\",\n      \"criteria\"\n    ],\n    \"message\": \"Invalid input: expected record, received null\"\n  }\n]",
+      "code": 400
+    }
+  }
+}

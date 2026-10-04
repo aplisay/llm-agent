@@ -108,7 +108,7 @@ class _Stop(Exception):
 def test_build_voice_session_passes_the_opening_to_ultravox(monkeypatch, opening):
     seen = {}
 
-    def fake_params(agent, system_prompt, ultravox_model, *, text_output, opening=None):
+    def fake_params(agent, system_prompt, ultravox_model, *, text_output, opening=None, **_):
         seen["opening"] = opening
         raise _Stop
 

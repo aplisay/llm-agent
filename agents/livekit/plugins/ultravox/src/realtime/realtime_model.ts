@@ -9,6 +9,9 @@ import {
   log,
   stream,
   shortuuid,
+  VADEventType,
+  type VAD,
+  type VADStream,
 } from "@livekit/agents";
 import { AudioFrame } from "@livekit/rtc-node";
 import { once } from "node:events";
@@ -17,9 +20,20 @@ import { WebSocket } from "ws";
 import * as api_proto from "./api_proto.js";
 import { FrameAccumulator } from "./frame_accumulator.js";
 import { UltravoxClient } from "./ultravox_client.js";
+import { ultravoxSpeedOverrides } from "./voice_speed.js";
 import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
+
+// The SDK passes a ToolContext instance (a class since agents 1.5); tests still
+// pass a plain name-keyed record. Object.keys() on the instance lists its
+// private fields, not the tools.
+function functionToolsOf(
+  ctx: llm.ToolContext | Record<string, any> | undefined,
+): Record<string, any> {
+  if (!ctx) return {};
+  return "functionTools" in ctx ? ctx.functionTools : ctx;
+}
 
 interface ModelOptions {
   modalities: Modality[];
@@ -27,6 +41,8 @@ interface ModelOptions {
   callId?: string;
   voice?: api_proto.Voice;
   languageHint?: string;
+  /** Portable `options.tts.speed`; see voice_speed.ts. */
+  ttsSpeed?: number;
   inputAudioFormat: api_proto.AudioFormat;
   outputAudioFormat: api_proto.AudioFormat;
   temperature: number;
@@ -38,6 +54,10 @@ interface ModelOptions {
   timeExceededMessage: string;
   transcriptOptional: boolean;
   firstSpeaker: string;
+  /** `agentReaction` per tool name, sent with that tool's result. See PR #354. */
+  toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
+  /** Text-output mode only: detects the caller speaking over the TTS. See #runLocalVad. */
+  localVad?: VAD;
   vendorSpecific?: {
     ultravox?: {
       experimentalSettings?: {
@@ -297,6 +317,18 @@ export function withInactivityMessagesOverride(
   return opts;
 }
 
+/** Replace toolReactions without changing model defaults; an override with no reactions clears them. */
+export function withToolReactionsOverride(
+  base: ModelOptions,
+  override?: { reactions?: Record<string, api_proto.UltravoxAgentReaction> }
+): ModelOptions {
+  const opts: ModelOptions = { ...base };
+  if (override) {
+    opts.toolReactions = override.reactions;
+  }
+  return opts;
+}
+
 /**
  * Fold one transcript frame into the turn accumulated so far.
  *
@@ -306,6 +338,19 @@ export function withInactivityMessagesOverride(
  * that reason since inception — so a consumer that reads only `text` silently drops
  * any turn delivered purely as deltas.
  */
+/**
+ * True when a user transcript belongs to a turn that an agent turn with a higher
+ * ordinal already answers. Ultravox can send the user's final transcript after its
+ * reply to it has started (live, 2026-10-01: agent ordinal 6, then user ordinal 5),
+ * so treating that transcript as a barge-in would cancel the reply itself.
+ */
+export function userTranscriptAlreadyAnswered(
+  userOrdinal: number | undefined,
+  latestAgentOrdinal: number | undefined
+): boolean {
+  return userOrdinal !== undefined && latestAgentOrdinal !== undefined && userOrdinal < latestAgentOrdinal;
+}
+
 export function foldTranscriptFrame(
   buffer: string,
   frame: { text?: string; delta?: string }
@@ -348,6 +393,23 @@ export function agentTextChunk(
   return { chunk: "", streamed };
 }
 
+/**
+ * The `client_tool_result` frame for a successful tool call. `agentReaction` is sent only
+ * when set: left off, Ultravox applies `speaks` and the model takes a new turn. See PR #354.
+ */
+export function clientToolResultMessage(
+  invocationId: string,
+  result: string,
+  agentReaction?: api_proto.UltravoxAgentReaction
+): api_proto.UltravoxFunctionResultMessage {
+  return {
+    type: "client_tool_result",
+    invocationId,
+    result,
+    ...(agentReaction ? { agentReaction } : {}),
+  };
+}
+
 export class RealtimeModel extends llm.RealtimeModel {
   sampleRate = api_proto.SAMPLE_RATE;
   numChannels = api_proto.NUM_CHANNELS;
@@ -366,6 +428,8 @@ export class RealtimeModel extends llm.RealtimeModel {
   #nextSessionFirstSpeaker?: api_proto.UltravoxFirstSpeakerSettings;
   /** See {@link setNextSessionInactivityMessages}. */
   #nextSessionInactivity?: { messages?: api_proto.UltravoxInactivityMessage[] };
+  /** See {@link setNextSessionToolReactions}. */
+  #nextSessionToolReactions?: { reactions?: Record<string, api_proto.UltravoxAgentReaction> };
   /** See {@link setProviderEndedCallback}. */
   #providerEndedCallback?: (info: { code?: number; reason?: string }) => void;
   /** The one session whose provider-side end is reported. See {@link setNextSessionPrimary}. */
@@ -378,6 +442,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     callId,
     voice,
     languageHint,
+    ttsSpeed,
     inputAudioFormat = "pcm16",
     outputAudioFormat = "pcm16",
     temperature = 0.8,
@@ -389,6 +454,8 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage = "It has been great chatting with you, but we have exceeded our time now.",
     transcriptOptional = false,
     firstSpeaker = "FIRST_SPEAKER_AGENT",
+    toolReactions,
+    localVad,
     vendorSpecific,
   }: {
     modalities?: ["text", "audio"] | ["text"];
@@ -396,6 +463,7 @@ export class RealtimeModel extends llm.RealtimeModel {
     callId?: string;
     voice?: api_proto.Voice;
     languageHint?: string;
+    ttsSpeed?: number;
     inputAudioFormat?: api_proto.AudioFormat;
     outputAudioFormat?: api_proto.AudioFormat;
     temperature?: number;
@@ -407,6 +475,8 @@ export class RealtimeModel extends llm.RealtimeModel {
     timeExceededMessage?: string;
     transcriptOptional?: boolean;
     firstSpeaker?: string;
+    toolReactions?: Record<string, api_proto.UltravoxAgentReaction>;
+    localVad?: VAD;
     vendorSpecific?: {
       ultravox?: {
         experimentalSettings?: {
@@ -427,6 +497,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: false,
       userTranscription: true,
       autoToolReplyGeneration: false,
+      manualFunctionCalls: false,
       // Text-only modalities = text-output mode: Ultravox sends no audio and the
       // AgentSession's TTS speaks the text stream (docs/realtime-external-tts.md).
       audioOutput: modalities.includes("audio"),
@@ -448,6 +519,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       callId,
       voice,
       languageHint,
+      ttsSpeed,
       inputAudioFormat,
       outputAudioFormat,
       temperature,
@@ -459,6 +531,8 @@ export class RealtimeModel extends llm.RealtimeModel {
       timeExceededMessage,
       transcriptOptional,
       firstSpeaker,
+      toolReactions,
+      localVad,
       vendorSpecific,
     };
 
@@ -500,6 +574,16 @@ export class RealtimeModel extends llm.RealtimeModel {
     messages: api_proto.UltravoxInactivityMessage[] | undefined
   ): void {
     this.#nextSessionInactivity = { messages };
+  }
+
+  /**
+   * Override toolReactions for the next handover session only: the incoming agent can
+   * register its hangup builtin under another name. Consumed in session().
+   */
+  setNextSessionToolReactions(
+    reactions: Record<string, api_proto.UltravoxAgentReaction> | undefined
+  ): void {
+    this.#nextSessionToolReactions = { reactions };
   }
 
   /**
@@ -554,9 +638,14 @@ export class RealtimeModel extends llm.RealtimeModel {
     this.#nextSessionFirstSpeaker = undefined;
     const inactivityOverride = this.#nextSessionInactivity;
     this.#nextSessionInactivity = undefined;
-    const opts: ModelOptions = withInactivityMessagesOverride(
-      withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
-      inactivityOverride
+    const toolReactionsOverride = this.#nextSessionToolReactions;
+    this.#nextSessionToolReactions = undefined;
+    const opts: ModelOptions = withToolReactionsOverride(
+      withInactivityMessagesOverride(
+        withFirstSpeakerOverride(this.#defaultOpts, firstSpeakerOverride),
+        inactivityOverride
+      ),
+      toolReactionsOverride
     );
     if (firstSpeakerOverride) {
       // Resolved lazily: RealtimeModel may be constructed before initializeLogger().
@@ -664,6 +753,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   // Ordinal of the user turn #userTranscriptBuffer belongs to, so a turn abandoned
   // without a final frame (barge-in, interruption) cannot prefix the next one.
   #userTranscriptOrdinal: number | undefined = undefined;
+  // Highest ordinal seen on an agent transcript; see userTranscriptAlreadyAnswered.
+  #agentTranscriptOrdinal: number | undefined = undefined;
+  #vadStream: VADStream | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
   // Track message IDs that have been sent to Ultravox (to avoid duplicates)
@@ -686,9 +778,14 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#chatCtx = chatCtx;
     this.#callCorrelationId = opts.callId ?? null;
 
+    if (this.#textOnly && opts.localVad) {
+      this.#vadStream = opts.localVad.stream();
+      void this.#runLocalVad(this.#vadStream);
+    }
+
     // Start the session immediately if tools are available, otherwise wait for updateTools
-    if (fncCtx && Object.keys(fncCtx).length > 0) {
-      this.#task = this.#start();
+    if (Object.keys(functionToolsOf(fncCtx)).length > 0) {
+      this.#startCall();
     } else {
       this.#logger.debug(
         "No tools provided at session creation, waiting for updateTools"
@@ -724,7 +821,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   get tools(): llm.ToolContext {
-    return this.#fncCtx || {};
+    return this.#fncCtx ?? llm.ToolContext.empty();
   }
 
   async updateInstructions(instructions: string): Promise<void> {
@@ -819,9 +916,9 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.#fncCtx = tools;
 
     // If the session hasn't started yet, start it now that we have tools
-    if (!this.#task && tools && Object.keys(tools).length > 0) {
+    if (!this.#task && Object.keys(functionToolsOf(tools)).length > 0) {
       this.#logger.debug("Starting session now that tools are available");
-      this.#task = this.#start();
+      this.#startCall();
     } else if (this.#callId) {
       this.#logger.warn(
         "Tools updated after session started - Ultravox doesn't support updating tools after call creation"
@@ -838,6 +935,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   pushAudio(frame: AudioFrame): void {
+    this.#vadStream?.pushFrame(frame);
     // Process audio through resampling and buffering
     for (const f of this.resampleAudio(frame)) {
       // Type assertion: AudioByteStream.write() accepts ArrayBuffer, but f.data.buffer
@@ -1076,7 +1174,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#logger.debug(
           "No tools calls seem to have been pushed, but we are talking so starting the session anyway"
         );
-        this.#task = this.#start();
+        this.#startCall();
       }
 
       // Buffer the frame for later sending when WebSocket is ready
@@ -1107,6 +1205,42 @@ export class RealtimeSession extends llm.RealtimeSession {
     return { response, output, content };
   }
 
+  /**
+   * `voiceOverrides`: a native vendorSpecific value wins; otherwise the portable
+   * `ttsSpeed`, placed under the voice's provider. A failed lookup costs the
+   * speed, never the call.
+   */
+  async #applyVoiceOverrides(
+    modelData: api_proto.UltravoxModelData,
+    uv: NonNullable<ModelOptions["vendorSpecific"]>["ultravox"],
+  ): Promise<void> {
+    if (uv?.voiceOverrides != null) {
+      modelData.voiceOverrides = uv.voiceOverrides;
+      return;
+    }
+    const speed = this.#opts.ttsSpeed;
+    if (speed === undefined) return;
+    const voice = typeof modelData.voice === "string" ? modelData.voice : undefined;
+    if (!voice) {
+      this.#logger.warn({ speed }, "options.tts.speed ignored: Ultravox needs an explicit voice to place it");
+      return;
+    }
+    let provider: string | undefined;
+    try {
+      provider = await this.#client.voiceProvider(voice);
+    } catch (error) {
+      this.#logger.warn({ error, voice, speed }, "options.tts.speed ignored: Ultravox voice lookup failed");
+      return;
+    }
+    const overrides = ultravoxSpeedOverrides(provider, speed);
+    if (!overrides) {
+      this.#logger.warn({ voice, provider, speed }, "options.tts.speed ignored: this Ultravox voice has no speed control");
+      return;
+    }
+    modelData.voiceOverrides = overrides.voiceOverrides;
+    this.#logger.debug({ voice, provider, speed: overrides.speed }, "Added Ultravox voice speed");
+  }
+
   #generateEventId(): string {
     return `ultravox-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
@@ -1128,6 +1262,12 @@ export class RealtimeSession extends llm.RealtimeSession {
     } as llm.RealtimeModelError);
   }
 
+  #startCall(): void {
+    this.#task = this.#start();
+    // Nothing awaits #task, and emitError has already reported the failure.
+    this.#task.catch(() => {});
+  }
+
   #start(): Promise<void> {
     return new Promise(async (resolve, reject) => {
       try {
@@ -1138,11 +1278,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         );
         const selectedTools: api_proto.UltravoxTool[] = [];
         if (this.#fncCtx) {
+          const functionTools = functionToolsOf(this.#fncCtx);
           this.#logger.debug(
-            { fncCtxKeys: Object.keys(this.#fncCtx) },
+            { fncCtxKeys: Object.keys(functionTools) },
             "Function context keys"
           );
-          for (const [name, func] of Object.entries(this.#fncCtx)) {
+          for (const [name, func] of Object.entries(functionTools)) {
             this.#logger.debug({ name, func }, "Processing function");
             const requiredList = Array.isArray(
               (func as any).parameters?.required
@@ -1231,6 +1372,9 @@ export class RealtimeSession extends llm.RealtimeSession {
           modelData.languageHint = languageHint;
           this.#logger.debug({ languageHint }, "Added Ultravox languageHint");
         }
+        if (!textOnly) {
+          await this.#applyVoiceOverrides(modelData, uv);
+        }
         if (uv?.vadSettings != null) {
           modelData.vadSettings = uv.vadSettings;
           this.#logger.debug(
@@ -1279,6 +1423,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
         this.#logger.info({ joinUrl, ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "Connecting to Ultravox WebSocket");
+        // Ordinals are per Ultravox call.
+        this.#agentTranscriptOrdinal = undefined;
         this.#ws = new WebSocket(joinUrl.toString());
         this.#logger.info({ ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "WebSocket created");
 
@@ -1520,6 +1666,8 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   async close() {
     this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
+    this.#vadStream?.close();
+    this.#vadStream = undefined;
     if (!this.#ws) return;
     this.#closing = true;
     await this.#ws.close();
@@ -1568,6 +1716,29 @@ export class RealtimeSession extends llm.RealtimeSession {
   /** Text-output mode: Ultravox sends no audio, so its streams are text-only. */
   get #textOnly(): boolean {
     return !this.#opts.modalities.includes("audio");
+  }
+
+  /**
+   * Text-output mode: once a turn's text has arrived, Ultravox gives no sign of
+   * the caller speaking over the TTS until their final transcript, which comes
+   * after they stop and often after Ultravox's reply to them has started. So a
+   * local VAD on the caller's audio raises the barge-in instead, as the Pipecat
+   * worker does (LOCAL_VAD_PROVIDERS).
+   */
+  async #runLocalVad(vadStream: VADStream): Promise<void> {
+    try {
+      for await (const ev of vadStream) {
+        if (ev.type === VADEventType.START_OF_SPEECH) {
+          this.#logger.debug({ speechDuration: ev.speechDuration }, "local VAD: caller started speaking");
+          this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+        } else if (ev.type === VADEventType.END_OF_SPEECH) {
+          this.emit("input_speech_stopped", { userTranscriptionEnabled: false });
+        }
+      }
+    } catch (error: any) {
+      this.#logger.warn({ error: error?.message }, "local VAD stopped; barge-in falls back to transcripts");
+      if (this.#vadStream === vadStream) this.#vadStream = undefined;
+    }
   }
 
   /**
@@ -1784,9 +1955,20 @@ export class RealtimeSession extends llm.RealtimeSession {
       // no earlier sign of the caller speaking than this transcript (measured
       // 2026-09-10: no playback_clear_buffer, no interim frames), while the TTS
       // may still be reading the turn out. Interrupt it now; Ultravox's reply
-      // to what the caller said follows as its own generation.
-      if (this.#textOnly && event.final && transcript.trim().length > 0) {
-        this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+      // to what the caller said follows as its own generation, unless it has
+      // already started, in which case interrupting would cancel that reply.
+      // Only a fallback: the local VAD (#runLocalVad) raises it much earlier.
+      if (this.#textOnly && !this.#vadStream && event.final && transcript.trim().length > 0) {
+        if (userTranscriptAlreadyAnswered(event.ordinal, this.#agentTranscriptOrdinal)) {
+          this.#logger.debug(
+            { ordinal: event.ordinal, agentOrdinal: this.#agentTranscriptOrdinal },
+            "user transcript arrived after the reply to it started; not interrupting"
+          );
+        } else {
+          this.emit("input_speech_started", { itemId: "ultravox-user-input" } as InputSpeechStarted);
+          // The caller has already stopped, and without this the session keeps them "speaking".
+          this.emit("input_speech_stopped", { userTranscriptionEnabled: false });
+        }
       }
 
       // Only emit transcription events when there's actual text content
@@ -1857,7 +2039,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       return;
     }
 
-    const func = this.#fncCtx[toolCall.name];
+    const func = functionToolsOf(this.#fncCtx)[toolCall.name];
     if (!func) {
       this.#logger.error(
         `No function with name ${toolCall.name} in function context`
@@ -2104,6 +2286,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   #handleAgentTranscript(event: api_proto.UltravoxTranscriptMessage): void {
+    if (event.ordinal !== undefined
+      && (this.#agentTranscriptOrdinal === undefined || event.ordinal > this.#agentTranscriptOrdinal)) {
+      this.#agentTranscriptOrdinal = event.ordinal;
+    }
     if (event.medium === "text") {
       this.#handleAgentTextTranscript(event);
       return;
@@ -2175,7 +2361,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   #executeFunctionFromEvent(
     event: api_proto.UltravoxFunctionCallMessage
   ): void {
-    const func = this.#fncCtx![event.toolName];
+    const func = functionToolsOf(this.#fncCtx)[event.toolName];
     if (!func) {
       this.#logger.error(
         `No function with name ${event.toolName} in function context`
@@ -2209,11 +2395,11 @@ export class RealtimeSession extends llm.RealtimeSession {
     } as any).then((result: any) => {
       // Send result back to Ultravox
       if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-        const functionResult: api_proto.UltravoxFunctionResultMessage = {
-          type: "client_tool_result",
-          invocationId: event.invocationId,
-          result
-        };
+        const functionResult = clientToolResultMessage(
+          event.invocationId,
+          result,
+          this.#opts.toolReactions?.[event.toolName]
+        );
         this.#ws.send(JSON.stringify(functionResult));
       }
     }).catch((e: any) => {

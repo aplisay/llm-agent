@@ -49,6 +49,8 @@ import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
 import { runFallbackMessage } from "./fallback-message.js";
+import { releaseFailedAttemptSession } from "./primary-session.js";
+import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
 
 // Types
@@ -399,7 +401,8 @@ export default defineAgent({
        *
        * Behaviour:
        *  - First attempt runs with the primary modelName from the agent.
-       *  - On setup/timeout error from runAgentWorker (i.e. before call.start),
+       *  - On a start failure from runAgentWorker (setup, the setup timeout, or a
+       *    session failure before the agent first speaks; see startup-window.ts),
        *    we consult the current agent's options.fallback with precedence:
        *      1. fallback.agent   – fetch and substitute a different agent, then retry.
        *      2. fallback.model   – retry the same agent with a different modelName.
@@ -417,10 +420,21 @@ export default defineAgent({
       let activeModelName = modelName;
       let usedFallbackModel = false;
       let usedFallbackAgent = false;
+      // Mirrors the steps the catch below can still take.
+      const failoverAvailable = (): boolean => {
+        const f = activeAgent.options?.fallback;
+        return Boolean(
+          f &&
+            ((!usedFallbackAgent && f.agent && f.agent !== activeAgent.id) ||
+              (!usedFallbackModel && f.model && activeModelName !== f.model) ||
+              f.message ||
+              f.number),
+        );
+      };
 
       // Try primary and any configured model/agent fallbacks until we either succeed
       // or exhaust the configured options and fall back to a transfer/propagated error.
-      fallbackLoop: while (true) {
+      fallbackLoop: for (;;) {
         const fallbackConfig = activeAgent.options?.fallback;
 
         const activeRecordingOptions =
@@ -455,6 +469,7 @@ export default defineAgent({
             endTransferActivityIfNeeded: endTransferActivityFn,
             getTransferState,
             recordingOptions: activeRecordingOptions,
+            failoverAvailable: failoverAvailable(),
           });
           // Successful run – break out of fallback loop
           break fallbackLoop;
@@ -469,8 +484,22 @@ export default defineAgent({
             "runAgentWorker failed, evaluating fallback options",
           );
 
+          // Before every fallback step, not only a retry: a session that started
+          // (and answered the caller) must not stay live while the message or
+          // number step uses the same room.
+          await releaseFailedAttemptSession(ctx, sessionRef(null));
+          session = null;
+          model = null;
+
           // If there is no fallback configuration on the current agent, propagate the error
           if (!fallbackConfig) {
+            throw error;
+          }
+
+          // A caller who hung up during a failed start has no call left to rescue;
+          // a retry would run in an empty room until the watchdog noticed.
+          if (callerLeftRoom(ctx.room, participant)) {
+            logger.info({}, "caller left during the failed start; not running the fallback chain");
             throw error;
           }
 
@@ -668,7 +697,7 @@ export default defineAgent({
         try {
           if (recordedCall && !recordedCall._endCalled) {
             await recordedCall.end(
-              `Agent setup failed: ${(e as Error).message}`,
+              `Agent setup failed: ${endReasonFrom(e)}`,
             );
           }
         } catch (endErr) {
@@ -740,6 +769,16 @@ export default defineAgent({
 });
 
 // ---- Helpers ----
+
+/**
+ * The first line of an error, capped. It becomes the call's hangup entry and the
+ * call hook's reason, and some provider errors append their whole request (the
+ * Ultravox /calls body carries the system prompt).
+ */
+function endReasonFrom(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  return message.split("\n", 1)[0].slice(0, 300);
+}
 
 /**
  * Collect every X- header from an inbound SIP INVITE into a

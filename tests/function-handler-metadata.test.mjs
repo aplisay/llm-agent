@@ -274,3 +274,125 @@ describe('function-handler metadata deep paths', () => {
   });
 });
 
+
+describe('function-handler field-list redaction (redact: [names])', () => {
+  const resolveResult =
+    '{"status":"resolved","match":{"name":"Sue Sinclair","extension":"201","direct":"+441234567890","mobile":null},' +
+    '"candidates":[{"name":"Sue Smith","department":"Sales","extension":"202"}]}';
+
+  const lookup = (over = {}) => ({
+    name: 'directory_resolve',
+    implementation: 'stub',
+    redact: ['extension', 'direct', 'mobile'],
+    input_schema: { properties: {} },
+    result: resolveResult,
+    ...over,
+  });
+
+  test('strips the named properties at any depth for the model and keeps the full result in metadata', async () => {
+    const metadata = {};
+    const { function_results } = await functionHandler(
+      [{ name: 'directory_resolve', input: {} }],
+      [lookup()],
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].error).toBeUndefined();
+    expect(JSON.parse(function_results[0].result)).toEqual({
+      status: 'resolved',
+      match: { name: 'Sue Sinclair' },
+      candidates: [{ name: 'Sue Smith', department: 'Sales' }],
+    });
+    expect(metadata.toolsCalls.directory_resolve.result).toEqual(JSON.parse(resolveResult));
+  });
+
+  test('a later tool can still read a stripped property from metadata', async () => {
+    const metadata = {};
+    const functions = [
+      lookup(),
+      {
+        name: 'dial',
+        implementation: 'stub',
+        input_schema: {
+          properties: {
+            number: { source: 'metadata', from: 'toolsCalls.directory_resolve.result.match.extension', type: 'string' },
+          },
+        },
+        result: 'dialled {number}',
+      },
+    ];
+    const { function_results } = await functionHandler(
+      [{ name: 'directory_resolve', input: {} }, { name: 'dial', input: {} }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).not.toContain('201');
+    expect(function_results[1].result).toBe('dialled 201');
+  });
+
+  test('leaves a result that is not JSON unchanged', async () => {
+    const metadata = {};
+    const { function_results } = await functionHandler(
+      [{ name: 'directory_resolve', input: {} }],
+      [lookup({ result: 'no such person' })],
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).toBe('no such person');
+    expect(metadata.toolsCalls.directory_resolve.result).toBe('no such person');
+  });
+
+  test('a failed invocation is fully redacted, as with redact: true', async () => {
+    const metadata = {};
+    const { function_results } = await functionHandler(
+      [{ name: 'brokenResolve', input: {} }],
+      [
+        {
+          name: 'brokenResolve',
+          implementation: 'rest',
+          redact: ['extension'],
+          method: 'get',
+          url: 'http://127.0.0.1:1/never-works',
+          input_schema: { properties: {} },
+        },
+      ],
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowRedactedFunctionResults: true, allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).toBe('FAILED - invocation failed');
+    expect(function_results[0].error).toBeDefined();
+    expect(metadata.toolsCalls.brokenResolve.result).toBeDefined();
+  });
+
+  test('is ignored when the handler does not allow redacted results', async () => {
+    const metadata = {};
+    const { function_results } = await functionHandler(
+      [{ name: 'directory_resolve', input: {} }],
+      [lookup()],
+      [],
+      jest.fn(),
+      metadata,
+      {},
+      { allowToolsCallsMetadataPaths: true },
+    );
+
+    expect(function_results[0].result).toBe(resolveResult);
+  });
+});

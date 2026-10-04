@@ -3,7 +3,10 @@
  * default rate card and to every bespoke card that prices models. Without
  * them Grok usage rows resolve `costStatus:'no_line'` and bill nothing.
  *
- *   node scripts/add-xai-rate-lines.mjs        # from the repo root
+ *   node scripts/add-xai-rate-lines.mjs                             # from the repo root
+ *   node scripts/add-xai-rate-lines.mjs -p .env.staging --dry-run   # print the plan, write nothing
+ *
+ * DRY_RUN=1 also selects the dry run.
  *
  * What it does, per target card:
  *   1. Finds the card version covering now().
@@ -12,8 +15,10 @@
  *      `tts` minute line per bundled provider (ultravox, openai, xai: the
  *      speech a realtime model synthesises itself, which the Pipecat worker
  *      meters under the model's vendor), and `input_tokens`, `output_tokens`
- *      and `cache_read_tokens` lines per Grok text model. Lines already
- *      present are left untouched, so re-running is a no-op.
+ *      and `cache_read_tokens` lines per Grok text model under both detail
+ *      forms its `llm` rows carry: `xai/grok-4.3` from the voice workers and
+ *      `grok-4.3` from a `text:xai/*` agent. Lines already present are left
+ *      untouched, so re-running is a no-op.
  *   3. Honours the card-immutability rule: a version already referenced by
  *      costed usage is SUPERSEDED (end-dated at now, new version inserted with
  *      the extra lines) instead of edited in place, mirroring the beforeUpdate
@@ -36,9 +41,12 @@
  *   Sonnet 5 line and no override gets the raw list digits (the original
  *   Sonnet 5 script's convention). XAI_INPUT_PRICE_MICROS,
  *   XAI_OUTPUT_PRICE_MICROS and XAI_CACHE_READ_PRICE_MICROS override the
- *   prices for every model outright. MODELS (comma-separated bare model ids)
- *   selects the text models; VOICE_MODELS (comma-separated full model names)
- *   the voice rows, default the Pipecat row only until the LiveKit row exists.
+ *   prices for every model outright. A card that already prices a model and
+ *   token unit under one detail form gives the other form that same price,
+ *   ahead of the factor and the overrides. MODELS (comma-separated bare model
+ *   ids) selects the text models; VOICE_MODELS (comma-separated full model
+ *   names) the voice rows, default the Pipecat row only until the LiveKit row
+ *   exists.
  *
  * Self-contained: loads ./.env and talks to Postgres directly (no app boot).
  */
@@ -99,14 +107,40 @@ export function textPricesFor(model, env = process.env, factor = 1) {
   };
 }
 
-/** The three token lines a text model needs on the card (matches lib/rates.js line shape). */
+/**
+ * The `detail` values a Grok text model's `llm` rows carry. The voice workers
+ * record the roster id and the text driver strips it to the bare id, and a
+ * line matches only an exact detail, so a card needs both.
+ */
+export function textModelDetails(model) {
+  return [`xai/${model}`, model];
+}
+
+/** The token lines a text model needs on the card, three per detail form (matches lib/rates.js line shape). */
 export function textModelLines(model, prices) {
-  const match = (unit) => ({ technology: 'llm', provider: 'xai', detail: `xai/${model}`, unit });
-  return [
-    { dim: 'model', match: match('input_tokens'), unit: 'token', priceMicros: prices.input },
-    { dim: 'model', match: match('output_tokens'), unit: 'token', priceMicros: prices.output },
-    { dim: 'model', match: match('cache_read_tokens'), unit: 'token', priceMicros: prices.cacheRead },
-  ];
+  return textModelDetails(model).flatMap((detail) => {
+    const match = (unit) => ({ technology: 'llm', provider: 'xai', detail, unit });
+    return [
+      { dim: 'model', match: match('input_tokens'), unit: 'token', priceMicros: prices.input },
+      { dim: 'model', match: match('output_tokens'), unit: 'token', priceMicros: prices.output },
+      { dim: 'model', match: match('cache_read_tokens'), unit: 'token', priceMicros: prices.cacheRead },
+    ];
+  });
+}
+
+/**
+ * The price the card already charges for this model and token unit under
+ * either detail form, else undefined. A new line takes it, so a text agent
+ * and a pipeline pay the same per token.
+ */
+export function cardTextPrice(lines, model, unit) {
+  const details = textModelDetails(model);
+  return (lines || []).find((l) => l?.dim === 'model'
+    && l?.match?.technology === 'llm'
+    && l?.match?.provider === 'xai'
+    && details.includes(l?.match?.detail)
+    && l?.match?.unit === unit
+    && typeof l?.priceMicros === 'number')?.priceMicros;
 }
 
 /** The per-minute voice line for a Grok voice row (the Ultravox and GPT-Live shape). */
@@ -154,15 +188,20 @@ export function hasLine(lines, candidate) {
 
 /**
  * The lines to add to one card: voice minute lines at `voicePrice`, the zero
- * lines for every bundled provider's own speech, and the text token lines,
- * minus those already present. Pure, so a fixture card can be checked in a
- * test.
+ * lines for every bundled provider's own speech, and the text token lines
+ * (at the card's own price where it has one, see cardTextPrice), minus those
+ * already present. Pure, so a fixture card can be checked in a test.
  */
 export function xaiAdditions(lines, { textModels = DEFAULT_TEXT_MODELS, voiceModels = DEFAULT_VOICE_MODELS, voicePrice, env = process.env, factor = 1 } = {}) {
+  const textLines = textModels.flatMap((model) => textModelLines(model, textPricesFor(model, env, factor))
+    .map((l) => {
+      const price = cardTextPrice(lines, model, l.match.unit);
+      return price === undefined ? l : { ...l, priceMicros: price };
+    }));
   const wanted = [
     ...voiceModels.map((name) => voiceModelLine(name, voicePrice)),
     ...bundledTtsLines(),
-    ...textModels.flatMap((model) => textModelLines(model, textPricesFor(model, env, factor))),
+    ...textLines,
   ];
   return wanted.filter((l) => !hasLine(lines, l));
 }
@@ -177,6 +216,8 @@ async function main() {
   const textModels = (process.env.MODELS || DEFAULT_TEXT_MODELS.join(',')).split(',').map((m) => m.trim()).filter(Boolean);
   const voiceModels = (process.env.VOICE_MODELS || DEFAULT_VOICE_MODELS.join(',')).split(',').map((m) => m.trim()).filter(Boolean);
   const voiceOverride = process.env.XAI_VOICE_PRICE_MICROS ? Number(process.env.XAI_VOICE_PRICE_MICROS) : undefined;
+  // The sibling scripts use one form each, so honour both: neither may write by mistake.
+  const dryRun = process.argv.includes('--dry-run') || Boolean(process.env.DRY_RUN);
 
   const client = new pg.Client({
     host: process.env.POSTGRES_HOST,
@@ -194,7 +235,7 @@ async function main() {
       }
       : false,
   });
-  console.log(`applying against postgres ${process.env.POSTGRES_HOST}/${process.env.POSTGRES_DB}`);
+  console.log(`${dryRun ? 'planning (dry run) against' : 'applying against'} postgres ${process.env.POSTGRES_HOST}/${process.env.POSTGRES_DB}`);
   await client.connect();
   try {
     // 1. Target names: the default card plus every card that prices models.
@@ -241,34 +282,38 @@ async function main() {
         continue;
       }
       const detail = { ...card.detail, lines: [...lines, ...additions] };
-      // 3. Referenced versions are immutable: supersede instead of editing in
-      //    place. The check runs inside the transaction with the row locked.
-      await client.query('BEGIN');
-      try {
-        await client.query(`SELECT id FROM rate_cards WHERE id = $1 FOR UPDATE`, [card.id]);
-        const referenced = await client.query(
-          `SELECT id FROM usage_records WHERE rate_name = $1 AND rate_card_start = $2 LIMIT 1`,
-          [card.name, card.start_date],
-        );
-        if (referenced.rows.length) {
-          const upd = await client.query(
-            `UPDATE rate_cards SET end_date = now(), updated_at = now() WHERE id = $1 RETURNING end_date`,
-            [card.id],
+      if (dryRun) {
+        console.log(`card "${card.name}" (id ${card.id}) would gain:`);
+      } else {
+        // 3. Referenced versions are immutable: supersede instead of editing in
+        //    place. The check runs inside the transaction with the row locked.
+        await client.query('BEGIN');
+        try {
+          await client.query(`SELECT id FROM rate_cards WHERE id = $1 FOR UPDATE`, [card.id]);
+          const referenced = await client.query(
+            `SELECT id FROM usage_records WHERE rate_name = $1 AND rate_card_start = $2 LIMIT 1`,
+            [card.name, card.start_date],
           );
-          await client.query(
-            `INSERT INTO rate_cards (name, start_date, end_date, currency, detail, description, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), now())`,
-            [card.name, upd.rows[0].end_date, card.end_date, card.currency, JSON.stringify(detail), card.description],
-          );
-          console.log(`card "${card.name}" (id ${card.id}) is referenced by costed usage, superseded with a new version`);
-        } else {
-          await client.query(`UPDATE rate_cards SET detail = $2::jsonb, updated_at = now() WHERE id = $1`, [card.id, JSON.stringify(detail)]);
-          console.log(`card "${card.name}" (id ${card.id}) updated in place (unreferenced)`);
+          if (referenced.rows.length) {
+            const upd = await client.query(
+              `UPDATE rate_cards SET end_date = now(), updated_at = now() WHERE id = $1 RETURNING end_date`,
+              [card.id],
+            );
+            await client.query(
+              `INSERT INTO rate_cards (name, start_date, end_date, currency, detail, description, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), now())`,
+              [card.name, upd.rows[0].end_date, card.end_date, card.currency, JSON.stringify(detail), card.description],
+            );
+            console.log(`card "${card.name}" (id ${card.id}) is referenced by costed usage, superseded with a new version`);
+          } else {
+            await client.query(`UPDATE rate_cards SET detail = $2::jsonb, updated_at = now() WHERE id = $1`, [card.id, JSON.stringify(detail)]);
+            console.log(`card "${card.name}" (id ${card.id}) updated in place (unreferenced)`);
+          }
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
         }
-        await client.query('COMMIT');
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
       }
       additions.forEach((l) => console.log(`  + ${l.match.detail || `tts|${l.match.provider}`} ${l.match.unit || 'voice'} @ ${l.priceMicros} micro-pence/${l.unit}`));
     }

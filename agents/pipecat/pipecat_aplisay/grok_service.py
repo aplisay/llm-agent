@@ -16,6 +16,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from . import grok
 from .grok import merged_session, strip_server_tools
+from .realtime_context import text_of as _text_of
 
 #: Longest an injection waits for ``session.updated`` before giving up.
 SESSION_READY_TIMEOUT_SECS = 10.0
@@ -30,18 +31,6 @@ class _TranscriptionCompleted(events.ConversationItemInputAudioTranscriptionComp
 # Widen the parser's model for this one event so the subclass can tell the
 # interim ``completed`` events (status in_progress) from the final one.
 events._server_event_types["conversation.item.input_audio_transcription.completed"] = _TranscriptionCompleted
-
-
-def _text_of(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            part.get("text", "") for part in content
-            if isinstance(part, dict) and part.get("type") in ("text", "input_text") and isinstance(part.get("text"), str)
-        ]
-        return "".join(parts).strip()
-    return ""
 
 
 class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
@@ -76,6 +65,11 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         if audio is not None and audio.input is not None and audio.input.format is None:
             audio.input.format = events.PCMAudioFormat(
                 rate=cast(events.SUPPORTED_SAMPLE_RATES, input_sample_rate)
+            )
+        # An output block set only for options.tts.speed has no format yet.
+        if audio is not None and audio.output is not None and audio.output.format is None:
+            audio.output.format = events.PCMAudioFormat(
+                rate=cast(events.SUPPORTED_SAMPLE_RATES, output_sample_rate)
             )
 
     async def send_client_event(self, event: events.ClientEvent) -> None:
@@ -256,10 +250,19 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         await super()._handle_evt_error(evt)
         await self._session_ended(f"error: {getattr(evt.error, 'message', '')}")
 
+    async def _connect(self) -> None:
+        # The stock reports a failed connect only as an ordinary error, and leaves no socket and no retry.
+        await super()._connect()
+        if self._websocket is None and not self._disconnecting:
+            await self._session_ended("connect failed")
+
     async def _receive_task_handler(self) -> None:
-        await super()._receive_task_handler()
-        if not self._disconnecting:
-            await self._session_ended("connection_closed")
+        # An abnormal close raises out of the loop rather than ending it.
+        try:
+            await super()._receive_task_handler()
+        finally:
+            if not self._disconnecting:
+                await self._session_ended("connection_closed")
 
     async def _session_ended(self, reason: str) -> None:
         if self._ended_reported or self._disconnecting or self._on_session_ended is None:

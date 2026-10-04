@@ -123,6 +123,8 @@ const startedSession = async (modelName: string, agent: any) => {
   const { session, model } = buildSession(modelName, agent);
   const s = session as any;
   s.activity = new AgentActivity(model, session);
+  // agents 1.9: say() refuses an activity whose scheduling start() has not resumed.
+  s.activity._schedulingPaused = false;
   s.output.audio = { onAttached() {}, onDetached() {} };
   return s;
 };

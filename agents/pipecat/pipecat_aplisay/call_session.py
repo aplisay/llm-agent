@@ -50,9 +50,10 @@ from .mcp_tools import (
     close_mcp_servers, connect_mcp_servers,
 )
 from .prompt_metadata import prompt_with_metadata
-from .constants import DISCONNECT_REASONS, PLATFORM
+from .constants import BRIDGED_CALL_MODEL, DISCONNECT_REASONS, PLATFORM
 from .pipeline_error_alarm import PipelineErrorAlarm
 from .recording import RecordingSession
+from .start_window import DisconnectGate, SessionStartFailed, StartWindow, watch_start_window
 from .sip_gateway.base import (
     GatewaySession,
     GatewaySessionParams,
@@ -272,6 +273,11 @@ class CallSession:
     # Set on a WebRTC-origin parent while a consultative leg is live (the
     # TransferAgent bot session), so teardown can stop it with the parent.
     _consult_session: Optional["CallSession"] = None
+    # On a consult leg dialled from a WebRTC parent: the routing its record was
+    # created with, and the task that moves the leg onto a bridged-call record
+    # once ``accept_transfer`` fires (see ``_start_consult_bridged_segment``).
+    _bridged_route: Optional[dict] = None
+    _bridged_handover: Optional[Any] = None
     # consultFeedback flag from the parent's transfer tool call. When False
     # (default), a rejected consult returns only a generic "Transfer failed" to
     # the parent agent; when True, the target's detailed reason is shared.
@@ -314,6 +320,11 @@ class CallSession:
     _is_handover_generation: bool = False
     # Escalates this generation's ErrorFrames (see pipeline_error_alarm).
     _error_alarm: Optional[Any] = None
+    # The current fallback-chain attempt's start-up window, and the gate that
+    # keeps its websocket open while it may still fail (see start_window.py).
+    # None on generations the fallback chain does not drive.
+    _start_window: Optional[StartWindow] = None
+    _start_gate: Optional[DisconnectGate] = None
     # Closers for any MCP server connections opened in ``prepare_run`` (the
     # worker acts as the MCP client). Awaited in ``run_prepared``'s finally so
     # the remote sessions don't outlive the call. See mcp_tools.py.
@@ -376,11 +387,24 @@ class CallSession:
 
         while True:
             fallback_cfg = (active_agent.get("options") or {}).get("fallback") or {}
+            # Mirrors the steps the except clause below can still take.
+            failover_available = bool(
+                (
+                    not used_fallback_agent
+                    and fallback_cfg.get("agent")
+                    and fallback_cfg["agent"] != active_agent.get("id")
+                )
+                or (not used_fallback_model and fallback_cfg.get("model") and fallback_cfg["model"] != active_model)
+                or fallback_cfg.get("message")
+                or fallback_cfg.get("number")
+            )
             try:
                 # Full agent-stack handovers are consumed inside run_prepared
                 # (shared with the browser /webrtc/offer path, which drives
                 # run_prepared directly and never enters this loop).
-                await self._run_once(active_agent, active_model, active_prompt)
+                await self._run_once(
+                    active_agent, active_model, active_prompt, failover_available=failover_available
+                )
                 return
             except api_client.AgentConcurrencyLimitExceededBusyError:
                 # Child-call concurrency failures must propagate as busy; the initial arrival handles announcements in
@@ -390,6 +414,13 @@ class CallSession:
                 logger.error(f"voice session failed: {e}; evaluating fallback")
                 if not fallback_cfg:
                     raise
+                if self._start_failure() is not None:
+                    # Every step below needs the live call, and the failed
+                    # pipeline's transport cannot run again.
+                    self._carry_call_over_after_start_failure()
+                    transport_handlers = self._snapshot_transport_handlers(
+                        self.gateway_session.transport
+                    )
 
                 # 1. Agent-level fallback
                 if (
@@ -468,6 +499,16 @@ class CallSession:
                                 ),
                             )
                         )
+                        # A failed attempt holds its log back for the chain's last
+                        # step, and nothing else flushes it after a transfer.
+                        try:
+                            await invocation_log.flush_invocation_logs(
+                                call_id=self.call.id,
+                                user_id=self.call.userId,
+                                org_id=self.call.organisationId,
+                            )
+                        except Exception as flush_error:  # noqa: BLE001
+                            logger.warning(f"invocation log flush failed: {flush_error}")
                         return
                     except Exception as inner:  # noqa: BLE001
                         logger.error(f"fallback transfer failed: {inner}")
@@ -500,6 +541,60 @@ class CallSession:
             entry = registry.get(name)
             if entry is not None and hasattr(entry, "handlers"):
                 entry.handlers[:] = saved
+
+    def _open_start_window(self) -> Optional[StartWindow]:
+        """Open the start-up window for a fallback-chain attempt.
+
+        None where a failed pipeline cannot be followed by another on the same
+        call: a consult leg, or a transport that cannot be rebuilt (Daily).
+        """
+        if self.parent_session is not None:
+            return None
+        if not self._transport_rebuildable(self.gateway_session.transport):
+            return None
+        self._start_window = StartWindow()
+        return self._start_window
+
+    def _close_start_window(self) -> None:
+        """The call is committed to a transfer or handover: no longer starting."""
+        if self._start_window is not None:
+            self._start_window.close()
+
+    def _start_failure(self) -> Optional[str]:
+        window = self._start_window
+        return window.failure if window is not None else None
+
+    def _carry_call_over_after_start_failure(self) -> None:
+        """Move the live call onto a fresh transport, as a full agent handover
+        does: the failed pipeline's processors cannot run again, but its
+        websocket is still open (DisconnectGate)."""
+        new_transport = self._rebuild_transport_for_handover(self.gateway_session.transport)
+        if new_transport is None:
+            raise RuntimeError("the transport cannot be rebuilt after a start failure")
+        self.gateway_session.transport = new_transport
+        # FrameProcessors of the failed pipeline; see run_prepared.
+        self.relay_endpoint = None
+        self._tone_injector = None
+
+    @staticmethod
+    def _transport_rebuildable(transport: Any) -> bool:
+        """Whether ``_rebuild_transport_for_handover`` can carry a telephony call over."""
+        client = getattr(transport, "_client", None)
+        if getattr(transport, "_params", None) is None or client is None:
+            return False
+        try:
+            from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport
+        except Exception:  # noqa: BLE001
+            return False
+        return (
+            isinstance(transport, FastAPIWebsocketTransport)
+            and getattr(client, "_websocket", None) is not None
+        )
+
+    async def _discard_recording(self) -> None:
+        recording, self._recording = self._recording, None
+        if recording is not None:
+            await recording.discard()
 
     def _hold_task(self, task: "asyncio.Task") -> "asyncio.Task":
         """Retain detached tasks until completion; asyncio only holds weak references. See PR #285."""
@@ -983,6 +1078,9 @@ class CallSession:
                 return
             # ---- Full agent-stack handover continuation ----
             self._pending_agent_handover = None
+            # The handover committed the call; the continuation is not a fallback attempt.
+            self._start_window = None
+            self._start_gate = None
             self.gateway_session.transport = pending["transport"]
             # A browser session's (inert) relay endpoint is built from
             # FrameProcessors that cannot be reused across pipeline tasks;
@@ -1047,6 +1145,7 @@ class CallSession:
                     self._fire_rebuilt_webrtc_connected(kick_transport)
                 )
 
+            start_failure: Optional[str] = None
             try:
                 await runner.run(task)
                 if self._pending_agent_handover is not None:
@@ -1056,10 +1155,15 @@ class CallSession:
                     logger.bind(call_id=self.call.id).info(
                         "pipeline ended for agent handover; not ending the call"
                     )
+                elif self._start_failure() is not None:
+                    logger.bind(call_id=self.call.id).warning(
+                        "pipeline ended on a start failure; not ending the call"
+                    )
                 else:
                     # Normal completion when transport disconnects or pipeline ends.
                     await self._end(DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
             finally:
+                start_failure = self._start_failure()
                 if kick_task and not kick_task.done():
                     kick_task.cancel()
                 if timeout_task and not timeout_task.done():
@@ -1075,24 +1179,34 @@ class CallSession:
                 # was bridged to, so the telephony side and its Call record don't
                 # outlive the browser caller.
                 await self._teardown_relay()
-                # Finalise the recording once the runner has stopped. The
-                # AudioBufferProcessor has already drained any in-flight frames by
-                # this point, so no more ``on_audio_data`` events will fire.
-                await self._finalise_recording()
-                # Persist this segment's captured logs as its InvocationLog (the
-                # UI "debug log"), keyed to this segment's own Call record — the
-                # per-call analogue of the LiveKit agent's job-shutdown persist.
-                try:
-                    await invocation_log.flush_invocation_logs(
-                        call_id=seg_call.id,
-                        user_id=seg_call.userId,
-                        org_id=seg_call.organisationId,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"invocation log flush failed: {e}")
+                if start_failure is not None:
+                    # The fallback chain's next step records the call, and a flush
+                    # here would split its InvocationLog in two (see prepare_run).
+                    await self._discard_recording()
+                else:
+                    if self._start_gate is not None:
+                        # A disconnect the start-up window held back.
+                        await self._start_gate.release()
+                    # Finalise the recording once the runner has stopped. The
+                    # AudioBufferProcessor has already drained any in-flight frames by
+                    # this point, so no more ``on_audio_data`` events will fire.
+                    await self._finalise_recording()
+                    # Persist this segment's captured logs as its InvocationLog (the
+                    # UI "debug log"), keyed to this segment's own Call record — the
+                    # per-call analogue of the LiveKit agent's job-shutdown persist.
+                    try:
+                        await invocation_log.flush_invocation_logs(
+                            call_id=seg_call.id,
+                            user_id=seg_call.userId,
+                            org_id=seg_call.organisationId,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"invocation log flush failed: {e}")
                 # Release any MCP server connections opened in prepare_run.
                 await close_mcp_servers(self._mcp_closers, log=logger)
                 self._mcp_closers = []
+            if start_failure is not None:
+                raise SessionStartFailed(start_failure)
 
     async def inject_dtmf(self, digit: str) -> bool:
         """Inject a DTMF keypress into the running pipeline as an
@@ -1163,6 +1277,7 @@ class CallSession:
                 await consult.gateway_session.shutdown()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"consult leg gateway shutdown raised: {e}")
+            await self._end_consult_bridged_segment(consult)
 
     async def _finalise_recording(self) -> None:
         recording = self._recording
@@ -1189,8 +1304,19 @@ class CallSession:
                 f"recording: set_call_recording_data failed: {e}"
             )
 
-    async def _run_once(self, agent: dict, model_name: str, system_prompt: str) -> None:
+    async def _run_once(
+        self, agent: dict, model_name: str, system_prompt: str, *, failover_available: bool = False
+    ) -> None:
+        # A build failure falls over on its own, so the window opens once the
+        # build is done: a slow MCP connect must not use up its 15 s.
+        self._start_window = None
+        self._start_gate = None
         task, max_duration_secs = await self.prepare_run(agent, model_name, system_prompt)
+        # Nowhere to fail over to: failures end the call as they always did.
+        window = self._open_start_window() if failover_available else None
+        if window is not None:
+            watch_start_window(task, window, task.cancel)
+            self._start_gate = DisconnectGate(self.gateway_session.transport, window)
         await self.run_prepared(task, max_duration_secs)
 
     async def _timeout_watchdog(self, seconds: int) -> None:
@@ -1553,6 +1679,7 @@ class CallSession:
         await self._send_message(
             {"inject": f"Call transferred to agent {new_agent.get('name') or target}"}
         )
+        self._close_start_window()
         logger.bind(
             from_agent=self.agent.get("id"),
             to_agent=new_agent.get("id"),
@@ -1694,6 +1821,7 @@ class CallSession:
             return self._transfer_failed(f"could not create continuation call: {e}")
 
         # Commit point: from here the handover happens.
+        self._close_start_window()
         self._pending_agent_handover = {
             "agent": new_agent,
             "system_prompt": system_prompt,
@@ -1985,22 +2113,32 @@ class CallSession:
         return delegate
 
     async def _on_injected_dtmf(self, digits: str) -> None:
-        """Aggregated keypad digits on a session whose service never sees a
-        context frame after it starts (GPT-Live, the Grok voice row): a
-        ``user`` transcript row (as the DTMF aggregator's TranscriptionFrame
-        would have produced) and the service's own injection path."""
-        await self._send_message({"user": f"DTMF: {digits}"}, is_final=True)
-        llm = self._llm_service
-        inject = getattr(llm, "inject_dtmf", None)
-        if inject is None:
-            return
-        await inject(digits)
+        """Aggregated keypad digits for a service that injects them itself
+        (GPT-Live, the Grok voice row, OpenAI Realtime). The service gets them
+        first. The context gets the user turn the DTMF aggregator would have
+        added, so transcripts and handover history keep them. The log row is
+        posted off the frame path: it must not hold the caller's audio."""
+        inject = getattr(self._llm_service, "inject_dtmf", None)
+        if inject is not None:
+            await inject(digits)
+        if self._llm_context is not None:
+            self._llm_context.add_message({"role": "user", "content": f"DTMF: {digits}"})
+        self._hold_task(asyncio.create_task(self._send_message({"user": f"DTMF: {digits}"}, is_final=True)))
 
     async def _on_provider_session_ended(self, reason: str) -> None:
         """The provider closed the realtime session (GPT-Live: expiry, a
         content policy close, a lost connection; Grok: a server close, a fatal
         error, the concurrent-session limit): end the call cleanly with that
-        reason."""
+        reason. Before the bot has spoken it is a start failure instead."""
+        window = self._start_window
+        if window is not None and window.fail(f"realtime provider ended the session: {reason}"):
+            logger.bind(reason=reason).warning(
+                "realtime session ended by the provider before the bot spoke; "
+                "handing the call to the fallback chain"
+            )
+            if self._task is not None:
+                await self._task.cancel()
+            return
         logger.bind(reason=reason).warning("realtime session ended by the provider; ending the call")
         self._wants_hangup = True
         await self._end(f"{DISCONNECT_REASONS['SESSION_CLOSED']}: provider {reason}")
@@ -2103,6 +2241,9 @@ class CallSession:
         """
         from .outbound_filter import authorise_destination
         from .transfer_prompts import resolve_transfer_prompt
+
+        # The model asked for a transfer, so the agent is up: from here a failure is not a start failure.
+        self._close_start_window()
 
         # Destination authorisation — the FIRST thing every transfer path does, so
         # blind, consultative and both WebRTC (media-relay) flows are gated by the
@@ -2492,15 +2633,36 @@ class CallSession:
         outbound_trunk_id: Optional[str] = None
     ) -> tuple[api_client.CallRecord, str]:
         """Create + start the telephony-leg Call record (child of the browser
-        call) and return it with its session id."""
+        call) and return it with its session id.
+
+        A blind leg has no bot on it, so its record is a bridged call from the
+        start. A consult leg runs the TransferAgent on the agent's model until
+        ``accept_transfer`` moves the rest of it onto a bridged-call record."""
         import uuid as _uuid
 
         leg_session_id = f"wrtc-{'consult' if consult else 'bridge'}-{_uuid.uuid4()}"
+        leg_call = await self._create_leg_record(
+            session_id=leg_session_id,
+            caller_id=caller_id,
+            destination=destination,
+            model_name=self.agent["modelName"] if consult else BRIDGED_CALL_MODEL,
+            consult=consult,
+            outbound_trunk_id=outbound_trunk_id,
+        )
+        await api_client.start_call(leg_call)
+        return leg_call, leg_session_id
+
+    async def _create_leg_record(
+        self, *, session_id: str, caller_id: str, destination: str,
+        model_name: str, consult: bool, outbound_trunk_id: Optional[str],
+    ) -> api_client.CallRecord:
+        """Create (but do not start) a telephony-leg Call record, child of the
+        browser call."""
         metadata: dict = {
             "aplisay": {
                 "callerId": caller_id,
                 "calledId": destination,
-                "model": self.agent["modelName"],
+                "model": model_name,
             },
             "outbound": True,
             "bridgeOf": self.call.id,
@@ -2508,18 +2670,18 @@ class CallSession:
         if consult:
             metadata["aplisay"]["transferConsultation"] = True
             metadata["aplisay"]["originalCallId"] = self.call.id
-        leg_call = await api_client.create_call(
+        return await api_client.create_call(
             {
                 "userId": self.agent["userId"],
                 "organisationId": self.agent["organisationId"],
                 "instanceId": self.instance["id"],
                 "agentId": self.agent["id"],
                 "platform": PLATFORM,
-                "platformCallId": leg_session_id,
+                "platformCallId": session_id,
                 "parentId": self.call.id,
                 "calledId": destination,
                 "callerId": caller_id,
-                "modelName": self.agent["modelName"],
+                "modelName": model_name,
                 # Destination billing (D3): the carried dial to the transfer target is
                 # chargeable when it egresses our public trunk (set by the caller from
                 # the resolved egress); a registration B2BUA leg leaves this None.
@@ -2528,8 +2690,6 @@ class CallSession:
                 "metadata": metadata,
             }
         )
-        await api_client.start_call(leg_call)
-        return leg_call, leg_session_id
 
     async def _do_webrtc_bridge(self, args: dict) -> dict:
         """Blind WebRTC→telephony transfer entry point.
@@ -2730,10 +2890,11 @@ class CallSession:
             self._transfer_failed(f"egress resolution failed: {e}")
             return
 
+        outbound_trunk_id = _chargeable_outbound_trunk_id(egress)
         try:
             leg_call, leg_session_id = await self._create_bridge_call(
                 caller_id=egress.caller_id, destination=destination, consult=True,
-                outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
+                outbound_trunk_id=outbound_trunk_id,
             )
         except Exception as e:  # noqa: BLE001
             self._transfer_failed(f"could not create consult call record: {e}")
@@ -2759,6 +2920,12 @@ class CallSession:
             self._transfer_failed(f"could not reach transfer target: {e}")
             return
 
+        consult_session._bridged_route = {
+            "session_id": leg_session_id,
+            "caller_id": egress.caller_id,
+            "destination": destination,
+            "outbound_trunk_id": outbound_trunk_id,
+        }
         self._consult_session = consult_session
         # Run the TransferAgent bot on the consult leg. accept/reject tools on it
         # drive our transfer_state and, on accept, bridge the relay endpoints.
@@ -2775,6 +2942,7 @@ class CallSession:
                 await consult_session.gateway_session.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+            await self._end_consult_bridged_segment(consult_session)
             # If the bridge was already engaged (accept_transfer fired) and the
             # target leg has now ended, the caller has no agent to fall back
             # to — drop them too. Before accept (consultation in progress, or a
@@ -2790,6 +2958,64 @@ class CallSession:
             await api_client.end_call(call, reason=reason)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"end_call failed for {getattr(call, 'id', '?')}: {e}")
+
+    async def _start_consult_bridged_segment(self, consult: "CallSession") -> None:
+        """``accept_transfer`` on a WebRTC consult: the TransferAgent steps aside
+        and the two humans talk over the relay. End the consultation record and
+        carry the rest of the leg on a ``telephony:bridged-call`` record, as the
+        LiveKit worker's ``finaliseBridgedCall`` does. Best-effort: the relay is
+        already up and stays up whatever happens here."""
+        handover = self._hold_task(
+            asyncio.create_task(self._consult_to_bridged_record(consult))
+        )
+        # Teardown waits for this task before ending the record, so a leg that
+        # drops mid-hand-over cannot leave a started record that is never ended.
+        consult._bridged_handover = handover
+        await asyncio.shield(handover)
+
+    async def _consult_to_bridged_record(
+        self, consult: "CallSession"
+    ) -> Optional[api_client.CallRecord]:
+        route = consult._bridged_route
+        # An ended consultation record means the leg is already going away, so
+        # there is no bridged segment to record.
+        if route is None or consult.call.end_called:
+            return None
+        try:
+            bridged = await self._create_leg_record(
+                **route, model_name=BRIDGED_CALL_MODEL, consult=False
+            )
+        except Exception as e:  # noqa: BLE001
+            # The consultation record stays open and covers the whole leg.
+            logger.warning(f"webrtc consult: bridged call record creation failed: {e}")
+            return None
+        # End before start: the concurrency limiter counts every live record,
+        # so the other order could refuse the bridged record at the limit.
+        await self._safe_end_call(
+            consult.call, f"Transfer accepted, continued as bridged call {bridged.id}"
+        )
+        try:
+            await api_client.start_call(bridged)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"webrtc consult: bridged call record start failed: {e}")
+            return None
+        logger.bind(consult_call_id=consult.call.id, bridged_call_id=bridged.id).info(
+            "webrtc consult: bridged segment continues on its own call record"
+        )
+        return bridged
+
+    async def _end_consult_bridged_segment(self, consult: "CallSession") -> None:
+        """End the bridged record an accepted WebRTC consult moved onto, once
+        the hand-over has settled. Idempotent."""
+        handover, consult._bridged_handover = consult._bridged_handover, None
+        if handover is None:
+            return
+        await asyncio.wait({handover})
+        if handover.cancelled() or handover.exception() is not None:
+            return
+        bridged = handover.result()
+        if bridged is not None:
+            await self._safe_end_call(bridged, DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"])
 
     # ---- Lifecycle ----
 
@@ -2855,6 +3081,7 @@ def _builtin_consult_accept(consult_session: CallSession):
                 media_relay.bridge(
                     parent.relay_endpoint, consult_session.relay_endpoint
                 )
+                await parent._start_consult_bridged_segment(consult_session)
             elif parent._consult_use_refer:
                 try:
                     await parent.gateway_session.attended_refer_with(

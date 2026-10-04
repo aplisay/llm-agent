@@ -40,6 +40,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 
+from .dtmf import CallbackDtmfAggregator
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
 from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
@@ -52,6 +53,11 @@ from .realtime_tts import (
     transcript_tts_enabled,
 )
 from .tool_log import log_tool_call, log_tool_result
+from .tts_speed import (
+    tts_speed_for,
+    ultravox_speed_extra,
+    warn_tts_speed_unsupported,
+)
 
 
 # Recording capture rate. The sipbridge WS carries 16 kHz in both
@@ -420,15 +426,20 @@ _DEFAULT_DTMF_TIMEOUT_MS = 1500
 
 
 def _dtmf_aggregator_for(
-    agent: dict, *, on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None
+    agent: dict,
+    *,
+    on_digits: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    mute_until_bot_complete: bool = False,
 ) -> DTMFAggregator:
     """Build the DTMF aggregator that buffers keypad digits into a single user
     turn, honouring per-agent ``options.dtmfTimeout`` and
     ``options.dtmfTerminator``.
 
-    ``on_digits`` (GPT-Live) swaps the ``TranscriptionFrame`` delivery for a
-    callback: the live session ignores context frames after it has started,
-    so the digits go to the injection shim instead (see gpt_live_service.py).
+    ``on_digits`` (GPT-Live, the Grok voice row, OpenAI Realtime) swaps the
+    ``TranscriptionFrame`` delivery for a callback: those services never send
+    a user message added to the context, so the digits go through the
+    service instead (see dtmf.py). ``mute_until_bot_complete`` drops digits
+    while the greeting mute holds the caller's speech.
 
     Transports (FreeSWITCH serializer, Daily, …) emit one ``InputDTMFFrame``
     per keypress. Without an aggregator those frames reach no consumer — the
@@ -479,12 +490,11 @@ def _dtmf_aggregator_for(
     # termination_digit may be None to disable the terminator (see above); the
     # base class type-hints KeypadEntry but only does an equality comparison.
     if on_digits is not None:
-        from .gpt_live_service import GptLiveDtmfAggregator
-
-        return GptLiveDtmfAggregator(
+        return CallbackDtmfAggregator(
             timeout=timeout_s,
             termination_digit=termination_digit,  # type: ignore[arg-type]
             on_digits=on_digits,
+            mute_until_bot_complete=mute_until_bot_complete,
         )
     return DTMFAggregator(
         timeout=timeout_s,
@@ -549,6 +559,10 @@ def build_stt_service(agent: dict) -> Any:
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
 
+#: The rate every transport runs at; OutputRateGuard resamples if one ever differs.
+NEUPHONIC_SAMPLE_RATE = 16000
+
+
 def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
     (defaulting to Cartesia).
@@ -573,14 +587,21 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     # and ElevenLabs both want base codes, not regional tags) is handled for us —
     # we only choose WHICH tag to hand over.
     language = _language_setting(agent, "tts")
+    # ``options.tts.speed``, clamped per vendor; None leaves the vendor's rate alone.
+    speed = tts_speed_for(agent, tts_vendor)
     if tts_vendor == "cartesia":
-        from pipecat.services.cartesia.tts import CartesiaTTSService
+        from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 
         return CartesiaTTSService(
             api_key=_require_env("CARTESIA_API_KEY"),
             settings=CartesiaTTSService.Settings(
                 voice=voice or "71a7ad14-091c-4e8e-a314-022ece01c121",
                 **({"language": language} if language is not None else {}),
+                **(
+                    {"generation_config": GenerationConfig(speed=speed)}
+                    if speed is not None
+                    else {}
+                ),
             ),
         )
     if tts_vendor == "elevenlabs":
@@ -606,6 +627,7 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
                 **({"language": language} if language is not None else {}),
+                **({"speed": speed} if speed is not None else {}),
             ),
         )
     if tts_vendor == "deepgram":
@@ -623,6 +645,25 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
         return DeepgramTTSService(
             api_key=_require_env("DEEPGRAM_API_KEY"),
             voice=voice or "aura-asteria-en",
+            **(
+                {"settings": DeepgramTTSService.Settings(speed=speed)}
+                if speed is not None
+                else {}
+            ),
+        )
+    if tts_vendor == "neuphonic":
+        from .neuphonic_tts import AplisayNeuphonicTTSService
+
+        # Given no rate, the service asks Neuphonic for its default but tags frames with the
+        # pipeline rate, so pass one. No voice means Neuphonic's default for the language.
+        return AplisayNeuphonicTTSService(
+            api_key=_require_env("NEUPHONIC_API_KEY"),
+            sample_rate=NEUPHONIC_SAMPLE_RATE,
+            settings=AplisayNeuphonicTTSService.Settings(
+                voice=voice or None,
+                **({"language": language} if language is not None else {}),
+                **({"speed": speed} if speed is not None else {}),
+            ),
         )
     raise RuntimeError(f"Unsupported TTS vendor {tts_vendor!r} for pipeline mode")
 
@@ -662,8 +703,10 @@ def _wire_inactivity_kick(
     relay_endpoint: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     inject: "Optional[Callable[[str], Awaitable[None]]]" = None,
-) -> None:
-    """Register the inactivity "kick" handler on the user aggregator.
+) -> "Optional[Callable[[], None]]":
+    """Register the inactivity "kick" handler on the user aggregator. Returns
+    a function that resets the unanswered-prompt count (a keypad answer never
+    starts a user turn, see dtmf.py), or None when nothing was wired.
 
     ``inject`` replaces the frame-based delivery for a service that ignores
     context frames after it has started (GPT-Live): it is awaited with the
@@ -709,14 +752,14 @@ def _wire_inactivity_kick(
     """
     message = _inactivity_message(agent)
     if message is None:
-        return
+        return None
 
     # Ultravox handles inactivity NATIVELY via ``inactivityMessages`` in the
     # /calls request body (see ``_ultravox_inactivity_extra``) — it has no
     # separate TTS, so a synthesised kick is unreliable. Skip the generic kick
     # for it to avoid a double nudge.
     if is_ultravox:
-        return
+        return None
 
     from loguru import logger as _logger
 
@@ -743,12 +786,15 @@ def _wire_inactivity_kick(
     hangup_after_prompts = _inactivity_hangup_enabled(agent) and on_inactivity_hangup is not None
     idle_prompts = 0
 
+    def reset() -> None:
+        nonlocal idle_prompts
+        idle_prompts = 0
+
     # Pipecat calls this with (aggregator, strategy). If the signature does not
     # accept both, the call raises and pipecat only logs it, so no reset happens.
     @user_aggregator.event_handler("on_user_turn_started")
     async def _on_user_turn_started(_aggregator, _strategy=None) -> None:  # noqa: ANN001
-        nonlocal idle_prompts
-        idle_prompts = 0
+        reset()
 
     @user_aggregator.event_handler("on_user_turn_idle")
     async def _on_user_turn_idle(_aggregator) -> None:  # noqa: ANN001
@@ -792,6 +838,8 @@ def _wire_inactivity_kick(
             await on_inactivity_hangup()  # type: ignore[misc]
         except Exception as e:  # noqa: BLE001
             _logger.warning(f"inactivity hangup failed: {e}")
+
+    return reset
 
 
 def _properties_to_function_schema(name: str, description: str, properties: dict, required: list[str]) -> FunctionSchema:
@@ -1029,8 +1077,9 @@ async def build_voice_session(
     ``on_provider_session_ended`` is called with the provider's reason when a
     Grok voice session ends on xAI's side (a server close, a fatal error, the
     concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
-    receives the aggregated keypad digits on a Grok voice row, where they
-    reach the model through the service rather than a transcription frame.
+    receives the aggregated keypad digits on a Grok voice row and on OpenAI
+    Realtime, where they reach the model through the service rather than a
+    transcription frame.
 
     ``opening`` is set when this generation continues a call already in
     progress, so the caller has been greeted: it is the platform's first-turn
@@ -1204,7 +1253,10 @@ def _openai_realtime_session_properties(agent: dict, *, text_output: bool) -> An
         )
     voice = (options.get("tts") or {}).get("voice") or "alloy"
     return SessionProperties(
-        audio=AudioConfiguration(input=audio_input, output=AudioOutput(voice=voice)),
+        audio=AudioConfiguration(
+            input=audio_input,
+            output=AudioOutput(voice=voice, speed=tts_speed_for(agent, "openai")),
+        ),
     )
 
 
@@ -1221,6 +1273,7 @@ def _xai_session_properties(agent: dict) -> Any:
     from pipecat.services.xai.realtime.events import (
         AudioConfiguration,
         AudioInput,
+        AudioOutput,
         InputAudioTranscription,
         Reasoning,
         SessionProperties,
@@ -1231,6 +1284,7 @@ def _xai_session_properties(agent: dict) -> Any:
 
     options = agent.get("options") or {}
     effort = voice_effort(options)
+    speed = tts_speed_for(agent, "xai")
     return SessionProperties(
         voice=(options.get("tts") or {}).get("voice") or XAI_DEFAULT_VOICE,
         turn_detection=TurnDetection(type="server_vad"),
@@ -1239,7 +1293,9 @@ def _xai_session_properties(agent: dict) -> Any:
                 transcription=InputAudioTranscription(
                     model=XAI_TRANSCRIPTION_MODEL, language_hint=language_hint(agent)
                 )
-            )
+            ),
+            # The subclass fills the format; see grok_service._ensure_audio_config.
+            output=AudioOutput(speed=speed) if speed is not None else None,
         ),
         reasoning=Reasoning(effort=effort) if effort else None,
     )
@@ -1252,6 +1308,7 @@ def _ultravox_one_shot_params(
     *,
     text_output: bool,
     opening: Optional[str] = None,
+    voice_overrides: Optional[dict] = None,
 ) -> Any:
     """The ``OneShotInputParams`` for one Ultravox /calls request.
 
@@ -1262,6 +1319,8 @@ def _ultravox_one_shot_params(
     ``opening`` is the platform's first-turn instruction when the generation
     continues a call already in progress (see ``build_voice_session``); the
     opening turn is then that instruction, not the agent's greeting.
+    ``voice_overrides`` is :func:`tts_speed.ultravox_speed_extra`, resolved by the
+    caller because it needs a voice lookup.
     """
     import uuid as _uuid
 
@@ -1389,6 +1448,7 @@ def _ultravox_one_shot_params(
             # Interruption sensitivity: platform default unless the agent
             # carries an explicit vendorSpecific override.
             **_ultravox_vad_extra(agent),
+            **(voice_overrides or {}),
         },
     )
     if voice:
@@ -1467,6 +1527,9 @@ async def _build_realtime(
             )
         from .gpt_live_service import build_gpt_live_service
 
+        if not transcript_tts:
+            warn_tts_speed_unsupported(agent, model_id)
+
         llm = build_gpt_live_service(
             api_key=_require_env("OPENAI_API_KEY"),
             voice=(options.get("tts") or {}).get("voice"),
@@ -1482,21 +1545,25 @@ async def _build_realtime(
         # `audio.input.transcription` set, OpenAI Realtime never emits
         # TranscriptionFrame for the user's speech, which means the
         # platform never sees a `user` row in the transaction log.
-        from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
+        #
+        # The stock service drops the platform's mid-call context messages
+        # and keypad digits; the subclass sends them. See openai_realtime_service.py.
+        from .openai_realtime_service import build_openai_realtime_service
 
         _, openai_model = model_id.split("/", 1)
-        llm = OpenAIRealtimeLLMService(
+        llm = build_openai_realtime_service(
             api_key=_require_env("OPENAI_API_KEY"),
-            settings=OpenAIRealtimeLLMService.Settings(
-                model=openai_model,
-                system_instruction=system_prompt,
-                session_properties=_openai_realtime_session_properties(
-                    agent, text_output=text_output
-                ),
+            model=openai_model,
+            system_prompt=system_prompt,
+            session_properties=_openai_realtime_session_properties(
+                agent, text_output=text_output
             ),
+            on_session_ended=on_provider_session_ended,
         )
     elif model_id.startswith("google/"):
         from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+
+        warn_tts_speed_unsupported(agent, model_id)
 
         llm = GeminiLiveLLMService(
             api_key=_require_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
@@ -1543,8 +1610,19 @@ async def _build_realtime(
         # the last ``/`` before sending — mirroring the native handler
         # (lib/models/ultravox.js ``modelData``: ``model.replace(/^.*\//, '')``).
         ultravox_model = model_id.rsplit("/", 1)[-1]
+        # In text-output mode the speed belongs to the external TTS.
+        voice_overrides = (
+            {}
+            if text_output
+            else await ultravox_speed_extra(agent, (options.get("tts") or {}).get("voice"))
+        )
         params = _ultravox_one_shot_params(
-            agent, system_prompt, ultravox_model, text_output=text_output, opening=opening
+            agent,
+            system_prompt,
+            ultravox_model,
+            text_output=text_output,
+            opening=opening,
+            voice_overrides=voice_overrides,
         )
 
         # Ultravox needs the function schemas at construction time:
@@ -1655,14 +1733,28 @@ async def _build_realtime(
     # never consumed and digits are dropped. GPT-Live routes the digits through
     # the injection shim instead of a TranscriptionFrame.
     if gpt_live_model and gpt_live is not None:
-        on_digits = gpt_live.on_dtmf
-    elif grok_voice_model:
+        digits_to_service = gpt_live.on_dtmf
+    elif callable(getattr(llm, "inject_dtmf", None)):
         # Same reason as GPT-Live: a TranscriptionFrame would become a user
         # message the service never sends; the digits go through the service.
-        on_digits = on_injected_dtmf
+        digits_to_service = on_injected_dtmf
     else:
-        on_digits = None
-    dtmf_aggregator = _dtmf_aggregator_for(agent, on_digits=on_digits)
+        digits_to_service = None
+    kick_reset: "Optional[Callable[[], None]]" = None
+
+    async def route_digits(digits: str) -> None:
+        # A bridged leg's bot is muted, so its digits go nowhere, as with the kick.
+        if relay_endpoint is not None and getattr(relay_endpoint, "engaged", False):
+            return
+        if kick_reset is not None:
+            kick_reset()
+        await digits_to_service(digits)  # type: ignore[misc]
+
+    dtmf_aggregator = _dtmf_aggregator_for(
+        agent,
+        on_digits=route_digits if digits_to_service is not None else None,
+        mute_until_bot_complete=bool(user_params and user_params.user_mute_strategies),
+    )
     # Auxiliary STT tap (options.stt.aux) right behind the relay tap: an
     # engaged relay silences the caller's audio for the aux engine too, and the
     # tap copies audio out to a side pipeline — nothing of the second engine
@@ -1708,7 +1800,7 @@ async def _build_realtime(
     # window. Inert unless options.inactivity is configured (the user
     # aggregator's user_idle_timeout stays 0 otherwise). Ultravox needs the
     # InputTextRawFrame path — see _wire_inactivity_kick.
-    _wire_inactivity_kick(
+    kick_reset = _wire_inactivity_kick(
         user_aggregator=user_aggregator,
         task_ref_getter=lambda: task,
         agent=agent,
@@ -1769,13 +1861,13 @@ async def _build_pipeline(
             settings=GoogleLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("anthropic/"):
-        from pipecat.services.anthropic.llm import AnthropicLLMService
+        from .anthropic_service import AplisayAnthropicLLMService
 
         _, anthropic_model = model_id.split("/", 1)
-        llm = AnthropicLLMService(
+        llm = AplisayAnthropicLLMService(
             api_key=_require_env("ANTHROPIC_API_KEY"),
             model=anthropic_model,
-            settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
+            settings=AplisayAnthropicLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("xai/"):
         # xAI Grok text models over their OpenAI-compatible endpoint (docs/grok.md).

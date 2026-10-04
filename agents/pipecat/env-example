@@ -34,6 +34,7 @@ WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 # DEEPGRAM_API_KEY=
 # CARTESIA_API_KEY=
 # ELEVENLABS_API_KEY=
+# NEUPHONIC_API_KEY=
 
 # Platform-wide outbound SBC for trunk-origin outbound calls / WebRTC→telephony
 # transfers (named to line up with the LiveKit stack). The bridge INVITEs this

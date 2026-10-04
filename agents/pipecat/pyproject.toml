@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Aplisay voice agent worker built on Pipecat. Daily as a pure SIP gateway, SmallWebRTCTransport for browsers."
 requires-python = ">=3.11"
 dependencies = [
-    "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,openai,silero,ultravox,webrtc]==1.10.0",
+    "pipecat-ai[anthropic,cartesia,daily,deepgram,google,mcp,neuphonic,openai,silero,ultravox,webrtc]==1.10.0",
     # mcp_tools.py requires mcp 2's transport API and snake_case attributes; keep this direct dependency. See PR #327.
     "mcp[cli]>=2,<3",
     "fastapi>=0.115",

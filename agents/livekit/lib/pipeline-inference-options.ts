@@ -114,6 +114,22 @@ function normalizeTtsVendorString(
   return { vendor: s.toLowerCase() };
 }
 
+/** The configured TTS vendor (or the one a voice id implies), lowercased, without `/model` scoping. */
+export function pipelineTtsVendor(agent: Agent): string {
+  const t = agent.options?.tts;
+  const voice = String(t?.voice || "").trim();
+  return normalizeTtsVendorString(t?.vendor).vendor || (voice ? inferTtsVendor(voice) : "");
+}
+
+/**
+ * Whether buildPipelineTts gives this agent Google TTS (Gemini, or `LIVEKIT_PIPELINE_GOOGLE_TTS`).
+ * Not {@link pipelineTtsVendor}: buildPipelineTts sends a `google/<model>` vendor to Inference.
+ */
+export function pipelineUsesGoogleTts(agent: Agent): boolean {
+  const t = agent.options?.tts;
+  return (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase() === "google";
+}
+
 /**
  * TTS inference id, e.g. `cartesia/sonic-3:<voice-uuid>`
  */
@@ -121,8 +137,17 @@ export function resolvePipelineTts(agent: Agent): string {
   const t = agent.options?.tts;
   const env = defaultPipelineEnv();
 
+  // Built by neuphonic-tts.ts, never through Inference; the string only names the billing vendor.
+  // Checked before the no-voice default, which would bill a voiceless Neuphonic agent as Cartesia.
+  if (pipelineTtsVendor(agent) === "neuphonic") {
+    const voice = String(t?.voice || "").trim();
+    const id = voice.includes(":") ? voice.split(":").pop()!.trim() : voice;
+    return id ? `neuphonic:${id}` : "neuphonic";
+  }
+
   if (!t?.voice) {
-    return env.tts;
+    // buildPipelineTts gives a google agent Google TTS even without a voice, so do not bill the default TTS.
+    return pipelineUsesGoogleTts(agent) ? googlePipelineTts("") : env.tts;
   }
 
   const voice = String(t.voice).trim();
@@ -158,16 +183,24 @@ export function resolvePipelineTts(agent: Agent): string {
     return `deepgram/aura-2:${deepgramCatalogToInferenceVoice(id)}`;
   }
   if (vendor === "google") {
-    const full = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS;
-    if (full) {
-      return full.includes("{voice}") ? full.replace("{voice}", voice) : full;
-    }
-    throw new Error(
-      "resolvePipelineTts: vendor google requires LIVEKIT_PIPELINE_GOOGLE_TTS, or use voice-session-factory Gemini TTS path",
-    );
+    return googlePipelineTts(voice);
   }
 
   return env.tts;
+}
+
+/**
+ * The `LIVEKIT_PIPELINE_GOOGLE_TTS` id for this voice. Without it this throws: Gemini TTS has no Inference id,
+ * so resolveUsageVendors leaves google usage to the plugin's `google.gemini.TTS` label.
+ */
+function googlePipelineTts(voice: string): string {
+  const full = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS;
+  if (full) {
+    return full.includes("{voice}") ? full.replace("{voice}", voice) : full;
+  }
+  throw new Error(
+    "resolvePipelineTts: vendor google requires LIVEKIT_PIPELINE_GOOGLE_TTS, or use voice-session-factory Gemini TTS path",
+  );
 }
 
 export function inferTtsVendor(voice: string): string {
@@ -182,7 +215,7 @@ export function inferTtsVendor(voice: string): string {
   }
   if (voice.includes(":")) {
     const [v] = voice.split(":");
-    if (["cartesia", "elevenlabs", "google", "deepgram"].includes(v.toLowerCase())) {
+    if (["cartesia", "elevenlabs", "google", "deepgram", "neuphonic"].includes(v.toLowerCase())) {
       return v.toLowerCase();
     }
   }

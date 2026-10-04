@@ -150,6 +150,18 @@ components:
             accept a `delegate` function. See docs/gpt-live.md.
           type: boolean
           example: false
+        kind:
+          type: string
+          enum: [generative, decision]
+          default: generative
+          description: |-
+            `generative` rows hold a conversation and run a tool loop. `decision` rows (the
+            `text:typesafe/` models) answer the agent's `result` function schema in one exchange: they
+            accept only a single builtin `result` function whose properties are an enum (Choice), a
+            boolean (Noul) or `x-levels` (Score), take no other functions, MCP servers or voice
+            options, cannot chat, and cannot be a `delegate` or `summaryAgent` target. Pickers for
+            voice agents should hide them. See docs/typesafe-jev.md.
+          example: generative
       required:
         - name
         - description
@@ -473,6 +485,22 @@ components:
           example: 0.2
         callHook:
           $ref: "#/components/schemas/CallHookConfig"
+        decision:
+          type: object
+          nullable: true
+          description: |-
+            Accepted only on `decision`-kind models (`text:typesafe/...`, see docs/typesafe-jev.md);
+            rejected on every other model. `minConfidence` (0 to 1) turns on confidence gating: a
+            Choice or Score answer whose confidence is below it is returned as `null` with its
+            distribution still in `result.probabilities`, and `result.decision` is `"review"`
+            (else `"auto"`). Without this option `result.decision` is absent.
+          properties:
+            minConfidence:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 1
+              example: 0.7
         recording:
           type: object
           description: |-
@@ -528,7 +556,7 @@ components:
             vendor:
               type: string
               description: |-
-                TTS provider (e.g. cartesia, google, elevenlabs, deepgram). On pipeline models it selects the
+                TTS provider (e.g. cartesia, google, elevenlabs, deepgram, neuphonic). On pipeline models it selects the
                 TTS stage. On a realtime model flagged `hasExternalTts` in GET /models, a vendor other than the
                 model's own provider switches the model to text output and the named TTS speaks its text, with
                 `voice` and `language` applying to that TTS (see docs/realtime-external-tts.md). Other realtime
@@ -541,6 +569,19 @@ components:
                 Must be a supported voice language as returned from a get on the `voices` api
               type: string
               example: en-GB-Wavenet-A
+            speed:
+              type: number
+              minimum: 0.25
+              maximum: 2
+              example: 1.2
+              description: |-
+                Speaking rate as a multiple of the voice's normal rate: `1` is normal, `1.2` is 20% faster,
+                `0.9` is 10% slower. Unset or `1` leaves the vendor's own rate alone.
+
+                Each vendor accepts a narrower range, and the worker clamps the value to it (for example
+                ElevenLabs 0.7 to 1.2, Cartesia 0.6 to 1.5). It applies to whatever speaks: the pipeline
+                or external TTS, or the realtime model's own voice. Vendors with no speed control ignore it
+                and the worker logs a warning. See docs/tts-speed.md for the support table.
             output:
               type: object
               description: |-
@@ -1261,6 +1302,26 @@ components:
           type: string
           description: ID of the listener/instance associated with the call (if available).
           example: "5a5c9a6b-bb8b-4dd9-a8ff-f179b0f3f777"
+        organisationId:
+          type: string
+          nullable: true
+          description: The organisation that owns the call. Not covered by `hash`.
+          example: "0f9d6c2e-7a1b-4e3c-9d8f-2b5a6c7d8e9f"
+        parentId:
+          type: string
+          nullable: true
+          description: |-
+            The parent call when this call is one leg of a transfer, hand-back or bridged transfer;
+            `null` on a root call. Not covered by `hash`.
+          example: null
+        modelName:
+          type: string
+          nullable: true
+          description: |-
+            The model this leg ran on, from the call record. A telephony bridged transfer creates its
+            human-to-human segment as its own leg with the sentinel `telephony:bridged-call`; a WebRTC
+            relay leg carries the agent's model. Not covered by `hash`.
+          example: "livekit:openai/gpt-4o"
         callerId:
           type: string
           description: Caller number for the call.
@@ -1440,13 +1501,25 @@ components:
                 has explicitly allowed it to which is a security feature to control the risk of data leakage.
 
           redact:
-            type: boolean
+            oneOf:
+              - type: boolean
+              - type: array
+                minItems: 1
+                items:
+                  type: string
+                  minLength: 1
             description: >-
-              When set to `true`, the function still executes normally and the real result is stored in
-              `metadata.toolsCalls.<function>.result`. However, the LLM receives only a redacted acknowledgement:
-              `"OK - function completed"` on success, or `"FAILED - invocation failed"` on error (with the `error`
-              object still present, but the result payload redacted). This is intended for handlers with dynamic
-              metadata support (e.g. LiveKit agents).
+              Hide some or all of the function's result from the model while the real result is still stored in
+              `metadata.toolsCalls.<function>.result` for later tools to chain (e.g. a transfer number).
+              `true`: the LLM receives only a redacted acknowledgement, `"OK - function completed"` on success or
+              `"FAILED - invocation failed"` on error (with the `error` object still present, but the result
+              payload redacted). A list of property names, e.g. `["extension", "direct", "mobile"]`: the LLM
+              receives the result with every property of those names removed, wherever it occurs in the result
+              (objects and arrays, any depth; names are matched exactly), so a lookup can disambiguate with the
+              caller ("did you mean Sue Sinclair?") while the numbers ride metadata only. A result that is not
+              JSON has nothing to strip and is returned unchanged; on error the behaviour of `true` applies. An
+              empty list is rejected. Either form is only allowed on handlers with dynamic metadata support
+              (LiveKit and Pipecat agents).
             example: true
           result:
             type: string

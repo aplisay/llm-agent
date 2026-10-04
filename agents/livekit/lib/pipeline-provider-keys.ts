@@ -16,6 +16,7 @@ import {
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
+import { deepgramTtsSpeed, ttsSpeedFor } from "./tts-speed.js";
 
 function truthyEnv(v: string | undefined): boolean {
   const s = (v || "").trim().toLowerCase();
@@ -118,7 +119,7 @@ function deepgramAuraModelFromSuffix(suffix: string): string {
   return `aura-${s}-en`;
 }
 
-function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string): tts.TTS {
+function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string, agent: Agent): tts.TTS {
   const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
@@ -127,24 +128,24 @@ function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string): tts.TTS {
   }
   const idx = descriptor.lastIndexOf(":");
   const voice = idx === -1 ? "" : descriptor.slice(idx + 1);
+  const model = deepgramAuraModelFromSuffix(voice);
   return new deepgram.TTS({
     apiKey,
-    model: deepgramAuraModelFromSuffix(voice),
+    model,
+    speed: deepgramTtsSpeed(agent, model),
   });
 }
 
+// Checked against Cartesia's /tts/bytes on 2026-09-30. Keep in step with SONIC_3_LANGUAGES in lib/voices/cartesia.js.
+const SONIC_3_LANGUAGES: ReadonlySet<string> = new Set([
+  "ar", "bg", "bn", "cs", "da", "de", "el", "en", "es", "fi", "fr", "gu", "he", "hi", "hr", "hu", "id",
+  "it", "ja", "ka", "kn", "ko", "ml", "mr", "ms", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sk", "sv",
+  "ta", "te", "th", "tl", "tr", "uk", "vi", "zh",
+]);
+
 function cartesiaLanguage(agent: Agent): string {
   const p = ttsPrimaryLanguage(agent) || "en";
-  const allowed = new Set([
-    "en",
-    "es",
-    "fr",
-    "de",
-    "pt",
-    "zh",
-    "ja",
-  ]);
-  return allowed.has(p) ? p : "en";
+  return SONIC_3_LANGUAGES.has(p) ? p : "en";
 }
 
 /**
@@ -161,10 +162,13 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       : voiceRaw;
     const model =
       process.env.LIVEKIT_PIPELINE_ELEVENLABS_MODEL?.trim() || "eleven_turbo_v2_5";
+    const speed = ttsSpeedFor(agent, "elevenlabs");
     return new elevenlabs.TTS({
       voiceId: id,
       model: model as never,
       language: ttsPrimaryLanguage(agent),
+      // The plugin's type requires stability and similarity_boost; ElevenLabs does not.
+      ...(speed !== undefined ? { voiceSettings: { speed } as elevenlabs.VoiceSettings } : {}),
     });
   }
   if (vendor === "cartesia") {
@@ -178,12 +182,13 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
       voice: id,
       model,
       language: cartesiaLanguage(agent),
+      speed: ttsSpeedFor(agent, "cartesia"),
     });
   }
   if (vendor === "deepgram") {
     const ttsStr = resolvePipelineTts(agent);
     if (ttsStr.startsWith("deepgram/aura-2:")) {
-      return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr);
+      return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr, agent);
     }
     throw new Error(
       `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.tts.vendor to be "deepgram/aura-2" (or voice config to infer deepgram) so it resolves to deepgram/aura-2:... (got "${ttsStr}")`,

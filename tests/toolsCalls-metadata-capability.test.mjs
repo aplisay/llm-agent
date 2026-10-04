@@ -84,3 +84,49 @@ describe('toolsCalls metadata capability enforcement', () => {
   });
 });
 
+
+describe('redact shape and field-list redaction enforcement', () => {
+  class OptedIn {
+    static name = 'livekit-like';
+    static hasDynamicMetadata = true;
+  }
+  class NotOptedIn {
+    static name = 'whatever';
+    static hasDynamicMetadata = false;
+  }
+  const fn = (redact) => ({
+    resolve: { implementation: 'rest', method: 'get', url: 'https://example.test/resolve', redact, input_schema: { properties: {} } },
+  });
+
+  test('allows redact as a list of property names when Handler opts in', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn(['extension', 'direct']) })).not.toThrow();
+  });
+
+  test('rejects redact as a list of property names when Handler does not opt in', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: NotOptedIn, functions: fn(['extension']) }))
+      .toThrow('Function result redaction is only allowed in handlers with hasDynamicMetadata');
+  });
+
+  test('redact: false is not a redaction request', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: NotOptedIn, functions: fn(false) })).not.toThrow();
+  });
+
+  test('rejects an empty list even when Handler opts in', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn([]) }))
+      .toThrow('redact: an empty list hides nothing');
+  });
+
+  test('rejects entries that are not non-empty strings', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn(['extension', 42]) }))
+      .toThrow('redact: every entry must be a non-empty property name');
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn(['  ']) }))
+      .toThrow('redact: every entry must be a non-empty property name');
+  });
+
+  test('rejects any other shape', () => {
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn('extension') }))
+      .toThrow('redact must be true, false, or a list of property names');
+    expect(() => validateToolsCallsMetadataUsage({ Handler: OptedIn, functions: fn({ fields: ['x'] }) }))
+      .toThrow('redact must be true, false, or a list of property names');
+  });
+});

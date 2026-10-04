@@ -13,7 +13,7 @@ On a realtime model, `options.tts.vendor` decides:
 |---|---|
 | unset | the model's own voice |
 | the model's own provider (`ultravox` on an Ultravox model, `openai` on OpenAI Realtime, `google` on Gemini Live) | the model's own voice |
-| any other TTS vendor the worker supports (`elevenlabs`, `deepgram`, `cartesia`) | text-output mode: the model emits text and that TTS speaks it |
+| any other TTS vendor the worker supports (`elevenlabs`, `deepgram`, `cartesia`, `neuphonic`) | text-output mode: the model emits text and that TTS speaks it |
 
 In text-output mode `options.tts.voice` and `options.tts.language` belong to
 the external TTS. The language is also still passed to the model as its

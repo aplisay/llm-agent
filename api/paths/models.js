@@ -35,6 +35,7 @@ const modelList = async (req, res) => {
         audioModel,
         voiceStack,
         requiresSttTts,
+        kind,
       }) => (
         [name,
         {
@@ -48,6 +49,7 @@ const modelList = async (req, res) => {
           hasOutputStt: hasOutputStt === true,
           hasExternalTts: hasExternalTts === true,
           hasDelegation: hasDelegation === true,
+          kind: kind || 'generative',
           ...(voiceStack != null ? { voiceStack } : {}),
           ...(requiresSttTts != null ? { requiresSttTts } : {}),
         }

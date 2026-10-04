@@ -56,7 +56,10 @@ Other examples may include things like determining a `user ID` or token using a 
 
 Metadata priming gives **integrity**: the LLM cannot modify the final value because the downstream tool input is resolved server-side from metadata.
 
-When you also need **confidentiality** (the LLM should not even see sensitive data), use `redact: true` on the producing function definition.
+When you also need **confidentiality** (the LLM should not even see sensitive data), use `redact` on the producing function definition. It takes two forms:
+
+- `redact: true` hides the whole result.
+- `redact: ["number", "extension"]` hides only the named properties, wherever they occur in the result (objects and arrays, any depth; names are matched exactly and are case-sensitive). The model sees the rest of the result and can act on it.
 
 With `redact: true` (for handlers with dynamic metadata support):
 
@@ -66,7 +69,16 @@ With `redact: true` (for handlers with dynamic metadata support):
    - success response to LLM: `"OK - function completed"`
    - failure response to LLM: `"FAILED - invocation failed"` (with `error` details, but result data redacted)
 
-This is the strongest pattern for sensitive handoff values such as transfer destinations, auth artifacts, account routing IDs, or policy decisions: the orchestration layer can use the real data, while the model never sees it.
+With `redact: ["number", …]` (same handlers):
+
+1. The function still executes normally and the full result is still written to `metadata.toolsCalls.<function>.result`, so a later tool can read a hidden property from there with `source: "metadata"`.
+2. On success the LLM receives the JSON result with every property of those names removed. A result that is not JSON has nothing to strip and is passed through unchanged.
+3. On failure the LLM receives `"FAILED - invocation failed"`, exactly as with `redact: true`.
+4. An empty list is rejected when the agent is created (it would hide nothing), as is any entry that is not a non-empty string.
+
+The field-list form lets one lookup do two jobs: the model can disambiguate with the caller from the visible properties (a name, a department, a list of near matches) while the number it must never see, or say, is primed for a later `transfer` from metadata.
+
+`redact: true` remains the strongest pattern for sensitive handoff values such as transfer destinations, auth artifacts, account routing IDs, or policy decisions: the orchestration layer can use the real data, while the model never sees it.
 
 ## LiveKit-only enforcement
 

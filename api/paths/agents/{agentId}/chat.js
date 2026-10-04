@@ -3,6 +3,7 @@ import { resolveAgentForUser } from '../../../../lib/builtin-agents.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { isModelAllowed } from '../../../../lib/auth/model-access.js';
 import TextHandler from '../../../../lib/handlers/text.js';
+import { isDecisionModelName } from '../../../../lib/decision-limits.js';
 
 let log;
 
@@ -53,6 +54,13 @@ const agentChat = async (req, res) => {
         message: `Agent ${agentId} is type ${agent.type || 'interactive-audio'}; only text agents support chat`,
       });
     }
+    // A decision model answers a result schema in one exchange and has no
+    // conversation to hold (docs/typesafe-jev.md).
+    if (isDecisionModelName(agent.modelName)) {
+      return res.status(400).send({
+        message: `Agent ${agentId} runs a decision model (${agent.modelName}), which has no chat; invoke it with POST /agents/${agentId}/invoke`,
+      });
+    }
     // Optional seed: an existing set to edit, a prior test result to diagnose,
     // the diagnosed agent's own definition (a SET-LESS troubleshoot — without
     // it the builder root-causes prompt/function bugs blind), and/or a
@@ -71,6 +79,9 @@ const agentChat = async (req, res) => {
       }
       if (!isModelAllowed(model, res.locals.user?._allowedModels)) {
         return res.status(403).send({ message: `Model not permitted: ${model}` });
+      }
+      if (isDecisionModelName(model)) {
+        return res.status(400).send({ message: `Decision models have no chat and cannot be a session's model: ${model}` });
       }
       agent.modelName = model;
     }
@@ -122,7 +133,7 @@ agentChat.apiDoc = {
             // request validator accepts both shapes.
             subjectAgent: { nullable: true, description: 'For a set-less troubleshoot: the diagnosed agent\'s own definition (prompt/functions/options) — or an array of definitions, one per distinct agent on the call — so fixes are grounded in what the agent actually says and does.' },
             knowledge: { type: 'string', nullable: true, description: 'A caller-formatted context block appended verbatim to the opening turn (e.g. website-knowledge state).' },
-            model: { type: 'string', nullable: true, description: 'Per-session model override (a `text:` catalogue model the caller is allowed to use, e.g. from a user preference). 400 if unknown, 403 if not permitted.' },
+            model: { type: 'string', nullable: true, description: 'Per-session model override (a `text:` catalogue model the caller is allowed to use, e.g. from a user preference). 400 if unknown or a `decision`-kind model, 403 if not permitted.' },
             headless: { type: 'boolean', nullable: true, description: 'When true, SKIP the builder opening turn — the session waits for the caller\'s first user message instead of auto-running the build/edit/diagnose greeting. For headless callers (e.g. polite.ai\'s independent reviewer) that drive the agent programmatically over the socket.' },
             history: {
               type: 'array',

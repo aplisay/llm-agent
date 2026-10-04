@@ -8,7 +8,10 @@ This is the Python port of ``lib/function-handler.js``. Behaviour must match:
 - Sequential execution within a tool-call batch.
 - Result writeback to ``metadata.toolsCalls[toolName]`` for chaining.
 - ``redact: True`` swaps the LLM-visible result for ``"OK"`` while keeping the
-  real result available to later tools via ``metadata.toolsCalls``.
+  real result available to later tools via ``metadata.toolsCalls``;
+  ``redact: ["number", ...]`` hides only the named properties (at any depth)
+  from the model, so one lookup can both disambiguate with the caller and
+  prime a transfer number the model never sees.
 
 Hardwired built-ins live here. Handler-specific built-ins (``hangup``,
 ``transfer``, ``transfer_status``) are passed in by the caller — see
@@ -200,6 +203,36 @@ def _resolve_inputs(
     return resolved
 
 
+def _strip_fields(value: Any, names: set[str]) -> Any:
+    if isinstance(value, list):
+        return [_strip_fields(v, names) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_fields(v, names) for k, v in value.items() if k not in names}
+    return value
+
+
+def redact_visible_result(result: Any, redact: Any, error: Optional[str]) -> Any:
+    """The model-visible copy of a function result under ``redact``.
+
+    ``True`` (or any error under either form) → ``"OK"``: the acknowledgement,
+    with the error carried separately. A list of property names → the result
+    with every property of those names removed wherever it occurs in the tree
+    (objects and arrays, any depth; names matched exactly). A result that is
+    not JSON has nothing to strip and is returned as is. Matches
+    ``lib/function-handler.js``; the full result always goes to metadata first.
+    """
+    if redact is True or error:
+        return "OK"
+    names = {n for n in redact if isinstance(n, str)} if isinstance(redact, list) else set()
+    if not names:
+        return result
+    parsed = _try_parse_json(result) if isinstance(result, str) else result
+    if not isinstance(parsed, (dict, list)):
+        return result
+    stripped = _strip_fields(parsed, names)
+    return json.dumps(stripped, indent=2) if isinstance(result, str) else stripped
+
+
 def _write_result_to_metadata(
     metadata: dict, tool_name: str, parameter: dict, result: Any, error: Optional[str]
 ) -> None:
@@ -310,10 +343,12 @@ async def function_handler(
         # Write to metadata BEFORE redaction so chaining sees the real value.
         _write_result_to_metadata(metadata, name, inputs, result, error)
 
-        # Redact LLM-visible result if requested.
+        # Redact the LLM-visible result if requested: the whole result, or just
+        # the named properties (see redact_visible_result).
         visible_result = result
-        if options.get("allowRedactedFunctionResults") and fn_def.get("redact"):
-            visible_result = "OK"
+        redact = fn_def.get("redact")
+        if options.get("allowRedactedFunctionResults") and (redact is True or (isinstance(redact, list) and redact)):
+            visible_result = redact_visible_result(result, redact, error)
 
         # Cap only the model-visible result after storing full metadata, so later tool calls can still chain it.
         # See PR #322.
