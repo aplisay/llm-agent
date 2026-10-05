@@ -7,9 +7,15 @@
  * Design: aplisay-strategy implementation/regserver-tactical-spec.md §2.
  */
 import { setupRealDatabase, teardownRealDatabase, PhoneRegistration, User, Organisation, Trunk, Op } from './setup/database-test-wrapper.js';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const REALM = 'sip.test.polite.ai';
+
+// The digest HA1 pair the Kamailio edge verifies against, computed here
+// independently of the model (schema 67).
+const md5 = (v) => createHash('md5').update(v).digest('hex');
+const ha1Of = (username, password) => md5(`${username}:${REALM}:${password}`);
+const ha1bOf = (username, password) => md5(`${username}@${REALM}:${REALM}:${password}`);
 
 describe('registrar accounts', () => {
   let testOrgId;
@@ -108,6 +114,9 @@ describe('registrar accounts', () => {
     expect(row.state).toBe('initial');
     expect(row.b2buaId).toBeNull();
     expect(row.bindings).toBeNull();
+    // Schema 67: the HA1 pair beside the sealed password, for the edge.
+    expect(row.ha1).toBe(ha1Of(r._body.username, r._body.password));
+    expect(row.ha1b).toBe(ha1bOf(r._body.username, r._body.password));
   });
 
   test('refuses an identity supplied by the caller', async () => {
@@ -208,6 +217,10 @@ describe('registrar accounts', () => {
     expect(row.password).toBe(rotate._body.password);
     expect(row.state).toBe('initial');
     expect(row.error).toBeNull();
+    // The HA1 pair follows the rotated password.
+    expect(row.ha1).toBe(ha1Of(createdRes._body.username, rotate._body.password));
+    expect(row.ha1).not.toBe(ha1Of(createdRes._body.username, createdRes._body.password));
+    expect(row.ha1b).toBe(ha1bOf(createdRes._body.username, rotate._body.password));
 
     const line = res();
     await createPhoneEndpoint(req({ body: { type: 'phone-registration', name: 'Line', registrar: 'sip.example.com', username: 'u2', password: 'p2' } }), line);
@@ -218,6 +231,45 @@ describe('registrar accounts', () => {
     const lineRotate = res();
     await rotateCredentials(req({ params: { identifier: line._body.id } }), lineRotate);
     expect(lineRotate._status).toBe(404);
+  });
+
+  test('the HA1 pair is registrar-only, never exposed, and backfilled for rows that predate it', async () => {
+    const { backfillRegistrarHA1 } = await import('../lib/database.js');
+
+    // A client-mode line carries no hashes: its password is the customer's
+    // and the edge never verifies it.
+    const line = res();
+    await createPhoneEndpoint(req({ body: { type: 'phone-registration', name: 'Line', registrar: 'sip.example.com', username: 'u3', password: 'p3' } }), line);
+    expect(line._status).toBe(201);
+    const lineRow = await PhoneRegistration.findByPk(line._body.id);
+    expect(lineRow.ha1).toBeNull();
+    expect(lineRow.ha1b).toBeNull();
+
+    // An account minted before the columns existed: the hook did not run,
+    // so the hashes are null until the upgrade's backfill fills them from
+    // the sealed password.
+    const account = await createAccount();
+    const id = account._body.id;
+    await PhoneRegistration.update({ ha1: null, ha1b: null }, { where: { id } });
+    expect((await PhoneRegistration.findByPk(id)).ha1).toBeNull();
+    await backfillRegistrarHA1();
+    const filled = await PhoneRegistration.findByPk(id);
+    expect(filled.ha1).toBe(ha1Of(account._body.username, account._body.password));
+    expect(filled.ha1b).toBe(ha1bOf(account._body.username, account._body.password));
+    expect(filled.password).toBe(account._body.password);
+    // Running it again is a no-op.
+    await backfillRegistrarHA1();
+    expect((await PhoneRegistration.findByPk(id)).ha1).toBe(filled.ha1);
+
+    // Neither reveal nor the read shape carries the hashes.
+    const reveal = res();
+    await revealCredentials(req({ params: { identifier: id } }), reveal);
+    expect(reveal._body.ha1).toBeUndefined();
+    const read = res();
+    await getPhoneEndpoint(req({ params: { identifier: id } }), read);
+    expect(read._status).toBe(200);
+    expect(read._body.ha1).toBeUndefined();
+    expect(read._body.ha1b).toBeUndefined();
   });
 
   test('refuses reveal to another organisation and to a caller without update', async () => {
