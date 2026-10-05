@@ -88,6 +88,30 @@ def test_deepgram_speed_keeps_the_voice():
     assert svc._settings.voice == "aura-2-thalia-en"
 
 
+@pytest.mark.parametrize(
+    "voice,speed,expected",
+    [("aura-2-thalia-en", 1.8, 1.5), ("aura-2-celeste-es", 0.5, 0.7)],
+)
+def test_deepgram_speed_clamped_on_aura_2_english_and_spanish(voice, speed, expected):
+    svc = build_tts_service(_agent(vendor="deepgram", voice=voice, speed=speed))
+    assert svc._settings.speed == expected
+
+
+# Deepgram answers 400 to any speed on these.
+@pytest.mark.parametrize(
+    "voice,model",
+    [
+        pytest.param("aura-asteria-en", "aura-asteria-en", id="aura-1"),
+        pytest.param(None, "aura-asteria-en", id="default voice"),
+        pytest.param("aura-2-julius-de", "aura-2-julius-de", id="aura-2 german"),
+    ],
+)
+def test_deepgram_no_speed_on_other_voices(voice, model):
+    svc = build_tts_service(_agent(vendor="deepgram", voice=voice, speed=1.2))
+    assert svc._settings.speed is None
+    assert svc._settings.voice == model
+
+
 def test_neuphonic_speed():
     svc = build_tts_service(_agent(vendor="neuphonic", speed=1.5))
     assert svc._settings.speed == 1.5
