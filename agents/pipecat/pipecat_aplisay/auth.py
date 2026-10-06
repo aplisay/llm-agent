@@ -5,7 +5,7 @@
 - ``/webrtc/offer`` consumes signed join tokens minted by
   :func:`Pipecat.join` in ``lib/handlers/pipecat.js``. The signature uses HMAC
   SHA-256 with ``PIPECAT_JOIN_SECRET`` — the worker validates and decodes the
-  payload here.
+  payload here. Join metadata in the payload is sealed; see ``join_metadata``.
 - Daily inbound webhook is authenticated by Daily's signature (TODO — add when
   setting up the production webhook).
 """
@@ -40,6 +40,7 @@ class JoinPayload:
     instance_id: str
     session_id: str
     expires_at: int
+    sealed_call_metadata: Optional[str] = None
 
 
 def verify_join_token(token: str) -> JoinPayload:
@@ -64,6 +65,7 @@ def verify_join_token(token: str) -> JoinPayload:
         instance_id=decoded["instanceId"],
         session_id=decoded["sessionId"],
         expires_at=int(decoded["expiresAt"]),
+        sealed_call_metadata=decoded.get("sealedCallMetadata"),
     )
 
 
