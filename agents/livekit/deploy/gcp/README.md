@@ -50,6 +50,9 @@ The agent runners are currently deployed as GCE *container VMs* — a
   operational one-liners over the node list from the last deployment.
 - [`drain.sh`](drain.sh) — retire a runner without leaving a stale worker
   registration behind. See [Retiring a runner](#retiring-a-runner).
+- [`shutdown-script.sh`](shutdown-script.sh) /
+  [`install-shutdown-script.sh`](install-shutdown-script.sh): drain the worker
+  on every VM stop. See [Stopping a runner](#stopping-a-runner).
 
 Generated locally and git-ignored: `.env.staging`, `.env.production`,
 `docker-compose.yaml`, `.last-deployment`, `.last-deployment-cos`.
@@ -293,13 +296,11 @@ landing before moving to the next.
 ### Retiring a runner
 
 Once the new node is serving, the old one has to be drained — not just
-stopped. Stopping a VM does not drain anything: dockerd kills containers after
-its own `--shutdown-timeout` (15s), not the container's 300s
-`stop_grace_period`, and a hard power-off never closes the registration
-WebSocket at all. LiveKit Cloud can then keep offering jobs to a worker that no
-longer exists until its own keepalive expires. Those jobs are never accepted,
-so an inbound SIP leg waiting on that agent just rings until the A-leg's 30s
-cap cancels it.
+stopped. Without the [shutdown script](#stopping-a-runner), stopping a VM does
+not drain anything. LiveKit Cloud can then keep offering jobs to a worker that
+no longer exists until its own keepalive expires. Those jobs are never
+accepted, so an inbound SIP leg waiting on that agent just rings until the
+A-leg's 30s cap cancels it.
 
 ```bash
 NODES=agent-runner-staging:europe-west2-b STOP_VM=1 ./drain.sh
@@ -314,6 +315,40 @@ otherwise re-register the worker the next time anyone starts that VM.
 An exit code of 137 means the drain was SIGKILLed before it finished — the
 stale-registration case — so the VM is left running for you to look at unless
 you pass `FORCE=1`.
+
+### Stopping a runner
+
+A plain VM stop (`gcloud compute instances stop`, an instance schedule such as
+`-be3`'s nightly stop, or GCE maintenance) does not stop the container. COS
+runs dockerd with `live-restore`, so on shutdown dockerd exits and leaves the
+container running, then systemd takes the network down. The worker never gets
+SIGTERM and its LiveKit WebSocket dies without a close. LiveKit keeps the dead
+registration for about 15 minutes and goes on offering it jobs. Each such job
+reaches a live runner 30 s or more late, so inbound SIP calls ring out and
+outbound test calls fail with `sip request timed out`. Calls still running on
+the stopped VM are cut off.
+
+[`shutdown-script.sh`](shutdown-script.sh) fixes this as the VM's GCE
+`shutdown-script`. systemd runs it before it takes the network down. It runs
+`docker stop` on the agent container, sends SIGTERM to the worker directly as
+well (dockerd may exit before it delivers the signal), and waits up to 90 s for
+the worker to drain. If the worker is still running then, it sends SIGKILL, so
+the kernel closes the socket while the network is up. GCE allows a standard VM
+120 s to shut down.
+
+Install it on existing runners (no restart needed; it takes effect at the next
+stop):
+
+```bash
+NODES=agent-runner-production:europe-west1-d,agent-runner-production-be4:europe-west1-b ./install-shutdown-script.sh
+```
+
+`deploy-cos.sh` adds it to the VMs it creates. Check that it ran from the
+journal of the previous boot:
+
+```bash
+sudo journalctl -b -1 | grep agent-shutdown
+```
 
 ## Day to day
 
