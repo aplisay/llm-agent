@@ -86,8 +86,10 @@ Every handler must support a non-SIP credentialed join path so browser or in-ban
 **Credentials are namespaced by handler name.** Each handler returns its credentials wrapped in a top-level object key matching its handler name. The LiveKit handler returns:
 
 ```
-{ livekit: { serverUrl, roomName, participantToken, participantName } }
+{ livekit: { serverUrl, roomName, participantToken, participantName }, callId }
 ```
+
+Each join gets its own room and participant identity, so two joins on one listener are two calls. `callId` is the id of the call record the worker creates.
 
 Any other handler must return `{ <handlername>: <its-own-credentials> }`. This namespacing keeps the listener endpoint response polymorphic across handlers without key collisions; clients select the right credentials by inspecting which key is present in the response.
 
@@ -616,7 +618,7 @@ Called during call setup to resolve the agent and its phone-number context. All 
 
 The three endpoints that drive the call lifecycle from section 7:
 
-- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency.
+- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency. An `id` that names a live call updates that call; an `id` that names an ended call gets a new record with a new id, so the worker must use the `id` in the response.
 - **`POST /api/agent-db/call/:id/start`** — reserve the agent's concurrency slot. Returns `429` with body code `AGENT_CONCURRENCY_LIMIT_EXCEEDED` on busy; the inbound path maps this to a SIP busy cause (section 6).
 - **`POST /api/agent-db/call/:id/end`** — end the call with a disconnect reason. Body may include batched transaction logs (when `streamLog` is false — see 8.4). Releases the concurrency slot.
 
