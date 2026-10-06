@@ -219,6 +219,58 @@ describe('function-handler metadata deep paths', () => {
     ).rejects.toThrow('Access to metadata.toolsCalls is only allowed in LiveKit agents');
   });
 
+  test('a missing metadata parameter marked required: false takes its default or is left out, never the model\'s value', async () => {
+    const metadata = { aplisay: { callId: 'call-1' } };
+    const functions = [
+      {
+        name: 'lookup',
+        implementation: 'stub',
+        input_schema: {
+          properties: {
+            callId: { source: 'metadata', from: 'aplisay.callId', type: 'string' },
+            agentKey: { source: 'metadata', from: 'simplyai.agent_key', type: 'string', required: false },
+            region: { source: 'metadata', from: 'simplyai.region', type: 'string', required: false, default: 'eu' },
+          },
+        },
+        result: 'ok',
+      },
+    ];
+
+    const { function_results } = await functionHandler(
+      [{ name: 'lookup', input: { agentKey: 'from-the-model', region: 'from-the-model' } }],
+      functions,
+      [],
+      jest.fn(),
+      metadata,
+      {},
+    );
+
+    expect(function_results[0]).not.toHaveProperty('error');
+    expect(metadata.toolsCalls.lookup.parameter).toEqual({ callId: 'call-1', region: 'eu' });
+  });
+
+  test.each([
+    ['does not set required', {}],
+    ['is required: true', { required: true }],
+  ])('a missing metadata parameter that %s still fails the call', async (_name, flags) => {
+    const functions = [
+      {
+        name: 'lookup',
+        implementation: 'stub',
+        input_schema: {
+          properties: {
+            agentKey: { source: 'metadata', from: 'simplyai.agent_key', type: 'string', ...flags },
+          },
+        },
+        result: 'ok',
+      },
+    ];
+
+    await expect(
+      functionHandler([{ name: 'lookup', input: {} }], functions, [], jest.fn(), {}, {})
+    ).rejects.toThrow('Metadata simplyai.agent_key not found');
+  });
+
   test('redacts successful function result to LLM while storing real metadata result', async () => {
     const metadata = {};
     const functions = [

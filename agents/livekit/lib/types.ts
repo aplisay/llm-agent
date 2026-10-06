@@ -97,6 +97,8 @@ export interface JobMetadata {
   aplisayId?: string;
   outbound?: boolean;
   callMetadata?: CallMetadata;
+  /** A WebRTC join's call metadata, sealed by lib/join-metadata.js. */
+  sealedCallMetadata?: string;
   [key: string]: any;
 }
 

@@ -52,6 +52,7 @@ import { runFallbackMessage } from "./fallback-message.js";
 import { releaseFailedAttemptSession } from "./primary-session.js";
 import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
+import { jobCallMetadata, mergeCallMetadata } from "./call-metadata.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -213,7 +214,11 @@ export default defineAgent({
         { ms: Date.now() - tGetCallInfo, room: room?.name },
         "timing: getCallInfo done",
       );
-      logger.info({ scenario }, "scenario");
+      // Call metadata can hold customer secrets, so log its keys only.
+      logger.info(
+        { scenario: { ...scenario, callMetadata: Object.keys(scenario.callMetadata) } },
+        "scenario",
+      );
 
       let {
         instance,
@@ -861,6 +866,14 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     },
     "getting call info",
   );
+  try {
+    callMetadata = jobCallMetadata(jobMetadata, process.env.LIVEKIT_API_SECRET);
+  } catch (e) {
+    logger.error(
+      { error: e instanceof Error ? e.message : String(e) },
+      "cannot open the sealed join metadata (do the API and this worker share LIVEKIT_API_SECRET?); the call goes on without it",
+    );
+  }
 
   let phoneRegistration: string | null = null;
   let instance: Instance | null = null;
@@ -1510,19 +1523,15 @@ async function setupCallAndUtilities({
     // public trunk is chargeable — inbound legs and registration egress are not.
     outboundTrunkId: outbound ? chargeableOutboundTrunkId(registrationOriginated) : undefined,
     options,
-    metadata: {
-      ...instance.metadata,
-      ...(callMetadata || {}),
-      aplisay: {
-        callerId,
-        calledId,
-        fallbackNumbers,
-        model: agent.modelName,
-        // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
-        // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
-        ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
-      },
-    },
+    metadata: mergeCallMetadata(instance.metadata, callMetadata, {
+      callerId,
+      calledId,
+      fallbackNumbers,
+      model: agent.modelName,
+      // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
+      // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
+      ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
+    }),
   });
 
   const { metadata } = call;
