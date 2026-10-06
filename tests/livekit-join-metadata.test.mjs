@@ -39,10 +39,12 @@ const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {
 /** The agent dispatch metadata the worker receives as `ctx.job.metadata`. */
 async function joinDispatch(joinArgs) {
   const handler = new Livekit({ instance: { id: INSTANCE_ID }, logger });
-  const { livekit } = await handler.join(joinArgs);
-  const claims = await new TokenVerifier(KEY, SECRET).verify(livekit.participantToken);
-  return { raw: claims.roomConfig.agents[0].metadata, claims };
+  const response = await handler.join(joinArgs);
+  const claims = await new TokenVerifier(KEY, SECRET).verify(response.livekit.participantToken);
+  return { raw: claims.roomConfig.agents[0].metadata, claims, response };
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 afterAll(() => {
   for (const [name, value] of Object.entries(savedEnv)) {
@@ -59,7 +61,7 @@ describe('LiveKit WebRTC join metadata', () => {
     const dispatch = JSON.parse(raw);
     expect(dispatch).toEqual({
       identity: INSTANCE_ID,
-      metadata: INSTANCE_ID,
+      callId: expect.stringMatching(UUID),
       sealedCallMetadata: expect.stringMatching(/^v1\./),
     });
     expect(openJoinMetadata(dispatch.sealedCallMetadata, SECRET)).toEqual(metadata);
@@ -85,13 +87,37 @@ describe('LiveKit WebRTC join metadata', () => {
     ['no metadata', { options: {} }],
     ['empty metadata', { options: { metadata: {} } }],
     ['null options', { options: null }],
-  ])('a join with %s dispatches as before', async (_name, joinArgs) => {
+  ])('a join with %s dispatches no sealed metadata', async (_name, joinArgs) => {
     const { raw } = await joinDispatch(joinArgs);
-    expect(JSON.parse(raw)).toEqual({ identity: INSTANCE_ID, metadata: INSTANCE_ID });
+    expect(JSON.parse(raw)).toEqual({ identity: INSTANCE_ID, callId: expect.stringMatching(UUID) });
   });
 
   test('a value sealed with another secret does not open', async () => {
     const { raw } = await joinDispatch({ options: { metadata } });
     expect(() => openJoinMetadata(JSON.parse(raw).sealedCallMetadata, 'another-secret-entirely')).toThrow();
+  });
+});
+
+// LiveKit dispatches the token's agent only when the join creates the room, and
+// a second participant with the same identity disconnects the first.
+describe('LiveKit WebRTC join room', () => {
+  test('each join gets its own room, identity and call id', async () => {
+    const first = await joinDispatch();
+    const second = await joinDispatch();
+    expect(second.claims.video.room).not.toBe(first.claims.video.room);
+    expect(second.claims.sub).not.toBe(first.claims.sub);
+    expect(second.response.callId).not.toBe(first.response.callId);
+  });
+
+  test('the response, the token and the dispatch agree', async () => {
+    const { raw, claims, response } = await joinDispatch();
+    const { callId, livekit } = response;
+    expect(callId).toMatch(UUID);
+    expect(claims.video.room).toBe(`agent-${INSTANCE_ID}-${callId}`);
+    expect(livekit.roomName).toBe(claims.video.room);
+    expect(claims.sub).toBe(`webrtc-${callId}`);
+    expect(livekit.participantName).toBe(claims.sub);
+    expect(claims.metadata).toBe(INSTANCE_ID);
+    expect(JSON.parse(raw)).toMatchObject({ identity: INSTANCE_ID, callId });
   });
 });

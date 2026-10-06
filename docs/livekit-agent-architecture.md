@@ -86,8 +86,10 @@ Every handler must support a non-SIP credentialed join path so browser or in-ban
 **Credentials are namespaced by handler name.** Each handler returns its credentials wrapped in a top-level object key matching its handler name. The LiveKit handler returns:
 
 ```
-{ livekit: { serverUrl, roomName, participantToken, participantName } }
+{ livekit: { serverUrl, roomName, participantToken, participantName }, callId }
 ```
+
+Each join gets its own room and participant identity, so two joins on one listener are two calls. `callId` is the id of the call record the worker creates.
 
 Any other handler must return `{ <handlername>: <its-own-credentials> }`. This namespacing keeps the listener endpoint response polymorphic across handlers without key collisions; clients select the right credentials by inspecting which key is present in the response.
 

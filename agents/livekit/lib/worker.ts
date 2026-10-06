@@ -927,7 +927,8 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
   the scenario is a bit complex:
   Outbound calls: our manual dispatch puts the number we want to call, CID and agent instanceID in the Job Metadata
-  Inbound WebRTC calls: again, we put the instanceId in the Job Metadata as `identity` when we dispatch the call
+  Inbound WebRTC calls: again, we put the instanceId in the Job Metadata as `identity` when we dispatch the call,
+                      with the `callId` the join returned to the client
   Inbound SIP calls: the livekit SIP call routing and dispatch puts SIP header information in the participant attributes
                       we use this to extract the called number, and then lookup which agent instance we should answer with.
   
