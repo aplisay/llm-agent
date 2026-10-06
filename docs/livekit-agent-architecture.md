@@ -618,7 +618,7 @@ Called during call setup to resolve the agent and its phone-number context. All 
 
 The three endpoints that drive the call lifecycle from section 7:
 
-- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency.
+- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency. An `id` that names a live call updates that call; an `id` that names an ended call gets a new record with a new id, so the worker must use the `id` in the response.
 - **`POST /api/agent-db/call/:id/start`** — reserve the agent's concurrency slot. Returns `429` with body code `AGENT_CONCURRENCY_LIMIT_EXCEEDED` on busy; the inbound path maps this to a SIP busy cause (section 6).
 - **`POST /api/agent-db/call/:id/end`** — end the call with a disconnect reason. Body may include batched transaction logs (when `streamLog` is false — see 8.4). Releases the concurrency slot.
 
