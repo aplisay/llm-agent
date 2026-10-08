@@ -614,6 +614,8 @@ Called during call setup to resolve the agent and its phone-number context. All 
 - **`GET /api/agent-db/agent`** — resolve Agent by `?agentId=`. Used for fallback-agent loading (section 9).
 - **`GET /api/agent-db/phone-endpoints`** — resolve PhoneEndpoint by `?number=&trunkId=` (trunk-based) or `?id=` (registration endpoint).
 
+**Time budget.** An inbound caller is ringing while these lookups run, and a setup that gives up is answered with a SIP busy cause. A worker must therefore treat a slow answer differently from a definite one: a lookup that times out or fails server-side (5xx, 429) is retried with backoff for as long as the caller can be expected to wait (a PBX cancels after 30 to 60 s; LiveKit SIP's ringing timeout is 3 min), while a definite answer (404, a trunk mismatch) ends the setup at once. The LiveKit worker runs all of one call's lookups under a single budget, 45 s by default, with a 5 s first attempt that lengthens on each retry (`lib/setup-lookup.ts`; `CALL_SETUP_LOOKUP_*` in the agent README). Its query to the LiveKit room service is a different dependency and keeps a separate short timer.
+
 ### 8.3 Call lifecycle endpoints
 
 The three endpoints that drive the call lifecycle from section 7:
