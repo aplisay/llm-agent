@@ -239,3 +239,9 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # MAGRATHEA_PASSWORD=
 # JAMBONZ_SIP_ENDPOINT=
 # LIVEKIT_SIP_ENDPOINT=
+# ── Call log rate limit ─────────────────────────────────────────────────────
+# Per-principal cap on GET /api/calls/{id}/logs and /invocation-log (both
+# paths share one bucket per user; an API key counts as its owner). Over the
+# cap the API answers 429 with a Retry-After header. Counted per API instance.
+# CALL_LOG_RATE_LIMIT=60
+# CALL_LOG_RATE_WINDOW_MS=60000

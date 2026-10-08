@@ -89,3 +89,53 @@ export const oauthHandoffLimiter = rateLimit({
 });
 
 export default signupLimiter;
+
+/**
+ * GET /api/calls/:callId/logs and /invocation-log — per-principal cap on the
+ * two bulk call-log reads. Each hit is an unindexed scan of transaction_logs /
+ * invocation_logs plus (invocation-log) a gunzip + JSON re-encode of every row,
+ * and the Sequelize pool is small, so one scripted client polling these can
+ * starve every other route, including the workers' call-setup lookups.
+ *
+ * Mounted AFTER the auth middleware so the key is the authenticated principal
+ * (the User row; an AuthKey resolves to its owner, so all of one user's keys
+ * share a bucket). Both paths share one bucket. Falls back to the client IP
+ * for a request with no principal. Configurable with CALL_LOG_RATE_LIMIT
+ * (requests per window, default 60) and CALL_LOG_RATE_WINDOW_MS (default
+ * 60000). In-memory store: the cap is per Cloud Run instance.
+ */
+export const CALL_LOG_RATE_LIMIT_DEFAULT = 60;
+export const CALL_LOG_RATE_WINDOW_MS_DEFAULT = 60 * 1000;
+
+function positiveInt(value, fallback) {
+  if (!/^\d+$/.test(String(value ?? '').trim())) return fallback;
+  const n = Number(value);
+  return n > 0 ? n : fallback;
+}
+
+/** Limit and window for the call-log limiter, from the environment. */
+export function callLogLimitConfig(env = process.env) {
+  return {
+    limit: positiveInt(env.CALL_LOG_RATE_LIMIT, CALL_LOG_RATE_LIMIT_DEFAULT),
+    windowMs: positiveInt(env.CALL_LOG_RATE_WINDOW_MS, CALL_LOG_RATE_WINDOW_MS_DEFAULT),
+  };
+}
+
+/** The authenticated principal's bucket key, or the client IP without one. */
+export function principalKey(req, res) {
+  const user = res?.locals?.user;
+  const id = user?.id ?? user?.user_id;
+  return id != null && id !== '' ? `principal:${id}` : `ip:${perIp(req)}`;
+}
+
+export function createCallLogLimiter({ limit, windowMs } = callLogLimitConfig()) {
+  return rateLimit({
+    ...common,
+    windowMs,
+    limit,
+    keyGenerator: principalKey,
+    message: { message: 'Too many call log requests. Retry after the interval in the Retry-After header.' },
+  });
+}
+
+export const callLogLimiter = createCallLogLimiter();
