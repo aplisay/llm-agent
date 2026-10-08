@@ -81,6 +81,7 @@ export default function (logger) {
         },
       },
       429: { description: 'Too many call log requests from this principal. Retry after the interval given in the Retry-After header.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      503: { description: 'Too many call log reads are in progress on this server. Retry after the interval given in the Retry-After header.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
 

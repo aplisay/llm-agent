@@ -128,6 +128,24 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
 // over-limit request never reaches the DB. See middleware/rate-limit.js.
 server.use(['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'], callLogLimiter);
 
+// Bounded concurrency on the same two reads: at most a few in flight per
+// process, below the Sequelize pool size, so they can never hold every
+// connection while the workers' agent-db calls queue. Mounted AFTER the
+// limiter (a client over its rate limit never takes a slot) and BEFORE
+// express-openapi so an over-cap request never reaches the DB.
+{
+  const { callLogGateConfig, createCallLogGate } = await import('./middleware/concurrency-gate.js');
+  const gateConfig = callLogGateConfig();
+  if (gateConfig.clamped) {
+    logger.warn(gateConfig, 'CALL_LOG_MAX_CONCURRENT clamped below the Sequelize pool size');
+  }
+  logger.info(gateConfig, 'call-log concurrency gate');
+  server.use(
+    ['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'],
+    createCallLogGate(gateConfig, logger),
+  );
+}
+
 // Check for private API exposure flag (support multiple naming conventions)
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
 // Create a path filter to exclude private endpoints when not exposed
