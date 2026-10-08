@@ -99,6 +99,17 @@ Required environment variables:
 - `SERVICE_BASE_URI` - Base URL for internal API calls (worker → agent-db)
 - `SHARED_API_TOKEN` - Optional auth for internal API calls
 
+Call-setup lookups (instance and phone endpoint) retry a slow or failing API
+inside one budget per call, so a caller keeps ringing instead of hearing busy
+while the API catches up. A definite answer (404, trunk mismatch) still fails at
+once. Optional tuning, all in milliseconds:
+
+- `CALL_SETUP_LOOKUP_BUDGET_MS` - total for all of one call's lookups (default 45000)
+- `CALL_SETUP_LOOKUP_ATTEMPT_MS` - first attempt's timeout, doubles per retry (default 5000)
+- `CALL_SETUP_LOOKUP_MAX_ATTEMPT_MS` - cap on an attempt's timeout (default 20000)
+- `CALL_SETUP_LOOKUP_BACKOFF_MS` - first pause before a retry, doubles per retry (default 500)
+- `CALL_SETUP_LOOKUP_MAX_BACKOFF_MS` - cap on that pause (default 2000)
+
 Registration-based **outbound originate** (caller ID = registration UUID) has no inbound SIP leg, so the worker uses the registration row’s **`b2buaId`** (B2BUA gateway IP/hostname — same value as `sipHXLkRealIp` on inbound registration calls) and **`options.transport`** (default `tcp`) for `findOrCreateRegistrationTrunk`, instead of reading participant attributes.
 
 ## Development
