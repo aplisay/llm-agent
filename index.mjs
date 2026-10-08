@@ -100,7 +100,7 @@ server.use(pino);
 // middleware and express-openapi so they shed load ahead of any DB work or the
 // route handler. (The /api/auth/* limiter is configured inside better-auth in
 // lib/auth/index.js, mounted further up.)
-const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter } = await import('./middleware/rate-limit.js');
+const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter, callLogLimiter } = await import('./middleware/rate-limit.js');
 server.use('/api/users/signup', signupLimiter);              // global cap
 server.use('/api/hooks', webhookLimiter);                    // per-IP
 server.use('/api/rooms/:listenerId/join', roomJoinLimiter);  // per-IP, before auth
@@ -122,6 +122,11 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
   const { default: initAuth } = await import('./middleware/auth.js');
   initAuth(server, logger);
 }
+
+// Per-principal cap on the bulk call-log reads. Mounted AFTER the auth
+// middleware (it keys on res.locals.user) and BEFORE express-openapi so an
+// over-limit request never reaches the DB. See middleware/rate-limit.js.
+server.use(['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'], callLogLimiter);
 
 // Check for private API exposure flag (support multiple naming conventions)
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
