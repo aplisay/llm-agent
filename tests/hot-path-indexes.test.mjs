@@ -74,11 +74,19 @@ describe('hot-path indexes', () => {
     expect(changed).toEqual([index]);
   });
 
-  test('the planner uses the organisation index for the per-call MAX(index)', async () => {
-    const [rows] = await q(
-      `EXPLAIN SELECT COALESCE(MAX(index), 0) + 1 FROM calls WHERE organisation_id = 'org-x'`,
-    );
-    const plan = rows.map((r) => r['QUERY PLAN']).join('\n');
-    expect(plan).toMatch(/calls_organisation_id_index/);
+  test('the planner can serve the per-call MAX(index) from the organisation index', async () => {
+    // The test table is empty, where a sequential scan is the cheaper plan, so
+    // take that choice away: with seqscan off the planner must find an index
+    // that answers the query, which is what this checks. (On a populated table it
+    // is the Backward form with a LIMIT; on an empty one a plain aggregate.)
+    const plan = await sequelize.transaction(async (transaction) => {
+      await sequelize.query('SET LOCAL enable_seqscan = off', { transaction });
+      const [rows] = await sequelize.query(
+        `EXPLAIN SELECT COALESCE(MAX(index), 0) + 1 FROM calls WHERE organisation_id = 'org-x'`,
+        { transaction },
+      );
+      return rows.map((r) => r['QUERY PLAN']).join('\n');
+    });
+    expect(plan).toMatch(/Index Only Scan( Backward)? using calls_organisation_id_index/);
   });
 });
