@@ -40,6 +40,15 @@ const start = (test) => test.then((res) => res);
 const get = (app, path) => start(request(app).get(path));
 const logs = (app, callId = 'c1') => get(app, `/api/calls/${callId}/logs`);
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
+// A fixed tick is not enough on a loaded CI runner (the supertest requests
+// span several event-loop turns), so wait for the state instead.
+const settle = async (ready, timeoutMs = 2_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!ready()) {
+    if (Date.now() > deadline) return;
+    await tick(5);
+  }
+};
 
 describe('call log concurrency gate', () => {
   test('lets `max` reads through at once and parks the next one', async () => {
@@ -47,11 +56,11 @@ describe('call log concurrency gate', () => {
     const first = logs(app);
     const second = logs(app);
     const third = logs(app);
-    await tick();
+    await settle(() => parked.length === 2 && gate.stats().waiting === 1);
     expect(parked).toHaveLength(2);
     expect(gate.stats()).toMatchObject({ active: 2, waiting: 1, max: 2 });
     releaseAll();
-    await tick();
+    await settle(() => parked.length === 1);
     expect(parked).toHaveLength(1);
     releaseAll();
     const results = await Promise.all([first, second, third]);
@@ -76,13 +85,13 @@ describe('call log concurrency gate', () => {
   test('a request that waits gets the slot when one frees up in time', async () => {
     const { app, parked, releaseOne } = buildApp({ max: 1, waitMs: 5_000 });
     const held = logs(app);
-    await tick();
+    await settle(() => parked.length === 1);
     const queued = logs(app);
     await tick();
     expect(parked).toHaveLength(1);
     releaseOne();
     expect((await held).status).toBe(200);
-    await tick();
+    await settle(() => parked.length === 1);
     expect(parked).toHaveLength(1);
     releaseOne();
     expect((await queued).status).toBe(200);
