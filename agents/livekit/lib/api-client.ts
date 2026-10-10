@@ -589,7 +589,9 @@ async function makeApiRequest<T>(endpoint: string, options: RequestInit = {}): P
     // Log Error objects under err so pino includes message, stack and cause; other keys serialize them as {}. See PR
     // #188.
     if (!(error instanceof ApiRequestError)) {
-      logger.error({ url, err: error }, 'API request error');
+      // An abort is the caller's own timeout (see setup-lookup.ts), not a fault.
+      const level = (error as Error)?.name === 'AbortError' ? 'warn' : 'error';
+      logger[level]({ url, err: error }, 'API request error');
     }
     throw error;
   }

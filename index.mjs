@@ -100,7 +100,7 @@ server.use(pino);
 // middleware and express-openapi so they shed load ahead of any DB work or the
 // route handler. (The /api/auth/* limiter is configured inside better-auth in
 // lib/auth/index.js, mounted further up.)
-const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter } = await import('./middleware/rate-limit.js');
+const { signupLimiter, webhookLimiter, roomJoinLimiter, oauthHandoffLimiter, callLogLimiter } = await import('./middleware/rate-limit.js');
 server.use('/api/users/signup', signupLimiter);              // global cap
 server.use('/api/hooks', webhookLimiter);                    // per-IP
 server.use('/api/rooms/:listenerId/join', roomJoinLimiter);  // per-IP, before auth
@@ -121,6 +121,29 @@ if (process.env.AUTHENTICATE_USERS === "NO") {
 } else {
   const { default: initAuth } = await import('./middleware/auth.js');
   initAuth(server, logger);
+}
+
+// Per-principal cap on the bulk call-log reads. Mounted AFTER the auth
+// middleware (it keys on res.locals.user) and BEFORE express-openapi so an
+// over-limit request never reaches the DB. See middleware/rate-limit.js.
+server.use(['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'], callLogLimiter);
+
+// Bounded concurrency on the same two reads: at most a few in flight per
+// process, below the Sequelize pool size, so they can never hold every
+// connection while the workers' agent-db calls queue. Mounted AFTER the
+// limiter (a client over its rate limit never takes a slot) and BEFORE
+// express-openapi so an over-cap request never reaches the DB.
+{
+  const { callLogGateConfig, createCallLogGate } = await import('./middleware/concurrency-gate.js');
+  const gateConfig = callLogGateConfig();
+  if (gateConfig.clamped) {
+    logger.warn(gateConfig, 'CALL_LOG_MAX_CONCURRENT clamped below the Sequelize pool size');
+  }
+  logger.info(gateConfig, 'call-log concurrency gate');
+  server.use(
+    ['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'],
+    createCallLogGate(gateConfig, logger),
+  );
 }
 
 // Check for private API exposure flag (support multiple naming conventions)

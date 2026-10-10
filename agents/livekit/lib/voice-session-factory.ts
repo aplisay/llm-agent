@@ -542,6 +542,19 @@ export function legacyTurnHandlingOptions({
   };
 }
 
+/** Node's longest timer: a longer delay, Infinity included, fires after 1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * agents-js 1.9 stops reading a reply's audio after 10 s with no frame. An Ultravox reply
+ * stays open across its tool calls, so a slow tool lost the answer's audio. Realtime
+ * sessions wait as 1.0.46 did; pipeline sessions keep the SDK's guard.
+ */
+export const realtimeIdleTimeoutOptions = {
+  forwardAudioIdleTimeout: MAX_TIMER_MS,
+  ttsReadIdleTimeout: MAX_TIMER_MS,
+} as const;
+
 export interface CreateVoiceModelAndSessionParams {
   voiceMode: VoiceMode;
   modelName: string;
@@ -646,6 +659,7 @@ export function createVoiceModelAndSession(
     llm: new realtime.RealtimeModel({ ...llmOptions, ...(localVad ? { localVad } : {}) }),
     ...externalTts,
     ...legacyTurnHandlingOptions({ turnDetection: null }),
+    ...realtimeIdleTimeoutOptions,
     ...realtimeInactivityVoiceOptions,
   } as any);
   return { session, model };

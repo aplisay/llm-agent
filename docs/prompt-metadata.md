@@ -75,6 +75,7 @@ here:
 |---|---|
 | `aplisay.dateTime` | Current date/time, e.g. `Tuesday 2026-07-28 10:32 Europe/London` — weekday included so the model can reason about "next Tuesday". Computed **live**; timezone from `AGENT_TIMEZONE` (default `Europe/London`) |
 | `aplisay.callerId` | Caller's number (`WebRTC` for browser sessions) |
+| `aplisay.callerIdName` | The caller's display-name from the SIP `From` header, when the INVITE carried one ([caller-id-name.md](./caller-id-name.md)); absent otherwise |
 | `aplisay.calledId` | Number the caller dialled |
 | `aplisay.callId` | Platform call id |
 | `aplisay.modelName` | Model handling the call |

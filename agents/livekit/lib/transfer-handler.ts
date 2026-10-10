@@ -24,7 +24,7 @@ import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
-import { legacyTurnHandlingOptions } from "./voice-session-factory.js";
+import { legacyTurnHandlingOptions, realtimeIdleTimeoutOptions } from "./voice-session-factory.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -1140,6 +1140,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     const transferSession = new voice.AgentSession({
       llm: consultLlm,
       ...legacyTurnHandlingOptions({ turnDetection: null }),
+      ...realtimeIdleTimeoutOptions,
     });
     setTransferSession(transferSession);
 

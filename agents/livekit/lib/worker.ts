@@ -17,7 +17,6 @@ import { agentForLog, instanceForLog } from "./log-fields.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
-  getInstanceById,
   createCall,
   createTransactionLog,
   type Instance,
@@ -25,8 +24,6 @@ import {
   type Call,
   type CallMetadata,
   type OutboundInfo,
-  getPhoneEndpointById,
-  getPhoneEndpointByNumber,
   type PhoneNumberInfo,
   type PhoneRegistrationInfo,
   type TrunkInfo,
@@ -40,7 +37,12 @@ import {
 } from "./transfer-handler.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import { withTimeout } from "./utils.js";
-import { sipAttribute } from "./sip-attributes.js";
+import {
+  SetupLookups,
+  SetupLookupTimeoutError,
+  setupLookupOptionsFromEnv,
+} from "./setup-lookup.js";
+import { sipAttribute, sipFromDisplayName } from "./sip-attributes.js";
 import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
@@ -52,6 +54,7 @@ import { runFallbackMessage } from "./fallback-message.js";
 import { releaseFailedAttemptSession } from "./primary-session.js";
 import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
+import { jobCallMetadata, mergeCallMetadata } from "./call-metadata.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -213,7 +216,11 @@ export default defineAgent({
         { ms: Date.now() - tGetCallInfo, room: room?.name },
         "timing: getCallInfo done",
       );
-      logger.info({ scenario }, "scenario");
+      // Call metadata can hold customer secrets, so log its keys only.
+      logger.info(
+        { scenario: { ...scenario, callMetadata: Object.keys(scenario.callMetadata) } },
+        "scenario",
+      );
 
       let {
         instance,
@@ -238,6 +245,7 @@ export default defineAgent({
         aLegEncrypted = true,
         forceBridged,
         sipHeaders = {},
+        callerIdName,
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -321,6 +329,7 @@ export default defineAgent({
         aLegEncrypted,
         forceBridged,
         sipHeaders,
+        callerIdName,
         requestHangup: () => {},
         participant: participant,
       });
@@ -785,11 +794,13 @@ function endReasonFrom(e: unknown): string {
  * `{ "x-header-name": value }` map (keys lowercased) for
  * `metadata.aplisay.sipHeaders`.
  *
- * LiveKit's inbound trunk is created with `includeHeaders=SIP_X_HEADERS` (see
- * initialise.ts), which maps every `X-*` INVITE header to a `sip.h.x-*`
+ * LiveKit's inbound trunk is created with `includeHeaders=SIP_ALL_HEADERS` (see
+ * initialise.ts), which maps every INVITE header to a `sip.h.<name>`
  * participant attribute — the header name lowercased — per the LiveKit SIP
- * participant reference. That dotted form is the authoritative source and is
- * lossless (strip the `sip.h.` prefix to recover the exact `x-header-name`).
+ * participant reference; only the `sip.h.x-*` subset is collected here (the
+ * From header is read separately, see sipFromDisplayName). That dotted form is
+ * the authoritative source and is lossless (strip the `sip.h.` prefix to
+ * recover the exact `x-header-name`).
  *
  * Some SDK/deploy paths have historically surfaced the same headers as
  * camelCased attribute keys instead (e.g. `sipHXAplisayTrunk` for
@@ -832,6 +843,10 @@ function collectSipInviteHeaders(
   return out;
 }
 
+// The LiveKit room query at call setup. Unlike the Aplisay API lookups it has no
+// retry: LiveKit answers it from memory.
+const ROOM_QUERY_TIMEOUT_MS = 5_000;
+
 async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   const jobMetadata: JobMetadata =
     (ctx.job.metadata && JSON.parse(ctx.job.metadata)) || {};
@@ -861,6 +876,14 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     },
     "getting call info",
   );
+  try {
+    callMetadata = jobCallMetadata(jobMetadata, process.env.LIVEKIT_API_SECRET);
+  } catch (e) {
+    logger.error(
+      { error: e instanceof Error ? e.message : String(e) },
+      "cannot open the sealed join metadata (do the API and this worker share LIVEKIT_API_SECRET?); the call goes on without it",
+    );
+  }
 
   let phoneRegistration: string | null = null;
   let instance: Instance | null = null;
@@ -884,6 +907,11 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   // participant attributes (see collectSipInviteHeaders). Surfaced to the agent
   // as metadata.aplisay.sipHeaders. Stays {} for outbound / WebRTC.
   let sipHeaders: Record<string, string> = {};
+  // The display-name from the inbound INVITE's From header (the caller's
+  // freeform name as presented on the wire), read from the `sip.h.from`
+  // participant attribute. Surfaced as metadata.aplisay.callerIdName; stays
+  // undefined for outbound / WebRTC and when the From has no display-name.
+  let callerIdName: string | undefined;
   // Whether the inbound A-leg media is encrypted (SRTP). Drives the
   // media-encryption policy of the B-leg registration trunk used for transfers:
   // we only offer SRTP onward when the A-leg is itself encrypted, otherwise we
@@ -914,333 +942,343 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
   Because we throw every media scenario into the same agent dispatch, working out which agent and capabilities from 
   the scenario is a bit complex:
   Outbound calls: our manual dispatch puts the number we want to call, CID and agent instanceID in the Job Metadata
-  Inbound WebRTC calls: again, we put the instanceId in the Job Metadata as `identity` when we dispatch the call
+  Inbound WebRTC calls: again, we put the instanceId in the Job Metadata as `identity` when we dispatch the call,
+                      with the `callId` the join returned to the client
   Inbound SIP calls: the livekit SIP call routing and dispatch puts SIP header information in the participant attributes
                       we use this to extract the called number, and then lookup which agent instance we should answer with.
   
   */
+  // One budget for every API lookup of this setup (see setup-lookup.ts). The
+  // LiveKit room query below keeps its own short timer: it is a different
+  // service, and a slow Aplisay API must not make the setup fail inside the
+  // time a caller is still ringing.
+  const lookups = new SetupLookups(setupLookupOptionsFromEnv());
   try {
-    // Various APIs may timeout here, so we need to set a timeout to avoid blocking the job.
-    await withTimeout(
-      async () => {
-        if (outbound) {
-          if (!calledId || !callerId || !instanceId) {
-            logger.error({ jobId: ctx.job.id, calledId, callerId, aplisayId, instanceId }, "missing metadata for outbound call");
-            throw new Error("Missing metadata for outbound call");
-          }
-          instance = await getInstanceById(instanceId);
-          if (!instance) {
-            logger.error(
-              { jobId: ctx.job.id },
-              `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`,
-            );
-            throw new Error("No instance found for outbound call");
-          }
-          // Do not perform side-effects here; signal to the caller to bridge
-          outboundCall = true;
-          const aplisayStr =
-            aplisayId != null ? String(aplisayId).trim() : "";
-          const callerIdStr = String(callerId);
-          const uuidRe =
-            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (outbound) {
+      if (!calledId || !callerId || !instanceId) {
+        logger.error({ jobId: ctx.job.id, calledId, callerId, aplisayId, instanceId }, "missing metadata for outbound call");
+        throw new Error("Missing metadata for outbound call");
+      }
+      instance = await lookups.instanceById(instanceId);
+      if (!instance) {
+        logger.error(
+          { jobId: ctx.job.id },
+          `No instance found for outbound call (${calledId} => ${callerId}) ${instanceId} was incorrect`,
+        );
+        throw new Error("No instance found for outbound call");
+      }
+      // Do not perform side-effects here; signal to the caller to bridge
+      outboundCall = true;
+      const aplisayStr =
+        aplisayId != null ? String(aplisayId).trim() : "";
+      const callerIdStr = String(callerId);
+      const uuidRe =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-          if (metaRegistrationEndpointId && metaB2buaGatewayIp) {
-            // A NUMBER on a registration trunk. The originate route resolved
-            // the trunk's registration and its B2BUA; the leg dials that
-            // B2BUA with the registration header and presents the number,
-            // and keeps its trunk identity for the X-Aplisay-Trunk header.
-            registrationOriginated = true;
-            registrationEndpointId = String(metaRegistrationEndpointId);
-            b2buaGatewayIp = String(metaB2buaGatewayIp);
-            b2buaGatewayTransport = String(metaB2buaGatewayTransport || "tcp");
-            registrationUsername = callerIdStr.replace(/^\+/, "");
-            callerId = registrationUsername;
-            outboundInfo = {
-              toNumber: calledId,
-              fromNumber: callerId,
-              aplisayId: aplisayStr || undefined,
-              instanceId: instanceId,
-            };
-          } else if (!aplisayStr && uuidRe.test(callerIdStr)) {
-            const regEndpoint = await getPhoneEndpointById(callerIdStr);
-            if (!regEndpoint || !("id" in regEndpoint)) {
-              throw new Error(
-                `Registration endpoint not found for outbound call: ${callerIdStr}`,
-              );
-            }
-            const regInfo = regEndpoint as PhoneRegistrationInfo;
-            if (!regInfo.outbound) {
-              throw new Error(
-                `Registration ${callerIdStr} is not enabled for outbound calling`,
-              );
-            }
-            const optDisplay =
-              regInfo.options &&
-              typeof regInfo.options === "object" &&
-              "displayNumber" in regInfo.options
-                ? String(
-                    (regInfo.options as { displayNumber?: string })
-                      .displayNumber || "",
-                  ).trim()
-                : "";
-            const cliRaw =
-              optDisplay ||
-              String(regInfo.username ?? "").trim();
-            if (!cliRaw) {
-              throw new Error(
-                `Registration endpoint ${callerIdStr} has no username or options.displayNumber for outbound CLI`,
-              );
-            }
-            registrationOriginated = true;
-            registrationEndpointId = callerIdStr;
-            // Honour the registration's bridged_transfer default for OUTBOUND-
-            // originated calls too, so a transfer later in the call bridges rather
-            // than REFERs when the endpoint (or its carrier) can't do REFER.
+      if (metaRegistrationEndpointId && metaB2buaGatewayIp) {
+        // A NUMBER on a registration trunk. The originate route resolved
+        // the trunk's registration and its B2BUA; the leg dials that
+        // B2BUA with the registration header and presents the number,
+        // and keeps its trunk identity for the X-Aplisay-Trunk header.
+        registrationOriginated = true;
+        registrationEndpointId = String(metaRegistrationEndpointId);
+        b2buaGatewayIp = String(metaB2buaGatewayIp);
+        b2buaGatewayTransport = String(metaB2buaGatewayTransport || "tcp");
+        registrationUsername = callerIdStr.replace(/^\+/, "");
+        callerId = registrationUsername;
+        outboundInfo = {
+          toNumber: calledId,
+          fromNumber: callerId,
+          aplisayId: aplisayStr || undefined,
+          instanceId: instanceId,
+        };
+      } else if (!aplisayStr && uuidRe.test(callerIdStr)) {
+        const regEndpoint = await lookups.phoneEndpointById(callerIdStr);
+        if (!regEndpoint || !("id" in regEndpoint)) {
+          throw new Error(
+            `Registration endpoint not found for outbound call: ${callerIdStr}`,
+          );
+        }
+        const regInfo = regEndpoint as PhoneRegistrationInfo;
+        if (!regInfo.outbound) {
+          throw new Error(
+            `Registration ${callerIdStr} is not enabled for outbound calling`,
+          );
+        }
+        const optDisplay =
+          regInfo.options &&
+          typeof regInfo.options === "object" &&
+          "displayNumber" in regInfo.options
+            ? String(
+                (regInfo.options as { displayNumber?: string })
+                  .displayNumber || "",
+              ).trim()
+            : "";
+        const cliRaw =
+          optDisplay ||
+          String(regInfo.username ?? "").trim();
+        if (!cliRaw) {
+          throw new Error(
+            `Registration endpoint ${callerIdStr} has no username or options.displayNumber for outbound CLI`,
+          );
+        }
+        registrationOriginated = true;
+        registrationEndpointId = callerIdStr;
+        // Honour the registration's bridged_transfer default for OUTBOUND-
+        // originated calls too, so a transfer later in the call bridges rather
+        // than REFERs when the endpoint (or its carrier) can't do REFER.
+        const regForceBridged = resolveRegistrationForceBridged(
+          regInfo.options,
+        );
+        if (regForceBridged !== undefined) {
+          forceBridged = regForceBridged;
+          logger.info(
+            { forceBridged, registrationEndpointId: callerIdStr },
+            "Extracted bridged_transfer (forceBridged) from outbound registration options",
+          );
+        }
+        const gatewayHost = String(regInfo.b2buaId ?? "").trim();
+        const gatewayTransport = "tcp";
+        if (!gatewayHost) {
+          throw new Error(
+            `Registration endpoint ${callerIdStr} has no b2buaId (B2BUA gateway IP) for outbound calls`,
+          );
+        }
+        b2buaGatewayIp = gatewayHost;
+        b2buaGatewayTransport = gatewayTransport;
+        callerId = cliRaw.replace(/^\+/, "");
+        // The calling number presented towards the gateway. Only the
+        // inbound path set this before, so an originated registration
+        // call presented the 00000 placeholder instead of its CLI.
+        registrationUsername = callerId;
+        outboundInfo = {
+          toNumber: calledId,
+          fromNumber: callerId,
+          instanceId: instanceId,
+        };
+      } else {
+        outboundInfo = {
+          toNumber: calledId,
+          fromNumber: callerId,
+          aplisayId: aplisayId,
+          instanceId: instanceId,
+        };
+      }
+    } else {
+      logger.info({ room }, "room name getting participants");
+      const participants = await withTimeout(
+        () => getRoomService().listParticipants(room.name!),
+        ROOM_QUERY_TIMEOUT_MS,
+        new Error("Call setup timeout (listParticipants)"),
+        () => logger.error({ jobId: ctx.job.id }, "info timeout"),
+      );
+      participant = participants.find(
+        (p) => p.identity !== "sip-outbound-call",
+      ) as ParticipantInfo;
+      bridgedParticipant = participants.find(
+        (p) => p.identity === "sip-outbound-call",
+      ) as ParticipantInfo | null;
+      logger.debug(
+        {
+          participants: participants.length,
+          participant,
+          bridgedParticipant,
+        },
+        "have bridged participant?",
+      );
+      if (identity) {
+        logger.debug({ identity }, "getting instance by identity");
+        instance = await lookups.instanceById(identity);
+        logger.debug({ instance: instanceForLog(instance) }, "instance found?");
+      } else if (room.name && participant?.attributes) {
+        logger.debug(
+          { participants, attributes: participant.attributes },
+          "participants",
+        );
+        if (participant) {
+          // Read via sipAttribute(): LiveKit delivers these dotted
+          // (`sip.trunkPhoneNumber`, `sip.h.x-aplisay-trunk`, …), while
+          // some paths have used camelCase aliases. Reading only the
+          // camelCase form left every value undefined against a real
+          // dotted-key participant, so inbound calls failed to resolve to
+          // an instance. See lib/sip-attributes.ts.
+          const attrs = participant.attributes || {};
+          const calledIdAttr = sipAttribute(attrs, "calledNumber");
+          const callerIdAttr = sipAttribute(attrs, "callerNumber");
+          const aplisayIdAttr = sipAttribute(attrs, "aplisayTrunk");
+          const phoneRegistrationAttr = sipAttribute(
+            attrs,
+            "phoneRegistration",
+          );
+          const sipHostnameAttr = sipAttribute(attrs, "sipHostname");
+          const b2buaGatewayIpAttr = sipAttribute(attrs, "lkRealIp");
+          const b2buaGatewayTransportAttr = sipAttribute(
+            attrs,
+            "lkTransport",
+          );
+          const aLegMediaEncryptionAttr = sipAttribute(
+            attrs,
+            "lkMediaEncryption",
+          );
+
+          calledId = calledIdAttr;
+          // A registration trunk's INVITE reaches LiveKit on the trunk's
+          // fixed number; the dialled number rides in X-Aplisay-Called.
+          const aplisayCalledAttr = sipAttribute(attrs, "aplisayCalled");
+          if (aplisayCalledAttr) calledId = aplisayCalledAttr;
+          callerId = callerIdAttr;
+          aplisayId = aplisayIdAttr;
+          phoneRegistration = phoneRegistrationAttr ?? null;
+
+          // Surface all inbound INVITE X- headers as metadata.aplisay.sipHeaders.
+          // This is the inbound-SIP branch, so every such call qualifies (the
+          // upstream SBC — sipbridge/voiceblender/etc. — stamps the X- headers,
+          // which LiveKit maps to sip.h.x-* participant attributes).
+          sipHeaders = collectSipInviteHeaders(participant.attributes);
+          // ...and the caller's display-name from the From header itself
+          // (`sip.h.from`, present because the trunk maps ALL headers).
+          callerIdName = sipFromDisplayName(participant.attributes);
+
+          // Determine A-leg media encryption from the B2BUA-stamped header
+          // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
+          // header is absent we keep the default (true) to preserve prior
+          // behaviour. The value is treated as plain RTP only when it
+          // explicitly indicates no/disabled encryption.
+          if (aLegMediaEncryptionAttr != null && aLegMediaEncryptionAttr !== '') {
+            const enc = String(aLegMediaEncryptionAttr).trim().toLowerCase();
+            aLegEncrypted = !['disable', 'disabled', 'none', 'off', 'no', 'false', '0', 'rtp', 'plain', 'unencrypted'].includes(enc);
+            logger.info(
+              { aLegMediaEncryption: aLegMediaEncryptionAttr, aLegEncrypted },
+              "Extracted A-leg media encryption from participant attributes",
+            );
+          }
+
+          // Store registration endpoint ID for transfer operations
+          if (phoneRegistration) {
+            registrationEndpointId = phoneRegistration;
+          }
+
+          // Store B2BUA gateway information for routing outbound calls
+          if (b2buaGatewayIpAttr) {
+            b2buaGatewayIp = b2buaGatewayIpAttr;
+            b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
+            logger.info(
+              { b2buaGatewayIp, b2buaGatewayTransport },
+              "Extracted B2BUA gateway information from participant attributes",
+            );
+          }
+
+          // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
+          // (sipHostname is the registrar hostname from the inbound call)
+          if (
+            phoneRegistration &&
+            sipHostnameAttr &&
+            !registrationRegistrar
+          ) {
+            registrationRegistrar = sipHostnameAttr;
+            logger.info(
+              { sipHostname: sipHostnameAttr },
+              "Using sipHostname as registrar from participant attributes",
+            );
+          }
+        }
+
+        calledId = calledId?.replace("+", "");
+        callerId = callerId?.replace("+", "");
+
+        // If we have a phoneRegistration ID, lookup the phone endpoint by ID
+        // Otherwise, use the calledId (phone number) to lookup by number
+        if (phoneRegistration) {
+          registrationOriginated = true;
+          logger.info(
+            { callerId, phoneRegistration, aplisayId },
+            "new Livekit inbound telephone call, looking up phone endpoint by registration ID",
+          );
+          const phoneEndpoint =
+            await lookups.phoneEndpointById(phoneRegistration);
+          if (phoneEndpoint && "id" in phoneEndpoint) {
+            const regInfo = phoneEndpoint as PhoneRegistrationInfo;
+            logger.info(
+              { phoneEndpoint: regInfo },
+              "found phone registration endpoint",
+            );
+            // Store registrar and transport for transfer operations
+            registrationRegistrar = regInfo.registrar || null;
+            registrationTransport = regInfo.options?.transport || null;
+            // Trunk username (= the A-leg's To-user / SIP extension), used as
+            // the calling number presented toward the gateway on transfers.
+            registrationUsername = regInfo.username || null;
+            // Registration transfer default: documented as
+            // options.bridged_transfer (snake_case); surfaces internally as
+            // forceBridged. Accepts the forceBridged alias too. See
+            // docs/phone-endpoints-api.md / call-transfers.md.
             const regForceBridged = resolveRegistrationForceBridged(
               regInfo.options,
             );
             if (regForceBridged !== undefined) {
               forceBridged = regForceBridged;
               logger.info(
-                { forceBridged, registrationEndpointId: callerIdStr },
-                "Extracted bridged_transfer (forceBridged) from outbound registration options",
+                { forceBridged, phoneRegistration },
+                "Extracted bridged_transfer (forceBridged) from phone registration options",
               );
             }
-            const gatewayHost = String(regInfo.b2buaId ?? "").trim();
-            const gatewayTransport = "tcp";
-            if (!gatewayHost) {
-              throw new Error(
-                `Registration endpoint ${callerIdStr} has no b2buaId (B2BUA gateway IP) for outbound calls`,
-              );
-            }
-            b2buaGatewayIp = gatewayHost;
-            b2buaGatewayTransport = gatewayTransport;
-            callerId = cliRaw.replace(/^\+/, "");
-            // The calling number presented towards the gateway. Only the
-            // inbound path set this before, so an originated registration
-            // call presented the 00000 placeholder instead of its CLI.
-            registrationUsername = callerId;
-            outboundInfo = {
-              toNumber: calledId,
-              fromNumber: callerId,
-              instanceId: instanceId,
-            };
-          } else {
-            outboundInfo = {
-              toNumber: calledId,
-              fromNumber: callerId,
-              aplisayId: aplisayId,
-              instanceId: instanceId,
-            };
-          }
-        } else {
-          logger.info({ room }, "room name getting participants");
-          const participants = await getRoomService().listParticipants(
-            room.name!,
-          );
-          participant = participants.find(
-            (p) => p.identity !== "sip-outbound-call",
-          ) as ParticipantInfo;
-          bridgedParticipant = participants.find(
-            (p) => p.identity === "sip-outbound-call",
-          ) as ParticipantInfo | null;
-          logger.debug(
-            {
-              participants: participants.length,
-              participant,
-              bridgedParticipant,
-            },
-            "have bridged participant?",
-          );
-          if (identity) {
-            logger.debug({ identity }, "getting instance by identity");
-            instance = await getInstanceById(identity);
-            logger.debug({ instance: instanceForLog(instance) }, "instance found?");
-          } else if (room.name && participant?.attributes) {
-            logger.debug(
-              { participants, attributes: participant.attributes },
-              "participants",
-            );
-            if (participant) {
-              // Read via sipAttribute(): LiveKit delivers these dotted
-              // (`sip.trunkPhoneNumber`, `sip.h.x-aplisay-trunk`, …), while
-              // some paths have used camelCase aliases. Reading only the
-              // camelCase form left every value undefined against a real
-              // dotted-key participant, so inbound calls failed to resolve to
-              // an instance. See lib/sip-attributes.ts.
-              const attrs = participant.attributes || {};
-              const calledIdAttr = sipAttribute(attrs, "calledNumber");
-              const callerIdAttr = sipAttribute(attrs, "callerNumber");
-              const aplisayIdAttr = sipAttribute(attrs, "aplisayTrunk");
-              const phoneRegistrationAttr = sipAttribute(
-                attrs,
-                "phoneRegistration",
-              );
-              const sipHostnameAttr = sipAttribute(attrs, "sipHostname");
-              const b2buaGatewayIpAttr = sipAttribute(attrs, "lkRealIp");
-              const b2buaGatewayTransportAttr = sipAttribute(
-                attrs,
-                "lkTransport",
-              );
-              const aLegMediaEncryptionAttr = sipAttribute(
-                attrs,
-                "lkMediaEncryption",
-              );
-
-              calledId = calledIdAttr;
-              // A registration trunk's INVITE reaches LiveKit on the trunk's
-              // fixed number; the dialled number rides in X-Aplisay-Called.
-              const aplisayCalledAttr = sipAttribute(attrs, "aplisayCalled");
-              if (aplisayCalledAttr) calledId = aplisayCalledAttr;
-              callerId = callerIdAttr;
-              aplisayId = aplisayIdAttr;
-              phoneRegistration = phoneRegistrationAttr ?? null;
-
-              // Surface all inbound INVITE X- headers as metadata.aplisay.sipHeaders.
-              // This is the inbound-SIP branch, so every such call qualifies (the
-              // upstream SBC — sipbridge/voiceblender/etc. — stamps the X- headers,
-              // which LiveKit maps to sip.h.x-* participant attributes).
-              sipHeaders = collectSipInviteHeaders(participant.attributes);
-
-              // Determine A-leg media encryption from the B2BUA-stamped header
-              // (X-Lk-Media-Encryption -> sipHXLkMediaEncryption). When the
-              // header is absent we keep the default (true) to preserve prior
-              // behaviour. The value is treated as plain RTP only when it
-              // explicitly indicates no/disabled encryption.
-              if (aLegMediaEncryptionAttr != null && aLegMediaEncryptionAttr !== '') {
-                const enc = String(aLegMediaEncryptionAttr).trim().toLowerCase();
-                aLegEncrypted = !['disable', 'disabled', 'none', 'off', 'no', 'false', '0', 'rtp', 'plain', 'unencrypted'].includes(enc);
-                logger.info(
-                  { aLegMediaEncryption: aLegMediaEncryptionAttr, aLegEncrypted },
-                  "Extracted A-leg media encryption from participant attributes",
-                );
-              }
-
-              // Store registration endpoint ID for transfer operations
-              if (phoneRegistration) {
-                registrationEndpointId = phoneRegistration;
-              }
-
-              // Store B2BUA gateway information for routing outbound calls
-              if (b2buaGatewayIpAttr) {
-                b2buaGatewayIp = b2buaGatewayIpAttr;
-                b2buaGatewayTransport = b2buaGatewayTransportAttr || null;
-                logger.info(
-                  { b2buaGatewayIp, b2buaGatewayTransport },
-                  "Extracted B2BUA gateway information from participant attributes",
-                );
-              }
-
-              // If we have sipHostname but no registrar from endpoint lookup, use sipHostname
-              // (sipHostname is the registrar hostname from the inbound call)
-              if (
-                phoneRegistration &&
-                sipHostnameAttr &&
-                !registrationRegistrar
-              ) {
-                registrationRegistrar = sipHostnameAttr;
-                logger.info(
-                  { sipHostname: sipHostnameAttr },
-                  "Using sipHostname as registrar from participant attributes",
-                );
-              }
-            }
-
-            calledId = calledId?.replace("+", "");
-            callerId = callerId?.replace("+", "");
-
-            // If we have a phoneRegistration ID, lookup the phone endpoint by ID
-            // Otherwise, use the calledId (phone number) to lookup by number
-            if (phoneRegistration) {
-              registrationOriginated = true;
+            // PhoneRegistration now has instanceId, so we can lookup the instance
+            if (regInfo.instanceId) {
+              instance = await lookups.instanceById(regInfo.instanceId);
               logger.info(
-                { callerId, phoneRegistration, aplisayId },
-                "new Livekit inbound telephone call, looking up phone endpoint by registration ID",
+                { instanceId: regInfo.instanceId, instance: instanceForLog(instance) },
+                "found instance from registration instanceId",
               );
-              const phoneEndpoint =
-                await getPhoneEndpointById(phoneRegistration);
-              if (phoneEndpoint && "id" in phoneEndpoint) {
-                const regInfo = phoneEndpoint as PhoneRegistrationInfo;
-                logger.info(
-                  { phoneEndpoint: regInfo },
-                  "found phone registration endpoint",
-                );
-                // Store registrar and transport for transfer operations
-                registrationRegistrar = regInfo.registrar || null;
-                registrationTransport = regInfo.options?.transport || null;
-                // Trunk username (= the A-leg's To-user / SIP extension), used as
-                // the calling number presented toward the gateway on transfers.
-                registrationUsername = regInfo.username || null;
-                // Registration transfer default: documented as
-                // options.bridged_transfer (snake_case); surfaces internally as
-                // forceBridged. Accepts the forceBridged alias too. See
-                // docs/phone-endpoints-api.md / call-transfers.md.
-                const regForceBridged = resolveRegistrationForceBridged(
-                  regInfo.options,
-                );
-                if (regForceBridged !== undefined) {
-                  forceBridged = regForceBridged;
-                  logger.info(
-                    { forceBridged, phoneRegistration },
-                    "Extracted bridged_transfer (forceBridged) from phone registration options",
-                  );
-                }
-                // PhoneRegistration now has instanceId, so we can lookup the instance
-                if (regInfo.instanceId) {
-                  instance = await getInstanceById(regInfo.instanceId);
-                  logger.info(
-                    { instanceId: regInfo.instanceId, instance: instanceForLog(instance) },
-                    "found instance from registration instanceId",
-                  );
-                }
-              }
-            }
-            // A registration with no agent attached is a registration TRUNK:
-            // the call resolves by (dialled number, trunk) like any other
-            // trunk call. Same ladder as pipecat's _lookup_instance_for_inbound.
-            if (!instance && calledId) {
-              logger.info(
-                { callerId, calledId, aplisayId },
-                "new Livekit inbound telephone call, looking up phone endpoint by number",
-              );
-              // Pass trunkId (aplisayId) for validation - will throw error if mismatch
-              const phoneEndpoint = await getPhoneEndpointByNumber(
-                calledId,
-                aplisayId,
-              );
-              if (phoneEndpoint && "number" in phoneEndpoint) {
-                const numInfo = phoneEndpoint as PhoneNumberInfo;
-                logger.info(
-                  { phoneEndpoint: numInfo },
-                  "found phone number endpoint",
-                );
-                // Store trunk info if available
-                if (numInfo.trunk) {
-                  trunkInfo = numInfo.trunk;
-                  logger.info(
-                    { trunkInfo },
-                    "trunk info retrieved from phone endpoint",
-                  );
-                }
-                // The number row names its instance. There is deliberately no
-                // lookup by bare number behind this: an inbound call is
-                // resolved by (number, trunk) or not at all, so a number that
-                // failed the trunk check above, or has no agent, is "no
-                // instance" rather than "try again without the trunk".
-                if (numInfo.instanceId) {
-                  instance = await getInstanceById(numInfo.instanceId);
-                }
-                aplisayId = numInfo.aplisayId || aplisayId;
-              }
             }
           }
         }
-      },
-      5000,
-      new Error("Call setup timeout (getCallInfo)"),
-      () => logger.error({ jobId: ctx.job.id }, "info timeout"),
-    );
+        // A registration with no agent attached is a registration TRUNK:
+        // the call resolves by (dialled number, trunk) like any other
+        // trunk call. Same ladder as pipecat's _lookup_instance_for_inbound.
+        if (!instance && calledId) {
+          logger.info(
+            { callerId, calledId, aplisayId },
+            "new Livekit inbound telephone call, looking up phone endpoint by number",
+          );
+          // Pass trunkId (aplisayId) for validation - will throw error if mismatch
+          const phoneEndpoint = await lookups.phoneEndpointByNumber(
+            calledId,
+            aplisayId,
+          );
+          if (phoneEndpoint && "number" in phoneEndpoint) {
+            const numInfo = phoneEndpoint as PhoneNumberInfo;
+            logger.info(
+              { phoneEndpoint: numInfo },
+              "found phone number endpoint",
+            );
+            // Store trunk info if available
+            if (numInfo.trunk) {
+              trunkInfo = numInfo.trunk;
+              logger.info(
+                { trunkInfo },
+                "trunk info retrieved from phone endpoint",
+              );
+            }
+            // The number row names its instance. There is deliberately no
+            // lookup by bare number behind this: an inbound call is
+            // resolved by (number, trunk) or not at all, so a number that
+            // failed the trunk check above, or has no agent, is "no
+            // instance" rather than "try again without the trunk".
+            if (numInfo.instanceId) {
+              instance = await lookups.instanceById(numInfo.instanceId);
+            }
+            aplisayId = numInfo.aplisayId || aplisayId;
+          }
+        }
+      }
+    }
   } catch (e) {
+    if (e instanceof SetupLookupTimeoutError) {
+      logger.error(
+        { jobId: ctx.job.id, label: e.label, attempts: e.attempts, ms: e.elapsedMs },
+        "info timeout",
+      );
+    }
     logger.error({ e }, "error getting call info");
     throw e instanceof Error ? e : new Error(String(e));
   }
@@ -1279,6 +1317,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     aLegEncrypted,
     forceBridged,
     sipHeaders,
+    callerIdName,
   };
 }
 
@@ -1401,6 +1440,7 @@ async function setupCallAndUtilities({
   aLegEncrypted = true,
   forceBridged,
   sipHeaders = {},
+  callerIdName,
   requestHangup,
   participant: originalParticipant,
 }: SetupCallParams & { participant?: ParticipantInfo | null }) {
@@ -1510,19 +1550,18 @@ async function setupCallAndUtilities({
     // public trunk is chargeable — inbound legs and registration egress are not.
     outboundTrunkId: outbound ? chargeableOutboundTrunkId(registrationOriginated) : undefined,
     options,
-    metadata: {
-      ...instance.metadata,
-      ...(callMetadata || {}),
-      aplisay: {
-        callerId,
-        calledId,
-        fallbackNumbers,
-        model: agent.modelName,
-        // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
-        // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
-        ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
-      },
-    },
+    metadata: mergeCallMetadata(instance.metadata, callMetadata, {
+      callerId,
+      calledId,
+      fallbackNumbers,
+      model: agent.modelName,
+      // Inbound SIP INVITE X- headers (empty for outbound / WebRTC). Referenced
+      // in prompts/tools via metadata paths like `aplisay.sipHeaders.x-my-header`.
+      ...(Object.keys(sipHeaders).length ? { sipHeaders } : {}),
+      // The caller's From display-name; omitted when the INVITE carried none
+      // (so `aplisay.callerIdName` reads as "not present", never "").
+      ...(callerIdName ? { callerIdName } : {}),
+    }),
   });
 
   const { metadata } = call;

@@ -86,8 +86,10 @@ Every handler must support a non-SIP credentialed join path so browser or in-ban
 **Credentials are namespaced by handler name.** Each handler returns its credentials wrapped in a top-level object key matching its handler name. The LiveKit handler returns:
 
 ```
-{ livekit: { serverUrl, roomName, participantToken, participantName } }
+{ livekit: { serverUrl, roomName, participantToken, participantName }, callId }
 ```
+
+Each join gets its own room and participant identity, so two joins on one listener are two calls. `callId` is the id of the call record the worker creates.
 
 Any other handler must return `{ <handlername>: <its-own-credentials> }`. This namespacing keeps the listener endpoint response polymorphic across handlers without key collisions; clients select the right credentials by inspecting which key is present in the response.
 
@@ -394,7 +396,7 @@ Lookup chain: (called number, `aplisayId`) → PhoneEndpoint → Instance → Ag
 
 **Registration trunks.** A phone-registration created with `trunk: true` owns a trunk (`phone_registrations.trunk_id`, `trunks.flags.provider = "registration"`). The B2BUA forwards its inbound calls with BOTH `X-Aplisay-PhoneRegistration` and `X-Aplisay-Trunk`, and carries the dialled number (normalised to E.164 per `did_source` / `did_country`) in `X-Aplisay-Called` as well as, on the Pipecat runtime, the Request-URI. The registration has no instance of its own, so the lookup ladder falls through from the registration to (called number, `aplisayId`) and the number's agent answers. `X-Aplisay-Called` wins over the Request-URI / `sip.trunkPhoneNumber` wherever both are present. The pair is the whole key: there is no lookup by bare number behind it, so a number the trunk check refuses, or one with no instance, is "no agent for this call" rather than a second attempt without the trunk.
 
-Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_X_HEADERS`); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
+Beyond routing, **all** `X-` headers on the inbound INVITE (including the routing ones above) are surfaced to the agent as `metadata.aplisay.sipHeaders` (a `{ "x-header-name": value }` map, keys lowercased) so agent logic and tools can read per-call context the SBC/carrier attached — see [`sip-headers.md`](sip-headers.md). LiveKit delivers them as `sip.h.x-*` participant attributes (the trunk is created with `includeHeaders = SIP_ALL_HEADERS`, so every INVITE header is mapped; the `From` header's display-name is read from `sip.h.from` and surfaced separately as `metadata.aplisay.callerIdName` — see [`caller-id-name.md`](caller-id-name.md)); on the Pipecat runtime the sipbridge and voiceblender gateways carry the same set.
 
 ### 6.3 Inbound SIP — B2BUA path
 
@@ -612,11 +614,13 @@ Called during call setup to resolve the agent and its phone-number context. All 
 - **`GET /api/agent-db/agent`** — resolve Agent by `?agentId=`. Used for fallback-agent loading (section 9).
 - **`GET /api/agent-db/phone-endpoints`** — resolve PhoneEndpoint by `?number=&trunkId=` (trunk-based) or `?id=` (registration endpoint).
 
+**Time budget.** An inbound caller is ringing while these lookups run, and a setup that gives up is answered with a SIP busy cause. A worker must therefore treat a slow answer differently from a definite one: a lookup that times out or fails server-side (5xx, 429) is retried with backoff for as long as the caller can be expected to wait (a PBX cancels after 30 to 60 s; LiveKit SIP's ringing timeout is 3 min), while a definite answer (404, a trunk mismatch) ends the setup at once. The LiveKit worker runs all of one call's lookups under a single budget, 45 s by default, with a 5 s first attempt that lengthens on each retry (`lib/setup-lookup.ts`; `CALL_SETUP_LOOKUP_*` in the agent README). Its query to the LiveKit room service is a different dependency and keeps a separate short timer.
+
 ### 8.3 Call lifecycle endpoints
 
 The three endpoints that drive the call lifecycle from section 7:
 
-- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency.
+- **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency. An `id` that names a live call updates that call; an `id` that names an ended call gets a new record with a new id, so the worker must use the `id` in the response.
 - **`POST /api/agent-db/call/:id/start`** — reserve the agent's concurrency slot. Returns `429` with body code `AGENT_CONCURRENCY_LIMIT_EXCEEDED` on busy; the inbound path maps this to a SIP busy cause (section 6).
 - **`POST /api/agent-db/call/:id/end`** — end the call with a disconnect reason. Body may include batched transaction logs (when `streamLog` is false — see 8.4). Releases the concurrency slot.
 

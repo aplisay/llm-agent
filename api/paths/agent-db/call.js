@@ -26,6 +26,13 @@ const callCreate = (async (req, res) => {
       // Idempotent behaviour: if a call with this ID already exists, update
       // the fields we were passed and return the existing row.
       let existing = await Call.findByPk(id);
+      // Never restart an ended call. A LiveKit WebRTC client that reconnects
+      // after its call ended dispatches the agent again with the join's callId.
+      if (existing?.endedAt) {
+        log.info({ id, instanceId }, 'call id already ended, creating a new call record');
+        id = undefined;
+        existing = null;
+      }
       if (existing) {
         const updateData = {};
         if (parentId !== undefined) updateData.parentId = parentId;

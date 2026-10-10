@@ -29,6 +29,7 @@ import logging
 import os
 import threading
 import uuid
+from urllib.parse import unquote
 
 # The ``websockets`` library logs every frame it sends/receives as a hex dump
 # (``> BINARY …`` / ``< BINARY …``) via its per-connection logger at DEBUG. With
@@ -61,7 +62,7 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 from . import api_client
-from .auth import require_dispatch_token, verify_join_token
+from .auth import JoinPayload, require_dispatch_token, verify_join_token
 from .bridged_transfer import run_sipbridge_bta_watch
 from .call_session import (
     CallSession,
@@ -75,6 +76,7 @@ from .call_session import (
 from .constants import DISCONNECT_REASONS, PLATFORM
 from . import http_client
 from .invocation_log import flush_invocation_logs, install_capture
+from .join_metadata import open_join_metadata
 from .output_cushion import install as install_output_cushion
 from .output_underrun import install as install_underrun_stats
 from .serializers import DtmfProtobufFrameSerializer, FreeSwitchAudioStreamSerializer
@@ -87,6 +89,7 @@ from .sip_gateway import (
     SipBridgeSipGateway,
     VoiceblenderSipGateway,
     collect_sip_headers,
+    normalise_display_name,
 )
 from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
@@ -393,8 +396,29 @@ def _aplisay_caller_id(call: api_client.CallRecord) -> Optional[str]:
 # routing contract plus any arbitrary carrier X- headers, which the sipbridge Go
 # layer forwards verbatim (see sipbridge internal/call/manager.go).
 _SIPBRIDGE_NON_INVITE_HEADERS = frozenset(
-    {"x-sipbridge-call-id", "x-sipbridge-from", "x-sipbridge-to"}
+    {
+        "x-sipbridge-call-id",
+        "x-sipbridge-from",
+        "x-sipbridge-from-name",
+        "x-sipbridge-to",
+    }
 )
+
+
+def _sipbridge_from_name(headers) -> Optional[str]:
+    """The From header's display-name from the sipbridge WS handshake.
+
+    sipbridge forwards it as ``X-Sipbridge-From-Name``, percent-encoded (RFC
+    3986) so a non-ASCII name survives the HTTP header — Starlette decodes
+    header bytes as latin-1, which would otherwise mangle UTF-8. Unquoted here
+    and normalised (quotes / backslash quoted-pairs / whitespace) for
+    ``metadata.aplisay.callerIdName``; ``None`` when the INVITE's From carried
+    no display-name (sipbridge omits the header).
+    """
+    raw = headers.get("x-sipbridge-from-name")
+    if not raw:
+        return None
+    return normalise_display_name(unquote(raw))
 
 
 async def _sipbridge_resolve_agent_from_headers(
@@ -450,6 +474,7 @@ async def _sipbridge_resolve_agent_from_headers(
         return s
 
     from_number = _user_of(from_uri)
+    from_name = _sipbridge_from_name(h)
     # A registration trunk's B2BUA puts the dialled number in X-Aplisay-Called
     # as well as the Request-URI; the header wins when present.
     to_number = h.get("x-aplisay-called") or _user_of(to_uri)
@@ -489,6 +514,7 @@ async def _sipbridge_resolve_agent_from_headers(
         registration_username=origin.registration_username,
         call_id=aplisay_call_id,
         sip_headers=sip_headers,
+        caller_id_name=from_name,
         raw={"bridge_call_id": bridge_call_id},
     )
     return instance, agent, ctx
@@ -895,6 +921,7 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     agent = instance.get("Agent")
     if not agent:
         raise HTTPException(status_code=404, detail="instance has no agent")
+    join_metadata = _open_join_metadata(payload)
 
     pc = SmallWebRTCConnection(ice_servers=WEBRTC_ICE_SERVERS)
     await pc.initialize(sdp, sdp_type)
@@ -927,6 +954,7 @@ async def webrtc_offer(request: Request) -> JSONResponse:
                 "options": agent.get("options") or {},
                 "metadata": {
                     **(instance.get("metadata") or {}),
+                    **join_metadata,
                     "aplisay": {
                         "callerId": "WebRTC",
                         "calledId": "WebRTC",
@@ -1172,6 +1200,26 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     # the browser can address trickle-ICE PATCHes and any later renegotiation to
     # this exact peer — and complete its end of the WebRTC handshake.
     return JSONResponse(answer)
+
+
+def _open_join_metadata(payload: JoinPayload) -> dict:
+    """The caller's metadata from a join token (``options.metadata`` on the join
+    API), or ``{}``. A value that will not open is logged and the call goes on
+    without it."""
+    if not payload.sealed_call_metadata:
+        return {}
+    try:
+        metadata = open_join_metadata(
+            payload.sealed_call_metadata, os.environ.get("PIPECAT_JOIN_SECRET")
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.bind(session_id=payload.session_id).error(
+            f"cannot open the sealed join metadata ({type(e).__name__}); "
+            "the call goes on without it"
+        )
+        return {}
+    # The API seals only an object; anything else would break the merge.
+    return metadata if isinstance(metadata, dict) else {}
 
 
 @app.patch("/webrtc/offer")

@@ -117,6 +117,21 @@ POSTGRES_PASSWORD=<DB PASSWORD>
 # POSTGRES_CERT=
 # POSTGRES_KEY=
 # POSTGRES_RO_SERVER_NAME=
+# Sequelize pool, per process. Every API instance (and jambonz-agent) opens up
+# to POSTGRES_POOL_MAX connections to the same database, plus one for
+# pg-listen, so check instances x (max + 1) against the Cloud SQL
+# max_connections before raising it. See docs/db-pool-and-bulk-reads.md.
+# POSTGRES_POOL_MAX=5
+# POSTGRES_POOL_MIN=0
+# POSTGRES_POOL_ACQUIRE_MS=60000
+# POSTGRES_POOL_IDLE_MS=10000
+# Bulk call-log reads (GET /api/calls/{id}/logs and /invocation-log) in flight
+# per process. Always clamped below POSTGRES_POOL_MAX so they can never hold
+# the whole pool. Over the cap a request waits CALL_LOG_QUEUE_WAIT_MS for a
+# slot (at most CALL_LOG_QUEUE_MAX waiting), then gets 503 with Retry-After.
+# CALL_LOG_MAX_CONCURRENT=2
+# CALL_LOG_QUEUE_WAIT_MS=2000
+# CALL_LOG_QUEUE_MAX=8
 # DANGER: forces a full sequelize sync on boot (already implied when
 # NODE_ENV=development). Never set in production — schema upgrades run
 # automatically via the internal schema-version gate.
@@ -239,3 +254,9 @@ LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
 # MAGRATHEA_PASSWORD=
 # JAMBONZ_SIP_ENDPOINT=
 # LIVEKIT_SIP_ENDPOINT=
+# ── Call log rate limit ─────────────────────────────────────────────────────
+# Per-principal cap on GET /api/calls/{id}/logs and /invocation-log (both
+# paths share one bucket per user; an API key counts as its owner). Over the
+# cap the API answers 429 with a Retry-After header. Counted per API instance.
+# CALL_LOG_RATE_LIMIT=60
+# CALL_LOG_RATE_WINDOW_MS=60000
