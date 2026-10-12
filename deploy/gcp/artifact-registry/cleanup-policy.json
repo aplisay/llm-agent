@@ -1,0 +1,27 @@
+[
+  {
+    "name": "keep-release-tags",
+    "action": { "type": "Keep" },
+    "condition": {
+      "tagState": "tagged",
+      "tagPrefixes": ["v", "beta", "next", "staging", "latest"]
+    }
+  },
+  {
+    "name": "keep-newest-10",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": {
+      "packageNamePrefixes": ["llm-agent", "polite-ai-website"],
+      "keepCount": 10
+    }
+  },
+  {
+    "name": "delete-old-builds",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "any",
+      "packageNamePrefixes": ["llm-agent", "polite-ai-website"],
+      "olderThan": "14d"
+    }
+  }
+]

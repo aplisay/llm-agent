@@ -1,0 +1,11 @@
+# Cloud Build: daily beta tag prune for the `containers` repository.
+# Started by the registry-prune-beta-tags Cloud Scheduler job. See README.md
+# and setup-prune-schedule.sh.
+steps:
+  - name: node:22-slim
+    entrypoint: node
+    args: [deploy/gcp/artifact-registry/prune-beta-tags.mjs, --apply]
+options:
+  logging: CLOUD_LOGGING_ONLY
+tags:
+  - registry-cleanup
