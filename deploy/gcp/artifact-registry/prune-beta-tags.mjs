@@ -11,7 +11,8 @@
 import { api, betaTagsToRemove, listImages } from './registry.mjs';
 
 const apply = process.argv.includes('--apply');
-const remove = betaTagsToRemove(await listImages());
+// Attachments carry no tags, so the prune does not need to know which they are.
+const remove = betaTagsToRemove(await listImages({ attachments: false }));
 
 for (const { v, tag } of remove) {
   // Full digest, so a tag can be put back before the policy deletes the version.
