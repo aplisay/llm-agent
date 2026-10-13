@@ -24,7 +24,8 @@ import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
-import { legacyTurnHandlingOptions, realtimeIdleTimeoutOptions } from "./voice-session-factory.js";
+import { createConsultSession } from "./voice-session-factory.js";
+import { textOutputEnabled } from "./realtime-tts.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -1137,11 +1138,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const consultLlm = getLlmForTransferSession(session);
-    const transferSession = new voice.AgentSession({
-      llm: consultLlm,
-      ...legacyTurnHandlingOptions({ turnDetection: null }),
-      ...realtimeIdleTimeoutOptions,
-    });
+    const transferSession = createConsultSession(consultLlm, context.agent);
     setTransferSession(transferSession);
 
     // Persist the consultation conversation onto the consult CALL RECORD.
@@ -1190,6 +1187,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       getCall: () => context.getConsultCall(),
       usageVendors: resolveUsageVendors(context.agent, context.agent.modelName),
       voiceMode: resolveVoiceMode(context.agent.modelName, context.agent.options),
+      textOutput: textOutputEnabled(context.agent, context.agent.modelName),
       fallbackDetail: context.agent.modelName,
     });
     consultUsageMeter.wire(transferSession);

@@ -644,23 +644,45 @@ export function createVoiceModelAndSession(
     ? {}
     : inactivityVoiceOptions;
 
-  // Text-output mode: the same TTS the pipeline path uses, built from
-  // `options.tts`. The SDK tees a text-only realtime generation into it
-  // (AgentActivity: "text response received from realtime API, falling back to
-  // use a TTS model") and the realtime session's `input_speech_started` events
-  // interrupt its playout.
-  const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
-
   const localVad = textOutputEnabled(agent, modelName) && modelName.includes("livekit:ultravox/")
     ? textOutputLocalVad(llmOptions)
     : undefined;
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({ ...llmOptions, ...(localVad ? { localVad } : {}) }),
-    ...externalTts,
+    ...textOutputTtsOptions(agent, modelName),
     ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeIdleTimeoutOptions,
     ...realtimeInactivityVoiceOptions,
   } as any);
   return { session, model };
+}
+
+/**
+ * Text-output mode: the same TTS the pipeline path uses, built from
+ * `options.tts`. The SDK tees a text-only realtime generation into it
+ * (AgentActivity: "text response received from realtime API, falling back to
+ * use a TTS model") and the realtime session's `input_speech_started` events
+ * interrupt its playout. Build one per session: the SDK sends a TTS instance's
+ * metrics to every session that holds it, so a shared one meters twice.
+ */
+export function textOutputTtsOptions(agent: Agent, modelName: string) {
+  return textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
+}
+
+/**
+ * The warm-transfer consult session. It runs on the primary session's model, so
+ * in text-output mode that model sends text only and the session needs its own
+ * TTS, or the transfer target hears nothing.
+ */
+export function createConsultSession(
+  primaryLlm: llm.LLM | llm.RealtimeModel,
+  agent: Agent,
+): voice.AgentSession {
+  return new voice.AgentSession({
+    llm: primaryLlm,
+    ...textOutputTtsOptions(agent, agent.modelName),
+    ...legacyTurnHandlingOptions({ turnDetection: null }),
+    ...realtimeIdleTimeoutOptions,
+  } as any);
 }
