@@ -9,7 +9,7 @@ import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
 import { SentenceStreamTTS } from "./sentence-stream-tts.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
-import type { VoiceMode } from "./voice-mode.js";
+import { resolveVoiceMode, type VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
   pipelineTtsVendor,
@@ -604,28 +604,7 @@ export function createVoiceModelAndSession(
   const inactivityVoiceOptions = userAwayTimeout !== undefined ? { userAwayTimeout } : {};
 
   if (voiceMode === "pipeline") {
-    const providerSeg = parseProviderModelName(modelName);
-    const useProviderKeys = pipelineUsesProviderApiKeys();
-    const sttModel = useProviderKeys
-      ? buildProviderPipelineStt(agent)
-      : resolvePipelineStt(agent);
-    const pipelineLlm = useProviderKeys
-      ? buildProviderPipelineLlm(agent, modelName)
-      : new inference.LLM({
-          model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
-        });
-    const ttsModel = buildPipelineTts(agent);
-
-    // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
-    // otherwise use STT-based turn detection (no extra native deps).
-    const session = new voice.AgentSession({
-      ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
-      stt: sttModel,
-      llm: pipelineLlm,
-      tts: ttsModel,
-      ...inactivityVoiceOptions,
-    } as any);
-    return { session, model };
+    return { session: createPipelineSession(agent, modelName, vad, inactivityVoiceOptions), model };
   }
 
   const { realtime } = getRealtimePlugin(modelName);
@@ -644,13 +623,20 @@ export function createVoiceModelAndSession(
     ? {}
     : inactivityVoiceOptions;
 
+  // Text-output mode: the same TTS the pipeline path uses, built from
+  // `options.tts`. The SDK tees a text-only realtime generation into it
+  // (AgentActivity: "text response received from realtime API, falling back to
+  // use a TTS model") and the realtime session's `input_speech_started` events
+  // interrupt its playout.
+  const externalTts = textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
+
   const localVad = textOutputEnabled(agent, modelName) && modelName.includes("livekit:ultravox/")
     ? textOutputLocalVad(llmOptions)
     : undefined;
 
   const session = new voice.AgentSession({
     llm: new realtime.RealtimeModel({ ...llmOptions, ...(localVad ? { localVad } : {}) }),
-    ...textOutputTtsOptions(agent, modelName),
+    ...externalTts,
     ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeIdleTimeoutOptions,
     ...realtimeInactivityVoiceOptions,
@@ -658,30 +644,70 @@ export function createVoiceModelAndSession(
   return { session, model };
 }
 
-/**
- * Text-output mode: the same TTS the pipeline path uses, built from
- * `options.tts`. The SDK tees a text-only realtime generation into it
- * (AgentActivity: "text response received from realtime API, falling back to
- * use a TTS model") and the realtime session's `input_speech_started` events
- * interrupt its playout. Build one per session: the SDK sends a TTS instance's
- * metrics to every session that holds it, so a shared one meters twice.
- */
-export function textOutputTtsOptions(agent: Agent, modelName: string) {
-  return textOutputEnabled(agent, modelName) ? { tts: buildPipelineTts(agent) } : {};
+/** A pipeline session with its own STT, LLM and TTS, built from the agent. */
+function createPipelineSession(
+  agent: Agent,
+  modelName: string,
+  vad: VAD | undefined,
+  extraOptions: Record<string, unknown> = {},
+): voice.AgentSession {
+  const providerSeg = parseProviderModelName(modelName);
+  const useProviderKeys = pipelineUsesProviderApiKeys();
+  const sttModel = useProviderKeys
+    ? buildProviderPipelineStt(agent)
+    : resolvePipelineStt(agent);
+  const pipelineLlm = useProviderKeys
+    ? buildProviderPipelineLlm(agent, modelName)
+    : new inference.LLM({
+        model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
+      });
+  const ttsModel = buildPipelineTts(agent);
+
+  // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
+  // otherwise use STT-based turn detection (no extra native deps).
+  return new voice.AgentSession({
+    ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
+    stt: sttModel,
+    llm: pipelineLlm,
+    tts: ttsModel,
+    ...extraOptions,
+  } as any);
+}
+
+export interface CreateConsultSessionParams {
+  /** The primary session's model. A realtime consult session runs on it. */
+  primaryLlm: llm.LLM | llm.RealtimeModel;
+  /** The agent and model running the primary session now, after any handover or fallback. */
+  agent: Agent;
+  modelName: string;
+  /** The prewarmed VAD, for a pipeline consult session. */
+  vad?: VAD;
 }
 
 /**
- * The warm-transfer consult session. It runs on the primary session's model, so
- * in text-output mode that model sends text only and the session needs its own
- * TTS, or the transfer target hears nothing.
+ * The warm-transfer consult session.
+ *
+ * Realtime: it runs on the primary session's model (each AgentSession opens its
+ * own provider session on it). When that model sends text only, the consult
+ * session needs its own TTS, or the transfer target hears nothing.
+ *
+ * Pipeline: it gets its own STT, LLM and TTS.
+ *
+ * Never share the primary's STT, LLM or TTS instance: the SDK sends their
+ * metrics and errors to every session that holds them, so the consult leg's
+ * usage would be billed to the caller's call too.
  */
-export function createConsultSession(
-  primaryLlm: llm.LLM | llm.RealtimeModel,
-  agent: Agent,
-): voice.AgentSession {
+export function createConsultSession(params: CreateConsultSessionParams): voice.AgentSession {
+  const { primaryLlm, agent, modelName, vad } = params;
+  if (resolveVoiceMode(modelName, agent.options) === "pipeline") {
+    return createPipelineSession(agent, modelName, vad);
+  }
+  // Ask the model, not the agent: an in-place handover keeps a model that an
+  // earlier agent put in text-output mode.
+  const textOnly = (primaryLlm as llm.RealtimeModel).capabilities?.audioOutput === false;
   return new voice.AgentSession({
     llm: primaryLlm,
-    ...textOutputTtsOptions(agent, agent.modelName),
+    ...(textOnly ? { tts: buildPipelineTts(agent) } : {}),
     ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeIdleTimeoutOptions,
   } as any);
