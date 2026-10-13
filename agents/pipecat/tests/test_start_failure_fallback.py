@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Optional
 
+import pytest
 from pipecat.frames.frames import BotStartedSpeakingFrame, EndFrame, StartFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -30,6 +31,7 @@ from pipecat_aplisay.start_window import (
 CALLER_LEFT = DISCONNECT_REASONS["ORIGINAL_PARTICIPANT"]
 PRIMARY = "pipecat:ultravox/ultravox-v0.7"
 FALLBACK = "pipecat:openai/gpt-realtime"
+SECOND_FALLBACK = "pipecat:openai/gpt-4o-mini"
 
 
 class _Service(FrameProcessor):
@@ -310,10 +312,12 @@ def _stub_run(
     from pipecat_aplisay import api_client, invocation_log
     from pipecat_aplisay.call_session import CallSession
 
-    seen: dict = {"models": [], "transports": [], "ended": [], "flushed": []}
+    seen: dict = {"models": [], "agents": [], "prompts": [], "transports": [], "ended": [], "flushed": []}
 
     async def prepare_run(self, agent, model_name, system_prompt, *, history=None):  # noqa: ANN001
         seen["models"].append(model_name)
+        seen["agents"].append(agent.get("id"))
+        seen["prompts"].append(system_prompt)
         seen["transports"].append(self.gateway_session.transport)
         service = services[len(seen["models"]) - 1](self)
         if recordings is not None:
@@ -442,6 +446,79 @@ def test_the_number_step_transfers_the_live_call_and_saves_one_log(monkeypatch) 
     assert request.destination == "+441234567890"
     assert seen["ended"] == []
     assert seen["flushed"] == ["call-1"], "the failed attempt's log is saved once, after the transfer"
+
+
+def _stub_agent_fetch(monkeypatch, fetch: Callable[[str], dict]) -> list:
+    """Serve fallback.agent fetches with ``fetch`` and record each
+    ``(agent_id, expected_organisation_id)`` requested."""
+    from pipecat_aplisay import api_client
+
+    requested: list = []
+
+    async def get_internal_agent_by_id(agent_id, expected_organisation_id=None):  # noqa: ANN001
+        requested.append((agent_id, expected_organisation_id))
+        return fetch(agent_id)
+
+    monkeypatch.setattr(api_client, "get_internal_agent_by_id", get_internal_agent_by_id)
+    return requested
+
+
+def _fallback_agent(organisation_id: str, **options: Any) -> dict:
+    return {
+        "id": "agent-2",
+        "userId": "user-2",
+        "organisationId": organisation_id,
+        "modelName": FALLBACK,
+        "prompt": "fallback prompt",
+        "options": options,
+    }
+
+
+def _not_found(_agent_id: str) -> dict:
+    from pipecat_aplisay import api_client
+
+    raise api_client.ApiRequestError(404, {"error": "Agent not found"}, "API request failed: 404")
+
+
+def test_the_agent_step_runs_the_fallback_agent_with_its_own_prompt(monkeypatch) -> None:
+    seen = _stub_run(
+        monkeypatch,
+        [lambda _s: _Service(fail="fatal"), lambda _s: _Service(fail="fatal"), lambda _s: _Service()],
+    )
+    requested = _stub_agent_fetch(
+        monkeypatch, lambda _id: _fallback_agent("org-1", fallback={"model": SECOND_FALLBACK})
+    )
+    session = _session({"agent": "agent-2"}, _ws_transport())
+
+    asyncio.run(session.run(system_prompt="test"))
+
+    assert requested == [("agent-2", "org-1")], "scoped to the call's organisation"
+    assert seen["agents"] == ["agent-1", "agent-2", "agent-2"]
+    assert seen["models"] == [PRIMARY, FALLBACK, SECOND_FALLBACK], "then the fallback agent's own chain"
+    assert seen["prompts"] == ["test", "fallback prompt", "fallback prompt"]
+    # Tool-call transfers and bridged-segment recording read session.agent.
+    assert session.agent["id"] == "agent-2"
+    assert seen["ended"] == [CALLER_LEFT]
+
+
+@pytest.mark.parametrize(
+    "fetch",
+    [
+        pytest.param(_not_found, id="refused-by-the-server"),
+        pytest.param(lambda _id: _fallback_agent("org-2"), id="another-organisation-returned"),
+    ],
+)
+def test_the_agent_step_skips_an_agent_from_another_organisation(monkeypatch, fetch) -> None:
+    seen = _stub_run(monkeypatch, [lambda _s: _Service(fail="fatal"), lambda _s: _Service()])
+    _stub_agent_fetch(monkeypatch, fetch)
+    session = _session({"agent": "agent-2", "model": FALLBACK}, _ws_transport())
+
+    asyncio.run(session.run(system_prompt="test"))
+
+    assert seen["agents"] == ["agent-1", "agent-1"], "the chain moves on to the model step"
+    assert seen["models"] == [PRIMARY, FALLBACK]
+    assert seen["prompts"] == ["test", "test"]
+    assert session.agent["id"] == "agent-1"
 
 
 def test_a_failed_attempt_discards_its_recording_and_the_retry_keeps_its_own(monkeypatch) -> None:

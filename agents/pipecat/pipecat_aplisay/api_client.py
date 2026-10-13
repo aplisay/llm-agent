@@ -123,18 +123,15 @@ async def get_instance_by_id(instance_id: str) -> dict:
     return await _request("GET", "/api/agent-db/instance", params={"instanceId": instance_id})
 
 
-async def get_agent_by_id(agent_id: str) -> dict:
-    return await _request("GET", f"/api/agents/{agent_id}")
-
-
 async def get_internal_agent_by_id(
     agent_id: str, expected_organisation_id: Optional[str] = None
 ) -> dict:
     """Fetch a full agent definition (including keys) via the internal agent-db API.
 
-    Used for in-call ``transfer_agent`` handover. Always pass the calling
-    call's organisation id so the server can refuse cross-tenant fetches —
-    mirrors ``getInternalAgentById`` in the LiveKit worker's api-client.ts.
+    Used for in-call ``transfer_agent`` handover and the ``fallback.agent``
+    step. Always pass the calling call's organisation id so the server can
+    refuse cross-tenant fetches. Mirrors ``getInternalAgentById`` in the
+    LiveKit worker's api-client.ts.
     """
     params: dict = {"agentId": agent_id}
     if expected_organisation_id:
