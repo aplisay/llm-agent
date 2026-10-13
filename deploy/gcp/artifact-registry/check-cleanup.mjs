@@ -100,7 +100,9 @@ function resolve(ref, images) {
 }
 
 const policies = JSON.parse(readFileSync(policyFile, 'utf8'));
-const images = await listImages();
+const listed = await listImages();
+const images = listed.filter(v => !v.attachment);
+console.log(`${listed.length - images.length} provenance attachments not shown: they go with their image.`);
 for (const v of images) { v.origTags = v.tags; v.pruned = []; }
 if (betaPrune) {
   const remove = betaTagsToRemove(images);

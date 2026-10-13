@@ -33,17 +33,25 @@ export async function api(path, init = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-export async function listImages() {
+async function listAll(resource) {
   const out = [];
   let page = '';
   do {
-    const body = await api(`/dockerImages?pageSize=1000${page ? `&pageToken=${page}` : ''}`);
-    out.push(...(body.dockerImages ?? []));
+    const body = await api(`/${resource}?pageSize=1000${page ? `&pageToken=${page}` : ''}`);
+    out.push(...(body[resource] ?? []));
     page = body.nextPageToken;
   } while (page);
-  return out.map(i => {
+  return out;
+}
+
+// `attachment` marks Cloud Build provenance manifests. The registry deletes
+// them with the image they describe and leaves them out of mostRecentVersions.
+export async function listImages() {
+  const attached = new Set((await listAll('attachments')).map(a => a.ociVersionName?.split('/versions/')[1]));
+  return (await listAll('dockerImages')).map(i => {
     const [pkg, digest] = i.uri.slice(HOST.length).split('@');
-    return { pkg, digest, tags: i.tags ?? [], created: Date.parse(i.uploadTime), updated: Date.parse(i.updateTime), bytes: +i.imageSizeBytes };
+    return { pkg, digest, tags: i.tags ?? [], created: Date.parse(i.uploadTime), updated: Date.parse(i.updateTime),
+      bytes: +i.imageSizeBytes, attachment: attached.has(digest) };
   });
 }
 
