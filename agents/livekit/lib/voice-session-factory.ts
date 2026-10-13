@@ -7,6 +7,7 @@ import type { VAD } from "@livekit/agents";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import type { VoiceAgent } from "./types.js";
 import { SentenceStreamTTS } from "./sentence-stream-tts.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import { resolveVoiceMode, type VoiceMode } from "./voice-mode.js";
@@ -604,7 +605,9 @@ export function createVoiceModelAndSession(
   const inactivityVoiceOptions = userAwayTimeout !== undefined ? { userAwayTimeout } : {};
 
   if (voiceMode === "pipeline") {
-    return { session: createPipelineSession(agent, modelName, vad, inactivityVoiceOptions), model };
+    const session = createPipelineSession(agent, modelName, vad, inactivityVoiceOptions);
+    sessionBuilds.set(session, { agent, modelName });
+    return { session, model };
   }
 
   const { realtime } = getRealtimePlugin(modelName);
@@ -641,8 +644,15 @@ export function createVoiceModelAndSession(
     ...realtimeIdleTimeoutOptions,
     ...realtimeInactivityVoiceOptions,
   } as any);
+  sessionBuilds.set(session, { agent, modelName });
   return { session, model };
 }
+
+/**
+ * The agent and model each session was built from. An in-place handover keeps
+ * the running session, so the caller goes on hearing this agent's voice.
+ */
+const sessionBuilds = new WeakMap<voice.AgentSession, VoiceAgent>();
 
 /** A pipeline session with its own STT, LLM and TTS, built from the agent. */
 function createPipelineSession(
@@ -675,17 +685,24 @@ function createPipelineSession(
 }
 
 export interface CreateConsultSessionParams {
-  /** The primary session's model. A realtime consult session runs on it. */
-  primaryLlm: llm.LLM | llm.RealtimeModel;
-  /** The agent and model running the primary session now, after any handover or fallback. */
-  agent: Agent;
-  modelName: string;
+  /** The caller's session. A realtime consult session runs on its model. */
+  primary: voice.AgentSession;
+  /**
+   * The agent and model running the call now. Used only when `primary` was not
+   * built by {@link createVoiceModelAndSession}.
+   */
+  voiceAgent: VoiceAgent;
   /** The prewarmed VAD, for a pipeline consult session. */
   vad?: VAD;
 }
 
 /**
- * The warm-transfer consult session.
+ * The warm-transfer consult session, and the agent and model its STT, LLM and
+ * TTS were built from.
+ *
+ * It copies the primary session's speech stack, so the transfer target hears
+ * the voice the caller hears. After an in-place handover that is still the
+ * earlier agent's, whatever the new agent sets.
  *
  * Realtime: it runs on the primary session's model (each AgentSession opens its
  * own provider session on it). When that model sends text only, the consult
@@ -697,18 +714,22 @@ export interface CreateConsultSessionParams {
  * metrics and errors to every session that holds them, so the consult leg's
  * usage would be billed to the caller's call too.
  */
-export function createConsultSession(params: CreateConsultSessionParams): voice.AgentSession {
-  const { primaryLlm, agent, modelName, vad } = params;
+export function createConsultSession(params: CreateConsultSessionParams): {
+  session: voice.AgentSession;
+  speech: VoiceAgent;
+} {
+  const { primary, voiceAgent, vad } = params;
+  const speech = sessionBuilds.get(primary) ?? voiceAgent;
+  const { agent, modelName } = speech;
   if (resolveVoiceMode(modelName, agent.options) === "pipeline") {
-    return createPipelineSession(agent, modelName, vad);
+    return { session: createPipelineSession(agent, modelName, vad), speech };
   }
-  // Ask the model, not the agent: an in-place handover keeps a model that an
-  // earlier agent put in text-output mode.
-  const textOnly = (primaryLlm as llm.RealtimeModel).capabilities?.audioOutput === false;
-  return new voice.AgentSession({
-    llm: primaryLlm,
+  const textOnly = (primary.llm as llm.RealtimeModel | undefined)?.capabilities?.audioOutput === false;
+  const session = new voice.AgentSession({
+    llm: primary.llm,
     ...(textOnly ? { tts: buildPipelineTts(agent) } : {}),
     ...legacyTurnHandlingOptions({ turnDetection: null }),
     ...realtimeIdleTimeoutOptions,
   } as any);
+  return { session, speech };
 }

@@ -1143,10 +1143,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const consultLlm = getLlmForTransferSession(session);
-    const transferSession = createConsultSession({
-      primaryLlm: consultLlm,
-      agent: voiceAgentDef,
-      modelName: voiceModelName,
+    const { session: transferSession, speech } = createConsultSession({
+      primary: session,
+      voiceAgent: { agent: voiceAgentDef, modelName: voiceModelName },
       vad: (context.ctx?.proc?.userData as { vad?: VAD } | undefined)?.vad,
     });
     setTransferSession(transferSession);
@@ -1191,14 +1190,14 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     );
 
     // Meter the consult leg's llm/tts/stt onto the consult call record. The
-    // consult leg runs the primary session's agent and model, so resolve vendors
-    // from them. Per-session, so it never double-counts the primary call's usage.
+    // consult leg copies the primary session's speech stack, so resolve vendors
+    // from it. Per-session, so it never double-counts the primary call's usage.
     const consultUsageMeter = makeUsageMeter({
       getCall: () => context.getConsultCall(),
-      usageVendors: resolveUsageVendors(voiceAgentDef, voiceModelName),
-      voiceMode: resolveVoiceMode(voiceModelName, voiceAgentDef.options),
+      usageVendors: resolveUsageVendors(speech.agent, speech.modelName),
+      voiceMode: resolveVoiceMode(speech.modelName, speech.agent.options),
       textOutput: transferSession.tts !== undefined,
-      fallbackDetail: voiceModelName,
+      fallbackDetail: speech.modelName,
     });
     consultUsageMeter.wire(transferSession);
 
