@@ -659,8 +659,8 @@ export async function runAgentWorker({
       // AGENT's call, not getActiveCall() — after a blind-bridge transfer the
       // latter flips to the no-agent bridged tail leg, so these component meters
       // would otherwise mis-attribute there (the bridged leg is billed only for
-      // its own audio-path minutes via its Call.end()). Falls back when unset.
-      const c: any = (getAgentCall ?? getActiveCall)();
+      // its own audio-path minutes via its Call.end()).
+      const c: any = getAgentCall();
       if (!c?.id) return;
       const records: any[] = [];
       for (const meter of usageMeters.values()) {
