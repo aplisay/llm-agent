@@ -18,8 +18,11 @@ import {
   saveInvocationLog,
   saveUsage,
   getInternalAgentById,
+  setBeforeCallEnd,
 } from "./api-client.js";
 import type { Agent, Call } from "./api-client.js";
+import { createUserTurnClock } from "./user-turn-clock.js";
+import { createUserTurnCorrections, isUserTurnTimingSource } from "./user-turn-corrections.js";
 import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
@@ -126,6 +129,50 @@ export async function runAgentWorker({
   const transferTranscriptGate = createTransferTranscriptGate({
     transferInProgress: getConsultInProgress,
   });
+  // TRANSCRIPT_USER_TIME=arrival restores the old `user` row time (when the
+  // transcript arrived) and turns off the end-of-call corrections.
+  const userTurnTimes = process.env.TRANSCRIPT_USER_TIME !== "arrival";
+  const userTurnClock = createUserTurnClock();
+  const userTurnCorrections = createUserTurnCorrections({ logger });
+  if (userTurnTimes) setBeforeCallEnd(userTurnCorrections.beforeEnd);
+
+  /** Log a session's transcript item; `user` rows get the end-of-turn time and are queued for correction. */
+  const logTranscriptItem = (
+    s: voice.AgentSession,
+    item: llm.ChatMessage,
+    text: string,
+    createdAt: number | undefined,
+  ): void => {
+    if (item.role !== "user" || !userTurnTimes) {
+      sendMessage(
+        { [item.role === "user" ? "user" : "agent"]: text },
+        createdAt ? new Date(createdAt) : undefined,
+      );
+      return;
+    }
+    const guess = userTurnClock.stamp(item, createdAt ?? Date.now());
+    const logged = sendMessage({ user: text }, guess);
+    userTurnCorrections.add({
+      itemId: item.id,
+      guess,
+      source: isUserTurnTimingSource(s.llm) ? s.llm : undefined,
+      logged,
+    });
+  };
+
+  /** Feed the session's speech events to the user turn clock. */
+  const wireUserTurnClock = (s: voice.AgentSession): void => {
+    s.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev: voice.AgentStateChangedEvent) => {
+      if (!isStaleSession(s) && ev.newState === "speaking") {
+        userTurnClock.noteResponseStarted(ev.createdAt);
+      }
+    });
+    s.on(voice.AgentSessionEventTypes.UserStateChanged, (ev: voice.UserStateChangedEvent) => {
+      if (isStaleSession(s)) return;
+      if (ev.newState === "speaking") userTurnClock.noteUserStarted(ev.createdAt);
+      else if (ev.oldState === "speaking") userTurnClock.noteUserStopped(ev.createdAt);
+    });
+  };
 
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
@@ -1234,14 +1281,12 @@ export async function runAgentWorker({
               role: role === "user" ? "user" : "agent",
               text,
             });
-            sendMessage(
-              { [role === "user" ? "user" : "agent"]: text },
-              createdAt ? new Date(createdAt) : undefined,
-            );
+            logTranscriptItem(s, item, text, createdAt);
           }
         }
       },
     );
+    wireUserTurnClock(s);
     s.on(
       voice.AgentSessionEventTypes.AgentStateChanged,
       async (ev: voice.AgentStateChangedEvent) => {
@@ -1738,6 +1783,7 @@ export async function runAgentWorker({
       onAgentTransfer,
       onSendDtmf,
       onToolLoopDetected,
+      onToolInvoked: () => userTurnClock.noteResponseStarted(),
     });
 
   // Give the worker's hangup latch a way to close the call itself. Registered
@@ -1878,16 +1924,12 @@ export async function runAgentWorker({
                   role: role === "user" ? "user" : "agent",
                   text,
                 });
-                sendMessage(
-                  {
-                    [role === "user" ? "user" : "agent"]: text,
-                  },
-                  createdAt ? new Date(createdAt) : undefined,
-                );
+                logTranscriptItem(setupSession, item, text, createdAt);
               }
             }
           },
         );
+        wireUserTurnClock(setupSession);
 
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,

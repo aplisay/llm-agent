@@ -47,12 +47,13 @@ export function createTools({
   onAgentTransfer,
   onSendDtmf,
   onToolLoopDetected,
+  onToolInvoked,
 }: {
   agent: Agent;
   call: Call;
   room: Room;
   participant: ParticipantInfo | null;
-  sendMessage: (message: MessageData, createdAt?: Date) => Promise<void>;
+  sendMessage: (message: MessageData, createdAt?: Date) => Promise<unknown>;
   metadata: CallMetadata;
   /**
    * Requests agent-initiated termination. Resolves with the result handed to
@@ -100,6 +101,8 @@ export function createTools({
     calls: number;
     windowMs: number;
   }) => void;
+  /** Called as each tool call starts, before it runs. */
+  onToolInvoked?: () => void;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -171,6 +174,7 @@ export function createTools({
             // INFO-level, event-tagged so every tool call is visible in the
             // per-call debug log for production agents (see ./tool-log.ts).
             logToolCall(logger, { tool: fnc.name, kind, args });
+            onToolInvoked?.();
 
             // Runaway-loop breaker. Checked BEFORE dispatch so a spinning model
             // cannot keep re-entering the tool body, and after logToolCall so

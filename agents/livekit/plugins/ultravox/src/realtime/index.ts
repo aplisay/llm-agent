@@ -5,3 +5,4 @@ export * from './api_proto.js';
 export * from './ultravox_client.js';
 export * from './realtime_model.js';
 export * from './voice_speed.js';
+export * from './user_turn_timings.js';

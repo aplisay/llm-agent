@@ -36,6 +36,7 @@ import {
   destroyInProgressTransfer,
 } from "./transfer-handler.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
+import type { LoggedTransactionLog } from "./user-turn-corrections.js";
 import { withTimeout } from "./utils.js";
 import {
   SetupLookups,
@@ -1594,7 +1595,10 @@ async function setupCallAndUtilities({
     createdAt?: Date;
   }> = [];
 
-  const sendMessage = async (message: MessageData, createdAt?: Date) => {
+  const sendMessage = async (
+    message: MessageData,
+    createdAt?: Date,
+  ): Promise<LoggedTransactionLog | undefined> => {
     try {
       const entries = Object.entries(message);
       if (entries.length > 0) {
@@ -1614,10 +1618,11 @@ async function setupCallAndUtilities({
         // This preserves the original event timestamp from ConversationItemAdded events
         const logCreatedAt = createdAt || new Date();
 
+        const logCall = activeAgentCall;
         const transactionLogData = {
           userId,
           organisationId,
-          callId: activeAgentCall.id,
+          callId: logCall.id,
           type,
           data: JSON.stringify(data),
           isFinal: true,
@@ -1627,13 +1632,14 @@ async function setupCallAndUtilities({
         // If streamLog is enabled, push immediately; otherwise batch for end
         // call — onto the ACTIVE call so each record's logs end with it.
         if (instance.streamLog === true) {
-          await createTransactionLog(transactionLogData);
-        } else {
-          (
-            ((activeAgentCall as any).batchedTransactionLogs ??
-              batchedTransactionLogs) as typeof batchedTransactionLogs
-          ).push(transactionLogData);
+          const created = await createTransactionLog(transactionLogData);
+          return { call: logCall, id: created?.id };
         }
+        (
+          ((logCall as any).batchedTransactionLogs ??
+            batchedTransactionLogs) as typeof batchedTransactionLogs
+        ).push(transactionLogData);
+        return { call: logCall, entry: transactionLogData };
       }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));

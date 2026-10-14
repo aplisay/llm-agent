@@ -622,7 +622,7 @@ The three endpoints that drive the call lifecycle from section 7:
 
 - **`POST /api/agent-db/call`** — create the call record. Does not reserve concurrency. An `id` that names a live call updates that call; an `id` that names an ended call gets a new record with a new id, so the worker must use the `id` in the response.
 - **`POST /api/agent-db/call/:id/start`** — reserve the agent's concurrency slot. Returns `429` with body code `AGENT_CONCURRENCY_LIMIT_EXCEEDED` on busy; the inbound path maps this to a SIP busy cause (section 6).
-- **`POST /api/agent-db/call/:id/end`** — end the call with a disconnect reason. Body may include batched transaction logs (when `streamLog` is false — see 8.4). Releases the concurrency slot.
+- **`POST /api/agent-db/call/:id/end`** — end the call with a disconnect reason. Body may include batched transaction logs (when `streamLog` is false — see 8.4), and `transactionLogCorrections`: reconciled `createdAt` times for rows already streamed (when `streamLog` is true), applied before the end callHook is sent. Releases the concurrency slot.
 
 Side effects: the REST server fires any configured `agent.options.callHook` callbacks based on the start and end events received here — the worker does not invoke callHooks directly.
 
@@ -632,6 +632,8 @@ Two endpoints capture call activity, distinguished by when they fire and what da
 
 - **`POST /api/agent-db/transaction-log`** — per-event log post, used when `instance.streamLog === true`. Each entry has a `type` field capturing the kind of event (user transcript, agent transcript, function call, function result, status change, etc.), a `data` payload, and timing fields. When `streamLog === false`, transaction logs are instead batched into the body of `call/:id/end` (see 8.3). The choice between live-stream and batched lives at instance level.
 - **`POST /api/agent-db/invocation-log`** — flush worker telemetry on shutdown. Body carries a log array and an optional subsystem identifier.
+
+A `user` row's `createdAt` is the end of the caller's turn. During the call it is a best guess (`lib/user-turn-clock.ts`): the session's own end of speech on pipeline models, otherwise the earliest of the provider's user-stopped event, the start of the reply or tool call, and the transcript's arrival. On Ultravox, `call.end()` first reconciles each row with the end time in Ultravox's messages API (`lib/user-turn-corrections.ts`, through `setBeforeCallEnd`), so batched rows and the end callHook carry the reconciled time. `TRANSCRIPT_USER_TIME=arrival` restores the old arrival-time stamp and turns the reconciliation off.
 
 ### 8.5 Recording metadata
 

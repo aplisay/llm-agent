@@ -242,7 +242,7 @@ Each entry contains:
 - **`type`**: The type of log entry (`"user"`, `"agent"`, `"call"`, `"hangup"`, etc.)
 - **`data`**: The text or data associated with the entry
 - **`isFinal`**: Whether this is the final version of the entry (may be `false` for partial transcriptions)
-- **`createdAt`**: ISO 8601 timestamp when the entry was created
+- **`createdAt`**: ISO 8601 timestamp when the entry was created. For a `user` entry this is when the caller stopped speaking for that turn; for an `agent` entry, when the agent stopped speaking. The end hook always carries the fully reconciled times.
 
 ## Request Verification
 

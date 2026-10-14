@@ -21,9 +21,17 @@ import * as api_proto from "./api_proto.js";
 import { FrameAccumulator } from "./frame_accumulator.js";
 import { UltravoxClient } from "./ultravox_client.js";
 import { ultravoxSpeedOverrides } from "./voice_speed.js";
+import {
+  matchUserTurnTimings,
+  type EmittedUserTurn,
+  type UserTurnTiming,
+} from "./user_turn_timings.js";
 import { Realtime_InputTextContent } from "./api_proto.js";
 
 type Modality = "text" | "audio";
+
+/** Cap on fetching a call's messages for user turn timings; the caller keeps its guesses on timeout. */
+const USER_TURN_TIMINGS_TIMEOUT_MS = 1500;
 
 // The SDK passes a ToolContext instance (a class since agents 1.5); tests still
 // pass a plain name-keyed record. Object.keys() on the instance lists its
@@ -683,6 +691,12 @@ export class RealtimeModel extends llm.RealtimeModel {
     return newSession;
   }
 
+  /** {@link RealtimeSession.userTurnTimings} across every session this model has run. */
+  async userTurnTimings(): Promise<Map<string, UserTurnTiming>> {
+    const maps = await Promise.all(this.#sessions.map((session) => session.userTurnTimings()));
+    return new Map(maps.flatMap((m) => [...m]));
+  }
+
   async close() {
     await Promise.allSettled(this.#sessions.map((session) => session.close()));
   }
@@ -755,6 +769,10 @@ export class RealtimeSession extends llm.RealtimeSession {
   #userTranscriptOrdinal: number | undefined = undefined;
   // Highest ordinal seen on an agent transcript; see userTranscriptAlreadyAnswered.
   #agentTranscriptOrdinal: number | undefined = undefined;
+  // Final user transcripts emitted, and the timings fetched for them; see userTurnTimings.
+  #userTurns: EmittedUserTurn[] = [];
+  #lastUserTurnTimings: Map<string, UserTurnTiming> | undefined = undefined;
+  #finalUserTurnTimings: Promise<Map<string, UserTurnTiming>> | undefined = undefined;
   #vadStream: VADStream | undefined = undefined;
   // Track last item ID for proper insertion order
   #lastItemId: string | undefined = undefined;
@@ -1664,6 +1682,38 @@ export class RealtimeSession extends llm.RealtimeSession {
     });
   }
 
+  /**
+   * When the caller's turns behind this session's final user transcripts
+   * started and ended, keyed by the transcript's item id, from Ultravox's own
+   * record of the call. Turns it cannot match are left out; on any failure the
+   * map is empty. After close() this is the snapshot taken before the delete.
+   */
+  userTurnTimings(): Promise<Map<string, UserTurnTiming>> {
+    return this.#finalUserTurnTimings ?? this.#fetchUserTurnTimings();
+  }
+
+  async #fetchUserTurnTimings(): Promise<Map<string, UserTurnTiming>> {
+    const callId = this.#callId;
+    const turns = [...this.#userTurns];
+    if (!callId || turns.length === 0) return new Map();
+    try {
+      const signal = AbortSignal.timeout(USER_TURN_TIMINGS_TIMEOUT_MS);
+      const [joined, messages] = await Promise.all([
+        this.#client.getCallJoined(callId, signal),
+        this.#client.listCallMessages(callId, signal),
+      ]);
+      const joinedMs = joined ? Date.parse(joined) : NaN;
+      if (!Number.isFinite(joinedMs)) return new Map();
+      const timings = matchUserTurnTimings(turns, messages, joinedMs);
+      this.#lastUserTurnTimings = timings;
+      this.#logger.debug({ callId, turns: turns.length, matched: timings.size }, "fetched user turn timings");
+      return timings;
+    } catch (error: any) {
+      this.#logger.warn({ callId, error: error?.message }, "could not fetch user turn timings");
+      return new Map();
+    }
+  }
+
   async close() {
     this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
     this.#vadStream?.close();
@@ -1673,13 +1723,21 @@ export class RealtimeSession extends llm.RealtimeSession {
     await this.#ws.close();
     this.#logger.debug({ callId: this.#callId }, "ws closed, deleting call");
     if (this.#callId) {
-      try {
-        await this.#client.deleteCall(this.#callId);
-      } catch (error: any) {
-        this.#logger.error({ error, message: error?.message, stack: error?.stack }, "Error deleting call");
-      }
+      const callId = this.#callId;
+      const last = this.#lastUserTurnTimings;
+      // Ultravox deletes a call's messages with the call, so the timings are
+      // taken first. Off the close path: a handover waits for this close.
+      const timings = (this.#finalUserTurnTimings =
+        last && last.size === this.#userTurns.length
+          ? Promise.resolve(last)
+          : this.#fetchUserTurnTimings());
+      void timings
+        .then(() => this.#client.deleteCall(callId))
+        .catch((error: any) => {
+          this.#logger.error({ error, message: error?.message, stack: error?.stack }, "Error deleting call");
+        });
     }
-    this.#logger.debug({ callId: this.#callId }, "call deleted");
+    this.#logger.debug({ callId: this.#callId }, "call delete queued");
     this.emit("close", { callId: this.#callId });
     this.#logger.debug({ callId: this.#callId }, "call close");
     await super.close();
@@ -1992,6 +2050,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             emitted,
             "Emitting input_audio_transcription_completed event"
           );
+          this.#userTurns.push({ itemId: transcriptionEvent.itemId, text: transcript });
         } else {
           this.#logger.debug(
             { ...emitted, event },
