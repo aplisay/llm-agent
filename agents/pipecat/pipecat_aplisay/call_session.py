@@ -64,6 +64,7 @@ from .sip_gateway.base import (
     TransferRequest,
 )
 from .voice_session import build_voice_session
+from .user_turn_times import UserTurnClock, reconcile_user_rows
 
 
 class _WebrtcEgressError(Exception):
@@ -296,6 +297,8 @@ class CallSession:
     # Handle to the pipeline's LLM service (set in ``prepare_run``) so the
     # in-call handover can re-register tool callbacks on it.
     _llm_service: Optional[Any] = None
+    # Ultravox user rows awaiting reconciliation at their call's end.
+    _user_turn_rows: list = field(default_factory=list)
     # The model name the running pipeline was built with (handover keeps the
     # session's model/voice; only prompt + tools are swapped).
     _active_model_name: Optional[str] = None
@@ -815,9 +818,12 @@ class CallSession:
             and external_tts_enabled(agent, model_id_from_name(model_name))
             else None
         )
+        # TRANSCRIPT_USER_TIME=arrival keeps user rows at their capture time
+        # and turns off the end-of-call reconciliation.
+        clock = None if os.environ.get("TRANSCRIPT_USER_TIME") == "arrival" else UserTurnClock()
         task.add_observer(
             TranscriptForwardingObserver(
-                self._send_message, mode=mode, bot_text_from=bot_text_from
+                self._send_message, mode=mode, bot_text_from=bot_text_from, clock=clock
             )
         )
 
@@ -1331,7 +1337,14 @@ class CallSession:
 
     # ---- Tool callbacks ----
 
-    async def _send_message(self, message: dict, *, is_final: bool = True) -> None:
+    async def _send_message(
+        self,
+        message: dict,
+        *,
+        is_final: bool = True,
+        created_at: Optional[datetime] = None,
+        user_turn: bool = False,
+    ) -> None:
         """Forward a transaction-log entry. Live-stream or batch per instance flag.
 
         ``is_final`` mirrors the LiveKit/Jambonz handler convention from
@@ -1340,6 +1353,9 @@ class CallSession:
         subsequent calls until a final entry comes through. That's what stops
         the frontend from accumulating one entry per interim transcription —
         all interims update the same row, and the final entry overwrites it.
+
+        ``user_turn`` marks a final caller transcript stamped at the end of the
+        turn (``created_at``); on Ultravox it is reconciled when the call ends.
         """
         try:
             type_, data = next(iter(message.items()))
@@ -1348,24 +1364,55 @@ class CallSession:
         if type_ == "status":
             return
 
+        call = self.call
         entry = {
-            "userId": self.call.userId,
-            "organisationId": self.call.organisationId,
-            "callId": self.call.id,
+            "userId": call.userId,
+            "organisationId": call.organisationId,
+            "callId": call.id,
             "type": type_,
             "data": data if isinstance(data, str) else _json_dumps_safe(data),
             "isFinal": is_final,
             # Without a capture time the server stamps the write time, so a
             # batched call's rows all share the end-of-call time and lose order.
-            "createdAt": datetime.now(timezone.utc),
+            "createdAt": created_at or datetime.now(timezone.utc),
         }
         if self.instance.get("streamLog"):
             try:
-                await api_client.create_transaction_log(entry)
+                created = await api_client.create_transaction_log(entry)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"transaction log post failed: {e}")
+                return
+            if user_turn and isinstance(created, dict) and created.get("id") is not None:
+                self._track_user_turn(call, entry, row_id=created["id"])
         else:
-            self.call.batched_transaction_logs.append(entry)
+            call.batched_transaction_logs.append(entry)
+            if user_turn:
+                self._track_user_turn(call, entry)
+
+    def _track_user_turn(self, call: api_client.CallRecord, entry: dict, row_id: Any = None) -> None:
+        """Queue an Ultravox user row for reconciliation before ``call`` ends."""
+        llm = self._llm_service
+        uv_call_id = getattr(llm, "ultravox_call_id", None)
+        api_key = getattr(llm, "ultravox_api_key", None)
+        if not uv_call_id or not api_key:
+            return
+        self._user_turn_rows.append(
+            {
+                "call": call,
+                "text": entry["data"],
+                "guess": entry["createdAt"],
+                "entry": None if row_id is not None else entry,
+                "id": row_id,
+                "ultravox_call_id": uv_call_id,
+                "api_key": api_key,
+            }
+        )
+        call.set_before_end(self._reconcile_user_turns)
+
+    async def _reconcile_user_turns(self, call: api_client.CallRecord) -> None:
+        rows = [r for r in self._user_turn_rows if r["call"] is call]
+        self._user_turn_rows = [r for r in self._user_turn_rows if r["call"] is not call]
+        await reconcile_user_rows(call, rows)
 
     async def _on_aux_transcript(self, text: str) -> None:
         """A final transcript from the auxiliary STT (``options.stt.aux``),

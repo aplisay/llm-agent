@@ -77,10 +77,16 @@ from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+
+from .user_turn_times import UserTurnClock
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.services.llm_service import LLMService
 from pipecat.services.stt_service import STTService
@@ -102,6 +108,17 @@ except Exception:  # noqa: BLE001
     TTSService = None  # type: ignore[assignment]
 
 _EMPTY = ""
+
+#: Frames that tell the user turn clock the caller started or stopped, or the
+#: bot started its reply (speech or a function call).
+_TURN_SIGNAL_FRAMES = (
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    BotStartedSpeakingFrame,
+    FunctionCallsStartedFrame,
+)
 
 SendMessageFn = Callable[..., Awaitable[None]]
 
@@ -130,9 +147,14 @@ class TranscriptForwardingObserver(BaseObserver):
         *,
         mode: VoiceMode = "pipeline",
         bot_text_from: Optional[BotTextSource] = None,
+        clock: Optional[UserTurnClock] = None,
     ) -> None:
         super().__init__()
         self._send_message = send_message
+        # When set, final user rows are stamped with the end of the caller's
+        # turn and sent as user turns (see user_turn_times.py).
+        self._clock = clock
+        self._clock_frame_ids: set[int] = set()
         self._mode: VoiceMode = mode
         self._bot_text_from: BotTextSource = bot_text_from or (
             "tts" if mode == "pipeline" else "llm"
@@ -148,6 +170,8 @@ class TranscriptForwardingObserver(BaseObserver):
     async def on_push_frame(self, data: FramePushed) -> None:
         src = data.source
         frame = data.frame
+        if self._clock is not None and isinstance(frame, _TURN_SIGNAL_FRAMES):
+            self._note_turn_signal(frame)
 
         # ----- User transcripts -----
         # Source-filter to the frame's originator class so we only count
@@ -162,7 +186,7 @@ class TranscriptForwardingObserver(BaseObserver):
         # LLMService). Accept from either.
         if isinstance(frame, TranscriptionFrame):
             if isinstance(src, (STTService, LLMService)):
-                await self._emit("user", frame.text or _EMPTY, is_final=True)
+                await self._emit("user", frame.text or _EMPTY, is_final=True, user_turn=True)
             return
         if isinstance(frame, InterimTranscriptionFrame):
             if isinstance(src, (STTService, LLMService)):
@@ -296,7 +320,26 @@ class TranscriptForwardingObserver(BaseObserver):
         # the next turn isn't suppressed.
         self._last.pop("agent", None)
 
-    async def _emit(self, type_: str, text: str, *, is_final: bool) -> None:
+    def _note_turn_signal(self, frame) -> None:
+        # Observers fire on every push between processors: note each frame once.
+        if frame.id in self._clock_frame_ids:
+            return
+        if len(self._clock_frame_ids) > 1000:
+            self._clock_frame_ids.clear()
+        self._clock_frame_ids.add(frame.id)
+        clock = self._clock
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            clock.note_user_stopped(frame.timestamp - frame.stop_secs)
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            clock.note_user_started(frame.timestamp - frame.start_secs)
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            clock.note_user_stopped()
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            clock.note_user_started()
+        else:
+            clock.note_response_started()
+
+    async def _emit(self, type_: str, text: str, *, is_final: bool, user_turn: bool = False) -> None:
         if not text:
             return
         last = self._last.get(type_)
@@ -305,7 +348,12 @@ class TranscriptForwardingObserver(BaseObserver):
             return
         self._last[type_] = signature
         try:
-            await self._send_message({type_: text}, is_final=is_final)
+            if user_turn and self._clock is not None:
+                await self._send_message(
+                    {type_: text}, is_final=is_final, created_at=self._clock.stamp(), user_turn=True
+                )
+            else:
+                await self._send_message({type_: text}, is_final=is_final)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"transcript emit failed: {e}")
         # Resetting the dedupe cache on final lets the next turn start
