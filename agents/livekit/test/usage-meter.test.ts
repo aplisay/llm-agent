@@ -164,6 +164,33 @@ test("realtime voiceMode suppresses stt/tts component rows but keeps llm", async
   assert.equal(saved.find((r) => r.technology === "llm" && r.unit === "input_tokens")?.quantity, 100);
 });
 
+test("realtime text-output keeps the external TTS rows and still drops stt", async () => {
+  const saved: any[] = [];
+  const meter = makeUsageMeter({
+    getCall: () => ({ id: "consult-textout", organisationId: "o1", userId: "u1", agentId: "a1" }),
+    usageVendors: vendors,
+    voiceMode: "realtime",
+    textOutput: true,
+    saveUsageFn: async (records) => {
+      saved.push(...(records as any[]));
+    },
+  });
+  const s = fakeSession();
+  meter.wire(s);
+
+  s.emit(voice.AgentSessionEventTypes.MetricsCollected, {
+    metrics: { type: "tts_metrics", label: "inference.TTS", charactersCount: 42, audioDurationMs: 1500 },
+  });
+  s.emit(voice.AgentSessionEventTypes.UserInputTranscribed, { isFinal: true, transcript: "hello there" });
+
+  await meter.flush(true);
+
+  assert.ok(saved.every((r) => r.technology !== "stt"), "no stt rows for realtime");
+  const tts = saved.find((r) => r.technology === "tts" && r.unit === "characters");
+  assert.equal(tts?.quantity, 42);
+  assert.equal(tts?.provider, "cartesia");
+});
+
 test("flush is a no-op when no call is resolved", async () => {
   let called = false;
   const meter = makeUsageMeter({

@@ -1,6 +1,6 @@
 import { AccessToken, VideoGrant } from "livekit-server-sdk";
 import { Room, RoomEvent } from "@livekit/rtc-node";
-import { voice, llm } from "@livekit/agents";
+import { voice, llm, type VAD } from "@livekit/agents";
 import logger from "./logger.js";
 import {
   bridgeParticipant,
@@ -24,8 +24,8 @@ import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
-import { legacyTurnHandlingOptions, realtimeIdleTimeoutOptions } from "./voice-session-factory.js";
-import type { ParticipantInfo, SipParticipant, TransferArgs } from "./types.js";
+import { createConsultSession } from "./voice-session-factory.js";
+import type { ParticipantInfo, SipParticipant, TransferArgs, VoiceAgent } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
   detachPrimaryAgentMediaAfterBridge,
@@ -168,6 +168,8 @@ export interface TransferContext {
   participant: ParticipantInfo;
   args: TransferArgs;
   agent: Agent;
+  /** Runs the consult leg. Defaults to `agent` and its model. */
+  voiceAgent?: VoiceAgent;
   instance: Instance;
   call: Call;
   callerId: string;
@@ -888,6 +890,10 @@ async function startConsultativeTransfer(
   if (!session) {
     throw new Error("Agent session is required for warm transfer");
   }
+  const { agent: voiceAgentDef, modelName: voiceModelName } = context.voiceAgent ?? {
+    agent: context.agent,
+    modelName: context.agent.modelName,
+  };
 
   logger.info(
     { roomName: room.name, number: args.number, useRefer },
@@ -1055,7 +1061,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     // Get the prompt from args, agent options, or use default
     const transferPrompt =
       args.transferPrompt ||
-      context.agent.options?.transferPrompt ||
+      voiceAgentDef.options?.transferPrompt ||
       defaultTransferPromptTemplate;
 
     // Replace ${parentTranscript} placeholder if present
@@ -1137,10 +1143,10 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
 
     // Step 6: Create TransferAgent session and connect to consultation room
     const consultLlm = getLlmForTransferSession(session);
-    const transferSession = new voice.AgentSession({
-      llm: consultLlm,
-      ...legacyTurnHandlingOptions({ turnDetection: null }),
-      ...realtimeIdleTimeoutOptions,
+    const { session: transferSession, speech } = createConsultSession({
+      primary: session,
+      voiceAgent: { agent: voiceAgentDef, modelName: voiceModelName },
+      vad: (context.ctx?.proc?.userData as { vad?: VAD } | undefined)?.vad,
     });
     setTransferSession(transferSession);
 
@@ -1184,13 +1190,14 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     );
 
     // Meter the consult leg's llm/tts/stt onto the consult call record. The
-    // consult LLM is the primary's, so resolve vendors from the primary model.
-    // Per-session, so it never double-counts the primary call's usage.
+    // consult leg copies the primary session's speech stack, so resolve vendors
+    // from it. Per-session, so it never double-counts the primary call's usage.
     const consultUsageMeter = makeUsageMeter({
       getCall: () => context.getConsultCall(),
-      usageVendors: resolveUsageVendors(context.agent, context.agent.modelName),
-      voiceMode: resolveVoiceMode(context.agent.modelName, context.agent.options),
-      fallbackDetail: context.agent.modelName,
+      usageVendors: resolveUsageVendors(speech.agent, speech.modelName),
+      voiceMode: resolveVoiceMode(speech.modelName, speech.agent.options),
+      textOutput: transferSession.tts !== undefined,
+      fallbackDetail: speech.modelName,
     });
     consultUsageMeter.wire(transferSession);
 
@@ -1242,12 +1249,12 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       userId,
       organisationId,
       instanceId: instance.id,
-      agentId: agent.id,
+      agentId: voiceAgentDef.id,
       platform: "livekit",
       platformCallId: consultRoomName,
       calledId: args.number,
       callerId: effectiveCallerId,
-      modelName: agent.modelName,
+      modelName: voiceModelName,
       // The consult leg is a carried dial to the transfer target — chargeable on our
       // public trunk unless registration-originated (target via the customer B2BUA).
       outboundTrunkId: chargeableOutboundTrunkId(context.registrationOriginated),

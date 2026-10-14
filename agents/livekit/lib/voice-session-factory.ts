@@ -7,9 +7,10 @@ import type { VAD } from "@livekit/agents";
 import * as google from "@livekit/agents-plugin-google";
 import * as ultravox from "../plugins/ultravox/src/index.js";
 import type { Agent, Call } from "./api-client.js";
+import type { VoiceAgent } from "./types.js";
 import { SentenceStreamTTS } from "./sentence-stream-tts.js";
 import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
-import type { VoiceMode } from "./voice-mode.js";
+import { resolveVoiceMode, type VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
   pipelineTtsVendor,
@@ -604,27 +605,8 @@ export function createVoiceModelAndSession(
   const inactivityVoiceOptions = userAwayTimeout !== undefined ? { userAwayTimeout } : {};
 
   if (voiceMode === "pipeline") {
-    const providerSeg = parseProviderModelName(modelName);
-    const useProviderKeys = pipelineUsesProviderApiKeys();
-    const sttModel = useProviderKeys
-      ? buildProviderPipelineStt(agent)
-      : resolvePipelineStt(agent);
-    const pipelineLlm = useProviderKeys
-      ? buildProviderPipelineLlm(agent, modelName)
-      : new inference.LLM({
-          model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
-        });
-    const ttsModel = buildPipelineTts(agent);
-
-    // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
-    // otherwise use STT-based turn detection (no extra native deps).
-    const session = new voice.AgentSession({
-      ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
-      stt: sttModel,
-      llm: pipelineLlm,
-      tts: ttsModel,
-      ...inactivityVoiceOptions,
-    } as any);
+    const session = createPipelineSession(agent, modelName, vad, inactivityVoiceOptions);
+    sessionBuilds.set(session, { agent, modelName });
     return { session, model };
   }
 
@@ -662,5 +644,92 @@ export function createVoiceModelAndSession(
     ...realtimeIdleTimeoutOptions,
     ...realtimeInactivityVoiceOptions,
   } as any);
+  sessionBuilds.set(session, { agent, modelName });
   return { session, model };
+}
+
+/**
+ * The agent and model each session was built from. An in-place handover keeps
+ * the running session, so the caller goes on hearing this agent's voice.
+ */
+const sessionBuilds = new WeakMap<voice.AgentSession, VoiceAgent>();
+
+/** A pipeline session with its own STT, LLM and TTS, built from the agent. */
+function createPipelineSession(
+  agent: Agent,
+  modelName: string,
+  vad: VAD | undefined,
+  extraOptions: Record<string, unknown> = {},
+): voice.AgentSession {
+  const providerSeg = parseProviderModelName(modelName);
+  const useProviderKeys = pipelineUsesProviderApiKeys();
+  const sttModel = useProviderKeys
+    ? buildProviderPipelineStt(agent)
+    : resolvePipelineStt(agent);
+  const pipelineLlm = useProviderKeys
+    ? buildProviderPipelineLlm(agent, modelName)
+    : new inference.LLM({
+        model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
+      });
+  const ttsModel = buildPipelineTts(agent);
+
+  // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
+  // otherwise use STT-based turn detection (no extra native deps).
+  return new voice.AgentSession({
+    ...legacyTurnHandlingOptions({ vad, turnDetection: vad ? "vad" : "stt" }),
+    stt: sttModel,
+    llm: pipelineLlm,
+    tts: ttsModel,
+    ...extraOptions,
+  } as any);
+}
+
+export interface CreateConsultSessionParams {
+  /** The caller's session. A realtime consult session runs on its model. */
+  primary: voice.AgentSession;
+  /**
+   * The agent and model running the call now. Used only when `primary` was not
+   * built by {@link createVoiceModelAndSession}.
+   */
+  voiceAgent: VoiceAgent;
+  /** The prewarmed VAD, for a pipeline consult session. */
+  vad?: VAD;
+}
+
+/**
+ * The warm-transfer consult session, and the agent and model its STT, LLM and
+ * TTS were built from.
+ *
+ * It copies the primary session's speech stack, so the transfer target hears
+ * the voice the caller hears. After an in-place handover that is still the
+ * earlier agent's, whatever the new agent sets.
+ *
+ * Realtime: it runs on the primary session's model (each AgentSession opens its
+ * own provider session on it). When that model sends text only, the consult
+ * session needs its own TTS, or the transfer target hears nothing.
+ *
+ * Pipeline: it gets its own STT, LLM and TTS.
+ *
+ * Never share the primary's STT, LLM or TTS instance: the SDK sends their
+ * metrics and errors to every session that holds them, so the consult leg's
+ * usage would be billed to the caller's call too.
+ */
+export function createConsultSession(params: CreateConsultSessionParams): {
+  session: voice.AgentSession;
+  speech: VoiceAgent;
+} {
+  const { primary, voiceAgent, vad } = params;
+  const speech = sessionBuilds.get(primary) ?? voiceAgent;
+  const { agent, modelName } = speech;
+  if (resolveVoiceMode(modelName, agent.options) === "pipeline") {
+    return { session: createPipelineSession(agent, modelName, vad), speech };
+  }
+  const textOnly = (primary.llm as llm.RealtimeModel | undefined)?.capabilities?.audioOutput === false;
+  const session = new voice.AgentSession({
+    llm: primary.llm,
+    ...(textOnly ? { tts: buildPipelineTts(agent) } : {}),
+    ...legacyTurnHandlingOptions({ turnDetection: null }),
+    ...realtimeIdleTimeoutOptions,
+  } as any);
+  return { session, speech };
 }

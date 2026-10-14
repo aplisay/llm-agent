@@ -38,6 +38,11 @@ export interface MakeUsageMeterOptions {
    * Defaults to pipeline behaviour (emit) when unset.
    */
   voiceMode?: VoiceMode;
+  /**
+   * A realtime model in text-output mode: its TTS is a separate engine, so its
+   * tts rows are kept (stt rows are still dropped).
+   */
+  textOutput?: boolean;
   /** Fallback detail when neither the configured vendor nor the SDK label is known. */
   fallbackDetail?: string;
   /** Skip events from a session that is no longer the active one. */
@@ -116,6 +121,7 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
     getCall,
     usageVendors,
     voiceMode,
+    textOutput = false,
     fallbackDetail,
     isStale = () => false,
     log = defaultLogger,
@@ -131,8 +137,12 @@ export function makeUsageMeter(opts: MakeUsageMeterOptions): UsageMeter {
   ): void => {
     if (!quantity || quantity <= 0) return;
     // Realtime models bundle STT+TTS into the model charge — never emit separate
-    // stt/tts rows for them (mirrors voice-agent-runtime's addMeter gate).
-    if (voiceMode === "realtime" && (technology === "stt" || technology === "tts")) return;
+    // stt/tts rows for them, bar a text-output session's TTS (mirrors
+    // voice-agent-runtime's addMeter gate).
+    if (
+      voiceMode === "realtime" &&
+      (technology === "stt" || (technology === "tts" && !textOutput))
+    ) return;
     // Prefer the configured vendor/model; fall back to the SDK label then the
     // supplied fallbackDetail (kept identical to voice-agent-runtime's addMeter).
     const resolved = usageVendors[technology as keyof UsageVendors];

@@ -68,6 +68,7 @@ import type {
   MessageData,
   HangupResult,
   HangupExecutor,
+  VoiceAgent,
 } from "./types.js";
 
 dotenv.config();
@@ -1643,9 +1644,11 @@ async function setupCallAndUtilities({
   const onTransfer = async ({
     args,
     participant: transferParticipant,
+    voiceAgent,
   }: {
     args: TransferArgs;
     participant: ParticipantInfo;
+    voiceAgent?: VoiceAgent;
   }) => {
     try {
       // Arm the confidence tone for this transfer (skip if a transfer is
@@ -1662,6 +1665,7 @@ async function setupCallAndUtilities({
         participant: transferParticipant,
         args,
         agent,
+        voiceAgent,
         instance,
         call,
         callerId,

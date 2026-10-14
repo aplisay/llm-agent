@@ -1689,7 +1689,10 @@ export async function runAgentWorker({
       // A transfer commits the call elsewhere, so a later failure is not a start failure.
       onTransfer: (params) => {
         startup.close();
-        return onTransfer(params);
+        return onTransfer({
+          ...params,
+          voiceAgent: { agent: activeAgentDef, modelName: activeModelName },
+        });
       },
       getTransferState,
       onAgentTransfer,

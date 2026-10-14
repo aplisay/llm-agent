@@ -14,6 +14,15 @@ import { type ParticipantInfo } from "livekit-server-sdk";
 export { ParticipantInfo };
 
 /**
+ * The agent definition and model running the voice session now. Differs from the
+ * call's first agent after a transfer_agent handover or a fallback agent or model.
+ */
+export interface VoiceAgent {
+  agent: Agent;
+  modelName: string;
+}
+
+/**
  * Return a non-empty hangup result so the model does not retry while teardown is in progress. See PR #181.
  */
 export interface HangupResult {
@@ -161,7 +170,11 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   sendMessage: (message: any, createdAt?: Date) => Promise<void>;
   call: Call;
   onHangup: () => Promise<HangupResult>;
-  onTransfer: (params: { args: any; participant: ParticipantInfo }) => Promise<any>;
+  onTransfer: (params: {
+    args: any;
+    participant: ParticipantInfo;
+    voiceAgent?: VoiceAgent;
+  }) => Promise<any>;
   /**
    * Hands the worker's hangup latch a way to drive teardown directly, so an
    * agent-initiated hangup no longer depends solely on an AgentStateChanged
