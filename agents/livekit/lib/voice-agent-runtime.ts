@@ -64,6 +64,7 @@ import {
   type OutputSttHandle,
 } from "./output-stt.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
+import { createTransferTranscriptGate } from "./transfer-transcript-gate.js";
 
 /** Numbers this job's attempts; a job process runs one job, so the highest is the current attempt. */
 let latestAttempt = 0;
@@ -122,6 +123,9 @@ export async function runAgentWorker({
   // Declared before the transfer-only branch, whose disconnect handler sets the reason.
   let invocationLogPersisted = false;
   let invocationLogReason: string | null = null;
+  const transferTranscriptGate = createTransferTranscriptGate({
+    transferInProgress: getConsultInProgress,
+  });
 
   // If transferOnly mode, skip agent setup and go straight to transfer handling
   if (transferOnly && transferArgs && participant) {
@@ -744,7 +748,7 @@ export async function runAgentWorker({
       agent: agentDef,
       config,
       onTranscript: (text, at) => {
-        if (getConsultInProgress()) return;
+        if (!transferTranscriptGate.allows({ role: "user" })) return;
         sendMessage({ [AUX_STT_LOG_TYPE]: text }, at);
       },
       onUsage: (unit, quantity) => addSideMeter(AUX_STT_TECHNOLOGY, vendor, unit, quantity),
@@ -1220,7 +1224,7 @@ export async function runAgentWorker({
         if (item.type !== "message") return;
         const { role, content } = item;
         if (isStaleSession(s)) return;
-        if (getConsultInProgress() === false) {
+        if (transferTranscriptGate.allows(item)) {
           const text = content.join("");
           // A pipeline stack's opening after a handover or hand-back arrives
           // as user input (openingReply): a platform instruction, not the
@@ -1724,6 +1728,7 @@ export async function runAgentWorker({
       // A transfer commits the call elsewhere, so a later failure is not a start failure.
       onTransfer: (params) => {
         startup.close();
+        transferTranscriptGate.noteTransferRequested();
         return onTransfer({
           ...params,
           voiceAgent: { agent: activeAgentDef, modelName: activeModelName },
@@ -1860,7 +1865,7 @@ export async function runAgentWorker({
             if (item.type !== "message") return;
             const { role, content } = item;
             if (isStaleSession(setupSession)) return;
-            if (getConsultInProgress() === false) {
+            if (transferTranscriptGate.allows(item)) {
               const text = content.join("");
               // An in-place handover's opening on a pipeline stack arrives as
               // user input (openingReply): a platform instruction, not the
