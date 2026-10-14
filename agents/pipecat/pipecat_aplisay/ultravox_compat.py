@@ -12,6 +12,8 @@ from pipecat.frames.frames import LLMFullResponseEndFrame, LLMFullResponseStartF
 from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
 
+from .user_turn_times import ultravox_call_id
+
 # Ultravox's client-tool execution window (protobuf Duration string, 40s max).
 # 10s clears our slowest data tools (booking_book ≈ 4s, MCP knowledge search)
 # with margin, while still bounding how long a wedged tool can freeze the
@@ -82,6 +84,25 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
             if isinstance(temporary, dict):
                 temporary.setdefault("timeout", ULTRAVOX_TOOL_TIMEOUT)
         return selected
+
+    #: The Ultravox call this service joined and the key that created it, for
+    #: reconciling user turn times at call end (user_turn_times.py).
+    ultravox_call_id: str | None = None
+    ultravox_api_key: str | None = None
+
+    async def _start_one_shot_call(self, params: Any) -> str:
+        join_url = await super()._start_one_shot_call(params)
+        self._note_ultravox_call(join_url, params)
+        return join_url
+
+    async def _start_agent_call(self, params: Any) -> str:
+        join_url = await super()._start_agent_call(params)
+        self._note_ultravox_call(join_url, params)
+        return join_url
+
+    def _note_ultravox_call(self, join_url: str, params: Any) -> None:
+        self.ultravox_call_id = ultravox_call_id(join_url)
+        self.ultravox_api_key = getattr(params, "api_key", None)
 
     async def deliver_native_tool_result(self, tool_call_id: str, result: Any) -> None:
         """Send a REAL native ``client_tool_result`` for a data tool the instant

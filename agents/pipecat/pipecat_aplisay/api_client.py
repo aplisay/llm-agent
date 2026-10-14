@@ -7,13 +7,14 @@ header names, and idempotency behaviour mirror the LiveKit worker's
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from . import http_client
 
@@ -284,6 +285,17 @@ class CallRecord(BaseModel):
     # Internal — accumulates batched logs when streamLog is False; flushed at end.
     batched_transaction_logs: list = []
     end_called: bool = False
+    # Reconciled createdAt for rows already streamed: [{"id", "createdAt"}].
+    transaction_log_corrections: list = []
+    # Awaited by end_call() before it builds the request (user_turn_times.py).
+    _before_end: Optional[Callable[["CallRecord"], Awaitable[None]]] = PrivateAttr(default=None)
+
+    def set_before_end(self, hook: Optional[Callable[["CallRecord"], Awaitable[None]]]) -> None:
+        self._before_end = hook
+
+
+#: Cap on the before-end hook; the call ends regardless.
+BEFORE_END_TIMEOUT_S = 2.5
 
 
 async def create_call(call_data: dict) -> CallRecord:
@@ -326,6 +338,11 @@ async def end_call(call: CallRecord, reason: Optional[str] = None) -> None:
     if not call.persisted:
         logger.debug(f"end_call: skipping non-persisted call {call.id}")
         return
+    if call._before_end is not None:
+        try:
+            await asyncio.wait_for(call._before_end(call), timeout=BEFORE_END_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"before-end hook failed; ending the call anyway: {e!r}")
     body: dict = {
         "reason": reason,
         "userId": call.userId,
@@ -334,6 +351,10 @@ async def end_call(call: CallRecord, reason: Optional[str] = None) -> None:
     if call.batched_transaction_logs:
         body["transactionLogs"] = [
             _serialise_log(entry) for entry in call.batched_transaction_logs
+        ]
+    if call.transaction_log_corrections:
+        body["transactionLogCorrections"] = [
+            _serialise_log(c) for c in call.transaction_log_corrections
         ]
     try:
         await _request("POST", f"/api/agent-db/call/{call.id}/end", body=body)
@@ -357,11 +378,12 @@ def _serialise_log(entry: dict) -> dict:
     return out
 
 
-async def create_transaction_log(entry: dict) -> None:
+async def create_transaction_log(entry: dict) -> Optional[dict]:
+    """POST one entry; returns the created row (its ``id`` is an integer)."""
     if entry.get("type") == "status":
-        return
+        return None
     body = _serialise_log(entry)
-    await _request("POST", "/api/agent-db/transaction-log", body=body)
+    return await _request("POST", "/api/agent-db/transaction-log", body=body)
 
 
 async def save_invocation_log(payload: dict) -> None:
