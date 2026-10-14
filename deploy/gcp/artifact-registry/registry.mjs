@@ -46,8 +46,10 @@ async function listAll(resource) {
 
 // `attachment` marks Cloud Build provenance manifests. The registry deletes
 // them with the image they describe and leaves them out of mostRecentVersions.
-export async function listImages() {
-  const attached = new Set((await listAll('attachments')).map(a => a.ociVersionName?.split('/versions/')[1]));
+// The daily prune passes attachments: false: its account cannot list them.
+export async function listImages({ attachments = true } = {}) {
+  const attached = new Set(attachments
+    ? (await listAll('attachments')).map(a => a.ociVersionName?.split('/versions/')[1]) : []);
   return (await listAll('dockerImages')).map(i => {
     const [pkg, digest] = i.uri.slice(HOST.length).split('@');
     return { pkg, digest, tags: i.tags ?? [], created: Date.parse(i.uploadTime), updated: Date.parse(i.updateTime),
