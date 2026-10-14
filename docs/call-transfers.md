@@ -123,7 +123,7 @@ When the attended-REFER path is taken, the platform sends the original caller a 
    - The TransferAgent waits for the target to accept or reject the transfer
 
 2. **Transfer Decision:**
-   - If accepted: The transfer target is moved from the consultation room to the main room
+   - If accepted: The transfer target is moved from the consultation room to the main room. On LiveKit this waits until the TransferAgent has stopped speaking (for at most 20 seconds), so the target hears the end of its last sentence
    - If rejected: The consultation room is cleaned up
 
 3. **Finalisation:**

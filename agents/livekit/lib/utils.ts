@@ -1,3 +1,5 @@
+import { voice } from "@livekit/agents";
+
 /**
  * Wraps an async operation with a timeout.
  * If the operation doesn't complete within the specified time, the timeout error is thrown.
@@ -58,4 +60,44 @@ export async function closeSessionBounded(
   } catch (e) {
     onFailure?.(e instanceof Error ? e : new Error(String(e)));
   }
+}
+
+/**
+ * Resolve once the agent has not been speaking for `quietMs`, or after `capMs`.
+ * Resolves with how it ended. Never throws.
+ *
+ * The quiet window is there because a tool can run before the first audio
+ * frame of the turn that called it has played, while the state is still
+ * "thinking", so "not speaking yet" must not count as finished.
+ */
+export function waitForAgentSpeechToEnd(
+  session: Pick<voice.AgentSession, "agentState" | "on" | "off">,
+  quietMs: number,
+  capMs: number,
+): Promise<"quiet" | "cap"> {
+  return new Promise((resolve) => {
+    let quietTimer: NodeJS.Timeout | undefined;
+    const finish = (outcome: "quiet" | "cap") => {
+      clearTimeout(quietTimer);
+      clearTimeout(capTimer);
+      session.off(voice.AgentSessionEventTypes.AgentStateChanged, onState);
+      resolve(outcome);
+    };
+    const startQuietWindow = () => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => finish("quiet"), quietMs);
+    };
+    const onState = (ev: voice.AgentStateChangedEvent) => {
+      if (ev.newState === "speaking") {
+        clearTimeout(quietTimer);
+      } else {
+        startQuietWindow();
+      }
+    };
+    const capTimer = setTimeout(() => finish("cap"), capMs);
+    session.on(voice.AgentSessionEventTypes.AgentStateChanged, onState);
+    if (session.agentState !== "speaking") {
+      startQuietWindow();
+    }
+  });
 }
