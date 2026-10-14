@@ -63,6 +63,7 @@ import { voice } from "@livekit/agents";
 
 
 import type { TrunkInfo } from './api-client.js';
+import type { LoggedTransactionLog } from './user-turn-corrections.js';
 
 export interface CallScenario {
   instance: Instance;
@@ -167,7 +168,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
   calledId: string;
   modelName: string;
   metadata: any;
-  sendMessage: (message: any, createdAt?: Date) => Promise<void>;
+  sendMessage: (message: any, createdAt?: Date) => Promise<LoggedTransactionLog | undefined>;
   call: Call;
   onHangup: () => Promise<HangupResult>;
   onTransfer: (params: {

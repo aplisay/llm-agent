@@ -1721,7 +1721,7 @@ components:
           example: "hello, how may a I help you"
         createdAt:
           type: string
-          description: The time this log entry was created
+          description: The time this log entry was created. For a `user` transcript entry this is when the caller stopped speaking for that turn; for an `agent` entry, when the agent stopped speaking. When streamLog is used to stream logs during the call, these are provisional and may differ from the fully reconciled logs recorded at the end of the call.
           example: 2020-01-01T00:00:00Z
         updatedAt:
           type: string

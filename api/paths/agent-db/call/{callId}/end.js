@@ -15,9 +15,28 @@ export default function (logger, voices, wsServer) {
   };
 };
 
+/**
+ * Set the createdAt of rows already stored for this call. A bad entry is
+ * skipped: a correction must never stop the call from ending.
+ */
+async function applyTransactionLogCorrections(callId, corrections) {
+  for (const { id, createdAt } of corrections) {
+    const rowId = Number(id);
+    const at = new Date(createdAt);
+    if (!Number.isSafeInteger(rowId) || rowId <= 0 || Number.isNaN(at.getTime())) continue;
+    try {
+      // No hooks: the progress socket must not send the row a second time.
+      await TransactionLog.update({ createdAt: at }, { where: { id: rowId, callId }, hooks: false });
+    }
+    catch (err) {
+      log?.warn?.({ err: err?.message, callId, id }, 'transaction log correction skipped');
+    }
+  }
+}
+
 const callEnd = (async (req, res) => {
   let { callId } = req.params;
-  let { reason, transactionLogs, userId, organisationId } = req.body;
+  let { reason, transactionLogs, transactionLogCorrections, userId, organisationId } = req.body;
   
   if (!callId) {
     return res.status(400).send({ error: 'callId parameter is required' });
@@ -33,6 +52,12 @@ const callEnd = (async (req, res) => {
     // Use provided userId/organisationId or fall back to call record values
     const finalUserId = userId || call.userId;
     const finalOrganisationId = organisationId || call.organisationId;
+
+    // Rows streamed during the call carry a provisional time. Apply the
+    // reconciled times first: for a streamed call the end hook reads them back.
+    if (Array.isArray(transactionLogCorrections) && transactionLogCorrections.length > 0) {
+      await applyTransactionLogCorrections(callId, transactionLogCorrections);
+    }
 
     // If transactionLogs array is provided, batch create them
     if (transactionLogs && Array.isArray(transactionLogs) && transactionLogs.length > 0) {
@@ -137,6 +162,18 @@ callEnd.apiDoc = {
                     format: 'date-time',
                     description: 'Timestamp when the log was captured (preserved from client-side)'
                   }
+                }
+              }
+            },
+            transactionLogCorrections: {
+              type: 'array',
+              description: 'Reconciled createdAt times for rows already stored during the call (used when streamLog is true). Applied before the end hook is sent.',
+              items: {
+                type: 'object',
+                required: ['id', 'createdAt'],
+                properties: {
+                  id: { type: 'integer', description: 'The transaction log row id returned when it was created' },
+                  createdAt: { type: 'string', format: 'date-time' }
                 }
               }
             }

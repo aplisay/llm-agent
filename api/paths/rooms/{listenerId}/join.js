@@ -85,7 +85,7 @@ export default function () {
                   properties: {
                     streamLog: {
                       type: "boolean",
-                      description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket",
+                      description: "If true, then this is a debug room which will post a live debug transcript as messages in the livekit room and/or socket. Logs streamed during the call are provisional and may differ from the fully reconciled logs recorded at the end of the call.",
                     },
                     metadata: {
                       type: "object",

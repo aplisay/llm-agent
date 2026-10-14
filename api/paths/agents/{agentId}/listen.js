@@ -133,7 +133,7 @@ export default function (wsServer) {
                     },
                     streamLog: {
                       type: "boolean",
-                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                      description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket. Logs streamed during the call are provisional and may differ from the fully reconciled logs recorded at the end of the call.",
                     },
                     recording: {
                       type: "object",
@@ -213,7 +213,7 @@ export default function (wsServer) {
                         },
                         streamLog: {
                           type: "boolean",
-                          description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket",
+                          description: "If true, then this is a debug instance which will post a live debug transcript as messages in a livekit room and/or socket. Logs streamed during the call are provisional and may differ from the fully reconciled logs recorded at the end of the call.",
                         },
                         metadata: {
                           type: "object",

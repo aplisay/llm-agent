@@ -7,6 +7,7 @@ import type {
   UltravoxVoice,
   UltravoxVoicesResponse,
 } from './api_proto.js';
+import type { UltravoxCallMessage } from './user_turn_timings.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Voice id or name -> provider. A voice's provider does not change, so this lives for the process. */
@@ -46,6 +47,35 @@ export class UltravoxClient {
       },
     });
   
+  }
+
+  /** When the call was joined, or undefined while it has not been. */
+  async getCallJoined(callId: string, signal?: AbortSignal): Promise<string | undefined> {
+    const response = await fetch(`${this.baseURL}calls/${callId}`, {
+      headers: { 'X-API-Key': this.apiKey },
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to get Ultravox call: ${response.status} ${response.statusText}`);
+    }
+    const { joined } = (await response.json()) as { joined?: string | null };
+    return joined ?? undefined;
+  }
+
+  /** Every in-call message of a call, following the result pages. */
+  async listCallMessages(callId: string, signal?: AbortSignal): Promise<UltravoxCallMessage[]> {
+    const messages: UltravoxCallMessage[] = [];
+    let url: string | null = `${this.baseURL}calls/${callId}/messages?mode=in_call&pageSize=200`;
+    for (let page = 0; url && page < 20; page++) {
+      const response: Response = await fetch(url, { headers: { 'X-API-Key': this.apiKey }, signal });
+      if (!response.ok) {
+        throw new Error(`Failed to list Ultravox call messages: ${response.status} ${response.statusText}`);
+      }
+      const body = (await response.json()) as { results?: UltravoxCallMessage[]; next?: string | null };
+      messages.push(...(body.results ?? []));
+      url = body.next ? new URL(body.next, this.baseURL).toString() : null;
+    }
+    return messages;
   }
 
   async getVoices(): Promise<UltravoxVoicesResponse> {

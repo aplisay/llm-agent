@@ -712,6 +712,17 @@ export async function setPhoneNumberProvisioned(
 
 
 // Create a new call record
+let beforeCallEnd: ((call: Call) => Promise<void>) | null = null;
+
+/**
+ * Work every call.end() awaits before it sends the end request; the runtime
+ * corrects transcript times there (user-turn-corrections.ts). A job process
+ * runs one job, so there is one hook; null removes it.
+ */
+export function setBeforeCallEnd(hook: ((call: Call) => Promise<void>) | null): void {
+  beforeCallEnd = hook;
+}
+
 export async function createCall(callData: {
   id?: string;
   parentId?: string;
@@ -788,31 +799,43 @@ export async function createCall(callData: {
 
     // Mark as called and store the promise
     (call as any)._endCalled = true;
-    
+
     logger.debug({ call, reason, transactionLogCount: transactionLogs?.length }, "logging ending call");
-    const body: any = { 
-      reason,
-      userId: call.userId,
-      organisationId: call.organisationId
-    };
-    // Use provided transactionLogs, or fall back to batched logs on call object
-    const logsToSend = transactionLogs || (call as any).batchedTransactionLogs;
-    if (logsToSend && logsToSend.length > 0) {
-      // Convert Date objects to ISO strings for JSON serialization
-      body.transactionLogs = logsToSend.map((log: any) => ({
-        ...log,
-        createdAt: log.createdAt instanceof Date 
-          ? log.createdAt.toISOString() 
-          : log.createdAt ? new Date(log.createdAt).toISOString() : undefined
-      }));
-    }
-    
-    // Create and store the promise
-    const endPromise = makeApiRequest(`/api/agent-db/call/${call.id}/end`, {
-      method: 'POST',
-      body: JSON.stringify(body)
-    });
-    
+    // Stored before any await, so a concurrent end() gets this same promise.
+    const endPromise = (async () => {
+      await beforeCallEnd?.(call).catch((err) => {
+        logger.warn({ callId: call.id, err }, "before-end hook failed; ending the call anyway");
+      });
+      const body: any = {
+        reason,
+        userId: call.userId,
+        organisationId: call.organisationId
+      };
+      // Use provided transactionLogs, or fall back to batched logs on call object
+      const logsToSend = transactionLogs || (call as any).batchedTransactionLogs;
+      if (logsToSend && logsToSend.length > 0) {
+        // Convert Date objects to ISO strings for JSON serialization
+        body.transactionLogs = logsToSend.map((log: any) => ({
+          ...log,
+          createdAt: log.createdAt instanceof Date
+            ? log.createdAt.toISOString()
+            : log.createdAt ? new Date(log.createdAt).toISOString() : undefined
+        }));
+      }
+      const corrections: Array<{ id: number; createdAt: Date }> | undefined =
+        (call as any).transactionLogCorrections;
+      if (corrections?.length) {
+        body.transactionLogCorrections = corrections.map(({ id, createdAt }) => ({
+          id,
+          createdAt: createdAt.toISOString(),
+        }));
+      }
+      return makeApiRequest(`/api/agent-db/call/${call.id}/end`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+    })();
+
     (call as any)._endPromise = endPromise;
     
     // Handle errors to ensure the promise is still stored even on failure
