@@ -22,6 +22,7 @@ import asyncio
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
@@ -1354,6 +1355,9 @@ class CallSession:
             "type": type_,
             "data": data if isinstance(data, str) else _json_dumps_safe(data),
             "isFinal": is_final,
+            # Without a capture time the server stamps the write time, so a
+            # batched call's rows all share the end-of-call time and lose order.
+            "createdAt": datetime.now(timezone.utc),
         }
         if self.instance.get("streamLog"):
             try:

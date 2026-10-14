@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
@@ -80,6 +81,8 @@ class BridgeTranscriptCollector:
             "type": _SPEAKER_LOG_TYPE.get(speaker, "user"),
             "data": text,
             "isFinal": True,
+            # Capture time, as CallSession._send_message: batched rows need it to keep order.
+            "createdAt": datetime.now(timezone.utc),
         }
         if self.stream_log:
             try:
