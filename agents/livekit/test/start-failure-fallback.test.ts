@@ -135,6 +135,7 @@ function attempt(
       modelRef: (m) => m,
       getConsultInProgress: () => false,
       getActiveCall: () => call,
+      getAgentCall: () => call,
       endTransferActivityIfNeeded: async () => {},
       getTransferState: () => ({ state: "none", description: "" }),
       registerHangupExecutor: () => {},
