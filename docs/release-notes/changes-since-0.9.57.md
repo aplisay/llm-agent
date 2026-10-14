@@ -1,26 +1,84 @@
-# Release 0.9.58 (draft) - transcript times
+# Release 0.9.58 (draft) - transcript times, warm transfers, usage attribution, image retention
 
-> Draft. Started with the transcript timing change. The other pull requests
-> merged to `next` since the 0.9.57 release point (#409 to #415, #417) are not
-> in it yet. The version number is provisional.
+> Draft. Covers changes merged to `next` since the 0.9.57 release point
+> (11 pull requests, 12 - 14 October 2026). The version number is
+> provisional.
 
 Each item is tagged by subsystem: **core** (API server, REST API, database,
 billing, auth, model drivers), **livekit** (LiveKit voice worker and Ultravox
 plugin), **pipecat** (Pipecat voice worker), **sipbridge** (SIP gateway used by
 Pipecat), and **ci** (build and release pipeline).
 
-## Transcript times - core+livekit
+## Transcript times - core+livekit+pipecat
 
-- **[livekit] `user` entry `createdAt`** is now when the caller stopped speaking
-  for that turn, as `agent` entries already give the time the agent stopped. It
-  was the time the transcript reached the worker, up to about 1.3 s later on
-  Ultravox and after the start of the agent's reply. A `user` entry now comes
-  before the reply and the tool calls it caused.
-- **[livekit] `streamLog`**: when streamLog is used to stream logs during the
-  call, these are provisional and may differ from the fully reconciled logs
-  recorded at the end of the call.
-- **[core] `POST /api/agent-db/call/{callId}/end`** accepts
-  `transactionLogCorrections`, `[{ id, createdAt }]`, and applies them before
-  the end call hook is sent.
-- **[livekit] `TRANSCRIPT_USER_TIME=arrival`** in the worker environment
-  restores the old transcript-arrival time.
+- **[livekit+pipecat] Where it applies**: LiveKit and Pipecat agents. `jambonz:`
+  agents still stamp a `user` entry at its first partial transcript, and
+  `ultravox:` agents write their entries when the call ends.
+- **[livekit+pipecat] `user` entry `createdAt`** is now when the caller stopped
+  speaking for that turn, as `agent` entries give when the agent stopped. It was
+  when the transcript arrived, after the agent's reply had started on Ultravox,
+  so a `user` entry now comes before the reply and tool calls it caused.
+- **[livekit+pipecat] `streamLog`**: when streamLog is used to stream logs
+  during the call, these are provisional and may differ from the fully
+  reconciled logs recorded at the end of the call.
+- **[core] Call end endpoint**: `POST /api/agent-db/call/{callId}/end` accepts
+  `transactionLogCorrections`, `[{ id, createdAt }]`, for entries already
+  stored, and applies them before the end call hook is sent.
+- **[pipecat] Capture times**: every transaction-log entry carries the time it
+  was captured. Batched entries all carried the end-of-call time, so their
+  order in `GET /calls/{id}/logs` and the end call hook was undefined.
+- **[livekit] Transfer requests**: the caller turn that asks for a blind
+  transfer is logged, as is agent speech that started before the transfer tool
+  call. Both could arrive after the transfer began and were dropped.
+- **[livekit+pipecat] `TRANSCRIPT_USER_TIME=arrival`** in the worker
+  environment keeps `user` entries at the time their transcript arrived.
+- **[core] Documentation**: `createdAt` is described in
+  [call-hooks.md](../call-hooks.md) and the API reference.
+
+## Warm transfers - livekit+pipecat
+
+- **[livekit] Consult leg voice**: the consult leg copies the caller's speech
+  stack, so the target hears the voice the caller hears. A realtime model with
+  an external TTS speaks through that TTS, and a pipeline agent gets its own
+  STT, LLM, and TTS.
+- **[livekit] Consult leg agent**: after a `transfer_agent` handover or a
+  fallback, the consult leg takes its transfer prompt and the consult call
+  record's `agentId` and `modelName` from the agent running the call, not the
+  call's first agent.
+- **[livekit] Accepted transfers**: the handover after `accept_transfer` waits
+  until the consult agent has been quiet for 1 s, at most 20 s, so the target
+  hears its last sentence in full.
+- **[livekit+pipecat] `accept_transfer` description** tells the model to call it
+  only after the target has agreed to take the call, never in the turn that
+  asks, and that confirming who they are is not agreeing.
+
+## Usage attribution - livekit
+
+- **[livekit] Usage after a bridge**: an agent's LLM token, external TTS,
+  `stt-aux`, and `stt-output` usage is billed to the agent's own call. A call
+  that ended on a transfer bridge billed all of it to the
+  `telephony:bridged-call` record.
+- **[livekit] Usage at a full-stack handover**: a `transfer_agent` handover to
+  another model, or a bridged call handed back to an agent, writes the outgoing
+  agent's usage to its own call with its own model labels. In-place handovers
+  are unchanged.
+
+## Image retention - ci
+
+- **[ci] Artifact Registry cleanup**: a cleanup policy and a daily beta-tag
+  prune remove old `llm-agent/` and `polite-ai-website/` images. Kept: releases,
+  `:beta`, `:next`, `:staging`, and `:latest`, the 3 newest betas or 14 days of
+  them, each package's 10 newest versions, and anything under 14 days old.
+- **[ci] `check-cleanup.mjs`** compares what the policy and prune would delete
+  with the images in use on Cloud Run, both DOKS clusters, and the runner VMs,
+  and exits 1 if any would go.
+- **[ci] Documentation**: new
+  [deploy/gcp/artifact-registry/README.md](../../deploy/gcp/artifact-registry/README.md).
+
+## Upgrade notes
+
+- **[core] Database schema** is unchanged (v68).
+- **[livekit+pipecat] New optional environment**: `TRANSCRIPT_USER_TIME`.
+- **[ci] Release tagging**: tag a release within 14 days of its main build.
+  After that the cleanup policy may have deleted the commit images the release
+  build needs, and its Verify step aborts.
