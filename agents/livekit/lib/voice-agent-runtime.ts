@@ -573,15 +573,18 @@ export async function runAgentWorker({
   // metrics pipeline and flush them to the platform usage ledger
   // (POST /api/agent-db/usage). Keyed per (technology, component label) so each
   // model/vendor meters separately; flushed with mode "set" so a re-flush is
-  // idempotent. Shared across the main session and any post-handover sessions.
-  const usageMeters = new Map<
+  // idempotent. One set of meters per agent call: an in-place handover keeps
+  // them, a full-stack handover flushes them to the outgoing call and starts
+  // afresh (handOverUsage).
+  let usageMeters = new Map<
     string,
     { technology: string; provider?: string; detail?: string; units: Record<string, number> }
   >();
   // Canonical {vendor, detail} per technology from the configured services, so
   // rows carry the real vendor even on the LiveKit-Inference path (whose metric
-  // label is vendor-blind, e.g. "inference.TTS"). Resolved once per worker.
-  const usageVendors = resolveUsageVendors(agent, modelName);
+  // label is vendor-blind, e.g. "inference.TTS"). Re-resolved for the incoming
+  // agent and model at a full-stack handover.
+  let usageVendors = resolveUsageVendors(agent, modelName);
   const addMeter = (
     technology: string,
     label: string | undefined,
@@ -602,9 +605,9 @@ export async function runAgentWorker({
       (technology === "stt" || (technology === "tts" && !resolvedTextOutput))
     ) return;
     // Prefer the configured vendor/model; fall back to the SDK label
-    // ("vendor.Component" / "vendor/model") then the bare modelName.
+    // ("vendor.Component" / "vendor/model") then the active model name.
     const resolved = usageVendors[technology as keyof UsageVendors];
-    const detail = resolved?.detail || label || modelName;
+    const detail = resolved?.detail || label || activeModelName;
     const provider =
       resolved?.vendor || (label ? label.split(/[./]/)[0] || undefined : undefined);
     const key = `${technology}|${detail}`;
@@ -653,17 +656,21 @@ export async function runAgentWorker({
       }
     });
   };
-  const flushUsage = async (finalised: boolean): Promise<void> => {
+  const flushUsage = async (
+    finalised: boolean,
+    meters = usageMeters,
+    target?: Call,
+  ): Promise<void> => {
     try {
       // Attribute the agent session's accumulated token/stt/tts meters to the
       // AGENT's call, not getActiveCall() — after a blind-bridge transfer the
       // latter flips to the no-agent bridged tail leg, so these component meters
       // would otherwise mis-attribute there (the bridged leg is billed only for
       // its own audio-path minutes via its Call.end()).
-      const c: any = getAgentCall();
+      const c: any = target ?? getAgentCall();
       if (!c?.id) return;
       const records: any[] = [];
-      for (const meter of usageMeters.values()) {
+      for (const meter of meters.values()) {
         for (const [unit, quantity] of Object.entries(meter.units)) {
           if (!quantity) continue;
           records.push({
@@ -690,6 +697,22 @@ export async function runAgentWorker({
     }
   };
 
+  // A side STT reports its last usage during dispose(), so every disposal is
+  // kept here until it settles and a flush can wait for it (stopSideStt).
+  const sideSttDisposals = new Set<Promise<void>>();
+  const trackSideSttDisposal = (disposal: Promise<void>): Promise<void> => {
+    const settled = disposal.catch(() => undefined);
+    sideSttDisposals.add(settled);
+    void settled.then(() => sideSttDisposals.delete(settled));
+    return settled;
+  };
+  /** Stop both side STTs and wait for every disposal so far, so their usage is in the meters. */
+  const stopSideStt = async (): Promise<void> => {
+    void disposeAuxStt();
+    void disposeOutputStt();
+    await Promise.all(sideSttDisposals);
+  };
+
   /**
    * (Re)arm the auxiliary STT for `agentDef` on the caller's track: dispose any
    * running instance (reporting its usage), then start one if the agent asks
@@ -699,10 +722,7 @@ export async function runAgentWorker({
    * a consultation has the caller on hold, exactly like the primary transcript.
    */
   const armAuxSttFor = (agentDef: Agent): void => {
-    if (auxStt) {
-      void auxStt.dispose();
-      auxStt = null;
-    }
+    void disposeAuxStt();
     const config = parseAuxSttOption(agentDef?.options);
     if (!config) return;
     // Inbound legs carry a ParticipantInfo (`identity`); an outbound leg's
@@ -735,7 +755,7 @@ export async function runAgentWorker({
     if (!auxStt) return Promise.resolve();
     const handle = auxStt;
     auxStt = null;
-    return handle.dispose();
+    return trackSideSttDisposal(handle.dispose());
   };
 
   /**
@@ -746,10 +766,7 @@ export async function runAgentWorker({
    * entry, and metered as `stt-output`.
    */
   const armOutputSttFor = (agentDef: Agent, s: voice.AgentSession | null): void => {
-    if (outputStt) {
-      void outputStt.dispose();
-      outputStt = null;
-    }
+    void disposeOutputStt();
     const config = parseOutputSttOption(agentDef?.options);
     if (!config || !s) return;
     const vendor = resolveOutputSttVendor(agentDef, config);
@@ -766,7 +783,22 @@ export async function runAgentWorker({
     if (!outputStt) return Promise.resolve();
     const handle = outputStt;
     outputStt = null;
-    return handle.dispose();
+    return trackSideSttDisposal(handle.dispose());
+  };
+
+  /**
+   * At a full-stack handover, write the outgoing agent's usage, finalised, to
+   * its own call (getAgentCall: on a takeover that is the original agent call,
+   * not the bridged record), then meter the incoming agent from zero against
+   * its own vendors. Must run before setActiveAgentCall switches the call.
+   */
+  const handOverUsage = async (nextAgent: Agent, nextModelName: string): Promise<void> => {
+    await stopSideStt();
+    const outgoingMeters = usageMeters;
+    const outgoingCall = getAgentCall();
+    usageMeters = new Map();
+    usageVendors = resolveUsageVendors(nextAgent, nextModelName);
+    await flushUsage(true, outgoingMeters, outgoingCall);
   };
 
   const cleanupAndClose = async (
@@ -852,7 +884,7 @@ export async function runAgentWorker({
 
       // Stop the side STTs first — and wait for each engine's last usage
       // report — so their final counts are in the meters the flush below writes.
-      await Promise.all([disposeAuxStt(), disposeOutputStt()]);
+      await stopSideStt();
 
       // Flush accumulated usage (tokens / characters / audio) to the ledger
       // before ending the call so it lands as the finalised session total.
@@ -1234,7 +1266,7 @@ export async function runAgentWorker({
       logger.error({ ev: sessionEventForLog(ev) }, "error (handover session)");
     });
     inactivityKick.attach(s);
-    // Keep metering the post-handover session into the same usage accumulator.
+    // Meters the incoming agent from zero: handOverUsage flushed the outgoing one.
     wireUsageMetrics(s);
     s.on(voice.AgentSessionEventTypes.Close, (ev: voice.CloseEvent) => {
       if (isStaleSession(s)) {
@@ -1385,6 +1417,8 @@ export async function runAgentWorker({
       const oldSession = session;
       session = null;
       sessionRef(null);
+      // The side STTs stop with the outgoing session; handOverUsage waits for them.
+      void stopSideStt();
       if (oldSession) {
         await withTimeout(
           () => oldSession.close(),
@@ -1397,6 +1431,7 @@ export async function runAgentWorker({
           );
         });
       }
+      await handOverUsage(newAgentDef, targetModelName);
 
       const voiceMode = resolveVoiceMode(targetModelName, newAgentDef.options);
       const vad =
