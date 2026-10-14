@@ -34,7 +34,7 @@ import {
 import { userOwnsPhoneNumber, userOwnsRow } from "./scope.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { getRoomService } from "./livekit-constants.js";
-import { closeSessionBounded } from "./utils.js";
+import { closeSessionBounded, waitForAgentSpeechToEnd } from "./utils.js";
 import { clearNextSessionPrimary } from "./provider-ended.js";
 import type { UltravoxFirstSpeakerSettings } from "../plugins/ultravox/src/realtime/api_proto.js";
 import {
@@ -116,6 +116,14 @@ const CONSULT_FIRST_SPEAKER_FALLBACK_DELAY = "3s";
  * as the agent-handover close in voice-agent-runtime.
  */
 const TRANSFER_SESSION_CLOSE_TIMEOUT_MS = 8_000;
+
+/**
+ * Before handing over an accepted transfer, wait for the TransferAgent to stop
+ * speaking. Models often ask "will you take the call?" and call accept_transfer
+ * in the same turn, and the tool runs while that question is still playing.
+ */
+const CONSULT_SPEECH_QUIET_MS = 1_000;
+const CONSULT_SPEECH_CAP_MS = 20_000;
 
 /**
  * Close the TransferAgent session without ever blocking the caller. Bounded (see
@@ -1076,7 +1084,7 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
       tools: {
         accept_transfer: llm.tool({
           description:
-            "Accept the transfer and connect the transfer target to the caller. Use this when the transfer target agrees to take the call.",
+            "Accept the transfer and connect the transfer target to the caller. Call this only after the transfer target has said yes to your question asking whether they will take the call. Never call it in the same turn as asking that question: ask, stop, and wait for their answer. Confirming who they are is not agreeing to take the call.",
           parameters: {
             type: "object",
             properties: {
@@ -1429,6 +1437,24 @@ async function finaliseConsultativeTransfer(
     { consultRoomName, callerRoom: room.name, useRefer },
     "finalising warm transfer"
   );
+
+  if (transferSession) {
+    const startedAt = Date.now();
+    const outcome = await waitForAgentSpeechToEnd(
+      transferSession,
+      CONSULT_SPEECH_QUIET_MS,
+      CONSULT_SPEECH_CAP_MS
+    );
+    logger.info(
+      { outcome, waitedMs: Date.now() - startedAt },
+      "consult agent finished speaking before handover"
+    );
+    // The caller can hang up during the wait; destroyInProgressTransfer has
+    // then already torn the consult down.
+    if (!getConsultInProgress()) {
+      throw new Error("Consult transfer ended while the consult agent was speaking");
+    }
+  }
 
   /**
    * End the consult record on every terminal path to release its concurrency slot; repeated cleanup is safe. See PR

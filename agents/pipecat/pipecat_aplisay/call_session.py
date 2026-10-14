@@ -3447,8 +3447,12 @@ def build_transfer_agent_dict(
                 "name": "accept_transfer",
                 "description": (
                     "Accept the transfer and connect the transfer "
-                    "target to the caller. Use this when the transfer "
-                    "target agrees to take the call."
+                    "target to the caller. Call this only after the "
+                    "transfer target has said yes to your question "
+                    "asking whether they will take the call. Never call "
+                    "it in the same turn as asking that question: ask, "
+                    "stop, and wait for their answer. Confirming who "
+                    "they are is not agreeing to take the call."
                 ),
                 # Dispatch to the ``accept_transfer`` entry in extra_builtins
                 # (wired in prepare_run). Without this the handler defaults to
