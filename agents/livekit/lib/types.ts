@@ -175,6 +175,7 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
     args: any;
     participant: ParticipantInfo;
     voiceAgent?: VoiceAgent;
+    teardownStarted?: () => boolean;
   }) => Promise<any>;
   /**
    * Hands the worker's hangup latch a way to drive teardown directly, so an

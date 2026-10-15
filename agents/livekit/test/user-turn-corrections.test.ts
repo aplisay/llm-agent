@@ -123,6 +123,24 @@ test("a slow timings fetch times out and the call ends with its guesses", async 
   assert.equal(log.entry!.createdAt!.getTime(), 1_000);
 });
 
+test("the cap covers the whole step, not each wait in it", async () => {
+  const call = newCall("c1");
+  const corrections = createUserTurnCorrections({ timeoutMs: 80 });
+  const log = batched(call, new Date(1_000));
+  const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+  corrections.add({
+    itemId: "a",
+    guess: new Date(1_000),
+    source: { userTurnTimings: () => after(60, new Map([["a", { startMs: 0, endMs: 500 }]])) },
+    logged: after(60, log),
+  });
+
+  // Each wait alone fits in the cap; together they do not, so the guess stays.
+  await corrections.beforeEnd(call);
+
+  assert.equal(log.entry!.createdAt!.getTime(), 1_000);
+});
+
 test("a failing timings fetch does not throw", async () => {
   const call = newCall("c1");
   const corrections = createUserTurnCorrections();
