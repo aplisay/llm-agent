@@ -178,6 +178,8 @@ export interface TransferContext {
   agent: Agent;
   /** Runs the consult leg. Defaults to `agent` and its model. */
   voiceAgent?: VoiceAgent;
+  /** True once the runtime's call teardown has begun (a party hung up). */
+  teardownStarted?: () => boolean;
   instance: Instance;
   call: Call;
   callerId: string;
@@ -480,6 +482,44 @@ async function validateTransferArgs(
 /**
  * Creates a bridged call record and finalises the original call
  */
+export const BRIDGED_HANDOVER_ENDED_REASON = "Call ended during transfer handover";
+
+/**
+ * Hand the call over from the agent's record to a new bridged record so that a
+ * hang-up at any point still leaves the bridged record ended. Teardown ends
+ * whatever the worker has registered as active, which stays the agent's call
+ * until `register` runs, and `Call.start()` would revive an ended record. A
+ * transfer target that hangs up right after being connected hits this.
+ * Returns the live bridged record, or null when the call ended first.
+ */
+export async function openBridgedCallRecord({
+  agentCall,
+  create,
+  register,
+  teardownStarted,
+}: {
+  agentCall: Call;
+  create: () => Promise<Call | null>;
+  register: (call: Call) => void;
+  teardownStarted: () => boolean;
+}): Promise<Call | null> {
+  if (teardownStarted()) return null;
+  const bridged = await create();
+  if (!bridged) return null;
+  await agentCall.end(`Agent left call, new bridged call: ${bridged.id}`);
+  if (teardownStarted()) {
+    await bridged.end(BRIDGED_HANDOVER_ENDED_REASON);
+    return null;
+  }
+  await bridged.start();
+  register(bridged);
+  if (teardownStarted()) {
+    await bridged.end(BRIDGED_HANDOVER_ENDED_REASON);
+    return null;
+  }
+  return bridged;
+}
+
 async function finaliseBridgedCall(
   call: Call,
   instance: Instance,
@@ -490,44 +530,44 @@ async function finaliseBridgedCall(
   options: any,
   session: voice.AgentSession | null,
   setBridgedCallRecord?: (call: Call | null) => void,
-  outboundTrunkId?: string
+  outboundTrunkId?: string,
+  teardownStarted: () => boolean = () => false
 ): Promise<Call | null> {
   detachPrimaryAgentMediaAfterBridge(session);
 
   try {
-    const originalCallId = call.id;
-    const bridgedCallRecord = await createCall({
-      parentId: originalCallId,
-      userId: agent.userId,
-      organisationId: agent.organisationId,
-      instanceId: instance.id,
-      agentId: agent.id,
-      platform: "livekit",
-      platformCallId: room?.name,
-      calledId,
-      callerId,
-      modelName: "telephony:bridged-call",
-      // The bridged tail leg is the carried dial to the transfer target — chargeable
-      // on our public trunk unless the original call is registration-originated (then
-      // the target is reached via the customer's own B2BUA/PBX).
-      outboundTrunkId,
-      options,
-      metadata: { ...call.metadata },
+    const bridgedCallRecord = await openBridgedCallRecord({
+      agentCall: call,
+      teardownStarted,
+      register: (bridged) => setBridgedCallRecord?.(bridged),
+      create: () =>
+        createCall({
+          parentId: call.id,
+          userId: agent.userId,
+          organisationId: agent.organisationId,
+          instanceId: instance.id,
+          agentId: agent.id,
+          platform: "livekit",
+          platformCallId: room?.name,
+          calledId,
+          callerId,
+          modelName: "telephony:bridged-call",
+          // The bridged tail leg is the carried dial to the transfer target — chargeable
+          // on our public trunk unless the original call is registration-originated (then
+          // the target is reached via the customer's own B2BUA/PBX).
+          outboundTrunkId,
+          options,
+          metadata: { ...call.metadata },
+        }),
     });
 
     if (bridgedCallRecord) {
-      await call.end(
-        `Agent left call, new bridged call: ${bridgedCallRecord.id}`
-      );
-      await bridgedCallRecord.start();
       await getRoomService().updateRoomMetadata(
         room.name!,
         JSON.stringify({ bridgedCallId: bridgedCallRecord.id })
       );
-      // Update the bridged call record in the worker
-      if (setBridgedCallRecord) {
-        setBridgedCallRecord(bridgedCallRecord);
-      }
+    } else {
+      logger.info({ callId: call.id }, "call ended during the transfer handover; no live bridged call record");
     }
 
     return bridgedCallRecord;
@@ -2258,7 +2298,8 @@ export async function handleTransfer(
       options,
       session,
       context.setBridgedCallRecord,
-      chargeableOutboundTrunkId(context.registrationOriginated)
+      chargeableOutboundTrunkId(context.registrationOriginated),
+      context.teardownStarted
     );
   };
 

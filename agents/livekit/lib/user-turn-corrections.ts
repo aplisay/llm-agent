@@ -60,8 +60,10 @@ export function createUserTurnCorrections(opts: {
   let pending: PendingRow[] = [];
 
   async function correct(call: Call): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const remaining = () => Math.max(0, deadline - Date.now());
     const rows = pending;
-    const logged = await within(Promise.all(rows.map((r) => r.logged)), timeoutMs);
+    const logged = await within(Promise.all(rows.map((r) => r.logged)), remaining());
     if (!logged) return;
     const mine = rows
       .map((row, i) => ({ row, log: logged[i] }))
@@ -71,7 +73,7 @@ export function createUserTurnCorrections(opts: {
 
     const sources = [...new Set(mine.map((m) => m.row.source).filter(isUserTurnTimingSource))];
     if (!sources.length) return;
-    const maps = await within(Promise.all(sources.map((s) => s.userTurnTimings())), timeoutMs);
+    const maps = await within(Promise.all(sources.map((s) => s.userTurnTimings())), remaining());
     if (!maps) {
       opts.logger?.warn({ callId: call.id }, "user turn timings timed out; keeping provisional times");
       return;

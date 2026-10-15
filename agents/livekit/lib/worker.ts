@@ -1654,10 +1654,12 @@ async function setupCallAndUtilities({
     args,
     participant: transferParticipant,
     voiceAgent,
+    teardownStarted,
   }: {
     args: TransferArgs;
     participant: ParticipantInfo;
     voiceAgent?: VoiceAgent;
+    teardownStarted?: () => boolean;
   }) => {
     try {
       // Arm the confidence tone for this transfer (skip if a transfer is
@@ -1675,6 +1677,7 @@ async function setupCallAndUtilities({
         args,
         agent,
         voiceAgent,
+        teardownStarted,
         instance,
         call,
         callerId,

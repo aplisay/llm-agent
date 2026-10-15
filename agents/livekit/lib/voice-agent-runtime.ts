@@ -1777,6 +1777,7 @@ export async function runAgentWorker({
         return onTransfer({
           ...params,
           voiceAgent: { agent: activeAgentDef, modelName: activeModelName },
+          teardownStarted: () => isCleaningUp,
         });
       },
       getTransferState,
