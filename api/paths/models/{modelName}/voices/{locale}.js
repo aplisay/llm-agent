@@ -129,7 +129,7 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
 
 The first and only method is \`prompt\`: describe the voice in plain language and the vendor generates it. The vendor is the model's own: OpenAI for GPT-Live (\`pipecat:openai/gpt-live-1\`). OpenAI prompt voices work on GPT-Live only.
 
-The call waits for the vendor and returns the voice with \`status: "ready"\`. Put its \`voice\` value in an agent's \`options.tts.voice\`. \`GET\` on this path lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
+The call waits for the vendor (about 20 seconds for OpenAI) and returns the voice with \`status: "ready"\`. Put its \`voice\` value in an agent's \`options.tts.voice\`. \`GET\` on this path lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
 
 Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
 

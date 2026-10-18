@@ -34,7 +34,8 @@ curl -X POST "https://llm-agent.example.com/api/models/pipecat%3Aopenai%2Fgpt-li
   }'
 ```
 
-The call waits for OpenAI (a few seconds) and returns `201`:
+The call waits for OpenAI and returns `201`. Expect it to take about 20
+seconds (21 s in a test on 2026-10-18), so a UI should show progress:
 
 ```json
 {
@@ -250,9 +251,14 @@ it, and it stops counting against the quota.
 ### Deleting at OpenAI
 
 OpenAI's API reference and its SDK (`openai` 7.38.0) list only a create call
-for voices. The API does serve `DELETE /v1/audio/voices/{voice_id}`: on
-2026-10-18 it answered a made-up id with "No voice found with id ...", not
-with an unknown-route error. `GET /v1/audio/voices` also answers, with a list.
+for voices. The API does serve `DELETE /v1/audio/voices/{voice_id}` and
+`GET /v1/audio/voices`. On 2026-10-18 one real voice was created through this
+API, appeared in OpenAI's list, and was deleted:
+
+- the delete took about 1 second and OpenAI replied
+  `{ "id": "voice_...", "object": "audio.voice.deleted", "deleted": true }`;
+- the voice then left OpenAI's list;
+- a second delete of the same id returned `404` "No voice found with id ...".
 
 Because these calls are not documented:
 
