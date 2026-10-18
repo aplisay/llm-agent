@@ -36,6 +36,8 @@ from .gpt_live import (
     backend_settings,
     compose_backend_instructions,
     compose_voice_instructions,
+    custom_voice,
+    custom_voice_line,
     greeting_opening_instruction,
     has_greeting,
     history_from_messages,
@@ -2082,9 +2084,11 @@ class CallSession:
             )
         merged = merge_tools(voice_tools, delegate_tools, log=logger)
         tool_names = [t["schema"]["name"] for t in merged]
+        cv = custom_voice(agent)
         session = GptLiveSession(
             delegate=spec,
-            voice_instructions=compose_voice_instructions(system_prompt, language=language_line(agent)),
+            voice_instructions=compose_voice_instructions(
+                system_prompt, language=language_line(agent), voice_line=custom_voice_line(cv)),
             backend_instructions=compose_backend_instructions(backend_prompt, tool_names=tool_names),
             tools=merged,
             settings=backend_settings(spec.agent),
@@ -2095,6 +2099,7 @@ class CallSession:
             # When the platform opens the call (a handover or a takeover), the
             # greeting does not play, so the caller is not made inaudible.
             deaf_during_greeting=has_greeting(agent) and self._platform_opening() is None,
+            custom_voice_id=cv["voice"] if cv else None,
         )
         logger.bind(
             event="delegation_config",

@@ -1,4 +1,5 @@
 import { Agent } from '../../../lib/database.js';
+import { customVoiceForAgent } from '../../../lib/custom-voices/index.js';
 
 let log;
 
@@ -34,7 +35,7 @@ const agentGet = async (req, res) => {
       log.warn({ agentId, expectedOrganisationId, actual: agent.organisationId }, 'cross-organisation agent fetch refused');
       return res.status(404).send({ error: 'Agent not found' });
     }
-    res.send(agent.toJSON());
+    res.send({ ...agent.toJSON(), customVoice: await customVoiceForAgent(agent) });
   }
   catch (err) {
     log.error(err, 'error fetching agent');

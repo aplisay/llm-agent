@@ -55,6 +55,15 @@ export default function (logger) {
     if ('chargeableNumberLimit' in req.body && !can(res.locals.user, 'organisation', 'setRate')) {
       return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setRate (super admin)' });
     }
+    // Same posture: OpenAI caps voices per OpenAI organisation, a slot every
+    // customer shares, so an orgAdmin must not raise their own allowance.
+    if ('customVoiceLimit' in req.body && !can(res.locals.user, 'organisation', 'setRate')) {
+      return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setRate (super admin)' });
+    }
+    if ('customVoiceLimit' in req.body && req.body.customVoiceLimit !== null
+      && (!Number.isInteger(req.body.customVoiceLimit) || req.body.customVoiceLimit < 0)) {
+      return res.status(400).send({ message: 'customVoiceLimit must be a non-negative integer or null (unlimited)' });
+    }
     // `status` is a soft-delete lever (DELETE sets status='deactivated'), so a
     // cross-tenant principal changing someone ELSE's status must hold the same
     // capability as DELETE. orgAdmin editing their OWN org is unaffected, and
@@ -77,7 +86,7 @@ export default function (logger) {
     const rbacErr = validateRbacFields(req.body);
     if (rbacErr) return res.status(400).send({ message: rbacErr });
 
-    const EDITABLE = ['name', 'agentLimit', 'chargeableNumberLimit', 'status', 'role', 'permissions', 'allowedModels'];
+    const EDITABLE = ['name', 'agentLimit', 'chargeableNumberLimit', 'customVoiceLimit', 'status', 'role', 'permissions', 'allowedModels'];
     for (const k of EDITABLE) if (k in req.body) org[k] = req.body[k];
     try {
       await org.save();
@@ -101,6 +110,7 @@ export default function (logger) {
               name: { type: 'string' },
               agentLimit: { type: 'integer', nullable: true },
               chargeableNumberLimit: { type: 'integer', nullable: true, description: 'Max numbers the org may hold on chargeable (non-owned) trunks; null = unlimited' },
+              customVoiceLimit: { type: 'integer', nullable: true, description: 'Max custom voices the org may hold (super admin); null = unlimited' },
               status: { type: 'string', enum: ['provisional', 'active', 'suspended', 'deactivated'] },
               role: { type: 'string', nullable: true },
               permissions: { type: 'object', nullable: true },

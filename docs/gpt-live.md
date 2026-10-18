@@ -283,6 +283,11 @@ The accents of the twelve voices added with GPT-Live follow OpenAI's
 descriptions. OpenAI gives no accent for the other ten, and their gender is
 Aplisay's label.
 
+An organisation can also make its own GPT-Live voices from a text description
+with `POST /models/pipecat:openai/gpt-live-1/voices/{locale}`. They are listed
+first under `OpenAI`, marked `custom: true`, and only that organisation sees
+them. See [custom-voices.md](custom-voices.md).
+
 By default `options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
 response modality: the row reports `hasExternalTts: false` and any other vendor
 is rejected unless the transcript-synthesis prototype below is enabled. This is

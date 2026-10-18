@@ -1,12 +1,21 @@
 import {
   getModelVoiceLocales,
 } from '../../../../lib/model-voices.js';
+import { can } from '../../../../lib/auth/permissions.js';
+import { customVoiceLocales } from '../../../../lib/custom-voices/index.js';
 
 export default function (logger, voices) {
   const modelVoicesLocalesGet = async (req, res) => {
     try {
       const modelName = decodeModelParam(req.params.modelName);
       const body = await getModelVoiceLocales({ modelName, voicesInstance: voices });
+      const user = res.locals?.user;
+      if (user && can(user, 'voice', 'read')) {
+        const extra = await customVoiceLocales(user, modelName);
+        if (extra.length) {
+          body.locales = [...new Set([...body.locales, ...extra])].sort((a, b) => a.localeCompare(b));
+        }
+      }
       res.send(body);
     } catch (err) {
       const code = err.statusCode || 500;
@@ -24,6 +33,7 @@ Use **URL-encoded** \`modelName\` as a single path segment (e.g. \`livekit%3Aope
 - **LiveKit pipeline** models: locales are derived from configured Inference TTS providers (Deepgram, ElevenLabs, Cartesia, etc.). Google Cloud catalogue voices are omitted from this list because the Node pipeline uses Gemini TTS, not Cloud voice ids.
 - **LiveKit realtime**: locales and vendors are scoped to the model provider (e.g. OpenAI realtime → OpenAI voices only; Ultravox → Ultravox only). Google Gemini realtime has no separate catalogue rows here.
 - **Other handlers**: locales match that handler’s nested voice map.
+- **Custom voices**: the locales of the caller's organisation's own custom voices for this model are added (see [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice)).
 
 Prefer this over [\`GET /voices\`](#operation-voicesList).`,
     operationId: 'modelVoiceLocales',

@@ -216,7 +216,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
 
     const read = mockReqRes({ role: 'billingService', params: { organisationId: orgId } });
     await billingGET(read.req, read.res);
-    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3, agentLimit: null });
+    expect(read.res.body).toEqual({ billingBlocked: true, billingConfig: cfg, chargeableNumberLimit: 3, agentLimit: null, customVoiceLimit: 3 });
 
     // balance read (own-org member) surfaces the block flag
     const bal = mockReqRes({ role: 'owner', organisationId: orgId, params: { organisationId: orgId } });
@@ -224,7 +224,7 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
     expect(bal.res.body.blocked).toBe(true);
 
     const cleared = await patch({ billingBlocked: false, billingConfig: null });
-    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3, agentLimit: null });
+    expect(cleared.body).toEqual({ billingBlocked: false, billingConfig: null, chargeableNumberLimit: 3, agentLimit: null, customVoiceLimit: 3 });
   });
 
   it('billing PATCH sets chargeableNumberLimit (integer >= 0, null = unlimited) and validates it', async () => {
@@ -260,6 +260,28 @@ describe('Phase 3: rate-history + balance + balance/credit', () => {
 
     // Same gate as the rest of the billing controls.
     expect((await patch({ chargeableNumberLimit: 99 }, 'owner')).statusCode).toBe(403);
+  });
+
+  it('billing PATCH sets customVoiceLimit (integer >= 0, null = unlimited) and validates it', async () => {
+    const patch = (body, role = 'billingService') => {
+      const { req, res } = mockReqRes({ role, params: { organisationId: orgId }, body });
+      return billingPATCH(req, res).then(() => res);
+    };
+
+    const raised = await patch({ customVoiceLimit: 10 });
+    expect(raised.statusCode).toBe(200);
+    expect(raised.body.customVoiceLimit).toBe(10);
+    expect((await Organisation.findByPk(orgId)).customVoiceLimit).toBe(10);
+
+    const unlimited = await patch({ customVoiceLimit: null });
+    expect(unlimited.statusCode).toBe(200);
+    expect((await Organisation.findByPk(orgId)).customVoiceLimit).toBeNull();
+
+    expect((await patch({ customVoiceLimit: -1 })).statusCode).toBe(400);
+    expect((await patch({ customVoiceLimit: '3' })).statusCode).toBe(400);
+    expect((await patch({ customVoiceLimit: 99 }, 'owner')).statusCode).toBe(403);
+    expect((await Organisation.findByPk(orgId)).customVoiceLimit).toBeNull();
+    await patch({ customVoiceLimit: 3 });
   });
 
   it('billing PATCH sets agentLimit (the concurrency cap lib/concurrency already enforces)', async () => {
