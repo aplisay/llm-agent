@@ -20,7 +20,8 @@ and execution; you define the agents and their relationships.
 
 This guide walks through all three patterns using a fictional cycle shop.
 The examples target a deployment with the GPT-Live API and Pipecat worker
-support enabled. Model availability and permissions are specific to your
+support enabled. `livekit:openai/gpt-live-1` works the same way, with the
+differences listed in [gpt-live.md](gpt-live.md#on-the-livekit-worker). Model availability and permissions are specific to your
 deployment; check `GET /models` before creating the set.
 
 ## The small addition to a set you already understand
@@ -493,8 +494,8 @@ The examples use the Pipecat GPT-Live model. The API update must be deployed
 alongside a worker with GPT-Live support, and that worker's OpenAI project
 must have GPT-Live access. A model appearing in `GET /models` confirms the
 API surface; a real call verifies worker configuration and provider access.
-Do not substitute a `livekit:` prefix unless your deployment advertises
-that model. GPT-Live handovers restart the agent stack and carry transcript
+To run a set on LiveKit, change the voice member to
+`livekit:openai/gpt-live-1` if your deployment advertises it. GPT-Live handovers restart the agent stack and carry transcript
 context into the new agent; ordinary worker transfer restrictions still
 apply.
 

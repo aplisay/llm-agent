@@ -24,7 +24,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [prompt-metadata.md](prompt-metadata.md) | Stating call facts (date/time, caller number, seeded data) in the agent's prompt |
 | [uninterruptible-greetings.md](uninterruptible-greetings.md) | Barge-in control for opening prompts |
 | [auxiliary-stt.md](auxiliary-stt.md) | Side STT engines: a second opinion on the caller (`options.stt.aux` → `user-aux`, `stt-aux`) and an audit of what the agent actually said (`options.tts.output` → `agent-speech`, `stt-output`) |
-| [custom-voices.md](custom-voices.md) | Custom voices an organisation creates: OpenAI prompt voices on GPT-Live, ownership, quota, and the planned recording and other-vendor methods |
+| [custom-voices.md](custom-voices.md) | Custom voices an organisation creates: OpenAI prompt voices on GPT-Live. Create, wait for, use and delete a voice; quota and permissions |
 | [tts-speed.md](tts-speed.md) | Speaking rate (`options.tts.speed`): the multiplier, and how each vendor and model applies it |
 | [ultravox-vendor-specific-options.md](ultravox-vendor-specific-options.md) | Ultravox model variants and tuning options |
 | [agent-concurrency-limits.md](agent-concurrency-limits.md) | Per-agent/user/organisation concurrency caps |
@@ -75,4 +75,4 @@ Index of the docs in this directory. Start with the first table if you're new; t
 ## Working documents
 
 Design plans and internal records — useful history, not user documentation:
-[implementation/](implementation/) (auth, RBAC, users API and rate-card plans) · [release-notes/](release-notes/) · [plan-recording-rest-and-options.md](plan-recording-rest-and-options.md) · [CONTEXT.md](CONTEXT.md) (contributor/agent onboarding).
+[implementation/](implementation/) (auth, RBAC, users API, rate-card plans and custom voices) · [release-notes/](release-notes/) · [plan-recording-rest-and-options.md](plan-recording-rest-and-options.md) · [CONTEXT.md](CONTEXT.md) (contributor/agent onboarding).

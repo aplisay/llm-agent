@@ -38,7 +38,7 @@ function makeRes() {
   };
 }
 
-const GPT_LIVE = 'pipecat:openai/gpt-live-1';
+const GPT_LIVE_ROWS = ['pipecat:openai/gpt-live-1', 'livekit:openai/gpt-live-1'];
 const REALTIME = 'pipecat:openai/gpt-realtime';
 
 describe('GPT-Live voices endpoints', () => {
@@ -65,13 +65,13 @@ describe('GPT-Live voices endpoints', () => {
     return res;
   };
 
-  test('the row offers the locale-neutral `any` locale as a realtime stack', async () => {
+  test.each(GPT_LIVE_ROWS)('%s offers the locale-neutral `any` locale as a realtime stack', async (GPT_LIVE) => {
     const res = await locales(GPT_LIVE);
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ locales: ['any'], voiceStack: 'realtime' });
   });
 
-  test('lists the GPT-Live voice set under OpenAI and nothing else', async () => {
+  test.each(GPT_LIVE_ROWS)('%s lists the GPT-Live voice set under OpenAI and nothing else', async (GPT_LIVE) => {
     const res = await voices(GPT_LIVE, 'any');
     expect(res.statusCode).toBe(200);
     expect(res.body.voiceStack).toBe('realtime');
@@ -91,7 +91,7 @@ describe('GPT-Live voices endpoints', () => {
     }
   });
 
-  test('any requested locale falls back to the `any` list', async () => {
+  test.each(GPT_LIVE_ROWS)('%s: any requested locale falls back to the `any` list', async (GPT_LIVE) => {
     const gb = await voices(GPT_LIVE, 'en-GB');
     expect(gb.statusCode).toBe(200);
     expect(gb.body.vendors.OpenAI.map((v) => v.name)).toEqual(OPENAI_LIVE_VOICES.map((v) => v.name));
@@ -108,9 +108,11 @@ describe('GPT-Live voices endpoints', () => {
     const gb = await voices(REALTIME, 'en-GB');
     expect(Object.keys(gb.body.vendors).sort()).toEqual(['OpenAI', 'elevenlabs']);
     expect(gb.body.vendors.elevenlabs.map((v) => v.name)).toEqual(['Rachel']);
-    // The GPT-Live row never offers the discrete catalogue.
-    const gpt = await voices(GPT_LIVE, 'en-GB');
-    expect(Object.keys(gpt.body.vendors)).toEqual(['OpenAI']);
+    // The GPT-Live rows never offer the discrete catalogue.
+    for (const row of GPT_LIVE_ROWS) {
+      const gpt = await voices(row, 'en-GB');
+      expect(Object.keys(gpt.body.vendors)).toEqual(['OpenAI']);
+    }
   });
 
   test('rejects a model name without a handler and an unknown handler', async () => {

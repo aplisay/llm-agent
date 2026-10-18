@@ -25,6 +25,7 @@ import { sipAttribute } from "./sip-attributes.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { createConsultSession } from "./voice-session-factory.js";
+import { gptLiveUsageBackend } from "./gpt-live-model.js";
 import type { ParticipantInfo, SipParticipant, TransferArgs, VoiceAgent } from "./types.js";
 import type { Agent, Call, Instance } from "./api-client.js";
 import {
@@ -1242,7 +1243,9 @@ Be helpful, informal, but respectful and concise as if talking to a colleague in
     // from it. Per-session, so it never double-counts the primary call's usage.
     const consultUsageMeter = makeUsageMeter({
       getCall: () => context.getConsultCall(),
-      usageVendors: resolveUsageVendors(speech.agent, speech.modelName),
+      usageVendors: resolveUsageVendors(speech.agent, speech.modelName, {
+        llmBackend: gptLiveUsageBackend(consultLlm),
+      }),
       voiceMode: resolveVoiceMode(speech.modelName, speech.agent.options),
       textOutput: transferSession.tts !== undefined,
       fallbackDetail: speech.modelName,

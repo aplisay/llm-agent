@@ -19,6 +19,7 @@ import {
   saveUsage,
   getInternalAgentById,
   setBeforeCallEnd,
+  invokeSubagent,
 } from "./api-client.js";
 import type { Agent, Call } from "./api-client.js";
 import { createUserTurnClock } from "./user-turn-clock.js";
@@ -50,6 +51,13 @@ import {
 import { resolveUsageVendors } from "./usage-vendors.js";
 import type { UsageVendors, VendorDetail } from "./usage-vendors.js";
 import { makeMetricsMeter } from "./usage-meter.js";
+import {
+  greetingOpeningInstruction,
+  isGptLiveModelName,
+  prepareGptLive,
+  type GptLivePrepared,
+} from "./gpt-live.js";
+import { attachClientDelegation, gptLiveUsageBackend, liveSessionOf } from "./gpt-live-model.js";
 import {
   armAuxStt,
   parseAuxSttOption,
@@ -633,8 +641,8 @@ export async function runAgentWorker({
   >();
   // Canonical {vendor, detail} per technology from the configured services, so
   // rows carry the real vendor even on the LiveKit-Inference path (whose metric
-  // label is vendor-blind, e.g. "inference.TTS"). Re-resolved for the incoming
-  // agent and model at a full-stack handover.
+  // label is vendor-blind, e.g. "inference.TTS"). Resolved again when a session is built:
+  // GPT-Live's llm rows are its backend model's, and a full-stack handover changes model.
   let usageVendors = resolveUsageVendors(agent, modelName);
   const addMeter = (
     technology: string,
@@ -1242,6 +1250,10 @@ export async function runAgentWorker({
     if (targetModelName !== activeModelName) {
       return false;
     }
+    // GPT-Live fixes its instructions and backend at session start.
+    if (isGptLiveModelName(activeModelName)) {
+      return false;
+    }
     const voiceMode =
       resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options);
     const isUltravoxRealtime =
@@ -1490,7 +1502,8 @@ export async function runAgentWorker({
       // The factory reads instructions/voice/options from the agent def, so
       // hand it the composed handover prompt in place of the raw one.
       const agentForSession: Agent = { ...newAgentDef, prompt: instructions };
-      const tools = buildTools(newAgentDef);
+      const gptLive = await prepareGptLiveFor(newAgentDef, targetModelName);
+      const tools = gptLive?.tools ?? buildTools(newAgentDef);
       // The caller was greeted when the call started, so the incoming agent
       // opens from a platform instruction, not its greeting: the hand-back
       // instruction after a human hand-back, else the handover instruction.
@@ -1505,7 +1518,11 @@ export async function runAgentWorker({
           vad,
           // On Ultravox the new call opens from it (firstSpeakerSettings).
           opening,
+          gptLive,
         });
+      usageVendors = resolveUsageVendors(newAgentDef, targetModelName, {
+        llmBackend: gptLiveUsageBackend(newSession.llm),
+      });
       wireHandoverSession(newSession, newAgentDef);
       providerEnded.arm(newSession, { callId: newCall.id, modelName: targetModelName });
 
@@ -1545,6 +1562,7 @@ export async function runAgentWorker({
         record: false,
         inputOptions: { closeOnDisconnect: true },
       });
+      attachGptLiveDelegation(newModel, gptLive, newAgentDef, newCall);
       // The incoming agent's own side-STT options apply from here (a takeover
       // also re-arms them: the caller is talking to an agent again).
       armAuxSttFor(newAgentDef);
@@ -1787,6 +1805,51 @@ export async function runAgentWorker({
       onToolInvoked: () => userTurnClock.noteResponseStarted(),
     });
 
+  // GPT-Live resolves its delegate (a text agent) before the session is built. See gpt-live.ts.
+  const prepareGptLiveFor = async (
+    agentDef: Agent,
+    forModelName: string,
+  ): Promise<GptLivePrepared | undefined> =>
+    isGptLiveModelName(forModelName)
+      ? await prepareGptLive({
+          agent: agentDef,
+          metadata,
+          organisationId: agentDef.organisationId,
+          buildTools,
+          fetchAgent: getInternalAgentById,
+          log: logger,
+        })
+      : undefined;
+
+  // Client delegation answers through the subagent endpoint; it needs the running session.
+  const attachGptLiveDelegation = (
+    model: voice.Agent,
+    prepared: GptLivePrepared | undefined,
+    agentDef: Agent,
+    forCall: Call,
+  ): void => {
+    if (prepared?.spec.mode !== "client") return;
+    const live = liveSessionOf(model);
+    if (!live) {
+      logger.warn({ callId: forCall.id }, "GPT-Live: no live session to take client delegations");
+      return;
+    }
+    const delegate = prepared.spec.agent;
+    attachClientDelegation(live, {
+      delegateName: delegate.name || delegate.id,
+      history: () =>
+        conversationHistory.map(({ role, text }) => ({
+          role: role === "user" ? ("user" as const) : ("assistant" as const),
+          text,
+        })),
+      invoke: (task) =>
+        invokeSubagent(delegate.id, { task }, metadata, {
+          organisationId: agentDef.organisationId,
+          callId: forCall.id,
+        }),
+    });
+  };
+
   // Give the worker's hangup latch a way to close the call itself. Registered
   // before the session starts so a hangup on the very first turn is covered,
   // and cleared in cleanupAndClose alongside registerBridgedTakeover.
@@ -1834,7 +1897,8 @@ export async function runAgentWorker({
     await withTimeout(
       async () => {
         operation = "createTools";
-        const tools = buildTools(agent);
+        const gptLive = await prepareGptLiveFor(agent, modelName);
+        const tools = gptLive?.tools ?? buildTools(agent);
 
         operation = "createModel";
         const maxDurationString: string = agent?.options?.maxDuration || "305s";
@@ -1871,7 +1935,13 @@ export async function runAgentWorker({
           call,
           tools,
           vad,
+          gptLive,
         });
+        if (gptLive) {
+          usageVendors = resolveUsageVendors(agent, modelName, {
+            llmBackend: gptLiveUsageBackend(builtSession.llm),
+          });
+        }
         /** Skip echo of opening user line (Ultravox) and empty STT placeholders. */
         const initialUserTranscriptToSkip =
           agent.options?.vendorSpecific?.ultravox?.firstSpeakerSettings?.user?.fallback?.text?.trim() ??
@@ -2102,6 +2172,7 @@ export async function runAgentWorker({
           "timing: session.start done",
         );
         logger.info({ callId: call.id }, "session started");
+        attachGptLiveDelegation(model, gptLive, agent, call);
 
         // Side STTs, each only if configured: the auxiliary ("second opinion")
         // STT on the caller's track, and the output audit on the session's output.
@@ -2176,6 +2247,8 @@ export async function runAgentWorker({
         !invalidGreeting &&
         !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/"));
 
+      const gptLive = isGptLiveModelName(modelName);
+
       if (wantGreeting && session) {
         const waitForPlayout = true;
 
@@ -2187,7 +2260,9 @@ export async function runAgentWorker({
         // - temporarily setting OpenAI server `turn_detection.interrupt_response=false` so the provider won't
         //   truncate on user VAD during the greeting,
         // then restoring both after playout.
-        if (isOpenAIRealtime(voiceMode, modelName)) {
+        // GPT-Live takes only the flip: the SDK then sends silence for the caller's audio while the
+        // greeting plays, which is the Pipecat worker's greeting guard (docs/gpt-live.md).
+        if (isOpenAIRealtime(voiceMode, modelName) || gptLive) {
           try {
             const interruption = (session as any).sessionOptions?.turnHandling?.interruption;
             if (interruption) {
@@ -2199,7 +2274,7 @@ export async function runAgentWorker({
             }
 
             const rt = (session as any).activity?.realtimeLLMSession;
-            const td = rt?.oaiRealtimeModel?._options?.turnDetection;
+            const td = gptLive ? undefined : rt?.oaiRealtimeModel?._options?.turnDetection;
             if (rt?.sendEvent && td && typeof td === "object") {
               const prevInterruptResponse =
                 (td as any).interrupt_response ?? true;
@@ -2246,7 +2321,18 @@ export async function runAgentWorker({
           }
         }
 
-        if (text) {
+        if (gptLive) {
+          const handle = await (session as any).generateReply({
+            instructions: greetingOpeningInstruction(agent),
+          });
+          if (waitForPlayout && handle?.waitForPlayout) {
+            await handle.waitForPlayout();
+          }
+          const audioOut = (session as any).output?.audio;
+          if (waitForPlayout && audioOut?.waitForPlayout) {
+            await audioOut.waitForPlayout();
+          }
+        } else if (text) {
           const handle = speakGreetingText(session, text, {
             voiceMode,
             modelName,
@@ -2304,6 +2390,10 @@ export async function runAgentWorker({
           },
           "invalid greeting config: set only one of options.greeting.text or options.greeting.instructions",
         );
+      }
+      // GPT-Live waits to be asked: without a greeting it opens with the platform default.
+      if (!wantGreeting && gptLive && session) {
+        (session as any).generateReply({ instructions: greetingOpeningInstruction(agent) });
       }
     } catch (e) {
       if (startup.failure) throw e;

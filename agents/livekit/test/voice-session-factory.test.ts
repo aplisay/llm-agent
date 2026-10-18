@@ -6,6 +6,7 @@ import * as ultravox from "../plugins/ultravox/src/index.js";
 import { buildRealtimeLlmOptions, getRealtimePlugin } from "../lib/voice-session-factory.js";
 import { OpenAIRealtimeModel } from "../lib/openai-realtime.js";
 import { LIVEKIT_REALTIME_MODEL_ROWS } from "../lib/livekit-model-registry.js";
+import { isGptLiveModelName } from "../lib/gpt-live.js";
 import { HANDOVER_OPENING_INSTRUCTION, TAKEOVER_OPENING_INSTRUCTION } from "../lib/handover-opening.js";
 
 // Covers the portable-option → RealtimeModel options mapping for realtime models:
@@ -364,6 +365,8 @@ test("openai and ultravox rows still resolve to their plugin's RealtimeModel", (
 test("every realtime row in the registry resolves to a RealtimeModel", () => {
   for (const [vendor, model] of LIVEKIT_REALTIME_MODEL_ROWS) {
     const modelName = `livekit:${vendor}/${model}`;
+    // GPT-Live is a duplex model with its own branch in the factory (gpt-live-session.test.ts).
+    if (isGptLiveModelName(modelName)) continue;
     assert.equal(
       typeof getRealtimePlugin(modelName).realtime?.RealtimeModel,
       "function",

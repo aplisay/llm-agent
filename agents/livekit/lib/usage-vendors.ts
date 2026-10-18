@@ -40,8 +40,15 @@ export function fromServiceString(s: string | undefined): VendorDetail {
  * empty mapping rather than throwing — the caller then falls back to the SDK
  * label. Realtime agents bundle STT+TTS so those meters never fire; resolving
  * their pipeline defaults is harmless.
+ *
+ * `llmBackend` replaces the model's own `llm` entry: GPT-Live's tokens are its
+ * backend model's (gpt-live-model.ts), not `openai/gpt-live-1`'s.
  */
-export function resolveUsageVendors(agent: Agent, modelName: string): UsageVendors {
+export function resolveUsageVendors(
+  agent: Agent,
+  modelName: string,
+  { llmBackend }: { llmBackend?: VendorDetail } = {},
+): UsageVendors {
   const safe = <T>(fn: () => T): T | undefined => {
     try {
       return fn();
@@ -51,9 +58,11 @@ export function resolveUsageVendors(agent: Agent, modelName: string): UsageVendo
   };
   // LLM: "livekit:<plugin>/<model>" -> vendor=<plugin>, detail="<plugin>/<model>".
   const m = /^livekit:([^/]+)\/(.+)$/.exec(modelName || "");
-  const llm: VendorDetail = m
-    ? { vendor: m[1]!.toLowerCase(), detail: `${m[1]!.toLowerCase()}/${m[2]}` }
-    : {};
+  const llm: VendorDetail = llmBackend
+    ? llmBackend
+    : m
+      ? { vendor: m[1]!.toLowerCase(), detail: `${m[1]!.toLowerCase()}/${m[2]}` }
+      : {};
   const tts = safe(() => fromServiceString(resolvePipelineTts(agent))) || {};
   const stt = safe(() => fromServiceString(resolvePipelineStt(agent))) || {};
   return { llm, tts, stt };

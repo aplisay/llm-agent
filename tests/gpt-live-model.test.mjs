@@ -4,6 +4,7 @@ import PipecatModel, {
   pipecatModelSupportsDelegation,
   pipecatModelSupportsExternalTts,
 } from '../lib/models/pipecat.js';
+import LivekitModel, { livekitModelIdFlags } from '../lib/models/livekit.js';
 import {
   filterVoiceTreeBySearch,
   gptLiveTranscriptTtsEnabled,
@@ -33,6 +34,7 @@ import {
  */
 
 const GPT_LIVE = 'pipecat:openai/gpt-live-1';
+const LIVEKIT_GPT_LIVE = 'livekit:openai/gpt-live-1';
 const VOICE_A = '11111111-1111-4111-8111-111111111111';
 const TEXT_B = '22222222-2222-4222-8222-222222222222';
 
@@ -99,6 +101,28 @@ describe('GPT-Live roster row', () => {
   });
 });
 
+describe('GPT-Live LiveKit row', () => {
+  test('is a realtime row with delegation and without external TTS', () => {
+    expect(livekitModelIdFlags['openai/gpt-live-1']).toEqual({
+      voiceStack: 'realtime', audioModel: true, pipeline: false, externalTts: false, delegation: true,
+    });
+    expect(modelSupportsDelegation(LIVEKIT_GPT_LIVE)).toBe(true);
+    expect(modelSupportsExternalTts(LIVEKIT_GPT_LIVE)).toBe(false);
+    expect(livekitModelIdFlags['openai/gpt-realtime']).toMatchObject({ externalTts: true });
+    expect(livekitModelIdFlags['openai/gpt-realtime'].delegation).toBeUndefined();
+    expect(isMinuteBilledModel(LIVEKIT_GPT_LIVE)).toBe(true);
+  });
+
+  test('allModels carries the same flags the handler exposes as hasDelegation', () => {
+    const row = LivekitModel.allModels.find(([id]) => id === 'openai/gpt-live-1');
+    expect(row).toBeDefined();
+    expect(row[1]).toBe('OpenAI GPT-Live (Livekit realtime)');
+    expect(row[2]).toMatchObject({ delegation: true, externalTts: false });
+    const flagged = LivekitModel.allModels.filter(([, , flags]) => flags.delegation === true).map(([id]) => id);
+    expect(flagged).toEqual(['openai/gpt-live-1']);
+  });
+});
+
 describe('GPT-Live voices', () => {
   // The handler's merged catalogue: the OpenAI Realtime list plus other vendors.
   const Handler = {
@@ -121,8 +145,8 @@ describe('GPT-Live voices', () => {
     expect(Object.keys(openaiLiveVoiceTree().OpenAI)).toEqual(['any']);
   });
 
-  test('a GPT-Live row validates voices against the GPT-Live list, not the Realtime list', async () => {
-    const names = await getVoiceNamesForAgentValidation({ modelName: GPT_LIVE, Handler, voicesInstance });
+  test.each([GPT_LIVE, LIVEKIT_GPT_LIVE])('%s validates voices against the GPT-Live list, not the Realtime list', async (modelName) => {
+    const names = await getVoiceNamesForAgentValidation({ modelName, Handler, voicesInstance });
     expect(names.has('marin')).toBe(true);
     expect(names.has('cedar')).toBe(true);
     expect(names.has('alloy')).toBe(true);
@@ -141,8 +165,8 @@ describe('GPT-Live voices', () => {
     expect(names.has('marin')).toBe(false);
   });
 
-  test('the only TTS vendor a GPT-Live row accepts is openai', async () => {
-    const vendors = await getTtsVendorsForAgentValidation({ modelName: GPT_LIVE, Handler, voicesInstance });
+  test.each([GPT_LIVE, LIVEKIT_GPT_LIVE])('the only TTS vendor %s accepts is openai', async (modelName) => {
+    const vendors = await getTtsVendorsForAgentValidation({ modelName, Handler, voicesInstance });
     expect([...vendors]).toEqual(['openai']);
   });
 

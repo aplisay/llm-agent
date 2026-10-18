@@ -35,6 +35,7 @@ function makeRes(user) {
 }
 
 const GPT_LIVE = 'pipecat:openai/gpt-live-1';
+const LIVEKIT_GPT_LIVE = 'livekit:openai/gpt-live-1';
 const REALTIME = 'pipecat:openai/gpt-realtime';
 const PROMPT = 'A warm, unhurried woman in her forties with a soft southern English accent, at a relaxed pace.';
 
@@ -185,8 +186,10 @@ describe('custom voices', () => {
     expect(res.headers.Location).toBe(`/api/custom-voices/${res.body.id}`);
     expect(res.body).toMatchObject({
       name: 'Concierge', vendor: 'openai', method: 'prompt', locale: 'en-GB', gender: 'female',
-      prompt: PROMPT, status: 'creating', voice: null, models: [GPT_LIVE],
+      prompt: PROMPT, status: 'creating', voice: null,
     });
+    // One OpenAI voice serves both GPT-Live rows.
+    expect([...res.body.models].sort()).toEqual([LIVEKIT_GPT_LIVE, GPT_LIVE]);
 
     // A poll while OpenAI works; the slot is already taken.
     expect((await getOne(ownerA, res.body.id)).body.status).toBe('creating');
@@ -504,6 +507,20 @@ describe('custom voices', () => {
     const realtime = makeRes(ownerA);
     await createAgent(makeReq({ body: { ...agentBody, modelName: REALTIME } }), realtime);
     expect(realtime.statusCode).toBe(400);
+  });
+
+  test('GPT-Live on LiveKit takes the same custom voices as the Pipecat row', async () => {
+    const voice = (await createVoice(ownerA, { name: 'lk', prompt: PROMPT }, { modelName: LIVEKIT_GPT_LIVE })).voice;
+    expect(voice).toMatchObject({ status: 'ready', vendor: 'openai' });
+    const listed = (await getVoices(ownerA, 'en-GB', LIVEKIT_GPT_LIVE)).body.vendors.OpenAI;
+    expect(listed[0]).toMatchObject({ name: voice.voice, custom: true, label: 'lk' });
+    for (const modelName of [LIVEKIT_GPT_LIVE, GPT_LIVE]) {
+      const res = makeRes(ownerA);
+      await createAgent(makeReq({
+        body: { name: 'Live', modelName, prompt: 'Be helpful.', options: { tts: { voice: voice.voice } } },
+      }), res);
+      expect(res.statusCode).toBe(200);
+    }
   });
 
   test('the worker fetch carries the voice id and prompt, and drops them after a delete', async () => {

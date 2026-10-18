@@ -36,7 +36,7 @@
  * generic `builtin` so consumers can surface agent-to-agent delegation as its
  * own category (the polite.ai calls drawer renders it as an AGENT row).
  */
-export type ToolKind = "function" | "builtin" | "mcp" | "subagent";
+export type ToolKind = "function" | "builtin" | "mcp" | "subagent" | "delegate";
 
 /** Minimal structural logger type so this stays decoupled from pino's exports. */
 interface ToolLogger {
