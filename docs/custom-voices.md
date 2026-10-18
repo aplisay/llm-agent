@@ -54,7 +54,7 @@ It returns `202` at once, with a `Location` header and the voice in
 ```
 
 OpenAI then makes the voice in the background. That takes about 20 seconds
-(21 s in a test on 2026-10-18). Poll the voice every few seconds until
+(16 s and 21 s in two tests on 2026-10-18). Poll the voice every few seconds until
 `status` is `ready` or `failed`:
 
 ```bash
