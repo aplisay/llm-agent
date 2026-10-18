@@ -125,9 +125,8 @@ Rules from OpenAI:
 - Do not ask for the voice of a named person or fictional character. OpenAI
   rejects these prompts, and the API returns `400`.
 
-Each successful request makes a new voice and uses a quota slot. Write the
-prompt carefully before you send it, because a deleted OpenAI voice still
-counts (see [Quota](#quota)).
+Each successful request makes a new voice and uses a quota slot until the
+voice is deleted (see [Quota](#quota)).
 
 ## Where the voice is listed
 
@@ -233,8 +232,9 @@ Query parameters:
 
 ### Delete
 
-`DELETE /api/custom-voices/{customVoiceId}` marks the voice deleted. It
-leaves the voice lists, and no agent can be saved with it.
+`DELETE /api/custom-voices/{customVoiceId}` deletes the voice at OpenAI, then
+marks it deleted here. It leaves the voice lists, no agent can be saved with
+it, and it stops counting against the quota.
 
 - While an agent of the organisation still uses the voice, the delete is
   refused with `409`, `code: "custom_voice_in_use"` and the `agents` that use
@@ -242,8 +242,27 @@ leaves the voice lists, and no agent can be saved with it.
   delete those agents speak with the default voice until their voice is
   changed.
 - A voice still being created cannot be deleted (`409`).
-- OpenAI has no call to delete a voice. The voice stays in the platform's
-  OpenAI organisation, and it still counts against the quota.
+- If OpenAI cannot delete the voice, the delete returns `502` (or `503` when
+  OpenAI is busy) and nothing changes here. Try again later.
+- A voice OpenAI no longer has is deleted here as normal.
+- A failed voice has nothing at OpenAI, so it is deleted here only.
+
+### Deleting at OpenAI
+
+OpenAI's API reference and its SDK (`openai` 7.38.0) list only a create call
+for voices. The API does serve `DELETE /v1/audio/voices/{voice_id}`: on
+2026-10-18 it answered a made-up id with "No voice found with id ...", not
+with an unknown-route error. `GET /v1/audio/voices` also answers, with a list.
+
+Because these calls are not documented:
+
+- OpenAI may change them without notice.
+- OpenAI has not confirmed that a delete frees one of the 100 slots
+  (see [The platform-wide cap](#the-platform-wide-cap)).
+- The server treats any 2xx as deleted. It treats a `404` as already gone
+  only when the message says "No voice found". A `404` can also mean the
+  project has no custom voice access, and then the voice is still there.
+- The row keeps OpenAI's reply under `vendor_data.deletion`, for audit.
 
 There is no rename yet.
 
@@ -268,13 +287,9 @@ The `voice` RBAC resource has three actions:
 Each organisation has `customVoiceLimit`: the most custom voices it may hold.
 The default is **3**. `null` means no limit.
 
-`used` counts:
-
-- voices being created or ready;
-- deleted voices the vendor still holds. OpenAI cannot delete a voice, so
-  every deleted OpenAI voice counts for ever.
-
-Failed voices do not count.
+`used` counts voices being created or ready. Failed and deleted voices do not
+count. (For a future vendor with no delete call, its deleted voices would
+still count, because the vendor still holds them.)
 
 Only the platform can change the quota, because the vendor's limit is shared
 by every customer:
@@ -293,8 +308,10 @@ OpenAI allows **100 prompt voices per OpenAI organisation**, and Aplisay's
 OpenAI organisation serves every customer. On top of the per-organisation
 quota, the server refuses a new OpenAI prompt voice with `503`
 (`code: "custom_voice_platform_limit"`) once the platform holds as many as
-`OPENAI_PROMPT_VOICE_PLATFORM_LIMIT` (default 100). Deleted OpenAI voices
-count here too.
+`OPENAI_PROMPT_VOICE_PLATFORM_LIMIT` (default 100). Deleted voices do not
+count, on the basis that OpenAI's delete frees the slot. If it turns out not
+to, OpenAI will refuse new voices before this cap is reached, and the API
+passes OpenAI's error on.
 
 The quota check and the new row are written under one Postgres advisory lock,
 so two requests cannot both take the last slot. The OpenAI call runs after
@@ -304,8 +321,8 @@ that, outside any transaction.
 
 For operators.
 
-- `OPENAI_API_KEY` on the API server makes the voices. It must be a
-  **project-scoped** key with the `api.voices.write` scope, on a project
+- `OPENAI_API_KEY` on the API server makes and deletes the voices. It must
+  be a **project-scoped** key with the `api.voices.write` scope, on a project
   that OpenAI has approved for GPT-Live and custom voices.
 - The Pipecat worker's `OPENAI_API_KEY` speaks with them. It must be a key of
   the **same OpenAI project**, with `api.voices.read`. A voice belongs to the
@@ -351,7 +368,10 @@ missing, so a deployment that is not force-synced still gets them.
 - No rename.
 - If the request to OpenAI times out, the voice is marked failed. OpenAI may
   still have made it, in which case it holds one of the 100 slots without a
-  ready row here.
+  ready row here. `GET /v1/audio/voices` could find such voices; nothing uses
+  it yet.
+- The delete call at OpenAI is not documented (see
+  [Deleting at OpenAI](#deleting-at-openai)).
 
 ## Other options
 
@@ -365,8 +385,8 @@ method it supports:
 
 - which models can speak a voice made that way (`supportsModel`);
 - the function that creates the voice;
-- whether a delete at our end frees the vendor's slot (`releasesOnDelete`),
-  and the call that does so;
+- the call that deletes the voice at the vendor (`deleteVoice`), when the
+  vendor has one;
 - the platform-wide cap and its environment variable.
 
 The create endpoint stays the same: `POST /models/{modelName}/voices/{locale}`
@@ -455,9 +475,10 @@ Points from this that shape the design:
   `POST /api/custom-voices/{customVoiceId}/choose` with the chosen preview
   that saves it and moves the row to `ready`. Only the saved voice should use
   quota.
-- **Deletes that free a slot.** Every vendor except OpenAI (voices) and Google
-  can delete. For those, `releasesOnDelete: true` and the driver's delete call
-  run on `DELETE /api/custom-voices/{id}`, and a deleted voice stops counting.
+- **Deletes that free a slot.** Every vendor here except Google can delete a
+  voice. The driver's `deleteVoice` runs on `DELETE /api/custom-voices/{id}`,
+  and a deleted voice stops counting. A vendor with no delete call leaves out
+  `deleteVoice`, and its deleted voices keep counting.
 - **Consent.** Only OpenAI and Google check consent in the API. For every clip
   clone, whatever the vendor, the API should ask the caller to confirm they
   have the speaker's consent and store that with the row.

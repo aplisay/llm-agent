@@ -1780,8 +1780,8 @@ components:
         used:
           type: integer
           description: |-
-            Voices being created or ready, plus deleted voices the vendor still holds (every deleted
-            OpenAI voice, as OpenAI has no delete call).
+            Voices being created or ready. Deleted voices do not count once the vendor has deleted
+            them (OpenAI voices are deleted at OpenAI).
           example: 1
         remaining:
           type: integer

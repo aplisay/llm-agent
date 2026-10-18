@@ -53,11 +53,9 @@ export default function (logger) {
 
   del.apiDoc = {
     summary: 'Delete one of the organisation\'s custom voices',
-    description: `Marks the voice deleted: it leaves the voice lists and no agent can be saved with it.
+    description: `Deletes the voice at the vendor (OpenAI), then marks it deleted here: it leaves the voice lists, no agent can be saved with it, and it stops counting against the quota. If the vendor delete fails (502 or 503), nothing changes and the delete can be retried.
 
 Refused with 409 (\`code: custom_voice_in_use\`, with \`agents\`) while an agent of the organisation still uses it. With \`force=true\` it is deleted anyway, and those agents speak with the model's default voice until their voice is changed.
-
-OpenAI has no call to delete a voice. A deleted OpenAI voice stays in the platform's OpenAI organisation and still counts against the quota.
 
 Requires \`voice:delete\`.`,
     operationId: 'deleteCustomVoice',
@@ -76,6 +74,7 @@ Requires \`voice:delete\`.`,
       200: { description: 'The deleted voice', content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoice' } } } },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
       409: { description: 'In use by agents, or still being created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      502: { description: 'The vendor could not delete the voice; it is unchanged', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

@@ -176,7 +176,7 @@ export default function (logger) {
                 type: 'integer',
                 nullable: true,
                 minimum: 0,
-                description: 'Max custom voices the organisation may hold (docs/custom-voices.md); null = unlimited. Deleted OpenAI voices still count.',
+                description: 'Max custom voices the organisation may hold (docs/custom-voices.md); null = unlimited.',
               },
             },
           },

@@ -35,7 +35,7 @@ export default function (logger) {
     summary: 'List the organisation\'s custom voices and quota',
     description: `Returns the custom voices that belong to the caller's organisation, newest first, and the organisation's quota. Create a voice with [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice) (\`docs/custom-voices.md\`).
 
-\`quota.used\` counts voices that are being created or are ready, plus deleted voices the vendor still holds. OpenAI has no call to delete a voice, so a deleted OpenAI voice still counts.
+\`quota.used\` counts voices that are being created or are ready. A deleted voice stops counting once the vendor has deleted it, which OpenAI does.
 
 Requires \`voice:read\`.`,
     operationId: 'listCustomVoices',

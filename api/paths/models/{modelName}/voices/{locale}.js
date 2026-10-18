@@ -131,7 +131,7 @@ The first and only method is \`prompt\`: describe the voice in plain language an
 
 The call waits for the vendor and returns the voice with \`status: "ready"\`. Put its \`voice\` value in an agent's \`options.tts.voice\`. \`GET\` on this path lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
 
-Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). An OpenAI voice counts against it even after it is deleted, because OpenAI has no call to delete a voice. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
+Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
 
 Requires \`voice:create\`.`,
     operationId: 'createModelVoice',

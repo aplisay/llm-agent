@@ -7,9 +7,9 @@ import { randomUUID } from 'crypto';
 /**
  * Custom voices (docs/custom-voices.md): POST /models/{modelName}/voices/{locale}
  * creates an OpenAI prompt voice for GPT-Live; /custom-voices lists, reads and
- * deletes; the voice lists, agent validation and the worker's agent fetch only
- * ever see the caller's own organisation's voices; and the quota holds, deleted
- * OpenAI voices included. OpenAI is a stubbed global fetch.
+ * deletes (at OpenAI too); the voice lists, agent validation and the worker's
+ * agent fetch only ever see the caller's own organisation's voices; and the quota
+ * holds. OpenAI is a stubbed global fetch.
  */
 
 const mockLogger = {
@@ -40,7 +40,7 @@ const mockVoices = { listVoices: async () => ({}) };
 describe('custom voices', () => {
   let voicesByLocale, locales, listCustomVoices, customVoiceItem, agentDbAgent, createAgent, CustomVoice;
   let orgA, orgB, ownerA, ownerB, memberA;
-  let openaiCalls, openaiResponse, savedFetch, savedKey, savedPlatformLimit, seq;
+  let openaiCalls, openaiResponse, openaiDeleteResponse, savedFetch, savedKey, savedPlatformLimit, seq;
 
   const post = async (user, body, { modelName = GPT_LIVE, locale = 'en-GB' } = {}) => {
     const res = makeRes(user);
@@ -98,8 +98,8 @@ describe('custom voices', () => {
     process.env.OPENAI_API_KEY = 'sk-proj-test';
     seq = 0;
     globalThis.fetch = async (url, init) => {
-      openaiCalls.push({ url, init, body: JSON.parse(init.body) });
-      const r = openaiResponse();
+      openaiCalls.push({ url, init, method: init.method, body: init.body ? JSON.parse(init.body) : undefined });
+      const r = init.method === 'DELETE' ? openaiDeleteResponse(url) : openaiResponse();
       return { ok: r.status < 400, status: r.status, json: async () => r.body };
     };
   }, 60000);
@@ -110,6 +110,7 @@ describe('custom voices', () => {
       status: 200,
       body: { object: 'audio.voice', id: `voice_test${++seq}${randomUUID().slice(0, 8)}`, name: 'x', type: 'prompt', created_at: 1, prompt: PROMPT },
     });
+    openaiDeleteResponse = (url) => ({ status: 200, body: { id: url.split('/').pop(), object: 'audio.voice', deleted: true } });
     delete process.env.OPENAI_PROMPT_VOICE_PLATFORM_LIMIT;
     await Agent.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
     await CustomVoice.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
@@ -241,7 +242,7 @@ describe('custom voices', () => {
     expect(listed.body.voices.map((v) => v.status)).toEqual(['failed', 'failed', 'failed']);
   });
 
-  test('enforces the organisation quota, and a deleted OpenAI voice still counts', async () => {
+  test('enforces the organisation quota, and a delete at OpenAI frees the slot', async () => {
     await Organisation.update({ customVoiceLimit: 1 }, { where: { id: orgA.id } });
     const first = await post(ownerA, { name: 'one', prompt: PROMPT });
     expect(first.statusCode).toBe(201);
@@ -250,16 +251,64 @@ describe('custom voices', () => {
     expect(second.statusCode).toBe(409);
     expect(second.body).toMatchObject({ code: 'custom_voice_quota_exceeded', quota: { limit: 1, used: 1, remaining: 0 } });
 
-    expect((await del(ownerA, first.body.id)).statusCode).toBe(200);
+    const deleted = await del(ownerA, first.body.id);
+    expect(deleted.statusCode).toBe(200);
+    const deleteCall = openaiCalls.at(-1);
+    expect(deleteCall.method).toBe('DELETE');
+    expect(deleteCall.url).toBe(`https://api.openai.com/v1/audio/voices/${first.body.voice}`);
+    expect(deleteCall.init.headers.Authorization).toBe('Bearer sk-proj-test');
+    const row = await CustomVoice.findByPk(first.body.id);
+    expect(row.vendorData.deletion).toMatchObject({ alreadyGone: false, response: { deleted: true } });
+
     const third = await post(ownerA, { name: 'three', prompt: PROMPT });
-    expect(third.statusCode).toBe(409);
-    expect(openaiCalls).toHaveLength(1);
+    expect(third.statusCode).toBe(201);
+    expect(openaiCalls.map((c) => c.method)).toEqual(['POST', 'DELETE', 'POST']);
 
     // Another organisation's quota is its own.
     expect((await post(ownerB, { name: 'b', prompt: PROMPT })).statusCode).toBe(201);
 
     await Organisation.update({ customVoiceLimit: null }, { where: { id: orgA.id } });
     expect((await post(ownerA, { name: 'unlimited', prompt: PROMPT })).statusCode).toBe(201);
+  });
+
+  test('a failed delete at OpenAI leaves the voice as it was', async () => {
+    await Organisation.update({ customVoiceLimit: 1 }, { where: { id: orgA.id } });
+    const voice = (await post(ownerA, { name: 'one', prompt: PROMPT })).body;
+
+    openaiDeleteResponse = () => ({ status: 500, body: { error: { message: 'internal detail' } } });
+    const failed = await del(ownerA, voice.id);
+    expect(failed.statusCode).toBe(502);
+    expect(failed.body.message).not.toMatch(/internal detail/);
+
+    // A 404 that is not "no voice found" (for example no custom voice access) does not mean gone.
+    openaiDeleteResponse = () => ({ status: 404, body: { error: { message: 'Your organization does not have access to this endpoint.' } } });
+    expect((await del(ownerA, voice.id)).statusCode).toBe(502);
+
+    openaiDeleteResponse = () => ({ status: 429, body: { error: { message: 'slow down' } } });
+    expect((await del(ownerA, voice.id)).statusCode).toBe(503);
+
+    expect((await getOne(ownerA, voice.id)).body.status).toBe('ready');
+    expect((await list(ownerA)).body.quota).toMatchObject({ used: 1, remaining: 0 });
+  });
+
+  test('a voice OpenAI no longer has is deleted here too', async () => {
+    const voice = (await post(ownerA, { name: 'gone', prompt: PROMPT })).body;
+    openaiDeleteResponse = (url) => ({
+      status: 404,
+      body: { error: { message: `No voice found with id '${url.split('/').pop()}'.`, type: 'invalid_request_error' } },
+    });
+    const res = await del(ownerA, voice.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe('deleted');
+    expect((await CustomVoice.findByPk(voice.id)).vendorData.deletion.alreadyGone).toBe(true);
+  });
+
+  test('a failed voice is deleted without calling OpenAI', async () => {
+    openaiResponse = () => ({ status: 400, body: { error: { message: 'no' } } });
+    const failed = (await post(ownerA, { name: 'x', prompt: PROMPT })).body.voice;
+    openaiCalls = [];
+    expect((await del(ownerA, failed.id)).statusCode).toBe(200);
+    expect(openaiCalls).toHaveLength(0);
   });
 
   test('concurrent creates cannot both take the last slot', async () => {
@@ -272,7 +321,7 @@ describe('custom voices', () => {
   });
 
   test('stops at the platform-wide cap', async () => {
-    const used = await CustomVoice.count({ where: { vendor: 'openai', method: 'prompt', status: ['creating', 'ready', 'deleted'] } });
+    const used = await CustomVoice.count({ where: { vendor: 'openai', method: 'prompt', status: ['creating', 'ready'] } });
     process.env.OPENAI_PROMPT_VOICE_PLATFORM_LIMIT = String(used);
     const res = await post(ownerA, { name: 'x', prompt: PROMPT });
     expect(res.statusCode).toBe(503);
@@ -315,6 +364,7 @@ describe('custom voices', () => {
     expect((await getOne(ownerA, voice.id)).statusCode).toBe(200);
     expect((await getOne(ownerB, voice.id)).statusCode).toBe(404);
     expect((await del(ownerB, voice.id)).statusCode).toBe(404);
+    expect(openaiCalls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
     expect((await getOne(ownerB, 'not-a-uuid')).statusCode).toBe(404);
     expect((await list(ownerB)).body.voices).toEqual([]);
     expect((await list(memberA)).body.voices.map((v) => v.id)).toEqual([voice.id]);
