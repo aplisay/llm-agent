@@ -44,6 +44,10 @@ tags:
     description: |-
       Voices are the list of text to speach (TTS) voices which are available in the engine, again they are
       set at agent creation time, but may also be modified in the course of running an agent.
+
+      An organisation can also create its own custom voices on models that support them, with
+      `POST /models/{modelName}/voices/{locale}`, and manage them under `/custom-voices`. A custom voice
+      belongs to the organisation that created it: no other organisation can list or use it.
   - name: Phone Endpoints
     description: |-
       Phone Endpoints represent routed telephone numbers and other SIP user fields available to an organisation for use with agents.
@@ -1659,6 +1663,140 @@ components:
           type: string
           description: The vendor assigned gender of this voice within the TTS engine
           example: male
+        description:
+          type: string
+          description: Free text about the voice (accent, style); for a custom voice its name and prompt.
+        custom:
+          type: boolean
+          description: Present and true on the caller's organisation's own custom voices.
+        customVoiceId:
+          type: string
+          format: uuid
+          description: The custom voice's id under `/custom-voices` (custom voices only).
+        label:
+          type: string
+          description: The custom voice's display name (custom voices only); `name` is its vendor id.
+        locale:
+          type: string
+          description: The locale a custom voice was made for, when it is not `any`.
+    CustomVoiceCreateInput:
+      type: object
+      description: A custom voice to create. See `docs/custom-voices.md`.
+      properties:
+        method:
+          type: string
+          enum: [prompt, recording]
+          default: prompt
+          description: |-
+            How the voice is made. `prompt`: the vendor generates a voice from a text description.
+            `recording` (a voice cloned from a short clip) is reserved and returns 501 for now.
+        vendor:
+          type: string
+          description: |-
+            The vendor to create the voice at. Optional: defaults to the only vendor that can make this
+            kind of voice for the model (`openai` for GPT-Live).
+          example: openai
+        name:
+          type: string
+          maxLength: 100
+          description: Display name. Shown in voice lists; not sent to callers.
+          example: Brighton concierge
+        prompt:
+          type: string
+          maxLength: 2000
+          description: |-
+            Plain-language description of the voice (method `prompt`): accent, age, presentation, pitch,
+            timbre, texture, loudness, speech rate, distinctiveness. Describe an adult voice. Do not ask
+            to imitate a named person or character: the vendor rejects it.
+          example: A warm, unhurried woman in her forties with a soft southern English accent, mid-low pitch, clear and friendly, at a relaxed pace.
+        scriptHint:
+          type: string
+          maxLength: 2000
+          description: |-
+            Optional sample text for the vendor to speak while it builds the voice. If omitted, the
+            vendor writes one from the prompt. Very short scripts are rejected.
+        gender:
+          type: string
+          enum: [male, female, neutral]
+          description: Optional label for voice lists and search.
+      required: [name, prompt]
+    CustomVoice:
+      type: object
+      description: A voice the organisation created. Only that organisation can see or use it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        vendor:
+          type: string
+          example: openai
+        method:
+          type: string
+          enum: [prompt, recording]
+        voice:
+          type: string
+          nullable: true
+          description: |-
+            The vendor's voice id. Put this in an agent's `options.tts.voice`. Null until the voice is ready.
+          example: voice_123abc
+        locale:
+          type: string
+          example: en-GB
+        gender:
+          type: string
+          nullable: true
+        prompt:
+          type: string
+          nullable: true
+          description: The description the voice was made from (method `prompt`).
+        status:
+          type: string
+          enum: [creating, ready, failed, deleted]
+        error:
+          type: string
+          description: Why the vendor failed (status `failed`).
+        models:
+          type: array
+          items:
+            type: string
+          description: The models this voice can be used on.
+          example: ['pipecat:openai/gpt-live-1']
+        createdAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+    CustomVoiceQuota:
+      type: object
+      properties:
+        limit:
+          type: integer
+          nullable: true
+          description: The organisation's `customVoiceLimit`. Null means no limit.
+          example: 3
+        used:
+          type: integer
+          description: |-
+            Voices being created or ready, plus deleted voices the vendor still holds (every deleted
+            OpenAI voice, as OpenAI has no delete call).
+          example: 1
+        remaining:
+          type: integer
+          nullable: true
+          example: 2
+    CustomVoiceQuotaError:
+      type: object
+      properties:
+        code:
+          type: string
+          example: custom_voice_quota_exceeded
+        message:
+          type: string
+        quota:
+          $ref: "#/components/schemas/CustomVoiceQuota"
     VoiceList:
       type: object
       additionalProperties:

@@ -1,4 +1,5 @@
 import { Instance, Agent } from '../../../lib/database.js';
+import { customVoiceForAgent } from '../../../lib/custom-voices/index.js';
 
 let appParameters, log;
 
@@ -46,7 +47,7 @@ const instanceGet = (async (req, res) => {
     // Return the same structure for both cases
     const result = {
       ...instance.toJSON(),
-      Agent: agent
+      Agent: { ...agent.toJSON(), customVoice: await customVoiceForAgent(agent) }
     };
 
     res.send(result);
@@ -155,6 +156,19 @@ instanceGet.apiDoc = {
                   updatedAt: {
                     type: 'string',
                     format: 'date-time'
+                  },
+                  customVoice: {
+                    type: 'object',
+                    description: 'Present when options.tts.voice is one of the organisation\'s ready custom voices (docs/custom-voices.md)',
+                    properties: {
+                      id: { type: 'string', format: 'uuid' },
+                      vendor: { type: 'string' },
+                      method: { type: 'string' },
+                      voice: { type: 'string' },
+                      name: { type: 'string' },
+                      prompt: { type: 'string', nullable: true },
+                      locale: { type: 'string' }
+                    }
                   }
                 }
               }

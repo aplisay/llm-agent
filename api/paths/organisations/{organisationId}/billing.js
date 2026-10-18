@@ -20,6 +20,9 @@ import { isSafeCallbackUrl } from '../../../../lib/balance-callback.js';
  *          `chargeableNumberLimit` — a client billing service sets it from
  *          whatever package the customer is on, and the direct org-PATCH route
  *          keeps its stricter `organisation:setLimits` gate.
+ *          `customVoiceLimit` caps the org's custom voices (docs/custom-voices.md,
+ *          default 3, null = unlimited), for the same reason; the org-PATCH route
+ *          gates it on `organisation:setRate`.
  *
  * Gated on `organisation:billing` — held by superAdmin and the least-privilege
  * `billingService` role (the client billing system's server-side seam, like
@@ -33,6 +36,7 @@ export default function (logger) {
     billingConfig: org.billingConfig ?? null,
     chargeableNumberLimit: org.chargeableNumberLimit ?? null,
     agentLimit: org.agentLimit ?? null,
+    customVoiceLimit: org.customVoiceLimit ?? null,
   });
 
   const get = async (req, res) => {
@@ -63,11 +67,20 @@ export default function (logger) {
       !('billingBlocked' in body) &&
       !('billingConfig' in body) &&
       !('chargeableNumberLimit' in body) &&
-      !('agentLimit' in body)
+      !('agentLimit' in body) &&
+      !('customVoiceLimit' in body)
     ) {
       return res
         .status(400)
-        .send({ message: 'Provide billingBlocked, billingConfig, chargeableNumberLimit and/or agentLimit' });
+        .send({ message: 'Provide billingBlocked, billingConfig, chargeableNumberLimit, agentLimit and/or customVoiceLimit' });
+    }
+
+    if ('customVoiceLimit' in body) {
+      const limit = body.customVoiceLimit;
+      if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {
+        return res.status(400).send({ message: 'customVoiceLimit must be a non-negative integer or null (unlimited)' });
+      }
+      org.customVoiceLimit = limit;
     }
 
     if ('agentLimit' in body) {
@@ -125,7 +138,7 @@ export default function (logger) {
     return res.send(shape(org));
   };
   update.apiDoc = {
-    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig / chargeableNumberLimit / agentLimit).',
+    summary: 'Set an organisation’s billing controls (billingBlocked / billingConfig / chargeableNumberLimit / agentLimit / customVoiceLimit).',
     operationId: 'updateOrganisationBilling',
     tags: ['Organisations', 'Billing'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],
@@ -158,6 +171,12 @@ export default function (logger) {
                 nullable: true,
                 minimum: 0,
                 description: 'Concurrency cap: max simultaneous calls for the organisation, enforced at call start; null = unlimited, 0 = none allowed. A client billing service sets this alongside the other billing controls.',
+              },
+              customVoiceLimit: {
+                type: 'integer',
+                nullable: true,
+                minimum: 0,
+                description: 'Max custom voices the organisation may hold (docs/custom-voices.md); null = unlimited. Deleted OpenAI voices still count.',
               },
             },
           },

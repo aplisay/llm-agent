@@ -11,7 +11,7 @@ import { defaultRateHistoryEntry } from '../../lib/rates.js';
  *        admin tab org-filter and the (super-admin-only) org-edit modal.
  *   POST create an organisation — superAdmin only (`organisation:create`).
  */
-const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'chargeableNumberLimit', 'role', 'allowedModels', 'permissions'];
+const LIST_ATTRS = ['id', 'name', 'status', 'agentLimit', 'chargeableNumberLimit', 'customVoiceLimit', 'role', 'allowedModels', 'permissions'];
 
 export default function (logger) {
   const list = async (req, res) => {
