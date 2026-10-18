@@ -34,8 +34,8 @@ curl -X POST "https://llm-agent.example.com/api/models/pipecat%3Aopenai%2Fgpt-li
   }'
 ```
 
-The call waits for OpenAI and returns `201`. Expect it to take about 20
-seconds (21 s in a test on 2026-10-18), so a UI should show progress:
+It returns `202` at once, with a `Location` header and the voice in
+`status: "creating"`:
 
 ```json
 {
@@ -43,17 +43,27 @@ seconds (21 s in a test on 2026-10-18), so a UI should show progress:
   "name": "Brighton concierge",
   "vendor": "openai",
   "method": "prompt",
-  "voice": "voice_123abc",
+  "voice": null,
   "locale": "en-GB",
   "gender": "female",
   "prompt": "A warm, unhurried woman in her forties with a soft southern English accent, mid-low pitch, clear and friendly, at a relaxed pace.",
-  "status": "ready",
+  "status": "creating",
   "models": ["pipecat:openai/gpt-live-1"],
   "createdAt": "2026-10-18T10:15:00.000Z"
 }
 ```
 
-Put the `voice` value on a GPT-Live agent:
+OpenAI then makes the voice in the background. That takes about 20 seconds
+(21 s in a test on 2026-10-18). Poll the voice every few seconds until
+`status` is `ready` or `failed`:
+
+```bash
+curl "https://llm-agent.example.com/api/custom-voices/6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+When it is ready, `voice` holds OpenAI's id (`voice_123abc`). Put that value on
+a GPT-Live agent:
 
 ```json
 {
@@ -86,27 +96,68 @@ Body (JSON):
 | `method` | no | `prompt` (the default). `recording` is reserved and returns `501`. |
 | `vendor` | no | Defaults to the only vendor that can make this kind of voice for the model (`openai`). Naming another vendor returns `400`. |
 
-The server checks the input, takes a slot from the quota, then calls OpenAI's
-`POST /v1/audio/voices` with `type: "prompt"`, the `name`, the `prompt`,
-`model: "auto"` and, when given, `script_hint`. When OpenAI answers, the voice
-is stored with `status: "ready"` and OpenAI's voice id in `voice`. OpenAI
-returns no preview audio.
+Before it returns, the server checks the input, takes a slot from the quota
+and stores the voice as `creating`. It returns `202` with the voice and a
+`Location` header (`/api/custom-voices/{id}`). It then calls OpenAI's
+`POST /v1/audio/voices` in the background, with `type: "prompt"`, the
+`prompt`, `model: "auto"` and, when given, `script_hint`. The name sent to
+OpenAI is `aplisay-<id>`, not the customer's name (see
+[How the background create works](#how-the-background-create-works)). When
+OpenAI answers, the voice becomes `ready` with OpenAI's voice id in `voice`.
+OpenAI returns no preview audio.
 
-Errors:
+Errors from `POST` (nothing is created):
 
 | Status | When |
 |---|---|
-| `400` | Bad input, a model with no custom voices, or OpenAI rejected the prompt. OpenAI's reason is passed on (for example, a prompt that names a real person). |
+| `400` | Bad input, or a model with no custom voices. |
 | `403` | The caller lacks `voice:create`, or the model is not in the caller's allowed models. |
 | `409` | The organisation's quota is used up. The body has `code: "custom_voice_quota_exceeded"` and the `quota`. |
 | `501` | `method: "recording"`. |
-| `502` | OpenAI failed or could not be reached. |
-| `503` | OpenAI custom voices are not configured on this platform, OpenAI is refusing new voices (rate or voice limit), or the platform has no slots left (`code: "custom_voice_platform_limit"`). |
+| `503` | OpenAI custom voices are not configured on this platform, or the platform has no slots left (`code: "custom_voice_platform_limit"`). |
 
-When OpenAI fails or rejects the prompt, the voice is kept with
-`status: "failed"` and an `error`, and it does not count against the quota.
-`GET /api/custom-voices` shows failed voices so a UI can explain what
-happened. Delete them to tidy the list.
+Errors from OpenAI arrive later, on the voice: `status: "failed"`, with an
+`error` message and an `errorCode`:
+
+| `errorCode` | Meaning | What to do |
+|---|---|---|
+| `rejected` | OpenAI refused the input, for example a prompt that names a real person. The `error` carries OpenAI's reason. | Change the prompt and create again. |
+| `vendor_unavailable` | OpenAI is refusing new voices for now (rate or voice limit). | Try again later. |
+| `vendor_error` | OpenAI failed or could not be reached. | Try again. |
+| `interrupted` | The server lost the create, and OpenAI has no such voice. | Try again. |
+
+A failed voice does not count against the quota. `GET /api/custom-voices`
+shows failed voices so a UI can explain what happened. Delete them to tidy the
+list.
+
+### How the background create works
+
+The API server runs on Cloud Run with CPU throttling on (staging, checked
+2026-10-18): work left running after a response only gets CPU while another
+request is in flight. A server can also restart in the middle of a create. So
+the server does not trust the background job alone:
+
+1. **The job.** It starts as `POST` returns, and normally finishes in about
+   20 seconds. It gives OpenAI 60 seconds. If no answer comes back (a timeout
+   or a network failure), OpenAI may still have made the voice, so the job
+   leaves it `creating` for the next step to settle.
+2. **The name tag.** The voice is created at OpenAI under the name
+   `aplisay-<id>`, where `<id>` is our voice id. OpenAI's list can then show
+   whether a create that we lost track of did make the voice.
+3. **Polls settle quiet creates.** When `GET /api/custom-voices/{id}` or
+   `GET /api/custom-voices` sees a voice still `creating` after 90 seconds,
+   and no job for it runs in that process, it looks in OpenAI's list
+   (`GET /v1/audio/voices`) during the request. If the voice is there, it
+   becomes `ready`. If it is still not there after 3 minutes, it becomes
+   `failed` with `errorCode: "interrupted"`.
+4. **A sweep.** The server does the same every minute for every
+   organisation's quiet creates, so a voice nobody polls is still settled.
+5. **A create that lands too late.** If OpenAI answers after the voice was
+   marked failed, the voice still becomes `ready`. If the user has deleted it
+   by then, the server deletes the new voice at OpenAI, so it holds no slot.
+
+A voice that is `creating` cannot be deleted (`409`); wait until it is `ready`
+or `failed`.
 
 ### Writing the prompt
 
@@ -372,10 +423,9 @@ missing, so a deployment that is not force-synced still gets them.
 - No preview audio: OpenAI returns none. The only way to hear a voice is a
   call with it.
 - No rename.
-- If the request to OpenAI times out, the voice is marked failed. OpenAI may
-  still have made it, in which case it holds one of the 100 slots without a
-  ready row here. `GET /v1/audio/voices` could find such voices; nothing uses
-  it yet.
+- A voice the user cannot see is made only if OpenAI's list stops answering
+  for 3 minutes while OpenAI also makes the voice. It would then hold one of
+  the 100 slots. Find it by its `aplisay-<id>` name.
 - The delete call at OpenAI is not documented (see
   [Deleting at OpenAI](#deleting-at-openai)).
 

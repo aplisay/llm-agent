@@ -110,9 +110,10 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
       return res.status(403).json({ message: 'model_not_permitted', detail: `Model ${modelName} is not permitted for your account.` });
     }
     try {
-      const voice = await createCustomVoice({ user, modelName, locale, body: req.body || {} });
-      req.log.info({ customVoiceId: voice.id, vendor: voice.vendor, modelName, locale }, 'custom voice created');
-      res.status(201).send(voice);
+      const voice = await createCustomVoice({ user, modelName, locale, body: req.body || {}, log: req.log });
+      req.log.info({ customVoiceId: voice.id, vendor: voice.vendor, modelName, locale }, 'custom voice create started');
+      res.set('Location', `/api/custom-voices/${voice.id}`);
+      res.status(202).send(voice);
     } catch (err) {
       if (err instanceof CustomVoiceError) {
         req.log.warn({ err: err.message, modelName, locale, code: err.extra?.code }, 'custom voice not created');
@@ -129,7 +130,9 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
 
 The first and only method is \`prompt\`: describe the voice in plain language and the vendor generates it. The vendor is the model's own: OpenAI for GPT-Live (\`pipecat:openai/gpt-live-1\`). OpenAI prompt voices work on GPT-Live only.
 
-The call waits for the vendor (about 20 seconds for OpenAI) and returns the voice with \`status: "ready"\`. Put its \`voice\` value in an agent's \`options.tts.voice\`. \`GET\` on this path lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
+The call checks the request, takes a quota slot and returns **202** at once with the voice in \`status: "creating"\` and a \`Location\` header. The vendor then makes the voice in the background (about 20 seconds for OpenAI). Poll [\`GET /custom-voices/{customVoiceId}\`](#operation-getCustomVoice) every few seconds until \`status\` is \`ready\` or \`failed\`. When it is ready, put its \`voice\` value in an agent's \`options.tts.voice\`; \`GET\` on this path then lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
+
+A vendor refusal (for example a prompt that names a real person) or a vendor failure arrives on the voice: \`status: "failed"\`, with \`error\` and \`errorCode\` (\`rejected\`: change the input; \`vendor_unavailable\` or \`vendor_error\`: try again; \`interrupted\`: the server lost the create). A failed voice does not count against the quota.
 
 Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
 
@@ -168,12 +171,13 @@ Requires \`voice:create\`.`,
       },
     },
     responses: {
-      201: {
-        description: 'The new voice',
+      202: {
+        description: 'Accepted: the voice, in status `creating`. `Location` names it under `/custom-voices`.',
+        headers: { Location: { schema: { type: 'string' }, description: 'The voice to poll' } },
         content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoice' } } },
       },
       400: {
-        description: 'Invalid input, a model with no custom voices, or the vendor rejected the prompt',
+        description: 'Invalid input, or a model with no custom voices',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
       403: {
@@ -188,12 +192,8 @@ Requires \`voice:create\`.`,
         description: '`method: "recording"` is not available yet',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
-      502: {
-        description: 'The vendor failed. The voice is kept with `status: "failed"` and does not count against the quota',
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
-      },
       503: {
-        description: 'The vendor is not configured, is refusing new voices, or the platform has no slots left',
+        description: 'The vendor is not configured, or the platform has no slots left',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
       default: {

@@ -1754,9 +1754,19 @@ components:
         status:
           type: string
           enum: [creating, ready, failed, deleted]
+          description: |-
+            `creating` while the vendor makes the voice in the background (about 20 seconds for
+            OpenAI); poll `GET /custom-voices/{customVoiceId}` until it is `ready` or `failed`.
         error:
           type: string
-          description: Why the vendor failed (status `failed`).
+          description: Why the create failed (status `failed`).
+        errorCode:
+          type: string
+          enum: [rejected, vendor_unavailable, vendor_error, interrupted]
+          description: |-
+            Status `failed` only. `rejected`: the vendor refused the input (change the prompt).
+            `vendor_unavailable`, `vendor_error`: try again. `interrupted`: the server lost the
+            create and the vendor has no such voice.
         models:
           type: array
           items:

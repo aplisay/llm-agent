@@ -29,6 +29,9 @@ export default function (logger) {
 
   get.apiDoc = {
     summary: 'Get one of the organisation\'s custom voices',
+    description: `Poll this after [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice) until \`status\` is \`ready\` or \`failed\` (about 20 seconds for OpenAI). A failed voice carries \`error\` and \`errorCode\`. If a create has gone quiet for 90 seconds, this call looks for the voice at the vendor and settles it; after 3 minutes with no voice there it is marked failed with \`errorCode: interrupted\`.
+
+Requires \`voice:read\`.`,
     operationId: 'getCustomVoice',
     tags: ['Voices'],
     parameters: [{ in: 'path', name: 'customVoiceId', required: true, schema: { type: 'string', format: 'uuid' } }],
