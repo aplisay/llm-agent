@@ -99,6 +99,34 @@ test("the factory builds a synthetic-backend session from the voice agent alone"
   assert.equal(session.vad, undefined);
 });
 
+// docs/custom-voices.md: the API server adds `customVoice` when options.tts.voice is one of
+// the organisation's ready voices.
+const BRIGHTON = {
+  id: "6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e",
+  vendor: "openai",
+  method: "prompt",
+  voice: "voice_123abc",
+  name: "Brighton concierge",
+  prompt: "A warm, unhurried woman in her forties.",
+  locale: "en-GB",
+};
+const withCustomVoice = (voice: string, cv: unknown) => ({ ...voiceAgent({ tts: { voice } }), customVoice: cv }) as any;
+
+test("a custom voice is sent as { id }, and its description joins the voice instructions", () => {
+  const { session, model } = build(withCustomVoice("voice_123abc", BRIGHTON));
+  assert.deepEqual(liveOptions(session)._opts.voice, { id: "voice_123abc" });
+  assert.equal(
+    model.instructions,
+    `You are Sam.\n\nYour speaking voice: A warm, unhurried woman in her forties.\n\n${VOICE_DELEGATION_POLICY}`,
+  );
+});
+
+test("a custom voice the server did not resolve: the default voice, and no voice line", () => {
+  const { session, model } = build(withCustomVoice("voice_gone99", null));
+  assert.equal(liveOptions(session)._opts.voice, "marin");
+  assert.equal(model.instructions, `You are Sam.\n\n${VOICE_DELEGATION_POLICY}`);
+});
+
 test("a declared OpenAI delegate: its model, prompt and settings are the backend", () => {
   const delegate = {
     id: "d-1",

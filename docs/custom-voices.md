@@ -17,7 +17,7 @@ has a quota of custom voices.
 | Read one | `GET /api/custom-voices/{customVoiceId}` |
 | Delete | `DELETE /api/custom-voices/{customVoiceId}` |
 | Use | an agent's `options.tts.voice` set to the voice's `voice` value |
-| Models (today) | `pipecat:openai/gpt-live-1` |
+| Models | `pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1` |
 
 ## Quick start
 
@@ -48,7 +48,7 @@ It returns `202` at once, with a `Location` header and the voice in
   "gender": "female",
   "prompt": "A warm, unhurried woman in her forties with a soft southern English accent, mid-low pitch, clear and friendly, at a relaxed pace.",
   "status": "creating",
-  "models": ["pipecat:openai/gpt-live-1"],
+  "models": ["pipecat:openai/gpt-live-1", "livekit:openai/gpt-live-1"],
   "createdAt": "2026-10-18T10:15:00.000Z"
 }
 ```
@@ -223,7 +223,7 @@ organisation** and that the agent's model can speak it. An id another
 organisation made, a deleted voice, or a model that cannot use the voice is
 rejected with the usual `Voice ... not supported by ...` error.
 
-At call time the Pipecat worker loads the agent from the API server, which
+At call time the worker (Pipecat or LiveKit) loads the agent from the API server, which
 adds a `customVoice` block when `options.tts.voice` is one of the
 organisation's ready voices:
 
@@ -381,7 +381,7 @@ For operators.
 - `OPENAI_API_KEY` on the API server makes and deletes the voices. It must
   be a **project-scoped** key with the `api.voices.write` scope, on a project
   that OpenAI has approved for GPT-Live and custom voices.
-- The Pipecat worker's `OPENAI_API_KEY` speaks with them. It must be a key of
+- The Pipecat and LiveKit workers' `OPENAI_API_KEY` speaks with them. It must be a key of
   the **same OpenAI project**, with `api.voices.read`. A voice belongs to the
   project that made it, and a key from another project cannot use it.
 - The 100-voice cap is per OpenAI **organisation**, not per project. If
@@ -415,10 +415,7 @@ missing, so a deployment that is not force-synced still gets them.
 
 ## Limits and known gaps
 
-- Only GPT-Live on Pipecat. When a LiveKit GPT-Live row lands, the server
-  already treats `livekit:openai/gpt-live*` as able to use these voices, but
-  the LiveKit worker must send the voice as `{ "id": ... }` and add the prompt
-  to its instructions in the same way.
+- GPT-Live only, on Pipecat and LiveKit. One voice works on both rows.
 - The builder's `list_voices` tool does not see custom voices yet.
 - No preview audio: OpenAI returns none. The only way to hear a voice is a
   call with it.

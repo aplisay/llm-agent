@@ -5,11 +5,13 @@
  */
 import { llm } from "@livekit/agents";
 import { getByPath } from "../agent-lib/metadata-path.js";
-import type { Agent, AgentFunction, CallMetadata } from "./api-client.js";
+import type { Agent, AgentFunction, CallMetadata, CustomVoice } from "./api-client.js";
 import { agentLanguageTag } from "./pipeline-inference-options.js";
 
 /** Must match OPENAI_LIVE_DEFAULT_VOICE in lib/voices/openai-live.js. */
 export const GPT_LIVE_DEFAULT_VOICE = "marin";
+/** OpenAI's custom voice ids start with this; the named voices never do (docs/custom-voices.md). */
+export const CUSTOM_VOICE_ID_PREFIX = "voice_";
 export const SYNTHETIC_BACKEND_MODEL_NAME = "text:openai/gpt-5.6-luna";
 export const DELEGATE_PLATFORM = "delegate";
 export const OPENING_INSTRUCTION = "Greet the caller and ask how you can help.";
@@ -191,11 +193,48 @@ export function languageLine(agent: Agent): string | undefined {
   return tag ? `Speak ${tag} unless the caller asks you to switch language.` : undefined;
 }
 
-export function composeVoiceInstructions(voicePrompt: string, { language }: { language?: string } = {}): string {
+export function composeVoiceInstructions(
+  voicePrompt: string,
+  { language, voiceLine }: { language?: string; voiceLine?: string } = {},
+): string {
   const parts = [(voicePrompt ?? "").trim() || "You are a helpful voice assistant."];
   if (language) parts.push(language);
+  if (voiceLine) parts.push(voiceLine);
   parts.push(VOICE_DELEGATION_POLICY);
   return parts.join("\n\n");
+}
+
+/**
+ * The agent's OpenAI custom voice, as the API server resolved it into `customVoice`, when it is the
+ * voice the agent names. The server resolves only a ready voice of the agent's own organisation.
+ */
+export function customVoice(agent: Agent): CustomVoice | undefined {
+  const cv = agent?.customVoice;
+  if (!cv || cv.vendor !== "openai" || !cv.voice) return undefined;
+  return cv.voice === agent?.options?.tts?.voice ? cv : undefined;
+}
+
+/** OpenAI asks for a prompt voice's description in the session instructions too. */
+export function customVoiceLine(cv: CustomVoice | undefined): string | undefined {
+  const prompt = String(cv?.prompt ?? "").trim();
+  return cv?.method === "prompt" && prompt ? `Your speaking voice: ${prompt}` : undefined;
+}
+
+/**
+ * The voice for `session.start`: a custom voice as `{ id }`, else the named voice. A `voice_` id the
+ * server did not resolve (deleted, or another organisation's) would make OpenAI refuse the session,
+ * so it falls back to the default voice and is returned as `unresolved` for the caller to log.
+ */
+export function gptLiveVoice(agent: Agent): {
+  voice: string | { id: string };
+  customVoice?: CustomVoice;
+  unresolved?: string;
+} {
+  const cv = customVoice(agent);
+  if (cv?.voice) return { voice: { id: cv.voice }, customVoice: cv };
+  const named = String(agent?.options?.tts?.voice ?? "").trim();
+  if (named.startsWith(CUSTOM_VOICE_ID_PREFIX)) return { voice: GPT_LIVE_DEFAULT_VOICE, unresolved: named };
+  return { voice: named || GPT_LIVE_DEFAULT_VOICE };
 }
 
 export function composeBackendInstructions(backendPrompt: string, { toolNames }: { toolNames: string[] }): string {

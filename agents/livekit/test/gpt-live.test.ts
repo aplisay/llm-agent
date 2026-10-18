@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { initializeLogger, llm } from "@livekit/agents";
 import {
   BACKEND_TOOL_POLICY,
+  CUSTOM_VOICE_ID_PREFIX,
   DELEGATION_FAILED_COMMENTARY,
   DELEGATION_STRANDED_COMMENTARY,
   GPT_LIVE_DEFAULT_VOICE,
@@ -15,6 +16,8 @@ import {
   chunkText,
   composeBackendInstructions,
   composeVoiceInstructions,
+  customVoice,
+  customVoiceLine,
   deepMerge,
   delegateBackend,
   delegationMode,
@@ -22,6 +25,7 @@ import {
   estimatedTokens,
   findDelegateFunction,
   greetingOpeningInstruction,
+  gptLiveVoice,
   inactivityCommentary,
   isGptLiveModelId,
   isGptLiveModelName,
@@ -106,12 +110,14 @@ test("the texts sent to the model are byte-identical to the Pipecat worker's", (
   assert.equal(OPENING_INSTRUCTION, pythonConstant(gptLive, "OPENING_INSTRUCTION"));
   assert.equal(SYNTHETIC_BACKEND_MODEL_NAME, pythonConstant(gptLive, "SYNTHETIC_BACKEND_MODEL_NAME"));
   assert.equal(GPT_LIVE_DEFAULT_VOICE, pythonConstant(gptLive, "GPT_LIVE_DEFAULT_VOICE"));
+  assert.equal(CUSTOM_VOICE_ID_PREFIX, pythonConstant(gptLive, "CUSTOM_VOICE_ID_PREFIX"));
   assert.equal(DELEGATION_FAILED_COMMENTARY, pythonConstant(service, "DELEGATION_FAILED_COMMENTARY"));
   assert.equal(DELEGATION_STRANDED_COMMENTARY, pythonConstant(service, "DELEGATION_STRANDED_COMMENTARY"));
   assert.ok(service.includes(JSON.stringify(NO_ANSWER_COMMENTARY)));
   // The f-strings, with their placeholders.
   assert.ok(gptLive.includes(`"${greetingOpeningInstruction(voiceAgent({ options: { greeting: { text: "{text}" } } }))}"`));
   assert.ok(gptLive.includes(`"The caller has gone quiet. Say this to them now, then wait: {message}"`));
+  assert.ok(gptLive.includes(`"${customVoiceLine({ method: "prompt", prompt: "{prompt}" })}"`));
   const stubMessage = gptLive.match(/"message": \(\n([\s\S]*?)\n\s*\),/);
   assert.ok(stubMessage, "dropped_output_stub message not found");
   assert.equal(
@@ -340,4 +346,63 @@ test("stranded calls are read from the backend's error message", () => {
   assert.deepEqual(missingCallIds("Missing function call outputs for: call_a1, call_b2, call_a1."), ["call_a1", "call_b2"]);
   assert.deepEqual(missingCallIds(undefined), []);
   assert.equal(JSON.parse(droppedOutputStub("call_a1")).call_id, "call_a1");
+});
+
+// Custom voices (docs/custom-voices.md): the API server adds `customVoice` to the agent when
+// options.tts.voice is one of the organisation's ready voices. Pipecat twin: test_gpt_live.py.
+const BRIGHTON = {
+  id: "6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e",
+  vendor: "openai",
+  method: "prompt",
+  voice: "voice_123abc",
+  name: "Brighton concierge",
+  prompt: "A warm, unhurried woman in her forties.",
+  locale: "en-GB",
+};
+const withVoice = (voice: string | undefined, cv: unknown) =>
+  ({ id: "a", userId: "u", organisationId: "o", modelName: "livekit:openai/gpt-live-1", options: { tts: { voice } }, customVoice: cv }) as any;
+
+test("customVoice: only the resolved OpenAI voice the agent names", () => {
+  assert.equal(customVoice(withVoice("voice_123abc", BRIGHTON)), BRIGHTON);
+  // A block for another voice (the agent changed voice since) is not this agent's voice.
+  assert.equal(customVoice(withVoice("cedar", BRIGHTON)), undefined);
+  assert.equal(customVoice(withVoice("voice_123abc", { ...BRIGHTON, vendor: "elevenlabs" })), undefined);
+  assert.equal(customVoice(withVoice("voice_123abc", { ...BRIGHTON, voice: null })), undefined);
+  assert.equal(customVoice(withVoice("voice_123abc", null)), undefined);
+  assert.equal(customVoice(withVoice("voice_123abc", undefined)), undefined);
+});
+
+test("customVoiceLine: a prompt voice's description, as OpenAI asks", () => {
+  assert.equal(customVoiceLine(BRIGHTON), "Your speaking voice: A warm, unhurried woman in her forties.");
+  assert.equal(customVoiceLine({ ...BRIGHTON, method: "recording" }), undefined);
+  assert.equal(customVoiceLine({ ...BRIGHTON, prompt: "  " }), undefined);
+  assert.equal(customVoiceLine(undefined), undefined);
+});
+
+test("gptLiveVoice: a custom voice as { id }, an unresolved one falls back, a name passes through", () => {
+  assert.deepEqual(gptLiveVoice(withVoice("voice_123abc", BRIGHTON)), {
+    voice: { id: "voice_123abc" },
+    customVoice: BRIGHTON,
+  });
+  // Deleted, or another organisation's: OpenAI would refuse the session with it.
+  assert.deepEqual(gptLiveVoice(withVoice("voice_gone99", null)), {
+    voice: GPT_LIVE_DEFAULT_VOICE,
+    unresolved: "voice_gone99",
+  });
+  assert.deepEqual(gptLiveVoice(withVoice(" cedar ", null)), { voice: "cedar" });
+  assert.deepEqual(gptLiveVoice(withVoice(undefined, null)), { voice: GPT_LIVE_DEFAULT_VOICE });
+});
+
+test("composeVoiceInstructions: the custom voice line sits between the language and the policy", () => {
+  assert.equal(
+    composeVoiceInstructions("You are Sam.", { language: "Speak en-GB.", voiceLine: "Your speaking voice: warm." }),
+    `You are Sam.\n\nSpeak en-GB.\n\nYour speaking voice: warm.\n\n${VOICE_DELEGATION_POLICY}`,
+  );
+});
+
+test("vendorSpecific.openai.live still replaces a custom voice in session.start", () => {
+  assert.deepEqual(
+    deepMerge({ audio: { output: { voice: { id: "voice_123abc" } } } }, { audio: { output: { voice: "cedar" } } }),
+    { audio: { output: { voice: "cedar" } } },
+  );
 });

@@ -32,11 +32,12 @@ import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-s
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
 import { OpenAIRealtimeModel } from "./openai-realtime.js";
 import {
-  GPT_LIVE_DEFAULT_VOICE,
   backendSettings,
   composeBackendInstructions,
   composeVoiceInstructions,
+  customVoiceLine,
   delegateBackend,
+  gptLiveVoice,
   isGptLiveModelName,
   languageLine,
   liveOverrides,
@@ -614,10 +615,18 @@ function createGptLiveSession(
     : promptWithMetadata(spec.agent.prompt ?? "", spec.agent.promptMetadata, call?.metadata);
   const { effort, maxTokens } = backendSettings(spec.agent);
   warnTtsSpeedUnsupported(agent, modelName);
+  const voiceChoice = gptLiveVoice(agent);
+  if (voiceChoice.unresolved) {
+    logger.warn(
+      { voice: voiceChoice.unresolved, agentId: agent?.id },
+      "options.tts.voice names a custom voice the API server did not resolve; using the default voice",
+    );
+  }
 
   const liveModel = new openai.realtime.GPTLiveModel({
     model: parseProviderModelName(modelName)?.split("/").pop() || undefined,
-    voice: agent?.options?.tts?.voice?.trim() || GPT_LIVE_DEFAULT_VOICE,
+    // A custom voice is `{ id }`; `vendorSpecific.openai.live` can still replace it in session.start.
+    voice: voiceChoice.voice,
     delegation: spec.mode,
     ...(spec.mode === "responses"
       ? {
@@ -641,7 +650,10 @@ function createGptLiveSession(
     recovery: spec.mode === "responses",
   });
   const model = new voice.Agent({
-    instructions: composeVoiceInstructions(agent.prompt ?? "", { language: languageLine(agent) }),
+    instructions: composeVoiceInstructions(agent.prompt ?? "", {
+      language: languageLine(agent),
+      voiceLine: customVoiceLine(voiceChoice.customVoice),
+    }),
     // Client mode: the delegate runs its own tools behind the subagent endpoint.
     tools: spec.mode === "client" ? llm.ToolContext.empty() : backendTools,
   });

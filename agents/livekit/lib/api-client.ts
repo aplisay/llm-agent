@@ -341,6 +341,23 @@ export interface Agent {
   };
   functions?: AgentFunction[];
   keys?: string[];
+  /**
+   * The organisation's custom voice that `options.tts.voice` names, when it is a ready one
+   * (docs/custom-voices.md). The agent-db agent and instance reads add it.
+   */
+  customVoice?: CustomVoice | null;
+}
+
+/** A custom voice as the API server resolves it for an agent (docs/custom-voices.md). */
+export interface CustomVoice {
+  id?: string;
+  vendor?: string;
+  method?: string;
+  /** The vendor's voice id, e.g. `voice_123abc`. */
+  voice?: string;
+  name?: string;
+  prompt?: string | null;
+  locale?: string;
 }
 
 /**
