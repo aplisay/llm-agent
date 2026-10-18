@@ -35,6 +35,10 @@ from .function_handler import _get_by_path
 #: OPENAI_LIVE_DEFAULT_VOICE in lib/voices/openai-live.js.
 GPT_LIVE_DEFAULT_VOICE = "marin"
 
+#: OpenAI's custom voice ids start with this; the named voices never do
+#: (docs/custom-voices.md). The Live API takes a custom voice as ``{"id": ...}``.
+CUSTOM_VOICE_ID_PREFIX = "voice_"
+
 #: The model a synthesised backend runs on (decision 4 of the plan): the
 #: cheaper of OpenAI's recommended pair. ``vendorSpecific.openai.live`` can
 #: override the model through ``delegation.responses.model``.
@@ -282,12 +286,33 @@ def language_line(agent: dict) -> Optional[str]:
     return f"Speak {tag} unless the caller asks you to switch language." if tag else None
 
 
-def compose_voice_instructions(voice_prompt: str, *, language: Optional[str] = None) -> str:
-    """The voice model's instructions: the persona prompt, the language line
-    and the platform delegation policy (decision 5)."""
+def custom_voice(agent: dict) -> Optional[dict]:
+    """The agent's OpenAI custom voice, as the API server resolved it into
+    ``customVoice`` (docs/custom-voices.md), when it is the voice the agent names.
+    The server only resolves a ready voice of the agent's own organisation."""
+    cv = (agent or {}).get("customVoice")
+    voice = (((agent or {}).get("options") or {}).get("tts") or {}).get("voice")
+    if not isinstance(cv, dict) or cv.get("vendor") != "openai" or not cv.get("voice"):
+        return None
+    return cv if cv.get("voice") == voice else None
+
+
+def custom_voice_line(cv: Optional[dict]) -> Optional[str]:
+    """OpenAI asks for a prompt voice's description in the session instructions too."""
+    prompt = ((cv or {}).get("prompt") or "").strip()
+    return f"Your speaking voice: {prompt}" if (cv or {}).get("method") == "prompt" and prompt else None
+
+
+def compose_voice_instructions(
+    voice_prompt: str, *, language: Optional[str] = None, voice_line: Optional[str] = None
+) -> str:
+    """The voice model's instructions: the persona prompt, the language line,
+    a custom voice's description and the platform delegation policy (decision 5)."""
     parts = [(voice_prompt or "").strip() or "You are a helpful voice assistant."]
     if language:
         parts.append(language)
+    if voice_line:
+        parts.append(voice_line)
     parts.append(VOICE_DELEGATION_POLICY)
     return "\n\n".join(parts)
 
@@ -436,6 +461,8 @@ class GptLiveSession:
     on_dtmf: Optional[Callable[[str], Awaitable[None]]] = None
     #: A greeting is configured: the caller stays inaudible until it completes.
     deaf_during_greeting: bool = False
+    #: The organisation's OpenAI custom voice id, sent as ``{"id": ...}``.
+    custom_voice_id: Optional[str] = None
 
 
 def has_greeting(agent: dict) -> bool:

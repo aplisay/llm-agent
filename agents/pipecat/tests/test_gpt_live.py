@@ -338,6 +338,57 @@ def test_session_start_carries_the_context_and_the_vendor_overrides():
     assert llm._opening_instruction == "Greet the caller."
 
 
+# --- custom voices (docs/custom-voices.md) --------------------------------------
+
+_CUSTOM = {
+    "id": "cv-1", "vendor": "openai", "method": "prompt", "voice": "voice_abc123",
+    "name": "Concierge", "prompt": "A warm, calm adult voice.", "locale": "en-GB",
+}
+
+
+def test_custom_voice_is_only_the_one_the_server_resolved_for_this_voice():
+    agent = _voice_agent(options={"tts": {"voice": "voice_abc123"}}, customVoice=_CUSTOM)
+    assert gpt_live.custom_voice(agent) == _CUSTOM
+    # A stale block for another voice, another vendor, or none at all is ignored.
+    assert gpt_live.custom_voice(_voice_agent(options={"tts": {"voice": "cedar"}}, customVoice=_CUSTOM)) is None
+    assert gpt_live.custom_voice(_voice_agent(
+        options={"tts": {"voice": "voice_abc123"}}, customVoice={**_CUSTOM, "vendor": "elevenlabs"})) is None
+    assert gpt_live.custom_voice(_voice_agent(options={"tts": {"voice": "voice_abc123"}})) is None
+
+
+def test_a_prompt_voice_description_joins_the_voice_instructions():
+    line = gpt_live.custom_voice_line(_CUSTOM)
+    assert line == "Your speaking voice: A warm, calm adult voice."
+    voice = compose_voice_instructions("You are Sam.", voice_line=line)
+    assert voice.index("You are Sam.") < voice.index(line) < voice.index(gpt_live.VOICE_DELEGATION_POLICY)
+    assert gpt_live.custom_voice_line({**_CUSTOM, "method": "recording"}) is None
+    assert gpt_live.custom_voice_line(None) is None
+
+
+def test_session_start_sends_a_custom_voice_as_an_id_object():
+    from pipecat.adapters.schemas.tools_schema import ToolsSchema
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    llm, sent = _build(_session(custom_voice_id="voice_abc123"), voice="voice_abc123")
+    assert llm._settings.voice is None
+    llm._context = LLMContext([], tools=ToolsSchema(standard_tools=[]))
+    asyncio.run(llm._send_session_config())
+    [payload] = sent
+    assert payload["session"]["audio"]["output"]["voice"] == {"id": "voice_abc123"}
+
+    # An explicit vendorSpecific voice still wins.
+    session = _session(custom_voice_id="voice_abc123", overrides={"audio": {"output": {"voice": "cedar"}}})
+    llm, sent = _build(session, voice="voice_abc123")
+    llm._context = LLMContext([], tools=ToolsSchema(standard_tools=[]))
+    asyncio.run(llm._send_session_config())
+    assert sent[0]["session"]["audio"]["output"]["voice"] == "cedar"
+
+
+def test_an_unresolved_custom_voice_id_falls_back_to_the_default_voice():
+    llm, _ = _build(_session(), voice="voice_gone")
+    assert llm._settings.voice == gpt_live.GPT_LIVE_DEFAULT_VOICE
+
+
 def test_injection_shim_events_in_responses_mode():
     llm, sent = _build(_session())
     llm._session_started = True
@@ -613,6 +664,27 @@ def test_compose_gpt_live_merges_delegate_tools_and_settings(monkeypatch):
     assert "Tools available to you: get_slots, hangup." in composed.backend_instructions
     assert composed.client_delegate is None
     assert composed.on_dtmf is not None and composed.on_session_ended is not None
+    assert composed.custom_voice_id is None
+
+
+def test_compose_gpt_live_carries_the_custom_voice(monkeypatch):
+    from pipecat_aplisay import api_client, call_session
+    from pipecat_aplisay.call_session import CallSession
+
+    async def fetch(agent_id, expected_organisation_id=None):
+        return _text_agent(mcpServers=[])
+
+    async def no_mcp(agent, *, log=None, max_result_bytes=None):
+        return [], []
+
+    monkeypatch.setattr(api_client, "get_internal_agent_by_id", fetch)
+    monkeypatch.setattr(call_session, "connect_mcp_servers", no_mcp)
+    call = api_client.CallRecord(id="c", userId="u", organisationId="org-1", instanceId="i", agentId="a", persisted=False)
+    agent = _voice_agent(options={"tts": {"voice": "voice_abc123"}}, customVoice=_CUSTOM)
+    session = CallSession(session_id="s", agent=agent, instance={}, call=call, sip_gateway=None, gateway_session=None)  # type: ignore[arg-type]
+    composed, _ = asyncio.run(session._compose_gpt_live(agent, "You are Sam.", session._build_tools_for(agent), {}))
+    assert composed.custom_voice_id == "voice_abc123"
+    assert "Your speaking voice: A warm, calm adult voice." in composed.voice_instructions
 
 
 def test_client_delegate_calls_the_subagent_endpoint(monkeypatch):

@@ -520,17 +520,30 @@ def build_gpt_live_service(
         from .gpt_live_transcript_tts import GptLiveTranscriptTtsService
 
         service_class = GptLiveTranscriptTtsService
+    overrides = session.overrides
+    if transcript_tts:
+        voice = gpt_live.GPT_LIVE_DEFAULT_VOICE
+    elif session.custom_voice_id:
+        # Upstream's settings take only a voice name, so the custom voice object
+        # goes in through the session.start merge; an explicit vendorSpecific value still wins.
+        overrides = gpt_live.deep_merge(
+            {"audio": {"output": {"voice": {"id": session.custom_voice_id}}}}, session.overrides)
+        voice = None
+    elif voice and voice.startswith(gpt_live.CUSTOM_VOICE_ID_PREFIX):
+        # Deleted, or not this organisation's: sent as a name, the API would refuse the session.
+        logger.bind(voice=voice).warning(
+            "options.tts.voice names a custom voice the API server did not resolve; using the default voice")
+        voice = gpt_live.GPT_LIVE_DEFAULT_VOICE
+    else:
+        voice = voice or gpt_live.GPT_LIVE_DEFAULT_VOICE
     llm = service_class(
         api_key=api_key,
         settings=AplisayOpenAILiveLLMService.Settings(
             system_instruction=session.voice_instructions,
-            voice=(
-                gpt_live.GPT_LIVE_DEFAULT_VOICE
-                if transcript_tts else voice or gpt_live.GPT_LIVE_DEFAULT_VOICE
-            ),
+            voice=voice,
         ),
         delegation=delegation,
-        live_overrides=session.overrides,
+        live_overrides=overrides,
         on_session_ended=session.on_session_ended,
         client_delegate=client_delegate,
         deaf_during_greeting=session.deaf_during_greeting,
