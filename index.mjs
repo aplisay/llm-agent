@@ -179,7 +179,7 @@ httpServer.listen(port, () => {
 // Start the reaper only in the server: importing database code from a CLI must not alter chat liveness. See PR #291.
 const { startChatSessionReaper, startChatOwnershipListener, releaseAllChatSessions } = await import('./lib/text-chat.js');
 startChatSessionReaper({ log: logger });
-// Settles custom voice creates whose background work was lost (docs/custom-voices.md).
+// Settles custom voice creates whose background work was lost (docs/implementation/custom-voices.md).
 const { startCustomVoiceSweeper } = await import('./lib/custom-voices/index.js');
 startCustomVoiceSweeper({ log: logger });
 // Answer other processes asking for a chat session this one holds (a client
