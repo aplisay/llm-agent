@@ -213,6 +213,9 @@ Which locale lists a voice:
 organisation's custom voices. For GPT-Live, whose standard voices are under
 `any`, an organisation with an `en-GB` voice sees `["any", "en-GB"]`.
 
+The agent builder's `list_voices` tool shows the builder's organisation the
+same voices, in all three of its modes (locales, one locale, and search).
+
 Custom voices appear in these lists only for callers with `voice:read`.
 
 ## List, read and delete
