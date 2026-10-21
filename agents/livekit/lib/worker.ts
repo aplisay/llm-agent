@@ -56,6 +56,7 @@ import { releaseFailedAttemptSession } from "./primary-session.js";
 import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
 import { jobCallMetadata, mergeCallMetadata } from "./call-metadata.js";
+import { writeGoogleCredential } from "./google-credential.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -73,6 +74,14 @@ import type {
 } from "./types.js";
 
 dotenv.config();
+{
+  const credential = writeGoogleCredential();
+  if (credential.status === "written") {
+    logger.info({ path: credential.path, bytes: credential.bytes }, "wrote Google credential");
+  } else if (credential.status === "no-source" || credential.status === "failed") {
+    logger.warn(credential, "no Google credential file: recording uploads will fail");
+  }
+}
 // LiveKit / plugins may read either name; do not overwrite a set ELEVEN_API_KEY.
 if (!process.env.ELEVEN_API_KEY && process.env.ELEVENLABS_API_KEY) {
   process.env.ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
