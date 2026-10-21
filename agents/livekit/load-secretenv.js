@@ -1,8 +1,6 @@
-// Emit only shell exports on stdout: entrypoint.sh evaluates them. Load secrets and materialise ADC credentials at
-// runtime. See agents/livekit/deploy/gcp/README.md; diagnostics belong on stderr.
+// Emit only shell exports on stdout: entrypoint.sh evaluates them. See
+// agents/livekit/deploy/gcp/README.md; diagnostics belong on stderr.
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 
 const ATTEMPTS = Math.max(1, Number(process.env.SECRETENV_FETCH_ATTEMPTS || 3));
 
@@ -52,35 +50,6 @@ async function fetchPair() {
   }
 }
 
-// Best-effort and idempotent, like the pipecat implementation: a no-op when the
-// path is unset, the source secret is absent, or something already exists at
-// the path (a mounted secret, say). Never fatal — a missing credential costs
-// recording uploads, and refusing to boot over it would cost every call.
-function materialiseGoogleCredential(env) {
-  const path = env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (!path) return;
-  // GOOGLE_CREDENTIAL is the JSON payload the Node images have always written;
-  // GOOGLE_APPLICATION_CREDENTIALS_JSON is the inline form pipecat also takes.
-  const content = env.GOOGLE_CREDENTIAL || env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-  if (!content) {
-    log(`GOOGLE_APPLICATION_CREDENTIALS=${path} but the bundle has no GOOGLE_CREDENTIAL — not writing it`);
-    return;
-  }
-  if (existsSync(path)) {
-    log(`Google credential already present at ${path} — leaving it alone`);
-    return;
-  }
-  try {
-    const dir = dirname(path);
-    if (dir && dir !== '.') mkdirSync(dir, { recursive: true });
-    // 0600 — this is a service-account private key.
-    writeFileSync(path, content, { encoding: 'utf8', mode: 0o600 });
-    log(`materialised Google credential at ${path} (${content.length}b)`);
-  } catch (err) {
-    log(`WARNING: could not write the Google credential to ${path}: ${err.message}`);
-  }
-}
-
 const supplied = Boolean(process.env.SECRETENV_KEY && process.env.SECRETENV_BUNDLE);
 if (supplied) {
   log('SECRETENV_KEY/_BUNDLE already in the environment — skipping Secret Manager');
@@ -88,16 +57,6 @@ if (supplied) {
   const { key, bundle } = await fetchPair();
   process.env.SECRETENV_KEY = key;
   process.env.SECRETENV_BUNDLE = bundle;
-}
-
-// Decrypt in-process purely so the credential above can be written. `dotenv` is
-// aliased to secretenv, so config() expands SECRETENV_BUNDLE into process.env.
-try {
-  const dotenv = (await import('dotenv')).default;
-  dotenv.config();
-  materialiseGoogleCredential(process.env);
-} catch (err) {
-  log(`WARNING: could not decrypt the bundle to materialise credentials: ${err.message}`);
 }
 
 // Only the pair crosses back to the shell; everything else the agent decrypts

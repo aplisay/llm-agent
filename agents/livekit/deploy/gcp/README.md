@@ -155,7 +155,6 @@ docker run  →  ENTRYPOINT /bin/sh /usr/src/app/entrypoint.sh   CMD start
                     ├─ node load-secretenv.js          (@google-cloud/secret-manager, ADC)
                     │    accessSecretVersion ${GOOGLE_SECRETENV_PATH}_KEY/versions/latest
                     │    accessSecretVersion ${GOOGLE_SECRETENV_PATH}_BUNDLE/versions/latest
-                    │    decrypt → write credentials/google.json (0600, if absent)
                     │    → `export SECRETENV_KEY=… SECRETENV_BUNDLE=…` on stdout
                     ├─ eval it
                     └─ exec node dist/realtime.js start    ← becomes PID 1
@@ -189,9 +188,12 @@ Consequences worth knowing:
 
 `credentials/google.json` — the file `GOOGLE_APPLICATION_CREDENTIALS` names, and
 what the `google-cloud-storage` client used for recording uploads actually
-opens — is written by the same loader, from the `GOOGLE_CREDENTIAL` value in the
-decrypted bundle. Mode `0600`, and skipped if something is already at that path
-(a mounted secret wins).
+opens — is written by the agent itself at start-up
+([`lib/google-credential.ts`](../../lib/google-credential.ts)), from the
+`GOOGLE_CREDENTIAL` value in the decrypted bundle. Mode `0600`, and skipped if
+something is already at that path (a mounted secret wins). It is not written by
+`entrypoint.sh`, so a deployment that overrides the image's entrypoint (a konlet
+declaration with its own `command`, say) still gets it.
 
 It used to be baked at **build** time:
 

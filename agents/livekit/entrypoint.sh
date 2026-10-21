@@ -8,9 +8,9 @@
 # to sit in instance metadata or a mounted env file. Same shape as
 # aplisay-sbc/entrypoint.sh (`eval $(node env-processor.js)`).
 #
-# load-secretenv.js also writes out the Google service-account JSON that ADC
-# needs on disk, from the bundle it just decrypted — the runtime replacement
-# for baking that key into an image layer at build time.
+# The agent writes the Google service-account file itself at start-up
+# (lib/google-credential.ts), so a deployment that skips this script still
+# gets it.
 #
 # `exec` matters: the agent becomes PID 1, so docker's SIGTERM reaches it
 # directly and @livekit/agents drains in-flight calls (ServerOptions sets
@@ -21,8 +21,7 @@
 #   GOOGLE_SECRETENV_PATH   projects/<numeric>/secrets/<BASE>. A container
 #                           handed SECRETENV_KEY + SECRETENV_BUNDLE directly
 #                           (local development, CI) needs neither this nor
-#                           Secret Manager access, and still gets its
-#                           credential file written.
+#                           Secret Manager access.
 #
 # Arguments are passed through to the agent, so the image's CMD (["start"]) and
 # any override (`docker run … dev`) work as before.
