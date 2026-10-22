@@ -1176,7 +1176,7 @@ components:
                                        "replace": { "Aplisay": "Appli-say" } } } }
               ```
 
-            `elevenlabs.conversation_config`: on an ElevenLabs Agents row (`pipecat:elevenlabs/<llm>`) a
+            `elevenlabs.conversation_config`: on an ElevenLabs Agents row (`pipecat:elevenlabs/<llm>`, `livekit:elevenlabs/<llm>`) a
             free-form object deep-merged into the hosted agent's conversation configuration after the
             platform's own mapping, so an explicit value here wins. Use it for `turn` (turn-taking:
             `turn_eagerness`, `turn_timeout`), `tts` (`model_id`, `stability`, `similarity_boost`), `asr`

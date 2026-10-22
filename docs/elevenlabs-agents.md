@@ -3,18 +3,20 @@
 ElevenLabs Agents is ElevenLabs's hosted voice agent: speech recognition, a
 large language model of your choice, ElevenLabs text-to-speech and turn-taking
 run together on the ElevenLabs side, over one WebSocket. The platform offers
-it as realtime rows on the Pipecat worker, one row per LLM:
+it as realtime rows on both voice workers, one row per LLM:
 
-| Row | LLM behind the agent |
-|---|---|
-| `pipecat:elevenlabs/gemini-2.5-flash` | Google Gemini 2.5 Flash |
-| `pipecat:elevenlabs/gpt-5.4-mini` | OpenAI GPT-5.4 mini |
-| `pipecat:elevenlabs/claude-haiku-5-5` | Anthropic Claude Haiku 5.5 |
-| `pipecat:elevenlabs/claude-sonnet-5-5` | Anthropic Claude Sonnet 5.5 |
+| Pipecat row | LiveKit row | LLM behind the agent |
+|---|---|---|
+| `pipecat:elevenlabs/gemini-2.5-flash` | `livekit:elevenlabs/gemini-2.5-flash` | Google Gemini 2.5 Flash |
+| `pipecat:elevenlabs/gpt-5.4-mini` | `livekit:elevenlabs/gpt-5.4-mini` | OpenAI GPT-5.4 mini |
+| `pipecat:elevenlabs/claude-haiku-5-5` | `livekit:elevenlabs/claude-haiku-5-5` | Anthropic Claude Haiku 5.5 |
+| `pipecat:elevenlabs/claude-sonnet-5-5` | `livekit:elevenlabs/claude-sonnet-5-5` | Anthropic Claude Sonnet 5.5 |
 
-The rows need `ELEVENLABS_API_KEY` on the API server (for the voice list) and
-on the Pipecat worker (for the conversation). It is the same key the
-ElevenLabs TTS vendor uses on pipeline rows.
+The two rows of an LLM behave the same except where
+[On the LiveKit worker](#on-the-livekit-worker) says otherwise. They need
+`ELEVENLABS_API_KEY` on the API server (for the voice list) and on the
+worker (for the conversation). It is the same key the ElevenLabs TTS vendor
+uses on pipeline rows.
 
 ## How a call runs
 
@@ -150,18 +152,33 @@ ElevenLabs reserves `end_call`, `language_detection`, `skip_turn`,
 names on an ElevenLabs row is rejected when the agent is saved. The platform
 never enables the system tools; use the `hangup` and `transfer` builtins.
 
+## On the LiveKit worker
+
+The LiveKit rows run the same hosted agents (the configuration and its hash
+are built the same way, so a configuration shared by the two workers shares
+one ElevenLabs agent) and take the same options. The differences:
+
+- The transcript after a barge-in comes from the LiveKit SDK's playback
+  position, not from ElevenLabs's own correction, so it is an estimate of what
+  the caller heard rather than ElevenLabs's account of it.
+- The inactivity message and the keypad digits reach the agent the way they
+  do on the other LiveKit realtime rows: an instruction to say the message
+  exactly, and the digits as keypad input.
+- MCP servers are not honoured on any LiveKit row, including these.
+
 ## Usage and billing
 
 ElevenLabs bills a conversation per minute and passes the LLM's cost through,
 so each row is billed per minute of call on the call's `voice` row, priced by
-the row's minute line (`model:pipecat:elevenlabs/<llm>` in the rate-component
-catalogue). The agent's speech is not metered as `tts`: ElevenLabs is also a
+the row's minute line (`model:pipecat:elevenlabs/<llm>` or
+`model:livekit:elevenlabs/<llm>` in the rate-component catalogue). The agent's speech is not metered as `tts`: ElevenLabs is also a
 discrete TTS vendor, and a `tts|elevenlabs` row would be priced by that line
 on top of the minute. No token rows are recorded; ElevenLabs reports none
 over the conversation.
 
-`scripts/add-elevenlabs-rate-lines.mjs` seeds the minute lines on the default
-card and on every bespoke card that prices models, at
+`scripts/add-elevenlabs-rate-lines.mjs` seeds the minute lines for the rows
+of both workers on the default card and on every bespoke card that prices
+models, at
 `ELEVENLABS_VOICE_PRICE_MICROS` micro-pence per minute. Without the override
 it copies the card's Ultravox minute price as a placeholder, which is below
 what ElevenLabs charges; set the real price per card and per LLM where they
@@ -178,9 +195,9 @@ platform's own. ElevenLabs's regional endpoints are reachable with
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `ELEVENLABS_API_KEY` | API server and Pipecat worker | The ElevenLabs key. `ELEVEN_API_KEY` is accepted on the worker. |
-| `ELEVENLABS_AGENT_PREFIX` | Pipecat worker | The first segment of every ElevenLabs agent name the worker creates (default `aplisay`). Give each deployment sharing a workspace its own. |
-| `ELEVENLABS_API_BASE` | Pipecat worker | The REST base, for a regional endpoint. |
+| `ELEVENLABS_API_KEY` | API server and both workers | The ElevenLabs key. `ELEVEN_API_KEY` is accepted on the workers. |
+| `ELEVENLABS_AGENT_PREFIX` | Both workers | The first segment of every ElevenLabs agent name the worker creates (default `aplisay`). Give each deployment sharing a workspace its own. |
+| `ELEVENLABS_API_BASE` | Both workers | The REST base, for a regional endpoint. |
 
 ## Limits and caveats
 

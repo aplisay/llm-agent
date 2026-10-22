@@ -47,7 +47,7 @@ it. xAI's Voice Agent API echoes a text modality request and ignores it: every
 form was tried on 2026-09-15 and the model kept speaking (see
 [grok.md](grok.md)).
 
-The ElevenLabs Agents rows (`pipecat:elevenlabs/<llm>`) do not carry it
+The ElevenLabs Agents rows (`pipecat:elevenlabs/<llm>`, `livekit:elevenlabs/<llm>`) do not carry it
 either. ElevenLabs's text-only conversation mode takes text in as well as out,
 so there is no way to keep its recognition and turn-taking while another TTS
 speaks (see [elevenlabs-agents.md](elevenlabs-agents.md)). Their own voice is

@@ -12,7 +12,8 @@
  * What it does, per target card:
  *   1. Finds the card version covering now().
  *   2. Adds a `voice` minute line per ElevenLabs Agents row (VOICE_MODELS, a
- *      comma-separated list of full model names, default every Pipecat row) at
+ *      comma-separated list of full model names, default every Pipecat and
+ *      LiveKit row) at
  *      ELEVENLABS_VOICE_PRICE_MICROS micro-pence per minute. Without that
  *      override the price of the card's own Ultravox minute line is used as a
  *      placeholder, which is below what ElevenLabs charges: set the real price
@@ -34,7 +35,10 @@ import { pathToFileURL } from 'node:url';
 import { ELEVENLABS_AGENT_LLMS } from '../lib/elevenlabs-agents.js';
 import { hasLine, ultravoxMinutePrice, voiceModelLine } from './add-xai-rate-lines.mjs';
 
-export const DEFAULT_VOICE_MODELS = ELEVENLABS_AGENT_LLMS.map(({ id }) => `pipecat:elevenlabs/${id}`);
+export const DEFAULT_VOICE_MODELS = ELEVENLABS_AGENT_LLMS.flatMap(({ id }) => [
+  `pipecat:elevenlabs/${id}`,
+  `livekit:elevenlabs/${id}`,
+]);
 
 /**
  * The minute lines one card still lacks, at `voicePrice`. Pure, so a fixture

@@ -24,6 +24,7 @@ import {
 import { BUNDLED_TTS_PROVIDERS, buildRateComponents, isMinuteBilledModel } from '../lib/rate-components.js';
 import { groupByLocale, mapXiLabsVoices, xilabsVoiceTree, seedXiLabsVoices, resetXiLabsVoicesCache } from '../lib/voices/xilabs.js';
 import { DEFAULT_VOICE_MODELS, elevenLabsAdditions } from '../scripts/add-elevenlabs-rate-lines.mjs';
+import LivekitModel, { livekitModelIdFlags } from '../lib/models/livekit.js';
 
 /**
  * ElevenLabs Agents rows without a database (docs/elevenlabs-agents.md): the
@@ -56,6 +57,20 @@ describe('ElevenLabs Agents roster rows', () => {
     }
     expect(elevenLabsAgentRows('LiveKit')[0]).toEqual(['elevenlabs', 'gemini-2.5-flash', 'ElevenLabs Agents, Gemini 2.5 Flash (LiveKit)']);
     expect(modelSupportsExternalTts(ROW)).toBe(false);
+  });
+
+  test('the LiveKit registry offers the same LLMs as the server list', () => {
+    // The TS registry (agents/livekit/lib/livekit-model-registry.ts) is compiled into dist
+    // and cannot import lib/elevenlabs-agents.js, so the two lists are kept by hand.
+    const livekitIds = Object.keys(livekitModelIdFlags).filter((id) => id.startsWith('elevenlabs/'));
+    expect(livekitIds).toEqual(ELEVENLABS_AGENT_LLMS.map(({ id }) => `elevenlabs/${id}`));
+    for (const id of livekitIds) {
+      expect(livekitModelIdFlags[id]).toEqual({ voiceStack: 'realtime', audioModel: true, pipeline: false });
+      expect(modelSupportsExternalTts(`livekit:${id}`)).toBe(false);
+      const row = LivekitModel.allModels.find(([rowId]) => rowId === id);
+      expect(row[1]).toMatch(/^ElevenLabs Agents, .* \(Livekit realtime\)$/);
+    }
+    expect(nativeTtsVendorForModel('livekit:elevenlabs/gemini-2.5-flash')).toBe('elevenlabs');
   });
 
   test('isElevenLabsAgentsModelName matches the rows on any handler and nothing else', () => {
@@ -179,13 +194,14 @@ describe('ElevenLabs Agents billing', () => {
   });
 
   test('the rate-line script plans one minute line per row and leaves present lines alone', () => {
-    expect(DEFAULT_VOICE_MODELS).toEqual(ELEVENLABS_AGENT_LLMS.map(({ id }) => `pipecat:elevenlabs/${id}`));
+    expect(DEFAULT_VOICE_MODELS).toEqual(ELEVENLABS_AGENT_LLMS.flatMap(({ id }) => [`pipecat:elevenlabs/${id}`, `livekit:elevenlabs/${id}`]));
     const additions = elevenLabsAdditions([], { voicePrice: 8000 });
-    expect(additions).toHaveLength(4);
+    expect(additions).toHaveLength(8);
     expect(additions[0]).toEqual({ dim: 'model', match: { technology: 'voice', detail: ROW }, unit: 'minute', priceMicros: 8000 });
     const again = elevenLabsAdditions(additions, { voicePrice: 9000 });
     expect(again).toEqual([]);
     const some = elevenLabsAdditions([additions[0]], { voiceModels: [ROW, 'livekit:elevenlabs/gpt-5.4-mini'], voicePrice: 8000 });
     expect(some.map((l) => l.match.detail)).toEqual(['livekit:elevenlabs/gpt-5.4-mini']);
+    expect(DEFAULT_VOICE_MODELS.filter((m) => m.startsWith('livekit:'))).toHaveLength(ELEVENLABS_AGENT_LLMS.length);
   });
 });
