@@ -128,12 +128,14 @@ class ElevenLabsAgentsLLMService(LLMService):
         )
         self._opening_message = opening
         self._on_session_ended = on_session_ended
-        # The first message plays the moment the conversation is initiated, so
-        # with ``defer_initiation`` the socket opens at start but the initiation
-        # waits for begin_conversation(): the call session calls it once the
-        # caller's media is up, or the greeting is spoken to nobody.
+        # ElevenLabs sends its initiation metadata the moment the socket opens
+        # and the first message plays the moment the overrides arrive, so with
+        # ``defer_initiation`` the socket itself waits for begin_conversation():
+        # the call session calls it once the caller's media is up, or the
+        # greeting is spoken to nobody (staging, 2026-10-22).
         self._defer_initiation = defer_initiation
         self._begun = False
+        self._conversation_url: Optional[str] = None
 
         self._socket: Optional[websocket_client.ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -184,27 +186,35 @@ class ElevenLabsAgentsLLMService(LLMService):
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
         try:
-            self.agent_id, url = await self._client.conversation_url(self._config)
-            self._socket = await websocket_client.connect(url, max_size=None)
-            self._disconnecting = False
-            self._receive_task = self.create_task(self._receive_messages())
-            logger.bind(agent_id=self.agent_id, deferred=self._defer_initiation).info("ElevenLabs conversation opened")
-            if not self._defer_initiation:
-                await self.begin_conversation()
+            self.agent_id, self._conversation_url = await self._client.conversation_url(self._config)
         except Exception as e:  # noqa: BLE001
             await self.push_error("Failed to start the ElevenLabs conversation", e, fatal=True)
             await self._session_ended(f"connect failed: {e}")
+            return
+        logger.bind(agent_id=self.agent_id, deferred=self._defer_initiation).info("ElevenLabs agent ready for the conversation")
+        if not self._defer_initiation:
+            await self.begin_conversation()
 
     async def begin_conversation(self) -> None:
-        """Send the initiation (the overrides, and so the first message). Once;
-        a call before the socket is open is honoured when it opens."""
-        if self._begun:
+        """Open the socket and send the initiation (the overrides, and so the
+        first message). Once; a call before start has the URL is honoured
+        as soon as it does."""
+        if self._begun or self._disconnecting:
             return
         self._defer_initiation = False
-        if self._socket is None:
+        if self._conversation_url is None:
             return
         self._begun = True
-        await self._send(el.initiation_message(self._overrides))
+        try:
+            self._socket = await websocket_client.connect(self._conversation_url, max_size=None)
+            # The initiation goes first: the server's metadata follows it, and
+            # with it the first message.
+            await self._send(el.initiation_message(self._overrides))
+            self._receive_task = self.create_task(self._receive_messages())
+            logger.bind(agent_id=self.agent_id).info("ElevenLabs conversation opened")
+        except Exception as e:  # noqa: BLE001
+            await self.push_error("Failed to open the ElevenLabs conversation", e, fatal=True)
+            await self._session_ended(f"connect failed: {e}")
 
     @property
     def begun(self) -> bool:
