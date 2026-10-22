@@ -146,6 +146,8 @@ CREDENTIALS_KEY=<RANDOM SECRET>
 # ── Model / voice providers (enable the ones this deployment uses) ──────────
 ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
 # ULTRAVOX_API_KEY=
+# ElevenLabs: the TTS vendor on pipeline rows and the ElevenLabs Agents rows
+# (docs/elevenlabs-agents.md); the server lists voices with it.
 # ELEVENLABS_API_KEY=
 # DEEPSEEK_KEY=
 # KIMI_KEY=
