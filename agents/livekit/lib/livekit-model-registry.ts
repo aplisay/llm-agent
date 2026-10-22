@@ -12,6 +12,17 @@ interface RowFlags {
   delegation?: boolean;
 }
 
+/**
+ * The LLMs offered behind a hosted ElevenLabs agent, one row each. Must match
+ * ELEVENLABS_AGENT_LLMS in lib/elevenlabs-agents.js (docs/elevenlabs-agents.md).
+ */
+export const ELEVENLABS_AGENT_LLMS: ReadonlyArray<readonly [id: string, description: string]> = [
+  ["gemini-2.5-flash", "Gemini 2.5 Flash"],
+  ["gpt-5.4-mini", "GPT-5.4 mini"],
+  ["claude-haiku-5-5", "Claude Haiku 5.5"],
+  ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
+];
+
 /** Speech-to-speech (builtin STT/TTS in the realtime model). */
 export const LIVEKIT_REALTIME_MODEL_ROWS: ReadonlyArray<
   readonly [vendor: string, name: string, description: string, flags?: RowFlags]
@@ -24,6 +35,10 @@ export const LIVEKIT_REALTIME_MODEL_ROWS: ReadonlyArray<
   ["ultravox", "ultravox-v0.6-gemma3-27b", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.7", "Ultravox 0.7 (GLM 4.6) (Livekit realtime)"],
   ["google", "gemini-2.0-flash-exp", "Google Gemini 2.0 (Livekit realtime)"],
+  // No externalTts: ElevenLabs's text-only mode drops audio input too (lib/elevenlabs-realtime.ts).
+  ...ELEVENLABS_AGENT_LLMS.map(
+    ([id, description]) => ["elevenlabs", id, `ElevenLabs Agents, ${description} (Livekit realtime)`] as const,
+  ),
 ] as const;
 
 /**
@@ -137,7 +152,7 @@ export function buildLivekitHandlerAllModels() {
   // its alias behind advertising a session that could never start. Targets are
   // matched against the NON-alias rows, so an alias can never satisfy another
   // alias and a cycle cannot keep a dead pair alive.
-  const offered = new Set(rows.map(([id]) => id).filter((id) => !(id in LIVEKIT_MODEL_ALIASES)));
+  const offered = new Set<string>(rows.map(([id]) => id).filter((id) => !(id in LIVEKIT_MODEL_ALIASES)));
   return rows.filter(([id]) => {
     const target = LIVEKIT_MODEL_ALIASES[id];
     return target === undefined || offered.has(target);

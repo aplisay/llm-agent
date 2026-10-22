@@ -58,6 +58,7 @@ import {
   type GptLivePrepared,
 } from "./gpt-live.js";
 import { attachClientDelegation, gptLiveUsageBackend, liveSessionOf } from "./gpt-live-model.js";
+import { isElevenLabsModelName } from "./elevenlabs-agents.js";
 import {
   armAuxStt,
   parseAuxSttOption,
@@ -1254,6 +1255,10 @@ export async function runAgentWorker({
     if (isGptLiveModelName(activeModelName)) {
       return false;
     }
+    // An ElevenLabs conversation is bound to one hosted agent and its tools.
+    if (isElevenLabsModelName(activeModelName)) {
+      return false;
+    }
     const voiceMode =
       resolvedVoiceMode || resolveVoiceMode(activeModelName, activeAgentDef.options);
     const isUltravoxRealtime =
@@ -1570,7 +1575,8 @@ export async function runAgentWorker({
 
       // The incoming agent speaks next. Ultravox realtime opens natively via
       // firstSpeakerSettings. Other stacks need an explicit first turn.
-      if (!(voiceMode === "realtime" && targetModelName.includes(":ultravox/"))) {
+      // Ultravox and ElevenLabs open the new leg themselves, from the opening passed to the factory.
+      if (!(voiceMode === "realtime" && (targetModelName.includes(":ultravox/") || isElevenLabsModelName(targetModelName)))) {
         try {
           await (newSession as any).generateReply(openingReply(voiceMode, opening));
         } catch (e) {
@@ -2242,10 +2248,12 @@ export async function runAgentWorker({
       const hasGreeting = Boolean(text) || Boolean(instructions);
       const invalidGreeting = Boolean(text) && Boolean(instructions);
 
+      // ElevenLabs greets provider-side too: the text is the conversation's first message, and
+      // instructions an opening message the model sends (lib/elevenlabs-realtime.ts).
       const wantGreeting =
         hasGreeting &&
         !invalidGreeting &&
-        !(voiceMode === "realtime" && modelName.includes("livekit:ultravox/"));
+        !(voiceMode === "realtime" && (modelName.includes("livekit:ultravox/") || isElevenLabsModelName(modelName)));
 
       const gptLive = isGptLiveModelName(modelName);
 
