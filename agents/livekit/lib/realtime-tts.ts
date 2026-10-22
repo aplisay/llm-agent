@@ -23,6 +23,9 @@ export const REALTIME_NATIVE_TTS_VENDORS: Record<string, string> = {
   ultravox: "ultravox",
   openai: "openai",
   google: "google",
+  // An ElevenLabs agent speaks with an ElevenLabs voice and has no text-output
+  // mode (docs/elevenlabs-agents.md).
+  elevenlabs: "elevenlabs",
 };
 
 /**

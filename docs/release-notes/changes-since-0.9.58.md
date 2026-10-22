@@ -17,6 +17,8 @@ Pipecat), and **ci** (build and release pipeline).
   voice is any ElevenLabs catalogue voice; billing is per minute on the call's
   voice row. `vendorSpecific.elevenlabs.conversation_config` tunes
   turn-taking and the TTS model. See [elevenlabs-agents.md](../elevenlabs-agents.md).
+- **[core+livekit] `livekit:elevenlabs/<llm>`**: the same four rows on the
+  LiveKit worker, sharing the hosted agents with the Pipecat rows.
 - **[core] `scripts/add-elevenlabs-rate-lines.mjs`** seeds the minute lines;
   `scripts/prune-elevenlabs-agents.mjs` removes hosted agents no longer used.
 

@@ -45,6 +45,8 @@ import {
   type GptLivePrepared,
 } from "./gpt-live.js";
 import { GptLiveRealtimeModel } from "./gpt-live-model.js";
+import { ElevenLabsRealtimeModel } from "./elevenlabs-realtime.js";
+import { isElevenLabsModelName } from "./elevenlabs-agents.js";
 import type {
   UltravoxAgentReaction,
   UltravoxInactivityMessage,
@@ -296,6 +298,8 @@ export const realtimePluginModules: Record<string, unknown> = {
   // Not the plugin module: the plugin's connect can end the job process. See openai-realtime.ts.
   openai: { realtime: { RealtimeModel: OpenAIRealtimeModel } },
   ultravox,
+  // A hosted ElevenLabs agent per configuration; see lib/elevenlabs-realtime.ts.
+  elevenlabs: { realtime: { RealtimeModel: ElevenLabsRealtimeModel } },
   google,
 };
 
@@ -415,9 +419,17 @@ export function buildRealtimeLlmOptions(
     } else if (modelName.includes("livekit:ultravox/")) {
       // The plugin clamps it to the range of the provider behind the voice.
       llmOptions.ttsSpeed = requestedTtsSpeed(agent);
-    } else {
+    } else if (!isElevenLabsModelName(modelName)) {
+      // ElevenLabs reads the speed from the agent itself (elevenlabs-agents.ts).
       warnTtsSpeedUnsupported(agent, modelName);
     }
+  }
+  // ElevenLabs: the model builds the hosted configuration and the conversation
+  // overrides from the agent, and opens the leg itself (docs/elevenlabs-agents.md).
+  if (isElevenLabsModelName(modelName)) {
+    llmOptions.agent = agent;
+    llmOptions.apiKey = process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_API_KEY || "";
+    if (opening) llmOptions.opening = opening;
   }
   const vendorSpecific = (agent?.options?.vendorSpecific ||
     undefined) as Record<string, any> | undefined;
@@ -710,7 +722,7 @@ export function createVoiceModelAndSession(
   const { realtime } = getRealtimePlugin(modelName);
   if (!realtime) {
     throw new Error(
-      `Unsupported realtime model: ${modelName} (expected livekit:<openai|ultravox|google>/...)`,
+      `Unsupported realtime model: ${modelName} (expected livekit:<openai|ultravox|google|elevenlabs>/...)`,
     );
   }
 
