@@ -1601,6 +1601,9 @@ async def _build_realtime(
             platform_opening=opening,
             max_duration_secs=max_duration_seconds(agent),
             on_session_ended=on_provider_session_ended,
+            # The call session begins the conversation on on_client_connected
+            # (call_session._wire_greeting), so the first message is heard.
+            defer_initiation=True,
         )
     elif model_id.startswith("ultravox/"):
         # Ultravox Realtime — Pipecat constructs a one-shot call against the

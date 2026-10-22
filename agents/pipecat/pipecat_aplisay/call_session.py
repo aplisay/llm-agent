@@ -941,8 +941,20 @@ class CallSession:
         # ElevenLabs speaks first by itself: a verbatim greeting is the
         # conversation's first message, anything else is an opening message
         # the service sends once the conversation is ready
-        # (elevenlabs_agents.opening_plan).
+        # (elevenlabs_agents.opening_plan). The conversation is begun here,
+        # once the caller's media is up: begun at start, the first message
+        # played before the WebRTC leg was connected and was never heard
+        # (staging, 2026-10-22).
         if is_elevenlabs_agents_model_id(model_id_from_name(model_name)):
+            llm = self._llm_service
+
+            @transport.event_handler("on_client_connected")
+            async def _on_client_connected_elevenlabs(*_args, **_kwargs) -> None:
+                try:
+                    await llm.begin_conversation()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"ElevenLabs begin_conversation failed: {e}")
+
             return
         from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
         from pipecat.frames.frames import LLMRunFrame as _RunFrame

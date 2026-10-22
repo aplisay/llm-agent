@@ -402,6 +402,8 @@ def _service(agent=None, *, platform_opening=None, on_session_ended=None, tool_s
         setattr(llm, name, noop)
     socket = _Socket()
     llm._socket = socket  # type: ignore[assignment]
+    # As after start() on a transport that reported the caller connected.
+    llm._begun = True
     return llm, socket, frames, calls
 
 
@@ -672,28 +674,68 @@ def test_elevenlabs_always_restarts_on_handover():
     assert session._needs_full_handover({"modelName": "pipecat:elevenlabs/gpt-5.4-mini"}) is True
 
 
-def test_the_generic_greeting_is_not_wired_on_an_elevenlabs_row():
+def test_the_elevenlabs_row_begins_the_conversation_when_the_caller_connects():
     from pipecat_aplisay import api_client
     from pipecat_aplisay.call_session import CallSession
 
     class _Transport:
         def __init__(self):
-            self.handlers: list[str] = []
+            self.handlers: dict[str, list] = {}
 
         def event_handler(self, name):
             def register(fn):
-                self.handlers.append(name)
+                self.handlers.setdefault(name, []).append(fn)
                 return fn
 
             return register
 
+    class _Llm:
+        begun = 0
+
+        async def begin_conversation(self):
+            self.begun += 1
+
     call = api_client.CallRecord(id="c", userId="u", organisationId="o", instanceId="i", agentId="a", persisted=False)
     session = CallSession(session_id="s", agent=_agent(), instance={}, call=call, sip_gateway=None, gateway_session=None)  # type: ignore[arg-type]
+    session._llm_service = _Llm()
     transport = _Transport()
     asyncio.run(session._wire_greeting(transport, object(), _agent(greeting={"text": "Hello"}), "realtime", ROW))
-    assert transport.handlers == []
-    asyncio.run(session._wire_greeting(transport, object(), _agent(greeting={"text": "Hello"}), "realtime", "pipecat:openai/gpt-realtime"))
-    assert transport.handlers == ["on_client_connected"]
+    # the generic greeting frames are not queued; the conversation begins on connect instead
+    [handler] = transport.handlers["on_client_connected"]
+    asyncio.run(handler())
+    assert session._llm_service.begun == 1
+    plain = _Transport()
+    asyncio.run(session._wire_greeting(plain, object(), _agent(greeting={"text": "Hello"}), "realtime", "pipecat:openai/gpt-realtime"))
+    assert list(plain.handlers) == ["on_client_connected"]
+
+
+def test_a_deferred_conversation_waits_for_begin_and_drops_audio_until_then():
+    llm, socket, frames, _ = _service()
+    llm._defer_initiation = True
+    llm._begun = False
+
+    async def scenario():
+        # audio before the conversation has begun goes nowhere (the server has no overrides yet)
+        await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01" * 6400, sample_rate=16000, num_channels=1))
+        assert socket.sent == []
+        await llm.begin_conversation()
+        assert [m["type"] for m in socket.sent] == ["conversation_initiation_client_data"]
+        assert socket.sent[0]["conversation_config_override"]["agent"]["prompt"]["prompt"] == "You are Sam."
+        await llm.begin_conversation()
+        assert len(socket.sent) == 1
+        await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01" * 6400, sample_rate=16000, num_channels=1))
+        assert any("user_audio_chunk" in m for m in socket.sent)
+
+    asyncio.run(scenario())
+    assert llm.begun is True
+    # a begin before the socket opens is honoured at start: the deferral is cleared
+    early, early_socket, _, _ = _service()
+    early._socket = None  # type: ignore[assignment]
+    early._defer_initiation = True
+    early._begun = False
+    asyncio.run(early.begin_conversation())
+    assert early.begun is False and early._defer_initiation is False
+    assert early_socket.sent == []
 
 
 def test_tools_register_for_native_results():

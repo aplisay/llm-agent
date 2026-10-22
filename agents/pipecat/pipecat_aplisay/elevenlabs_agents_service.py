@@ -100,6 +100,7 @@ class ElevenLabsAgentsLLMService(LLMService):
         max_duration_secs: Optional[int] = None,
         on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
         client: Optional[ElevenLabsAgentsClient] = None,
+        defer_initiation: bool = False,
         **kwargs: Any,
     ) -> None:
         llm = el.elevenlabs_llm(model_id)
@@ -127,6 +128,12 @@ class ElevenLabsAgentsLLMService(LLMService):
         )
         self._opening_message = opening
         self._on_session_ended = on_session_ended
+        # The first message plays the moment the conversation is initiated, so
+        # with ``defer_initiation`` the socket opens at start but the initiation
+        # waits for begin_conversation(): the call session calls it once the
+        # caller's media is up, or the greeting is spoken to nobody.
+        self._defer_initiation = defer_initiation
+        self._begun = False
 
         self._socket: Optional[websocket_client.ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -180,12 +187,28 @@ class ElevenLabsAgentsLLMService(LLMService):
             self.agent_id, url = await self._client.conversation_url(self._config)
             self._socket = await websocket_client.connect(url, max_size=None)
             self._disconnecting = False
-            await self._send(el.initiation_message(self._overrides))
             self._receive_task = self.create_task(self._receive_messages())
-            logger.bind(agent_id=self.agent_id).info("ElevenLabs conversation opened")
+            logger.bind(agent_id=self.agent_id, deferred=self._defer_initiation).info("ElevenLabs conversation opened")
+            if not self._defer_initiation:
+                await self.begin_conversation()
         except Exception as e:  # noqa: BLE001
             await self.push_error("Failed to start the ElevenLabs conversation", e, fatal=True)
             await self._session_ended(f"connect failed: {e}")
+
+    async def begin_conversation(self) -> None:
+        """Send the initiation (the overrides, and so the first message). Once;
+        a call before the socket is open is honoured when it opens."""
+        if self._begun:
+            return
+        self._defer_initiation = False
+        if self._socket is None:
+            return
+        self._begun = True
+        await self._send(el.initiation_message(self._overrides))
+
+    @property
+    def begun(self) -> bool:
+        return self._begun
 
     async def stop(self, frame: EndFrame) -> None:
         await super().stop(frame)
@@ -280,7 +303,7 @@ class ElevenLabsAgentsLLMService(LLMService):
         await self._send({"type": "client_tool_result", "tool_call_id": tool_call_id, "result": result, "is_error": is_error})
 
     async def _send_user_audio(self, frame: InputAudioRawFrame) -> None:
-        if self._socket is None:
+        if self._socket is None or not self._begun:
             return
         self._last_user_id = frame.user_id if isinstance(frame, UserAudioRawFrame) else ""
         audio = frame.audio
