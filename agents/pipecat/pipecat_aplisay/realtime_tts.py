@@ -30,6 +30,10 @@ REALTIME_NATIVE_TTS_VENDORS: dict[str, str] = {
     # The Grok voice model speaks with xAI's own voices and has no text-only
     # output (docs/grok.md), so it never appears in TEXT_OUTPUT_PROVIDERS.
     "xai": "xai",
+    # ElevenLabs agents speak with ElevenLabs voices; their text-only mode
+    # drops audio input too, so there is no text-output mode either
+    # (docs/elevenlabs-agents.md).
+    "elevenlabs": "elevenlabs",
 }
 
 #: Realtime providers this worker can run in text-output mode. Gemini Live is

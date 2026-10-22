@@ -47,6 +47,7 @@ from .gpt_live import (
     merge_tools,
     resolve_delegate,
 )
+from .elevenlabs_agents import is_elevenlabs_agents_model_id
 from .grok import is_xai_voice_model_id
 from .mcp_tools import (
     MCP_MAX_RESULT_BYTES, MCP_MAX_RESULT_BYTES_DELEGATED,
@@ -937,6 +938,12 @@ class CallSession:
 
         if model_id_from_name(model_name).startswith("ultravox/"):
             return
+        # ElevenLabs speaks first by itself: a verbatim greeting is the
+        # conversation's first message, anything else is an opening message
+        # the service sends once the conversation is ready
+        # (elevenlabs_agents.opening_plan).
+        if is_elevenlabs_agents_model_id(model_id_from_name(model_name)):
+            return
         from pipecat.frames.frames import LLMMessagesAppendFrame as _AppendFrame
         from pipecat.frames.frames import LLMRunFrame as _RunFrame
 
@@ -1652,10 +1659,13 @@ class CallSession:
         # GPT-Live fixes instructions, voice and delegation mode at session
         # start, so a handover is always a restart (docs/gpt-live.md). Grok
         # fixes the model and voice per connection (docs/grok.md).
+        # An ElevenLabs conversation is bound to one hosted agent and its tools
+        # (docs/elevenlabs-agents.md).
         return (
             current_id.startswith("ultravox/")
             or is_gpt_live_model_id(current_id)
             or is_xai_voice_model_id(current_id)
+            or is_elevenlabs_agents_model_id(current_id)
         )
 
     async def _on_agent_transfer(self, args: dict) -> dict:
