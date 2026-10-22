@@ -709,6 +709,17 @@ def test_the_elevenlabs_row_begins_the_conversation_when_the_caller_connects():
     assert list(plain.handlers) == ["on_client_connected"]
 
 
+def test_the_builder_passes_the_deferral_through():
+    # The worker calls the builder, not the class (voice_session._build_realtime);
+    # staging found the builder without the argument (2026-10-22).
+    deferred = build_elevenlabs_agents_service(
+        api_key="key", model_id=MODEL_ID, agent=_agent(), tool_schemas=[], system_prompt="x", defer_initiation=True,
+    )
+    assert deferred._defer_initiation is True and deferred.begun is False
+    prompt = build_elevenlabs_agents_service(api_key="key", model_id=MODEL_ID, agent=_agent(), tool_schemas=[], system_prompt="x")
+    assert prompt._defer_initiation is False
+
+
 def test_a_deferred_conversation_waits_for_begin_and_drops_audio_until_then():
     llm, socket, frames, _ = _service()
     llm._defer_initiation = True

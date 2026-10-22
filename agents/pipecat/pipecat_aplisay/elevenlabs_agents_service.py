@@ -552,6 +552,7 @@ def build_elevenlabs_agents_service(
     platform_opening: Optional[str] = None,
     max_duration_secs: Optional[int] = None,
     on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
+    defer_initiation: bool = False,
 ) -> ElevenLabsAgentsLLMService:
     """Construct the service for one session."""
     return ElevenLabsAgentsLLMService(
@@ -563,4 +564,5 @@ def build_elevenlabs_agents_service(
         platform_opening=platform_opening,
         max_duration_secs=max_duration_secs,
         on_session_ended=on_session_ended,
+        defer_initiation=defer_initiation,
     )
