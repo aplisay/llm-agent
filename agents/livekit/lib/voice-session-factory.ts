@@ -27,6 +27,7 @@ import {
 } from "./pipeline-provider-keys.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import logger from "./logger.js";
+import { resolveLivekitModelId } from "./livekit-model-registry.js";
 import { buildNeuphonicTts } from "./neuphonic-tts.js";
 import { requestedTtsSpeed, ttsSpeedFor, warnTtsSpeedUnsupported } from "./tts-speed.js";
 import { openingFirstSpeakerSettings } from "./handover-opening.js";
@@ -402,7 +403,9 @@ export function buildRealtimeLlmOptions(
     callId,
   };
   if (providerModelName) {
-    llmOptions.model = providerModelName;
+    // An agent saved on a retired id runs as its alias target (LIVEKIT_MODEL_ALIASES).
+    const plugin = modelName.match(/^livekit:([^/]+)\//)?.[1] ?? "";
+    llmOptions.model = resolveLivekitModelId(`${plugin}/${providerModelName}`).replace(/^[^/]+\//, "");
   }
   // Always set: the plugin's own default is 0.8.
   if (modelName.includes("livekit:ultravox/")) {

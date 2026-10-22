@@ -34,7 +34,12 @@ export const LIVEKIT_REALTIME_MODEL_ROWS: ReadonlyArray<
   ["ultravox", "ultravox-v0.6", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.6-gemma3-27b", "Ultravox 0.6 (Livekit realtime)"],
   ["ultravox", "ultravox-v0.7", "Ultravox 0.7 (GLM 4.6) (Livekit realtime)"],
-  ["google", "gemini-2.0-flash-exp", "Google Gemini 2.0 (Livekit realtime)"],
+  // The default Live model of @livekit/agents-plugin-google 1.9.0, and the
+  // same model as the Pipecat row (lib/models/pipecat.js).
+  ["google", "gemini-2.5-flash-native-audio-preview-12-2025", "Google Gemini 2.5 Flash Live (Livekit realtime)"],
+  // Retired alias (LIVEKIT_MODEL_ALIASES): listed while its target is, so an
+  // agent saved on it still shows a listed model.
+  ["google", "gemini-2.0-flash-exp", "Google Gemini 2.0 Live (Livekit realtime, retired: runs Gemini 2.5 Flash Live)"],
   // No externalTts: ElevenLabs's text-only mode drops audio input too (lib/elevenlabs-realtime.ts).
   ...ELEVENLABS_AGENT_LLMS.map(
     ([id, description]) => ["elevenlabs", id, `ElevenLabs Agents, ${description} (Livekit realtime)`] as const,
@@ -66,14 +71,24 @@ export const LIVEKIT_PIPELINE_MODEL_ROWS = [
  *
  * Declaring the target here lets `buildLivekitHandlerAllModels` drop an alias
  * whose target is not offered, rather than advertise a name that resolves to
- * nothing. Resolution is unaffected either way: a saved agent finds its handler
- * by the `livekit:` PREFIX (`Handler.getHandler` → `Handler.parseName`), never
- * by looking its model up in this roster, so an unlisted alias still runs and
- * still passes the `Unknown model name` check on save.
+ * nothing, and lets the worker send the target to the provider
+ * (`resolveLivekitModelId` in `buildRealtimeLlmOptions`). Handler lookup does
+ * not use this map or the roster: a saved agent finds its handler by the
+ * `livekit:` PREFIX (`Handler.getHandler` → `Handler.parseName`), so an unlisted
+ * alias still runs and still passes the `Unknown model name` check on save.
  */
 export const LIVEKIT_MODEL_ALIASES: Record<string, string> = {
   "ultravox/ultravox-70b": "ultravox/ultravox-v0.6",
+  // Google shut the model this row was named after down on 2025-12-09. Pipecat
+  // ran its library default (this target) whatever the row said, but this
+  // worker sent the retired id. An agent still saved on it now runs the target.
+  "google/gemini-2.0-flash-exp": "google/gemini-2.5-flash-native-audio-preview-12-2025",
 };
+
+/** The id a model id runs as: its alias target when it has one, else itself. */
+export function resolveLivekitModelId(modelId: string): string {
+  return LIVEKIT_MODEL_ALIASES[modelId] ?? modelId;
+}
 
 const pipelineFlag = {
   voiceStack: "pipeline" as const,

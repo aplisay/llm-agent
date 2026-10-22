@@ -10,7 +10,7 @@ import { externalTtsVendor, textOutputEnabled, ttsVendor } from "../lib/realtime
 
 const ULTRAVOX = "livekit:ultravox/ultravox-v0.7";
 const OPENAI = "livekit:openai/gpt-realtime";
-const GEMINI = "livekit:google/gemini-2.0-flash-exp";
+const GEMINI = "livekit:google/gemini-2.5-flash-native-audio-preview-12-2025";
 
 const agent = (tts?: Record<string, unknown>) => ({ prompt: "p", options: tts ? { tts } : {} }) as any;
 

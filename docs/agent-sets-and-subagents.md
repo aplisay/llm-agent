@@ -84,8 +84,11 @@ The runtime picks one of two modes per transfer:
 * **In place** (same `modelName`, stack supports the swap): prompt + tools are
   replaced inside the live session (LiveKit `llm.handoff()`; Pipecat context /
   settings / tools frames). Same call record, same model and voice.
-* **Full-stack restart** (model string differs, or Ultravox realtime which can
-  swap neither prompt nor tools after call creation): the running agent stack
+* **Full-stack restart** (model string differs, or a realtime stack whose live
+  session cannot take the swapped prompt, tools or opening: Ultravox (on
+  LiveKit only when the tool surface changes), GPT-Live and ElevenLabs Agents
+  on both workers, and Grok voice and Gemini Live on Pipecat): the running
+  agent stack
   is stopped and the target agent's own stack — model, voice, tools — starts
   on the same live call. A **child call record** is created with
   `parentId` = the original call (the bridged-transfer lineage convention);
@@ -272,7 +275,7 @@ shared function handler runs in-process.
 
 | Capability | livekit | jambonz | pipecat | ultravox | text |
 |---|---|---|---|---|---|
-| `transfer_agent` (in place, same model) | ✅ ¹ | ❌ | ✅ (not Ultravox realtime) | ❌ | n/a |
+| `transfer_agent` (in place, same model) | ✅ ¹ (not GPT-Live or ElevenLabs Agents) | ❌ | ✅ (not Ultravox, GPT-Live, Grok, ElevenLabs Agents or Gemini Live realtime) | ❌ | n/a |
 | `transfer_agent` (full restart + child call) | ✅ | ❌ | ✅ (ws SIP gateways + browser WebRTC) | ❌ | n/a |
 | `subagent` caller | ✅ | ❌ | ✅ | ❌ | ✅ (nested) |
 | `result` / invokable | n/a | n/a | n/a | n/a | ✅ |

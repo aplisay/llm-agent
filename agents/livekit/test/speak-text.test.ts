@@ -23,7 +23,7 @@ process.env.LIVEKIT_API_SECRET ||= "test-secret";
 
 const PIPELINE = "livekit:openai/gpt-4o-mini";
 const OPENAI = "livekit:openai/gpt-realtime";
-const GEMINI = "livekit:google/gemini-2.0-flash-exp";
+const GEMINI = "livekit:google/gemini-2.5-flash-native-audio-preview-12-2025";
 
 const GREETING = "Thank you for calling Acme Dental.";
 const PROMPT = "Are you still there?";

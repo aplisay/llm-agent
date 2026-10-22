@@ -1,6 +1,7 @@
 """What the platform appends to a realtime model's context mid-call, shared by
-the service subclasses (grok_service.py, openai_realtime_service.py). No
-provider imports: voice_session loads this on every realtime call."""
+the service subclasses (gemini_service.py, grok_service.py,
+openai_realtime_service.py). No provider imports: voice_session loads this on
+every realtime call."""
 
 from __future__ import annotations
 
