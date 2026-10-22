@@ -361,6 +361,13 @@ class _Socket:
     async def close(self) -> None:
         return None
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        # nothing to receive: the loop ends at once
+        raise StopAsyncIteration
+
 
 def _service(agent=None, *, platform_opening=None, on_session_ended=None, tool_schemas=None):
     agent = agent or _agent()
@@ -720,30 +727,45 @@ def test_the_builder_passes_the_deferral_through():
     assert prompt._defer_initiation is False
 
 
-def test_a_deferred_conversation_waits_for_begin_and_drops_audio_until_then():
+def test_a_deferred_conversation_connects_on_begin_and_drops_audio_until_then(monkeypatch):
+    import pipecat_aplisay.elevenlabs_agents_service as service_module
+
     llm, socket, frames, _ = _service()
+    # as after start() with defer_initiation: the URL is known, nothing is connected
+    llm._socket = None  # type: ignore[assignment]
     llm._defer_initiation = True
     llm._begun = False
+    llm._conversation_url = "wss://el.test/conv?token=1"
+    connected: list[str] = []
+
+    async def fake_connect(url, **_kwargs):
+        connected.append(url)
+        return socket
+
+    monkeypatch.setattr(service_module.websocket_client, "connect", fake_connect)
 
     async def scenario():
-        # audio before the conversation has begun goes nowhere (the server has no overrides yet)
+        # audio before the conversation has begun goes nowhere (there is no socket)
         await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01" * 6400, sample_rate=16000, num_channels=1))
-        assert socket.sent == []
+        assert socket.sent == [] and connected == []
         await llm.begin_conversation()
+        # the initiation is the first message on the socket
+        assert connected == ["wss://el.test/conv?token=1"]
         assert [m["type"] for m in socket.sent] == ["conversation_initiation_client_data"]
         assert socket.sent[0]["conversation_config_override"]["agent"]["prompt"]["prompt"] == "You are Sam."
         await llm.begin_conversation()
-        assert len(socket.sent) == 1
+        assert len(connected) == 1 and len(socket.sent) == 1
         await llm._send_user_audio(InputAudioRawFrame(audio=b"\x01" * 6400, sample_rate=16000, num_channels=1))
         assert any("user_audio_chunk" in m for m in socket.sent)
 
     asyncio.run(scenario())
     assert llm.begun is True
-    # a begin before the socket opens is honoured at start: the deferral is cleared
+    # a begin before start has the URL only clears the deferral; start then connects
     early, early_socket, _, _ = _service()
     early._socket = None  # type: ignore[assignment]
     early._defer_initiation = True
     early._begun = False
+    early._conversation_url = None
     asyncio.run(early.begin_conversation())
     assert early.begun is False and early._defer_initiation is False
     assert early_socket.sent == []
