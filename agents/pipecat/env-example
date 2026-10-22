@@ -33,7 +33,14 @@ WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 # ANTHROPIC_API_KEY=
 # DEEPGRAM_API_KEY=
 # CARTESIA_API_KEY=
+# ElevenLabs TTS and the ElevenLabs Agents rows (docs/elevenlabs-agents.md).
+# ELEVEN_API_KEY is accepted as a fallback.
 # ELEVENLABS_API_KEY=
+# The first segment of every ElevenLabs agent name this worker creates, so
+# deployments sharing a workspace stay apart (default aplisay).
+# ELEVENLABS_AGENT_PREFIX=
+# A regional ElevenLabs endpoint (default https://api.elevenlabs.io).
+# ELEVENLABS_API_BASE=
 # NEUPHONIC_API_KEY=
 
 # Platform-wide outbound SBC for trunk-origin outbound calls / WebRTC→telephony

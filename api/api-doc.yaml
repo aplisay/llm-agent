@@ -1176,6 +1176,19 @@ components:
                                        "replace": { "Aplisay": "Appli-say" } } } }
               ```
 
+            `elevenlabs.conversation_config`: on an ElevenLabs Agents row (`pipecat:elevenlabs/<llm>`) a
+            free-form object deep-merged into the hosted agent's conversation configuration after the
+            platform's own mapping, so an explicit value here wins. Use it for `turn` (turn-taking:
+            `turn_eagerness`, `turn_timeout`), `tts` (`model_id`, `stability`, `similarity_boost`), `asr`
+            (`keywords`) and `agent.prompt` LLM settings such as `reasoning_effort`. The prompt, the LLM, the
+            tools, `first_message`, the voice, the audio formats, the events and the duration cap are set by
+            the platform and are rejected when the agent is saved, as is anything other than
+            `conversation_config`. See docs/elevenlabs-agents.md.
+              ```json
+              { "elevenlabs": { "conversation_config": { "turn": { "turn_eagerness": "eager" },
+                                                         "tts": { "model_id": "eleven_turbo_v2_5" } } } }
+              ```
+
             The structure and allowed values are vendor-specific and should be documented by each vendor.
           type: object
           additionalProperties: true

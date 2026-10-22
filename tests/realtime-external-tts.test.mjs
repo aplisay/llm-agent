@@ -33,6 +33,9 @@ describe('external TTS on realtime models', () => {
       expect(pipecatModelSupportsExternalTts('google/gemini-2.0-flash-exp')).toBe(false);
       // The Grok Voice Agent API has no text-only output either (docs/grok.md).
       expect(pipecatModelSupportsExternalTts('xai/grok-voice-think-fast-2.0')).toBe(false);
+      // ElevenLabs's text-only mode drops audio input too (docs/elevenlabs-agents.md).
+      expect(pipecatModelSupportsExternalTts('elevenlabs/gemini-2.5-flash')).toBe(false);
+      expect(pipecatModelIdFlags['elevenlabs/gemini-2.5-flash']).toEqual({ voiceStack: 'realtime', audioModel: true, pipeline: false });
       expect(pipecatModelSupportsExternalTts('openai/gpt-4o-mini')).toBe(false);
       expect(pipecatModelIdFlags['ultravox/ultravox-v0.7']).toMatchObject({
         voiceStack: 'realtime',

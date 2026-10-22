@@ -115,7 +115,7 @@ def bundled_speech_vendor(agent: dict, model_id: str) -> str | None:
 
 #: Do not meter native speech as TTS when the vendor also sells discrete TTS: its paid rate would match.
 #: See docs/realtime-external-tts.md.
-UNMETERED_BUNDLED_SPEECH_VENDORS: frozenset[str] = frozenset({"google"})
+UNMETERED_BUNDLED_SPEECH_VENDORS: frozenset[str] = frozenset({"google", "elevenlabs"})
 
 
 def _bundled_speech_is_unmeterable(agent: dict, model_id: str) -> bool:

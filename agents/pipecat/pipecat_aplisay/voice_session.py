@@ -42,6 +42,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 
 from .dtmf import CallbackDtmfAggregator
 from .gpt_live import GptLiveSession, is_gpt_live_model_id
+from .elevenlabs_agents import is_elevenlabs_agents_model_id, max_duration_seconds
 from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
@@ -914,7 +915,9 @@ def _is_ultravox_realtime(llm: Any) -> bool:
 def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
     """Ultravox data tools must survive interruptions and return native results without async placeholders. See PRs #168 and #169. Keep
     protected builtins on the synchronous result path used by handover; other providers remain synchronous."""
-    ultravox_realtime = _is_ultravox_realtime(llm)
+    # Ultravox and ElevenLabs take one native result per invocation, and the
+    # conversation waits for it; see deliver_native_tool_result on each service.
+    native_results = _is_ultravox_realtime(llm) or callable(getattr(llm, "deliver_native_tool_result", None))
     schemas: list[FunctionSchema] = []
     for entry in tools:
         s = entry["schema"]
@@ -934,7 +937,7 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
             # client_tool_result (deliver_native_tool_result), NOT via Pipecat's
             # async-tool user-text path which Ultravox ignores. Same set as the
             # cancel_on_interruption=False tools below.
-            _native=bool(ultravox_realtime and not entry.get("protect_from_interruption")),
+            _native=bool(native_results and not entry.get("protect_from_interruption")),
         ) -> None:
             # Log every tool/MCP call and its result at INFO with an ``event``
             # marker (see tool_log.py) so they are visible in the per-call debug
@@ -1035,7 +1038,7 @@ def _register_tools_on_llm(llm: Any, tools: list[dict]) -> ToolsSchema:
         # _deliver_native_result, NOT the async user-text path). Synchronous for
         # shielded builtins and for every tool off the Ultravox path.
         is_builtin_side_effect = bool(entry.get("protect_from_interruption"))
-        cancel_on_interruption = not (ultravox_realtime and not is_builtin_side_effect)
+        cancel_on_interruption = not (native_results and not is_builtin_side_effect)
         llm.register_function(
             s["name"], _runner, cancel_on_interruption=cancel_on_interruption
         )
@@ -1487,6 +1490,7 @@ async def _build_realtime(
     options = agent.get("options") or {}
     gpt_live_model = is_gpt_live_model_id(model_id)
     grok_voice_model = is_xai_voice_model_id(model_id)
+    elevenlabs_model = is_elevenlabs_agents_model_id(model_id)
 
     # Text-output mode (realtime_tts.py): the agent names a TTS vendor other
     # than the model's own, so the model emits text and a discrete TTS stage
@@ -1580,6 +1584,22 @@ async def _build_realtime(
             system_prompt=system_prompt,
             session_properties=_xai_session_properties(agent),
             agent=agent,
+            on_session_ended=on_provider_session_ended,
+        )
+    elif elevenlabs_model:
+        # A hosted ElevenLabs agent per configuration, found or created at
+        # session start; the greeting, the opening instruction and the keypad
+        # digits go through the service. See docs/elevenlabs-agents.md.
+        from .elevenlabs_agents_service import build_elevenlabs_agents_service
+
+        llm = build_elevenlabs_agents_service(
+            api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+            model_id=model_id,
+            agent=agent,
+            tool_schemas=[entry["schema"] for entry in tools],
+            system_prompt=system_prompt,
+            platform_opening=opening,
+            max_duration_secs=max_duration_seconds(agent),
             on_session_ended=on_provider_session_ended,
         )
     elif model_id.startswith("ultravox/"):
@@ -1812,7 +1832,7 @@ async def _build_realtime(
         # context sent through the service (gpt_live_service.py). Grok speaks
         # the message exactly through its verbatim item (grok_service.py).
         inject=(
-            llm.inject_inactivity_prompt if gpt_live_model
+            llm.inject_inactivity_prompt if gpt_live_model or elevenlabs_model
             else llm.speak_verbatim if grok_voice_model
             else None
         ),

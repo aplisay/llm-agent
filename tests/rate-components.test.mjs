@@ -20,6 +20,7 @@ const models = [
   { name: 'livekit:ultravox/ultravox-v0.6', description: 'Ultravox' },
   { name: 'livekit:openai/gpt-4o', description: 'GPT-4o' },
   { name: 'pipecat:xai/grok-voice-think-fast-2.0', description: 'Grok Voice' },
+  { name: 'pipecat:elevenlabs/gemini-2.5-flash', description: 'ElevenLabs Agents' },
 ];
 
 describe('rate-components catalogue', () => {
@@ -46,6 +47,10 @@ describe('rate-components catalogue', () => {
     const grok = byKey('model:pipecat:xai/grok-voice-think-fast-2.0');
     expect(grok.units).toEqual(['minute']);
     expect(grok.match).toEqual({ technology: 'voice', detail: 'pipecat:xai/grok-voice-think-fast-2.0' });
+    // An ElevenLabs Agents row is a per-minute conversation (docs/elevenlabs-agents.md).
+    const el = byKey('model:pipecat:elevenlabs/gemini-2.5-flash');
+    expect(el.units).toEqual(['minute']);
+    expect(el.match).toEqual({ technology: 'voice', detail: 'pipecat:elevenlabs/gemini-2.5-flash' });
   });
 
   it('advertises tts/stt engines with their billing units', () => {
