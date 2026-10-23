@@ -42,7 +42,7 @@ const PROMPT = 'A warm, unhurried woman in her forties with a soft southern Engl
 const mockVoices = { listVoices: async () => ({}) };
 
 describe('custom voices', () => {
-  let voicesByLocale, locales, listCustomVoices, customVoiceItem, agentDbAgent, createAgent, CustomVoice;
+  let voicesByLocale, locales, listCustomVoices, customVoiceItem, agentDbAgent, createAgent, CustomVoice, functionHandler;
   let whenCustomVoiceSettled, sweepCreatingVoices;
   let orgA, orgB, ownerA, ownerB, memberA;
   let openaiCalls, openaiResponse, openaiDeleteResponse, openaiVoices, savedFetch, savedKey, savedPlatformLimit, seq;
@@ -73,6 +73,17 @@ describe('custom voices', () => {
     const res = makeRes(user);
     await listCustomVoices(makeReq({ query }), res);
     return res;
+  };
+  // The builder's list_voices builtin, called as its chat session calls it.
+  const listVoices = async (input, organisationId) => {
+    const { function_results } = await functionHandler(
+      [{ name: 'list_voices', input }],
+      [{
+        name: 'list_voices', implementation: 'builtin', platform: 'list_voices',
+        input_schema: { properties: { modelName: { type: 'string' }, locale: { type: 'string' }, search: { type: 'array' } } },
+      }],
+      [], () => { }, {}, {}, organisationId ? { voiceOrganisationId: organisationId } : {});
+    return JSON.parse(function_results[0].result);
   };
   const del = async (user, id, query = {}) => {
     const res = makeRes(user);
@@ -107,6 +118,7 @@ describe('custom voices', () => {
     customVoiceItem = (await import('../api/paths/custom-voices/{customVoiceId}.js')).default(mockLogger);
     agentDbAgent = (await import('../api/paths/agent-db/agent.js')).default(mockLogger).GET;
     createAgent = (await import('../api/paths/agents.js')).default(mockLogger, {}, {}).POST;
+    ({ functionHandler } = await import('../lib/function-handler.js'));
 
     orgA = await Organisation.create({ id: randomUUID(), name: 'Custom Voice Org A' });
     orgB = await Organisation.create({ id: randomUUID(), name: 'Custom Voice Org B' });
@@ -477,6 +489,55 @@ describe('custom voices', () => {
     const locB = makeRes(ownerB);
     await locales(makeReq({ params: { modelName: GPT_LIVE } }), locB);
     expect(locB.body.locales).toEqual(['any']);
+  });
+
+  // list_voices used to give GPT-Live only the stock list, so a set builder could
+  // not offer the organisation's own voice, though a save accepts it.
+  test('the builder\'s list_voices offers the organisation\'s own ready voices, and nobody else\'s', async () => {
+    const voice = (await createVoice(ownerA, { name: 'Northern Irish admin', prompt: PROMPT, gender: 'female' })).voice;
+
+    expect((await listVoices({ modelName: GPT_LIVE }, orgA.id)).locales).toEqual(['any', 'en-GB']);
+    expect((await listVoices({ modelName: GPT_LIVE }, orgB.id)).locales).toEqual(['any']);
+
+    const gb = (await listVoices({ modelName: GPT_LIVE, locale: 'en-GB' }, orgA.id)).vendors.OpenAI;
+    expect(gb[0]).toMatchObject({ name: voice.voice, custom: true, label: 'Northern Irish admin' });
+    expect(gb.some((v) => v.name === 'marin')).toBe(true);
+
+    const found = await listVoices({ modelName: GPT_LIVE, search: ['northern', 'irish', 'admin'] }, orgA.id);
+    expect(found.vendors.OpenAI[0]).toMatchObject({ name: voice.voice, custom: true, matchedTerms: ['northern', 'irish', 'admin'] });
+    expect(found.unmatchedTerms).toEqual([]);
+
+    const otherOrg = await listVoices({ modelName: GPT_LIVE, search: ['northern', 'irish', 'admin'] }, orgB.id);
+    expect(JSON.stringify(otherOrg)).not.toContain(voice.voice);
+    expect(otherOrg.unmatchedTerms).toEqual(['northern', 'admin']);
+    // No organisation in the call options (a subagent's tool plane): the stock list only.
+    expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, locale: 'any' }))).not.toContain(voice.voice);
+  });
+
+  // An id the registry lacks (here a text id with the prefix swapped) used to be read
+  // as a realtime row of an unknown provider and offered every vendor's voices.
+  test('the builder\'s list_voices refuses a model id the handler does not list', async () => {
+    const { error } = await listVoices({ modelName: 'pipecat:anthropic/claude-sonnet-4-6', search: ['british'] }, orgA.id);
+    expect(error).toMatch(/^Unknown model pipecat:anthropic\/claude-sonnet-4-6/);
+    expect(error).toContain('pipecat:anthropic/claude-sonnet-4-5');
+    expect(error).toContain('pipecat:openai/gpt-live-1');
+    expect((await listVoices({ modelName: 'livekit:openai/no-such-model' }, orgA.id)).error).toMatch(/^Unknown model livekit:/);
+  });
+
+  // The refusal reads the model id maps, while GET /models serves the allModels rows.
+  // Check those rows, so a row added to one list but not the other is caught.
+  test('the builder\'s list_voices accepts every model GET /models offers', async () => {
+    const { unknownVoiceModelMessage } = await import('../lib/model-voices.js');
+    const { default: PipecatModel } = await import('../lib/models/pipecat.js');
+    const { default: LiveKitModel } = await import('../lib/models/livekit.js');
+    const offered = [
+      ...PipecatModel.allModels.map(([id]) => `pipecat:${id}`),
+      ...LiveKitModel.allModels.map(([id]) => `livekit:${id}`),
+    ];
+    const elevenLabs = ['pipecat:elevenlabs/gemini-2.5-flash', 'livekit:elevenlabs/claude-sonnet-5-5'];
+    expect(offered).toEqual(expect.arrayContaining([GPT_LIVE, LIVEKIT_GPT_LIVE, ...elevenLabs]));
+    expect(offered.filter((id) => unknownVoiceModelMessage(id) !== null)).toEqual([]);
+    for (const id of elevenLabs) expect(unknownVoiceModelMessage(id)).toBeNull();
   });
 
   test('another organisation cannot read, delete or list a voice', async () => {

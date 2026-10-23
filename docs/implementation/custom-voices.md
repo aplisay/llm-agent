@@ -174,7 +174,6 @@ missing, so a deployment that is not force-synced still gets them.
 
 ## Known gaps
 
-- The builder's `list_voices` tool does not see custom voices yet.
 - A voice the user cannot see is made only if OpenAI's list stops answering
   for 3 minutes while OpenAI also makes the voice. It would then hold one of
   the 100 slots. Find it by its `aplisay-<id>` name.
