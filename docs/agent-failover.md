@@ -29,7 +29,7 @@ When an agent fails to start (e.g., model connection timeout, unsupported model,
    - This is the highest priority fallback
 
 2. **Model Fallback** (`options.fallback.model`)
-   - If no agent fallback is configured (or it fails), the system retries with a different model
+   - If no agent fallback is configured (or the fallback agent cannot be used), the system retries with a different model
    - This model does not need to (probably shouldn't!) use the same vendor, failover can therefore be directed at an entirely different model
    - Only the `modelName` is changed; all other agent properties remain the same
    - The session is restarted with the fallback model
@@ -133,7 +133,9 @@ To configure an agent-level fallback, specify the ID of another agent:
 }
 ```
 
-The fallback agent must already exist. When the primary agent fails, the system will:
+The fallback agent must already exist, and it must belong to the same organisation as the agent that falls back to it. On Pipecat it must also be a voice agent (type `interactive-audio`) with a `pipecat:` model, because the call cannot move to another runtime. None of this is checked when the agent is saved. A fallback agent that is missing, belongs to another organisation, or cannot run on the call's runtime is skipped when the call fails over, and the chain moves on to the primary agent's next step.
+
+When the primary agent fails, the system will:
 - Fetch the fallback agent by ID
 - Restart the session with the fallback agent's configuration
 - Use the fallback agent's own `options.fallback` for any further fallback decisions
@@ -264,9 +266,10 @@ You can configure multiple fallback levels:
 Note that with both `message` and `number` set, the announcement wins: it is higher precedence, and it is terminal on success, so `number` is only reached if the announcement could not be played at all. If what you want is "announce, then transfer", that is not this option — configure `number` alone and use the transfer's own prompting.
 
 In this example:
-1. If the primary agent fails, try the fallback agent
-2. If the fallback agent also fails (or if agent fallback wasn't triggered), try the fallback model
-3. If the fallback model also fails, transfer to the fallback number
+1. If the primary agent fails, try the fallback agent. Once the call has switched to it, only the fallback agent's own `options.fallback` is used: if it fails as well, the `model`, `message` and `number` above are not tried
+2. If the fallback agent cannot be used (it is missing, belongs to another organisation, or cannot run on the call's runtime), it is skipped and this chain continues: try the fallback model
+3. If the fallback model also fails, play the announcement
+4. If the announcement cannot be played, transfer to the fallback number
 
 ### Example: Creating an Agent with Failover
 
@@ -406,7 +409,8 @@ Every step of this path is non-fatal by design, because it only ever runs when s
 **What happens:**
 1. Primary agent fails with "Unsupported model" error
 2. System fetches and switches to fallback agent (agent fallback)
-3. If fallback agent also fails, call is transferred to `+441234567890`
+3. If fallback agent also fails, its own `options.fallback` decides what happens next. The primary agent's fallback number is not used, so if the fallback agent has no fallback of its own, the call ends
+4. If the fallback agent cannot be used at all (it is missing, belongs to another organisation, or cannot run on the call's runtime), it is skipped and the call is transferred to `+441234567890`
 
 ### Scenario 3: Complete Failover Chain
 
@@ -485,7 +489,9 @@ All properties are optional, but at least one should be specified for failover t
 ### Fallback Agent Not Found
 
 - **Verify agent exists**: The fallback agent ID must reference an existing agent
-- **Check permissions**: Ensure the fallback agent is accessible to the same user/organization
+- **Check the organisation**: The fallback agent must belong to the same organisation as the agent that falls back to it. An agent in another organisation is treated as not found
+- **Check the runtime**: On Pipecat the fallback agent must be a voice agent with a `pipecat:` model. Any other agent is skipped in the same way
+- **Check logs**: Look for `fallback agent failed` (Pipecat) or `Failed to fetch or use fallback agent` (LiveKit). The chain then moves on to the model, message or number step
 
 ### Message Fallback Not Playing
 
