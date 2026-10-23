@@ -28,7 +28,7 @@ import type { ParticipantInfo, SipParticipant } from "./types.js";
 import type { RunAgentWorkerParams } from "./types.js";
 import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
-import { invocationLogs } from "./invocation-log-buffer.js";
+import { invocationLogs, invocationLogTime } from "./invocation-log-buffer.js";
 import { finaliseJobBeforeExit, setJobFinaliser } from "./job-finaliser.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
@@ -116,13 +116,7 @@ async function persistInvocationLogIfAvailable(
       "persistInvocationLogIfAvailable: debug snapshot before sort",
     );
 
-    const ts = (e: unknown) => {
-      const t = (e as { time?: number | string })?.time;
-      if (typeof t === "number") return t;
-      if (typeof t === "string") return new Date(t).getTime();
-      return 0;
-    };
-    const sorted = [...invocationLogs].sort((a, b) => ts(a) - ts(b));
+    const sorted = [...invocationLogs].sort((a, b) => invocationLogTime(a) - invocationLogTime(b));
     console.log(
       { length: sorted.length },
       "persistInvocationLogIfAvailable: sorted invocation logs",

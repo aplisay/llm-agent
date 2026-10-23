@@ -718,7 +718,7 @@ Recording is configured per-agent (overridable per-instance — see 9.4). When e
 
 ### 9.3 Invocation logs
 
-The worker buffers structured logs during a call — provider activity, tool-call traces, error contexts, decision points — and flushes them on shutdown via POST `/api/agent-db/invocation-log` (section 8.4).
+The worker buffers structured logs during a call — provider activity, tool-call traces, error contexts, decision points — and flushes them on shutdown via POST `/api/agent-db/invocation-log` (section 8.4). The buffer takes the worker's own lines and, at info and above, the LiveKit Agents SDK's (which plugins log through), both passed through the same secret masking.
 
 The buffer is process-wide; logs from concurrent calls interleave, and entries correlate by `callId`. Each batch may carry an optional `subsystem` identifier (e.g. `worker`, `transfer`, `recording`) so the REST server can partition them.
 
