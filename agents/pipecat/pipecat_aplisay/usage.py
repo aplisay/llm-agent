@@ -55,10 +55,10 @@ def usage_vendors(
     The ``llm`` model is authoritative over the metric label (``_resolve``): it
     is the roster id (``xai/grok-4.3``), which is what the rate lines match
     (lib/rate-components.js) and what LiveKit rows carry. The metric label is
-    the service's own model name, bare, and on Gemini Live it is Pipecat's
-    default model rather than the row's. ``backend`` (GPT-Live) names the
-    delegate model the LLM tokens belong to, so the rows land on the delegate
-    model's own rate line (docs/gpt-live.md).
+    the service's own model name: bare, or on Gemini Live the row's model with
+    a ``models/`` prefix. ``backend`` (GPT-Live) names the delegate model the
+    LLM tokens belong to, so the rows land on the delegate model's own rate
+    line (docs/gpt-live.md).
     """
     options = agent.get("options") or {}
     model_id = model_id_from_name(model_name)

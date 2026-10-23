@@ -326,10 +326,19 @@ class TestNeedsFullHandover:
             # Target omits modelName: treated as same model.
             ("pipecat:openai/gpt-4o", None, False),
             # Model string changes: full restart + child call record.
-            ("pipecat:openai/gpt-4o", "pipecat:google/gemini-2.0-flash-exp", True),
+            ("pipecat:openai/gpt-4o", "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025", True),
             ("pipecat:openai/gpt-4o", "pipecat:ultravox/ultravox-v0.7", True),
             # Ultravox realtime can never swap in place, even same-model.
             ("pipecat:ultravox/ultravox-v0.7", "pipecat:ultravox/ultravox-v0.7", True),
+            # Gemini Live neither: the in-place frames never reach the live
+            # session (test_gemini_live.py). The retired id is the same row.
+            (
+                "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025",
+                "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025",
+                True,
+            ),
+            ("pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025", None, True),
+            ("pipecat:google/gemini-2.0-flash-exp", "pipecat:google/gemini-2.0-flash-exp", True),
         ],
     )
     def test_matrix(self, current, target, expected) -> None:
@@ -412,7 +421,7 @@ class TestFullHandover:
                 "id": agent_id,
                 "type": "interactive-audio",
                 "name": "Gemini specialist",
-                "modelName": "pipecat:google/gemini-2.0-flash-exp",
+                "modelName": "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025",
                 "prompt": "You are the specialist.",
                 "functions": [],
             }
@@ -463,7 +472,7 @@ class TestFullHandover:
         [body] = created
         assert body["parentId"] == "call-1"
         assert body["agentId"] == TARGET_UUID
-        assert body["modelName"] == "pipecat:google/gemini-2.0-flash-exp"
+        assert body["modelName"] == "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025"
         assert started == ["child-1"]
         # Original call ended with a pointer to its continuation.
         [(ended_id, reason)] = ended
@@ -495,7 +504,7 @@ class TestFullHandover:
             return {
                 "id": agent_id,
                 "type": "interactive-audio",
-                "modelName": "pipecat:google/gemini-2.0-flash-exp",
+                "modelName": "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025",
                 "prompt": "specialist",
             }
 

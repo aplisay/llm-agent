@@ -36,6 +36,11 @@ describe('livekit model aliases', () => {
     expect(LIVEKIT_MODEL_ALIASES['ultravox/ultravox-70b']).toBe('ultravox/ultravox-v0.6');
   });
 
+  test('the retired gemini-2.0-flash-exp id is an alias of the Gemini 2.5 Flash Live row', () => {
+    expect(LIVEKIT_MODEL_ALIASES['google/gemini-2.0-flash-exp']).toBe('google/gemini-2.5-flash-native-audio-preview-12-2025');
+    expect(ids(buildLivekitHandlerAllModels())).toContain('google/gemini-2.0-flash-exp');
+  });
+
   test('an alias is listed while its target is listed', () => {
     const listed = ids(buildLivekitHandlerAllModels());
     expect(listed).toContain('ultravox/ultravox-v0.6');

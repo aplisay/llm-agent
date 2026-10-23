@@ -63,7 +63,7 @@ def test_opt_in_does_not_claim_a_text_modality():
     assert external_tts_enabled(agent, "openai/gpt-live-1")
     assert not text_output_enabled(agent, "openai/gpt-live-1")
     assert not transcript_tts_enabled(agent, "openai/gpt-realtime")
-    assert not transcript_tts_enabled(agent, "google/gemini-2.0-flash-exp")
+    assert not transcript_tts_enabled(agent, "google/gemini-2.5-flash-native-audio-preview-12-2025")
     for value in (False, None, "true", 1):
         agent["options"]["tts"]["experimentalTranscript"] = value
         assert not external_tts_enabled(agent, "openai/gpt-live-1")
