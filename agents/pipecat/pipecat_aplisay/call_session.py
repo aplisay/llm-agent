@@ -831,7 +831,8 @@ class CallSession:
         )
 
         # Meter LLM token + TTS character usage into the platform usage ledger.
-        # Flushed (finalised) from _end(); requires the pipeline's usage metrics
+        # Flushed (finalised) from _end(), or for the outgoing leg of a full
+        # handover from _run_prepared_once(); requires the pipeline's usage metrics
         # to be enabled (see voice_session.py PipelineParams).
         from .usage import UsageMeteringObserver, usage_vendors
 
@@ -1156,6 +1157,8 @@ class CallSession:
         # self.call is only swapped to the continuation in run_prepared, AFTER
         # this returns, so it's stable for this segment — capture it up front.
         seg_call = self.call
+        # Likewise the continuation's prepare_run replaces the usage observer.
+        seg_usage = getattr(self, "_usage_observer", None)
         with logger.contextualize(callId=seg_call.id):
             runner = PipelineRunner(handle_sigint=False)
             self._runner = runner
@@ -1183,6 +1186,11 @@ class CallSession:
                     logger.bind(call_id=self.call.id).info(
                         "pipeline ended for agent handover; not ending the call"
                     )
+                    # _end only flushes the last leg. Write this leg's meters to
+                    # its own call now, and drop the observer so nothing writes
+                    # them again onto the continuation call.
+                    await self._flush_usage(seg_usage, seg_call)
+                    self._usage_observer = None
                 elif self._start_failure() is not None:
                     logger.bind(call_id=self.call.id).warning(
                         "pipeline ended on a start failure; not ending the call"
@@ -3100,16 +3108,21 @@ class CallSession:
     async def _end(self, reason: str) -> None:
         # Flush accumulated token/character usage to the ledger before ending
         # the call so it lands as the finalised session total (best-effort).
-        usage_observer = getattr(self, "_usage_observer", None)
-        if usage_observer is not None:
-            try:
-                await usage_observer.flush(self.call, finalised=True)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"usage flush failed: {e}")
+        await self._flush_usage(getattr(self, "_usage_observer", None), self.call)
         try:
             await api_client.end_call(self.call, reason=reason)
         except Exception as e:  # noqa: BLE001
             logger.error(f"end_call failed: {e}")
+
+    @staticmethod
+    async def _flush_usage(observer: Optional[Any], call: Any) -> None:
+        """Write ``observer``'s meters, finalised, to ``call``. Never raises."""
+        if observer is None:
+            return
+        try:
+            await observer.flush(call, finalised=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"usage flush failed: {e}")
 
 
 # ---- Helpers ----
