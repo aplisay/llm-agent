@@ -1879,8 +1879,11 @@ components:
           example: 648aa45d-204a-4c0c-a1e1-419406254134
         type:
           type: string
-          description: The type of this log entry
-          enum: ["call", "agent", "user", "hangup"]
+          description: >
+            The type of this log entry. `user-aux` rows come from the auxiliary STT engine
+            (`options.stt.aux`) and `agent-speech` rows from the output audit STT engine
+            (`options.tts.output`); see docs/auxiliary-stt.md.
+          enum: ["start", "hangup", "goodbye", "answer", "inject", "call", "call_failed", "agent", "user", "user-aux", "agent-speech", "function_calls", "rest_callout", "function_results", "error"]
           example: call
         data:
           type: string
