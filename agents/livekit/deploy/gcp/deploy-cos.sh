@@ -644,6 +644,7 @@ create_node() {
         --machine-type="$mtype"
         --image-family="$COS_IMAGE_FAMILY" --image-project=cos-cloud
         --metadata=google-logging-enabled=false,google-monitoring-enabled=false
+        --metadata-from-file=shutdown-script="$SCRIPT_DIR/shutdown-script.sh"
     )
     [ -n "$sa" ]        && args+=( --service-account="$sa" )
     [ -n "$scopes" ]    && args+=( --scopes="$scopes" )
