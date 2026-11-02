@@ -31,6 +31,12 @@ patches:
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
         value: pipecat-sip-staging
+      # Publish the hostname, not the IP, in the Service status. Otherwise kube-proxy
+      # routes in-cluster clients that dial the LB IP straight to the pods, skipping
+      # the LB's TLS, and 443 answers plain HTTP. The name must resolve to the LB IP.
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-hostname
+        value: staging.pipecat.aplisay.net
       # WebRTC TLS — DO-managed Let's Encrypt cert for staging.pipecat.aplisay.net
       # (pipecat.aplisay.net is delegated to DO, so DO issues + auto-renews it):
       #   doctl compute certificate create --type lets_encrypt \
