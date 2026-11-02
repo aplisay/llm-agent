@@ -36,8 +36,8 @@ the server does not trust the background job alone:
 2. **The name tag.** The voice is created at OpenAI under the name
    `aplisay-<id>`, where `<id>` is our voice id. OpenAI's list can then show
    whether a create that we lost track of did make the voice.
-3. **Polls settle quiet creates.** When `GET /api/custom-voices/{id}` or
-   `GET /api/custom-voices` sees a voice still `creating` after 90 seconds,
+3. **Polls settle quiet creates.** When `GET /api/voices/custom/{id}` or
+   `GET /api/voices/custom` sees a voice still `creating` after 90 seconds,
    and no job for it runs in that process, it looks in OpenAI's list
    (`GET /v1/audio/voices`) during the request. If the voice is there, it
    becomes `ready`. If it is still not there after 3 minutes, it becomes
@@ -161,7 +161,7 @@ missing, so a deployment that is not force-synced still gets them.
 
 | Column | Meaning |
 |---|---|
-| `id` | Our id, used under `/custom-voices`. |
+| `id` | Our id, used under `/voices/custom`. |
 | `organisation_id` | The owner. No foreign key: rows outlive anything that would cascade, because the vendor still holds the voice. |
 | `created_by` | The user who created it. |
 | `vendor`, `method` | `openai`, `prompt`. |
@@ -246,9 +246,9 @@ English").
 
 Planned shape here:
 
-- `GET /api/custom-voices/consent-phrases?language=en` passes OpenAI's list
+- `GET /api/voices/custom/consent-phrases?language=en` passes OpenAI's list
   through.
-- `POST /api/custom-voices/consents` (multipart: `name`, `language`,
+- `POST /api/voices/custom/consents` (multipart: `name`, `language`,
   `recording`) stores a consent row owned by the organisation, with OpenAI's
   consent id. `DELETE` on it deletes the consent at OpenAI too.
 - `POST /api/models/{modelName}/voices/{locale}` as multipart with
@@ -279,11 +279,11 @@ Points from this that shape the design:
 - **Previews.** ElevenLabs and Inworld design voices in two steps: one call
   returns several previews with audio, a second call saves one. That fits as
   a voice row with `status: "previewing"` and its previews, and a
-  `POST /api/custom-voices/{customVoiceId}/choose` with the chosen preview
+  `POST /api/voices/custom/{customVoiceId}/choose` with the chosen preview
   that saves it and moves the row to `ready`. Only the saved voice should use
   quota.
 - **Deletes that free a slot.** Every vendor here except Google can delete a
-  voice. The driver's `deleteVoice` runs on `DELETE /api/custom-voices/{id}`,
+  voice. The driver's `deleteVoice` runs on `DELETE /api/voices/custom/{id}`,
   and a deleted voice stops counting. A vendor with no delete call leaves out
   `deleteVoice`, and its deleted voices keep counting.
 - **Consent.** Only OpenAI and Google check consent in the API. For every clip

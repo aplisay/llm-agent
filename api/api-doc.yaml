@@ -46,7 +46,7 @@ tags:
       set at agent creation time, but may also be modified in the course of running an agent.
 
       An organisation can also create its own custom voices on models that support them, with
-      `POST /models/{modelName}/voices/{locale}`, and manage them under `/custom-voices`. A custom voice
+      `POST /models/{modelName}/voices/{locale}`, and manage them under `/voices/custom`. A custom voice
       belongs to the organisation that created it: no other organisation can list or use it.
   - name: Phone Endpoints
     description: |-
@@ -1696,7 +1696,7 @@ components:
         customVoiceId:
           type: string
           format: uuid
-          description: The custom voice's id under `/custom-voices` (custom voices only).
+          description: The custom voice's id under `/voices/custom` (custom voices only).
         label:
           type: string
           description: The custom voice's display name (custom voices only); `name` is its vendor id.
@@ -1803,7 +1803,7 @@ components:
           enum: [creating, ready, failed, deleted]
           description: |-
             `creating` while the vendor makes the voice in the background (about 20 seconds for
-            OpenAI); poll `GET /custom-voices/{customVoiceId}` until it is `ready` or `failed`.
+            OpenAI); poll `GET /voices/custom/{customVoiceId}` until it is `ready` or `failed`.
         error:
           type: string
           description: Why the create failed (status `failed`).
@@ -1832,7 +1832,7 @@ components:
         inUse:
           type: object
           description: |-
-            Platform voices listed with `GET /custom-voices?visibility=platform`, for a caller with
+            Platform voices listed with `GET /voices/custom?visibility=platform`, for a caller with
             `voice:managePlatform` only: how many agents use the voice, in how many organisations.
           properties:
             agents:
@@ -1843,14 +1843,14 @@ components:
           type: string
           nullable: true
           description: |-
-            Platform voices listed with `GET /custom-voices?visibility=platform`, for a caller with
+            Platform voices listed with `GET /voices/custom?visibility=platform`, for a caller with
             `voice:managePlatform` only: the sample text the voice was made with.
         ownership:
           type: object
           description: |-
             Platform voices, for a caller with `voice:managePlatform` only. `state` is `owner` when a
             delete here also deletes the voice at the vendor, and `released` when it does not (see
-            `PATCH /custom-voices/{customVoiceId}`). `from` is the `adoptedFrom` of a voice registered by
+            `PATCH /voices/custom/{customVoiceId}`). `from` is the `adoptedFrom` of a voice registered by
             `vendorVoiceId`; `to` is where a released voice was released to.
           properties:
             state:

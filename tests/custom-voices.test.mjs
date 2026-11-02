@@ -3,11 +3,16 @@ import {
   Agent, User, Organisation,
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import express from 'express';
+import openapi from 'express-openapi';
+import request from 'supertest';
+import yaml from 'js-yaml';
 
 /**
  * Custom voices (docs/custom-voices.md): POST /models/{modelName}/voices/{locale}
  * accepts an OpenAI prompt voice for GPT-Live and makes it in the background;
- * /custom-voices lists, reads (settling a create that went quiet) and deletes (at
+ * /voices/custom lists, reads (settling a create that went quiet) and deletes (at
  * OpenAI too); the voice lists, agent validation and the worker's agent fetch only
  * ever see the caller's own organisation's voices; and the quota holds. Platform
  * voices, made by a super admin, are visible to and usable by every organisation.
@@ -130,8 +135,8 @@ describe('custom voices', () => {
     ({ whenCustomVoiceSettled, sweepCreatingVoices } = await import('../lib/custom-voices/index.js'));
     voicesByLocale = (await import('../api/paths/models/{modelName}/voices/{locale}.js')).default(mockLogger, mockVoices);
     locales = (await import('../api/paths/models/{modelName}/voices.js')).default(mockLogger, mockVoices).GET;
-    listCustomVoices = (await import('../api/paths/custom-voices.js')).default(mockLogger).GET;
-    customVoiceItem = (await import('../api/paths/custom-voices/{customVoiceId}.js')).default(mockLogger);
+    listCustomVoices = (await import('../api/paths/voices/custom.js')).default(mockLogger).GET;
+    customVoiceItem = (await import('../api/paths/voices/custom/{customVoiceId}.js')).default(mockLogger);
     agentDbAgent = (await import('../api/paths/agent-db/agent.js')).default(mockLogger).GET;
     createAgent = (await import('../api/paths/agents.js')).default(mockLogger, {}, {}).POST;
     updateAgentRoute = (await import('../api/paths/agents/{agentId}.js')).default(mockLogger).PUT;
@@ -214,7 +219,7 @@ describe('custom voices', () => {
     });
     const res = await post(ownerA, { name: 'Concierge', prompt: `  ${PROMPT}  `, scriptHint: 'Good morning, how can I help you today?', gender: 'female' });
     expect(res.statusCode).toBe(202);
-    expect(res.headers.Location).toBe(`/api/custom-voices/${res.body.id}`);
+    expect(res.headers.Location).toBe(`/api/voices/custom/${res.body.id}`);
     expect(res.body).toMatchObject({
       name: 'Concierge', vendor: 'openai', method: 'prompt', locale: 'en-GB', gender: 'female',
       prompt: PROMPT, status: 'creating', voice: null,
@@ -568,6 +573,38 @@ describe('custom voices', () => {
     expect((await getOne(ownerB, 'not-a-uuid')).statusCode).toBe(404);
     expect((await list(ownerB)).body.voices).toEqual([]);
     expect((await list(memberA)).body.voices.map((v) => v.id)).toEqual([voice.id]);
+  });
+
+  test('the router serves /voices/custom beside /voices, and /custom-voices is a 404', async () => {
+    const voice = await CustomVoice.create({
+      organisationId: orgA.id, vendor: 'openai', method: 'prompt', name: 'routed', prompt: PROMPT, locale: 'en-GB',
+      status: 'ready', vendorVoiceId: `voice_route${randomUUID().slice(0, 8)}`,
+    });
+    const app = express();
+    app.use((req, res, next) => { req.log = mockLogger; res.locals.user = ownerA; next(); });
+    await openapi.initialize({
+      app,
+      apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
+      dependencies: { logger: mockLogger, voices: mockVoices },
+      paths: './api/paths',
+      // The old location is in the glob, so a route file left there would be served.
+      routesGlob: '{voices,custom-voices}{.js,/**/*.js}',
+      promiseMode: true,
+    });
+    const routes = app._router.stack.filter((l) => l.route).map((l) => l.route.path);
+    expect(routes).toEqual(expect.arrayContaining(['/api/voices', '/api/voices/custom', '/api/voices/custom/:customVoiceId']));
+    expect(routes.filter((r) => r.includes('custom-voices'))).toEqual([]);
+
+    const listed = await request(app).get('/api/voices/custom');
+    expect(listed.status).toBe(200);
+    expect(listed.body.voices.map((v) => v.id)).toEqual([voice.id]);
+    expect((await request(app).get(`/api/voices/custom/${voice.id}`)).body).toMatchObject({ id: voice.id, name: 'routed' });
+
+    expect((await request(app).get('/api/custom-voices')).status).toBe(404);
+    expect((await request(app).get(`/api/custom-voices/${voice.id}`)).status).toBe(404);
+    expect((await request(app).patch(`/api/custom-voices/${voice.id}`).send({ withdrawn: true })).status).toBe(404);
+    expect((await request(app).delete(`/api/custom-voices/${voice.id}`)).status).toBe(404);
+    expect((await CustomVoice.findByPk(voice.id)).status).toBe('ready');
   });
 
   test('only the owning organisation can put a ready voice on an agent', async () => {

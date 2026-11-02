@@ -1,13 +1,13 @@
-import { requirePermission } from '../../../lib/auth/permissions.js';
+import { requirePermission } from '../../../../lib/auth/permissions.js';
 import {
   CustomVoiceError,
   deleteCustomVoice,
   getCustomVoice,
   patchPlatformVoice,
-} from '../../../lib/custom-voices/index.js';
+} from '../../../../lib/custom-voices/index.js';
 
 /**
- * GET / PATCH / DELETE /api/custom-voices/{customVoiceId} (docs/custom-voices.md).
+ * GET / PATCH / DELETE /api/voices/custom/{customVoiceId} (docs/custom-voices.md).
  * Another organisation's own voice is a 404, so its existence is not leaked.
  * PATCH changes platform voices only.
  */

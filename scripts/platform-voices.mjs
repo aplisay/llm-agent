@@ -90,7 +90,7 @@ function failure(what, res) {
 }
 
 async function platformVoices(call) {
-  const res = await call('GET', '/custom-voices?visibility=platform');
+  const res = await call('GET', '/voices/custom?visibility=platform');
   if (!res.ok) throw failure('listing platform voices', res);
   return res.body.voices || [];
 }
@@ -121,7 +121,7 @@ export async function exportVoices({ api, key, fetchImpl = fetch, now = () => ne
 async function waitForVoice(call, id, { sleep, pollMs, timeoutMs }) {
   const started = Date.now();
   for (;;) {
-    const res = await call('GET', `/custom-voices/${id}`);
+    const res = await call('GET', `/voices/custom/${id}`);
     if (!res.ok) throw failure(`reading voice ${id}`, res);
     if (DONE.has(res.body.status)) return res.body;
     if (Date.now() - started > timeoutMs) return res.body;
@@ -169,7 +169,7 @@ export async function importVoices({
   const summary = { created: 0, adopted: 0, released: 0, skipped: 0, failed: 0 };
 
   const release = async (v) => {
-    const res = await sourceCall('PATCH', `/custom-voices/${v.id}`, { release: { to: target } });
+    const res = await sourceCall('PATCH', `/voices/custom/${v.id}`, { release: { to: target } });
     if (!res.ok) {
       log(`${v.name}: not released on ${source}: ${failure('release', res).message}. Run again to retry.`);
       summary.failed += 1;

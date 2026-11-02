@@ -113,7 +113,7 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
       const voice = await createCustomVoice({ user, modelName, locale, body: req.body || {}, log: req.log });
       req.log.info({ customVoiceId: voice.id, vendor: voice.vendor, modelName, locale, visibility: voice.visibility, status: voice.status },
         'custom voice create started');
-      res.set('Location', `/api/custom-voices/${voice.id}`);
+      res.set('Location', `/api/voices/custom/${voice.id}`);
       res.status(202).send(voice);
     } catch (err) {
       if (err instanceof CustomVoiceError) {
@@ -131,11 +131,11 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
 
 The first and only method is \`prompt\`: describe the voice in plain language and the vendor generates it. The vendor is the model's own: OpenAI for GPT-Live (\`pipecat:openai/gpt-live-1\`). OpenAI prompt voices work on GPT-Live only.
 
-The call checks the request, takes a quota slot and returns **202** at once with the voice in \`status: "creating"\` and a \`Location\` header. The vendor then makes the voice in the background (about 20 seconds for OpenAI). Poll [\`GET /custom-voices/{customVoiceId}\`](#operation-getCustomVoice) every few seconds until \`status\` is \`ready\` or \`failed\`. When it is ready, put its \`voice\` value in an agent's \`options.tts.voice\`; \`GET\` on this path then lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
+The call checks the request, takes a quota slot and returns **202** at once with the voice in \`status: "creating"\` and a \`Location\` header. The vendor then makes the voice in the background (about 20 seconds for OpenAI). Poll [\`GET /voices/custom/{customVoiceId}\`](#operation-getCustomVoice) every few seconds until \`status\` is \`ready\` or \`failed\`. When it is ready, put its \`voice\` value in an agent's \`options.tts.voice\`; \`GET\` on this path then lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
 
 A vendor refusal (for example a prompt that names a real person) or a vendor failure arrives on the voice: \`status: "failed"\`, with \`error\` and \`errorCode\` (\`rejected\`: change the input; \`vendor_unavailable\` or \`vendor_error\`: try again; \`interrupted\`: the server lost the create). A failed voice does not count against the quota.
 
-Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
+Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /voices/custom\`](#operation-listCustomVoices).
 
 With \`visibility: "platform"\` the voice is a **platform voice**: every organisation can list it and put it on an agent. It counts against no organisation's quota, only the platform-wide limit. This needs \`voice:managePlatform\` (403 \`code: voice_platform_forbidden\` without it). A platform voice may also give \`vendorVoiceId\`: an existing vendor voice that this platform's vendor key can already use. It is registered as it is, with no new voice made at the vendor, and the response is the voice in \`status: "ready"\`. A \`vendorVoiceId\` the vendor does not list for this key is a 400 with \`code: vendor_voice_not_found\`; one already registered here is a 409 with \`code: custom_voice_exists\`.
 
@@ -175,7 +175,7 @@ Requires \`voice:create\`.`,
     },
     responses: {
       202: {
-        description: 'Accepted: the voice, in status `creating` (`ready` when `vendorVoiceId` was given). `Location` names it under `/custom-voices`.',
+        description: 'Accepted: the voice, in status `creating` (`ready` when `vendorVoiceId` was given). `Location` names it under `/voices/custom`.',
         headers: { Location: { schema: { type: 'string' }, description: 'The voice to poll' } },
         content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoice' } } },
       },

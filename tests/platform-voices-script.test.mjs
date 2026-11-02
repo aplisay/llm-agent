@@ -37,7 +37,7 @@ function stubServer({ voices = [], models = [GPT_LIVE, LIVEKIT_GPT_LIVE], vendor
     if (method === 'GET' && path === '/api/models') {
       return [200, Object.fromEntries(models.map((m) => [m, { description: m }]))];
     }
-    if (method === 'GET' && path === '/api/custom-voices?visibility=platform') {
+    if (method === 'GET' && path === '/api/voices/custom?visibility=platform') {
       return [200, { voices: server.voices, quota: { limit: 100, used: server.voices.length, remaining: 100 - server.voices.length } }];
     }
     let m = path.match(/^\/api\/models\/([^/]+)\/voices\/([^/]+)$/);
@@ -52,7 +52,7 @@ function stubServer({ voices = [], models = [GPT_LIVE, LIVEKIT_GPT_LIVE], vendor
       server.voices.push(created);
       return [202, created];
     }
-    m = path.match(/^\/api\/custom-voices\/([^/?]+)$/);
+    m = path.match(/^\/api\/voices\/custom\/([^/?]+)$/);
     if (method === 'GET' && m) {
       const v = server.voices.find((x) => x.id === m[1]);
       const n = (server.polls.get(v.id) || 0) + 1;
@@ -188,7 +188,7 @@ describe('platform-voices script', () => {
     expect(target.polls.size).toBe(0);
     // The failed release of Two never reached the source stub.
     expect(source.calls.filter((c) => c.method === 'PATCH')).toEqual([
-      { method: 'PATCH', path: '/api/custom-voices/s-1', body: { release: { to: TARGET } } },
+      { method: 'PATCH', path: '/api/voices/custom/s-1', body: { release: { to: TARGET } } },
     ]);
     expect(source.voices.map((v) => v.ownership.state)).toEqual(['released', 'owner']);
     expect(first.lines.join('\n')).toMatch(/Two: not released on https:\/\/source\.example.*Run again/);

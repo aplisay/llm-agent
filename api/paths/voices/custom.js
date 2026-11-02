@@ -1,13 +1,13 @@
-import { requirePermission } from '../../lib/auth/permissions.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 import {
   CustomVoiceError,
   getCustomVoiceQuota,
   getPlatformVoiceQuota,
   listCustomVoices,
-} from '../../lib/custom-voices/index.js';
+} from '../../../lib/custom-voices/index.js';
 
 /**
- * GET /api/custom-voices: the caller's organisation's custom voices and its
+ * GET /api/voices/custom: the caller's organisation's custom voices and its
  * quota, or the platform voices and the platform-wide count
  * (docs/custom-voices.md). Voices are created with
  * POST /models/{modelName}/voices/{locale}.

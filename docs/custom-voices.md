@@ -12,9 +12,9 @@ number of custom voices (see [Quota](#quota)). The platform also offers
 | | |
 |---|---|
 | Create | `POST /api/models/{modelName}/voices/{locale}` |
-| Check progress, or read one | `GET /api/custom-voices/{customVoiceId}` |
-| List, with the quota | `GET /api/custom-voices` |
-| Delete | `DELETE /api/custom-voices/{customVoiceId}` |
+| Check progress, or read one | `GET /api/voices/custom/{customVoiceId}` |
+| List, with the quota | `GET /api/voices/custom` |
+| Delete | `DELETE /api/voices/custom/{customVoiceId}` |
 | Use | set an agent's `options.tts.voice` to the voice's `voice` value |
 | Models | `pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1` |
 
@@ -64,7 +64,7 @@ The answer is `202`, with a `Location` header that names the voice:
 Poll it every 2 to 3 seconds:
 
 ```bash
-curl "https://llm-agent.example.com/api/custom-voices/6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e" \
+curl "https://llm-agent.example.com/api/voices/custom/6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -103,7 +103,7 @@ Body (JSON):
 | `vendor` | no | Leave it out. The model decides the vendor (`openai` for GPT-Live). |
 
 A successful call returns `202` with the voice in status `creating` and a
-`Location` header (`/api/custom-voices/{id}`). It takes a place in the quota
+`Location` header (`/api/voices/custom/{id}`). It takes a place in the quota
 straight away.
 
 If the call is refused, nothing is created:
@@ -138,7 +138,7 @@ voice fails with `errorCode: "rejected"`.
 
 ## Wait for the voice
 
-Poll `GET /api/custom-voices/{customVoiceId}` every 2 to 3 seconds until
+Poll `GET /api/voices/custom/{customVoiceId}` every 2 to 3 seconds until
 `status` is no longer `creating`:
 
 | `status` | Meaning |
@@ -202,7 +202,7 @@ GPT-Live), before the standard voices. A custom voice looks like this:
 ```
 
 `name` is the value for `options.tts.voice`. `label` is the name to show.
-`customVoiceId` is the voice's id under `/api/custom-voices`.
+`customVoiceId` is the voice's id under `/api/voices/custom`.
 
 Which locale lists a voice:
 
@@ -224,7 +224,7 @@ Custom voices appear in these lists only for callers with `voice:read`.
 
 ### List
 
-`GET /api/custom-voices` returns the organisation's voices, newest first, and
+`GET /api/voices/custom` returns the organisation's voices, newest first, and
 its quota:
 
 ```json
@@ -241,12 +241,12 @@ its quota:
 
 ### Read one
 
-`GET /api/custom-voices/{customVoiceId}` returns one voice. A voice of another
+`GET /api/voices/custom/{customVoiceId}` returns one voice. A voice of another
 organisation is a `404`.
 
 ### Delete
 
-`DELETE /api/custom-voices/{customVoiceId}` deletes the voice for good, at
+`DELETE /api/voices/custom/{customVoiceId}` deletes the voice for good, at
 OpenAI too, and frees its place in the quota. It returns the voice with status
 `deleted`.
 
@@ -308,8 +308,8 @@ with these differences:
   own custom voices, marked `"platform": true` as well as `"custom": true`.
   The description reads `<name> (platform voice): <prompt>`. The builder's
   `list_voices` tool shows them too.
-- `GET /api/custom-voices?visibility=platform` lists them. `quota` is then the
-  platform-wide count. `GET /api/custom-voices/{customVoiceId}` reads one.
+- `GET /api/voices/custom?visibility=platform` lists them. `quota` is then the
+  platform-wide count. `GET /api/voices/custom/{customVoiceId}` reads one.
 - They cost nothing from the organisation's quota.
 - Any organisation can put one on an agent whose model can speak it: set
   `options.tts.voice` to its `voice` value (the `name` of its row in the
@@ -319,7 +319,7 @@ with these differences:
   `"visibility": "platform"` in the body.
 
 A platform voice can be **withdrawn**
-(`PATCH /api/custom-voices/{customVoiceId}` with `{ "withdrawn": true }`). It
+(`PATCH /api/voices/custom/{customVoiceId}` with `{ "withdrawn": true }`). It
 then leaves every voice list and no agent can newly take it. An agent that
 already has it keeps speaking with it, and can still be saved, until its voice
 is changed. Its row in `?visibility=platform` carries `withdrawnAt`.
