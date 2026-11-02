@@ -21,7 +21,7 @@ export default function (logger, voices) {
       });
       const user = res.locals?.user;
       if (user && can(user, 'voice', 'read')) {
-        // The organisation's own voices come first, under the vendor key the model uses.
+        // The organisation's own voices come first, then the platform voices, under the vendor key the model uses.
         const custom = await customVoiceCatalogueRows(user, modelName, { locale });
         for (const [vendor, rows] of Object.entries(custom)) {
           body.vendors[vendor] = [...rows, ...(body.vendors[vendor] || [])];
@@ -44,7 +44,7 @@ export default function (logger, voices) {
 
 For **LiveKit realtime** models, vendors are limited to the model’s provider (OpenAI vs Ultravox, etc.), not the full merged catalogue.
 
-The caller's organisation's own **custom voices** for this model come first in their vendor's list, marked \`custom: true\` with a \`customVoiceId\` (see [\`POST\`](#operation-createModelVoice) on this path). A custom voice is listed at its own locale. One made at \`any\` is listed at every locale, and asking for \`any\` lists them all.
+The caller's organisation's own **custom voices** for this model come first in their vendor's list, marked \`custom: true\` with a \`customVoiceId\` (see [\`POST\`](#operation-createModelVoice) on this path). The **platform voices** follow them, marked \`custom: true\` and \`platform: true\`; withdrawn ones are left out. A custom voice is listed at its own locale. One made at \`any\` is listed at every locale, and asking for \`any\` lists them all.
 
 Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
     operationId: 'modelVoicesByLocale',
@@ -111,7 +111,8 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
     }
     try {
       const voice = await createCustomVoice({ user, modelName, locale, body: req.body || {}, log: req.log });
-      req.log.info({ customVoiceId: voice.id, vendor: voice.vendor, modelName, locale }, 'custom voice create started');
+      req.log.info({ customVoiceId: voice.id, vendor: voice.vendor, modelName, locale, visibility: voice.visibility, status: voice.status },
+        'custom voice create started');
       res.set('Location', `/api/custom-voices/${voice.id}`);
       res.status(202).send(voice);
     } catch (err) {
@@ -135,6 +136,8 @@ The call checks the request, takes a quota slot and returns **202** at once with
 A vendor refusal (for example a prompt that names a real person) or a vendor failure arrives on the voice: \`status: "failed"\`, with \`error\` and \`errorCode\` (\`rejected\`: change the input; \`vendor_unavailable\` or \`vendor_error\`: try again; \`interrupted\`: the server lost the create). A failed voice does not count against the quota.
 
 Each organisation has a quota (\`customVoiceLimit\` on the organisation, default 3). Deleting a voice frees its slot. Read the quota with [\`GET /custom-voices\`](#operation-listCustomVoices).
+
+With \`visibility: "platform"\` the voice is a **platform voice**: every organisation can list it and put it on an agent. It counts against no organisation's quota, only the platform-wide limit. This needs \`voice:managePlatform\` (403 \`code: voice_platform_forbidden\` without it). A platform voice may also give \`vendorVoiceId\`: an existing vendor voice that this platform's vendor key can already use. It is registered as it is, with no new voice made at the vendor, and the response is the voice in \`status: "ready"\`. A \`vendorVoiceId\` the vendor does not list for this key is a 400 with \`code: vendor_voice_not_found\`; one already registered here is a 409 with \`code: custom_voice_exists\`.
 
 Requires \`voice:create\`.`,
     operationId: 'createModelVoice',
@@ -172,20 +175,20 @@ Requires \`voice:create\`.`,
     },
     responses: {
       202: {
-        description: 'Accepted: the voice, in status `creating`. `Location` names it under `/custom-voices`.',
+        description: 'Accepted: the voice, in status `creating` (`ready` when `vendorVoiceId` was given). `Location` names it under `/custom-voices`.',
         headers: { Location: { schema: { type: 'string' }, description: 'The voice to poll' } },
         content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoice' } } },
       },
       400: {
-        description: 'Invalid input, or a model with no custom voices',
+        description: 'Invalid input, a model with no custom voices, or a `vendorVoiceId` the vendor does not list (`code: vendor_voice_not_found`)',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
       403: {
-        description: 'Lacks `voice:create`, or the model is not permitted',
+        description: 'Lacks `voice:create`, the model is not permitted, or a platform voice without `voice:managePlatform` (`code: voice_platform_forbidden`)',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
       409: {
-        description: 'The organisation\'s quota is used up (`code: custom_voice_quota_exceeded`, with `quota`)',
+        description: 'The organisation\'s quota is used up (`code: custom_voice_quota_exceeded`, with `quota`), or the `vendorVoiceId` is already registered (`code: custom_voice_exists`)',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoiceQuotaError' } } },
       },
       501: {

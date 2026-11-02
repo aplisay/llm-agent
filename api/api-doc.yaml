@@ -1687,7 +1687,12 @@ components:
           description: Free text about the voice (accent, style); for a custom voice its name and prompt.
         custom:
           type: boolean
-          description: Present and true on the caller's organisation's own custom voices.
+          description: Present and true on the caller's organisation's own custom voices, and on platform voices.
+        platform:
+          type: boolean
+          description: |-
+            Present and true on a platform voice: a custom voice every organisation can use. Listed
+            after the organisation's own custom voices.
         customVoiceId:
           type: string
           format: uuid
@@ -1738,10 +1743,33 @@ components:
           type: string
           enum: [male, female, neutral]
           description: Optional label for voice lists and search.
+        visibility:
+          type: string
+          enum: [organisation, platform]
+          default: organisation
+          description: |-
+            `organisation`: the voice belongs to the caller's organisation and counts against its quota.
+            `platform`: every organisation can use the voice, and it counts against no organisation's
+            quota. Needs `voice:managePlatform`.
+        vendorVoiceId:
+          type: string
+          maxLength: 200
+          description: |-
+            Platform voices only. An existing vendor voice that this platform's vendor key can already
+            use (for OpenAI, a `voice_...` id of the same OpenAI project). It is registered as it is: no
+            voice is made at the vendor, and the voice is `ready` at once. Deleting it here still
+            deletes it at the vendor.
+          example: voice_123abc
+        adoptedFrom:
+          type: string
+          maxLength: 2048
+          description: With `vendorVoiceId` only. Where the voice came from, kept for audit.
       required: [name, prompt]
     CustomVoice:
       type: object
-      description: A voice the organisation created. Only that organisation can see or use it.
+      description: |-
+        A voice the organisation created (`visibility: organisation`), which only that organisation can
+        see or use; or a platform voice (`visibility: platform`), which every organisation can.
       properties:
         id:
           type: string
@@ -1792,19 +1820,110 @@ components:
             type: string
           description: The models this voice can be used on.
           example: ['pipecat:openai/gpt-live-1']
+        visibility:
+          type: string
+          enum: [organisation, platform]
+        withdrawnAt:
+          type: string
+          format: date-time
+          description: |-
+            Platform voices only: when the voice was withdrawn. A withdrawn voice is left out of every
+            voice list and no agent can newly take it; agents that already have it keep it.
+        inUse:
+          type: object
+          description: |-
+            Platform voices listed with `GET /custom-voices?visibility=platform`, for a caller with
+            `voice:managePlatform` only: how many agents use the voice, in how many organisations.
+          properties:
+            agents:
+              type: integer
+            organisations:
+              type: integer
+        scriptHint:
+          type: string
+          nullable: true
+          description: |-
+            Platform voices listed with `GET /custom-voices?visibility=platform`, for a caller with
+            `voice:managePlatform` only: the sample text the voice was made with.
+        ownership:
+          type: object
+          description: |-
+            Platform voices, for a caller with `voice:managePlatform` only. `state` is `owner` when a
+            delete here also deletes the voice at the vendor, and `released` when it does not (see
+            `PATCH /custom-voices/{customVoiceId}`). `from` is the `adoptedFrom` of a voice registered by
+            `vendorVoiceId`; `to` is where a released voice was released to.
+          properties:
+            state:
+              type: string
+              enum: [owner, released]
+            from:
+              type: string
+            to:
+              type: string
         createdAt:
           type: string
           format: date-time
         deletedAt:
           type: string
           format: date-time
+    PlatformVoicePatch:
+      type: object
+      description: |-
+        A change to a platform voice. Send `withdrawn`, `release`, or both. Any other field is a 400.
+      additionalProperties: false
+      properties:
+        withdrawn:
+          type: boolean
+          description: True withdraws the voice from every voice list; false lists it again.
+        release:
+          type: object
+          description: |-
+            Records that the vendor voice is now managed at `to`. A later delete here does not delete
+            it at the vendor. One way: a second release changes nothing.
+          additionalProperties: false
+          properties:
+            to:
+              type: string
+              maxLength: 2048
+          required: [to]
+    CustomVoiceInUseError:
+      type: object
+      properties:
+        code:
+          type: string
+          example: custom_voice_in_use
+        message:
+          type: string
+        agents:
+          type: array
+          description: |-
+            The agents that use the voice. For a platform voice, up to 50 agents from any
+            organisation, each with `organisationId` and `organisationName`.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              organisationId:
+                type: string
+              organisationName:
+                type: string
+                nullable: true
+        total:
+          type: integer
+          description: Platform voices only. How many agents use the voice in all.
     CustomVoiceQuota:
       type: object
       properties:
         limit:
           type: integer
           nullable: true
-          description: The organisation's `customVoiceLimit`. Null means no limit.
+          description: |-
+            The organisation's `customVoiceLimit`, or with `visibility=platform` the platform-wide limit.
+            Null means no limit.
           example: 3
         used:
           type: integer

@@ -6,7 +6,8 @@ the voice in plain words and OpenAI makes it.
 
 A custom voice belongs to the organisation that made it. No other
 organisation can see it or use it. Each organisation can hold a limited
-number of custom voices (see [Quota](#quota)).
+number of custom voices (see [Quota](#quota)). The platform also offers
+[platform voices](#platform-voices) that every organisation can use.
 
 | | |
 |---|---|
@@ -217,6 +218,7 @@ The agent builder's `list_voices` tool shows the builder's organisation the
 same voices, in all three of its modes (locales, one locale, and search).
 
 Custom voices appear in these lists only for callers with `voice:read`.
+[Platform voices](#platform-voices) follow the organisation's own voices.
 
 ## List, read and delete
 
@@ -287,11 +289,44 @@ Custom voices use the `voice` permission:
 
 | Role | `voice` actions |
 |---|---|
-| owner, orgAdmin, superAdmin, audioOnly, textOnly | `create`, `read`, `delete` |
+| owner, orgAdmin, audioOnly, textOnly | `create`, `read`, `delete` |
+| superAdmin | `create`, `read`, `delete`, `managePlatform` |
 | member, support | `read` |
 
 `create` also needs the model to be in the caller's allowed models. Every call
-sees only the caller's own organisation's voices.
+sees only the caller's own organisation's voices, and the platform voices.
+`managePlatform` is for [platform voices](#platform-voices) and cannot be
+granted by an organisation admin.
+
+## Platform voices
+
+A platform voice is a custom voice that every organisation can use. The
+platform operator makes them. They work like an organisation's own voices,
+with these differences:
+
+- They appear in every organisation's voice lists, after the organisation's
+  own custom voices, marked `"platform": true` as well as `"custom": true`.
+  The description reads `<name> (platform voice): <prompt>`. The builder's
+  `list_voices` tool shows them too.
+- `GET /api/custom-voices?visibility=platform` lists them. `quota` is then the
+  platform-wide count. `GET /api/custom-voices/{customVoiceId}` reads one.
+- They cost nothing from the organisation's quota.
+- Any organisation can put one on an agent whose model can speak it: set
+  `options.tts.voice` to its `voice` value (the `name` of its row in the
+  voice lists), as for any custom voice.
+- Only a caller with `voice:managePlatform` can make, withdraw or delete one.
+  It is made with the same `POST /api/models/{modelName}/voices/{locale}` and
+  `"visibility": "platform"` in the body.
+
+A platform voice can be **withdrawn**
+(`PATCH /api/custom-voices/{customVoiceId}` with `{ "withdrawn": true }`). It
+then leaves every voice list and no agent can newly take it. An agent that
+already has it keeps speaking with it, and can still be saved, until its voice
+is changed. Its row in `?visibility=platform` carries `withdrawnAt`.
+
+A platform voice cannot be deleted while any agent in any organisation uses
+it. `force=true` does not apply. The `409` lists the agents with
+`organisationId` and `organisationName`.
 
 ## Limits
 

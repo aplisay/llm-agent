@@ -33,7 +33,7 @@ Use **URL-encoded** \`modelName\` as a single path segment (e.g. \`livekit%3Aope
 - **LiveKit pipeline** models: locales are derived from configured Inference TTS providers (Deepgram, ElevenLabs, Cartesia, etc.). Google Cloud catalogue voices are omitted from this list because the Node pipeline uses Gemini TTS, not Cloud voice ids.
 - **LiveKit realtime**: locales and vendors are scoped to the model provider (e.g. OpenAI realtime → OpenAI voices only; Ultravox → Ultravox only). Google Gemini realtime has no separate catalogue rows here.
 - **Other handlers**: locales match that handler’s nested voice map.
-- **Custom voices**: the locales of the caller's organisation's own custom voices for this model are added (see [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice)).
+- **Custom voices**: the locales of the caller's organisation's own custom voices for this model, and of the platform voices that are not withdrawn, are added (see [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice)).
 
 Prefer this over [\`GET /voices\`](#operation-voicesList).`,
     operationId: 'modelVoiceLocales',

@@ -159,7 +159,7 @@ instanceGet.apiDoc = {
                   },
                   customVoice: {
                     type: 'object',
-                    description: 'Present when options.tts.voice is one of the organisation\'s ready custom voices (docs/custom-voices.md)',
+                    description: 'Present when options.tts.voice is one of the organisation\'s ready custom voices, or a ready platform voice (docs/custom-voices.md)',
                     properties: {
                       id: { type: 'string', format: 'uuid' },
                       vendor: { type: 'string' },
@@ -167,7 +167,8 @@ instanceGet.apiDoc = {
                       voice: { type: 'string' },
                       name: { type: 'string' },
                       prompt: { type: 'string', nullable: true },
-                      locale: { type: 'string' }
+                      locale: { type: 'string' },
+                      visibility: { type: 'string', enum: ['organisation', 'platform'] }
                     }
                   }
                 }

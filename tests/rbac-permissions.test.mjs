@@ -54,6 +54,15 @@ describe('permissions — roles vocabulary', () => {
     expect(can({ role: 'orgAdmin' }, 'rate', 'create')).toBe(false);
     expect(can({ role: 'orgAdmin' }, 'organisation', 'setRate')).toBe(false);
   });
+  test('voice:managePlatform is superAdmin-only and an orgAdmin cannot grant it', () => {
+    expect(statementsFor('superAdmin').voice).toEqual(['create', 'read', 'delete', 'managePlatform']);
+    for (const role of ['owner', 'member', 'orgAdmin', 'support', 'textOnly', 'audioOnly', 'billingService', 'analysisService']) {
+      expect(can({ role }, 'voice', 'managePlatform')).toBe(false);
+    }
+    expect(statementsFor('owner').voice).toEqual(['create', 'read', 'delete']);
+    expect(actorCanGrant({ role: 'orgAdmin' }, { permissions: { voice: ['managePlatform'] } })).toBe(false);
+    expect(actorCanGrant({ role: 'superAdmin' }, { permissions: { voice: ['managePlatform'] } })).toBe(true);
+  });
   test('billingService can credit balance and assign an org its rate card', () => {
     expect(can({ role: 'billingService' }, 'organisation', 'credit')).toBe(true);
     expect(can({ role: 'billingService' }, 'organisation', 'billing')).toBe(true);
