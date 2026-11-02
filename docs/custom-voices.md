@@ -6,14 +6,15 @@ the voice in plain words and OpenAI makes it.
 
 A custom voice belongs to the organisation that made it. No other
 organisation can see it or use it. Each organisation can hold a limited
-number of custom voices (see [Quota](#quota)).
+number of custom voices (see [Quota](#quota)). The platform also offers
+[platform voices](#platform-voices) that every organisation can use.
 
 | | |
 |---|---|
 | Create | `POST /api/models/{modelName}/voices/{locale}` |
-| Check progress, or read one | `GET /api/custom-voices/{customVoiceId}` |
-| List, with the quota | `GET /api/custom-voices` |
-| Delete | `DELETE /api/custom-voices/{customVoiceId}` |
+| Check progress, or read one | `GET /api/voices/custom/{customVoiceId}` |
+| List, with the quota | `GET /api/voices/custom` |
+| Delete | `DELETE /api/voices/custom/{customVoiceId}` |
 | Use | set an agent's `options.tts.voice` to the voice's `voice` value |
 | Models | `pipecat:openai/gpt-live-1`, `livekit:openai/gpt-live-1` |
 
@@ -63,7 +64,7 @@ The answer is `202`, with a `Location` header that names the voice:
 Poll it every 2 to 3 seconds:
 
 ```bash
-curl "https://llm-agent.example.com/api/custom-voices/6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e" \
+curl "https://llm-agent.example.com/api/voices/custom/6f1c0b7e-0d3a-4c5e-9a43-1f1d2b3c4d5e" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
@@ -102,7 +103,7 @@ Body (JSON):
 | `vendor` | no | Leave it out. The model decides the vendor (`openai` for GPT-Live). |
 
 A successful call returns `202` with the voice in status `creating` and a
-`Location` header (`/api/custom-voices/{id}`). It takes a place in the quota
+`Location` header (`/api/voices/custom/{id}`). It takes a place in the quota
 straight away.
 
 If the call is refused, nothing is created:
@@ -137,7 +138,7 @@ voice fails with `errorCode: "rejected"`.
 
 ## Wait for the voice
 
-Poll `GET /api/custom-voices/{customVoiceId}` every 2 to 3 seconds until
+Poll `GET /api/voices/custom/{customVoiceId}` every 2 to 3 seconds until
 `status` is no longer `creating`:
 
 | `status` | Meaning |
@@ -201,7 +202,7 @@ GPT-Live), before the standard voices. A custom voice looks like this:
 ```
 
 `name` is the value for `options.tts.voice`. `label` is the name to show.
-`customVoiceId` is the voice's id under `/api/custom-voices`.
+`customVoiceId` is the voice's id under `/api/voices/custom`.
 
 Which locale lists a voice:
 
@@ -217,12 +218,13 @@ The agent builder's `list_voices` tool shows the builder's organisation the
 same voices, in all three of its modes (locales, one locale, and search).
 
 Custom voices appear in these lists only for callers with `voice:read`.
+[Platform voices](#platform-voices) follow the organisation's own voices.
 
 ## List, read and delete
 
 ### List
 
-`GET /api/custom-voices` returns the organisation's voices, newest first, and
+`GET /api/voices/custom` returns the organisation's voices, newest first, and
 its quota:
 
 ```json
@@ -239,12 +241,12 @@ its quota:
 
 ### Read one
 
-`GET /api/custom-voices/{customVoiceId}` returns one voice. A voice of another
+`GET /api/voices/custom/{customVoiceId}` returns one voice. A voice of another
 organisation is a `404`.
 
 ### Delete
 
-`DELETE /api/custom-voices/{customVoiceId}` deletes the voice for good, at
+`DELETE /api/voices/custom/{customVoiceId}` deletes the voice for good, at
 OpenAI too, and frees its place in the quota. It returns the voice with status
 `deleted`.
 
@@ -287,11 +289,44 @@ Custom voices use the `voice` permission:
 
 | Role | `voice` actions |
 |---|---|
-| owner, orgAdmin, superAdmin, audioOnly, textOnly | `create`, `read`, `delete` |
+| owner, orgAdmin, audioOnly, textOnly | `create`, `read`, `delete` |
+| superAdmin | `create`, `read`, `delete`, `managePlatform` |
 | member, support | `read` |
 
 `create` also needs the model to be in the caller's allowed models. Every call
-sees only the caller's own organisation's voices.
+sees only the caller's own organisation's voices, and the platform voices.
+`managePlatform` is for [platform voices](#platform-voices) and cannot be
+granted by an organisation admin.
+
+## Platform voices
+
+A platform voice is a custom voice that every organisation can use. The
+platform operator makes them. They work like an organisation's own voices,
+with these differences:
+
+- They appear in every organisation's voice lists, after the organisation's
+  own custom voices, marked `"platform": true` as well as `"custom": true`.
+  The description reads `<name> (platform voice): <prompt>`. The builder's
+  `list_voices` tool shows them too.
+- `GET /api/voices/custom?visibility=platform` lists them. `quota` is then the
+  platform-wide count. `GET /api/voices/custom/{customVoiceId}` reads one.
+- They cost nothing from the organisation's quota.
+- Any organisation can put one on an agent whose model can speak it: set
+  `options.tts.voice` to its `voice` value (the `name` of its row in the
+  voice lists), as for any custom voice.
+- Only a caller with `voice:managePlatform` can make, withdraw or delete one.
+  It is made with the same `POST /api/models/{modelName}/voices/{locale}` and
+  `"visibility": "platform"` in the body.
+
+A platform voice can be **withdrawn**
+(`PATCH /api/voices/custom/{customVoiceId}` with `{ "withdrawn": true }`). It
+then leaves every voice list and no agent can newly take it. An agent that
+already has it keeps speaking with it, and can still be saved, until its voice
+is changed. Its row in `?visibility=platform` carries `withdrawnAt`.
+
+A platform voice cannot be deleted while any agent in any organisation uses
+it. `force=true` does not apply. The `409` lists the agents with
+`organisationId` and `organisationName`.
 
 ## Limits
 

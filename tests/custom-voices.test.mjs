@@ -3,14 +3,20 @@ import {
   Agent, User, Organisation,
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import express from 'express';
+import openapi from 'express-openapi';
+import request from 'supertest';
+import yaml from 'js-yaml';
 
 /**
  * Custom voices (docs/custom-voices.md): POST /models/{modelName}/voices/{locale}
  * accepts an OpenAI prompt voice for GPT-Live and makes it in the background;
- * /custom-voices lists, reads (settling a create that went quiet) and deletes (at
+ * /voices/custom lists, reads (settling a create that went quiet) and deletes (at
  * OpenAI too); the voice lists, agent validation and the worker's agent fetch only
- * ever see the caller's own organisation's voices; and the quota holds. OpenAI is
- * a stubbed global fetch.
+ * ever see the caller's own organisation's voices; and the quota holds. Platform
+ * voices, made by a super admin, are visible to and usable by every organisation.
+ * OpenAI is a stubbed global fetch.
  */
 
 const mockLogger = {
@@ -42,9 +48,9 @@ const PROMPT = 'A warm, unhurried woman in her forties with a soft southern Engl
 const mockVoices = { listVoices: async () => ({}) };
 
 describe('custom voices', () => {
-  let voicesByLocale, locales, listCustomVoices, customVoiceItem, agentDbAgent, createAgent, CustomVoice, functionHandler;
+  let voicesByLocale, locales, listCustomVoices, customVoiceItem, agentDbAgent, createAgent, updateAgentRoute, CustomVoice, functionHandler;
   let whenCustomVoiceSettled, sweepCreatingVoices;
-  let orgA, orgB, ownerA, ownerB, memberA;
+  let orgA, orgB, orgS, ownerA, ownerB, memberA, superS;
   let openaiCalls, openaiResponse, openaiDeleteResponse, openaiVoices, savedFetch, savedKey, savedPlatformLimit, seq;
 
   const post = async (user, body, { modelName = GPT_LIVE, locale = 'en-GB' } = {}) => {
@@ -90,6 +96,21 @@ describe('custom voices', () => {
     await customVoiceItem.DELETE(makeReq({ params: { customVoiceId: id }, query }), res);
     return res;
   };
+  const patch = async (user, id, body) => {
+    const res = makeRes(user);
+    await customVoiceItem.PATCH(makeReq({ params: { customVoiceId: id }, body }), res);
+    return res;
+  };
+  const saveAgent = async (user, body) => {
+    const res = makeRes(user);
+    await createAgent(makeReq({ body }), res);
+    return res;
+  };
+  const updateAgent = async (user, agentId, body) => {
+    const res = makeRes(user);
+    await updateAgentRoute(makeReq({ params: { agentId }, body }), res);
+    return res;
+  };
   // A 'creating' row with no job behind it, as a restart leaves one.
   const orphanCreate = async (org, ageMs) => {
     const row = await CustomVoice.create({
@@ -114,17 +135,20 @@ describe('custom voices', () => {
     ({ whenCustomVoiceSettled, sweepCreatingVoices } = await import('../lib/custom-voices/index.js'));
     voicesByLocale = (await import('../api/paths/models/{modelName}/voices/{locale}.js')).default(mockLogger, mockVoices);
     locales = (await import('../api/paths/models/{modelName}/voices.js')).default(mockLogger, mockVoices).GET;
-    listCustomVoices = (await import('../api/paths/custom-voices.js')).default(mockLogger).GET;
-    customVoiceItem = (await import('../api/paths/custom-voices/{customVoiceId}.js')).default(mockLogger);
+    listCustomVoices = (await import('../api/paths/voices/custom.js')).default(mockLogger).GET;
+    customVoiceItem = (await import('../api/paths/voices/custom/{customVoiceId}.js')).default(mockLogger);
     agentDbAgent = (await import('../api/paths/agent-db/agent.js')).default(mockLogger).GET;
     createAgent = (await import('../api/paths/agents.js')).default(mockLogger, {}, {}).POST;
+    updateAgentRoute = (await import('../api/paths/agents/{agentId}.js')).default(mockLogger).PUT;
     ({ functionHandler } = await import('../lib/function-handler.js'));
 
     orgA = await Organisation.create({ id: randomUUID(), name: 'Custom Voice Org A' });
     orgB = await Organisation.create({ id: randomUUID(), name: 'Custom Voice Org B' });
+    orgS = await Organisation.create({ id: randomUUID(), name: 'Custom Voice Org S' });
     ownerA = await makeUser(orgA, 'owner');
     ownerB = await makeUser(orgB, 'owner');
     memberA = await makeUser(orgA, 'member');
+    superS = await makeUser(orgS, 'superAdmin');
 
     savedFetch = globalThis.fetch;
     savedKey = process.env.OPENAI_API_KEY;
@@ -150,19 +174,19 @@ describe('custom voices', () => {
     });
     openaiDeleteResponse = (url) => ({ status: 200, body: { id: url.split('/').pop(), object: 'audio.voice.deleted', deleted: true } });
     delete process.env.OPENAI_PROMPT_VOICE_PLATFORM_LIMIT;
-    await Agent.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
-    await CustomVoice.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
-    await Organisation.update({ customVoiceLimit: 3 }, { where: { id: [orgA.id, orgB.id] } });
+    await Agent.destroy({ where: { organisationId: [orgA.id, orgB.id, orgS.id] } });
+    await CustomVoice.destroy({ where: { organisationId: [orgA.id, orgB.id, orgS.id] } });
+    await Organisation.update({ customVoiceLimit: 3 }, { where: { id: [orgA.id, orgB.id, orgS.id] } });
   });
 
   afterAll(async () => {
     globalThis.fetch = savedFetch;
     if (savedKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedKey;
     if (savedPlatformLimit !== undefined) process.env.OPENAI_PROMPT_VOICE_PLATFORM_LIMIT = savedPlatformLimit;
-    await Agent.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
-    await CustomVoice.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
-    await User.destroy({ where: { organisationId: [orgA.id, orgB.id] } });
-    await Organisation.destroy({ where: { id: [orgA.id, orgB.id] } });
+    await Agent.destroy({ where: { organisationId: [orgA.id, orgB.id, orgS.id] } });
+    await CustomVoice.destroy({ where: { organisationId: [orgA.id, orgB.id, orgS.id] } });
+    await User.destroy({ where: { organisationId: [orgA.id, orgB.id, orgS.id] } });
+    await Organisation.destroy({ where: { id: [orgA.id, orgB.id, orgS.id] } });
     await teardownRealDatabase();
   }, 60000);
 
@@ -195,7 +219,7 @@ describe('custom voices', () => {
     });
     const res = await post(ownerA, { name: 'Concierge', prompt: `  ${PROMPT}  `, scriptHint: 'Good morning, how can I help you today?', gender: 'female' });
     expect(res.statusCode).toBe(202);
-    expect(res.headers.Location).toBe(`/api/custom-voices/${res.body.id}`);
+    expect(res.headers.Location).toBe(`/api/voices/custom/${res.body.id}`);
     expect(res.body).toMatchObject({
       name: 'Concierge', vendor: 'openai', method: 'prompt', locale: 'en-GB', gender: 'female',
       prompt: PROMPT, status: 'creating', voice: null,
@@ -551,6 +575,38 @@ describe('custom voices', () => {
     expect((await list(memberA)).body.voices.map((v) => v.id)).toEqual([voice.id]);
   });
 
+  test('the router serves /voices/custom beside /voices, and /custom-voices is a 404', async () => {
+    const voice = await CustomVoice.create({
+      organisationId: orgA.id, vendor: 'openai', method: 'prompt', name: 'routed', prompt: PROMPT, locale: 'en-GB',
+      status: 'ready', vendorVoiceId: `voice_route${randomUUID().slice(0, 8)}`,
+    });
+    const app = express();
+    app.use((req, res, next) => { req.log = mockLogger; res.locals.user = ownerA; next(); });
+    await openapi.initialize({
+      app,
+      apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
+      dependencies: { logger: mockLogger, voices: mockVoices },
+      paths: './api/paths',
+      // The old location is in the glob, so a route file left there would be served.
+      routesGlob: '{voices,custom-voices}{.js,/**/*.js}',
+      promiseMode: true,
+    });
+    const routes = app._router.stack.filter((l) => l.route).map((l) => l.route.path);
+    expect(routes).toEqual(expect.arrayContaining(['/api/voices', '/api/voices/custom', '/api/voices/custom/:customVoiceId']));
+    expect(routes.filter((r) => r.includes('custom-voices'))).toEqual([]);
+
+    const listed = await request(app).get('/api/voices/custom');
+    expect(listed.status).toBe(200);
+    expect(listed.body.voices.map((v) => v.id)).toEqual([voice.id]);
+    expect((await request(app).get(`/api/voices/custom/${voice.id}`)).body).toMatchObject({ id: voice.id, name: 'routed' });
+
+    expect((await request(app).get('/api/custom-voices')).status).toBe(404);
+    expect((await request(app).get(`/api/custom-voices/${voice.id}`)).status).toBe(404);
+    expect((await request(app).patch(`/api/custom-voices/${voice.id}`).send({ withdrawn: true })).status).toBe(404);
+    expect((await request(app).delete(`/api/custom-voices/${voice.id}`)).status).toBe(404);
+    expect((await CustomVoice.findByPk(voice.id)).status).toBe('ready');
+  });
+
   test('only the owning organisation can put a ready voice on an agent', async () => {
     const voice = (await createVoice(ownerA, { name: 'mine', prompt: PROMPT })).voice;
     const agentBody = { name: 'Live', modelName: GPT_LIVE, prompt: 'Be helpful.', options: { tts: { voice: voice.voice } } };
@@ -597,6 +653,7 @@ describe('custom voices', () => {
     };
     expect((await fetchAgent()).customVoice).toEqual({
       id: voice.id, vendor: 'openai', method: 'prompt', voice: voice.voice, name: 'mine', prompt: PROMPT, locale: 'en-GB',
+      visibility: 'organisation',
     });
 
     const inUse = await del(ownerA, voice.id);
@@ -611,5 +668,261 @@ describe('custom voices', () => {
     expect((await list(ownerA)).body.voices).toEqual([]);
     expect((await list(ownerA, { includeDeleted: 'true' })).body.voices.map((v) => v.id)).toEqual([voice.id]);
     expect((await del(ownerA, voice.id)).statusCode).toBe(404);
+  });
+  describe('platform voices', () => {
+    const createPlatform = (body = {}, opts) =>
+      createVoice(superS, { visibility: 'platform', name: 'Platform concierge', prompt: PROMPT, gender: 'female', ...body }, opts);
+    const platformList = async (user) => (await list(user, { visibility: 'platform' })).body;
+    const agentBody = (voice, name = 'Live') => ({ name, modelName: GPT_LIVE, prompt: 'Be helpful.', options: { tts: { voice } } });
+    const fetchAgent = async (agentId) => {
+      const res = makeRes({ isSystem: true });
+      await agentDbAgent(makeReq({ query: { agentId } }), res);
+      return res.body;
+    };
+    // OpenAI's list of the project's voices, as a voice registered by id would be found there.
+    const listedAtOpenAI = (id, name = 'aplisay-elsewhere') => ({ id, name, object: 'audio.voice', type: 'prompt' });
+
+    test('a super admin makes one; it uses no organisation quota, only the platform count', async () => {
+      const before = (await platformList(superS)).quota.used;
+      const { res, voice } = await createPlatform({ scriptHint: 'Hello, how can I help?' });
+      expect(res.body).toMatchObject({ status: 'creating', visibility: 'platform' });
+      expect(voice).toMatchObject({ status: 'ready', visibility: 'platform', ownership: { state: 'owner' } });
+      expect(openaiCalls.map((c) => c.method)).toEqual(['POST']);
+
+      const row = await CustomVoice.findByPk(voice.id);
+      expect(row).toMatchObject({ visibility: 'platform', organisationId: orgS.id, createdBy: superS.id, withdrawnAt: null });
+      expect((await list(superS)).body.quota).toMatchObject({ used: 0 });
+      expect((await list(superS)).body.voices).toEqual([]);
+      expect((await platformList(superS)).quota).toMatchObject({ limit: 100, used: before + 1 });
+
+      // Even an organisation with no room left can make one.
+      await Organisation.update({ customVoiceLimit: 0 }, { where: { id: orgS.id } });
+      expect((await createPlatform({ name: 'Second' })).voice.status).toBe('ready');
+    });
+
+    test('only voice:managePlatform can make one, and an organisation voice cannot name a vendorVoiceId', async () => {
+      const owner = await post(ownerA, { visibility: 'platform', name: 'x', prompt: PROMPT });
+      expect(owner.statusCode).toBe(403);
+      expect(owner.body.code).toBe('voice_platform_forbidden');
+      const orgAdmin = await post({ ...ownerA, role: 'orgAdmin' }, { visibility: 'platform', name: 'x', prompt: PROMPT });
+      expect(orgAdmin.statusCode).toBe(403);
+      expect(await CustomVoice.count({ where: { visibility: 'platform', organisationId: [orgA.id, orgB.id, orgS.id] } })).toBe(0);
+
+      expect((await post(superS, { visibility: 'public', name: 'x', prompt: PROMPT })).statusCode).toBe(400);
+      expect((await post(ownerA, { name: 'x', prompt: PROMPT, vendorVoiceId: 'voice_x' })).statusCode).toBe(400);
+      expect(openaiCalls).toHaveLength(0);
+    });
+
+    test('takes the platform cap like any create', async () => {
+      const used = (await platformList(superS)).quota.used;
+      process.env.OPENAI_PROMPT_VOICE_PLATFORM_LIMIT = String(used);
+      const res = await post(superS, { visibility: 'platform', name: 'x', prompt: PROMPT });
+      expect(res.statusCode).toBe(503);
+      expect(res.body.code).toBe('custom_voice_platform_limit');
+      expect((await platformList(superS)).quota).toMatchObject({ limit: used, remaining: 0 });
+    });
+
+    test('every organisation lists it, after its own voices and before the stock ones', async () => {
+      const platform = (await createPlatform()).voice;
+      const own = (await createVoice(ownerB, { name: 'B voice', prompt: PROMPT })).voice;
+
+      const bPlatform = await platformList(ownerB);
+      expect(bPlatform.voices.map((v) => v.id)).toEqual([platform.id]);
+      // Only a platform administrator sees in-use counts, the script hint and ownership.
+      expect(bPlatform.voices[0]).not.toHaveProperty('inUse');
+      expect(bPlatform.voices[0]).not.toHaveProperty('scriptHint');
+      expect(bPlatform.voices[0]).not.toHaveProperty('ownership');
+      expect((await list(ownerB)).body.voices.map((v) => v.id)).toEqual([own.id]);
+      expect((await getOne(ownerB, platform.id)).body).toMatchObject({ id: platform.id, visibility: 'platform' });
+
+      const openai = (await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI;
+      expect(openai.slice(0, 2).map((v) => v.name)).toEqual([own.voice, platform.voice]);
+      expect(openai[0]).not.toHaveProperty('platform');
+      expect(openai[1]).toMatchObject({
+        custom: true, platform: true, customVoiceId: platform.id, label: 'Platform concierge', gender: 'female', locale: 'en-GB',
+      });
+      expect(openai[1].description).toMatch(/^Platform concierge \(platform voice\): A warm/);
+      expect(openai[2].custom).toBeUndefined();
+
+      // Organisation A has no voice of its own: the platform voice comes first.
+      expect((await getVoices(ownerA, 'en-GB')).body.vendors.OpenAI[0]).toMatchObject({ name: platform.voice, platform: true });
+      const loc = makeRes(ownerA);
+      await locales(makeReq({ params: { modelName: GPT_LIVE } }), loc);
+      expect(loc.body.locales).toEqual(['any', 'en-GB']);
+      // The super admin's own organisation lists it once, as a platform voice.
+      expect((await getVoices(superS, 'en-GB')).body.vendors.OpenAI.filter((v) => v.custom)).toEqual([
+        expect.objectContaining({ name: platform.voice, platform: true }),
+      ]);
+    });
+
+    test('any organisation puts it on an agent, and the worker fetch carries it', async () => {
+      const platform = (await createPlatform({ scriptHint: 'Hello, how can I help?' })).voice;
+      const saved = await saveAgent(ownerB, agentBody(platform.voice));
+      expect(saved.statusCode).toBe(200);
+      expect((await fetchAgent(saved.body.id)).customVoice).toEqual({
+        id: platform.id, vendor: 'openai', method: 'prompt', voice: platform.voice, name: 'Platform concierge',
+        prompt: PROMPT, locale: 'en-GB', visibility: 'platform',
+      });
+
+      const [listed] = (await platformList(superS)).voices;
+      expect(listed).toMatchObject({ id: platform.id, inUse: { agents: 1, organisations: 1 }, scriptHint: 'Hello, how can I help?' });
+      expect((await saveAgent(ownerA, agentBody(platform.voice))).statusCode).toBe(200);
+      expect((await platformList(superS)).voices[0].inUse).toEqual({ agents: 2, organisations: 2 });
+    });
+
+    test('only a platform administrator withdraws or deletes it, and never while an agent uses it', async () => {
+      const platform = (await createPlatform()).voice;
+      const agent = (await saveAgent(ownerB, agentBody(platform.voice, 'B live'))).body;
+
+      expect((await del(ownerB, platform.id)).statusCode).toBe(403);
+      expect((await del(ownerB, platform.id, { force: 'true' })).statusCode).toBe(403);
+      expect((await patch(ownerB, platform.id, { withdrawn: true })).statusCode).toBe(403);
+      // The super admin's own organisation's owner has no say either.
+      expect((await del(await makeUser(orgS, 'owner'), platform.id)).statusCode).toBe(403);
+
+      for (const query of [{}, { force: 'true' }]) {
+        const refused = await del(superS, platform.id, query);
+        expect(refused.statusCode).toBe(409);
+        expect(refused.body).toMatchObject({
+          code: 'custom_voice_in_use',
+          total: 1,
+          agents: [{ id: agent.id, name: 'B live', organisationId: orgB.id, organisationName: 'Custom Voice Org B' }],
+        });
+      }
+      expect(openaiCalls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+
+      // B moves its agent to a stock voice; the delete then goes through, at OpenAI too.
+      expect((await updateAgent(ownerB, agent.id, { options: { tts: { voice: 'marin' } } })).statusCode).toBe(200);
+      const deleted = await del(superS, platform.id);
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.body.status).toBe('deleted');
+      expect(openaiCalls.at(-1)).toMatchObject({ method: 'DELETE', url: `https://api.openai.com/v1/audio/voices/${platform.voice}` });
+      expect((await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI.some((v) => v.platform)).toBe(false);
+    });
+
+    test('a withdrawn voice leaves every list; agents that have it keep it, no new agent takes it', async () => {
+      const platform = (await createPlatform()).voice;
+      const agent = (await saveAgent(ownerB, agentBody(platform.voice))).body;
+
+      const withdrawn = await patch(superS, platform.id, { withdrawn: true });
+      expect(withdrawn.statusCode).toBe(200);
+      expect(withdrawn.body.withdrawnAt).toBeTruthy();
+      const firstWithdrawnAt = withdrawn.body.withdrawnAt;
+      expect((await patch(superS, platform.id, { withdrawn: true })).body.withdrawnAt).toEqual(firstWithdrawnAt);
+
+      expect((await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI.some((v) => v.platform)).toBe(false);
+      expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, locale: 'en-GB' }, orgB.id))).not.toContain(platform.voice);
+      expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, search: ['platform', 'concierge'] }, orgB.id))).not.toContain(platform.voice);
+      expect((await listVoices({ modelName: GPT_LIVE }, orgB.id)).locales).toEqual(['any']);
+      // Still in the platform list, marked.
+      expect((await platformList(ownerB)).voices[0]).toMatchObject({ id: platform.id, withdrawnAt: firstWithdrawnAt });
+
+      // The existing agent still saves and still speaks it; a new one is refused.
+      expect((await updateAgent(ownerB, agent.id, { prompt: 'Be very helpful.' })).statusCode).toBe(200);
+      expect((await updateAgent(ownerB, agent.id, { options: { tts: { voice: platform.voice } } })).statusCode).toBe(200);
+      expect((await fetchAgent(agent.id)).customVoice).toMatchObject({ voice: platform.voice, visibility: 'platform' });
+      const refused = await saveAgent(ownerB, agentBody(platform.voice, 'New'));
+      expect(refused.statusCode).toBe(400);
+      expect(JSON.stringify(refused.body)).toMatch(/not supported/);
+      // An existing agent that did not have it cannot take it either.
+      const other = (await saveAgent(ownerA, agentBody('marin'))).body;
+      expect((await updateAgent(ownerA, other.id, { options: { tts: { voice: platform.voice } } })).statusCode).toBe(400);
+
+      const restored = await patch(superS, platform.id, { withdrawn: false });
+      expect(restored.statusCode).toBe(200);
+      expect(restored.body).not.toHaveProperty('withdrawnAt');
+      expect((await saveAgent(ownerB, agentBody(platform.voice, 'New'))).statusCode).toBe(200);
+      expect((await updateAgent(ownerA, other.id, { options: { tts: { voice: platform.voice } } })).statusCode).toBe(200);
+      expect((await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI.some((v) => v.platform)).toBe(true);
+    });
+
+    test('PATCH changes platform voices only, and only withdrawn and release', async () => {
+      const platform = (await createPlatform()).voice;
+      const own = (await createVoice(ownerA, { name: 'mine', prompt: PROMPT })).voice;
+      expect((await patch(superS, platform.id, { name: 'Renamed' })).statusCode).toBe(400);
+      expect((await patch(superS, platform.id, {})).statusCode).toBe(400);
+      expect((await patch(superS, platform.id, { withdrawn: 'yes' })).statusCode).toBe(400);
+      expect((await patch(superS, platform.id, { release: 'https://elsewhere.example' })).statusCode).toBe(400);
+      expect((await patch(superS, platform.id, { release: {} })).statusCode).toBe(400);
+      expect((await patch(superS, own.id, { withdrawn: true })).statusCode).toBe(404);
+      // The super admin's own organisation voice is visible to it, but is not a platform voice.
+      const superOwn = (await createVoice(superS, { name: 'super own', prompt: PROMPT })).voice;
+      expect((await patch(superS, superOwn.id, { withdrawn: true })).statusCode).toBe(400);
+      expect((await patch(superS, randomUUID(), { withdrawn: true })).statusCode).toBe(404);
+      expect((await CustomVoice.findByPk(platform.id)).name).toBe('Platform concierge');
+    });
+
+    test('a voice OpenAI already holds is registered by id, released, and deleted where it is owned', async () => {
+      openaiVoices = [listedAtOpenAI('voice_elsewhere1'), listedAtOpenAI('voice_elsewhere2')];
+      const adopted = await post(superS, {
+        visibility: 'platform', name: 'Adopted', prompt: PROMPT, scriptHint: 'Hello there, how are you today?',
+        vendorVoiceId: 'voice_elsewhere1', adoptedFrom: 'https://source.example',
+      });
+      expect(adopted.statusCode).toBe(202);
+      expect(adopted.body).toMatchObject({
+        status: 'ready', voice: 'voice_elsewhere1', visibility: 'platform',
+        ownership: { state: 'owner', from: 'https://source.example' },
+      });
+      // A list call at OpenAI and no create.
+      expect(openaiCalls.map((c) => c.method)).toEqual(['GET']);
+      const row = await CustomVoice.findByPk(adopted.body.id);
+      expect(row.vendorData).toMatchObject({
+        ownership: 'owner', adopted: { from: 'https://source.example' }, request: { scriptHint: 'Hello there, how are you today?' },
+      });
+      expect((await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI[0]).toMatchObject({ name: 'voice_elsewhere1', platform: true });
+
+      // Not in this OpenAI project, or already here.
+      const missing = await post(superS, { visibility: 'platform', name: 'Missing', prompt: PROMPT, vendorVoiceId: 'voice_nowhere' });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.body.code).toBe('vendor_voice_not_found');
+      const twice = await post(superS, { visibility: 'platform', name: 'Again', prompt: PROMPT, vendorVoiceId: 'voice_elsewhere1' });
+      expect(twice.statusCode).toBe(409);
+      expect(twice.body).toMatchObject({ code: 'custom_voice_exists', customVoiceId: adopted.body.id });
+      expect(openaiCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+
+      // Released: one way, and a second release changes nothing.
+      const released = await patch(superS, adopted.body.id, { release: { to: 'https://target.example' } });
+      expect(released.statusCode).toBe(200);
+      expect(released.body.ownership).toEqual({ state: 'released', from: 'https://source.example', to: 'https://target.example' });
+      const firstRelease = (await CustomVoice.findByPk(adopted.body.id)).vendorData.released;
+      expect(firstRelease).toMatchObject({ to: 'https://target.example' });
+      const again = await patch(superS, adopted.body.id, { release: { to: 'https://other.example' } });
+      expect(again.body.ownership).toEqual(released.body.ownership);
+      expect((await CustomVoice.findByPk(adopted.body.id)).vendorData.released).toEqual(firstRelease);
+
+      // A released voice is deleted here only; an owned adopted one at OpenAI too.
+      openaiCalls = [];
+      expect((await del(superS, adopted.body.id)).statusCode).toBe(200);
+      expect(openaiCalls).toHaveLength(0);
+      expect((await CustomVoice.findByPk(adopted.body.id)).vendorData.deletion).toMatchObject({ local: true });
+
+      const owned = await post(superS, { visibility: 'platform', name: 'Owned', prompt: PROMPT, vendorVoiceId: 'voice_elsewhere2' });
+      expect(owned.statusCode).toBe(202);
+      openaiCalls = [];
+      expect((await del(superS, owned.body.id)).statusCode).toBe(200);
+      expect(openaiCalls.map((c) => `${c.method} ${c.url}`)).toEqual(['DELETE https://api.openai.com/v1/audio/voices/voice_elsewhere2']);
+    });
+
+    test('only a ready voice is released', async () => {
+      let finish;
+      openaiResponse = (body) => new Promise((resolve) => {
+        finish = () => resolve({ status: 200, body: { id: 'voice_slow_platform', name: body.name } });
+      });
+      const res = await post(superS, { visibility: 'platform', name: 'Slow', prompt: PROMPT });
+      expect((await patch(superS, res.body.id, { release: { to: 'https://target.example' } })).statusCode).toBe(409);
+      finish();
+      await whenCustomVoiceSettled(res.body.id);
+    });
+
+    test('the builder\'s list_voices offers it in all three modes, flagged, with or without an organisation', async () => {
+      const platform = (await createPlatform({ name: 'Highland guide' })).voice;
+      for (const organisationId of [orgB.id, undefined]) {
+        expect((await listVoices({ modelName: GPT_LIVE }, organisationId)).locales).toEqual(['any', 'en-GB']);
+        const gb = (await listVoices({ modelName: GPT_LIVE, locale: 'en-GB' }, organisationId)).vendors.OpenAI;
+        expect(gb[0]).toMatchObject({ name: platform.voice, custom: true, platform: true, label: 'Highland guide' });
+        const found = await listVoices({ modelName: GPT_LIVE, search: ['highland', 'guide'] }, organisationId);
+        expect(found.vendors.OpenAI[0]).toMatchObject({ name: platform.voice, platform: true, matchedTerms: ['highland', 'guide'] });
+      }
+    });
   });
 });

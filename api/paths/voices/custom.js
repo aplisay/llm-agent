@@ -1,13 +1,15 @@
-import { requirePermission } from '../../lib/auth/permissions.js';
+import { requirePermission } from '../../../lib/auth/permissions.js';
 import {
   CustomVoiceError,
   getCustomVoiceQuota,
+  getPlatformVoiceQuota,
   listCustomVoices,
-} from '../../lib/custom-voices/index.js';
+} from '../../../lib/custom-voices/index.js';
 
 /**
- * GET /api/custom-voices: the caller's organisation's custom voices and its
- * quota (docs/custom-voices.md). Voices are created with
+ * GET /api/voices/custom: the caller's organisation's custom voices and its
+ * quota, or the platform voices and the platform-wide count
+ * (docs/custom-voices.md). Voices are created with
  * POST /models/{modelName}/voices/{locale}.
  */
 export default function (logger) {
@@ -17,9 +19,10 @@ export default function (logger) {
     try {
       const includeDeleted = req.query?.includeDeleted === true || req.query?.includeDeleted === 'true';
       const modelName = req.query?.modelName ? String(req.query.modelName) : undefined;
+      const visibility = req.query?.visibility ? String(req.query.visibility) : 'organisation';
       const [voices, quota] = await Promise.all([
-        listCustomVoices(user, { includeDeleted, modelName }),
-        getCustomVoiceQuota(user),
+        listCustomVoices(user, { includeDeleted, modelName, visibility }),
+        visibility === 'platform' ? getPlatformVoiceQuota() : getCustomVoiceQuota(user),
       ]);
       res.send({ voices, quota });
     } catch (err) {
@@ -32,10 +35,12 @@ export default function (logger) {
   };
 
   list.apiDoc = {
-    summary: 'List the organisation\'s custom voices and quota',
+    summary: 'List the organisation\'s custom voices and quota, or the platform voices',
     description: `Returns the custom voices that belong to the caller's organisation, newest first, and the organisation's quota. Create a voice with [\`POST /models/{modelName}/voices/{locale}\`](#operation-createModelVoice) (\`docs/custom-voices.md\`).
 
 \`quota.used\` counts voices that are being created or are ready. A deleted voice stops counting once the vendor has deleted it, which OpenAI does.
+
+With \`visibility=platform\` it returns the platform voices instead: voices every organisation can use, withdrawn ones included (\`withdrawnAt\`). \`quota\` is then the platform-wide count of the vendor's voices, over every organisation's voices and the platform voices. A caller with \`voice:managePlatform\` also gets each voice's \`inUse\` counts and \`scriptHint\`.
 
 Requires \`voice:read\`.`,
     operationId: 'listCustomVoices',
@@ -54,6 +59,13 @@ Requires \`voice:read\`.`,
         required: false,
         schema: { type: 'string' },
         description: 'Only voices this model can speak, e.g. `pipecat:openai/gpt-live-1`.',
+      },
+      {
+        in: 'query',
+        name: 'visibility',
+        required: false,
+        schema: { type: 'string', enum: ['organisation', 'platform'], default: 'organisation' },
+        description: '`organisation`: the caller\'s organisation\'s own voices. `platform`: the platform voices.',
       },
     ],
     responses: {
