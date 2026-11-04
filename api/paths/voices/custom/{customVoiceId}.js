@@ -3,13 +3,13 @@ import {
   CustomVoiceError,
   deleteCustomVoice,
   getCustomVoice,
-  patchPlatformVoice,
+  patchCustomVoice,
 } from '../../../../lib/custom-voices/index.js';
 
 /**
  * GET / PATCH / DELETE /api/voices/custom/{customVoiceId} (docs/custom-voices.md).
  * Another organisation's own voice is a 404, so its existence is not leaked.
- * PATCH changes platform voices only.
+ * PATCH changes a voice's description; withdraw and release are for platform voices only.
  */
 export default function (logger) {
   const sendError = (req, res, err, what) => {
@@ -47,42 +47,44 @@ Requires \`voice:read\`.`,
   };
 
   const patch = async (req, res) => {
-    if (!requirePermission(res, 'voice', 'managePlatform')) return;
+    if (!requirePermission(res, 'voice', 'create')) return;
     try {
-      const voice = await patchPlatformVoice(res.locals.user, req.params.customVoiceId, req.body || {});
-      req.log.info({ customVoiceId: voice.id, body: req.body }, 'platform voice changed');
+      const voice = await patchCustomVoice(res.locals.user, req.params.customVoiceId, req.body || {});
+      req.log.info({ customVoiceId: voice.id, fields: Object.keys(req.body || {}) }, 'custom voice changed');
       res.send(voice);
     } catch (err) {
-      sendError(req, res, err, 'change the platform voice');
+      sendError(req, res, err, 'change the custom voice');
     }
   };
 
   patch.apiDoc = {
-    summary: 'Withdraw, restore or release a platform voice',
-    description: `Changes a platform voice (\`visibility: platform\`). An organisation's own voice is a 400.
+    summary: 'Change a custom voice\'s description, or withdraw, restore or release a platform voice',
+    description: `\`{ "description": "..." }\` sets the voice's description: words that help people and the agent builder find it, such as accent, region or style (for example "British, UK, English, Northern, Manchester"). It is searched and shown in voice lists, ahead of the prompt. It does not change how the voice sounds. \`null\` or a blank string clears it. It can be changed on the organisation's own voices, and on platform voices by a caller with \`voice:managePlatform\`.
+
+These change a platform voice (\`visibility: platform\`) only, and are a 400 on an organisation's own voice:
 
 - \`{ "withdrawn": true }\` withdraws the voice: it leaves every voice list, and no agent can newly take it. Agents that already have it keep speaking with it, and can still be saved with it, until their voice is changed. \`{ "withdrawn": false }\` lists it again.
 - \`{ "release": { "to": "<url>" } }\` records that the vendor voice is now managed at \`to\`, another platform whose vendor key can use the same voice. A later delete here then only marks the voice deleted, and does not delete it at the vendor. A release cannot be undone, and a second one changes nothing. The voice must be \`ready\`.
 
 Any other field is a 400: there is no rename.
 
-Requires \`voice:managePlatform\`.`,
-    operationId: 'patchPlatformVoice',
+Requires \`voice:create\`, and \`voice:managePlatform\` for a platform voice.`,
+    operationId: 'patchCustomVoice',
     tags: ['Voices'],
     parameters: [{ in: 'path', name: 'customVoiceId', required: true, schema: { type: 'string', format: 'uuid' } }],
     requestBody: {
       required: true,
       content: {
         'application/json': {
-          schema: { $ref: '#/components/schemas/PlatformVoicePatch' },
-          example: { withdrawn: true },
+          schema: { $ref: '#/components/schemas/CustomVoicePatch' },
+          example: { description: 'British, UK, English, Northern, Manchester' },
         },
       },
     },
     responses: {
       200: { description: 'The voice', content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomVoice' } } } },
-      400: { description: 'Invalid body, or not a platform voice', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
-      403: { description: 'Lacks `voice:managePlatform`', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      400: { description: 'Invalid body, or a platform-only change to an organisation voice', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      403: { description: 'Lacks `voice:create`, or `voice:managePlatform` for a platform voice', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
       409: { description: 'A release of a voice that is not ready', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'Error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
@@ -107,7 +109,7 @@ Requires \`voice:managePlatform\`.`,
 
 Refused with 409 (\`code: custom_voice_in_use\`, with \`agents\`) while an agent of the organisation still uses it. With \`force=true\` it is deleted anyway, and those agents speak with the model's default voice until their voice is changed.
 
-A platform voice (\`visibility: platform\`) also needs \`voice:managePlatform\`, and is refused with 409 while any agent in any organisation uses it, whatever \`force\` says. The 409 then lists up to 50 agents with \`organisationId\` and \`organisationName\`, and \`total\`. Withdraw the voice with [\`PATCH\`](#operation-patchPlatformVoice) so no new agent takes it. A released platform voice is marked deleted here without a vendor delete.
+A platform voice (\`visibility: platform\`) also needs \`voice:managePlatform\`, and is refused with 409 while any agent in any organisation uses it, whatever \`force\` says. The 409 then lists up to 50 agents with \`organisationId\` and \`organisationName\`, and \`total\`. Withdraw the voice with [\`PATCH\`](#operation-patchCustomVoice) so no new agent takes it. A released platform voice is marked deleted here without a vendor delete.
 
 Requires \`voice:delete\`.`,
     operationId: 'deleteCustomVoice',

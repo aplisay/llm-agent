@@ -96,6 +96,7 @@ Body (JSON):
 | Field | Required | Meaning |
 |---|---|---|
 | `name` | yes | Display name, up to 100 characters. Shown in voice lists. Callers never hear it. |
+| `description` | no | Words that help people and the agent builder find the voice, up to 500 characters: accent, region, style. For example `British, UK, English, Northern, Manchester`. See [Description](#description). |
 | `prompt` | yes | A plain description of the voice, up to 2,000 characters. See [Writing the prompt](#writing-the-prompt). |
 | `scriptHint` | no | Sample text for OpenAI to speak while it builds the voice, up to 2,000 characters. If you leave it out, OpenAI writes one. Very short scripts are rejected. |
 | `gender` | no | `male`, `female` or `neutral`. A label for voice lists. It does not change the voice. |
@@ -192,7 +193,7 @@ GPT-Live), before the standard voices. A custom voice looks like this:
 ```json
 {
   "name": "voice_123abc",
-  "description": "Brighton concierge (custom voice): A warm, unhurried woman in her forties ...",
+  "description": "Brighton concierge (custom voice): British, UK, southern, Brighton A warm, unhurried woman ...",
   "gender": "female",
   "locale": "en-GB",
   "custom": true,
@@ -202,7 +203,8 @@ GPT-Live), before the standard voices. A custom voice looks like this:
 ```
 
 `name` is the value for `options.tts.voice`. `label` is the name to show.
-`customVoiceId` is the voice's id under `/api/voices/custom`.
+`customVoiceId` is the voice's id under `/api/voices/custom`. `description`
+is the voice's [description](#description), if it has one, then its prompt.
 
 Which locale lists a voice:
 
@@ -261,6 +263,30 @@ A failed voice was never made at OpenAI, so it is simply removed.
 
 There is no rename.
 
+### Description
+
+A voice's description holds words that help people and the agent builder
+find it. The builder's `list_voices` search only finds a voice whose text has
+one of the words it searches for. A prompt such as "a Manchester accent" does
+not contain "British" or "UK", so add those words to the description.
+
+The description is searched and shown in the voice lists ahead of the prompt.
+It does not change how the voice sounds: the prompt made the voice, and
+changing it later would not change the voice at OpenAI.
+
+Set it when you create the voice, or change it later:
+
+```http
+PATCH /api/voices/custom/{customVoiceId}
+Content-Type: application/json
+
+{ "description": "British, UK, English, Northern, Manchester" }
+```
+
+`null` or a blank string clears it. It needs `voice:create`. A platform
+voice's description also needs `voice:managePlatform`. Any other field is a
+`400`.
+
 ## Quota
 
 Each organisation has `customVoiceLimit`, the most custom voices it can hold.
@@ -306,15 +332,16 @@ with these differences:
 
 - They appear in every organisation's voice lists, after the organisation's
   own custom voices, marked `"platform": true` as well as `"custom": true`.
-  The description reads `<name> (platform voice): <prompt>`. The builder's
-  `list_voices` tool shows them too.
+  The description reads `<name> (custom platform voice): <description> <prompt>`.
+  The builder's `list_voices` tool shows them too.
 - `GET /api/voices/custom?visibility=platform` lists them. `quota` is then the
   platform-wide count. `GET /api/voices/custom/{customVoiceId}` reads one.
 - They cost nothing from the organisation's quota.
 - Any organisation can put one on an agent whose model can speak it: set
   `options.tts.voice` to its `voice` value (the `name` of its row in the
   voice lists), as for any custom voice.
-- Only a caller with `voice:managePlatform` can make, withdraw or delete one.
+- Only a caller with `voice:managePlatform` can make, withdraw or delete one,
+  or change its description.
   It is made with the same `POST /api/models/{modelName}/voices/{locale}` and
   `"visibility": "platform"` in the body.
 
