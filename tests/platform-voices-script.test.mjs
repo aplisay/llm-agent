@@ -102,7 +102,7 @@ describe('platform-voices script', () => {
   test('exports the ready platform voices with what an import needs', async () => {
     const source = stubServer({
       voices: [
-        voice({ name: 'Concierge', scriptHint: 'Hello there', withdrawnAt: undefined }),
+        voice({ name: 'Concierge', description: 'British, UK', scriptHint: 'Hello there', withdrawnAt: undefined }),
         voice({ name: 'Retired', withdrawnAt: '2026-11-01T00:00:00Z' }),
         voice({ name: 'Broken', status: 'failed', voice: null }),
         voice({ name: 'Promoted', ownership: { state: 'released', to: TARGET } }),
@@ -115,11 +115,12 @@ describe('platform-voices script', () => {
     expect(data.exportedAt).toBe('2026-11-02T10:00:00.000Z');
     expect(data.voices.map((v) => v.name)).toEqual(['Concierge', 'Retired', 'Promoted']);
     expect(data.voices[0]).toEqual({
-      id: 'id-Concierge', name: 'Concierge', prompt: 'A warm voice.', scriptHint: 'Hello there', gender: 'female', locale: 'en-GB',
+      id: 'id-Concierge', name: 'Concierge', description: 'British, UK', prompt: 'A warm voice.', scriptHint: 'Hello there',
+      gender: 'female', locale: 'en-GB',
       vendor: 'openai', method: 'prompt', models: [GPT_LIVE, LIVEKIT_GPT_LIVE], vendorVoiceId: 'voice_Concierge',
       withdrawn: false, ownership: 'owner',
     });
-    expect(data.voices[1].withdrawn).toBe(true);
+    expect(data.voices[1]).toMatchObject({ withdrawn: true, description: null });
     expect(data.voices[2].ownership).toBe('released');
 
     const out = [];
@@ -136,7 +137,7 @@ describe('platform-voices script', () => {
       source: SOURCE,
       voices: [
         { ...voice({ name: 'Existing' }), vendorVoiceId: 'voice_e', withdrawn: false, ownership: 'owner' },
-        { ...voice({ name: 'Fresh', scriptHint: 'Hello there' }), vendorVoiceId: 'voice_f', withdrawn: false, ownership: 'owner' },
+        { ...voice({ name: 'Fresh', description: 'British, UK', scriptHint: 'Hello there' }), vendorVoiceId: 'voice_f', withdrawn: false, ownership: 'owner' },
         { ...voice({ name: 'Rejected' }), vendorVoiceId: 'voice_r', withdrawn: false, ownership: 'owner' },
         { ...voice({ name: 'Retired' }), vendorVoiceId: 'voice_w', withdrawn: true, ownership: 'owner' },
       ],
@@ -149,7 +150,8 @@ describe('platform-voices script', () => {
       `/api/models/${encodeURIComponent(GPT_LIVE)}/voices/en-GB`,
     ]);
     expect(posts[0].body).toEqual({
-      visibility: 'platform', name: 'Fresh', prompt: 'A warm voice.', scriptHint: 'Hello there', gender: 'female', vendor: 'openai',
+      visibility: 'platform', name: 'Fresh', description: 'British, UK', prompt: 'A warm voice.', scriptHint: 'Hello there',
+      gender: 'female', vendor: 'openai',
     });
     expect(target.polls.get('new-2')).toBe(2);
     expect(lines.join('\n')).toMatch(/Existing: skipped, already a platform voice/);

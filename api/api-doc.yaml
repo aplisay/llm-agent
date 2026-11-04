@@ -1725,6 +1725,15 @@ components:
           maxLength: 100
           description: Display name. Shown in voice lists; not sent to callers.
           example: Brighton concierge
+        description:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: |-
+            Optional words that help people and the agent builder find the voice, such as accent,
+            region or style. Searched and shown in voice lists, ahead of the prompt. Does not change
+            how the voice sounds. Can be changed later with `PATCH /voices/custom/{customVoiceId}`.
+          example: British, UK, English, southern, Brighton
         prompt:
           type: string
           maxLength: 2000
@@ -1776,6 +1785,10 @@ components:
           format: uuid
         name:
           type: string
+        description:
+          type: string
+          nullable: true
+          description: Search text for voice lists, apart from the prompt. Null when not set.
         vendor:
           type: string
           example: openai
@@ -1866,12 +1879,19 @@ components:
         deletedAt:
           type: string
           format: date-time
-    PlatformVoicePatch:
+    CustomVoicePatch:
       type: object
       description: |-
-        A change to a platform voice. Send `withdrawn`, `release`, or both. Any other field is a 400.
+        A change to a custom voice. Send `description`, `withdrawn`, `release`, or more than one.
+        `withdrawn` and `release` are for platform voices only. Any other field is a 400.
       additionalProperties: false
       properties:
+        description:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: |-
+            Search text for voice lists, such as accent, region or style. Null or blank clears it.
         withdrawn:
           type: boolean
           description: True withdraws the voice from every voice list; false lists it again.

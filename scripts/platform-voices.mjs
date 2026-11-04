@@ -104,6 +104,7 @@ export async function exportVoices({ api, key, fetchImpl = fetch, now = () => ne
     voices: voices.map((v) => ({
       id: v.id,
       name: v.name,
+      description: v.description ?? null,
       prompt: v.prompt,
       scriptHint: v.scriptHint ?? null,
       gender: v.gender ?? null,
@@ -213,6 +214,7 @@ export async function importVoices({
     const body = {
       visibility: 'platform',
       name: v.name,
+      ...(v.description ? { description: v.description } : {}),
       prompt: v.prompt,
       ...(v.scriptHint ? { scriptHint: v.scriptHint } : {}),
       ...(v.gender ? { gender: v.gender } : {}),

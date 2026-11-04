@@ -538,6 +538,45 @@ describe('custom voices', () => {
     expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, locale: 'any' }))).not.toContain(voice.voice);
   });
 
+  test('a description is set at create, changed with PATCH, and searched by the builder', async () => {
+    const blank = (await createVoice(ownerA, { name: 'Blank', prompt: PROMPT, description: '   ' })).voice;
+    expect(blank.description).toBeNull();
+    expect((await post(ownerA, { name: 'Long', prompt: PROMPT, description: 'x'.repeat(501) })).statusCode).toBe(400);
+
+    const voice = (await createVoice(ownerA, { name: 'Mancunian', prompt: PROMPT, description: 'Northern, Manchester' })).voice;
+    expect(voice.description).toBe('Northern, Manchester');
+    // The prompt says "southern English": the builder's search found nothing for "british" before.
+    expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, search: ['british'] }, orgA.id))).not.toContain(voice.voice);
+
+    const changed = await patch(ownerA, voice.id, { description: '  British, UK, English, Northern  ' });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.body).toMatchObject({ id: voice.id, description: 'British, UK, English, Northern', prompt: PROMPT });
+    expect((await getOne(ownerA, voice.id)).body.description).toBe('British, UK, English, Northern');
+
+    const found = await listVoices({ modelName: GPT_LIVE, search: ['british', 'uk'] }, orgA.id);
+    expect(found.vendors.OpenAI[0]).toMatchObject({ name: voice.voice, custom: true, label: 'Mancunian', matchedTerms: ['british', 'uk'] });
+    // The description leads, so it survives the browse list's trim.
+    const gb = (await listVoices({ modelName: GPT_LIVE, locale: 'en-GB' }, orgA.id)).vendors.OpenAI;
+    expect(gb.find((v) => v.name === voice.voice).description).toMatch(/^Mancunian \(custom voice\): British, UK, English, Northern A warm/);
+    expect((await getVoices(ownerA)).body.vendors.OpenAI.find((v) => v.name === voice.voice).description).toContain('British, UK');
+
+    expect((await patch(ownerA, voice.id, { description: 'x'.repeat(501) })).statusCode).toBe(400);
+    expect((await patch(ownerA, voice.id, { description: 5 })).statusCode).toBe(400);
+    expect((await patch(ownerA, voice.id, { prompt: 'New prompt' })).statusCode).toBe(400);
+    expect((await patch(ownerA, voice.id, { withdrawn: true })).statusCode).toBe(400);
+    expect((await patch(memberA, voice.id, { description: 'Mine now' })).statusCode).toBe(403);
+    expect((await patch(ownerB, voice.id, { description: 'Mine now' })).statusCode).toBe(404);
+    expect((await CustomVoice.findByPk(voice.id)).description).toBe('British, UK, English, Northern');
+
+    const cleared = await patch(ownerA, voice.id, { description: '' });
+    expect(cleared.body.description).toBeNull();
+    expect((await patch(ownerA, voice.id, { description: null })).statusCode).toBe(200);
+    expect(JSON.stringify(await listVoices({ modelName: GPT_LIVE, search: ['british'] }, orgA.id))).not.toContain(voice.voice);
+
+    expect((await del(ownerA, voice.id)).statusCode).toBe(200);
+    expect((await patch(ownerA, voice.id, { description: 'Gone' })).statusCode).toBe(404);
+  });
+
   // An id the registry lacks (here a text id with the prefix swapped) used to be read
   // as a realtime row of an unknown provider and offered every vendor's voices.
   test('the builder\'s list_voices refuses a model id the handler does not list', async () => {
@@ -581,6 +620,7 @@ describe('custom voices', () => {
       status: 'ready', vendorVoiceId: `voice_route${randomUUID().slice(0, 8)}`,
     });
     const app = express();
+    app.use(express.json());
     app.use((req, res, next) => { req.log = mockLogger; res.locals.user = ownerA; next(); });
     await openapi.initialize({
       app,
@@ -599,6 +639,13 @@ describe('custom voices', () => {
     expect(listed.status).toBe(200);
     expect(listed.body.voices.map((v) => v.id)).toEqual([voice.id]);
     expect((await request(app).get(`/api/voices/custom/${voice.id}`)).body).toMatchObject({ id: voice.id, name: 'routed' });
+
+    // The request validator takes a description, and a null to clear it, but no other field.
+    const described = await request(app).patch(`/api/voices/custom/${voice.id}`).send({ description: 'British, UK' });
+    expect(described.status).toBe(200);
+    expect(described.body.description).toBe('British, UK');
+    expect((await request(app).patch(`/api/voices/custom/${voice.id}`).send({ description: null })).status).toBe(200);
+    expect((await request(app).patch(`/api/voices/custom/${voice.id}`).send({ name: 'renamed' })).status).toBe(400);
 
     expect((await request(app).get('/api/custom-voices')).status).toBe(404);
     expect((await request(app).get(`/api/custom-voices/${voice.id}`)).status).toBe(404);
@@ -741,7 +788,7 @@ describe('custom voices', () => {
       expect(openai[1]).toMatchObject({
         custom: true, platform: true, customVoiceId: platform.id, label: 'Platform concierge', gender: 'female', locale: 'en-GB',
       });
-      expect(openai[1].description).toMatch(/^Platform concierge \(platform voice\): A warm/);
+      expect(openai[1].description).toMatch(/^Platform concierge \(custom platform voice\): A warm/);
       expect(openai[2].custom).toBeUndefined();
 
       // Organisation A has no voice of its own: the platform voice comes first.
@@ -836,7 +883,7 @@ describe('custom voices', () => {
       expect((await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI.some((v) => v.platform)).toBe(true);
     });
 
-    test('PATCH changes platform voices only, and only withdrawn and release', async () => {
+    test('PATCH withdraws and releases platform voices only, and changes nothing else but a description', async () => {
       const platform = (await createPlatform()).voice;
       const own = (await createVoice(ownerA, { name: 'mine', prompt: PROMPT })).voice;
       expect((await patch(superS, platform.id, { name: 'Renamed' })).statusCode).toBe(400);
@@ -912,6 +959,26 @@ describe('custom voices', () => {
       expect((await patch(superS, res.body.id, { release: { to: 'https://target.example' } })).statusCode).toBe(409);
       finish();
       await whenCustomVoiceSettled(res.body.id);
+    });
+
+    test('only a platform administrator changes its description, which every organisation\'s builder searches', async () => {
+      const platform = (await createPlatform({ name: 'Highland guide', description: 'Scottish' })).voice;
+      expect(platform.description).toBe('Scottish');
+      expect((await patch(ownerB, platform.id, { description: 'British' })).statusCode).toBe(403);
+      expect((await patch(await makeUser(orgS, 'owner'), platform.id, { description: 'British' })).statusCode).toBe(403);
+
+      const changed = await patch(superS, platform.id, { description: 'British, UK, Scottish, Highland' });
+      expect(changed.statusCode).toBe(200);
+      expect(changed.body).toMatchObject({ description: 'British, UK, Scottish, Highland', visibility: 'platform' });
+      expect((await platformList(superS)).voices.find((v) => v.id === platform.id).description).toBe('British, UK, Scottish, Highland');
+
+      for (const organisationId of [orgB.id, undefined]) {
+        const found = await listVoices({ modelName: GPT_LIVE, search: ['british', 'uk'] }, organisationId);
+        expect(found.vendors.OpenAI[0]).toMatchObject({ name: platform.voice, platform: true, matchedTerms: ['british', 'uk'] });
+        // Search reads text, not the custom flag, so a platform voice says "custom" too.
+        const custom = await listVoices({ modelName: GPT_LIVE, search: ['custom'] }, organisationId);
+        expect(custom.vendors.OpenAI.map((v) => v.name)).toContain(platform.voice);
+      }
     });
 
     test('the builder\'s list_voices offers it in all three modes, flagged, with or without an organisation', async () => {
