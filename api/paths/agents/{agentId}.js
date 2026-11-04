@@ -1,6 +1,13 @@
 import { Agent, Instance, PhoneNumber } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
-import { validateAgentTargets, findConversingReferrers, assertNotConversingTarget, AgentSetValidationError } from '../../../lib/agent-set-labels.js';
+import {
+  validateAgentTargets,
+  findConversingReferrers,
+  assertNotConversingTarget,
+  assertNotDelegateWithResult,
+  unusableDelegateResults,
+  AgentSetValidationError,
+} from '../../../lib/agent-set-labels.js';
 import { isDecisionModelName } from '../../../lib/decision-limits.js';
 import { assertAgentsNotWired, WiredListenerError } from '../../../lib/deployment-guard.js';
 import { isBuiltinAgentId, renderBuiltinAgent } from '../../../lib/builtin-agents.js';
@@ -185,6 +192,12 @@ const agentUpdate = async (req, res) => {
       // Nothing may delegate to, or summarise with, an agent that becomes a decision model (docs/typesafe-jev.md).
       const referrers = await findConversingReferrers(agentId, { where: scopeWhereForUser(res.locals.user) });
       assertNotConversingTarget({ label: agent.name || agentId, referrers });
+    }
+    const resulting = { modelName: modelName ?? agent.modelName, functions: functions ?? agent.functions };
+    if ((modelName !== undefined || functions !== undefined) && unusableDelegateResults(resulting).length) {
+      // A hosted GPT-Live backend answers in plain text, so a delegate target may not carry a `result` builtin (docs/gpt-live.md).
+      const referrers = await findConversingReferrers(agentId, { where: scopeWhereForUser(res.locals.user) });
+      assertNotDelegateWithResult({ label: agent.name || agentId, agent: resulting, referrers });
     }
     await agent.update({ name, description, prompt, promptMetadata, options, functions, mcpServers, keys, modelName, type });
     req.log.info({ ...agent.dataValues, keys: undefined }, 'Agent updated');
