@@ -41,6 +41,7 @@ import {
 } from "./voice-session-factory.js";
 import { createInactivityKick } from "./inactivity-kick.js";
 import { createProviderEndedTeardown, markNextSessionPrimary } from "./provider-ended.js";
+import { createLlmErrorHangup, llmErrorMessageFor } from "./llm-error-hangup.js";
 import {
   armHandoverFirstSpeaker,
   HANDOVER_OPENING_INSTRUCTION,
@@ -1177,6 +1178,17 @@ export async function runAgentWorker({
     },
   });
 
+  const llmErrorHangup = createLlmErrorHangup({
+    currentSession: () => session,
+    startupSettled: () => !startup.open && !startup.failure && !attemptAbandoned,
+    isCleaningUp: () => isCleaningUp,
+    handoverInProgress: () => agentHandoverInProgress,
+    isBridged: () => Boolean(getBridgedParticipant()),
+    consultInProgress: () => getConsultInProgress(),
+    message: () => llmErrorMessageFor(activeAgentDef),
+    endCall: () => cleanupAndClose(DISCONNECT_REASONS.LLM_ERROR),
+  });
+
   /**
    * Makes this attempt inert once it has failed to start, before the worker
    * releases its session and runs the fallback chain on the same room.
@@ -1529,6 +1541,7 @@ export async function runAgentWorker({
       });
       wireHandoverSession(newSession, newAgentDef);
       providerEnded.arm(newSession, { callId: newCall.id, modelName: targetModelName });
+      if (voiceMode === "pipeline") llmErrorHangup.arm(newSession, { callId: newCall.id });
 
       session = newSession;
       sessionRef(newSession);
@@ -2039,6 +2052,7 @@ export async function runAgentWorker({
 
         // Re-arm provider-end handling after each handover; the active model belongs to the session. See PR #342.
         providerEnded.arm(setupSession, { callId: call.id, modelName });
+        if (resolvedVoiceMode === "pipeline") llmErrorHangup.arm(setupSession, { callId: call.id });
 
         session.on(
           voice.AgentSessionEventTypes.Close,
