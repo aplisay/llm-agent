@@ -14,7 +14,7 @@ import {
 // Internal modules
 import logger from "./logger.js";
 import { agentForLog, instanceForLog } from "./log-fields.js";
-import { invocationLogs } from "./invocation-log-buffer.js";
+import { invocationLogs, trimIdleLines } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import {
   createCall,
@@ -153,7 +153,8 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const job = ctx.job;
     const room = job.room as unknown as Room;
-    logger.info({ job, room }, "new call");
+    const idleLogLinesDropped = trimIdleLines();
+    logger.info({ job, room, idleLogLinesDropped }, "new call");
 
     // Simulate standard Agents job environment so RecorderIO can write audio.ogg.
     // The SDK reads sessionDirectory from getJobContext().sessionDirectory (getter backed by _sessionDirectory).
