@@ -44,7 +44,7 @@ export default function (logger, voices) {
 
 For **LiveKit realtime** models, vendors are limited to the model’s provider (OpenAI vs Ultravox, etc.), not the full merged catalogue.
 
-The caller's organisation's own **custom voices** for this model come first in their vendor's list, marked \`custom: true\` with a \`customVoiceId\` (see [\`POST\`](#operation-createModelVoice) on this path). The **platform voices** follow them, marked \`custom: true\` and \`platform: true\`; withdrawn ones are left out. A custom voice is listed at its own locale. One made at \`any\` is listed at every locale, and asking for \`any\` lists them all.
+The caller's organisation's own **custom voices** for this model come first in their vendor's list, marked \`custom: true\` with a \`customVoiceId\` (see [\`POST\`](#operation-createModelVoice) on this path). The **platform voices** follow them, marked \`custom: true\` and \`platform: true\`; withdrawn ones are left out. A custom voice is listed at every locale of its language (one made at \`en-IE\` is listed at \`en-GB\` too, after the voices made at \`en-GB\`). One made at \`any\` is listed at every locale, and asking for \`any\` lists them all.
 
 Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
     operationId: 'modelVoicesByLocale',
@@ -131,7 +131,7 @@ Encode both \`modelName\` and \`locale\` if they contain reserved characters.`,
 
 The first and only method is \`prompt\`: describe the voice in plain language and the vendor generates it. The vendor is the model's own: OpenAI for GPT-Live (\`pipecat:openai/gpt-live-1\`). OpenAI prompt voices work on GPT-Live only.
 
-The call checks the request, takes a quota slot and returns **202** at once with the voice in \`status: "creating"\` and a \`Location\` header. The vendor then makes the voice in the background (about 20 seconds for OpenAI). Poll [\`GET /voices/custom/{customVoiceId}\`](#operation-getCustomVoice) every few seconds until \`status\` is \`ready\` or \`failed\`. When it is ready, put its \`voice\` value in an agent's \`options.tts.voice\`; \`GET\` on this path then lists it under its vendor at \`locale\`, or at every locale when \`locale\` is \`any\`.
+The call checks the request, takes a quota slot and returns **202** at once with the voice in \`status: "creating"\` and a \`Location\` header. The vendor then makes the voice in the background (about 20 seconds for OpenAI). Poll [\`GET /voices/custom/{customVoiceId}\`](#operation-getCustomVoice) every few seconds until \`status\` is \`ready\` or \`failed\`. When it is ready, put its \`voice\` value in an agent's \`options.tts.voice\`; \`GET\` on this path then lists it under its vendor at every locale in the language of \`locale\`, or at every locale when \`locale\` is \`any\`.
 
 A vendor refusal (for example a prompt that names a real person) or a vendor failure arrives on the voice: \`status: "failed"\`, with \`error\` and \`errorCode\` (\`rejected\`: change the input; \`vendor_unavailable\` or \`vendor_error\`: try again; \`interrupted\`: the server lost the create). A failed voice does not count against the quota.
 
