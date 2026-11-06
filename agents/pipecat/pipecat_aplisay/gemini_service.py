@@ -68,9 +68,11 @@ class AplisayGeminiLiveLLMService(GeminiLiveLLMService):
         if self._context is not None:
             self._sent_messages = len(list(self._context.get_messages()))
 
-    async def _handle_context(self, context: LLMContext) -> None:
+    async def _handle_context(
+        self, context: LLMContext, direction: FrameDirection = FrameDirection.DOWNSTREAM
+    ) -> None:
         initial = self._context is None
-        await super()._handle_context(context)
+        await super()._handle_context(context, direction)
         if initial:
             return
         messages = list(context.get_messages())

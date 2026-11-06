@@ -1,8 +1,10 @@
 """The Anthropic service reports the token counts in Anthropic's stream, not
-Pipecat's sum of the ``message_start`` and cumulative ``message_delta`` counts.
+a sum of the ``message_start`` and cumulative ``message_delta`` counts.
 
-Drives Pipecat's real ``_process_context`` over a canned event stream. The
-counts are from live ``claude-sonnet-4-5`` streams on 2026-09-16.
+Pipecat summed them before 1.15, and we had a subclass that undid it (PR #346).
+These tests keep a check on the stock service. They drive Pipecat's real
+``_process_context`` over a canned event stream. The counts are from live
+``claude-sonnet-4-5`` streams on 2026-09-16.
 """
 
 from __future__ import annotations
@@ -20,8 +22,7 @@ from anthropic.types.beta import (
     BetaRawMessageStopEvent,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
-
-from pipecat_aplisay.anthropic_service import AplisayAnthropicLLMService
+from pipecat.services.anthropic.llm import AnthropicLLMService
 
 
 def _start(usage: dict) -> BetaRawMessageStartEvent:
@@ -70,10 +71,10 @@ def _run(events: list, *, interrupt: bool = False) -> list:
         return stream()
 
     client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=create)))
-    service = AplisayAnthropicLLMService(
+    service = AnthropicLLMService(
         api_key="test",
         client=client,
-        settings=AplisayAnthropicLLMService.Settings(model="claude-sonnet-4-5", system_instruction="You are terse."),
+        settings=AnthropicLLMService.Settings(model="claude-sonnet-4-5", system_instruction="You are terse."),
     )
     reported: list = []
 

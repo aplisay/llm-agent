@@ -20,12 +20,12 @@ def recording_service(monkeypatch):
     service = ElevenLabsTranscriptTTSService(api_key="test")
     monkeypatch.setattr(service, "_connect", AsyncMock())
     monkeypatch.setattr(service, "_disconnect", AsyncMock())
-    monkeypatch.setattr(service, "_push_tts_frames", AsyncMock())
+    monkeypatch.setattr(service, "_synthesize_text", AsyncMock())
     return service
 
 
 def texts(service):
-    return [call.args[0].text for call in service._push_tts_frames.call_args_list]
+    return [call.args[0] for call in service._synthesize_text.call_args_list]
 
 
 def test_fragments_bypass_local_aggregation_and_preserve_split_words(monkeypatch):

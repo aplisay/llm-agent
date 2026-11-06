@@ -121,14 +121,13 @@ when the browser isn't on the same machine as the worker.
 
 ```bash
 cd agents/pipecat
-uv run --frozen -p 3.12 --with pytest python -m pytest tests -q
+uv run --frozen -p 3.14 --with pytest python -m pytest tests -q
 ```
 
-Pin `-p 3.12`. Nothing runs these in CI, and the image is
-`python:3.12-slim`, but `uv sync` on its own picks the newest interpreter it
-can find. The versions disagree: asyncio's implicit default event loop, which
-grpc.aio relies on when a channel is built outside a running loop, is gone on
-3.12 after any `asyncio.run()` and still there on 3.14. See
+Nothing runs these in CI. Test on 3.14, the image's interpreter
+(`python:3.14-slim`); `requires-python` and `.python-version` already ask uv
+for it. grpc.aio needs a default event loop when a channel is built outside a
+running loop, and since 3.12 there is none after any `asyncio.run()`. See
 `tests/conftest.py`.
 
 ## Layout

@@ -53,7 +53,8 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         # Set by the greeting wiring: seed the conversation on the first run
         # but do not ask the model to speak (a forced greeting speaks instead).
         self._hold_first_response = False
-        self._responses_requested = 0
+        # A response.create owed once the active response is done (see _create_response).
+        self._response_pending = False
         self._ended_reported = False
 
     # ---- session shape --------------------------------------------------
@@ -146,7 +147,7 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         as items, then the session update that carries the context's tools."""
         assert self._context is not None
         adapter = self.get_llm_adapter()
-        params = adapter.get_llm_invocation_params(self._context)
+        params = await adapter.get_llm_invocation_params(self._context)
         for item in params["messages"]:
             event = events.ConversationItemCreateEvent(item=item)
             self._messages_added_manually[event.item.id] = True
@@ -156,7 +157,6 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
         self._sent_messages = len(list(self._context.get_messages()))
 
     async def _create_response(self) -> None:
-        self._responses_requested += 1
         if not self._api_session_ready:
             self._run_llm_when_api_session_ready = True
             return
@@ -167,7 +167,14 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
             self._hold_first_response = False
             logger.debug(f"{self}: conversation seeded; the forced greeting speaks first")
             return
+        if self._response_active:
+            # Sent after response.done instead. The stock's own hold is not
+            # used: it drops the request when a response.created lands first.
+            self._response_pending = True
+            return
         await super()._create_response()
+        # This response takes in everything sent before it.
+        self._results_awaiting_response = False
 
     async def _handle_messages_append(self, frame) -> None:  # noqa: ANN001
         # The user aggregator has already added the messages to the context
@@ -191,7 +198,7 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
             type="message", role="system", content=[events.ItemContent(type="input_text", text=text)]
         )
 
-    async def _handle_context(self, context) -> None:  # noqa: ANN001
+    async def _handle_context(self, context, direction=FrameDirection.DOWNSTREAM) -> None:  # noqa: ANN001
         if self._context is None:
             self._context = context
             await self._process_completed_function_calls(send_new_results=False)
@@ -214,9 +221,10 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
                 self._messages_added_manually[item.id] = True
                 await self.send_client_event(event)
                 run = True
-        before = self._responses_requested
         await self._process_completed_function_calls(send_new_results=True)
-        if run and self._responses_requested == before:
+        # An upstream context frame is the assistant aggregator asking for a
+        # response to the tool results delivered since the last one.
+        if run or (direction == FrameDirection.UPSTREAM and self._results_awaiting_response):
             await self._create_response()
 
     # ---- inbound events ---------------------------------------------------
@@ -234,6 +242,9 @@ class AplisayGrokRealtimeLLMService(GrokRealtimeLLMService):
 
     async def _handle_evt_response_done(self, evt) -> None:  # noqa: ANN001
         await super()._handle_evt_response_done(evt)
+        if self._response_pending:
+            self._response_pending = False
+            await self._create_response()
         status = getattr(evt.response, "status", None)
         if status == "failed":
             details = getattr(evt.response, "status_details", None)

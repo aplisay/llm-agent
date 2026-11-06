@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     DataFrame,
     Frame,
+    FunctionCallResultFrame,
     InputDTMFFrame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
@@ -164,10 +165,13 @@ class _Live:
         await self.task.queue_frames([LLMRunFrame()])
         await _until(lambda: "response.create" in self.kinds())
         assert self.kinds()[-3:] == ["conversation.item.create", "session.update", "response.create"]
+        await self.llm._handle_evt_response_done(_response_done())
         self.sent.clear()
 
     async def responses(self, count: int, timeout: float = 3.0) -> None:
+        """Wait for the count of responses, then finish the last one."""
         await _until(lambda: self.kinds().count("response.create") >= count, timeout)
+        await self.llm._handle_evt_response_done(_response_done())
 
 
 @asynccontextmanager
@@ -458,9 +462,11 @@ def _texts(sent: list[dict]) -> list[str]:
 
 
 async def _seeded(llm, sent, messages=SEED):  # noqa: ANN001
+    """The seed, and its response done."""
     await _connected(llm)
     await llm._handle_context(_context(messages))
     assert _kinds(sent)[-3:] == ["conversation.item.create", "session.update", "response.create"]
+    await llm._handle_evt_response_done(_response_done())
     sent.clear()
 
 
@@ -484,6 +490,7 @@ def test_the_seed_marks_what_it_packed_as_sent():
         await llm._handle_context(_context(seed))
         assert _kinds(sent)[-3:] == ["conversation.item.create", "session.update", "response.create"]
         assert llm._seen_messages == seed
+        await llm._handle_evt_response_done(_response_done())
         sent.clear()
         await llm._handle_context(llm._context)
         assert _kinds(sent) == ["conversation.item.create", "response.create"]
@@ -553,6 +560,7 @@ def test_digits_before_the_seed_wait_for_it():
         sent.clear()
         await llm._handle_evt_response_done(_response_done())
         assert _kinds(sent) == ["response.create"]
+        await llm._handle_evt_response_done(_response_done())
         # After the seed the digits go straight out.
         sent.clear()
         await llm.inject_dtmf("6")
@@ -629,6 +637,70 @@ def test_a_replaced_context_starts_a_new_conversation():
             {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "transfer_agent", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "call-1", "content": '{"status": "OK"}'},
         ]))
+        assert sent == []
+
+    asyncio.run(scenario())
+
+
+def _result(call_id: str) -> FunctionCallResultFrame:
+    return FunctionCallResultFrame(function_name="lookup", tool_call_id=call_id, arguments={}, result={"ok": True})
+
+
+def test_a_pushed_tool_result_is_answered_on_the_aggregator_request():
+    """The result goes out as it is pushed; the response waits for the
+    assistant aggregator's upstream context frame, and only that one asks."""
+    llm, sent = _service()
+
+    async def scenario():
+        await _seeded(llm, sent)
+        llm._open_function_calls.add("call-1")
+        await OpenAIRealtimeLLMService.push_frame(llm, _result("call-1"))
+        assert [i["type"] for i in _items(sent)] == ["function_call_output"]
+        assert "response.create" not in _kinds(sent)
+        context = _context([*SEED, {"role": "tool", "tool_call_id": "call-1", "content": '{"ok": true}'}])
+        await llm._handle_context(context)
+        assert "response.create" not in _kinds(sent)
+        await llm._handle_context(context, FrameDirection.UPSTREAM)
+        assert _kinds(sent) == ["conversation.item.create", "response.create"]
+        # A second request for the same result asks for nothing more.
+        await llm._handle_context(context, FrameDirection.UPSTREAM)
+        assert _kinds(sent).count("response.create") == 1
+
+    asyncio.run(scenario())
+
+
+def test_a_held_response_survives_a_response_created():
+    """Digits sent while a response is being created: its response.created
+    must not cancel the response the digits are owed."""
+    llm, sent = _service()
+
+    async def scenario():
+        await _seeded(llm, sent)
+        await llm._handle_context(_context([*SEED, {"role": "developer", "content": "Say hello."}]))
+        assert _kinds(sent) == ["conversation.item.create", "response.create"]
+        await llm.inject_dtmf("7")
+        assert _kinds(sent)[-1] == "conversation.item.create"
+        await llm._handle_evt_response_created(None)
+        await llm._handle_evt_response_done(_response_done())
+        assert _kinds(sent)[-1] == "response.create"
+
+    asyncio.run(scenario())
+
+
+def test_a_late_result_for_a_replaced_conversation_is_not_sent():
+    """The outgoing agent's transfer_agent result, pushed after the in-place
+    handover started the new conversation."""
+    llm, sent = _service()
+
+    async def scenario():
+        await _seeded(llm, sent)
+        llm._session_call_ids.add("call-1")
+        llm._open_function_calls.add("call-1")
+        await llm._update_settings(LLMSettings(system_instruction="You are agent two."))
+        await llm._handle_context(_context([{"role": "developer", "content": "You are agent two."}]))
+        await asyncio.gather(*llm._stub_tasks)
+        sent.clear()
+        await OpenAIRealtimeLLMService.push_frame(llm, _result("call-1"))
         assert sent == []
 
     asyncio.run(scenario())
