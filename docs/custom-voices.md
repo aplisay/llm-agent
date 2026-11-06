@@ -208,9 +208,14 @@ is the voice's [description](#description), if it has one, then its prompt.
 
 Which locale lists a voice:
 
-- A voice is listed at its own locale.
+- A voice is listed at every locale of its language. A voice made at `en-IE`
+  is listed at `en-IE`, `en-GB` and `en-US`, but not at `fr-FR`.
 - A voice made at `any` is listed at every locale.
 - Asking for `any` lists all the organisation's voices for the model.
+
+In each group (the organisation's own voices, then the platform voices), the
+voices at the asked locale or at `any` come first, then those of the same
+language's other regions.
 
 `GET /api/models/{modelName}/voices` includes the locales of the
 organisation's custom voices. For GPT-Live, whose standard voices are under

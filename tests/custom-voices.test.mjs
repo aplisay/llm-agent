@@ -515,6 +515,25 @@ describe('custom voices', () => {
     expect(locB.body.locales).toEqual(['any']);
   });
 
+  test('a voice is listed at every locale of its language, after the asked locale\'s own', async () => {
+    // Made first, so only the locale ordering can put the GB voice ahead of it at en-GB.
+    const ie = (await createVoice(ownerA, { name: 'IE voice', prompt: PROMPT }, { locale: 'en-IE' })).voice;
+    const gb = (await createVoice(ownerA, { name: 'GB voice', prompt: PROMPT })).voice;
+    const customAt = async (locale) =>
+      (await getVoices(ownerA, locale)).body.vendors.OpenAI.filter((v) => v.custom).map((v) => v.label);
+
+    expect(await customAt('en-GB')).toEqual(['GB voice', 'IE voice']);
+    expect(await customAt('en-gb')).toEqual(['GB voice', 'IE voice']);
+    expect(await customAt('en-IE')).toEqual(['IE voice', 'GB voice']);
+    expect(await customAt('en-US')).toEqual(['IE voice', 'GB voice']);
+    expect(await customAt('fr-FR')).toEqual([]);
+    expect((await getVoices(ownerA, 'en-GB')).body.vendors.OpenAI[1]).toMatchObject({ name: ie.voice, locale: 'en-IE' });
+
+    const builder = (await listVoices({ modelName: GPT_LIVE, locale: 'en-GB' }, orgA.id)).vendors.OpenAI;
+    expect(builder.filter((v) => v.custom).map((v) => v.name)).toEqual([gb.voice, ie.voice]);
+    expect((await listVoices({ modelName: GPT_LIVE }, orgA.id)).locales).toEqual(['any', 'en-GB', 'en-IE']);
+  });
+
   // list_voices used to give GPT-Live only the stock list, so a set builder could
   // not offer the organisation's own voice, though a save accepts it.
   test('the builder\'s list_voices offers the organisation\'s own ready voices, and nobody else\'s', async () => {
@@ -800,6 +819,19 @@ describe('custom voices', () => {
       expect((await getVoices(superS, 'en-GB')).body.vendors.OpenAI.filter((v) => v.custom)).toEqual([
         expect.objectContaining({ name: platform.voice, platform: true }),
       ]);
+    });
+
+    // An en-IE platform voice used to be missing from an en-GB agent's voice list.
+    test('an organisation lists a platform voice of another region of its agent\'s language', async () => {
+      await createPlatform({ name: 'Donegal' }, { locale: 'en-IE' });
+      await createPlatform();
+      await createVoice(ownerB, { name: 'B voice', prompt: PROMPT });
+
+      const custom = (await getVoices(ownerB, 'en-GB')).body.vendors.OpenAI.filter((v) => v.custom);
+      expect(custom.map((v) => [v.label, !!v.platform])).toEqual([
+        ['B voice', false], ['Platform concierge', true], ['Donegal', true],
+      ]);
+      expect((await getVoices(ownerB, 'de-DE')).body.vendors.OpenAI.some((v) => v.custom)).toBe(false);
     });
 
     test('any organisation puts it on an agent, and the worker fetch carries it', async () => {
