@@ -70,6 +70,7 @@ def cushioned(base: type) -> type:
                 self.inflight_probe = None
             self._handed_ms = 0.0
             self._upstream_offset_ms = 0.0
+            self._held_future: Optional[asyncio.Future] = None
 
         def add_audio_bytes(self, audio_bytes: bytes):  # noqa: ANN201
             cushion = self._cushion_chunks
@@ -104,31 +105,43 @@ def cushioned(base: type) -> type:
             if backlog > self.peak_backlog_ms:
                 self.peak_backlog_ms = backlog
 
-            # Hand the future to the chunk that leaves `cushion` behind it, so
-            # the producer wakes while the queue still has that much to play.
-            release = max(0, len(chunks) - 1 - cushion)
-            for i, chunk in enumerate(chunks):
+            for chunk in chunks:
                 action = self._pause_action(chunk, backlog)
-                if action == _TRIM and i != release:
-                    # A speech stream has fallen behind: shorten this pause. The
-                    # chunk carrying the future is always kept, because the
-                    # producer waits on it.
+                if action == _TRIM:
+                    # A speech stream has fallen behind: shorten this pause.
                     backlog -= self._chunk_ms
                     self.trimmed_chunks += 1
                     continue
-                self._chunk_queue.append((chunk, future if i == release else None))
+                self._chunk_queue.append((chunk, None))
                 if action == _STRETCH:
                     # Repeat only quiet chunks to build the cushion without altering voiced audio. See PRs #251 and #311.
                     self._chunk_queue.append((chunk, None))
                     backlog += self._chunk_ms
                     self.stretched_chunks += 1
 
-            # While the queue is still shallower than the cushion, do not hold
-            # the producer at all: this is what lets the cushion form at the
-            # start of a turn, when it is most needed and least available.
-            if len(self._chunk_queue) <= cushion and not future.done():
+            # Wake the producer when the queue falls to the cushion (see recv),
+            # not when a chunk of this write plays: writes are 40 ms, so pinning
+            # the future to one left only 30 ms of a 60 ms cushion queued.
+            self._release_held()
+            if len(self._chunk_queue) <= cushion:
                 future.set_result(True)
+            else:
+                self._held_future = future
             return future
+
+        def _release_held(self) -> None:
+            held, self._held_future = self._held_future, None
+            if held is not None and not held.done():
+                held.set_result(True)
+
+        def _on_chunk_played(self) -> None:
+            if self._held_future is not None and len(self._chunk_queue) <= self._cushion_chunks:
+                self._release_held()
+
+        async def recv(self):  # noqa: ANN201
+            frame = await super().recv()
+            self._on_chunk_played()
+            return frame
 
         def _pause_action(self, chunk: bytes, backlog_ms: float) -> Optional[str]:
             """Repeat this chunk to lengthen a pause, drop it to shorten one, or neither.
@@ -212,9 +225,9 @@ def cushioned(base: type) -> type:
 
             Without this the cushion is a liability: the track plays out whatever
             it holds no matter what the pipeline decides, so a deeper queue means
-            the agent talks over the caller for longer. Any future still riding a
-            dropped chunk MUST be resolved here or write_audio_frame waits on it
-            for ever and the leg goes silent.
+            the agent talks over the caller for longer. A held producer MUST be
+            released here or write_audio_frame waits for ever and the leg goes
+            silent.
 
             The transport empties its own queue on the same interruption, so the
             count of audio in flight starts again from zero.
@@ -224,6 +237,7 @@ def cushioned(base: type) -> type:
                 if fut is not None and not fut.done():
                     fut.set_result(True)
             self._chunk_queue.clear()
+            self._release_held()
             self._quiet_seen = 0
             self._trimming = False
             self.anchor_upstream()

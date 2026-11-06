@@ -46,6 +46,8 @@ from .elevenlabs_agents import is_elevenlabs_agents_model_id, max_duration_secon
 from .grok import is_xai_voice_model_id
 from .output_cushion import OutputCushionInterrupt
 from .output_rate_guard import OutputRateGuard
+from .recording.speech_gated_buffer import SpeechGatedAudioBufferProcessor
+from .speech_stream_aligner import SpeechStreamAligner
 from .realtime_tts import (
     external_tts_enabled,
     external_tts_vendor,
@@ -1132,7 +1134,7 @@ async def build_voice_session(
     if enable_recording:
         # Set a nonzero buffer_size: zero accumulates the whole call until stop_recording(). See PR #285.
         # Keep stereo user-left/bot-right at the SIP path's 16 kHz; RecordingSession appends each flush.
-        audio_buffer = AudioBufferProcessor(
+        audio_buffer = SpeechGatedAudioBufferProcessor(
             num_channels=2,
             sample_rate=RECORDING_SAMPLE_RATE,
             buffer_size=RECORDING_FLUSH_BYTES,
@@ -1759,6 +1761,8 @@ async def _build_realtime(
         tone_injector.bind_output(transport.output())
     # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
     rate_guard = OutputRateGuard(output_transport=transport.output())
+    # A speech stream must reach output() in whole chunks, or the transport pads or drops its remainder mid-speech.
+    aligner = SpeechStreamAligner(output_transport=transport.output())
     # Barge-in has to reach BELOW the transport: the output track plays out
     # whatever it holds regardless of what the pipeline decides, so the cushion
     # that protects against starvation would otherwise become tail-talk over an
@@ -1811,6 +1815,7 @@ async def _build_realtime(
         *tone,
         *relay_inject,
         rate_guard,
+        aligner,
         cushion_interrupt,
         *output,
         transport.output(),
