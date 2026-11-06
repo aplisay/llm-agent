@@ -48,7 +48,8 @@ The full picture — call lifecycle, scaling model, gateway options — is in th
 ```shell
 git clone https://github.com/aplisay/llm-agent.git && cd llm-agent
 yarn install && (cd agents/livekit && yarn install)
-cp environment-example .env    # then set database, auth and provider keys
+cp environment-example .env    # then set the database and provider keys
+yarn bootstrap                 # prints your first API key
 yarn develop
 ```
 

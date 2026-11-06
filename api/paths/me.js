@@ -26,7 +26,7 @@ export default function (logger) {
       role: u.role ?? null,
       status: u.status ?? null,
       // Prefer the memoised map; fall back to a live computation so principals
-      // attachRbac never ran on (no-auth defaultUser, x-shared-token system) still
+      // attachRbac never ran on (the x-shared-token system principal) still
       // report a permissions map consistent with isAdmin/isSuperAdmin below.
       permissions: u._effectivePermissions
         ?? (u.isSystem ? statementsFor('superAdmin') : effectivePermissions(u, u.Organisation)),

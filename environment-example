@@ -6,11 +6,16 @@ GOOGLE_APPLICATION_CREDENTIALS=<PATH TO CREDENTIAL JSON FILE>
 JAMBONZ_SERVER=<JAMBONZ API SERVER HOSTNAME>, usually api.server.name
 JAMBONZ_API_KEY=<JAMBONZ API SERVER HOSTNAME>
 JAMBONZ_AGENT_NAME=<THIS SERVER DNS NAME>
-# this will generate an open source build which doesn't authenticate
-AUTHENTICATE_USERS=NO
+# First API key for a new instance (docs/running.md, "First API key"). On a
+# database with no users the server creates one organisation, one superAdmin
+# user and this key when it starts. Ignored once any user exists. 32 characters
+# or more: `openssl rand -base64 32`. Or leave it unset and run `yarn bootstrap`.
+# BOOTSTRAP_API_KEY=<RANDOM SECRET>
 
-# Shared token for internal API communication between services
-SHARED_API_TOKEN=your_secure_shared_token_here
+# Shared token for internal API communication between services (the voice
+# workers send it as x-shared-token). It gives full access to every route, so
+# never use a guessable value: `openssl rand -base64 32`
+# SHARED_API_TOKEN=<RANDOM SECRET>
 
 # Base URI for the main LLM agent API service
 SERVICE_BASE_URI=http://localhost:5000/api
