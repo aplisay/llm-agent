@@ -6,9 +6,12 @@ import {
   fixupLabelReferences,
   validateAgentTargets,
   validateDelegateToolCollisions,
+  validateDelegateResultContracts,
   keyedCopiesShadowedByDelegate,
   findConversingReferrers,
   assertNotConversingTarget,
+  assertNotDelegateWithResult,
+  unusableDelegateResults,
   AgentSetValidationError
 } from '../../lib/agent-set-labels.js';
 import { isDecisionModelName } from '../../lib/decision-limits.js';
@@ -171,6 +174,7 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
   const resulting = members.map(({ label, def, agent }) => ({
     label,
     id: agent.id,
+    modelName: agent.modelName,
     functions: agent.functions,
     sentNames: def.functions === undefined ? undefined : new Set(functionNames(def.functions)),
   }));
@@ -178,7 +182,7 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
     const written = new Set(members.map(({ agent }) => agent.id));
     for (const agent of existing) {
       if (removedIds.has(agent.id) || written.has(agent.id)) continue;
-      resulting.push({ label: agent.label, id: agent.id, functions: agent.functions });
+      resulting.push({ label: agent.label, id: agent.id, modelName: agent.modelName, functions: agent.functions });
     }
   }
   // Drop keyed copies the delegate shadows, so a document can move a keyed function to it. See PR #344.
@@ -192,6 +196,15 @@ export async function reconcileMembers({ set, byLabel, existing = [], user, tran
     }
   }
   validateDelegateToolCollisions(resulting);
+  // A hosted GPT-Live backend answers in plain text and cannot carry a `result`
+  // builtin (docs/gpt-live.md): in-set pairs here, outside referrers below.
+  validateDelegateResultContracts(resulting);
+  const inSetIds = new Set(resulting.map(({ id }) => id));
+  for (const { label, agent } of members) {
+    if (!unusableDelegateResults(agent).length) continue;
+    const referrers = await findConversingReferrers(agent.id, { where: scopeWhereForUser(user), transaction, excludeAgentIds: inSetIds });
+    assertNotDelegateWithResult({ label, agent, referrers });
+  }
   for (const { agent } of members) {
     await agent.save({ transaction });
   }

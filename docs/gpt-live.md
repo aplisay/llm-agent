@@ -145,6 +145,12 @@ worker, which executes them with the owning agent's keys and returns the
 results, so REST functions, MCP tools (Pipecat only) and the call-control
 builtins all work. This is the mode of the synthetic backend too.
 
+The backend's plain reply is its answer, so an OpenAI delegate may not
+declare a `result` builtin. Nothing in the worker runs one: each call would
+fail and the answer it carried would be lost. A save that leaves one on an
+agent a `delegate` points at is rejected, from either side of the link. A
+client delegate may keep one, because the subagent endpoint reads it.
+
 **Client delegation**, for any other text model (Anthropic, Gemini, Kimi,
 OpenRouter, DeepSeek). Each delegation becomes a synthetic subagent call
 through the same internal endpoint a `subagent` function uses, with the
