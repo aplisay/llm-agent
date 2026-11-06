@@ -30,6 +30,9 @@ export const DISCONNECT_REASONS = {
   // NB Call.end discards `reason` for `status` (always "ended normally") — this string
   // is durable in the hangup transaction-log row and the invocation log, not in status.
   REALTIME_PROVIDER_ENDED: "Realtime provider ended session",
+  // A pipeline LLM kept failing (e.g. a revoked key), so the caller was told and the call ended.
+  // See llm-error-hangup.ts.
+  LLM_ERROR: "LLM error",
 } as const;
 
 /**

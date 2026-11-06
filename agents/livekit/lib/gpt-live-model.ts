@@ -3,8 +3,10 @@
  * DuplexRealtimeAdapter, which adds what the other realtime models give the runtime (provider-ended,
  * usage attribution) and the Pipecat worker's session behaviour (gpt_live_service.py).
  */
-import { llm, shortuuid } from "@livekit/agents";
+import type { IncomingMessage } from "node:http";
+import { APIStatusError, llm, shortuuid } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
+import type { WebSocket } from "ws";
 import logger from "./logger.js";
 import {
   DELEGATION_FAILED_COMMENTARY,
@@ -31,11 +33,16 @@ type ProviderEndedInfo = { reason?: string };
 const DEAD_AIR_GRACE_MS = 4_000;
 const DELEGATION_TIMEOUT_MS = 90_000;
 const MAX_TRACKED_OUTPUTS = 64;
+const HANDSHAKE_BODY_MAX = 4_096;
+const HANDSHAKE_BODY_WAIT_MS = 1_000;
 
-/** The plugin keeps these private; both are plain methods, so an instance override replaces them. */
+/** The plugin keeps these private; the methods are plain ones, so an instance override replaces them. */
 interface LiveSessionInternals {
   sessionStartEvent(): { session?: Record<string, unknown> };
   queueEvent?(event: Record<string, unknown>, replayOnReconnect: boolean): void;
+  runConnection(...args: unknown[]): Promise<void>;
+  ws?: WebSocket;
+  connectionDone?: { readonly done: boolean; resolve(error: Error | undefined): void };
 }
 
 /** Send an event for this connection only: a stub or a resume means nothing after a reconnect. */
@@ -53,6 +60,72 @@ function mergeIntoSessionStart(live: LiveSession, overrides: Record<string, unkn
   internals.sessionStartEvent = function (this: LiveSession) {
     const event = build.call(this);
     return { ...event, session: deepMerge(event.session ?? {}, overrides) };
+  };
+}
+
+/** OpenAI's `error.code` (else `error.type`) from a refused handshake. The message can quote the key. */
+export function handshakeErrorCode(body: string): string | undefined {
+  try {
+    const error = (JSON.parse(body) as { error?: { code?: unknown; type?: unknown } } | null)?.error;
+    const code = typeof error?.code === "string" ? error.code : error?.type;
+    return typeof code === "string" && /^[\w.-]{1,64}$/.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readHandshakeBody(res: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = "";
+    const finish = () => {
+      clearTimeout(timer);
+      resolve(body);
+    };
+    const timer = setTimeout(finish, HANDSHAKE_BODY_WAIT_MS);
+    res.setEncoding("utf8");
+    res.on("data", (chunk: string) => {
+      body += chunk;
+      if (body.length >= HANDSHAKE_BODY_MAX) finish();
+    });
+    res.once("end", finish);
+    res.once("close", finish);
+    res.once("error", finish);
+  });
+}
+
+/**
+ * The plugin's socket 'error' listener drops a refused handshake's HTTP status, so a revoked key
+ * logged only "GPT-Live connection failed". Fail the connection with the status instead; the
+ * plugin then gives up at once on a 4xx other than 408/429. The request holds the Authorization
+ * header, so nothing from it goes into the error.
+ */
+export function reportHandshakeStatus(live: LiveSession): void {
+  const internals = live as unknown as LiveSessionInternals;
+  const run = internals.runConnection;
+  internals.runConnection = function (this: LiveSession, ...args: unknown[]) {
+    const running = run.apply(this, args);
+    // runConnection has opened the socket before its first await.
+    const { ws, connectionDone: done } = internals;
+    // With a listener here, ws leaves the refused request open for us to end.
+    ws?.once("unexpected-response", (_req, res: IncomingMessage) => {
+      void readHandshakeBody(res).then((body) => {
+        const code = handshakeErrorCode(body);
+        const requestId = res.headers["x-request-id"];
+        if (done && !done.done) {
+          done.resolve(
+            new APIStatusError({
+              message: `GPT-Live connection failed: HTTP ${res.statusCode}${code ? ` ${code}` : ""}`,
+              options: {
+                statusCode: res.statusCode,
+                requestId: typeof requestId === "string" ? requestId : null,
+              },
+            }),
+          );
+        }
+        ws.terminate();
+      });
+    });
+    return running;
   };
 }
 
@@ -211,6 +284,7 @@ export class GptLiveRealtimeModel extends llm.DuplexRealtimeAdapter {
     this.#primarySession ??= session;
     const live = (session as unknown as { duplexSession: LiveSession }).duplexSession;
     mergeIntoSessionStart(live, this.#overrides);
+    reportHandshakeStatus(live);
     if (this.#recovery) armDelegationRecovery(live);
     const ended = (info: ProviderEndedInfo) => {
       if (session === this.#primarySession) this.#providerEndedCallback?.(info);
