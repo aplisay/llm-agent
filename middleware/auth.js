@@ -1,13 +1,14 @@
-import { initializeApp, applicationDefault } from 'firebase-admin/app';
 import { Instance, User, AuthKey, Organisation } from '../lib/database.js';
 import { scopeWhereForUser } from '../lib/scope.js';
-import * as firebase from 'firebase-admin/auth';
 import { auth as betterAuth } from '../lib/auth/index.js';
 import { fromNodeHeaders } from 'better-auth/node';
 import { effectivePermissions, statementsFor, intersectStatements, keyRestrictionStatements, can, ORGANISATION_RBAC_ATTRIBUTES } from '../lib/auth/permissions.js';
 import { effectiveAllowedModels } from '../lib/auth/model-access.js';
 import { isBootstrapSuperAdmin } from '../lib/admin-gate.js';
+import { bootstrapSettled } from '../lib/bootstrap.js';
 import { timingSafeEqual } from 'node:crypto';
+
+const UNKNOWN_TOKEN = 'Authentication error: unknown API key or token';
 
 /**
  * Constant-time token comparison, for a secret presented by an untrusted
@@ -109,17 +110,30 @@ async function attachRbac(user) {
   return user;
 }
 
-function init(app, logger) {
+// firebase-admin is an optional dependency, and only a token that is neither an
+// API key nor a better-auth session reaches it. So it is loaded on first use:
+// an instance that uses API keys alone never needs the package or Google credentials.
+let firebaseLoading;
+function loadFirebase(logger) {
+  firebaseLoading ??= (async () => {
+    try {
+      const { initializeApp, applicationDefault } = await import('firebase-admin/app');
+      const firebase = await import('firebase-admin/auth');
+      initializeApp({
+        credential: applicationDefault(),
+        databaseURL: `https://${process.env.GOOGLE_PROJECT_ID}`
+      });
+      return firebase;
+    }
+    catch (e) {
+      logger.error({ e }, 'firebase auth error');
+      return null;
+    }
+  })();
+  return firebaseLoading;
+}
 
-  try {
-    const authAdmin = initializeApp({
-      credential: applicationDefault(),
-      databaseURL: `https://${process.env.GOOGLE_PROJECT_ID}`
-    });
-  }
-  catch (e) {
-    logger.error({ e }, 'firebase auth error');
-  };
+function init(app, logger) {
 
   // Install a route that looks for an access token and tries to work out what sort of token it is
 
@@ -216,6 +230,8 @@ function init(app, logger) {
         }
         // Some other bearer token
         else if (type !== 'instance') {
+          // A key from BOOTSTRAP_API_KEY may still be on its way into a new database.
+          await bootstrapSettled();
           // Check for a static auth key.
           let { user, expiry } = await AuthKey.verify(token) || {};
           if (user) {
@@ -258,9 +274,24 @@ function init(app, logger) {
               next();
             }
             else {
-              let user = await firebase
-                .getAuth()
-                .verifyIdToken(token);
+              const firebase = await loadFirebase(logger);
+              if (!firebase) {
+                throw new Error(UNKNOWN_TOKEN);
+              }
+              let user;
+              try {
+                user = await firebase
+                  .getAuth()
+                  .verifyIdToken(token);
+              }
+              catch (e) {
+                // No Firebase project on this instance: say the key is unknown,
+                // not that Firebase needs a project id.
+                if (e?.code === 'auth/invalid-credential') {
+                  throw new Error(UNKNOWN_TOKEN, { cause: e });
+                }
+                throw e;
+              }
               req.log.debug({ user, token }, 'firebase auth');
               if (user) {
                 res.locals.user = await User.import({ ...user, id: user.user_id });
@@ -281,7 +312,7 @@ function init(app, logger) {
       }
     }
     catch (e) {
-      req.log.error({ message: e.message, error: e.stack }, 'Auth error');
+      req.log.error({ message: e.message, error: e.stack, cause: e.cause?.message }, 'Auth error');
       res.status(401)
         .json({ message: e.message || `Authentication error` });
     }

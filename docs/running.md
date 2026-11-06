@@ -40,7 +40,7 @@ The essentials, by group:
 | Core | `WS_PORT`, `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; pino level |
 | Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there. The schema work every process runs at start is serialised across processes by a Postgres advisory lock (`lib/boot-lock.js`), so replicas starting together take turns rather than racing |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
-| Auth | `AUTHENTICATE_USERS=NO` for a local instance | Real deployments use Firebase (legacy) or better-auth (`BETTER_AUTH_*`), plus org-scoped API keys |
+| Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`) add user sign-in for multi-user deployments and are optional |
 | LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
 | Speech | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `NEUPHONIC_API_KEY`, `CARTESIA_API_KEY`, Google credentials as above | Needed for pipeline (non speech-to-speech) models |
 | LiveKit runtime | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | LiveKit Cloud or self-hosted |
@@ -56,6 +56,23 @@ You don't need everything. Three sensible starting points:
 2. **Telephony via Jambonz** — the quickest route to a real phone number: a [Jambonz](https://jambonz.org) account with unallocated inbound numbers routed from your SIP trunk provider, STT/TTS credentials added on the Jambonz side, and the `JAMBONZ_*` variables here.
 3. **Telephony via the Pipecat worker** — self-contained SIP using one of the supported gateways (bundled Go [`sipbridge`](sipbridge-integration.md), FreeSWITCH, [Voiceblender](voiceblender-integration.md) or Daily). Most control, most moving parts.
 
+## First API key
+
+Every request needs an API key, and a new database has no users. Create the first key in one of two ways:
+
+- Run `yarn bootstrap`. It creates one organisation, one user and one key, and prints the key. Options: `--key`, `--org`, `--name`, `--email`.
+- Or set `BOOTSTRAP_API_KEY` in `.env` to a random value of 32 characters or more (`openssl rand -base64 32`). The server creates the same three rows, with that key, when it first starts.
+
+Both do nothing once any user exists, so `BOOTSTRAP_API_KEY` can stay set. The user has the `superAdmin` role, so it can also set up trunks, numbers and rate cards. Neither way needs Firebase or better-auth.
+
+Send the key as a bearer token:
+
+```shell
+export APLISAY_KEY="<your key>"
+```
+
+For more users or keys, use `node tools/agent-admin.js` (`add-org`, `add-user`, `add-authkey`, `list-authkeys`).
+
 ## Start the server
 
 ```shell
@@ -66,7 +83,7 @@ yarn start     # production mode
 The API and WebSocket listen on `WS_PORT` (default 4000). Sanity-check with the model catalogue:
 
 ```shell
-curl http://localhost:4000/api/models
+curl -H "Authorization: Bearer $APLISAY_KEY" http://localhost:4000/api/models
 ```
 
 The REST surface is defined in [`api/api-doc.yaml`](../api/api-doc.yaml) and browsable as a hosted reference at [llm.aplisay.com/api](https://llm.aplisay.com/api). The open-source [llm-frontend](https://github.com/aplisay/llm-frontend) gives you a UI over your own instance.
@@ -102,4 +119,4 @@ Some suites exercise live external services (e.g. ElevenLabs voices, jambonz.clo
 - **Google Cloud Run / Cloud Build**: pipelines in `deploy/gcp/cloudrun/` cover the server and each worker, including staging variants; `deploy/bundle-secretenv.sh` bundles encrypted environment for images.
 - **Kubernetes**: Pipecat worker + SIP gateway manifests in `agents/pipecat/deploy/k8s`.
 
-Production checklist: authentication on (Firebase or `BETTER_AUTH_ENABLED=true`), `CREDENTIALS_KEY` set, `DB_FORCE_SYNC` unset, recording bucket configured if used, and your authentication and multi-tenancy configuration reviewed. Vulnerability reports go via [SECURITY.md](../SECURITY.md).
+Production checklist: API keys kept secret and `SHARED_API_TOKEN` set to a random value, user sign-in configured if you need it (Firebase or `BETTER_AUTH_ENABLED=true`), `CREDENTIALS_KEY` set, `DB_FORCE_SYNC` unset, recording bucket configured if used, and your authentication and multi-tenancy configuration reviewed. Vulnerability reports go via [SECURITY.md](../SECURITY.md).

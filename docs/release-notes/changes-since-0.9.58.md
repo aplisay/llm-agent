@@ -60,6 +60,23 @@ Pipecat), and **ci** (build and release pipeline).
   record, as for Ultravox, GPT-Live, Grok voice and ElevenLabs Agents. The
   in-place swap kept the outgoing agent's prompt and tools.
 
+## Self-hosting - core
+
+- **[core] `AUTHENTICATE_USERS=NO`**: removed. Every request now needs an API
+  key. The setting is ignored, with a warning at start. In 0.9.58 it answered
+  500 on every request.
+- **[core] `yarn bootstrap`**: on a database with no users, creates one
+  organisation, one `superAdmin` user and one API key, and prints the key.
+  Options `--key`, `--org`, `--name` and `--email`. See
+  [running.md](../running.md#first-api-key).
+- **[core] `BOOTSTRAP_API_KEY`**: set it to a random value of 32 characters or
+  more and the server does the same when it first starts, with that key. It is
+  ignored once any user exists.
+- **[core] Firebase sign-in**: `firebase-admin` loads on first use, so an
+  instance that uses API keys alone needs neither the package nor Google
+  credentials. On an instance with no Firebase project, an unknown token
+  answers 401 `Authentication error: unknown API key or token`.
+
 ## Upgrade notes
 
 - **[core] Gemini Live rate lines**: run `scripts/add-gemini-live-rate-lines.mjs`

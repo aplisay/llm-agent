@@ -142,7 +142,7 @@ describe('permissions — roles vocabulary', () => {
     expect(can({ role: 'onboardingService' }, 'rate', 'read')).toBe(false);
   });
   test('superAdmin is a SUPERSET — keeps owner product powers incl agent:create', () => {
-    // Regression guard: without this, no-auth/bootstrap/super principals 403 on agent create.
+    // Regression guard: without this, bootstrap/super principals 403 on agent create.
     expect(can({ role: 'superAdmin' }, 'agent', 'create')).toBe(true);
     expect(can({ role: 'superAdmin' }, 'agentSet', 'create')).toBe(true);
     expect(can({ role: 'superAdmin' }, 'apiKey', 'create')).toBe(true);

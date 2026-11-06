@@ -114,11 +114,10 @@ if (betterAuth) {
   mountOauthHandoff(server, logger, { limiter: oauthHandoffLimiter });
 }
 
-// Import middleware dynamically based on environment
 if (process.env.AUTHENTICATE_USERS === "NO") {
-  const { default: initNoAuth } = await import('./middleware/no-auth.js');
-  initNoAuth(server, logger);
-} else {
+  logger.warn('AUTHENTICATE_USERS=NO is no longer supported and is ignored: every request needs an API key. Run `yarn bootstrap` to create the first one (docs/running.md).');
+}
+{
   const { default: initAuth } = await import('./middleware/auth.js');
   initAuth(server, logger);
 }
@@ -171,6 +170,14 @@ openapi.initialize({
   errorMiddleware: (await import('./middleware/errors.js')).default,
   securityFilter
 });
+
+// First API key for a new self-hosted instance. Does nothing once any user exists.
+// Started before listen(): the auth middleware holds requests until it settles.
+{
+  const { bootstrapFromEnv } = await import('./lib/bootstrap.js');
+  bootstrapFromEnv({ log: logger })
+    .catch((err) => logger.error({ err: err.message }, 'bootstrap failed: no API key was created'));
+}
 
 httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
