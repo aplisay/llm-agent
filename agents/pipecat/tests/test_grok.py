@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.frames.frames import InterimTranscriptionFrame, TranscriptionFrame
+from pipecat.frames.frames import FunctionCallResultFrame, InterimTranscriptionFrame, TranscriptionFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.xai.realtime import events
+from pipecat.services.xai.realtime.llm import GrokRealtimeLLMService
 
 from pipecat_aplisay import grok
 from pipecat_aplisay.grok import (
@@ -160,6 +163,15 @@ def _context(messages=None) -> LLMContext:
     return LLMContext(list(messages or []), tools=ToolsSchema(standard_tools=[]))
 
 
+def _done(llm) -> None:
+    """The running response finishes."""
+    evt = events.parse_server_event(json.dumps({
+        "event_id": "e1", "type": "response.done",
+        "response": {"id": "r1", "object": "realtime.response", "output": [], "status": "completed"},
+    }))
+    asyncio.run(llm._handle_evt_response_done(evt))
+
+
 def test_service_settings_and_audio_format_fill():
     llm, _ = _build(_agent(tts={"voice": "leo"}))
     assert llm._settings.model == "grok-voice-think-fast-2.0"
@@ -274,6 +286,7 @@ def test_first_run_seeds_history_and_holds_the_response_behind_a_forced_greeting
 def test_context_watermark_sends_developer_messages_but_never_user_turns():
     llm, sent = _build()
     asyncio.run(llm._handle_context(_context()))
+    _done(llm)
     sent.clear()
     # a transcribed user turn lands in the context: the server already has it
     ctx = _context([{"role": "user", "content": "I need an appointment"}])
@@ -303,6 +316,7 @@ def test_context_watermark_sends_developer_messages_but_never_user_turns():
 def test_a_tool_result_creates_one_response_only():
     llm, sent = _build()
     asyncio.run(llm._handle_context(_context()))
+    _done(llm)
     sent.clear()
     ctx = _context([
         {"role": "developer", "content": "Answer now."},
@@ -312,6 +326,34 @@ def test_a_tool_result_creates_one_response_only():
     kinds = [p["type"] for p in sent]
     assert kinds.count("response.create") == 1
     assert [p["item"]["type"] for p in sent if p["type"] == "conversation.item.create"] == ["message", "function_call_output"]
+
+
+def test_a_pushed_tool_result_is_answered_on_the_aggregator_request():
+    llm, sent = _build()
+    asyncio.run(llm._handle_context(_context()))
+    _done(llm)
+    sent.clear()
+    llm._open_function_calls.add("call-1")
+    result = FunctionCallResultFrame(function_name="lookup", tool_call_id="call-1", arguments={}, result={"ok": True})
+    asyncio.run(GrokRealtimeLLMService.push_frame(llm, result))
+    assert [p["type"] for p in sent] == ["conversation.item.create"]
+    ctx = _context([{"role": "tool", "tool_call_id": "call-1", "content": '{"ok": true}'}])
+    asyncio.run(llm._handle_context(ctx))
+    assert "response.create" not in [p["type"] for p in sent]
+    asyncio.run(llm._handle_context(ctx, FrameDirection.UPSTREAM))
+    asyncio.run(llm._handle_context(ctx, FrameDirection.UPSTREAM))
+    assert [p["type"] for p in sent] == ["conversation.item.create", "response.create"]
+
+
+def test_a_held_response_survives_a_response_created():
+    """Digits sent while a response is being created are still answered."""
+    llm, sent = _build()
+    asyncio.run(llm._handle_context(_context()))
+    asyncio.run(llm.inject_dtmf("7"))
+    assert [p["type"] for p in sent][-2:] == ["response.create", "conversation.item.create"]
+    asyncio.run(llm._handle_evt_response_created(SimpleNamespace(response=None)))
+    _done(llm)
+    assert sent[-1]["type"] == "response.create"
 
 
 def test_interim_transcription_completed_events_are_interim_frames():

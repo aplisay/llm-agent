@@ -186,7 +186,7 @@ def _language_enum(tag: str) -> Optional[Language]:
     unrecognised region (``en-ZZ``) still yields ``Language.EN`` rather than
     nothing. Returning the enum (rather than a raw string) matters because each
     Pipecat service maps it through its own ``language_to_service_language()`` —
-    that is what turns ``en-GB`` into Cartesia's base code, Google's ``en-GB``
+    that is what turns ``en-GB`` into ElevenLabs' base code, Google's ``en-GB``
     recognition code, and so on.
     """
     canonical = _canonical_bcp47(tag)
@@ -588,8 +588,9 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     # the STT side, each branch OMITS the field entirely when None so the
     # vendor's own default survives. Pipecat maps the enum through each service's
     # ``language_to_service_language()``, so the vendor-specific shape (Cartesia
-    # and ElevenLabs both want base codes, not regional tags) is handled for us —
-    # we only choose WHICH tag to hand over.
+    # takes the regional locales it supports and the base code otherwise;
+    # ElevenLabs wants base codes) is handled for us. We only choose WHICH tag
+    # to hand over.
     language = _language_setting(agent, "tts")
     # ``options.tts.speed``, clamped per vendor; None leaves the vendor's rate alone.
     # Whether Deepgram takes one depends on the voice, so its branch works it out.
@@ -1901,13 +1902,13 @@ async def _build_pipeline(
             settings=GoogleLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("anthropic/"):
-        from .anthropic_service import AplisayAnthropicLLMService
+        from pipecat.services.anthropic.llm import AnthropicLLMService
 
         _, anthropic_model = model_id.split("/", 1)
-        llm = AplisayAnthropicLLMService(
+        llm = AnthropicLLMService(
             api_key=_require_env("ANTHROPIC_API_KEY"),
             model=anthropic_model,
-            settings=AplisayAnthropicLLMService.Settings(system_instruction=system_prompt),
+            settings=AnthropicLLMService.Settings(system_instruction=system_prompt),
         )
     elif model_id.startswith("xai/"):
         # xAI Grok text models over their OpenAI-compatible endpoint (docs/grok.md).

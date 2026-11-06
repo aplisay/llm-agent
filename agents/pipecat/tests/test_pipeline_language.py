@@ -144,7 +144,7 @@ def test_deepgram_stt_ignores_the_non_specific_sentinels(api_keys):
     assert stt._build_connect_kwargs()["language"] == "en"
 
 
-# GoogleSTTService needs default_event_loop for synchronous grpc.aio construction on Python 3.12. See PR #326.
+# GoogleSTTService needs default_event_loop for synchronous grpc.aio construction from Python 3.12. See PR #326.
 
 
 def test_google_stt_uses_the_declared_recognition_language(
@@ -181,14 +181,19 @@ def test_google_stt_falls_back_to_default_for_an_unresolvable_tag(
 # --- TTS ---------------------------------------------------------------------
 
 
-def test_cartesia_gets_the_language_as_a_base_code(api_keys):
-    tts = build_tts_service(_agent(tts={"vendor": "cartesia", "language": "de-DE"}))
+def test_cartesia_gets_a_regional_locale_it_supports(api_keys):
+    tts = build_tts_service(_agent(tts={"vendor": "cartesia", "language": "en-GB"}))
+    assert tts._settings.language == "en-GB"
+
+
+def test_cartesia_gets_the_base_code_for_a_locale_it_lacks(api_keys):
+    tts = build_tts_service(_agent(tts={"vendor": "cartesia", "language": "de-CH"}))
     assert tts._settings.language == "de"
 
 
 def test_cartesia_takes_the_stt_language_as_fallback(api_keys):
     tts = build_tts_service(_agent(stt={"language": "fr-FR"}))
-    assert tts._settings.language == "fr"
+    assert tts._settings.language == "fr-FR"
 
 
 def test_cartesia_keeps_its_default_when_unset(api_keys):
@@ -201,7 +206,7 @@ def test_cartesia_voice_still_wins_alongside_a_language(api_keys):
         _agent(tts={"vendor": "cartesia", "voice": "some-voice-id", "language": "de-DE"})
     )
     assert tts._settings.voice == "some-voice-id"
-    assert tts._settings.language == "de"
+    assert tts._settings.language == "de-DE"
 
 
 def test_elevenlabs_gets_the_language(api_keys):

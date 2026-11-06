@@ -1,9 +1,9 @@
 """OpenAI Realtime with the platform's mid-call context injection. See PR #364.
 
 Pipecat's ``OpenAIRealtimeLLMService`` seeds the server conversation once, from
-the first context frame. After that it only sends newly completed tool
-results, and its ``_handle_messages_append`` is a stub. So nothing the worker
-appends to the context later reaches OpenAI.
+the first context frame. After that it only sends tool results. Appended
+messages stop at the context aggregators, so its ``_handle_messages_append``
+never runs, and nothing the worker adds to the context later reaches OpenAI.
 
 This subclass follows ``grok_service.AplisayGrokRealtimeLLMService``. Each new
 developer or system context message goes out as a ``system`` conversation item
@@ -21,7 +21,8 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Literal, Optional
 
 from loguru import logger
-from pipecat.frames.frames import LLMFullResponseEndFrame, TTSStoppedFrame
+from pipecat.frames.frames import FunctionCallResultFrame, LLMFullResponseEndFrame, TTSStoppedFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.realtime import events
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
@@ -47,12 +48,13 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
         self._seen_messages: list = []
         # Keypad digits pressed before the seed; sent after it (see inject_dtmf).
         self._held_items: list[events.ConversationItem] = []
-        self._responses_requested = 0
         self._seeding = False
         # A response.create owed once the active response is done.
         self._response_pending = False
         # Function calls the current server conversation has issued.
         self._session_call_ids: set[str] = set()
+        # Calls of conversations that were replaced (see _restart_conversation).
+        self._retired_call_ids: set[str] = set()
 
     # ---- items ------------------------------------------------------------
 
@@ -82,10 +84,11 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
     # ---- responses --------------------------------------------------------
 
     async def _create_response(self) -> None:
-        self._responses_requested += 1
-        if self._seeding or self._current_assistant_response is not None:
+        if self._seeding or self._current_assistant_response is not None or self._response_active:
             # OpenAI refuses a response.create while a response is active; it
-            # is sent after that response's response.done instead.
+            # is sent after that response's response.done instead. The stock's
+            # own hold is not used: it drops the request when a response.created
+            # lands between the request and response.done.
             self._response_pending = True
             return
         seeding = (
@@ -99,6 +102,9 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
             await super()._create_response()
         finally:
             self._seeding = False
+        if self._response_active:
+            # This response takes in everything sent before it.
+            self._results_awaiting_response = False
         if not seeding or self._llm_needs_conversation_setup:
             return
         self._seen_messages = snapshot
@@ -125,6 +131,12 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
     async def _handle_evt_function_call_arguments_done(self, evt) -> None:  # noqa: ANN001
         self._session_call_ids.add(evt.call_id)
         await super()._handle_evt_function_call_arguments_done(evt)
+
+    async def _handle_function_call_result(self, frame: FunctionCallResultFrame) -> None:
+        if frame.tool_call_id in self._retired_call_ids:
+            # The stock would send it into the new conversation as a message.
+            return
+        await super()._handle_function_call_result(frame)
 
     # ---- the provider ending the session ------------------------------------
 
@@ -178,11 +190,11 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
             return False
         return text_of(first.get("content")) != (self._settings.system_instruction or "").strip()
 
-    async def _handle_context(self, context) -> None:  # noqa: ANN001
+    async def _handle_context(self, context, direction=FrameDirection.DOWNSTREAM) -> None:  # noqa: ANN001
         if self._context is None or self._llm_needs_conversation_setup:
             # The first run seeds the server from the whole context; until
             # then the stock path only sends tool results.
-            await super()._handle_context(context)
+            await super()._handle_context(context, direction)
             return
         messages = list(context.get_messages())
         new = self._new_messages(messages)
@@ -200,9 +212,10 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
                 continue
             await self._send_item(self._text_item("system", text))
             sent = True
-        before = self._responses_requested
         await self._process_completed_function_calls(send_new_results=True)
-        if sent and self._responses_requested == before:
+        # An upstream context frame is the assistant aggregator asking for a
+        # response to the tool results delivered since the last one.
+        if sent or (direction == FrameDirection.UPSTREAM and self._results_awaiting_response):
             await self._create_response()
 
     async def _restart_conversation(self, context) -> None:  # noqa: ANN001
@@ -216,6 +229,7 @@ class AplisayOpenAIRealtimeLLMService(OpenAIRealtimeLLMService):
             if self._is_modality_enabled("audio"):
                 await self.push_frame(TTSStoppedFrame())
         old_calls, self._session_call_ids = self._session_call_ids, set()
+        self._retired_call_ids |= old_calls
         self._context = context
         self._seen_messages = []
         self._held_items = []

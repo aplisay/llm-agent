@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def default_event_loop():
-    """Synchronous grpc.aio construction needs a default loop after asyncio.run() clears it on Python 3.12.
+    """Synchronous grpc.aio construction needs a default loop after asyncio.run() clears it (Python 3.12 on).
     Keep this test-only: production constructs services in a running loop; see PR #326."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
