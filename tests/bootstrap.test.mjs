@@ -39,6 +39,9 @@ beforeAll(async () => {
   // The wrapper pointed POSTGRES_DB at the shared worker database on import;
   // lib/database.js has not been loaded yet, so this still takes effect.
   process.env.POSTGRES_DB = database;
+  // Keep lib/auth/index.js inert, as on an instance that uses API keys alone.
+  // CI enables better-auth, whose start-up import lands between tests and fails the suite.
+  process.env.BETTER_AUTH_ENABLED = 'false';
   await setupRealDatabase();
 
   ({ bootstrap, bootstrapFromEnv, BootstrapError } = await import('../lib/bootstrap.js'));
