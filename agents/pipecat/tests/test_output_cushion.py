@@ -91,6 +91,42 @@ class TestStallsAreAbsorbed:
 
         asyncio.run(run())
 
+    def test_the_producer_wakes_with_the_whole_cushion_still_queued(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The transport writes 40 ms at a time. Waking it when a chunk of its
+        own write played left 3 of the 6 chunks queued."""
+
+        async def run() -> None:
+            t = _track(monkeypatch, 60)
+            depths: list[int] = []
+            held = None
+            for _ in range(200):
+                while held is None or held.done():
+                    if held is not None:
+                        depths.append(len(t._chunk_queue))
+                    held = t.add_audio_bytes(_audio(4))
+                t._chunk_queue.popleft()
+                t._on_chunk_played()
+            assert min(depths[5:]) >= 6, depths[:20]
+
+        asyncio.run(run())
+
+    def test_a_stall_just_after_the_producer_wakes_is_absorbed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def run() -> None:
+            t = _track(monkeypatch, 60)
+            held = None
+            while held is None or held.done():
+                held = t.add_audio_bytes(_audio(4))
+            while not held.done():
+                await t.recv()
+            frames = [await t.recv() for _ in range(5)]
+            assert not any(_is_silence(f) for f in frames), "a 50 ms stall reached the wire"
+
+        asyncio.run(run())
+
     def test_without_the_cushion_the_same_stall_reaches_the_wire(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -506,6 +542,7 @@ async def _play(track, steps: int, source) -> _Played:
             chunk, fut = track._chunk_queue.popleft()
             if fut is not None and not fut.done():
                 fut.set_result(True)
+            track._on_chunk_played()
             if first_voiced is None and chunk[:2] == b"\x11\x11":
                 first_voiced = step
         backlog.append(track.backlog_ms())
@@ -633,11 +670,11 @@ class TestTrimming:
 
         asyncio.run(run())
 
-    def test_the_chunk_carrying_the_future_is_kept(
+    def test_a_trimmed_write_still_releases_the_producer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The transport waits on that future. Dropping its chunk would hold the
-        producer for ever and the call would go silent."""
+        """The transport waits on the future. Trimming a whole write must not
+        hold the producer for ever, or the call goes silent."""
 
         async def run() -> None:
             t = _track(monkeypatch, 60)
@@ -645,15 +682,13 @@ class TestTrimming:
             forwarded = _wire(t)
             forwarded[0] += 1000.0
             t.add_audio_bytes(_audio(10))        # a full queue: the producer is held
-            t._quiet_seen = 2                    # the next quiet chunk is due a trim
-            fut = t.add_audio_bytes(_quiet(4))   # ...and that chunk carries the future
-            assert t.trimmed_chunks == 1, "the fourth chunk goes instead"
-            assert not fut.done()
-            assert any(f is fut for _chunk, f in t._chunk_queue), "the future was dropped"
+            t._trim_every = 1                    # every quiet chunk goes
+            fut = t.add_audio_bytes(_quiet(4))
+            assert t.trimmed_chunks == 4
+            assert not fut.done(), "the queue is still over the cushion"
             while t._chunk_queue:
-                _chunk, f = t._chunk_queue.popleft()
-                if f is not None and not f.done():
-                    f.set_result(True)
+                t._chunk_queue.popleft()
+                t._on_chunk_played()
             assert fut.done()
 
         asyncio.run(run())
