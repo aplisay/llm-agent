@@ -82,6 +82,15 @@ set both to this host's address.
 
 The Pipecat worker and its SIP gateway are not in `compose.yaml` yet.
 
+## Smoke test
+
+`scripts/smoke.sh` builds and starts the stack, checks `GET /api/health`, uses
+the first API key, creates a text agent on `text:stub/echo` and runs one chat
+round trip, then tears the stack down. It needs no provider key: the stub
+model, which repeats its input, is listed only when `APLISAY_STUB_MODEL=1`,
+and the script sets that for its own run. CI runs the same script on every
+pull request to `next`.
+
 ## Stop and reset
 
 ```shell

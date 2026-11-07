@@ -141,6 +141,12 @@ Pipecat), and **ci** (build and release pipeline).
 - **[pipecat] Google credential file**: written from `GOOGLE_CREDENTIAL` at
   start without a secretenv bundle too.
 - **[sipbridge] arm64 image**: the build now compiles for the target platform.
+- **[core] `APLISAY_STUB_MODEL`**: set to `1` to list `text:stub/echo`, a text
+  model that repeats its input and needs no provider key. For smoke tests
+  only. Unset, the model is neither listed nor usable.
+- **[ci] Smoke test**: `scripts/smoke.sh` starts the compose stack, uses the
+  first API key, creates an agent and runs a text chat round trip. A GitHub
+  Actions workflow runs it on every pull request to `next`.
 
 ## Upgrade notes
 

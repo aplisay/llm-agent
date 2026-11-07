@@ -334,6 +334,7 @@ Limits and timeouts. The defaults suit most installs.
 | `TEXT_CHAT_HEARTBEAT_MS` | API | `60000` | How often a process marks its chat sessions as alive. |
 | `TEXT_CHAT_LIVENESS_GRACE_MS` | API | `300000` | Missed heartbeat time after which another process may take a session. |
 | `USAGE_STALE_SESSION_HOURS` | API | `24` | Age after which an unfinished usage session is closed. |
+| `APLISAY_STUB_MODEL` | API |  | Set to 1 to list text:stub/echo, a text model that repeats its input and needs no provider key. For smoke tests only: never set it in production. |
 
 ## Diagnostics
 
