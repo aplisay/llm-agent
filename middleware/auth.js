@@ -140,6 +140,7 @@ function init(app, logger) {
   app.use(async (req, res, next) => {
     if (
       req.method === 'OPTIONS'
+      || req.path === '/api/health'
       || req.originalUrl.startsWith('/api/api-docs') 
       || req.originalUrl.startsWith('/api/hooks')
       || req.originalUrl.startsWith('/api/auth')

@@ -101,6 +101,24 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] API image start-up**: the image compiles the LiveKit model registry
   at build time, so a container no longer runs a TypeScript build on every
   start.
+- **[core] `environment-example`**: rebuilt as a short template with every
+  provider commented out and no placeholder strings. User sign-up and email are
+  off; their settings moved to `environment-example.polite-ai`.
+  `SERVICE_BASE_URI` now names port 4000.
+- **[core] `config/env.schema.json`**: one entry per environment variable the
+  API server, both voice workers and sipbridge read. `yarn env:generate` builds
+  the templates and the new
+  [configuration reference](../self-hosting/configuration.md) from it.
+- **[core+livekit] Placeholder values**: a value written as `<...>` is treated
+  as unset, with a warning at start.
+- **[core] `yarn doctor`**: lists each runtime and provider as enabled or
+  disabled, names what a disabled one is missing, and checks the database.
+  The server logs the same table at start.
+- **[core] `GET /api/health`**: needs no API key. Returns the same table as
+  JSON, and 503 when the database does not answer. It names unset variables
+  and never returns a value.
+- **[core] Database settings**: the server exits with a message naming the
+  missing `POSTGRES_*` variables instead of an `Invalid URL` error.
 
 ## Upgrade notes
 

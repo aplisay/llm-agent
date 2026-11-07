@@ -7,6 +7,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | Doc | What it covers |
 |---|---|
 | [running.md](running.md) | Install, environment, database, workers, tests, deployment |
+| [self-hosting/configuration.md](self-hosting/configuration.md) | Every environment variable, by component (generated from `config/env.schema.json`) |
 | [architecture.md](architecture.md) | Control plane vs realtime plane, components, life of a call, scaling |
 | [../SECURITY.md](../SECURITY.md) | Vulnerability reporting policy |
 

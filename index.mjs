@@ -12,12 +12,26 @@ import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
 import { buildInfo, describeBuild } from './lib/build-info.js';
 import { listenPort } from './lib/listen-port.js';
+import { clearPlaceholders } from './lib/env-placeholders.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
 // makes stale deploys visible in the boot log.
 logger.info(buildInfo(), `build version: ${describeBuild()}`);
 dotenv.config();
+{
+  const placeholders = clearPlaceholders();
+  if (placeholders.length) {
+    logger.warn({ names: placeholders }, `treating placeholder values (<...>) as unset: ${placeholders.join(', ')}`);
+  }
+  // lib/database.js builds a connection URL from these, and fails with
+  // "Invalid URL" and no hint when one is missing.
+  const missingDb = ['POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB', 'POSTGRES_USER'].filter((name) => !process.env[name]);
+  if (missingDb.length) {
+    logger.fatal(`cannot start: set ${missingDb.join(', ')} (see environment-example)`);
+    process.exit(1);
+  }
+}
 
 
 const server = express();
@@ -183,6 +197,13 @@ openapi.initialize({
 httpServer.listen(port, () => {
   logger.info(`Server listening at http://localhost:${port}`);
 });
+
+{
+  const { configStatus, formatStatus } = await import('./lib/config-status.js');
+  configStatus()
+    .then((status) => logger.info(status, `configuration (also GET /api/health, yarn doctor):\n${formatStatus(status)}`))
+    .catch((err) => logger.warn({ err: err.message }, 'could not work out the configuration status'));
+}
 
 // Start the reaper only in the server: importing database code from a CLI must not alter chat liveness. See PR #291.
 const { startChatSessionReaper, startChatOwnershipListener, releaseAllChatSessions } = await import('./lib/text-chat.js');

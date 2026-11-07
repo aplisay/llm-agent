@@ -1,0 +1,66 @@
+# Extra settings for running the API server behind a front end that signs
+# users up and sends email, such as polite.ai. A self-hosted instance that
+# uses API keys alone does not need any of this. Append what you need to .env.
+#
+# Generated from config/env.schema.json by `yarn env:generate`. Edit the
+# schema, not this file.
+
+# ── Hosted sign-up and email ──────────────────────────────────────────────────
+# User sign-up with better-auth, the waitlist and outbound email. Only needed
+# beside a front end such as polite.ai. Off unless BETTER_AUTH_ENABLED=true.
+# Run yarn auth:migrate once to create better-auth's own tables.
+
+# true to turn on better-auth user sign-in beside API keys.
+BETTER_AUTH_ENABLED=true
+
+# Random secret of 32 characters or more.
+BETTER_AUTH_SECRET=
+
+# Public base URL of this API, used to build OAuth callback URLs.
+BETTER_AUTH_URL=http://localhost:4000
+
+# Front-end origins allowed to call the auth routes, comma separated.
+BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:3000,http://localhost:5173
+
+# true to require a verified email address before sign-in.
+BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=false
+
+# Google OAuth client id for Google sign-in.
+# BETTER_AUTH_GOOGLE_CLIENT_ID=
+
+# Google OAuth client secret.
+# BETTER_AUTH_GOOGLE_CLIENT_SECRET=
+
+# Secret a proxying front end sends to have its end user's IP address trusted
+# for rate limits.
+# AUTH_PROXY_SECRET=
+
+# Emails per address per hour from the reset and verification routes.
+# AUTH_EMAIL_PER_ADDRESS_HOURLY=3
+
+# Emails per address per day.
+# AUTH_EMAIL_PER_ADDRESS_DAILY=10
+
+# Emails per hour in total.
+# AUTH_EMAIL_GLOBAL_HOURLY=250
+
+# Where the waitlist confirmation link sends the user.
+# WAITLIST_CALLBACK_URL=http://localhost:5173/confirmed
+
+# Origin of the front end that receives Google sign-in hand-offs.
+# POLITE_SITE_URL=http://localhost:5173
+
+# User ids allowed to call the admin /api/users routes, comma separated.
+# ADMIN_USER_IDS=
+
+# smtp2go to send email. Unset means emails are written to the log.
+# EMAIL_SEND_TYPE=smtp2go
+
+# SMTP2GO API key.
+# EMAIL_SEND_KEY=
+
+# Sender address.
+# EMAIL_FROM_ADDRESS=hello@example.com
+
+# Sender name.
+# EMAIL_FROM_NAME=Example

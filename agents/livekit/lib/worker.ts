@@ -58,6 +58,7 @@ import { callerLeftRoom } from "./caller-presence.js";
 import { userOwnsRow } from "./scope.js";
 import { jobCallMetadata, mergeCallMetadata } from "./call-metadata.js";
 import { writeGoogleCredential } from "./google-credential.js";
+import { clearPlaceholders } from "./env-placeholders.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -75,6 +76,12 @@ import type {
 } from "./types.js";
 
 dotenv.config();
+{
+  const placeholders = clearPlaceholders();
+  if (placeholders.length) {
+    logger.warn({ names: placeholders }, `treating placeholder values (<...>) as unset: ${placeholders.join(", ")}`);
+  }
+}
 {
   const credential = writeGoogleCredential();
   if (credential.status === "written") {

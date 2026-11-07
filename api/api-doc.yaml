@@ -36,6 +36,9 @@ tags:
       An instance of an Agent is created by POSTing to the `/agents` endpoint, and then one or more instances may be activated
       using the `listen` verb to cause implementation specific worker plugins to then execute them to service inbound SIP or WebRTC 
       calls.
+  - name: Health
+    description: |-
+      Whether the instance is up, and which runtimes and providers it can use. Needs no authentication.
   - name: Models
     description: |-
       A Model is an AI language model provider which is used by an Agent and controlled through a prompt.

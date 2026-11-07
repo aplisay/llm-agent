@@ -23,6 +23,8 @@
     "test:setup": "docker-compose -f tests/docker-compose.test.yml up -d",
     "livekit-dev": "(cd agents/livekit && yarn build) && NODE_ENV=development LOGLEVEL=debug nodemon --spawn --watch agents/livekit/dist --delay 3 agents/livekit/dist/realtime.js dev",
     "bootstrap": "node scripts/bootstrap.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "env:generate": "node scripts/env-schema/generate.mjs",
     "auth:generate": "npx --yes @better-auth/cli@1.4.21 generate --config scripts/better-auth-config.mjs",
     "auth:migrate": "npx --yes @better-auth/cli@1.4.21 migrate --config scripts/better-auth-config.mjs",
     "eval:builder": "node tools/builder-eval/run.mjs"

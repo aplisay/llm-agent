@@ -13,6 +13,7 @@
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { clearPlaceholders } from '../lib/env-placeholders.js';
 
 export function loadEnv(argv = process.argv) {
   let requested = null;
@@ -30,5 +31,7 @@ export function loadEnv(argv = process.argv) {
     process.exit(1);
   }
   console.log(`[env] ${path}${result.error ? ' (not found — using process env only)' : ''}`);
+  const placeholders = clearPlaceholders();
+  if (placeholders.length) console.log(`[env] treating placeholder values (<...>) as unset: ${placeholders.join(', ')}`);
   return path;
 }

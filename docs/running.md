@@ -27,11 +27,21 @@ The LiveKit worker is compiled automatically (`predevelop`/`prestart` run its `y
 
 ## Configure
 
-Copy the annotated template and edit it — `environment-example` is the reference for every variable, with inline comments:
+Copy the template and edit it. It lists the variables most installs need, all providers commented out:
 
 ```shell
 cp environment-example .env
 ```
+
+[self-hosting/configuration.md](self-hosting/configuration.md) describes every variable each component reads. Both files are generated from `config/env.schema.json` (`yarn env:generate`). Settings for user sign-up and email, which only a front end such as polite.ai needs, are in `environment-example.polite-ai`.
+
+Check the result before you start the server:
+
+```shell
+yarn doctor
+```
+
+It lists each runtime and provider as enabled or disabled, names the variables a disabled one is missing, and checks that the database answers. The server prints the same table at start, and `GET /api/health` returns it as JSON with no API key. A value written as `<...>` is treated as unset.
 
 The essentials, by group:
 
@@ -40,7 +50,7 @@ The essentials, by group:
 | Core | `WS_PORT` (or `PORT`), `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; `WS_PORT` wins when both are set. pino level |
 | Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there. The schema work every process runs at start is serialised across processes by a Postgres advisory lock (`lib/boot-lock.js`), so replicas starting together take turns rather than racing |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
-| Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`) add user sign-in for multi-user deployments and are optional |
+| Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`, see `environment-example.polite-ai`) add user sign-in for multi-user deployments and are optional |
 | LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
 | Speech | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `NEUPHONIC_API_KEY`, `CARTESIA_API_KEY`, Google credentials as above | Needed for pipeline (non speech-to-speech) models |
 | LiveKit runtime | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | LiveKit Cloud or self-hosted |
