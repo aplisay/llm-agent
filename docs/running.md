@@ -115,8 +115,25 @@ Some suites exercise live external services (e.g. ElevenLabs voices, jambonz.clo
 
 ## Deploying
 
-- **Docker**: the top-level `Dockerfile` builds the API server image (Node 22); worker images build from their `agents/<runtime>` directories.
-- **Google Cloud Run / Cloud Build**: pipelines in `deploy/gcp/cloudrun/` cover the server and each worker, including staging variants; `deploy/bundle-secretenv.sh` bundles encrypted environment for images.
-- **Kubernetes**: Pipecat worker + SIP gateway manifests in `agents/pipecat/deploy/k8s`.
+Every image builds with the repo root as the build context:
+
+| Image | Build command |
+|---|---|
+| API server | `docker build -f Dockerfile .` |
+| LiveKit worker | `docker build -f agents/livekit/Dockerfile .` |
+| Pipecat worker | `docker build -f agents/pipecat/Dockerfile .` |
+| sipbridge (Pipecat SIP gateway) | `docker build -f agents/pipecat/sipbridge/Dockerfile .` |
+| Jambonz worker | `docker build -f agents/jambonz/Dockerfile .` |
+
+**Configuration.** Every image reads plain environment variables, the same names as `.env`. Pass them with `docker run -e`, an env file, a Kubernetes Secret or your platform's settings. [secretenv](https://github.com/rjp44/secretenv) is optional: it lets a deploy ship the whole environment as one encrypted value (`SECRETENV_KEY` plus `SECRETENV_BUNDLE`), and an image with neither set reads its environment as given. `deploy/bundle-secretenv.sh` makes such a pair from an env file.
+
+Where Aplisay's own deploy files live, for reference:
+
+- **Cloud Build** (`deploy/gcp/cloudrun/`, `cloudbuild-release.yaml`): builds the images. The API server and the Jambonz worker run on Cloud Run.
+- **LiveKit worker**: Docker Compose on Compute Engine VMs, `agents/livekit/deploy/gcp/`.
+- **Pipecat worker and SIP gateways**: Kubernetes, `agents/pipecat/deploy/k8s/`, or Compute Engine VMs, `agents/pipecat/deploy/gcp/`.
+- **API server on Kubernetes**: `deploy/k8s/beta/`.
+
+These name Aplisay's projects, hosts and registries. Treat them as examples.
 
 Production checklist: API keys kept secret and `SHARED_API_TOKEN` set to a random value, user sign-in configured if you need it (Firebase or `BETTER_AUTH_ENABLED=true`), `CREDENTIALS_KEY` set, `DB_FORCE_SYNC` unset, recording bucket configured if used, and your authentication and multi-tenancy configuration reviewed. Vulnerability reports go via [SECURITY.md](../SECURITY.md).

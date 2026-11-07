@@ -86,6 +86,12 @@ Pipecat), and **ci** (build and release pipeline).
   and `yarn start`, `yarn stage` and `yarn develop` in `agents/livekit`, now
   start the worker. `yarn livekit-dev` reads the repo-root `.env`. A Linux
   checkout can now run the worker from source.
+- **[core] Plain environment**: every image runs from plain environment
+  variables; a `SECRETENV_KEY`/`SECRETENV_BUNDLE` pair is optional. See
+  [running.md](../running.md#deploying), which now also gives each image's
+  build command.
+- **[core+livekit] `bundle-secretenv.sh`** uses the repo's installed secretenv,
+  and its `npx` fallback is pinned to `v1.0.5`.
 
 ## Upgrade notes
 

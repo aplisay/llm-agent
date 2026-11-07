@@ -91,6 +91,10 @@ export default worker;
 
 ## Environment Variables
 
+Set these as plain environment variables or in `.env`. A
+`SECRETENV_KEY`/`SECRETENV_BUNDLE` pair, as used in Aplisay's own deploys, is
+optional.
+
 Required environment variables:
 
 - `LIVEKIT_URL` - LiveKit server URL
