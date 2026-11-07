@@ -53,7 +53,7 @@ yarn bootstrap                 # prints your first API key
 yarn develop
 ```
 
-You'll need Node 22+, PostgreSQL, and credentials for at least one LLM provider and one runtime. The **[running guide](docs/running.md)** walks through environment configuration, minimum viable setups (WebRTC-only or full telephony), starting the workers, tests and deployment.
+You'll need Node 22 LTS or 24 (Node 23 is not supported), PostgreSQL, and credentials for at least one LLM provider and one runtime. The **[running guide](docs/running.md)** walks through environment configuration, minimum viable setups (WebRTC-only or full telephony), starting the workers, tests and deployment.
 
 ## The API
 

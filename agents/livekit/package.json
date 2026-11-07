@@ -4,6 +4,9 @@
   "description": "Omni provider voice agent",
   "type": "module",
   "main": "dist/realtime.js",
+  "engines": {
+    "node": "^22.0.0 || >=24.0.0"
+  },
   "exports": {
     ".": {
       "import": "./dist/realtime.js",

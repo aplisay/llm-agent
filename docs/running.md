@@ -4,7 +4,7 @@ How to get from a clone to an agent you can talk to: install, environment, datab
 
 ## Prerequisites
 
-- **Node.js 22+** and **yarn 1.x** (the production image is built `FROM node:22`).
+- **Node.js 22 LTS or 24** and **yarn 1.x**. Node 23 is not supported: `yarn install` refuses it. `.nvmrc` names 22 for `nvm use`.
 - **PostgreSQL** (CI runs against Postgres 15). For a throwaway local instance:
 
   ```shell
