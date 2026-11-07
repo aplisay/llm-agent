@@ -92,7 +92,7 @@ The REST surface is defined in [`api/api-doc.yaml`](../api/api-doc.yaml) and bro
 
 The API server alone can run **Ultravox** agents (their cloud is the runtime) and headless **text** agents. Everything else needs its runtime worker:
 
-- **LiveKit** (`agents/livekit`, TypeScript): for development, `yarn livekit-dev` from the repo root; in production it runs as its own container, built from that directory.
+- **LiveKit** (`agents/livekit`, TypeScript): for development, `yarn livekit-dev` from the repo root. It builds the worker and runs it with the same `.env` as the API server. In production it runs as its own container, built with `docker build -f agents/livekit/Dockerfile .` from the repo root.
 - **Pipecat** (`agents/pipecat`, Python): managed with `uv`, launched with an explicit SIP gateway selection and env file (it does not read `.env` implicitly), e.g.
 
   ```shell

@@ -4,14 +4,12 @@ A modular LiveKit voice agent implementation with SIP telephony support.
 
 ## Structure
 
-The agent has been refactored into a modular structure:
-
-- `realtime.ts` - Main entry point
-- `lib/` - Core modules
-  - `index.ts` - Module entry point and CLI runner
+- `realtime.ts` - Main entry point and CLI runner
+- `lib/` - Core modules, for example:
   - `worker.ts` - Main agent worker logic
   - `telephony.ts` - SIP transfer and bridging functions
-  - `initialise.ts` - SIP client initialization
+  - `initialise.ts` - SIP client initialisation
+- `agent-lib/` - Files shared with the API server (`lib/` at the repo root)
 
 ## Installation
 
@@ -32,7 +30,7 @@ This will compile TypeScript files to JavaScript in the `dist/` directory.
 ### Running the Agent
 
 ```bash
-# Development mode
+# Development mode (rebuilds and restarts on change)
 yarn develop
 
 # Production mode
@@ -41,6 +39,11 @@ yarn start
 # Staging mode
 yarn stage
 ```
+
+Each of these builds `dist/` first and then runs `node dist/realtime.js`. The
+worker reads `.env` from its working directory, so these read
+`agents/livekit/.env`. To run the worker with the API server's `.env` at the
+repo root, run `yarn livekit-dev` from the repo root instead.
 
 ### Setup SIP Configuration
 
