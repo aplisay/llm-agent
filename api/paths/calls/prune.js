@@ -1,7 +1,7 @@
 import { Call, TransactionLog, InvocationLog, Organisation, Op, Sequelize } from '../../../lib/database.js';
 import { Storage } from '@google-cloud/storage';
 import { requirePermission, can } from '../../../lib/auth/permissions.js';
-import { parseGcsPath, defaultRecordingBaseUrl } from '../../../lib/recording/index.js';
+import { recordingStorageConfig, openRecordingStore, parseStoragePath } from '../../../lib/recording/index.js';
 
 /**
  * POST /api/calls/prune — org-scoped bulk pruning of stored call ARTIFACTS
@@ -116,8 +116,17 @@ export default function (logger) {
       let prunedRecordings = 0;
       let prunedTranscripts = 0;
       let prunedInvocationLogs = 0;
-      const storage = wanted.includes('recording') ? makeStorage() : null;
-      const { bucket } = wanted.includes('recording') ? parseGcsPath(defaultRecordingBaseUrl()) : {};
+      // GCS keeps the injectable client the tests use; the other stores go through storage.js.
+      const storageConfig = wanted.includes('recording') ? recordingStorageConfig() : { enabled: false };
+      let deleteObject = async () => {};
+      if (storageConfig.enabled && storageConfig.backend === 'gcs') {
+        const storage = makeStorage();
+        const { bucket } = parseStoragePath(storageConfig.baseUrl);
+        deleteObject = (objectName) => storage.bucket(bucket).file(objectName).delete({ ignoreNotFound: true });
+      } else if (storageConfig.enabled) {
+        const store = await openRecordingStore();
+        deleteObject = (objectName) => store.delete(objectName);
+      }
 
       for (const call of calls) {
         if (wanted.includes('recording') && call.recordingId) {
@@ -126,7 +135,7 @@ export default function (logger) {
             // Best-effort object delete, exactly as DELETE /calls/{id}/recording:
             // a missing object is fine, and a storage failure still clears the
             // metadata so the call stops advertising a recording.
-            await storage.bucket(bucket).file(objectName).delete({ ignoreNotFound: true });
+            await deleteObject(objectName);
           } catch (err) {
             log.error({ err, callId: call.id, objectName }, 'prune: error deleting recording object from storage');
           }

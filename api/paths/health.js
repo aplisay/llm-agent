@@ -74,6 +74,14 @@ health.apiDoc = {
               runtimes: componentList,
               providers: componentList,
               speech: componentList,
+              recording: {
+                type: 'object',
+                properties: {
+                  enabled: { type: 'boolean' },
+                  backend: { type: 'string', enum: ['gcs', 's3', 'file'] },
+                  reason: { type: 'string', description: 'Why recording is off.' },
+                },
+              },
               warnings: { type: 'array', items: { type: 'string' } },
             },
           },

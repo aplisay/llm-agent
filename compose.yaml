@@ -70,6 +70,10 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
       # scripts/smoke.sh sets it to list the keyless text:stub/echo model.
       APLISAY_STUB_MODEL: ${APLISAY_STUB_MODEL:-}
+      # The worker writes recordings here and the API serves them back.
+      RECORDING_STORAGE_PATH: ${RECORDING_STORAGE_PATH:-file:///data/recordings}
+    volumes:
+      - recordings:/data/recordings
     ports:
       - target: 4000
         published: ${API_PORT:-4000}
@@ -133,6 +137,9 @@ services:
       SERVICE_BASE_URI: http://api:4000
       SHARED_API_TOKEN: ${SHARED_API_TOKEN:-insecure-development-token-run-compose-setup}
       NUM_IDLE_PROCESSES: ${NUM_IDLE_PROCESSES:-1}
+      RECORDING_STORAGE_PATH: ${RECORDING_STORAGE_PATH:-file:///data/recordings}
+    volumes:
+      - recordings:/data/recordings
     depends_on:
       livekit:
         condition: service_started
@@ -220,4 +227,5 @@ configs:
 
 volumes:
   pgdata:
+  recordings:
   caddydata:

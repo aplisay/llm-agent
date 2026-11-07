@@ -274,7 +274,13 @@ Where call recordings and cached fallback messages are kept.
 
 | Variable | Components | Default | Description |
 |---|---|---|---|
-| `RECORDING_STORAGE_PATH` | API, LiveKit, Pipecat |  | Where call recordings go: gs://bucket/prefix (Google Cloud Storage). |
+| `RECORDING_STORAGE_PATH` | API, LiveKit, Pipecat |  | Where call recordings go: gs://bucket/prefix (Google Cloud Storage), s3://bucket/prefix (S3 or an S3-compatible store) or file:///directory (a directory the workers and the API share). Unset means recording is off, except that a process with Google credentials keeps the old default bucket gs://llm-voice/<NODE_ENV>-recordings. |
+| `S3_ENDPOINT` | API, LiveKit, Pipecat |  | Endpoint of an S3-compatible store, for example http://minio:9000. Unset means AWS S3 in S3_REGION. |
+| `S3_REGION` | API, LiveKit, Pipecat | `us-east-1` | S3 region. |
+| `S3_ACCESS_KEY_ID` | API, LiveKit, Pipecat |  | S3 access key id. Required for s3:// recording storage. Secret. |
+| `S3_SECRET_ACCESS_KEY` | API, LiveKit, Pipecat |  | S3 secret access key. Required for s3:// recording storage. Secret. |
+| `S3_SESSION_TOKEN` | API, LiveKit, Pipecat |  | S3 session token, for temporary credentials. Secret. |
+| `S3_FORCE_PATH_STYLE` | API, LiveKit, Pipecat | `true with S3_ENDPOINT, else false` | true to address the bucket in the URL path (most S3-compatible stores), false for a bucket host name. |
 | `FALLBACK_MESSAGE_STORAGE_PATH` | API, Pipecat |  | Where cached fallback messages go: gs://bucket/prefix. Defaults to a folder beside the recordings. |
 
 ## Hosted sign-up and email
@@ -362,6 +368,7 @@ You do not normally set these.
 | `LIVEKIT_WORKER_PREBUILT` | API |  | Set by the API image: the LiveKit registry is already built, so prestart skips the build. |
 | `HOSTNAME` | API |  | Host name, used to name this process in the database. |
 | `POD_NAME` | API |  | Kubernetes pod name, used in place of HOSTNAME. |
+| `K_SERVICE` | API, LiveKit, Pipecat |  | Set by Cloud Run. Counts as Google credentials when RECORDING_STORAGE_PATH is unset. |
 | `TMPDIR` | LiveKit |  | Temporary directory. |
 | `SECRETENV_KEY` | API, LiveKit, Pipecat, sipbridge |  | Key for SECRETENV_BUNDLE. Optional: see docs/running.md. Secret. |
 | `SECRETENV_BUNDLE` | API, LiveKit, Pipecat, sipbridge |  | The whole environment, encrypted. Optional. Secret. |

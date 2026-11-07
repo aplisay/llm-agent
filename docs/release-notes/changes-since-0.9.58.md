@@ -147,6 +147,15 @@ Pipecat), and **ci** (build and release pipeline).
 - **[ci] Smoke test**: `scripts/smoke.sh` starts the compose stack, uses the
   first API key, creates an agent and runs a text chat round trip. A GitHub
   Actions workflow runs it on every pull request to `next`.
+- **[core+livekit+pipecat] Recording storage**: `RECORDING_STORAGE_PATH`
+  now also takes `s3://bucket/prefix` (S3 or S3-compatible, with `S3_ENDPOINT`,
+  `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and
+  `S3_FORCE_PATH_STYLE`) and `file:///directory`, beside `gs://`.
+- **[core+livekit+pipecat] Recording without storage**: with
+  `RECORDING_STORAGE_PATH` unset and no Google credentials, a requested
+  recording is skipped with a warning, and recording downloads answer 503.
+  Instances with Google credentials keep the old default bucket, and the start-up
+  log asks for `RECORDING_STORAGE_PATH` to be set.
 
 ## Upgrade notes
 

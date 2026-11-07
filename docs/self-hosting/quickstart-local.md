@@ -65,6 +65,10 @@ The test page is for development only. Never publish it on a public host.
 | `livekit-worker` | none | The LiveKit voice worker. It shares the `livekit` container's network |
 | `ui` | 8080 | The test page, with a proxy to the API |
 
+Recordings go to the `recordings` volume (`RECORDING_STORAGE_PATH=file:///data/recordings`),
+which the worker writes and the API server reads. Set `RECORDING_STORAGE_PATH` in
+`.env` to use an `s3://` or `gs://` bucket instead.
+
 Ports are published on 127.0.0.1. Set `APLISAY_BIND=0.0.0.0` in `.env` to
 publish them on every interface.
 

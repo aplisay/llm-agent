@@ -1,7 +1,7 @@
 import path from 'node:path';
 import logger from './logger.js';
 // JS module imported via tsconfig allowJs; contract documented in lib/recording/CONTRACT.md
-import { uploadEncryptedOgg } from '../agent-lib/recording/index.js';
+import { uploadEncryptedOgg, recordingStorageConfig } from '../agent-lib/recording/index.js';
 
 const RECORDER_IO_FILENAME = 'audio.ogg';
 
@@ -36,4 +36,20 @@ export async function uploadRecorderIOToGcs(
     clientEncryptionKey: options?.clientEncryptionKey,
     logger,
   });
+}
+
+/**
+ * The recording options to use for a call. With no recording storage
+ * configured (agent-lib/recording/storage.js) a requested recording is turned
+ * off, with a warning, instead of failing its upload at the end of the call.
+ */
+export function recordingWhenStorable<T extends { enabled?: boolean } | null | undefined>(options: T): T {
+  if (!options?.enabled) return options;
+  const storage = recordingStorageConfig();
+  if (storage.enabled) return options;
+  logger.warn(
+    { reason: storage.reason },
+    "recording requested but no recording storage is configured: this call is not recorded (set RECORDING_STORAGE_PATH)",
+  );
+  return { ...options, enabled: false };
 }

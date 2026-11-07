@@ -59,6 +59,7 @@ import { userOwnsRow } from "./scope.js";
 import { jobCallMetadata, mergeCallMetadata } from "./call-metadata.js";
 import { writeGoogleCredential } from "./google-credential.js";
 import { clearPlaceholders } from "./env-placeholders.js";
+import { recordingWhenStorable } from "./call-recording.js";
 
 // Types
 import type { RemoteParticipant, Room } from "@livekit/rtc-node";
@@ -466,8 +467,9 @@ export default defineAgent({
       fallbackLoop: for (;;) {
         const fallbackConfig = activeAgent.options?.fallback;
 
-        const activeRecordingOptions =
-          instance.recording ?? activeAgent.options?.recording;
+        const activeRecordingOptions = recordingWhenStorable(
+          instance.recording ?? activeAgent.options?.recording,
+        );
 
         try {
           await runAgentWorker({

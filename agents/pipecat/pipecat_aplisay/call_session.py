@@ -58,6 +58,7 @@ from .prompt_metadata import prompt_with_metadata
 from .constants import BRIDGED_CALL_MODEL, DISCONNECT_REASONS, PLATFORM
 from .pipeline_error_alarm import PipelineErrorAlarm
 from .recording import RecordingSession
+from .recording.storage import recording_storage_config
 from .start_window import DisconnectGate, SessionStartFailed, StartWindow, watch_start_window
 from .sip_gateway.base import (
     GatewaySession,
@@ -3375,6 +3376,14 @@ def _resolve_recording_options(agent: dict, instance: dict) -> _RecordingOptions
     instance_opts = (instance.get("recording") if isinstance(instance, dict) else None) or {}
 
     enabled = instance_opts.get("enabled", agent_opts.get("enabled", False))
+    if enabled:
+        storage = recording_storage_config()
+        if not storage["enabled"]:
+            logger.warning(
+                f"recording requested but no recording storage is configured ({storage['reason']}): "
+                "this call is not recorded; set RECORDING_STORAGE_PATH"
+            )
+            enabled = False
     key = instance_opts.get("key", agent_opts.get("key"))
     if isinstance(key, str) and not key.strip():
         key = None

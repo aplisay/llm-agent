@@ -153,5 +153,19 @@ POSTGRES_PASSWORD=
 # ── Recording and stored audio ────────────────────────────────────────────────
 # Where call recordings and cached fallback messages are kept.
 
-# Where call recordings go: gs://bucket/prefix (Google Cloud Storage).
+# Where call recordings go: gs://bucket/prefix (Google Cloud Storage),
+# s3://bucket/prefix (S3 or an S3-compatible store) or file:///directory (a
+# directory the workers and the API share). Unset means recording is off,
+# except that a process with Google credentials keeps the old default bucket
+# gs://llm-voice/<NODE_ENV>-recordings.
 # RECORDING_STORAGE_PATH=
+
+# Endpoint of an S3-compatible store, for example http://minio:9000. Unset
+# means AWS S3 in S3_REGION.
+# S3_ENDPOINT=
+
+# S3 access key id.
+# S3_ACCESS_KEY_ID=
+
+# S3 secret access key.
+# S3_SECRET_ACCESS_KEY=
