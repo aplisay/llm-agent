@@ -119,6 +119,9 @@ Pipecat), and **ci** (build and release pipeline).
   and never returns a value.
 - **[core] Database settings**: the server exits with a message naming the
   missing `POSTGRES_*` variables instead of an `Invalid URL` error.
+- **[core] Test page**: `tools/test-page` is a small page that talks to a
+  LiveKit agent in the browser. It runs in the compose `ui` profile and is
+  never served by the API server.
 
 ## Upgrade notes
 
