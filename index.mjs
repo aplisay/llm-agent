@@ -13,6 +13,7 @@ import { cleanHandlers } from './lib/handlers/index.js';
 import { buildInfo, describeBuild } from './lib/build-info.js';
 import { listenPort } from './lib/listen-port.js';
 import { clearPlaceholders } from './lib/env-placeholders.js';
+import { writeGoogleCredential } from './lib/google-credential.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
@@ -30,6 +31,12 @@ dotenv.config();
   if (missingDb.length) {
     logger.fatal(`cannot start: set ${missingDb.join(', ')} (see environment-example)`);
     process.exit(1);
+  }
+  const credential = writeGoogleCredential();
+  if (credential.status === 'written') {
+    logger.info({ path: credential.path, bytes: credential.bytes }, 'wrote Google credential');
+  } else if (credential.status === 'failed') {
+    logger.warn(credential, 'could not write the Google credential file');
   }
 }
 

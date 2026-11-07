@@ -63,6 +63,8 @@ def load() -> None:
     key = os.environ.get("SECRETENV_KEY")
     bundle = os.environ.get("SECRETENV_BUNDLE")
     if not key or not bundle:
+        # Plain-environment deploys can pass GOOGLE_CREDENTIAL directly.
+        _materialise_google_credential()
         return
     try:
         parsed = _decrypt(bundle, key)

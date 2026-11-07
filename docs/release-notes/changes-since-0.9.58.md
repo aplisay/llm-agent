@@ -130,6 +130,17 @@ Pipecat), and **ci** (build and release pipeline).
   first API key, and prints the key and the URLs.
 - **[core] `SERVICE_BASE_URI`**: documented as the API server's base URL
   without `/api`, which is what the workers expect.
+- **[ci] Public images**: each `v*` tag builds `aplisay-api`,
+  `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge`
+  for amd64 and arm64, pushes them to `ghcr.io/aplisay` with an SBOM, and
+  publishes a GitHub Release from `docs/release-notes/<tag>.md`.
+- **[core] API image credential**: an image built without secretenv build
+  args carries no `credentials/google.json`. The server writes the file at
+  start from `GOOGLE_CREDENTIAL` when it is missing. Builds with the args are
+  unchanged.
+- **[pipecat] Google credential file**: written from `GOOGLE_CREDENTIAL` at
+  start without a secretenv bundle too.
+- **[sipbridge] arm64 image**: the build now compiles for the target platform.
 
 ## Upgrade notes
 

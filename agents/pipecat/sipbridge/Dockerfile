@@ -26,8 +26,10 @@ RUN go mod download
 COPY agents/pipecat/sipbridge/ .
 
 ARG VERSION=dev
-# TARGETARCH is auto-set by BuildKit but unset on the legacy builder, so default
-# it to amd64 (Cloud Build's architecture).
+# TARGETARCH is set by BuildKit, but only inside a stage that declares it. The
+# legacy builder leaves it empty, so default it to amd64 (Cloud Build's
+# architecture).
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \

@@ -34,7 +34,7 @@ ARG SECRETENV_KEY
 ENV SECRETENV_BUNDLE=$SECRETENV_BUNDLE SECRETENV_KEY=$SECRETENV_KEY
 COPY . .
 RUN mkdir -p credentials
-RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
+RUN if [ -n "$SECRETENV_BUNDLE" ]; then npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json; fi
 CMD [ "yarn", "test" ]
 
 # --------------------------------------------------------------------------
@@ -46,6 +46,10 @@ CMD [ "yarn", "test" ]
 # `npx secretenv` runs AFTER `COPY . .` so the credentials it writes are
 # rebuilt on every commit and can never be served from a stale cache layer.
 # credentials/ is gitignored, so the COPY cannot clobber the generated file.
+#
+# A build with no SECRETENV_BUNDLE arg (the public images) writes no
+# credential file at all. The server then writes it at start from a
+# GOOGLE_CREDENTIAL env var, if one is set (lib/google-credential.js).
 # --------------------------------------------------------------------------
 FROM deps AS runtime
 ARG SECRETENV_BUNDLE
@@ -59,7 +63,7 @@ ENV BUILD_COMMIT=$COMMIT_SHA BUILD_BRANCH=$BRANCH_NAME BUILD_TAG=$TAG_NAME
 EXPOSE $PORT
 COPY . .
 RUN mkdir -p credentials
-RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
+RUN if [ -n "$SECRETENV_BUNDLE" ]; then npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json; fi
 # The API imports the LiveKit worker's compiled model registry. Compile it here,
 # once, instead of in `prestart` on every container start; prestart skips the
 # build when LIVEKIT_WORKER_PREBUILT is set and the output is present.
