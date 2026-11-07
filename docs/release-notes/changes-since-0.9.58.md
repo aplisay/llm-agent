@@ -92,6 +92,9 @@ Pipecat), and **ci** (build and release pipeline).
   build command.
 - **[core+livekit] `bundle-secretenv.sh`** uses the repo's installed secretenv,
   and its `npx` fallback is pinned to `v1.0.5`.
+- **[core] Repository tidy**: removed `API.md` (stale generated JSDoc; the
+  OpenAPI document `api/api-doc.yaml` is the reference), `agent.json`,
+  `websocket-monitor.js` and the unused `uk-number-validator` submodule.
 
 ## Upgrade notes
 

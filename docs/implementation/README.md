@@ -2,8 +2,7 @@
 
 Internal engineering design docs, plans, and decision records for llm-agent —
 **how things are built and why**. These are *not* user-facing API documentation
-(the OpenAPI spec under `api/` and the generated `API.md` cover the public
-surface).
+(the OpenAPI spec, `api/api-doc.yaml`, covers the public surface).
 
 Docs may be **DRAFT / awaiting review** and describe work that is not yet
 implemented — each states its status at the top.
