@@ -10,6 +10,7 @@ Call recording is implemented entirely in the LLM Agent backend:
 
 - When recording is enabled, the worker record agent interactions as **stereo OGG/Opus** transiently within the worker, then then encrypts and uploads this to a storage bucket. Recordings are encrypted at rest. 
 - Recording is controlled at agent and instance level (see below). The `key` option controls who holds the encryption key (client or server).
+- On a self-hosted instance, `RECORDING_STORAGE_PATH` says where recordings go: `gs://bucket/prefix` (Google Cloud Storage), `s3://bucket/prefix` (S3 or an S3-compatible store, with the `S3_*` settings) or `file:///directory` (a directory the workers and the API server share; the compose stack uses a volume). With no storage configured, a requested recording is skipped and the worker logs why. See [configuration.md](self-hosting/configuration.md#recording-and-stored-audio).
 
 You control recording behaviour at:
 

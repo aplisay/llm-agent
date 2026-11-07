@@ -50,14 +50,24 @@ Two modes:
 Both implementations derive the key identically so a recording made by one
 agent is decryptable by the other.
 
-## GCS object naming
+## Storage and object naming
 
 ```
 ${RECORDING_STORAGE_PATH}/${callId}.ogg
 ```
 
-- `RECORDING_STORAGE_PATH` is a `gs://bucket[/prefix]` URL.
-- When unset, default is `gs://llm-voice/${NODE_ENV || 'development'}-recordings`.
+- `RECORDING_STORAGE_PATH` picks the store: `gs://bucket[/prefix]` (GCS),
+  `s3://bucket[/prefix]` (S3 or S3-compatible, with `S3_ENDPOINT`,
+  `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`,
+  `S3_FORCE_PATH_STYLE`) or `file:///directory`. `storage.js` and
+  `storage.py` hold the rules.
+- When unset, recording is off, except that a process with Google
+  credentials (`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CREDENTIAL`, Cloud
+  Run's `K_SERVICE`, or a non-empty `credentials/google.json`) keeps the old
+  default `gs://llm-voice/${NODE_ENV || 'development'}-recordings`, which
+  deployments made before the setting existed rely on.
+- The recording id stored on the call is the object name. For `file://` it is
+  relative to the directory.
 - The agent always uses the **primary** `callId` (i.e. the inbound leg id —
   never the bridged child id).
 

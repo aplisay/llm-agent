@@ -506,6 +506,6 @@ hook came from, with no user session:
 
 ## Related Documentation
 
-- [API Documentation](../API.md) - Full API reference including call hook configuration
+- [API reference](../api/api-doc.yaml) - The OpenAPI document, including call hook configuration
 - [Phone Endpoints API](./phone-endpoints-api.md) - Configuring phone endpoints for agents
 

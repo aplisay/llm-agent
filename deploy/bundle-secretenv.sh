@@ -34,7 +34,10 @@
 #   - gcloud (gcp target) / kubectl (k8s target), openssl (key), node (+ npx)
 #   - the encryption uses the repo's local `secretenv` (node_modules) when
 #     present, so the bundle is wire-identical to what the container decrypts;
-#     otherwise it pulls github:rjp44/secretenv via npx.
+#     otherwise it pulls github:rjp44/secretenv#v1.0.5 via npx.
+#
+# secretenv is optional. Every image also runs from plain environment
+# variables; this script is only for deploys that ship one encrypted bundle.
 
 set -euo pipefail
 
@@ -213,11 +216,14 @@ export SECRETENV_KEY
 
 encrypt_bundle() {
     local file="$1"
-    if [ -f "$REPO_ROOT/node_modules/secretenv/bin/secretenv.js" ]; then
+    # package.json installs secretenv under the name dotenv.
+    if [ -f "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" ]; then
+        node "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" -p "$file" -e 2>/dev/null
+    elif [ -f "$REPO_ROOT/node_modules/secretenv/bin/secretenv.js" ]; then
         node "$REPO_ROOT/node_modules/secretenv/bin/secretenv.js" -p "$file" -e 2>/dev/null
     else
-        command -v npx >/dev/null 2>&1 || { echo -e "${RED}npx not found and no local node_modules/secretenv${NC}" >&2; exit 3; }
-        npx --yes --quiet -p github:rjp44/secretenv secretenv -p "$file" -e 2>/dev/null
+        command -v npx >/dev/null 2>&1 || { echo -e "${RED}npx not found and no local secretenv in node_modules${NC}" >&2; exit 3; }
+        npx --yes --quiet -p github:rjp44/secretenv#v1.0.5 secretenv -p "$file" -e 2>/dev/null
     fi
 }
 

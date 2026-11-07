@@ -1,269 +1,171 @@
-OPENAI_API_KEY=<YOUR OPENAI KEY>
-OPENAI_MODEL=gpt-3.5-turbo
-GOOGLE_PROJECT_ID=<YOUR GOOGLE PROJECT ID>
-GOOGLE_PROJECT_LOCATION="us-central1"
-GOOGLE_APPLICATION_CREDENTIALS=<PATH TO CREDENTIAL JSON FILE>
-JAMBONZ_SERVER=<JAMBONZ API SERVER HOSTNAME>, usually api.server.name
-JAMBONZ_API_KEY=<JAMBONZ API SERVER HOSTNAME>
-JAMBONZ_AGENT_NAME=<THIS SERVER DNS NAME>
-# First API key for a new instance (docs/running.md, "First API key"). On a
-# database with no users the server creates one organisation, one superAdmin
-# user and this key when it starts. Ignored once any user exists. 32 characters
-# or more: `openssl rand -base64 32`. Or leave it unset and run `yarn bootstrap`.
-# BOOTSTRAP_API_KEY=<RANDOM SECRET>
-
-# Shared token for internal API communication between services (the voice
-# workers send it as x-shared-token). It gives full access to every route, so
-# never use a guessable value: `openssl rand -base64 32`
-# SHARED_API_TOKEN=<RANDOM SECRET>
-
-# Base URI for the main LLM agent API service
-SERVICE_BASE_URI=http://localhost:5000/api
-
-# ── Better-Auth (parallel to Firebase — Phase 0 WIP) ────────────────────────
-# Off by default: when unset/!= "true" the better-auth package is never loaded
-# and auth behaves exactly as before (Firebase + AuthKey + instance + shared).
-BETTER_AUTH_ENABLED=true
-# Random 32+ char secret: `openssl rand -base64 32`
-BETTER_AUTH_SECRET=<RANDOM SECRET>
-# Public base URL of THIS api service (used to build OAuth callback URLs)
-BETTER_AUTH_URL=http://localhost:4000
-# Comma-separated SPA origins allowed to call the auth endpoints
-BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:3000
-# Mirror Firebase's verified-email gate (default false for easy WIP testing)
-BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=false
-# Google OAuth (server-side) — create credentials with redirect URI
-#   <BETTER_AUTH_URL>/api/auth/callback/google
-BETTER_AUTH_GOOGLE_CLIENT_ID=<GOOGLE OAUTH CLIENT ID>
-BETTER_AUTH_GOOGLE_CLIENT_SECRET=<GOOGLE OAUTH CLIENT SECRET>
+# Example environment for the API server. Copy it to .env and edit it.
 #
-# Better-Auth owns its satellite tables (session/account/verification); create
-# them once against this DB with:  npx @better-auth/cli@latest migrate
-# The shared `users` table stays Sequelize-owned (do NOT let the CLI alter it).
+# Generated from config/env.schema.json by `yarn env:generate`. Edit the
+# schema, not this file. docs/self-hosting/configuration.md describes every
+# variable, including the ones not listed here.
 #
-# NOTE: BETTER_AUTH_TRUSTED_ORIGINS must include the polite-ai origin whose
-# /confirmed page is the waitlist verification callbackURL (e.g.
-# http://localhost:5173 in dev, https://polite.ai in prod) or the post-verify
-# redirect is origin-rejected.
-#
-# Per-user rate limiting for BFF-proxied auth traffic: the polite-ai BFF
-# forwards the END-USER's IP as `x-client-ip`, authenticated by this shared
-# secret in `x-auth-proxy-secret` (same value in polite-ai's AUTH_PROXY_SECRET).
-# Unset => the header is always stripped and BFF traffic shares one rate bucket.
-# AUTH_PROXY_SECRET=<RANDOM SECRET, `openssl rand -base64 32`>
-#
-# Budgets for the endpoints that send email (/request-password-reset,
-# /send-verification-email): per submitted ADDRESS (hourly/daily, the
-# inbox-bombing guard) and a GLOBAL hourly circuit-breaker for the smtp2go
-# quota. Enforced pre-lookup, uniform 429 — never an enumeration oracle.
-# Counter table is auto-created on the auth DB; no migration step. Defaults:
-# AUTH_EMAIL_PER_ADDRESS_HOURLY=3
-# AUTH_EMAIL_PER_ADDRESS_DAILY=10
-# AUTH_EMAIL_GLOBAL_HOURLY=250
+# A value written as <...> is treated as unset, with a warning at start.
+# Settings for user sign-up and email are in environment-example.polite-ai.
 
-# ── Waitlist (polite.ai coming-soon) ────────────────────────────────────────
-# Where better-auth redirects after the waitlist confirmation link is clicked
-# (polite-ai's ${SITE_URL}/confirmed). On success it redirects with no query;
-# on failure it appends ?error=<code>.
-WAITLIST_CALLBACK_URL=http://localhost:5173/confirmed
+# ── Core service ──────────────────────────────────────────────────────────────
+# Listen port, logging and how the services find each other.
 
-# ── polite-ai origin (Google sign-in hand-off) ──────────────────────────────
-# The EXACT public origin of the polite-ai app; /api/oauth-handoff will deliver
-# one-time session tokens ONLY to ${POLITE_SITE_URL}/auth/google/callback
-# (deliberately NOT the trusted-origins list — that also carries the playground
-# origin). Falls back to WAITLIST_CALLBACK_URL's origin when unset.
-POLITE_SITE_URL=http://localhost:5173
+# HTTP and WebSocket listen port. Wins over PORT when both are set.
+# WS_PORT=4000
 
-# ── Admin gate for the /api/users management routes ─────────────────────────
-# Comma-separated user ids allowed to call the admin /api/users list/create/
-# modify routes. The public POST /api/users/signup is ungated. Empty => only the
-# internal x-shared-token principal counts as admin. Swap for RBAC later.
-ADMIN_USER_IDS=
-
-# ── Outbound email (@aplisay/email) — used by the verification/reset hooks ───
-# With EMAIL_SEND_TYPE unset, emails are logged to the console (dev/preview).
-EMAIL_SEND_TYPE=smtp2go
-# Optional endpoint override (defaults to the SMTP2GO public API):
-# EMAIL_SEND_URL=https://api.smtp2go.com/v3/email/send
-EMAIL_SEND_KEY=<SMTP2GO API KEY>
-EMAIL_FROM_ADDRESS=hello@aplisay.com
-EMAIL_FROM_NAME="polite.ai"
-
-# Sender personas for the verification/reset emails (lib/auth/email-brands.js).
-# The caller names one per request with `x-email-brand`; the persona supplies the
-# sender, the product name, the tagline and — optionally — the whole copy, so a
-# front end can speak in its own voice without a change in this repo. Unset =
-# the addresses above plus the built-in product-neutral wording. Either a path to
-# a JSON document (mounted Secret/ConfigMap, preferred) or the same JSON inline;
-# a persona without a `from` is ignored, and any parse error degrades to the
-# built-ins rather than failing the boot.
-# EMAIL_BRANDS_FILE=/etc/llm-agent/email-brands.json
-# EMAIL_BRANDS={"default":"aplisay","brands":{"aplisay":{"from":"hello@aplisay.com"},"example":{"from":"hello@example.com","fromName":"Example","productName":"Example","tagline":"Your tagline here."}}}
-
-# ── Core service ─────────────────────────────────────────────────────────────
-# HTTP/WS listen port for this API service (also the better-auth baseURL
-# fallback port when BETTER_AUTH_URL is unset).
-WS_PORT=4000
-# pino log level: fatal | error | warn | info | debug | trace
+# Log level: fatal, error, warn, info, debug or trace.
 LOGLEVEL=info
-# Include the private /agent-db surface in the published OpenAPI doc.
-# Leave unset in production.
-# EXPOSE_PRIVATE_APIS=false
 
-# ── Database (PostgreSQL / Sequelize) ────────────────────────────────────────
+# Base URL of the API server, without /api (for example
+# http://localhost:4000), that the voice workers call back to.
+# SERVICE_BASE_URI=http://localhost:4000
+
+# Token the voice workers send to the API as x-shared-token. It gives full
+# access to every route, so use a long random value (openssl rand -hex 32).
+# Needed when you run a worker.
+# SHARED_API_TOKEN=
+
+# ── Access and secrets ────────────────────────────────────────────────────────
+# The first API key and encryption of stored secrets.
+
+# First API key for a new instance. On a database with no users the server
+# creates one organisation, one superAdmin user and this key at start. Ignored
+# once any user exists. 32 characters or more. Or leave it unset and run yarn
+# bootstrap.
+# BOOTSTRAP_API_KEY=
+
+# Key that encrypts stored SIP passwords and agent key material. Unset means
+# they are stored in plain text, with a warning. Set it in every real
+# deployment (openssl rand -base64 32) and never change it once data exists.
+# CREDENTIALS_KEY=
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# PostgreSQL connection. The API server and the Jambonz worker connect
+# directly.
+
+# Database host.
 POSTGRES_HOST=localhost
+
+# Database port.
 POSTGRES_PORT=5432
+
+# Database name.
 POSTGRES_DB=llmvoice
-POSTGRES_USER=<DB USER>
-POSTGRES_PASSWORD=<DB PASSWORD>
-# TLS / mTLS (Cloud SQL-style): CA + client cert/key as inline PEM, and the
-# server name the certificate is verified against when dialling by IP.
-# POSTGRES_CA=
-# POSTGRES_CERT=
-# POSTGRES_KEY=
-# POSTGRES_RO_SERVER_NAME=
-# Sequelize pool, per process. Every API instance (and jambonz-agent) opens up
-# to POSTGRES_POOL_MAX connections to the same database, plus one for
-# pg-listen, so check instances x (max + 1) against the Cloud SQL
-# max_connections before raising it. See docs/db-pool-and-bulk-reads.md.
-# POSTGRES_POOL_MAX=5
-# POSTGRES_POOL_MIN=0
-# POSTGRES_POOL_ACQUIRE_MS=60000
-# POSTGRES_POOL_IDLE_MS=10000
-# Bulk call-log reads (GET /api/calls/{id}/logs and /invocation-log) in flight
-# per process. Always clamped below POSTGRES_POOL_MAX so they can never hold
-# the whole pool. Over the cap a request waits CALL_LOG_QUEUE_WAIT_MS for a
-# slot (at most CALL_LOG_QUEUE_MAX waiting), then gets 503 with Retry-After.
-# CALL_LOG_MAX_CONCURRENT=2
-# CALL_LOG_QUEUE_WAIT_MS=2000
-# CALL_LOG_QUEUE_MAX=8
-# DANGER: forces a full sequelize sync on boot (already implied when
-# NODE_ENV=development). Never set in production — schema upgrades run
-# automatically via the internal schema-version gate.
-# DB_FORCE_SYNC=false
 
-# ── Secrets at rest ──────────────────────────────────────────────────────────
-# Encryption key for stored credentials (SIP registration passwords, agent key
-# material). If UNSET those secrets are stored in PLAINTEXT (a warning is
-# logged) — set it in every real deployment: `openssl rand -base64 32`
-CREDENTIALS_KEY=<RANDOM SECRET>
+# Database user.
+POSTGRES_USER=llm
 
-# ── Model / voice providers (enable the ones this deployment uses) ──────────
-ANTHROPIC_API_KEY=<YOUR ANTHROPIC KEY>
+# Database password. Use letters and digits only: it is also placed in a
+# connection URL without escaping.
+POSTGRES_PASSWORD=
+
+# ── Model providers ───────────────────────────────────────────────────────────
+# Set at least one. A provider whose key is unset is not listed in GET
+# /models.
+
+# OpenAI key: text models, and OpenAI Realtime and GPT-Live on the voice
+# workers.
+# OPENAI_API_KEY=
+
+# Anthropic key: Claude text models.
+# ANTHROPIC_API_KEY=
+
+# Google AI Studio key: Gemini text models, and Gemini Live on the LiveKit
+# worker.
+# GOOGLE_API_KEY=
+
+# Ultravox key: the Ultravox runtime (no worker needed) and Ultravox rows on
+# the voice workers.
 # ULTRAVOX_API_KEY=
-# ElevenLabs: the TTS vendor on pipeline rows and the ElevenLabs Agents rows
-# (docs/elevenlabs-agents.md); the server lists voices with it.
-# ELEVENLABS_API_KEY=
-# DEEPSEEK_KEY=
-# KIMI_KEY=
-# OPENROUTER_KEY=
-# xAI Grok text models and the Grok voice model (docs/grok.md). The older
-# GROK_API_KEY name is accepted as a fallback.
+
+# xAI key: Grok text models and the Grok voice rows.
 # XAI_API_KEY=
-# Neuphonic TTS (docs/neuphonic.md): the server lists voices with it and the
-# LiveKit worker speaks with it.
-# NEUPHONIC_API_KEY=
-# Cartesia TTS: the server lists voices with it and both workers speak with it.
+
+# DeepSeek key: DeepSeek text models.
+# DEEPSEEK_KEY=
+
+# Moonshot key: Kimi text models.
+# KIMI_KEY=
+
+# OpenRouter key: OpenRouter text models.
+# OPENROUTER_KEY=
+
+# ElevenLabs key: TTS on pipeline rows, ElevenLabs Agents rows, and the voice
+# list.
+# ELEVENLABS_API_KEY=
+
+# ── Speech providers ──────────────────────────────────────────────────────────
+# Speech-to-text and text-to-speech for pipeline (STT, LLM, TTS) rows.
+# Speech-to-speech rows do not need them.
+
+# Deepgram key: speech-to-text on pipeline rows.
+# DEEPGRAM_API_KEY=
+
+# Cartesia key: text-to-speech, and the voice list.
 # CARTESIA_API_KEY=
-# TypeSafe Jev decision model (docs/typesafe-jev.md), the text:typesafe/ rows.
-# Direct route: TYPESAFE_API_KEY. OpenRouter route: set TYPESAFE_BASE_URL to
-# https://openrouter.ai/api and the driver uses OPENROUTER_KEY when
-# TYPESAFE_API_KEY is unset. The row is not advertised without a usable key.
-# TYPESAFE_API_KEY=
-# TYPESAFE_BASE_URL=https://api.typesafe.ai
-# Whole budget of one decision, including its one retry, in milliseconds.
-# TYPESAFE_TIMEOUT_MS=5000
 
-# ── LiveKit handler ──────────────────────────────────────────────────────────
-LIVEKIT_URL=wss://<your-livekit-host>
-LIVEKIT_API_KEY=<LIVEKIT API KEY>
-LIVEKIT_API_SECRET=<LIVEKIT API SECRET>
+# Neuphonic key: text-to-speech, and the voice list.
+# NEUPHONIC_API_KEY=
 
-# ── Pipecat handler ──────────────────────────────────────────────────────────
-# PIPECAT_WORKER_URL=          # worker dispatch endpoint
-# PIPECAT_DISPATCH_TOKEN=      # bearer token for dispatch calls
-# PIPECAT_JOIN_SECRET=         # shared secret for join callbacks
-# PIPECAT_PUBLIC_URL=          # public URL handed to the worker for callbacks
-# Real Trunk.id pipecat outbound/carried legs egress on (billing attribution AND
-# outbound destination authorisation — docs/outbound-call-authorisation.md). Set the
-# same value here and on both voice workers.
-# APLISAY_OUTBOUND_TRUNK_ID=
+# ── LiveKit runtime ───────────────────────────────────────────────────────────
+# LiveKit Cloud or a self-hosted LiveKit server. Unset means the livekit
+# models are not listed.
 
-# ── Call recordings ──────────────────────────────────────────────────────────
-# GCS location for call recordings (gs://bucket/prefix). Defaults to
-# gs://llm-voice/<NODE_ENV>-recordings when unset.
+# LiveKit server URL (wss://...). Browsers connect to it too, so it must be
+# reachable from them.
+# LIVEKIT_URL=
+
+# LiveKit API key.
+# LIVEKIT_API_KEY=
+
+# LiveKit API secret.
+# LIVEKIT_API_SECRET=
+
+# ── Pipecat runtime ───────────────────────────────────────────────────────────
+# The Pipecat worker. Unset means the pipecat models are not listed.
+
+# URL the API dispatches Pipecat sessions to.
+# PIPECAT_WORKER_URL=
+
+# Bearer token on dispatch calls. Same value on the API and the worker.
+# PIPECAT_DISPATCH_TOKEN=
+
+# Secret that signs browser join requests. Same value on the API and the
+# worker.
+# PIPECAT_JOIN_SECRET=
+
+# Public URL of the Pipecat worker that browsers connect to.
+# PIPECAT_PUBLIC_URL=
+
+# ── Jambonz runtime ───────────────────────────────────────────────────────────
+# An external Jambonz cluster for SIP calls. Unset means the jambonz models
+# are not listed.
+
+# Jambonz API host name.
+# JAMBONZ_SERVER=
+
+# Jambonz API key.
+# JAMBONZ_API_KEY=
+
+# Public DNS name of the Jambonz worker that Jambonz calls back to.
+# JAMBONZ_AGENT_NAME=
+
+# ── Recording and stored audio ────────────────────────────────────────────────
+# Where call recordings and cached fallback messages are kept.
+
+# Where call recordings go: gs://bucket/prefix (Google Cloud Storage),
+# s3://bucket/prefix (S3 or an S3-compatible store) or file:///directory (a
+# directory the workers and the API share). Unset means recording is off,
+# except that a process with Google credentials keeps the old default bucket
+# gs://llm-voice/<NODE_ENV>-recordings.
 # RECORDING_STORAGE_PATH=
 
-# ── Agent-set builder (dashboard "builder" feature) ──────────────────────────
-# SET_BUILDER_MODEL=text:anthropic/claude-opus-4-8
-# SET_BUILDER_MCP_URL=https://mcp-next.aplisay.com/mcp
-# SET_BUILDER_MAX_TOKENS=32768
+# Endpoint of an S3-compatible store, for example http://minio:9000. Unset
+# means AWS S3 in S3_REGION.
+# S3_ENDPOINT=
 
-# ── Concurrency limits ───────────────────────────────────────────────────────
-# Backend for per-user/org agent-concurrency counting: sql (default) | redis
-# (the redis store is a placeholder — keep sql).
-# AGENT_CONCURRENCY_STORE=sql
+# S3 access key id.
+# S3_ACCESS_KEY_ID=
 
-# ── Tuning (defaults are sensible; override only with cause) ─────────────────
-# MAX_TOKENS=1024                 # OpenAI completion cap
-# ANTHROPIC_MAX_RETRIES=          # Anthropic SDK retry count
-# ANTHROPIC_REQUEST_TIMEOUT_MS=   # Anthropic request timeout
-# TEXT_CHAT_MAX_TOOL_HOPS=        # text-chat tool-call recursion cap
-# TEXT_CHAT_PENDING_TTL_MS=       # pending text-chat session TTL
-# SUBAGENT_TIMEOUT=60000          # agent-invoke/subagent timeout (ms)
-
-# ── b2bua node API (SIP traces and registration probes) ─────────────────────
-# The regclient b2bua exposes a small authenticated HTTPS API per node. The API
-# proxies to it for GET /phone-endpoints/{id}/trace and the probe routes, using
-# phone_registrations.b2bua_id to find the node that owns each registration.
-# Leave REGCLIENT_API_TOKEN unset to disable those routes (they answer 503).
-# REGCLIENT_API_TOKEN=<shared with the node secretenv bundle>
-# REGCLIENT_API_PORT=8443
-# Public certificate of the private CA that signs node certificates. PEM, or
-# base64 of a PEM. Required unless REGCLIENT_API_INSECURE=1.
-# REGCLIENT_CA_CERT=
-# TRACE_PROXY_TIMEOUT_MS=2000     # hard per-request timeout; no retries
-# Which node runs which stack is normally known rather than discovered: each
-# regclient node reports itself to POST /api/agent-db/b2bua-nodes once a minute
-# (authenticated with SHARED_API_TOKEN above). A node that has never announced
-# itself is classified from the request instead — only regclient can present a
-# certificate our CA signed — reported as 501 rather than 504, and cached, so it
-# costs one short attempt per node rather than a timeout per call.
-# REGCLIENT_DISCOVERY_TIMEOUT_MS=750    # bound on the first try to an unknown node
-# REGCLIENT_CAPABILITY_TTL_MS=600000    # how long "serves traces" is remembered
-# REGCLIENT_UNSUPPORTED_TTL_MS=60000    # how long "does not" is remembered
-# Nodes able to run a probe for a registration no node has claimed yet.
-# Optional override; by default an unclaimed registration is probed on the least loaded
-# regclient node that has heartbeated recently (b2bua_nodes).
-# REGCLIENT_PROBE_NODES=
-# Optional pin: only these node addresses may be contacted at all.
-# REGCLIENT_NODE_ALLOWLIST=
-# Allow node addresses in private ranges (compose/kind); public IPs only by
-# default. Link-local is never allowed.
-# REGCLIENT_ALLOW_PRIVATE_NODES=0
-# Dev only: skip TLS verification (and, with REGCLIENT_API_SCHEME=http, TLS).
-# REGCLIENT_API_INSECURE=0
-
-# ── Registrar accounts (regserver) ──────────────────────────────────────────
-# The name customers' PBXes register to, which is also the digest realm on every
-# registrar-mode phone registration this deployment issues (a bare hostname; the
-# port is always 5061, TLS). Unset, registrar accounts cannot be created (503,
-# code registrar_unavailable). Permanent once the first account exists: the
-# realm is what every PBX hashes its password against. Design:
-# aplisay-strategy implementation/regserver-tactical-spec.md.
-# REGSERVER_REGISTRAR=sip.polite.ai
-
-# ── Number administration (tools/number.js — manual admin script only) ──────
-# Magrathea carrier credentials + SIP ingress hosts for bulk/manual number
-# maintenance. NOT read by the API service itself; the self-service Buy-number
-# flow (and its copies of these values) lives in polite-ai.
-# MAGRATHEA_USERNAME=
-# MAGRATHEA_PASSWORD=
-# JAMBONZ_SIP_ENDPOINT=
-# LIVEKIT_SIP_ENDPOINT=
-# ── Call log rate limit ─────────────────────────────────────────────────────
-# Per-principal cap on GET /api/calls/{id}/logs and /invocation-log (both
-# paths share one bucket per user; an API key counts as its owner). Over the
-# cap the API answers 429 with a Retry-After header. Counted per API instance.
-# CALL_LOG_RATE_LIMIT=60
-# CALL_LOG_RATE_WINDOW_MS=60000
+# S3 secret access key.
+# S3_SECRET_ACCESS_KEY=

@@ -128,3 +128,11 @@ def test_materialise_google_credential_json_fallback(clean_google_env, monkeypat
     secretenv._materialise_google_credential()
 
     assert dest.read_text(encoding="utf-8") == '{"from":"json"}'
+
+
+def test_load_without_bundle_still_materialises_google_credential(clean_env, clean_google_env, monkeypatch, tmp_path):
+    target = tmp_path / "credentials" / "google.json"
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(target))
+    monkeypatch.setenv("GOOGLE_CREDENTIAL", '{"type": "service_account"}')
+    secretenv.load()
+    assert target.read_text() == '{"type": "service_account"}'

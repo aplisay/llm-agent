@@ -34,7 +34,11 @@ describe('POST /calls/prune', () => {
     }),
   };
 
+  const savedStoragePath = process.env.RECORDING_STORAGE_PATH;
+
   beforeAll(async () => {
+    // Pin the GCS back end, whose client the fake replaces.
+    process.env.RECORDING_STORAGE_PATH = 'gs://prune-test-bucket/recordings';
     await setupRealDatabase();
     await databaseStarted;
     const mod = await import('../api/paths/calls/prune.js');
@@ -56,6 +60,8 @@ describe('POST /calls/prune', () => {
   }, 30000);
 
   afterAll(async () => {
+    if (savedStoragePath === undefined) delete process.env.RECORDING_STORAGE_PATH;
+    else process.env.RECORDING_STORAGE_PATH = savedStoragePath;
     setStorageFactory(null);
     await teardownRealDatabase();
   }, 60000);

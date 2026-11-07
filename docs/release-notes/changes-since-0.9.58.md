@@ -60,7 +60,7 @@ Pipecat), and **ci** (build and release pipeline).
   record, as for Ultravox, GPT-Live, Grok voice and ElevenLabs Agents. The
   in-place swap kept the outgoing agent's prompt and tools.
 
-## Self-hosting - core
+## Self-hosting - core+livekit+pipecat+sipbridge+ci
 
 - **[core] `AUTHENTICATE_USERS=NO`**: removed. Every request now needs an API
   key. The setting is ignored, with a warning at start. In 0.9.58 it answered
@@ -76,6 +76,87 @@ Pipecat), and **ci** (build and release pipeline).
   instance that uses API keys alone needs neither the package nor Google
   credentials. On an instance with no Firebase project, an unknown token
   answers 401 `Authentication error: unknown API key or token`.
+- **[core+livekit] Node version**: both `package.json` files declare Node 22
+  or later in `engines`, and `.nvmrc` names 22. Node 22 LTS and 24 are
+  supported; Node 23 is not, because the test tools refuse to install on it.
+- **[core] `yarn auth:migrate`** and `yarn auth:generate` fetch
+  `@better-auth/cli` on demand, so a default install no longer builds
+  `better-sqlite3`.
+- **[core+livekit] LiveKit worker scripts**: `yarn livekit-dev` (repo root),
+  and `yarn start`, `yarn stage` and `yarn develop` in `agents/livekit`, now
+  start the worker. `yarn livekit-dev` reads the repo-root `.env`. A Linux
+  checkout can now run the worker from source.
+- **[core] Plain environment**: every image runs from plain environment
+  variables; a `SECRETENV_KEY`/`SECRETENV_BUNDLE` pair is optional. See
+  [running.md](../running.md#deploying), which now also gives each image's
+  build command.
+- **[core+livekit] `bundle-secretenv.sh`** uses the repo's installed secretenv,
+  and its `npx` fallback is pinned to `v1.0.5`.
+- **[core] Repository tidy**: removed `API.md` (stale generated JSDoc; the
+  OpenAPI document `api/api-doc.yaml` is the reference), `agent.json`,
+  `websocket-monitor.js` and the unused `uk-number-validator` submodule.
+- **[core] Listen port**: the API server reads `PORT` when `WS_PORT` is unset,
+  so it listens where Cloud Run, Kubernetes and most container platforms
+  expect. `WS_PORT` still wins when both are set.
+- **[core] API image start-up**: the image compiles the LiveKit model registry
+  at build time, so a container no longer runs a TypeScript build on every
+  start.
+- **[core] `environment-example`**: rebuilt as a short template with every
+  provider commented out and no placeholder strings. User sign-up and email are
+  off; their settings moved to `environment-example.polite-ai`.
+  `SERVICE_BASE_URI` now names port 4000.
+- **[core] `config/env.schema.json`**: one entry per environment variable the
+  API server, both voice workers and sipbridge read. `yarn env:generate` builds
+  the templates and the new
+  [configuration reference](../self-hosting/configuration.md) from it.
+- **[core+livekit] Placeholder values**: a value written as `<...>` is treated
+  as unset, with a warning at start.
+- **[core] `yarn doctor`**: lists each runtime and provider as enabled or
+  disabled, names what a disabled one is missing, and checks the database.
+  The server logs the same table at start.
+- **[core] `GET /api/health`**: needs no API key. Returns the same table as
+  JSON, and 503 when the database does not answer. It names unset variables
+  and never returns a value.
+- **[core] Database settings**: the server exits with a message naming the
+  missing `POSTGRES_*` variables instead of an `Invalid URL` error.
+- **[core] Test page**: `tools/test-page` is a small page that talks to a
+  LiveKit agent in the browser. It runs in the compose `ui` profile and is
+  never served by the API server.
+- **[core+livekit] `compose.yaml`**: `docker compose up` starts PostgreSQL,
+  the API server, a LiveKit server, the LiveKit worker and the test page, with
+  ports on 127.0.0.1. Optional `sip-livekit` and `edge` (Caddy) profiles. See
+  [quickstart-local.md](../self-hosting/quickstart-local.md).
+- **[core] `scripts/compose-setup.sh`** writes `.env` with random secrets and a
+  first API key, and prints the key and the URLs.
+- **[core] `SERVICE_BASE_URI`**: documented as the API server's base URL
+  without `/api`, which is what the workers expect.
+- **[ci] Public images**: when the repository variable
+  `PUBLISH_PUBLIC_IMAGES` is `true`, each `v*` tag builds `aplisay-api`,
+  `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge`
+  for amd64 and arm64, pushes them to `ghcr.io/aplisay` with an SBOM, and
+  publishes a GitHub Release from `docs/release-notes/<tag>.md`.
+- **[core] API image credential**: an image built without secretenv build
+  args carries no `credentials/google.json`. The server writes the file at
+  start from `GOOGLE_CREDENTIAL` when it is missing. Builds with the args are
+  unchanged.
+- **[pipecat] Google credential file**: written from `GOOGLE_CREDENTIAL` at
+  start without a secretenv bundle too.
+- **[sipbridge] arm64 image**: the build now compiles for the target platform.
+- **[core] `APLISAY_STUB_MODEL`**: set to `1` to list `text:stub/echo`, a text
+  model that repeats its input and needs no provider key. For smoke tests
+  only. Unset, the model is neither listed nor usable.
+- **[ci] Smoke test**: `scripts/smoke.sh` starts the compose stack, uses the
+  first API key, creates an agent and runs a text chat round trip. A GitHub
+  Actions workflow runs it on every pull request to `next`.
+- **[core+livekit+pipecat] Recording storage**: `RECORDING_STORAGE_PATH`
+  now also takes `s3://bucket/prefix` (S3 or S3-compatible, with `S3_ENDPOINT`,
+  `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and
+  `S3_FORCE_PATH_STYLE`) and `file:///directory`, beside `gs://`.
+- **[core+livekit+pipecat] Recording without storage**: with
+  `RECORDING_STORAGE_PATH` unset and no Google credentials, a requested
+  recording is skipped with a warning, and recording downloads answer 503.
+  Instances with Google credentials keep the old default bucket, and the start-up
+  log asks for `RECORDING_STORAGE_PATH` to be set.
 
 ## Upgrade notes
 

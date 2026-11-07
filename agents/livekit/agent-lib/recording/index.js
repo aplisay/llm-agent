@@ -13,3 +13,9 @@ export {
   objectNameFor,
 } from './gcs-path.js';
 export { uploadEncryptedOgg } from './upload.js';
+export {
+  recordingStorageConfig,
+  openRecordingStore,
+  parseStoragePath,
+  signS3Request,
+} from './storage.js';

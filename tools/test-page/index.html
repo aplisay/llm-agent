@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aplisay test page</title>
+  <style>
+    :root { color-scheme: light dark; --fg: #1f2933; --bg: #ffffff; --muted: #616e7c; --line: #d9dee3; --accent: #1b76bc; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #e4e7eb; --bg: #13171c; --muted: #9aa5b1; --line: #323f4b; --accent: #5aa9e6; } }
+    body { font: 15px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 16px; }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    p { margin: 4px 0 12px; color: var(--muted); }
+    label { display: block; font-weight: 600; margin-top: 12px; }
+    input, select, button { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+    input, select { width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; margin-top: 12px; margin-right: 8px; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { margin-top: 16px; font-weight: 600; }
+    #transcript { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+    #transcript div { margin: 4px 0; }
+    #transcript .who { font-weight: 600; margin-right: 6px; }
+    pre { white-space: pre-wrap; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Aplisay test page</h1>
+  <p>Talk to an agent in this browser. For development only: never expose this page on a public host.</p>
+
+  <label for="apiKey">API key</label>
+  <input id="apiKey" type="password" autocomplete="off" placeholder="The key from yarn bootstrap or BOOTSTRAP_API_KEY">
+  <button id="load">Load agents</button>
+
+  <label for="agent">Agent</label>
+  <select id="agent" disabled><option>Load agents first</option></select>
+
+  <button id="start" class="primary" disabled>Start talking</button>
+  <button id="stop" disabled>Stop</button>
+
+  <div id="status">Not connected.</div>
+  <div id="transcript"></div>
+  <pre id="log"></pre>
+</main>
+<script src="vendor/livekit-client.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

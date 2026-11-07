@@ -1,0 +1,101 @@
+# Public images for each version tag: multi-arch builds pushed to GHCR with an
+# SBOM and provenance, then a GitHub Release from docs/release-notes/<tag>.md.
+# Aplisay's own deploys still build in Cloud Build (cloudbuild-release.yaml).
+# No secretenv build args are passed, so no image carries a credential.
+name: Release images
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    # Off until the repository variable PUBLISH_PUBLIC_IMAGES is 'true', so a
+    # merge alone never publishes images or a release. The release job needs this one.
+    if: vars.PUBLISH_PUBLIC_IMAGES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: aplisay-api
+            dockerfile: Dockerfile
+          - name: aplisay-livekit-worker
+            dockerfile: agents/livekit/Dockerfile
+          - name: aplisay-pipecat-worker
+            dockerfile: agents/pipecat/Dockerfile
+          - name: aplisay-sipbridge
+            dockerfile: agents/pipecat/sipbridge/Dockerfile
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # package.json still says an old version; the tag is the version.
+      - name: Set package versions from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for file in package.json agents/livekit/package.json; do
+            node -e 'const fs = require("fs"); const [file, version] = process.argv.slice(1);
+              const pkg = JSON.parse(fs.readFileSync(file, "utf8")); pkg.version = version;
+              fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");' "$file" "$version"
+          done
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            TAG_NAME=${{ github.ref_name }}
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  release:
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="docs/release-notes/${TAG}.md"
+          if [ -f "$notes" ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"
+          else
+            echo "::warning::$notes not found; using generated notes"
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi

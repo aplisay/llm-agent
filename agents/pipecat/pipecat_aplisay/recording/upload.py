@@ -13,7 +13,8 @@ from loguru import logger
 
 from .encryption_key import derive_key, generate_key
 from .gcm_stream import GcmEncryptStream
-from .gcs_path import default_recording_base_url, object_name_for, parse_gcs_path
+from .gcs_path import object_name_for, parse_gcs_path
+from .storage import put_object, recording_storage_config, storage_location
 
 
 @dataclass
@@ -49,7 +50,13 @@ async def upload_encrypted_ogg(
         "upload_encrypted_ogg: source file size before upload"
     )
 
-    bucket_name, prefix = parse_gcs_path(base_url or default_recording_base_url())
+    config = recording_storage_config({**os.environ, "RECORDING_STORAGE_PATH": base_url} if base_url else None)
+    if not config["enabled"]:
+        raise RuntimeError(f"recording storage is off: {config['reason']}")
+    if config["backend"] == "gcs":
+        bucket_name, prefix = parse_gcs_path(config["base_url"])
+    else:
+        bucket_name, prefix = storage_location(config)
     gcs_object = object_name_for(prefix, call_id)
 
     if client_encryption_key:
@@ -86,12 +93,15 @@ async def upload_encrypted_ogg(
             return b"".join(pieces)
 
         payload = await asyncio.to_thread(_build_payload)
-        await asyncio.to_thread(
-            _upload_payload,
-            bucket_name,
-            gcs_object,
-            payload,
-        )
+        if config["backend"] == "gcs":
+            await asyncio.to_thread(
+                _upload_payload,
+                bucket_name,
+                gcs_object,
+                payload,
+            )
+        else:
+            await asyncio.to_thread(put_object, config, gcs_object, payload, None, _SDK_TIMEOUT_SECS)
 
     try:
         await asyncio.wait_for(_do_upload(), timeout=upload_timeout_secs)
@@ -112,7 +122,7 @@ async def upload_encrypted_ogg(
         bucket=bucket_name,
         gcs_object=gcs_object,
         has_server_key=bool(server_generated_key),
-    ).info("upload_encrypted_ogg: uploaded encrypted recording to GCS")
+    ).info(f"upload_encrypted_ogg: uploaded encrypted recording ({config['backend']})")
 
     if delete_local_on_success:
         try:

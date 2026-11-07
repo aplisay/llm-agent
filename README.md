@@ -45,15 +45,27 @@ The full picture — call lifecycle, scaling model, gateway options — is in th
 
 ## Run it
 
+With Docker:
+
 ```shell
 git clone https://github.com/aplisay/llm-agent.git && cd llm-agent
+scripts/compose-setup.sh       # writes .env with random secrets, prints your first API key
+docker compose up --build
+```
+
+That starts PostgreSQL, the API server on port 4000, a LiveKit server and worker, and a test page on port 8080. Add one model provider key to `.env` (for example `OPENAI_API_KEY`) to talk to an agent in the browser. The **[local quickstart](docs/self-hosting/quickstart-local.md)** has the details.
+
+From source:
+
+```shell
 yarn install && (cd agents/livekit && yarn install)
 cp environment-example .env    # then set the database and provider keys
+yarn doctor                    # checks the settings and the database
 yarn bootstrap                 # prints your first API key
 yarn develop
 ```
 
-You'll need Node 22+, PostgreSQL, and credentials for at least one LLM provider and one runtime. The **[running guide](docs/running.md)** walks through environment configuration, minimum viable setups (WebRTC-only or full telephony), starting the workers, tests and deployment.
+You'll need Node 22 LTS or 24 (Node 23 is not supported), PostgreSQL, and credentials for at least one LLM provider and one runtime. The **[running guide](docs/running.md)** walks through environment configuration, minimum viable setups (WebRTC-only or full telephony), starting the workers, tests and deployment.
 
 ## The API
 
