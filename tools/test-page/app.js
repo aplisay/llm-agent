@@ -78,24 +78,35 @@
             if (data.status) log(`agent status: ${data.status}`);
           } catch { /* not JSON */ }
         })
-        .on(RoomEvent.Disconnected, () => { status('Disconnected.'); });
+        // The worker ends the room when the agent cannot start, for example
+        // when the model's provider key is missing: its log says why.
+        .on(RoomEvent.Disconnected, () => {
+          if (state.room === room) end('Disconnected. If this was not you, check the livekit-worker log.');
+        });
       await room.connect(serverUrl, participantToken);
-      await room.localParticipant.setMicrophoneEnabled(true);
-      status('Connected. Speak to the agent.');
       $('stop').disabled = false;
+      status('Connected. Turning on the microphone...');
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true);
+        status('Connected. Speak to the agent.');
+      } catch (err) {
+        status(`Connected, but the microphone is not available: ${err.message}`);
+      }
     } catch (err) {
-      status(`Could not start: ${err.message}`);
-      $('start').disabled = false;
+      await end(`Could not start: ${err.message}`);
     }
   };
 
-  $('stop').onclick = async () => {
-    $('stop').disabled = true;
-    if (state.room) await state.room.disconnect();
-    if (state.listenerId) await api(`/listener/${state.listenerId}`, { method: 'DELETE' }).catch((err) => log(err.message));
+  async function end(message) {
+    const { room, listenerId } = state;
     state.room = null;
     state.listenerId = null;
+    if (room) await room.disconnect().catch(() => {});
+    if (listenerId) await api(`/listener/${listenerId}`, { method: 'DELETE' }).catch((err) => log(err.message));
+    $('stop').disabled = true;
     $('start').disabled = false;
-    status('Stopped.');
-  };
+    status(message);
+  }
+
+  $('stop').onclick = () => end('Stopped.');
 })();
