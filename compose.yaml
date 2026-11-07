@@ -1,0 +1,221 @@
+# Local stack: the API server, PostgreSQL, a LiveKit server, the LiveKit
+# worker and a test page. See docs/self-hosting/quickstart-local.md.
+#
+#   scripts/compose-setup.sh     # once: writes .env with random secrets
+#   docker compose up --build
+#
+# A bare `docker compose up` starts the default set below. Run
+# `scripts/compose-setup.sh` first to get random secrets and a first API key;
+# without it the services use the fixed development values below and you get
+# a key with `docker compose exec api yarn bootstrap`.
+#
+# Ports are published on 127.0.0.1 only. Set APLISAY_BIND=0.0.0.0 to publish
+# them on every interface, and use the edge profile for TLS on a public host.
+#
+# Default set:
+#   core      postgres, api
+#   livekit   livekit (server), livekit-worker
+#   ui        ui (the test page; development only)
+# Optional profiles:
+#   sip-livekit   livekit-sip and redis: phone calls through LiveKit SIP
+#   edge          caddy: TLS in front of the API and LiveKit on a public host
+# Not here yet: sip-pipecat (the Pipecat worker with sipbridge). Its route to
+# the phone network is still an open decision.
+#
+# The API and the LiveKit worker read .env (if it exists) for provider keys and
+# other settings. The `environment` entries below wire the services together and
+# win over .env.
+
+name: aplisay
+
+x-bind: &bind ${APLISAY_BIND:-127.0.0.1}
+
+services:
+  # ── core ──────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-llmvoice}
+      POSTGRES_USER: ${POSTGRES_USER:-llm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aplisay}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WS_PORT: "4000"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-llmvoice}
+      POSTGRES_USER: ${POSTGRES_USER:-llm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aplisay}
+      SERVICE_BASE_URI: http://api:4000
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN:-insecure-development-token-run-compose-setup}
+      # Handed to browsers in room join answers, so it must be reachable from
+      # them. The API itself only dials LiveKit for outbound SIP calls.
+      LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+    ports:
+      - target: 4000
+        published: ${API_PORT:-4000}
+        host_ip: *bind
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+
+  # ── livekit ───────────────────────────────────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:v1.13.8
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        bind_addresses: ["0.0.0.0"]
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+          node_ip: ${LIVEKIT_NODE_IP:-127.0.0.1}
+        keys:
+          ${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+        redis:
+          address: ${LIVEKIT_REDIS_ADDRESS:-}
+        logging:
+          level: info
+    ports:
+      - target: 7880
+        published: 7880
+        host_ip: *bind
+      - target: 7881
+        published: 7881
+        host_ip: *bind
+      - target: 7882
+        published: 7882
+        protocol: udp
+        host_ip: *bind
+    restart: unless-stopped
+
+  livekit-worker:
+    build:
+      context: .
+      dockerfile: agents/livekit/Dockerfile
+    # Shares the LiveKit server's network namespace, so both it and a browser
+    # on this host reach the server's media ports at LIVEKIT_NODE_IP
+    # (127.0.0.1 by default).
+    network_mode: service:livekit
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+      SERVICE_BASE_URI: http://api:4000
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN:-insecure-development-token-run-compose-setup}
+      NUM_IDLE_PROCESSES: ${NUM_IDLE_PROCESSES:-1}
+    depends_on:
+      livekit:
+        condition: service_started
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── ui (development only) ─────────────────────────────────────────────────
+  ui:
+    build:
+      context: .
+      dockerfile: tools/test-page/Dockerfile
+    environment:
+      API_UPSTREAM: api:4000
+    ports:
+      - target: 8080
+        published: ${UI_PORT:-8080}
+        host_ip: *bind
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ── sip-livekit (optional) ────────────────────────────────────────────────
+  # Phone calls through LiveKit SIP. Needs a public IP and these in .env:
+  # LIVEKIT_REDIS_ADDRESS=redis:6379, LIVEKIT_NODE_IP=<public IP>,
+  # APLISAY_BIND=0.0.0.0. Run with: docker compose --profile sip-livekit up
+  redis:
+    image: redis:7-alpine
+    profiles: [sip-livekit]
+    restart: unless-stopped
+
+  livekit-sip:
+    image: livekit/sip:v1.2.0
+    profiles: [sip-livekit]
+    network_mode: host
+    environment:
+      SIP_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY:-devkey}
+        api_secret: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+        ws_url: ws://127.0.0.1:7880
+        redis:
+          address: 127.0.0.1:6379
+        sip_port: 5060
+        rtp_port: 10000-20000
+        use_external_ip: true
+    depends_on:
+      - redis
+      - livekit
+    restart: unless-stopped
+
+  # ── edge (optional) ───────────────────────────────────────────────────────
+  # TLS for a public host. Set APLISAY_DOMAIN (the API) and LIVEKIT_DOMAIN (the
+  # LiveKit server) in .env, point both at this host, and set
+  # LIVEKIT_PUBLIC_URL=wss://<LIVEKIT_DOMAIN>. The test page is not exposed.
+  # Run with: docker compose --profile edge up
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    environment:
+      APLISAY_DOMAIN: ${APLISAY_DOMAIN:-}
+      LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN:-}
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddydata:/data
+    depends_on:
+      - api
+      - livekit
+    restart: unless-stopped
+
+configs:
+  caddyfile:
+    content: |
+      {$$APLISAY_DOMAIN} {
+        reverse_proxy api:4000
+      }
+      {$$LIVEKIT_DOMAIN} {
+        reverse_proxy livekit:7880
+      }
+
+volumes:
+  pgdata:
+  caddydata:

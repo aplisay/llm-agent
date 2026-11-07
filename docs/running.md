@@ -2,6 +2,8 @@
 
 How to get from a clone to an agent you can talk to: install, environment, database, workers, tests and deployment. For what the pieces *are*, read the [architecture overview](architecture.md) first.
 
+To run the whole stack in containers instead, with one command, see [self-hosting/quickstart-local.md](self-hosting/quickstart-local.md).
+
 ## Prerequisites
 
 - **Node.js 22 LTS or 24** and **yarn 1.x**. Node 23 is not supported: `yarn install` refuses it. `.nvmrc` names 22 for `nvm use`.

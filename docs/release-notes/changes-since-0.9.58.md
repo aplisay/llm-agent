@@ -122,6 +122,14 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Test page**: `tools/test-page` is a small page that talks to a
   LiveKit agent in the browser. It runs in the compose `ui` profile and is
   never served by the API server.
+- **[core+livekit] `compose.yaml`**: `docker compose up` starts PostgreSQL,
+  the API server, a LiveKit server, the LiveKit worker and the test page, with
+  ports on 127.0.0.1. Optional `sip-livekit` and `edge` (Caddy) profiles. See
+  [quickstart-local.md](../self-hosting/quickstart-local.md).
+- **[core] `scripts/compose-setup.sh`** writes `.env` with random secrets and a
+  first API key, and prints the key and the URLs.
+- **[core] `SERVICE_BASE_URI`**: documented as the API server's base URL
+  without `/api`, which is what the workers expect.
 
 ## Upgrade notes
 

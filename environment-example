@@ -16,8 +16,9 @@
 # Log level: fatal, error, warn, info, debug or trace.
 LOGLEVEL=info
 
-# Base URL of this API, with /api, that the voice workers call back to.
-# SERVICE_BASE_URI=http://localhost:4000/api
+# Base URL of the API server, without /api (for example
+# http://localhost:4000), that the voice workers call back to.
+# SERVICE_BASE_URI=http://localhost:4000
 
 # Token the voice workers send to the API as x-shared-token. It gives full
 # access to every route, so use a long random value (openssl rand -hex 32).

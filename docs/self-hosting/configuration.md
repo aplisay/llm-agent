@@ -21,7 +21,7 @@ Listen port, logging and how the services find each other.
 | `PORT` | API, Pipecat | `4000 (API), 8082 (Pipecat)` | Listen port when WS_PORT is unset. Container platforms such as Cloud Run set it. The Pipecat worker listens on it. |
 | `LOGLEVEL` | API, LiveKit, Pipecat | `info (debug when NODE_ENV=development)` | Log level: fatal, error, warn, info, debug or trace. |
 | `NODE_ENV` | API, LiveKit, Pipecat |  | Run mode: development (schema syncs at start, readable logs), production or staging (JSON logs). The yarn scripts set it. |
-| `SERVICE_BASE_URI` | API, LiveKit, Pipecat |  | Base URL of this API, with /api, that the voice workers call back to. |
+| `SERVICE_BASE_URI` | API, LiveKit, Pipecat |  | Base URL of the API server, without /api (for example http://localhost:4000), that the voice workers call back to. |
 | `SHARED_API_TOKEN` | API, LiveKit, Pipecat |  | Token the voice workers send to the API as x-shared-token. It gives full access to every route, so use a long random value (openssl rand -hex 32). Needed when you run a worker. Secret. |
 | `EXPOSE_PRIVATE_APIS` | API | `false` | Set to true to include the internal /agent-db routes in the published OpenAPI document. |
 | `AGENT_TIMEZONE` | API, Pipecat | `Europe/London` | Time zone for the date and time an agent is given in its metadata. |
@@ -56,7 +56,7 @@ PostgreSQL connection. The API server and the Jambonz worker connect directly.
 | `POSTGRES_POOL_MIN` | API | `0` | Minimum idle connections per process. |
 | `POSTGRES_POOL_ACQUIRE_MS` | API | `60000` | How long a query waits for a free connection. |
 | `POSTGRES_POOL_IDLE_MS` | API | `10000` | How long an idle connection stays open. |
-| `DB_FORCE_SYNC` | API | `false` | Forces a full schema sync at start (already done when NODE_ENV=development). Never set it in production: upgrades run on their own. |
+| `DB_FORCE_SYNC` | API | `false` | Forces a full schema sync at start. Development mode and an empty database sync without it. Read docs/running.md before you set it in production. |
 
 ## Model providers
 

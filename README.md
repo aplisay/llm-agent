@@ -45,8 +45,19 @@ The full picture — call lifecycle, scaling model, gateway options — is in th
 
 ## Run it
 
+With Docker:
+
 ```shell
 git clone https://github.com/aplisay/llm-agent.git && cd llm-agent
+scripts/compose-setup.sh       # writes .env with random secrets, prints your first API key
+docker compose up --build
+```
+
+That starts PostgreSQL, the API server on port 4000, a LiveKit server and worker, and a test page on port 8080. Add one model provider key to `.env` (for example `OPENAI_API_KEY`) to talk to an agent in the browser. The **[local quickstart](docs/self-hosting/quickstart-local.md)** has the details.
+
+From source:
+
+```shell
 yarn install && (cd agents/livekit && yarn install)
 cp environment-example .env    # then set the database and provider keys
 yarn doctor                    # checks the settings and the database
