@@ -11,6 +11,7 @@ import { createServer } from 'http';
 import createWsServer from './lib/ws-handler.js';
 import { cleanHandlers } from './lib/handlers/index.js';
 import { buildInfo, describeBuild } from './lib/build-info.js';
+import { listenPort } from './lib/listen-port.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
@@ -33,7 +34,7 @@ catch (e) {
   process.exit(1);
 }
 
-const port = process.env.WS_PORT || 4000;
+const port = listenPort();
 
 if (process.env.NODE_ENV === 'development') {
   apiDoc.servers.unshift({ url: `http://localhost:${port}/api` });

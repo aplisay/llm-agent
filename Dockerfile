@@ -60,4 +60,9 @@ EXPOSE $PORT
 COPY . .
 RUN mkdir -p credentials
 RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json
+# The API imports the LiveKit worker's compiled model registry. Compile it here,
+# once, instead of in `prestart` on every container start; prestart skips the
+# build when LIVEKIT_WORKER_PREBUILT is set and the output is present.
+RUN cd agents/livekit && yarn build
+ENV LIVEKIT_WORKER_PREBUILT=1
 CMD [ "yarn", "start"]

@@ -37,7 +37,7 @@ The essentials, by group:
 
 | Group | Variables | Notes |
 |---|---|---|
-| Core | `WS_PORT`, `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; pino level |
+| Core | `WS_PORT` (or `PORT`), `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; `WS_PORT` wins when both are set. pino level |
 | Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there. The schema work every process runs at start is serialised across processes by a Postgres advisory lock (`lib/boot-lock.js`), so replicas starting together take turns rather than racing |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
 | Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`) add user sign-in for multi-user deployments and are optional |
@@ -80,7 +80,7 @@ yarn develop   # NODE_ENV=development, nodemon, debug logging
 yarn start     # production mode
 ```
 
-The API and WebSocket listen on `WS_PORT` (default 4000). Sanity-check with the model catalogue:
+The API and WebSocket listen on `WS_PORT`, else `PORT`, else 4000. Sanity-check with the model catalogue:
 
 ```shell
 curl -H "Authorization: Bearer $APLISAY_KEY" http://localhost:4000/api/models

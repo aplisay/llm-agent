@@ -11,9 +11,9 @@
   "scripts": {
     "predevelop": "cd agents/livekit && yarn build",
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
-    "prestart": "cd agents/livekit && yarn build",
+    "prestart": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "start": "NODE_ENV=production node index.mjs",
-    "prestage": "cd agents/livekit && yarn build",
+    "prestage": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
     "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --verbose",
     "test:db": "yarn test:setup && yarn test && yarn test:cleanup",

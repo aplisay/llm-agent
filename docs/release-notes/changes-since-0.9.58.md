@@ -95,6 +95,12 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] Repository tidy**: removed `API.md` (stale generated JSDoc; the
   OpenAPI document `api/api-doc.yaml` is the reference), `agent.json`,
   `websocket-monitor.js` and the unused `uk-number-validator` submodule.
+- **[core] Listen port**: the API server reads `PORT` when `WS_PORT` is unset,
+  so it listens where Cloud Run, Kubernetes and most container platforms
+  expect. `WS_PORT` still wins when both are set.
+- **[core] API image start-up**: the image compiles the LiveKit model registry
+  at build time, so a container no longer runs a TypeScript build on every
+  start.
 
 ## Upgrade notes
 

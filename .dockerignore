@@ -2,6 +2,8 @@
 # level, so the nested trees under agents/ need the ** form: without it a local
 # build ships gigabytes of the developer's checkout to the daemon.
 **/node_modules
+# Images build their own dist/. Never ship a local build into one.
+**/dist
 .git
 .claude
 coverage
