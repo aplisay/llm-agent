@@ -82,6 +82,10 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core] `yarn auth:migrate`** and `yarn auth:generate` fetch
   `@better-auth/cli` on demand, so a default install no longer builds
   `better-sqlite3`.
+- **[core+livekit] LiveKit worker scripts**: `yarn livekit-dev` (repo root),
+  and `yarn start`, `yarn stage` and `yarn develop` in `agents/livekit`, now
+  start the worker. `yarn livekit-dev` reads the repo-root `.env`. A Linux
+  checkout can now run the worker from source.
 
 ## Upgrade notes
 
