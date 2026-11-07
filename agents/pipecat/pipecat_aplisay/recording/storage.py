@@ -38,7 +38,12 @@ def recording_storage_config(env: Optional[Mapping[str, str]] = None) -> dict:
 
 
 def _has_google_credentials(env: Mapping[str, str]) -> bool:
-    if env.get("GOOGLE_APPLICATION_CREDENTIALS") or env.get("GOOGLE_CREDENTIAL") or env.get("K_SERVICE"):
+    if (
+        env.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or env.get("GOOGLE_CREDENTIAL")
+        or env.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        or env.get("K_SERVICE")
+    ):
         return True
     try:
         return os.path.getsize("credentials/google.json") > 0

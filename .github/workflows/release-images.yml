@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   images:
+    # Off until the repository variable PUBLISH_PUBLIC_IMAGES is 'true', so a
+    # merge alone never publishes images or a release. The release job needs this one.
+    if: vars.PUBLISH_PUBLIC_IMAGES == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

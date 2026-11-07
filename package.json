@@ -6,7 +6,7 @@
   "main": "index.mjs",
   "packageManager": "yarn@1.22.22",
   "engines": {
-    "node": "^22.0.0 || >=24.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "predevelop": "cd agents/livekit && yarn build",

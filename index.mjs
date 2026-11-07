@@ -25,12 +25,14 @@ dotenv.config();
   if (placeholders.length) {
     logger.warn({ names: placeholders }, `treating placeholder values (<...>) as unset: ${placeholders.join(', ')}`);
   }
-  // lib/database.js builds a connection URL from these, and fails with
-  // "Invalid URL" and no hint when one is missing.
+  // A missing POSTGRES_PORT already stops lib/database.js at load with a bare
+  // "Invalid URL". The others fall back to pg defaults, so they only warn.
   const missingDb = ['POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB', 'POSTGRES_USER'].filter((name) => !process.env[name]);
-  if (missingDb.length) {
+  if (missingDb.includes('POSTGRES_PORT')) {
     logger.fatal(`cannot start: set ${missingDb.join(', ')} (see environment-example)`);
     process.exit(1);
+  } else if (missingDb.length) {
+    logger.warn(`${missingDb.join(', ')} unset: using the Postgres client defaults`);
   }
   const credential = writeGoogleCredential();
   if (credential.status === 'written') {

@@ -15,10 +15,18 @@ describe('clearPlaceholders', () => {
       JAMBONZ_SERVER: '<JAMBONZ API SERVER HOSTNAME>, usually api.server.name',
       POSTGRES_HOST: 'localhost',
       EMAIL_FROM_NAME: 'A <b> c',
+      FALLBACK_SSML: '<speak>Sorry, please call back.</speak>',
+      SELF_CLOSING: '<break time="1s"/> Hello',
       EMPTY: '',
     };
     expect(clearPlaceholders(env).sort()).toEqual(['JAMBONZ_SERVER', 'OPENAI_API_KEY']);
-    expect(env).toEqual({ POSTGRES_HOST: 'localhost', EMAIL_FROM_NAME: 'A <b> c', EMPTY: '' });
+    expect(env).toEqual({
+      POSTGRES_HOST: 'localhost',
+      EMAIL_FROM_NAME: 'A <b> c',
+      FALLBACK_SSML: '<speak>Sorry, please call back.</speak>',
+      SELF_CLOSING: '<break time="1s"/> Hello',
+      EMPTY: '',
+    });
     expect(clearedPlaceholders()).toEqual(expect.arrayContaining(['JAMBONZ_SERVER', 'OPENAI_API_KEY']));
   });
 });

@@ -6,7 +6,7 @@ To run the whole stack in containers instead, with one command, see [self-hostin
 
 ## Prerequisites
 
-- **Node.js 22 LTS or 24** and **yarn 1.x**. Node 23 is not supported: `yarn install` refuses it. `.nvmrc` names 22 for `nvm use`.
+- **Node.js 22 LTS or 24** and **yarn 1.x**. Node 23 is not supported: the test tools refuse to install on it. `.nvmrc` names 22 for `nvm use`.
 - **PostgreSQL** (CI runs against Postgres 15). For a throwaway local instance:
 
   ```shell
@@ -137,7 +137,7 @@ Every image builds with the repo root as the build context:
 | sipbridge (Pipecat SIP gateway) | `docker build -f agents/pipecat/sipbridge/Dockerfile .` |
 | Jambonz worker | `docker build -f agents/jambonz/Dockerfile .` |
 
-**Public images.** Each version tag from this workflow on publishes `ghcr.io/aplisay/aplisay-api`, `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge` for amd64 and arm64, with an SBOM (`.github/workflows/release-images.yml`). They carry no credentials: set `GOOGLE_CREDENTIAL` and `GOOGLE_APPLICATION_CREDENTIALS` and the API server and LiveKit worker write the credential file at start.
+**Public images.** Once the repository variable `PUBLISH_PUBLIC_IMAGES` is set to `true`, each version tag publishes `ghcr.io/aplisay/aplisay-api`, `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge` for amd64 and arm64, with an SBOM (`.github/workflows/release-images.yml`). They carry no credentials: set `GOOGLE_CREDENTIAL` and `GOOGLE_APPLICATION_CREDENTIALS` and the API server and LiveKit worker write the credential file at start.
 
 **Configuration.** Every image reads plain environment variables, the same names as `.env`. Pass them with `docker run -e`, an env file, a Kubernetes Secret or your platform's settings. [secretenv](https://github.com/rjp44/secretenv) is optional: it lets a deploy ship the whole environment as one encrypted value (`SECRETENV_KEY` plus `SECRETENV_BUNDLE`), and an image with neither set reads its environment as given. `deploy/bundle-secretenv.sh` makes such a pair from an env file.
 

@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/realtime.js",
   "engines": {
-    "node": "^22.0.0 || >=24.0.0"
+    "node": ">=22.0.0"
   },
   "exports": {
     ".": {

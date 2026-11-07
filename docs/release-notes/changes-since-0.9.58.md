@@ -77,8 +77,8 @@ Pipecat), and **ci** (build and release pipeline).
   credentials. On an instance with no Firebase project, an unknown token
   answers 401 `Authentication error: unknown API key or token`.
 - **[core+livekit] Node version**: both `package.json` files declare Node 22
-  LTS or 24 in `engines`, and `.nvmrc` names 22. `yarn install` refuses Node
-  23 with a clear message.
+  or later in `engines`, and `.nvmrc` names 22. Node 22 LTS and 24 are
+  supported; Node 23 is not, because the test tools refuse to install on it.
 - **[core] `yarn auth:migrate`** and `yarn auth:generate` fetch
   `@better-auth/cli` on demand, so a default install no longer builds
   `better-sqlite3`.
@@ -130,7 +130,8 @@ Pipecat), and **ci** (build and release pipeline).
   first API key, and prints the key and the URLs.
 - **[core] `SERVICE_BASE_URI`**: documented as the API server's base URL
   without `/api`, which is what the workers expect.
-- **[ci] Public images**: each `v*` tag builds `aplisay-api`,
+- **[ci] Public images**: when the repository variable
+  `PUBLISH_PUBLIC_IMAGES` is `true`, each `v*` tag builds `aplisay-api`,
   `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge`
   for amd64 and arm64, pushes them to `ghcr.io/aplisay` with an SBOM, and
   publishes a GitHub Release from `docs/release-notes/<tag>.md`.

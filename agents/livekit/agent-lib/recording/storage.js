@@ -50,7 +50,8 @@ export function recordingStorageConfig(env = process.env) {
 }
 
 function hasGoogleCredentials(env) {
-  if (env.GOOGLE_APPLICATION_CREDENTIALS || env.GOOGLE_CREDENTIAL || env.K_SERVICE) return true;
+  if (env.GOOGLE_APPLICATION_CREDENTIALS || env.GOOGLE_CREDENTIAL
+    || env.GOOGLE_APPLICATION_CREDENTIALS_JSON || env.K_SERVICE) return true;
   try {
     return fs.statSync('credentials/google.json').size > 0;
   } catch {
