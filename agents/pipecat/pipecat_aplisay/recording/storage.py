@@ -1,4 +1,4 @@
-"""Where recordings go — sibling of ``lib/recording/storage.js``.
+"""Where recordings go: the sibling of ``lib/recording/storage.js``.
 
 ``RECORDING_STORAGE_PATH`` picks the back end: ``gs://bucket[/prefix]``
 (Google Cloud Storage), ``s3://bucket[/prefix]`` (S3 or an S3-compatible store,
