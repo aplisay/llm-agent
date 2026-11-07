@@ -60,7 +60,7 @@ Pipecat), and **ci** (build and release pipeline).
   record, as for Ultravox, GPT-Live, Grok voice and ElevenLabs Agents. The
   in-place swap kept the outgoing agent's prompt and tools.
 
-## Self-hosting - core
+## Self-hosting - core+livekit+pipecat+sipbridge+ci
 
 - **[core] `AUTHENTICATE_USERS=NO`**: removed. Every request now needs an API
   key. The setting is ignored, with a warning at start. In 0.9.58 it answered
