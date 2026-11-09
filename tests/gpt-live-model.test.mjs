@@ -19,10 +19,15 @@ import { buildRateComponents, isMinuteBilledModel } from '../lib/rate-components
 import {
   AGENT_TARGET_PLATFORMS,
   AgentSetValidationError,
+  assertNotDelegateWithResult,
+  conversingReferrers,
   delegateToolCollisions,
   fixupLabelReferences,
   keyedCopiesShadowedByDelegate,
+  runsHostedDelegation,
+  unusableDelegateResults,
   validateAgentTargets,
+  validateDelegateResultContracts,
   validateDelegateToolCollisions,
 } from '../lib/agent-set-labels.js';
 
@@ -311,5 +316,74 @@ describe('delegate in agent-set label handling', () => {
     expect(keyedCopiesShadowedByDelegate([{ ...voice, sentNames: undefined }, brain]).size).toBe(0);
     // A delegate outside the set is not checked here.
     expect(keyedCopiesShadowedByDelegate([voice]).size).toBe(0);
+  });
+});
+
+describe('a result builtin on a GPT-Live backend', () => {
+  const HOSTED = 'text:openai/gpt-5.6-terra';
+  const CLIENT = 'text:anthropic/claude-sonnet-4-5';
+  const resultFunction = (name = 'deliver_answer') => ({
+    name,
+    implementation: 'builtin',
+    platform: 'result',
+    input_schema: { properties: { answer: { type: 'string', required: true } } },
+  });
+  const voice = () => ({ label: 'voice', id: VOICE_A, modelName: GPT_LIVE, functions: [delegateFunction(TEXT_B)] });
+
+  test('runsHostedDelegation matches the worker: an openai/ model after the handler prefix', () => {
+    for (const modelName of [HOSTED, 'text:OpenAI/gpt-5.6-luna', 'openai/gpt-5.6-terra', ' text:openai/x ']) {
+      expect(runsHostedDelegation(modelName)).toBe(true);
+    }
+    for (const modelName of [CLIENT, 'text:google/gemini-2.5-pro', 'text:openrouter/openai/gpt-5', '', undefined, null]) {
+      expect(runsHostedDelegation(modelName)).toBe(false);
+    }
+  });
+
+  test('unusableDelegateResults names result builtins on a hosted model only, in either function shape', () => {
+    const functions = [resultFunction(), { name: 'notify_email_team', implementation: 'rest' }];
+    expect(unusableDelegateResults({ modelName: HOSTED, functions })).toEqual(['deliver_answer']);
+    expect(unusableDelegateResults({ modelName: HOSTED, functions: { deliver_answer: resultFunction() } })).toEqual(['deliver_answer']);
+    // Client delegation runs through the subagent endpoint, where result is the output contract.
+    expect(unusableDelegateResults({ modelName: CLIENT, functions })).toEqual([]);
+    expect(unusableDelegateResults({ modelName: HOSTED, functions: [{ name: 'x', implementation: 'rest', platform: 'result' }] })).toEqual([]);
+    expect(unusableDelegateResults({ modelName: HOSTED })).toEqual([]);
+    expect(unusableDelegateResults(undefined)).toEqual([]);
+  });
+
+  test('validateDelegateResultContracts rejects an in-set hosted backend that carries one', () => {
+    const backend = { label: 'backend', id: TEXT_B, modelName: HOSTED, functions: [resultFunction('backend_result')] };
+    expect(() => validateDelegateResultContracts([voice(), backend])).toThrow(AgentSetValidationError);
+    expect(() => validateDelegateResultContracts([voice(), backend]))
+      .toThrow(/Agent "backend" is the GPT-Live backend of "voice" \(function brain\) and runs text:openai\/gpt-5\.6-terra.*remove its result function "backend_result" \(list it in removeFunctions\)/);
+    expect(() => validateDelegateResultContracts([voice(), { ...backend, modelName: CLIENT }])).not.toThrow();
+    expect(() => validateDelegateResultContracts([voice(), { ...backend, functions: [] }])).not.toThrow();
+    // A delegate outside the set is checked against its stored row by validateAgentTargets.
+    expect(() => validateDelegateResultContracts([voice()])).not.toThrow();
+  });
+
+  test('validateAgentTargets checks a delegate target it looks up, and leaves in-set targets to the set check', async () => {
+    const stored = { id: TEXT_B, name: 'Stored backend', type: 'text', modelName: HOSTED, functions: [resultFunction()] };
+    await expect(validateAgentTargets([delegateFunction(TEXT_B)], { lookupAgent: async () => stored, owningLabel: 'voice' }))
+      .rejects.toThrow(/Agent "Stored backend" is the GPT-Live backend of "voice" \(function brain \(delegate\)\)/);
+    await expect(validateAgentTargets([delegateFunction(TEXT_B)], { lookupAgent: async () => ({ ...stored, modelName: CLIENT }), owningLabel: 'voice' }))
+      .resolves.toBeUndefined();
+    const membersById = new Map([[TEXT_B, { type: 'text', modelName: HOSTED }]]);
+    await expect(validateAgentTargets([delegateFunction(TEXT_B)], { membersById, owningLabel: 'voice' })).resolves.toBeUndefined();
+    // A subagent target keeps its result contract.
+    const subagent = { ...delegateFunction(TEXT_B, 'ask_knowledge'), platform: 'subagent' };
+    await expect(validateAgentTargets([subagent], { lookupAgent: async () => stored, owningLabel: 'voice' })).resolves.toBeUndefined();
+  });
+
+  test('assertNotDelegateWithResult refuses the target side only when something delegates to it', () => {
+    const backend = { modelName: HOSTED, functions: [resultFunction()] };
+    const agents = [{ id: VOICE_A, name: 'Reception', functions: [delegateFunction(TEXT_B)] }];
+    const referrers = conversingReferrers(TEXT_B, { agents });
+    expect(referrers).toEqual([{ agentId: VOICE_A, name: 'Reception', kind: 'delegate', context: 'function brain (delegate)' }]);
+    expect(() => assertNotDelegateWithResult({ label: 'backend', agent: backend, referrers }))
+      .toThrow(/Agent "backend" is the GPT-Live backend of Reception \(function brain \(delegate\)\)/);
+    expect(() => assertNotDelegateWithResult({ label: 'backend', agent: backend, referrers: [] })).not.toThrow();
+    // A hand-back summariser is invoked like a subagent, so its result function stays valid.
+    const summariser = [{ agentId: VOICE_A, name: 'Reception', kind: 'summaryAgent', context: 'options.bridgedTransferToAgent["1"].summaryAgent' }];
+    expect(() => assertNotDelegateWithResult({ label: 'backend', agent: backend, referrers: summariser })).not.toThrow();
   });
 });

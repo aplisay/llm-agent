@@ -8,8 +8,9 @@ import { randomUUID } from 'crypto';
  * The `delegate` builtin at agent save time (docs/gpt-live.md): accepted on a
  * GPT-Live row with one `agent` parameter targeting a text agent, rejected
  * everywhere else and in every other shape; the GPT-Live voice list and vendor
- * rule; and the agent-set collision check between a voice member and its
- * in-set delegate. The pure helpers are tests/gpt-live-model.test.mjs.
+ * rule; the agent-set collision check between a voice member and its
+ * in-set delegate; and the refusal of a `result` function on an OpenAI-hosted
+ * delegate. The pure helpers are tests/gpt-live-model.test.mjs.
  */
 
 const mockLogger = {
@@ -34,6 +35,17 @@ function makeRes(user) {
 const GPT_LIVE = 'pipecat:openai/gpt-live-1';
 const REALTIME = 'pipecat:openai/gpt-realtime';
 const TEXT_MODEL = 'text:openai/gpt-5.6-luna';
+const CLIENT_TEXT_MODEL = 'text:anthropic/claude-sonnet-5';
+
+function resultFunction(name = 'backend_result') {
+  return {
+    name,
+    implementation: 'builtin',
+    platform: 'result',
+    description: 'Deliver the answer',
+    input_schema: { type: 'object', properties: { answer: { type: 'string', required: true, description: 'The answer' } } },
+  };
+}
 
 function delegateFunction(target, { name = 'brain', extra = {}, source = 'static' } = {}) {
   return {
@@ -300,6 +312,89 @@ describe('delegate builtin validation', () => {
         expect(res.body.message).toMatch(/both agents declare a function named "get_slots"/);
         expect(namesOf((await Agent.findByPk(brainId)).functions)).toEqual(['get_slots']);
       });
+    });
+
+    describe('a result function on the delegate', () => {
+      const owner = () => ({ userId: user.id, organisationId: user.organisationId });
+
+      test('rejects a hosted backend that declares one, and names the fix', async () => {
+        const res = makeRes(user);
+        await createAgentSet(makeReq(setDocument({ brainFunctions: [resultFunction()] })), res);
+        expect(res.statusCode).toBe(400);
+        expect(res.body.message).toMatch(/Agent "brain" is the GPT-Live backend of "voice" \(function brain\)/);
+        expect(res.body.message).toMatch(/remove its result function "backend_result" \(list it in removeFunctions\)/);
+      });
+
+      test('accepts one on a client-delegation backend', async () => {
+        const doc = setDocument({ brainFunctions: [resultFunction()] });
+        doc.agents[1].modelName = CLIENT_TEXT_MODEL;
+        const res = makeRes(user);
+        await createAgentSet(makeReq(doc), res);
+        expect(res.statusCode).toBe(200);
+      });
+
+      test('a patch is refused while the pair carries one, and removeFunctions clears it', async () => {
+        const res = makeRes(user);
+        await createAgentSet(makeReq(setDocument()), res);
+        expect(res.statusCode).toBe(200);
+        const setId = res.body.id;
+        const brainId = res.body.agents.find((a) => a.label === 'brain').id;
+
+        await expect(patchAgentSetForAgent(setId, {
+          agents: [{ label: 'brain', functions: [resultFunction()] }],
+        }, owner())).rejects.toThrow(/remove its result function "backend_result"/);
+
+        // A row that already carries one: an unrelated edit is refused until it goes.
+        const row = await Agent.findByPk(brainId);
+        await row.update({ functions: [resultFunction()] });
+        await expect(patchAgentSetForAgent(setId, {
+          agents: [{ label: 'voice', prompt: 'You are Sam, v2.' }],
+        }, owner())).rejects.toThrow(/is the GPT-Live backend of "voice"/);
+        await expect(patchAgentSetForAgent(setId, {
+          agents: [{ label: 'brain', removeFunctions: ['backend_result'] }],
+        }, owner())).resolves.toBeDefined();
+        expect((await Agent.findByPk(brainId)).functions).toEqual([]);
+      });
+    });
+  });
+
+  describe('a result function on a delegate target outside a set', () => {
+    let updateAgent;
+    beforeAll(async () => {
+      updateAgent = (await import('../api/paths/agents/{agentId}.js')).default(mockLogger).PUT;
+    });
+    const update = async (agentId, body) => {
+      const res = makeRes(user);
+      await updateAgent(makeReq(body, { agentId }), res);
+      return res;
+    };
+    const textAgentWith = (functions) => Agent.create({
+      name: 'Stored backend', modelName: TEXT_MODEL, type: 'text', prompt: 'You are the backend.',
+      functions, userId: user.id, organisationId: org.id,
+    });
+
+    test('a new voice agent may not delegate to a stored hosted backend that carries one', async () => {
+      const backend = await textAgentWith([resultFunction()]);
+      const res = await create({ modelName: GPT_LIVE, functions: [delegateFunction(backend.id)] });
+      expect(res.statusCode).toBe(400);
+      expect(errorText(res)).toMatch(/Agent "Stored backend" is the GPT-Live backend of .*remove its result function "backend_result"/);
+    });
+
+    test('an agent something delegates to may not gain one, unless it moves to client delegation', async () => {
+      const backend = await textAgentWith([]);
+      const voice = await create({ modelName: GPT_LIVE, functions: [delegateFunction(backend.id)] });
+      expect(voice.statusCode).toBe(200);
+
+      const added = await update(backend.id, { functions: [resultFunction()] });
+      expect(added.statusCode).toBe(400);
+      expect(added.body.message).toMatch(/Agent "Stored backend" is the GPT-Live backend of Sam \(function brain \(delegate\)\)/);
+      expect((await Agent.findByPk(backend.id)).functions).toEqual([]);
+
+      const client = await update(backend.id, { modelName: CLIENT_TEXT_MODEL, functions: [resultFunction()] });
+      expect(client.statusCode).toBe(200);
+      // Moving back onto an OpenAI model with the function still there is the same fault.
+      const back = await update(backend.id, { modelName: TEXT_MODEL });
+      expect(back.statusCode).toBe(400);
     });
   });
 });
