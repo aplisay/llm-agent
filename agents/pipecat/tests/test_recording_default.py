@@ -14,7 +14,15 @@ option and you cannot express "on" by saying nothing. Say what you mean.
 
 from __future__ import annotations
 
+import pytest
+
 from pipecat_aplisay.call_session import _resolve_recording_options
+
+
+@pytest.fixture(autouse=True)
+def recording_storage(monkeypatch, tmp_path):
+    # A requested recording is dropped when no storage is configured.
+    monkeypatch.setenv("RECORDING_STORAGE_PATH", f"file://{tmp_path}")
 
 
 def _agent(recording=None) -> dict:
@@ -77,3 +85,11 @@ class TestKeyHandling:
         agent = _agent({"enabled": True, "key": "agent-key"})
         instance = {"recording": {"key": "listener-key"}}
         assert _resolve_recording_options(agent, instance).key == "listener-key"
+
+
+class TestStorage:
+    def test_no_storage_means_no_recording(self, monkeypatch, tmp_path) -> None:
+        for name in ("RECORDING_STORAGE_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIAL", "K_SERVICE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.chdir(tmp_path)  # no credentials/google.json here
+        assert _resolve_recording_options(_agent({"enabled": True}), {}).enabled is False

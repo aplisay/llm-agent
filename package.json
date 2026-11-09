@@ -5,12 +5,15 @@
   "type": "module",
   "main": "index.mjs",
   "packageManager": "yarn@1.22.22",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "predevelop": "cd agents/livekit && yarn build",
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
-    "prestart": "cd agents/livekit && yarn build",
+    "prestart": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "start": "NODE_ENV=production node index.mjs",
-    "prestage": "cd agents/livekit && yarn build",
+    "prestage": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
     "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --verbose",
     "test:db": "yarn test:setup && yarn test && yarn test:cleanup",
@@ -18,10 +21,12 @@
     "test:ci": "docker-compose -f docker-compose.ci.yml build --no-cache test-runner && docker-compose -f docker-compose.ci.yml up --abort-on-container-exit --exit-code-from test-runner",
     "test:cleanup": "docker-compose -f tests/docker-compose.test.yml down -v",
     "test:setup": "docker-compose -f tests/docker-compose.test.yml up -d",
-    "livekit-dev": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml agents/livekit/realtime.mjs dev",
+    "livekit-dev": "(cd agents/livekit && yarn build) && NODE_ENV=development LOGLEVEL=debug nodemon --spawn --watch agents/livekit/dist --delay 3 agents/livekit/dist/realtime.js dev",
     "bootstrap": "node scripts/bootstrap.mjs",
-    "auth:generate": "better-auth generate --config scripts/better-auth-config.mjs",
-    "auth:migrate": "better-auth migrate --config scripts/better-auth-config.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "env:generate": "node scripts/env-schema/generate.mjs",
+    "auth:generate": "npx --yes @better-auth/cli@1.4.21 generate --config scripts/better-auth-config.mjs",
+    "auth:migrate": "npx --yes @better-auth/cli@1.4.21 migrate --config scripts/better-auth-config.mjs",
     "eval:builder": "node tools/builder-eval/run.mjs"
   },
   "author": "",
@@ -64,7 +69,6 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@better-auth/cli": "^1.4.21",
     "gulp": "^4.0.2",
     "gulp-exec": "^5.0.0",
     "gulp-rename": "^2.0.0",

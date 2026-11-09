@@ -1,0 +1,24 @@
+# Level 1 smoke test on every pull request to next: build and start the
+# compose stack, use the first API key, create an agent on the keyless stub
+# model, run one text chat round trip, tear down. See scripts/smoke.sh.
+name: Smoke test
+
+on:
+  pull_request:
+    branches: [next]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Run scripts/smoke.sh
+        run: scripts/smoke.sh

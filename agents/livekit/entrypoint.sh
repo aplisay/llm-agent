@@ -41,8 +41,7 @@ if [ -n "${GOOGLE_SECRETENV_PATH:-}" ] || { [ -n "${SECRETENV_KEY:-}" ] && [ -n 
     eval "$SECRETENV_EXPORTS"
     unset SECRETENV_EXPORTS
 else
-    echo "entrypoint: no GOOGLE_SECRETENV_PATH and no SECRETENV_* in the environment" >&2
-    echo "entrypoint: starting anyway — the agent will run without decrypted secrets" >&2
+    echo "entrypoint: no GOOGLE_SECRETENV_PATH and no SECRETENV_* pair: using the plain environment" >&2
 fi
 
 exec node "$APP_DIR/dist/realtime.js" "$@"

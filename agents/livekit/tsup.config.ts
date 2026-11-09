@@ -24,7 +24,7 @@ const defaultOptions: Options = {
     "agent-lib/database.js",
     "agent-lib/function-handler.js",
   ],
-  onSuccess: "mkdir -p dist/agent-lib && cp -rp agent-lib/* dist/agent-lib/",
+  onSuccess: "node scripts/copy-agent-lib.mjs",
 };
 export default defaultOptions;
 

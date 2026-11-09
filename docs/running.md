@@ -2,9 +2,11 @@
 
 How to get from a clone to an agent you can talk to: install, environment, database, workers, tests and deployment. For what the pieces *are*, read the [architecture overview](architecture.md) first.
 
+To run the whole stack in containers instead, with one command, see [self-hosting/quickstart-local.md](self-hosting/quickstart-local.md).
+
 ## Prerequisites
 
-- **Node.js 22+** and **yarn 1.x** (the production image is built `FROM node:22`).
+- **Node.js 22 LTS or 24** and **yarn 1.x**. Node 23 is not supported: the test tools refuse to install on it. `.nvmrc` names 22 for `nvm use`.
 - **PostgreSQL** (CI runs against Postgres 15). For a throwaway local instance:
 
   ```shell
@@ -27,20 +29,30 @@ The LiveKit worker is compiled automatically (`predevelop`/`prestart` run its `y
 
 ## Configure
 
-Copy the annotated template and edit it — `environment-example` is the reference for every variable, with inline comments:
+Copy the template and edit it. It lists the variables most installs need, all providers commented out:
 
 ```shell
 cp environment-example .env
 ```
 
+[self-hosting/configuration.md](self-hosting/configuration.md) describes every variable each component reads. Both files are generated from `config/env.schema.json` (`yarn env:generate`). Settings for user sign-up and email, which only a front end such as polite.ai needs, are in `environment-example.polite-ai`.
+
+Check the result before you start the server:
+
+```shell
+yarn doctor
+```
+
+It lists each runtime and provider as enabled or disabled, names the variables a disabled one is missing, and checks that the database answers. The server prints the same table at start, and `GET /api/health` returns it as JSON with no API key. A value written as `<...>` is treated as unset.
+
 The essentials, by group:
 
 | Group | Variables | Notes |
 |---|---|---|
-| Core | `WS_PORT`, `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; pino level |
+| Core | `WS_PORT` (or `PORT`), `LOGLEVEL` | HTTP + WebSocket listen port, default `4000`; `WS_PORT` wins when both are set. pino level |
 | Database | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | Optional mTLS via `POSTGRES_CA/CERT/KEY`. In `NODE_ENV=development` the schema syncs automatically; in production upgrades run through the internal schema-version gate — never set `DB_FORCE_SYNC` there. The schema work every process runs at start is serialised across processes by a Postgres advisory lock (`lib/boot-lock.js`), so replicas starting together take turns rather than racing |
 | Secrets at rest | `CREDENTIALS_KEY` | Encrypts stored SIP passwords and key material. Unset ⇒ plaintext with a logged warning; set it (`openssl rand -base64 32`) in every real deployment |
-| Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`) add user sign-in for multi-user deployments and are optional |
+| Auth | `BOOTSTRAP_API_KEY`, or run `yarn bootstrap` | Every request needs an API key: see [First API key](#first-api-key). Firebase (legacy) and better-auth (`BETTER_AUTH_*`, see `environment-example.polite-ai`) add user sign-in for multi-user deployments and are optional |
 | LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_PROJECT_ID` + `GOOGLE_APPLICATION_CREDENTIALS`, `ULTRAVOX_API_KEY` | Enable only what this deployment uses |
 | Speech | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `NEUPHONIC_API_KEY`, `CARTESIA_API_KEY`, Google credentials as above | Needed for pipeline (non speech-to-speech) models |
 | LiveKit runtime | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | LiveKit Cloud or self-hosted |
@@ -80,7 +92,7 @@ yarn develop   # NODE_ENV=development, nodemon, debug logging
 yarn start     # production mode
 ```
 
-The API and WebSocket listen on `WS_PORT` (default 4000). Sanity-check with the model catalogue:
+The API and WebSocket listen on `WS_PORT`, else `PORT`, else 4000. Sanity-check with the model catalogue:
 
 ```shell
 curl -H "Authorization: Bearer $APLISAY_KEY" http://localhost:4000/api/models
@@ -92,7 +104,7 @@ The REST surface is defined in [`api/api-doc.yaml`](../api/api-doc.yaml) and bro
 
 The API server alone can run **Ultravox** agents (their cloud is the runtime) and headless **text** agents. Everything else needs its runtime worker:
 
-- **LiveKit** (`agents/livekit`, TypeScript): for development, `yarn livekit-dev` from the repo root; in production it runs as its own container, built from that directory.
+- **LiveKit** (`agents/livekit`, TypeScript): for development, `yarn livekit-dev` from the repo root. It builds the worker and runs it with the same `.env` as the API server. In production it runs as its own container, built with `docker build -f agents/livekit/Dockerfile .` from the repo root.
 - **Pipecat** (`agents/pipecat`, Python): managed with `uv`, launched with an explicit SIP gateway selection and env file (it does not read `.env` implicitly), e.g.
 
   ```shell
@@ -115,8 +127,27 @@ Some suites exercise live external services (e.g. ElevenLabs voices, jambonz.clo
 
 ## Deploying
 
-- **Docker**: the top-level `Dockerfile` builds the API server image (Node 22); worker images build from their `agents/<runtime>` directories.
-- **Google Cloud Run / Cloud Build**: pipelines in `deploy/gcp/cloudrun/` cover the server and each worker, including staging variants; `deploy/bundle-secretenv.sh` bundles encrypted environment for images.
-- **Kubernetes**: Pipecat worker + SIP gateway manifests in `agents/pipecat/deploy/k8s`.
+Every image builds with the repo root as the build context:
+
+| Image | Build command |
+|---|---|
+| API server | `docker build -f Dockerfile .` |
+| LiveKit worker | `docker build -f agents/livekit/Dockerfile .` |
+| Pipecat worker | `docker build -f agents/pipecat/Dockerfile .` |
+| sipbridge (Pipecat SIP gateway) | `docker build -f agents/pipecat/sipbridge/Dockerfile .` |
+| Jambonz worker | `docker build -f agents/jambonz/Dockerfile .` |
+
+**Public images.** Once the repository variable `PUBLISH_PUBLIC_IMAGES` is set to `true`, each version tag publishes `ghcr.io/aplisay/aplisay-api`, `aplisay-livekit-worker`, `aplisay-pipecat-worker` and `aplisay-sipbridge` for amd64 and arm64, with an SBOM (`.github/workflows/release-images.yml`). They carry no credentials: set `GOOGLE_CREDENTIAL` and `GOOGLE_APPLICATION_CREDENTIALS` and the API server and LiveKit worker write the credential file at start.
+
+**Configuration.** Every image reads plain environment variables, the same names as `.env`. Pass them with `docker run -e`, an env file, a Kubernetes Secret or your platform's settings. [secretenv](https://github.com/rjp44/secretenv) is optional: it lets a deploy ship the whole environment as one encrypted value (`SECRETENV_KEY` plus `SECRETENV_BUNDLE`), and an image with neither set reads its environment as given. `deploy/bundle-secretenv.sh` makes such a pair from an env file.
+
+Where Aplisay's own deploy files live, for reference:
+
+- **Cloud Build** (`deploy/gcp/cloudrun/`, `cloudbuild-release.yaml`): builds the images. The API server and the Jambonz worker run on Cloud Run.
+- **LiveKit worker**: Docker Compose on Compute Engine VMs, `agents/livekit/deploy/gcp/`.
+- **Pipecat worker and SIP gateways**: Kubernetes, `agents/pipecat/deploy/k8s/`, or Compute Engine VMs, `agents/pipecat/deploy/gcp/`.
+- **API server on Kubernetes**: `deploy/k8s/beta/`.
+
+These name Aplisay's projects, hosts and registries. Treat them as examples.
 
 Production checklist: API keys kept secret and `SHARED_API_TOKEN` set to a random value, user sign-in configured if you need it (Firebase or `BETTER_AUTH_ENABLED=true`), `CREDENTIALS_KEY` set, `DB_FORCE_SYNC` unset, recording bucket configured if used, and your authentication and multi-tenancy configuration reviewed. Vulnerability reports go via [SECURITY.md](../SECURITY.md).

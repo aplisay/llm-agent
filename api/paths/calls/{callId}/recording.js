@@ -1,15 +1,12 @@
 import { Call, CallRecordingDownload } from '../../../../lib/database.js';
-import { Storage } from '@google-cloud/storage';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import {
   GcmDecryptStream,
-  parseGcsPath,
-  defaultRecordingBaseUrl,
+  recordingStorageConfig,
+  openRecordingStore,
 } from '../../../../lib/recording/index.js';
 
 export default function (logger) {
-  const storage = new Storage();
-
   const getCallRecording = async (req, res) => {
     if (!requirePermission(res, 'recording', 'download')) return;
     const { callId } = req.params;
@@ -27,6 +24,11 @@ export default function (logger) {
       return res.status(404).send({ error: 'Recording not found for this call' });
     }
 
+    const storageConfig = recordingStorageConfig();
+    if (!storageConfig.enabled) {
+      return res.status(503).send({ error: `Recording storage is not configured: ${storageConfig.reason}` });
+    }
+
     // Log download for billing / audit
     try {
       await CallRecordingDownload.create({
@@ -39,15 +41,14 @@ export default function (logger) {
       logger.error({ err, callId: call.id }, 'failed to log recording download');
     }
 
-    const { bucket } = parseGcsPath(defaultRecordingBaseUrl());
+    const store = await openRecordingStore();
+    const bucket = store.bucket;
     const objectName = call.recordingId;
-    const file = storage.bucket(bucket).file(objectName);
 
-    // Diagnostics: log recording metadata and GCS object size to debug empty recordings
+    // Diagnostics: log recording metadata and object size to debug empty recordings
     let objectSize = null;
     try {
-      const [metadata] = await file.getMetadata();
-      objectSize = metadata?.size != null ? Number(metadata.size) : null;
+      objectSize = await store.size(objectName);
     } catch (err) {
       logger.warn({ err, callId: call.id, objectName, bucket }, 'getCallRecording: could not get recording object metadata (object may not exist yet)');
     }
@@ -68,7 +69,7 @@ export default function (logger) {
       try {
         const key = Buffer.from(call.encryptionKey, 'base64');
         const decryptStream = new GcmDecryptStream(key);
-        const readStream = file.createReadStream();
+        const readStream = store.createReadStream(objectName);
 
         res.setHeader('Content-Type', 'audio/ogg');
         readStream
@@ -101,7 +102,7 @@ export default function (logger) {
     // Stream the file as-is so the client can decrypt when they provided the key.
     try {
       res.setHeader('Content-Type', 'application/octet-stream');
-      const readStream = file.createReadStream();
+      const readStream = store.createReadStream(objectName);
       readStream.on('error', (err) => {
         logger.error({ err, callId: call.id }, 'error reading recording from GCS');
         if (!res.headersSent) {
@@ -171,7 +172,6 @@ export default function (logger) {
 async function deleteCallRecording(req, res) {
   if (!requirePermission(res, 'recording', 'delete')) return;
   const { callId } = req.params;
-  const storage = new Storage();
 
   const where = { id: callId, ...res.locals.user.sql.where };
 
@@ -187,12 +187,11 @@ async function deleteCallRecording(req, res) {
       return res.status(404).send({ error: 'Recording not found for this call' });
     }
 
-    const { bucket } = parseGcsPath(defaultRecordingBaseUrl());
     const objectName = call.recordingId;
-    const file = storage.bucket(bucket).file(objectName);
 
     try {
-      await file.delete({ ignoreNotFound: true });
+      // With storage off the object cannot be reached; the metadata is still cleared.
+      if (recordingStorageConfig().enabled) await (await openRecordingStore()).delete(objectName);
     } catch (err) {
       // Log but still proceed with clearing metadata
       // eslint-disable-next-line no-console

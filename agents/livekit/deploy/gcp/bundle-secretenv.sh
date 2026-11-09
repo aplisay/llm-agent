@@ -41,7 +41,7 @@
 #   - gcloud (publish), openssl (key), node (+ npx)
 #   - the encryption uses the repo's local `secretenv` (node_modules) when
 #     present, so the bundle is wire-identical to what the container decrypts;
-#     otherwise it pulls github:rjp44/secretenv via npx.
+#     otherwise it pulls github:rjp44/secretenv#v1.0.5 via npx.
 
 set -euo pipefail
 
@@ -175,7 +175,7 @@ encrypt_bundle() {
         node "$REPO_ROOT/node_modules/dotenv/bin/secretenv.js" -p "$file" -e 2>/dev/null
     else
         command -v npx >/dev/null 2>&1 || { echo -e "${RED}npx not found and no local node_modules/secretenv${NC}" >&2; exit 3; }
-        npx --yes --quiet -p github:rjp44/secretenv secretenv -p "$file" -e 2>/dev/null
+        npx --yes --quiet -p github:rjp44/secretenv#v1.0.5 secretenv -p "$file" -e 2>/dev/null
     fi
 }
 

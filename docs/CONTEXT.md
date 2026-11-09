@@ -24,7 +24,7 @@ lives under `agents/`.
 - **yarn** at the repo root. **`agents/livekit`** is **TypeScript built with tsup**
   (`dist/`) and has its **own lockfile** (pnpm) — it is effectively a sub-project.
 - **Jest** tests, split into DB-backed and no-DB configs; DB tests use **docker-compose**.
-- TODO(domain): pin the Node version and any other version that changes commands.
+- Node 22 LTS or 24, pinned by `engines` in both `package.json` files and by `.nvmrc`.
 
 ## 3. Getting started
 
