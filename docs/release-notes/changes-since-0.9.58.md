@@ -159,6 +159,15 @@ Pipecat), and **ci** (build and release pipeline).
   Instances with Google credentials keep the old default bucket, and the start-up
   log asks for `RECORDING_STORAGE_PATH` to be set.
 
+## Call logs - livekit
+
+- **[livekit] Invocation log**: `GET /api/calls/{callId}/invocation-log` for a
+  LiveKit call now also holds the LiveKit Agents SDK and Ultravox plugin lines
+  at info and above: the provider connection, each speech turn, the caller
+  transcriptions and the close. These lines carry pino's `msg`, `level` and
+  `time` fields rather than `message`, `severity` and `timestamp`. The Ultravox
+  join URL is no longer logged.
+
 ## Upgrade notes
 
 - **[core] Gemini Live rate lines**: run `scripts/add-gemini-live-rate-lines.mjs`

@@ -4,6 +4,7 @@ import { createGcpLoggingPinoConfig } from "@google-cloud/pino-logging-gcp-confi
 const captureStats = {
   parsed: 0,
   parseErrors: 0,
+  sdk: 0,
 };
 
 const isProdLike =
@@ -81,6 +82,50 @@ let logBuffer: unknown[] | null = null;
 
 export function setInvocationLogBuffer(_buf: unknown[]): void {
   logBuffer = _buf;
+}
+
+const OTEL_LOGS_ENABLED = Symbol.for("@livekit/agents:otelEnabled");
+const sdkStreamsCaptured = new WeakSet<object>();
+
+type SdkMultistream = {
+  add(dest: { level: string; stream: { write(line: string): void } }): unknown;
+};
+
+// The SDK bundles its own pino copy, so its Symbol("pino.stream") is not ours: match by description.
+function pinoStreamOf(sdkLogger: object): unknown {
+  for (let o: object | null = sdkLogger; o; o = Object.getPrototypeOf(o)) {
+    const sym = Object.getOwnPropertySymbols(o).find((s) => s.description === "pino.stream");
+    if (sym) return (o as Record<symbol, unknown>)[sym];
+  }
+  return undefined;
+}
+
+/**
+ * Copies info-and-above lines from the agents-js logger (which plugins also log through) into the
+ * invocation log buffer, redacted like our own lines. Returns false when that logger has no
+ * multistream to add to.
+ */
+export function captureSdkLogs(sdkLogger: object): boolean {
+  const stream = pinoStreamOf(sdkLogger) as SdkMultistream | undefined;
+  if (typeof stream?.add !== "function") return false;
+  if (sdkStreamsCaptured.has(stream)) return true;
+  sdkStreamsCaptured.add(stream);
+  stream.add({
+    level: "info",
+    stream: {
+      write(line: string) {
+        // With LiveKit Cloud log export on, worker.ts already buffers these lines from the exporter.
+        if (!logBuffer || (globalThis as Record<symbol, unknown>)[OTEL_LOGS_ENABLED]) return;
+        try {
+          logBuffer.push(JSON.parse(redactLine(line)));
+          captureStats.sdk++;
+        } catch {
+          captureStats.parseErrors++;
+        }
+      },
+    },
+  });
+  return true;
 }
 
 export function getCaptureStats(): {

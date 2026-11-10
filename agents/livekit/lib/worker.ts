@@ -7,12 +7,13 @@ import {
   type JobContext,
   defineAgent,
   getJobContext,
+  log,
   telemetry,
   voice,
 } from "@livekit/agents";
 
 // Internal modules
-import logger from "./logger.js";
+import logger, { captureSdkLogs } from "./logger.js";
 import { agentForLog, instanceForLog } from "./log-fields.js";
 import { invocationLogs } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
@@ -161,6 +162,9 @@ export default defineAgent({
   entry: async (ctx: JobContext) => {
     const job = ctx.job;
     const room = job.room as unknown as Room;
+    if (!captureSdkLogs(log())) {
+      logger.warn("agents-js logger has no multistream; its lines stay out of the invocation log");
+    }
     logger.info({ job, room }, "new call");
 
     // Simulate standard Agents job environment so RecorderIO can write audio.ogg.

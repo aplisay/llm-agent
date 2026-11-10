@@ -1440,7 +1440,8 @@ export class RealtimeSession extends llm.RealtimeSession {
         const joinUrl = new URL(callResponse.joinUrl);
         joinUrl.searchParams.append("experimentalMessages", "debug");
 
-        this.#logger.info({ joinUrl, ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "Connecting to Ultravox WebSocket");
+        // No joinUrl: it opens the call's media socket, and these lines reach the customer's invocation log.
+        this.#logger.info({ ultravoxCallId: this.#callId, callId: this.#callCorrelationId }, "Connecting to Ultravox WebSocket");
         // Ordinals are per Ultravox call.
         this.#agentTranscriptOrdinal = undefined;
         this.#ws = new WebSocket(joinUrl.toString());
@@ -1472,9 +1473,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.#closing = false;
         this.#sessionId = this.#callId;
         this.#expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
-        this.#logger.info({ ultravoxCallId: this.#callId, joinURL: joinUrl?.toString() },
-          "Connected to Ultravox WebSocket"
-        );
+        this.#logger.info({ ultravoxCallId: this.#callId }, "Connected to Ultravox WebSocket");
 
         // Flush any buffered audio frames now that WebSocket is ready
         this.#flushAudioBuffer();
@@ -1624,7 +1623,7 @@ export class RealtimeSession extends llm.RealtimeSession {
             }
           }
           this.#sendTaskRunning = false;
-          this.#logger.debug({ ws: this.#ws, closing: this.#closing, readyState: this.#ws?.readyState }, "sendTask finished");
+          this.#logger.debug({ closing: this.#closing, readyState: this.#ws?.readyState }, "sendTask finished");
         };
 
         // Start sendTask and handle any unhandled rejections
@@ -1715,7 +1714,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   async close() {
-    this.#logger.info({ ws: this.#ws, call: this.#callId }, "closing call");
+    this.#logger.info({ readyState: this.#ws?.readyState, call: this.#callId }, "closing call");
     this.#vadStream?.close();
     this.#vadStream = undefined;
     if (!this.#ws) return;
