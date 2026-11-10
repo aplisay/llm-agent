@@ -57,7 +57,7 @@ The essentials, by group:
 | Speech | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `NEUPHONIC_API_KEY`, `CARTESIA_API_KEY`, Google credentials as above | Needed for pipeline (non speech-to-speech) models |
 | LiveKit runtime | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | LiveKit Cloud or self-hosted |
 | Pipecat runtime | `PIPECAT_WORKER_URL`, `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET`, `PIPECAT_PUBLIC_URL` | See worker section below |
-| Jambonz runtime | `JAMBONZ_SERVER`, `JAMBONZ_API_KEY`, `JAMBONZ_AGENT_NAME` | Requires a Jambonz instance/account with spare inbound numbers |
+| Jambonz runtime | `JAMBONZ_SERVER`, `JAMBONZ_API_KEY`, `JAMBONZ_AGENT_NAME` | Requires a Jambonz cluster or account with your SIP trunk connected |
 | Recording | `RECORDING_STORAGE_PATH` | `gs://bucket/prefix` for call recordings |
 
 ## Minimum viable setups
@@ -65,8 +65,10 @@ The essentials, by group:
 You don't need everything. Three sensible starting points:
 
 1. **WebRTC only (no telephony)** — Postgres + one LLM key + LiveKit credentials (+ Deepgram/ElevenLabs for pipeline voices). Agents are reachable in browser rooms; nothing SIP is involved.
-2. **Telephony via Jambonz** — the quickest route to a real phone number: a [Jambonz](https://jambonz.org) account with unallocated inbound numbers routed from your SIP trunk provider, STT/TTS credentials added on the Jambonz side, and the `JAMBONZ_*` variables here.
+2. **Telephony via Jambonz** — a [Jambonz](https://jambonz.org) cluster or account with your SIP trunk provider connected as a carrier, STT/TTS credentials added on the Jambonz side, and the `JAMBONZ_*` variables here. Numbers are created in this API; the Jambonz worker copies them to Jambonz at start.
 3. **Telephony via the Pipecat worker** — self-contained SIP using one of the supported gateways (bundled Go [`sipbridge`](sipbridge-integration.md), FreeSWITCH, [Voiceblender](voiceblender-integration.md) or Daily). Most control, most moving parts.
+
+[self-hosting/telephony-routes.md](self-hosting/telephony-routes.md) compares the routes to the phone network, and [self-hosting/choose-a-runtime.md](self-hosting/choose-a-runtime.md) the runtimes.
 
 ## First API key
 
@@ -98,7 +100,7 @@ The API and WebSocket listen on `WS_PORT`, else `PORT`, else 4000. Sanity-check 
 curl -H "Authorization: Bearer $APLISAY_KEY" http://localhost:4000/api/models
 ```
 
-The REST surface is defined in [`api/api-doc.yaml`](../api/api-doc.yaml) and browsable as a hosted reference at [llm.aplisay.com/api](https://llm.aplisay.com/api). The open-source [llm-frontend](https://github.com/aplisay/llm-frontend) gives you a UI over your own instance.
+The REST surface is defined in [`api/api-doc.yaml`](../api/api-doc.yaml) and browsable as a hosted reference at [llm.aplisay.com/api](https://llm.aplisay.com/api). The compose stack includes a small test page for talking to an agent in the browser: see [self-hosting/quickstart-local.md](self-hosting/quickstart-local.md).
 
 ## Workers
 

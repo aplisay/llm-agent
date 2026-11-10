@@ -1,0 +1,63 @@
+name: Bug report
+description: Something does not work as the docs say it should.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read docs/self-hosting/troubleshooting.md first.
+        Remove API keys, passwords and real phone numbers before you post.
+        Report a security problem privately, as SECURITY.md describes, not here.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: A release tag, or the output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: How you run it
+      options:
+        - Docker Compose (compose.yaml)
+        - From source
+        - My own deployment
+        - Aplisay hosted service
+    validations:
+      required: true
+
+  - type: textarea
+    id: health
+    attributes:
+      label: Output of GET /api/health
+      description: It holds names only, no values.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: Commands or API calls, in order.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include log lines from the API server and the worker.
+    validations:
+      required: true

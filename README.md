@@ -67,17 +67,20 @@ yarn develop
 
 You'll need Node 22 LTS or 24 (Node 23 is not supported), PostgreSQL, and credentials for at least one LLM provider and one runtime. The **[running guide](docs/running.md)** walks through environment configuration, minimum viable setups (WebRTC-only or full telephony), starting the workers, tests and deployment.
 
+The **[self-hosting pages](docs/self-hosting/README.md)** cover the rest: which runtime to choose, routes to the phone network, a production checklist, upgrades and troubleshooting. They also say what is in this repo and what is not. The carrier edge that Aplisay operates is not, and you do not need it: a self-hosted instance connects to any SIP trunk.
+
 ## The API
 
 Everything is a REST resource, described by an OpenAPI document and browsable at [llm.aplisay.com/api](https://llm.aplisay.com/api): create an **agent** from a JSON definition, activate it as a **listener** on a phone number or WebRTC room, then watch **calls**, transcripts, recordings and usage flow from it. A WebSocket feed streams every utterance, tool call and result in real time — the Playground's live trace is just this feed.
 
-Client-side, [llm-frontend](https://github.com/aplisay/llm-frontend) is an open-source web client for the whole API, and [`@aplisay/react-widget`](https://www.npmjs.com/package/@aplisay/react-widget) embeds agent audio in your own site.
+Client-side, [`@aplisay/react-widget`](https://www.npmjs.com/package/@aplisay/react-widget) embeds agent audio in your own site, and the compose stack includes a small test page for talking to an agent in the browser.
 
 ## Documentation
 
 | Topic | Doc |
 |---|---|
-| Install, configure, first call | [Running llm-agent](docs/running.md) |
+| Self-hosting: quickstart, runtimes, telephony, upgrades, troubleshooting | [Self-hosting](docs/self-hosting/README.md) |
+| Run from source, configure, first call | [Running llm-agent](docs/running.md) |
 | System design and scaling | [Architecture overview](docs/architecture.md) |
 | Transfers, handback, redirects | [Call transfers](docs/call-transfers.md) |
 | Recording and retrieval | [Call recording](docs/call-recording.md) |
@@ -96,6 +99,6 @@ We build and operate the full stack — this platform, the browser widget, and t
 
 ## Contributing, security, licence
 
-Issues and pull requests are welcome — `yarn test:no-db` runs the fast suite, and [docs/ci-testing.md](docs/ci-testing.md) describes the full gate. Please report vulnerabilities privately per [SECURITY.md](SECURITY.md).
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md). AI coding assistants should start with [AGENTS.md](AGENTS.md). Support for self-hosted instances is best effort. Please report vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
 Released under the [MIT licence](LICENCE), © Aplisay Ltd.
