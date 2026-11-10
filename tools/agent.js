@@ -48,7 +48,7 @@ if (!command || command === 'help' || options.help) {
   console.log('          --help: Show this help message');
   console.log(`Examples: ${progName} start --file agent.json --number 1234567890`);
   console.log(`          ${progName} start --file agent.json`);
-  console.log(`          ${progName} dev --file agent.json --number 1234567890 --key NCmQg2Pgd3bCBssUPzEPJToREPt4Upqgm6UmU52C9uM9gI19`);
+  console.log(`          ${progName} dev --file agent.json --number 1234567890 --key <your-api-key>`);
   !command && !options.help && console.error("Please specify a command");
   process.exit(1);
 }
