@@ -4,10 +4,8 @@
 #   scripts/compose-setup.sh     # once: writes .env with random secrets
 #   docker compose up --build
 #
-# A bare `docker compose up` starts the default set below. Run
-# `scripts/compose-setup.sh` first to get random secrets and a first API key;
-# without it the services use the fixed development values below and you get
-# a key with `docker compose exec api yarn bootstrap`.
+# Compose stops with an error until .env has the secrets that
+# scripts/compose-setup.sh writes, or values you set yourself.
 #
 # Ports are published on 127.0.0.1 only. Set APLISAY_BIND=0.0.0.0 to publish
 # them on every interface, and use the edge profile for TLS on a public host.
@@ -37,7 +35,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-llmvoice}
       POSTGRES_USER: ${POSTGRES_USER:-llm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aplisay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/compose-setup.sh}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -60,14 +58,14 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-llmvoice}
       POSTGRES_USER: ${POSTGRES_USER:-llm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aplisay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/compose-setup.sh}
       SERVICE_BASE_URI: http://api:4000
-      SHARED_API_TOKEN: ${SHARED_API_TOKEN:-insecure-development-token-run-compose-setup}
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN:?run scripts/compose-setup.sh}
       # Handed to browsers in room join answers, so it must be reachable from
       # them. The API itself only dials LiveKit for outbound SIP calls.
       LIVEKIT_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?run scripts/compose-setup.sh}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?run scripts/compose-setup.sh}
       # scripts/smoke.sh sets it to list the keyless text:stub/echo model.
       APLISAY_STUB_MODEL: ${APLISAY_STUB_MODEL:-}
       # The worker writes recordings here and the API serves them back.
@@ -101,7 +99,7 @@ services:
           use_external_ip: false
           node_ip: ${LIVEKIT_NODE_IP:-127.0.0.1}
         keys:
-          ${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+          ${LIVEKIT_API_KEY:?run scripts/compose-setup.sh}: ${LIVEKIT_API_SECRET:?run scripts/compose-setup.sh}
         redis:
           address: ${LIVEKIT_REDIS_ADDRESS:-}
         logging:
@@ -132,10 +130,10 @@ services:
         required: false
     environment:
       LIVEKIT_URL: ws://127.0.0.1:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?run scripts/compose-setup.sh}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?run scripts/compose-setup.sh}
       SERVICE_BASE_URI: http://api:4000
-      SHARED_API_TOKEN: ${SHARED_API_TOKEN:-insecure-development-token-run-compose-setup}
+      SHARED_API_TOKEN: ${SHARED_API_TOKEN:?run scripts/compose-setup.sh}
       NUM_IDLE_PROCESSES: ${NUM_IDLE_PROCESSES:-1}
       RECORDING_STORAGE_PATH: ${RECORDING_STORAGE_PATH:-file:///data/recordings}
     volumes:
@@ -177,8 +175,8 @@ services:
     network_mode: host
     environment:
       SIP_CONFIG_BODY: |
-        api_key: ${LIVEKIT_API_KEY:-devkey}
-        api_secret: ${LIVEKIT_API_SECRET:-insecure-development-secret-0123456789}
+        api_key: ${LIVEKIT_API_KEY:?run scripts/compose-setup.sh}
+        api_secret: ${LIVEKIT_API_SECRET:?run scripts/compose-setup.sh}
         ws_url: ws://127.0.0.1:7880
         redis:
           address: 127.0.0.1:6379

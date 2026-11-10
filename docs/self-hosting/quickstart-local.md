@@ -18,9 +18,8 @@ random secrets: a first API key (`BOOTSTRAP_API_KEY`), `CREDENTIALS_KEY`,
 API key and the URLs. It keeps any value already in `.env`, so it is safe to
 run again.
 
-A bare `docker compose up` without the script also works. The services then use
-fixed development secrets from `compose.yaml`, and you create a key with
-`docker compose exec api yarn bootstrap`.
+`compose.yaml` has no default secrets. Compose stops with an error until `.env`
+has them, so run the script before the first `docker compose` command.
 
 The first build takes a few minutes. When the API is up:
 
