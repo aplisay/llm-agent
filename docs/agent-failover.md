@@ -85,6 +85,15 @@ An agent that waits for the caller to speak first may not speak within 15 second
 
 On Pipecat, a failure in the window can only be followed by another attempt on the websocket SIP gateways (sipbridge, FreeSWITCH and voiceblender), where the call can move to a fresh pipeline. On Daily, a failure once the pipeline has started ends the call as before; failures while the agent is being built still trigger failover.
 
+### LLM errors after start-up (LiveKit pipeline agents)
+
+A LiveKit pipeline agent (separate speech-to-text, LLM and text-to-speech) whose LLM keeps failing after the start-up window does not leave the caller in silence. The agent says a short line through its own text-to-speech, then ends the call with the reason `LLM error`. This happens on:
+
+- the first LLM error that will not clear by itself: an HTTP 4xx other than 408 and 429, such as a rejected API key, no access to the model, or an unknown model
+- the second unrecoverable LLM error in a row, for any other cause. The count starts again each time the agent speaks
+
+The line is the `text` of `options.fallback.message` when the agent has one, spoken in the agent's own voice. Otherwise it is "Sorry, I'm having a technical problem and can't continue this call. Please try again later." Nothing happens while the caller is bridged to a transfer, on hold for a consult, or during an agent handover. A failure inside the start-up window still goes to the fallback chain.
+
 ### Limitations
 
 Whilst failover can be used to provide resilience by failing over to other model vendors or blind transferring calls to a phone number,
