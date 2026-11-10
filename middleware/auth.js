@@ -137,7 +137,8 @@ function init(app, logger) {
 
     // agent-db routes are internal-only: they must be called with x-shared-token.
     // Tenant auth (Firebase / AuthKey) must never be able to access these routes.
-    const isAgentDbPath = req.originalUrl.startsWith('/api/agent-db');
+    // Match the way the router does: on the parsed path, ignoring case.
+    const isAgentDbPath = /^\/api\/agent-db(\/|$)/i.test(req.path);
     
     // A b2bua node announcing itself needs exactly one route, and it runs on
     // the most exposed machines in the estate — internet-facing SIP, reachable
