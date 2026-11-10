@@ -27,6 +27,10 @@ automatically at boot.
 | `agents.options.recording.key` | string nested in JSONB |
 | `instances.recording.key` | string nested in JSONB |
 
+Registrar accounts also carry `phone_registrations.ha1` and `ha1b`: MD5 digest
+hashes, kept unencrypted by design so a SIP edge without `CREDENTIALS_KEY` can
+verify. They are never returned by the API and are outside the audit and sweep.
+
 (Organisation BYOK provider keys — `organisation_keys.value` — are fail-closed
 from birth and never have plaintext rows, so they are not part of this sweep.)
 
