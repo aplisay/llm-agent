@@ -127,7 +127,8 @@ Pipecat), and **ci** (build and release pipeline).
   ports on 127.0.0.1. Optional `sip-livekit` and `edge` (Caddy) profiles. See
   [quickstart-local.md](../self-hosting/quickstart-local.md).
 - **[core] `scripts/compose-setup.sh`** writes `.env` with random secrets and a
-  first API key, and prints the key and the URLs.
+  first API key, and prints the key and the URLs. `compose.yaml` has no default
+  secrets and stops with an error until `.env` has them.
 - **[core] `SERVICE_BASE_URI`**: documented as the API server's base URL
   without `/api`, which is what the workers expect.
 - **[ci] Public images**: when the repository variable
