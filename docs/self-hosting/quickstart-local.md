@@ -1,3 +1,10 @@
+---
+title: Run the stack locally with Docker Compose
+description: The API server, PostgreSQL, a LiveKit server, the LiveKit worker and a test page on one machine.
+audience: operator
+status: current
+---
+
 # Run the stack locally with Docker Compose
 
 This brings up the API server, PostgreSQL, a LiveKit server, the LiveKit worker
@@ -84,6 +91,17 @@ set both to this host's address.
   `APLISAY_DOMAIN`, `LIVEKIT_DOMAIN` and `LIVEKIT_PUBLIC_URL` first.
 
 The Pipecat worker and its SIP gateway are not in `compose.yaml` yet.
+[telephony-routes.md](telephony-routes.md) describes each route to the phone
+network.
+
+## Next
+
+- [choose-a-runtime.md](choose-a-runtime.md): the other runtimes and the keys
+  each model needs.
+- [troubleshooting.md](troubleshooting.md): when something does not start.
+- [production-checklist.md](production-checklist.md): before the instance is
+  reachable from the internet.
+- [upgrading.md](upgrading.md): moving to a newer version.
 
 ## Smoke test
 

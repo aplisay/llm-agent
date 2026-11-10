@@ -6,7 +6,13 @@ Index of the docs in this directory. Start with the first table if you're new; t
 
 | Doc | What it covers |
 |---|---|
+| [self-hosting/README.md](self-hosting/README.md) | Self-hosting index: what is in the repo and what is not, and how to get access |
 | [self-hosting/quickstart-local.md](self-hosting/quickstart-local.md) | The whole stack on one machine with Docker Compose |
+| [self-hosting/choose-a-runtime.md](self-hosting/choose-a-runtime.md) | The five runtimes, what each needs, and which to enable first |
+| [self-hosting/telephony-routes.md](self-hosting/telephony-routes.md) | The open routes to the phone network: LiveKit SIP, `sipbridge`, Jambonz |
+| [self-hosting/production-checklist.md](self-hosting/production-checklist.md) | What to check before an instance is reachable from the internet |
+| [self-hosting/upgrading.md](self-hosting/upgrading.md) | Moving to a newer version, including the database schema step |
+| [self-hosting/troubleshooting.md](self-hosting/troubleshooting.md) | Common faults by symptom |
 | [running.md](running.md) | Install, environment, database, workers, tests, deployment |
 | [self-hosting/configuration.md](self-hosting/configuration.md) | Every environment variable, by component (generated from `config/env.schema.json`) |
 | [architecture.md](architecture.md) | Control plane vs realtime plane, components, life of a call, scaling |
@@ -78,4 +84,4 @@ Index of the docs in this directory. Start with the first table if you're new; t
 ## Working documents
 
 Design plans and internal records — useful history, not user documentation:
-[implementation/](implementation/) (auth, RBAC, users API, rate-card plans and custom voices) · [release-notes/](release-notes/) · [plan-recording-rest-and-options.md](plan-recording-rest-and-options.md) · [CONTEXT.md](CONTEXT.md) (contributor/agent onboarding).
+[implementation/](implementation/) (auth, RBAC, users API, rate-card plans and custom voices) · [release-notes/](release-notes/) · [plan-recording-rest-and-options.md](plan-recording-rest-and-options.md) · [CONTEXT.md](CONTEXT.md) (contributor/agent onboarding; see also [../AGENTS.md](../AGENTS.md) and [../CONTRIBUTING.md](../CONTRIBUTING.md)).

@@ -1,0 +1,42 @@
+name: Question
+description: Help with running or using the platform. Support is best effort.
+title: "[question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read docs/self-hosting/troubleshooting.md first.
+        Support is best effort, with no promised response time.
+        Remove API keys, passwords and real phone numbers before you post.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What you are trying to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands or API calls, and what came back.
+    validations:
+      required: true
+
+  - type: textarea
+    id: health
+    attributes:
+      label: Output of GET /api/health
+      description: It holds names only, no values.
+      render: json
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: false
