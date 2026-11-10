@@ -14,7 +14,6 @@ const REALM = 'sip.test.polite.ai';
 // The digest HA1 pair (schema 72), computed independently of the model.
 const md5 = (v) => createHash('md5').update(v).digest('hex');
 const ha1Of = (username, password) => md5(`${username}:${REALM}:${password}`);
-const ha1bOf = (username, password) => md5(`${username}@${REALM}:${REALM}:${password}`);
 
 describe('registrar accounts', () => {
   let testOrgId;
@@ -113,9 +112,10 @@ describe('registrar accounts', () => {
     expect(row.state).toBe('initial');
     expect(row.b2buaId).toBeNull();
     expect(row.bindings).toBeNull();
-    // Schema 72: the HA1 pair beside the sealed password, for the edge.
+    // Schema 72: the HA1 beside the sealed password, for the edge. A new account has no previous hash.
     expect(row.ha1).toBe(ha1Of(r._body.username, r._body.password));
-    expect(row.ha1b).toBe(ha1bOf(r._body.username, r._body.password));
+    expect(row.previousHa1).toBeNull();
+    expect(row.previousHa1Until).toBeNull();
   });
 
   test('refuses an identity supplied by the caller', async () => {
@@ -216,10 +216,12 @@ describe('registrar accounts', () => {
     expect(row.password).toBe(rotate._body.password);
     expect(row.state).toBe('initial');
     expect(row.error).toBeNull();
-    // The HA1 pair follows the rotated password.
+    // The HA1 follows the rotated password, and the old one is kept for the 24 hour grace window.
     expect(row.ha1).toBe(ha1Of(createdRes._body.username, rotate._body.password));
-    expect(row.ha1).not.toBe(ha1Of(createdRes._body.username, createdRes._body.password));
-    expect(row.ha1b).toBe(ha1bOf(createdRes._body.username, rotate._body.password));
+    expect(row.previousHa1).toBe(ha1Of(createdRes._body.username, createdRes._body.password));
+    const graceMs = row.previousHa1Until.getTime() - Date.now();
+    expect(graceMs).toBeGreaterThan(23.9 * 60 * 60 * 1000);
+    expect(graceMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
 
     const line = res();
     await createPhoneEndpoint(req({ body: { type: 'phone-registration', name: 'Line', registrar: 'sip.example.com', username: 'u2', password: 'p2' } }), line);
@@ -232,7 +234,7 @@ describe('registrar accounts', () => {
     expect(lineRotate._status).toBe(404);
   });
 
-  test('the HA1 pair is registrar-only, never exposed, and backfilled for rows that predate it', async () => {
+  test('the HA1 is registrar-only, never exposed, and backfilled for rows that predate it', async () => {
     const { backfillRegistrarHA1 } = await import('../lib/database.js');
 
     // A client-mode line carries no hashes: the edge never verifies it.
@@ -241,17 +243,18 @@ describe('registrar accounts', () => {
     expect(line._status).toBe(201);
     const lineRow = await PhoneRegistration.findByPk(line._body.id);
     expect(lineRow.ha1).toBeNull();
-    expect(lineRow.ha1b).toBeNull();
+    expect(lineRow.previousHa1).toBeNull();
 
     // An account minted before the columns existed has null hashes until the boot backfill fills them.
     const account = await createAccount();
     const id = account._body.id;
-    await PhoneRegistration.update({ ha1: null, ha1b: null }, { where: { id } });
+    await PhoneRegistration.update({ ha1: null }, { where: { id } });
     expect((await PhoneRegistration.findByPk(id)).ha1).toBeNull();
     await backfillRegistrarHA1();
     const filled = await PhoneRegistration.findByPk(id);
     expect(filled.ha1).toBe(ha1Of(account._body.username, account._body.password));
-    expect(filled.ha1b).toBe(ha1bOf(account._body.username, account._body.password));
+    // Filling a missing hash is not a rotate.
+    expect(filled.previousHa1).toBeNull();
     expect(filled.password).toBe(account._body.password);
     // Running it again is a no-op.
     await backfillRegistrarHA1();
@@ -265,27 +268,28 @@ describe('registrar accounts', () => {
     await getPhoneEndpoint(req({ params: { identifier: id } }), read);
     expect(read._status).toBe(200);
     expect(read._body.ha1).toBeUndefined();
-    expect(read._body.ha1b).toBeUndefined();
+    expect(read._body.previousHa1).toBeUndefined();
+    expect(read._body.previousHa1Until).toBeUndefined();
   });
 
-  test('the backfill repairs a stale HA1 pair without touching the password', async () => {
+  test('the backfill repairs a stale HA1 without touching the password', async () => {
     const { backfillRegistrarHA1 } = await import('../lib/database.js');
     const account = await createAccount();
     const id = account._body.id;
     const stale = md5('stale');
-    await PhoneRegistration.update({ ha1: stale, ha1b: stale }, { where: { id } });
+    await PhoneRegistration.update({ ha1: stale }, { where: { id } });
     const before = await PhoneRegistration.findByPk(id);
     expect(before.ha1).toBe(stale);
 
     await backfillRegistrarHA1();
     const after = await PhoneRegistration.findByPk(id);
     expect(after.ha1).toBe(ha1Of(account._body.username, account._body.password));
-    expect(after.ha1b).toBe(ha1bOf(account._body.username, account._body.password));
+    expect(after.previousHa1).toBeNull();
     expect(after.getDataValue('password')).toBe(before.getDataValue('password'));
     expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
   });
 
-  test('the HA1 pair follows a change of username or realm', async () => {
+  test('the HA1 follows a change of username or realm, with no grace window', async () => {
     const account = await createAccount();
     const { password } = account._body;
     const row = await PhoneRegistration.findByPk(account._body.id);
@@ -299,7 +303,8 @@ describe('registrar accounts', () => {
     await row.save();
     const moved = await PhoneRegistration.findByPk(row.id);
     expect(moved.ha1).toBe(md5(`${username}:${realm}:${password}`));
-    expect(moved.ha1b).toBe(md5(`${username}@${realm}:${realm}:${password}`));
+    expect(moved.previousHa1).toBeNull();
+    expect(moved.previousHa1Until).toBeNull();
   });
 
   test('refuses reveal to another organisation and to a caller without update', async () => {

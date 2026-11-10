@@ -62,9 +62,11 @@ export interface PhoneRegistrationSchema {
   /** Registrar rows only: bindings mirrored by the owning node; null or empty when nothing is registered. */
   bindings?: RegistrationBinding[] | null;
   bindingsUpdatedAt?: Date | null;
-  /** Registrar rows only: digest HA1 of user:realm:password and of user@realm:realm:password. Never returned by the API. */
+  /** Registrar rows only: digest HA1 of user:realm:password. Never returned by the API. */
   ha1?: string | null;
-  ha1b?: string | null;
+  /** The HA1 before the last password rotate, valid until previousHa1Until. Never returned by the API. */
+  previousHa1?: string | null;
+  previousHa1Until?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
