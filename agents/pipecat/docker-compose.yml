@@ -137,11 +137,11 @@ services:
 
   # ---- sipbridge ingress (profile: sipbridge) ---------------------------
   #
-  # Minimal in-tree SIP UAS — see agents/pipecat/sipbridge for the Go
-  # source. Phase A: inbound G.711 (PCMU/PCMA) only, REST control API on
-  # :8090, no TLS/SRTP. Designed to be ~1/30th the runtime footprint of
-  # freeswitch + esl-poller. Builds from source via the Dockerfile in
-  # the same directory.
+  # Minimal in-tree SIP gateway — see agents/pipecat/sipbridge for the Go
+  # source. G.711 (PCMU/PCMA), SIP over UDP on 5060 and over TLS on 5061,
+  # SRTP, and a REST control API for the worker. Designed to be ~1/30th the
+  # runtime footprint of freeswitch + esl-poller. Builds from source via the
+  # Dockerfile in the same directory.
   sipbridge:
     profiles: ["sipbridge"]
     build:
@@ -149,6 +149,12 @@ services:
       dockerfile: agents/pipecat/sipbridge/Dockerfile
     network_mode: host
     restart: unless-stopped
+    # Every variable in .env reaches the container, so the SIPBRIDGE_* settings
+    # that have no line below (TLS, SRTP, RTP timeout, trace) can be set there.
+    # The lines below win over .env.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # Advertised IPs (stamped into Via/Contact and SDP c=/m=). Must be
       # reachable by the upstream B2BUA / SBC.
@@ -166,7 +172,10 @@ services:
       SIPBRIDGE_RTP_PORT_MIN: ${SIPBRIDGE_RTP_PORT_MIN:-10000}
       SIPBRIDGE_RTP_PORT_MAX: ${SIPBRIDGE_RTP_PORT_MAX:-20000}
       SIPBRIDGE_WORKER_WS_BASE: ${SIPBRIDGE_WORKER_WS_BASE:-ws://127.0.0.1:8082}
-      SIPBRIDGE_API_BIND_ADDR: ":${SIPBRIDGE_API_PORT:-8090}"
+      # The control API places calls, and only the worker on this host uses
+      # it. Loopback by default. Set SIPBRIDGE_API_TOKEN as well if you bind
+      # it anywhere else.
+      SIPBRIDGE_API_BIND_ADDR: ${SIPBRIDGE_API_BIND_ADDR:-127.0.0.1:8090}
       SIPBRIDGE_API_TOKEN: ${SIPBRIDGE_API_TOKEN:-}
       # Outbound-trunk identity + auth for trunk-origin originate / WebRTC
       # transfers (read by the Go bridge, not the worker). FROM_DOMAIN must
@@ -186,6 +195,12 @@ services:
       dockerfile: agents/pipecat/Dockerfile
     network_mode: host
     restart: unless-stopped
+    # Every variable in .env reaches the worker: PIPECAT_SIP_OUTBOUND, provider
+    # keys with no line below, recording storage and the rest of
+    # docs/self-hosting/configuration.md. The lines below win over .env.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: 8082
       # Which SIP gateway to wire at startup. The worker reads SIP_GATEWAY

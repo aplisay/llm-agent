@@ -52,6 +52,10 @@ services:
     env_file:
       - path: .env
         required: false
+    # Lets the API reach a voice worker that runs on the host network, such as
+    # the Pipecat worker (PIPECAT_WORKER_URL=http://host.docker.internal:8082).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       WS_PORT: "4000"
       POSTGRES_HOST: postgres

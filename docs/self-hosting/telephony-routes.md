@@ -41,7 +41,7 @@ All three need the same things from the network:
 - a public IP address on the host that runs the SIP gateway,
 - host networking for the gateway container,
 - the SIP port and a wide UDP range for audio open to your trunk provider
-  (5060 and 10000 to 20000 by default),
+  (5060 and 10000 to 20000 by default), and closed to everyone else,
 - a SIP trunk from a provider, with your numbers pointed at that IP address.
 
 That rules out platforms that only route HTTP, such as Cloud Run. Use a
@@ -54,9 +54,11 @@ same:
 
 1. Create a **trunk** record: `POST /api/trunks`. It names the route
    (`handler` is `livekit`, `pipecat` or `jambonz`). This needs the first
-   user, which has the `superAdmin` role.
+   user, which has the `superAdmin` role. List your organisation in
+   `organisationIds`, or step 2 is refused. Set `"outbound": true` if you will
+   place calls.
 2. Create a **phone endpoint** for each number on that trunk:
-   `POST /api/phone-endpoints`.
+   `POST /api/phone-endpoints`. The number takes its route from the trunk.
 3. Point a number at an agent: `POST /api/agents/{agentId}/listen` with the
    number. The agent's runtime must match the number's route.
 
@@ -64,7 +66,13 @@ same:
 
 When a call arrives, the worker reads the called number from the SIP request,
 asks the API which agent listens on it, and starts that agent. A call to a
-number with no listener is rejected.
+number with no listener is rejected. The number must arrive in the form you
+stored. Only a leading `+` is ignored, so `02079460810` does not match
+`+442079460810`.
+
+Outbound calls and transfers are limited to UK geographic and mobile numbers
+unless the agent sets `options.outboundCallFilter`. See
+[../outbound-call-authorisation.md](../outbound-call-authorisation.md).
 
 ## Route 1: LiveKit SIP
 
@@ -102,46 +110,21 @@ accepts a SIP call, opens a WebSocket to the Pipecat worker and carries the
 audio. It can take calls straight from a provider's trunk and place calls to
 one.
 
-It is not in the root `compose.yaml` yet. Today it runs from the Pipecat
-directory:
+**[byo-trunk-sipbridge.md](byo-trunk-sipbridge.md) is the step-by-step
+guide**: what kind of trunk fits, the settings, the firewall, the API records
+and how to test.
 
-```shell
-cd agents/pipecat
-cp env-example .env     # then edit, see below
-docker compose --profile sipbridge up --build
-```
+In short:
 
-Set at least these in `agents/pipecat/.env`:
-
-| Variable | Meaning |
-|---|---|
-| `SIP_GATEWAY=sipbridge` | The worker defaults to another gateway |
-| `EXT_IP_ADDRESS` | The host's public IP address, for SIP and audio |
-| `SERVICE_BASE_URI`, `SHARED_API_TOKEN` | How the worker reaches the API server |
-| `PIPECAT_DISPATCH_TOKEN`, `PIPECAT_JOIN_SECRET` | Shared with the API server |
-| `PIPECAT_SIP_OUTBOUND` | Your trunk provider's SIP address, for outbound calls and transfers |
-| `PIPECAT_SIP_USERNAME`, `PIPECAT_SIP_PASSWORD` | Its credentials. Leave empty for a trunk that authenticates by IP address |
-| `PIPECAT_SIP_FROM_DOMAIN` | The domain in the From header, if your provider needs one |
-
-The API server needs `PIPECAT_WORKER_URL`, `PIPECAT_DISPATCH_TOKEN`,
-`PIPECAT_JOIN_SECRET` and `PIPECAT_PUBLIC_URL` to enable the `pipecat`
-runtime. [configuration.md](configuration.md) lists the `SIPBRIDGE_*`
-variables for ports, TLS and SRTP.
-
-Things to know:
-
-- Known gap: `agents/pipecat/docker-compose.yml` passes a fixed list of
-  variables to the worker. `PIPECAT_SIP_OUTBOUND` and some provider keys (for
-  example `XAI_API_KEY`) are not in that list. Until that is fixed, add the
-  ones you need under `pipecat-worker`, `environment` in that file. Without
-  `PIPECAT_SIP_OUTBOUND` the worker cannot place outbound calls or transfers.
-- `sipbridge` accepts SIP from any address. Limit its SIP port to your
-  provider's addresses with a firewall.
+- It is not in the root `compose.yaml` yet. It runs from `agents/pipecat` with
+  `docker compose --profile sipbridge up --build`, beside the API server.
+- It does not register with a provider. Your trunk must send calls to a fixed
+  IP address, and accept yours by IP address or by a user name and password.
+- It speaks SIP over UDP or TLS and G.711 audio.
+- It accepts SIP from any address. Limit its ports to your provider's
+  addresses with a firewall.
 - It needs Linux host networking. Docker Desktop changes the source address
   of UDP packets, so use a Linux host for real calls.
-- Calls carry extra `X-Aplisay-*` SIP headers. Most providers ignore them.
-- The comments in `env-example` are written for Aplisay's own edge. Where they
-  say "SBC", read "your trunk provider".
 
 [../sipbridge-integration.md](../sipbridge-integration.md) describes the
 gateway in depth.
