@@ -20,6 +20,7 @@ Listen port, logging and how the services find each other.
 | `WS_PORT` | API | `4000` | HTTP and WebSocket listen port. Wins over PORT when both are set. |
 | `PORT` | API, Pipecat | `4000 (API), 8082 (Pipecat)` | Listen port when WS_PORT is unset. Container platforms such as Cloud Run set it. The Pipecat worker listens on it. |
 | `LOGLEVEL` | API, LiveKit, Pipecat | `info (debug when NODE_ENV=development)` | Log level: fatal, error, warn, info, debug or trace. |
+| `CORS_ORIGINS` | API |  | Extra browser origins allowed to call the API, comma separated. Needed when a front end is served from an origin other than the API's. Not needed behind a same-origin proxy. |
 | `NODE_ENV` | API, LiveKit, Pipecat |  | Run mode: development (schema syncs at start, readable logs), production or staging (JSON logs). The yarn scripts set it. |
 | `SERVICE_BASE_URI` | API, LiveKit, Pipecat |  | Base URL of the API server, without /api (for example http://localhost:4000), that the voice workers call back to. |
 | `SHARED_API_TOKEN` | API, LiveKit, Pipecat |  | Token the voice workers send to the API as x-shared-token. It gives full access to every route, so use a long random value (openssl rand -hex 32). Needed when you run a worker. Secret. |
