@@ -52,6 +52,7 @@ Where to look:
 | It does not work | [docs/self-hosting/troubleshooting.md](docs/self-hosting/troubleshooting.md) |
 | Phone calls | [docs/self-hosting/telephony-routes.md](docs/self-hosting/telephony-routes.md) |
 | A newer version | [docs/self-hosting/upgrading.md](docs/self-hosting/upgrading.md) |
+| Sign-in for several people | [docs/self-hosting/user-accounts.md](docs/self-hosting/user-accounts.md) |
 | Going public | [docs/self-hosting/production-checklist.md](docs/self-hosting/production-checklist.md) |
 | A feature (transfers, recording, tools) | [docs/README.md](docs/README.md) |
 | An API operation or schema | `api/api-doc.yaml`, or `GET /api/api-docs` on a running instance |

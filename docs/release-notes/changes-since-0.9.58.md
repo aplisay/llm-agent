@@ -79,9 +79,18 @@ Pipecat), and **ci** (build and release pipeline).
 - **[core+livekit] Node version**: both `package.json` files declare Node 22
   or later in `engines`, and `.nvmrc` names 22. Node 22 LTS and 24 are
   supported; Node 23 is not, because the test tools refuse to install on it.
-- **[core] `yarn auth:migrate`** and `yarn auth:generate` fetch
-  `@better-auth/cli` on demand, so a default install no longer builds
-  `better-sqlite3`.
+- **[core] `yarn auth:generate`** fetches `@better-auth/cli` on demand, so a
+  default install no longer builds `better-sqlite3`.
+- **[core] `yarn auth:migrate`** now runs `scripts/auth-migrate.mjs`, which
+  uses the better-auth version the server runs. The pinned command-line tool
+  it used before was older than that version and left the `account` table
+  short of a column, so sign-up answered 500.
+- **[core] `scripts/compose-setup.sh --accounts`** turns on user accounts for
+  the compose bundle: it sets `BETTER_AUTH_ENABLED`, a session secret, the API
+  address and the trusted front-end origins. See
+  [user-accounts.md](../self-hosting/user-accounts.md).
+- **[core] `CORS_ORIGINS`**: extra browser origins allowed to call the API,
+  comma separated, for a front end served from another origin.
 - **[core+livekit] LiveKit worker scripts**: `yarn livekit-dev` (repo root),
   and `yarn start`, `yarn stage` and `yarn develop` in `agents/livekit`, now
   start the worker. `yarn livekit-dev` reads the repo-root `.env`. A Linux

@@ -19,6 +19,7 @@ one server, or as part of a larger deployment.
 | [configuration.md](configuration.md) | You need the meaning of an environment variable |
 | [telephony-routes.md](telephony-routes.md) | You want phone calls, not only browser calls |
 | [production-checklist.md](production-checklist.md) | The instance will be reachable from the internet |
+| [user-accounts.md](user-accounts.md) | Several people need their own sign-in |
 | [upgrading.md](upgrading.md) | You are moving to a newer version |
 | [troubleshooting.md](troubleshooting.md) | Something does not start or does not answer |
 

@@ -4,7 +4,19 @@
 # .env are kept, so it is safe to run again. Needs only a POSIX shell.
 #
 #   scripts/compose-setup.sh
+#   scripts/compose-setup.sh --accounts   also turn on user accounts
+#
+# --accounts lets people sign in with an email and password beside API keys.
+# See docs/self-hosting/user-accounts.md.
 set -eu
+
+ACCOUNTS=no
+for arg in "$@"; do
+    case "$arg" in
+        --accounts) ACCOUNTS=yes ;;
+        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 cd "$(dirname "$0")/.."
 ENV_FILE=.env
@@ -47,6 +59,22 @@ fill LIVEKIT_API_SECRET "$(random_hex 24)"
 API_PORT=$(current API_PORT); API_PORT=${API_PORT:-4000}
 UI_PORT=$(current UI_PORT); UI_PORT=${UI_PORT:-8080}
 
+if [ "$ACCOUNTS" = yes ]; then
+    # Unlike fill, this replaces a value: .env may already say =false.
+    if [ "$(current BETTER_AUTH_ENABLED)" != true ]; then
+        grep -vE "^BETTER_AUTH_ENABLED=" "$ENV_FILE" > "$ENV_FILE.tmp" || true
+        printf 'BETTER_AUTH_ENABLED=true\n' >> "$ENV_FILE.tmp"
+        mv "$ENV_FILE.tmp" "$ENV_FILE"
+        echo "Set BETTER_AUTH_ENABLED."
+    fi
+    fill BETTER_AUTH_SECRET "$(random_hex 32)"
+    fill BETTER_AUTH_URL "http://localhost:$API_PORT"
+    # Sign-in is refused from any other browser origin.
+    fill BETTER_AUTH_TRUSTED_ORIGINS "http://localhost:$UI_PORT,http://localhost:3000"
+    # Where the link in the sign-up email points. Self sign-up is off without it.
+    fill WAITLIST_CALLBACK_URL "http://localhost:$UI_PORT/login"
+fi
+
 cat <<EOF
 
 Ready. Start the stack with:
@@ -63,3 +91,12 @@ Then:
 To talk to an agent, add a model provider key to .env, for example
 OPENAI_API_KEY, and restart with: docker compose up -d
 EOF
+
+if [ "$(current BETTER_AUTH_ENABLED)" = true ]; then
+    cat <<EOF
+
+User accounts are on. A new account cannot use the API until an admin
+activates it. Emails (verification, password reset) are written to the API
+log unless EMAIL_SEND_TYPE is set. See docs/self-hosting/user-accounts.md.
+EOF
+fi

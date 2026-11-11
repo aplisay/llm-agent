@@ -26,7 +26,7 @@
     "doctor": "node scripts/doctor.mjs",
     "env:generate": "node scripts/env-schema/generate.mjs",
     "auth:generate": "npx --yes @better-auth/cli@1.4.21 generate --config scripts/better-auth-config.mjs",
-    "auth:migrate": "npx --yes @better-auth/cli@1.4.21 migrate --config scripts/better-auth-config.mjs",
+    "auth:migrate": "node scripts/auth-migrate.mjs",
     "eval:builder": "node tools/builder-eval/run.mjs"
   },
   "author": "",
