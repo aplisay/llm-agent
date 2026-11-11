@@ -36,8 +36,8 @@ PIPECAT_WS_URL=ws://127.0.0.1:8082/freeswitch/audio
 WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 ESL_POLLER_URL=http://127.0.0.1:4001
 
-# Voiceblender ingress only.
-VOICEBLENDER_VERSION=v0.7.1
+# Voiceblender ingress only. Tag of the upstream image vpbx/voiceblender (no "v").
+VOICEBLENDER_VERSION=0.16.0
 VOICEBLENDER_API_KEY=<NEW256bithexstring>
 VOICEBLENDER_VSI_TOKEN=
 VOICEBLENDER_APP_ID=aplisay-pipecat

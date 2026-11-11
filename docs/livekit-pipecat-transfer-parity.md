@@ -15,7 +15,7 @@ repo, REST + VSI) — with a focus on call transfers.
 | Blind transfer, bridged (media stays on platform) | ✅ SIP participant into the caller room | ✅ `mode: "dial_bridge"` (agent-less leg + in-process RTP relay) | ✅ agent-less leg + ephemeral room |
 | Consultative (warm) transfer — TransferAgent consult phase | ✅ | ✅ | ✅ |
 | Consultative finalise, bridged | ✅ `moveParticipant` into caller room | ✅ `mode: "bridged"` relay | ✅ room bridge |
-| Consultative finalise, attended REFER-with-Replaces | ✅ | ✅ `mode: "attended"` | ❌ — falls back to media bridge (voiceblender's transfer API takes `replaces_leg_id`, but the worker integration for the consult finalise is not wired; the bridged fallback is used) |
+| Consultative finalise, attended REFER-with-Replaces | ✅ | ✅ `mode: "attended"` | ✅ `POST /v1/legs/{id}/transfer` with `replaces_leg_id` (wired November 2026, not yet tested on a live call; falls back to the room bridge if the consult leg's dialled URI is unknown) |
 | Transfer mode selection (origin defaults + `forceBridged`/`forceRefer` + endpoint options) | ✅ | ✅ | ✅ |
 | `transfer_status`, `transferPrompt`, `consultFeedback`, `callerId` override | ✅ | ✅ | ✅ |
 | Outbound destination authorisation (`outboundCallFilter` + per-trunk/rating policy — [doc](outbound-call-authorisation.md)) | ✅ platform call in `validateTransferArgs` | ✅ platform call in `_on_transfer` (gateway-independent) | ✅ same |
@@ -27,9 +27,9 @@ repo, REST + VSI) — with a focus on call transfers.
 
 **Conclusion:** bridged warm (consultative) and cold (blind) transfers between
 two SIP endpoints are supported on all three topologies. The remaining
-genuine deltas are (a) voiceblender's attended-REFER finalise (a REFER
-optimisation, not a bridged-transfer gap) and (b) the missing bridged-segment
-call record on the Pipecat topologies (billing/CDR parity follow-up).
+genuine delta is the missing bridged-segment call record on the Pipecat
+topologies (billing/CDR parity follow-up). Voiceblender's attended-REFER
+finalise is wired but has not yet been tested on a live call.
 
 ## Defects found and fixed during this analysis
 

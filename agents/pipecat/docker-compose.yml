@@ -109,7 +109,10 @@ services:
 
   voiceblender:
     profiles: ["voiceblender"]
-    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
+    # Pinned in four places: here, docker-compose.dev.yml,
+    # deploy/gcp/docker-compose.gcp.yml and
+    # deploy/k8s/overlays/voiceblender/daemonset.yaml. Change them together.
+    image: vpbx/voiceblender:${VOICEBLENDER_VERSION:-0.16.0}
     network_mode: host
     restart: unless-stopped
     environment:
@@ -119,9 +122,15 @@ services:
       SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}  # 0 disables TLS
       RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
       RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
-      EXT_IP_ADDRESS: ${EXT_IP_ADDRESS:-127.0.0.1}
-      # API auth — used by the worker for REST calls + VSI subscription.
-      API_KEY: ${VOICEBLENDER_API_KEY:-}
+      # Voiceblender reads SIP_BIND_IP (socket bind, default 127.0.0.1) and
+      # SIP_EXTERNAL_IP (advertised address), not EXT_IP_ADDRESS.
+      SIP_BIND_IP: ${SIP_BIND_IP:-0.0.0.0}
+      SIP_EXTERNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
+      SIP_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      # v0.8+ defaults to PCMU,PCMA only. This keeps the v0.7 offer.
+      SIP_CODECS: "opus,G722,PCMU,PCMA"
+      # Voiceblender has no API key: the worker's VOICEBLENDER_API_KEY Bearer is
+      # ignored. ALLOWED_IPS (HTTP) and SIP_ALLOWED_IPS (SIP) are its only gates.
       # We don't use voiceblender's native recording — our worker pipeline
       # handles AES-GCM-encrypted OGG/Opus upload to GCS already, so S3
       # vars stay unset.

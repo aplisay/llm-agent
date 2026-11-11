@@ -385,7 +385,7 @@ same wrapper baked in and point the overlay at it instead.)
   call-control sidecar (3 containers). TLS 5061 is preconfigured; **RTP range is
   16384-16484**, not 10000-20000 — open that range instead.
 - **voiceblender** — `overlays/voiceblender`. Uses the third-party
-  `ghcr.io/voiceblender/voiceblender` image; the node-IP wrapper assumes the
+  `vpbx/voiceblender` image (Docker Hub); the node-IP wrapper assumes the
   binary is on `PATH` as `voiceblender`. Review `overlays/voiceblender/daemonset.yaml`
   before production use.
 
