@@ -31,6 +31,7 @@ import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
 import {
   buildOutputStt,
+  errorText,
   startSideSttEngine,
   type SideSttConfig,
   type SideSttEngine,
@@ -117,7 +118,7 @@ export function armOutputStt(params: ArmOutputSttParams): OutputSttHandle {
   try {
     sttInstance = buildStt(agent, config);
   } catch (e) {
-    logger.warn({ e, roomName, config }, "outputStt: could not build the audit engine (continuing without it)");
+    logger.warn({ err: errorText(e), roomName, config }, "outputStt: could not build the audit engine (continuing without it)");
     return NOOP_HANDLE;
   }
 

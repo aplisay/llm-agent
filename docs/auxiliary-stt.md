@@ -35,7 +35,7 @@ Both options have the **same shape as `options.stt`** (`vendor`, `language`), pl
 |---|---|---|
 | `enabled` | `true` | Set `false` to switch the auxiliary engine off without removing the block. |
 | `vendor` | the platform's default STT engine (Deepgram) | Same semantics as `stt.vendor`: a vendor name, optionally scoped as `vendor/model[:lang]` (e.g. `deepgram/nova-2:en`). LiveKit offers `deepgram`, `assemblyai`, `cartesia` (via LiveKit Inference; Deepgram only under `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS`); Pipecat offers `deepgram` and `google`. |
-| `language` | `stt.language`, then `tts.language` | Language hint for the auxiliary engine (`Language` schema). The "no fixed language" sentinels (`any`, `multi`, …) are accepted and mean "let the engine decide", as for `stt.language`. |
+| `language` | `stt.language`, then `tts.language` | Language hint for the auxiliary engine (`Language` schema). The "no fixed language" sentinels (`any`, `multi`, …) are accepted and mean "let the engine decide", as for `stt.language`. Under `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS`, a region tag Deepgram has no model for (such as `en-IE`) is sent as its base language (`en-US` for English), since Deepgram refuses it. |
 
 `{}` (or `true`) enables the engine with defaults. The block is validated when the agent is saved: unknown fields, a nested block, a non-boolean `enabled`, a malformed vendor string or a non-BCP-47 language are rejected with a 400. A vendor the *worker* cannot build (say `google` on LiveKit) is not caught at save time: the worker logs a warning and the call runs without the second opinion.
 

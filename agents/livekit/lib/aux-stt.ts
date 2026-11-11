@@ -56,6 +56,10 @@ import { waitForAudioTrack, waitForRemoteParticipant } from "./bridge-transcript
 export const AUX_STT_TECHNOLOGY = "stt-aux";
 /** Transaction-log type for auxiliary transcripts (next to the primary `user`). */
 export const AUX_STT_LOG_TYPE = "user-aux";
+/** An error's message for a log field: the logger renders an Error object as `{}`. */
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 /** Sample rate the caller track is decoded at for the auxiliary stream. */
 const AUX_STT_SAMPLE_RATE = 16000;
 /**
@@ -287,12 +291,12 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
         try {
           onTranscript(text, new Date());
         } catch (e) {
-          logger.warn({ e, roomName, subject }, `${label}: transcript handler failed`);
+          logger.warn({ err: errorText(e), roomName, subject }, `${label}: transcript handler failed`);
         }
       }
     } catch (e) {
       if (!disposed) {
-        logger.warn({ e, roomName, subject }, `${label}: side transcription failed (continuing without it)`);
+        logger.warn({ err: errorText(e), roomName, subject }, `${label}: side transcription failed (continuing without it)`);
       }
     }
   })();
@@ -512,7 +516,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       // Best-effort: the call carries on without the second opinion.
       if (!disposed) {
         logger.warn(
-          { e, roomName, callerIdentity },
+          { err: errorText(e), roomName, callerIdentity },
           "auxStt: auxiliary transcription failed (continuing without it)",
         );
       }

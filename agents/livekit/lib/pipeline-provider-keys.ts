@@ -28,13 +28,29 @@ export function pipelineUsesProviderApiKeys(): boolean {
   return truthyEnv(process.env.LIVEKIT_PIPELINE_USE_PROVIDER_KEYS);
 }
 
-function deepgramSttLanguage(agent: Agent): string {
+// Deepgram refuses the connection (400) for region tags it has no model for, such as
+// en-IE, en-CA or fi-FI, so only its published regional variants are sent as such.
+// https://developers.deepgram.com/docs/models-languages-overview
+const DEEPGRAM_REGIONAL_LANGUAGES = new Set([
+  "en-US", "en-GB", "en-AU", "en-NZ", "en-IN",
+  "es-419", "fr-CA", "de-CH", "pt-BR", "pt-PT", "nl-BE",
+  "zh-CN", "zh-TW", "zh-HK",
+]);
+// BCP-47 base codes Deepgram knows by another name.
+const DEEPGRAM_LANGUAGE_ALIASES: Record<string, string> = { nb: "no" };
+
+/** The `language` sent to the Deepgram plugin for the agent's `options.stt.language`. */
+export function deepgramSttLanguage(agent: Agent): string {
   const raw = agent.options?.stt?.language?.trim();
   if (!raw) return "en-US";
-  const norm = raw.replace("_", "-");
-  if (/^[a-z]{2}-[a-z]{2}$/i.test(norm)) return norm;
+  const m = /^([a-z]{2})[-_]([a-z]{2}|419)$/i.exec(raw);
+  if (m) {
+    const tag = `${m[1]!.toLowerCase()}-${m[2]!.toUpperCase()}`;
+    if (DEEPGRAM_REGIONAL_LANGUAGES.has(tag)) return tag;
+  }
   const primary = langToSttSuffix(raw);
-  return primary === "en" ? "en-US" : primary;
+  if (primary === "en") return "en-US";
+  return DEEPGRAM_LANGUAGE_ALIASES[primary] ?? primary;
 }
 
 function parseDeepgramStt(agent: Agent): { model: string; language: string } {
