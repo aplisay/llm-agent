@@ -1,6 +1,6 @@
 import {
   setupRealDatabase, teardownRealDatabase,
-  UsageRecord, Organisation, User, Op, databaseStarted,
+  UsageRecord, Organisation, User, Agent, Op, databaseStarted,
 } from './setup/database-test-wrapper.js';
 import { recordUsage, recordLlmTokens, finaliseSession } from '../lib/usage.js';
 import { randomUUID } from 'crypto';
@@ -83,6 +83,48 @@ describe('Usage ledger: recordUsage / recordLlmTokens', () => {
     await recordUsage({ ...ids, technology: 'tts', provider: 'elevenlabs', detail: 'eleven_turbo_v2', unit: 'characters', quantity: 3 });
     const rows = await UsageRecord.findAll({ where: { sessionId: 's5' } });
     expect(rows).toHaveLength(3);
+  });
+
+  describe('an agent deleted before its usage lands', () => {
+    const makeAgent = async () => {
+      const agentId = randomUUID();
+      await Agent.create(
+        { id: agentId, name: 'Deleted Agent', modelName: 'livekit:test-model', userId, organisationId: orgId },
+        { validate: false },
+      );
+      return agentId;
+    };
+    const sideStt = (agentId, quantity, finalised) => ({
+      sessionId: `s-deleted-${agentId}`, organisationId: orgId, userId, agentId,
+      technology: 'stt-aux', provider: 'deepgram', detail: 'deepgram/nova-3',
+      unit: 'milliseconds', quantity, finalised, log: silentLog,
+    });
+
+    it('records a new meter without the agent', async () => {
+      const agentId = await makeAgent();
+      await Agent.destroy({ where: { id: agentId }, force: true });
+
+      const row = await recordUsage(sideStt(agentId, 10370, true));
+      expect(row).toBeTruthy();
+      expect(row.agentId).toBeNull();
+      expect(Number(row.quantity)).toBe(10370);
+      expect(row.finalised).toBe(true);
+      expect(row.meterKey).toBe(`${agentId}|stt-aux|deepgram|deepgram/nova-3|milliseconds`);
+    });
+
+    it('updates a meter written while the agent existed', async () => {
+      const agentId = await makeAgent();
+      const first = await recordUsage(sideStt(agentId, 4000, false));
+      expect(first.agentId).toBe(agentId);
+      await Agent.destroy({ where: { id: agentId }, force: true });
+
+      const row = await recordUsage(sideStt(agentId, 10370, true));
+      expect(row).toBeTruthy();
+      expect(String(row.id)).toBe(String(first.id));
+      expect(row.agentId).toBeNull();
+      expect(Number(row.quantity)).toBe(10370);
+      expect(row.finalised).toBe(true);
+    });
   });
 
   it('sessionId defaults to callId when not supplied', async () => {
