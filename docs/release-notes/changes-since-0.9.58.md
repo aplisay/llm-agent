@@ -91,6 +91,15 @@ Pipecat), and **ci** (build and release pipeline).
   [user-accounts.md](../self-hosting/user-accounts.md).
 - **[core] `CORS_ORIGINS`**: extra browser origins allowed to call the API,
   comma separated, for a front end served from another origin.
+- **[core] `GET /api/health` `features`**: says whether user accounts, the
+  agent-set builder and SIP registration are available, so a front end can
+  hide what the instance cannot do. The builder is off when the provider of
+  `SET_BUILDER_MODEL` has no key, and the entry names the missing variable.
+  `yarn doctor` prints the same.
+- **[core] `SET_BUILDER_MCP_URL` default**: the agent-set builder reads the
+  released docs at `https://mcp.aplisay.com/mcp` unless `NODE_ENV` is
+  `development` or `staging`, where it still reads the next channel. Before,
+  every instance read the next channel unless the variable was set.
 - **[core+livekit] LiveKit worker scripts**: `yarn livekit-dev` (repo root),
   and `yarn start`, `yarn stage` and `yarn develop` in `agents/livekit`, now
   start the worker. `yarn livekit-dev` reads the repo-root `.env`. A Linux

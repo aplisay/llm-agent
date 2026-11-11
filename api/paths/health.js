@@ -25,6 +25,24 @@ async function checkDatabase() {
   return result;
 }
 
+// Whether a b2bua registration node has sent a heartbeat lately. Registering
+// to a PBX or a carrier, and the trace and probe tools, need one.
+const NODE_CHECK_TTL_MS = 30000;
+let nodeCheck = { at: 0, enabled: false };
+
+async function sipRegistrationEnabled() {
+  if (Date.now() - nodeCheck.at < NODE_CHECK_TTL_MS) return nodeCheck.enabled;
+  let enabled = false;
+  try {
+    const { probeNodeFromRegistry } = await import('../../lib/regclient-facade.js');
+    enabled = !!(await probeNodeFromRegistry());
+  } catch {
+    enabled = false;
+  }
+  nodeCheck = { at: Date.now(), enabled };
+  return enabled;
+}
+
 export default function () {
   return { GET: health };
 }
@@ -32,11 +50,13 @@ export default function () {
 const health = async (req, res) => {
   const [database, status] = await Promise.all([checkDatabase(), configStatus()]);
   const { commit, tag } = buildInfo();
+  const sipRegistration = { enabled: database.ok ? await sipRegistrationEnabled() : false };
   res.status(database.ok ? 200 : 503).json({
     status: database.ok ? 'ok' : 'degraded',
     build: { commit, tag },
     database,
     ...status,
+    features: { ...status.features, sipRegistration },
   });
 };
 
@@ -55,7 +75,7 @@ const componentList = {
 
 health.apiDoc = {
   summary: 'Instance health and configuration',
-  description: 'No authentication. Says whether the database answers, and which runtimes and providers are enabled. '
+  description: 'No authentication. Says whether the database answers, and which runtimes, providers and optional features are enabled. '
     + 'For a disabled one it names the unset variables. It never returns a value.',
   operationId: 'health',
   tags: ['Health'],
@@ -80,6 +100,31 @@ health.apiDoc = {
                   enabled: { type: 'boolean' },
                   backend: { type: 'string', enum: ['gcs', 's3', 'file'] },
                   reason: { type: 'string', description: 'Why recording is off.' },
+                },
+              },
+              features: {
+                type: 'object',
+                description: 'Optional features, for a front end to show or hide.',
+                properties: {
+                  accounts: {
+                    type: 'object',
+                    description: 'Sign-in with an email and password (BETTER_AUTH_ENABLED).',
+                    properties: { enabled: { type: 'boolean' } },
+                  },
+                  setBuilder: {
+                    type: 'object',
+                    description: 'The agent-set builder (builtin:set-builder). On when its model provider has a key.',
+                    properties: {
+                      enabled: { type: 'boolean' },
+                      model: { type: 'string' },
+                      missing: { type: 'array', items: { type: 'string' }, description: 'Names of the unset variables it needs.' },
+                    },
+                  },
+                  sipRegistration: {
+                    type: 'object',
+                    description: 'Registration to a PBX or carrier, with trace and probe. On when a b2bua registration node is reporting.',
+                    properties: { enabled: { type: 'boolean' } },
+                  },
                 },
               },
               warnings: { type: 'array', items: { type: 'string' } },
