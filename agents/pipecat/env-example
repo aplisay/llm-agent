@@ -3,9 +3,13 @@
 # Copy to .env in the same directory as docker-compose.yml.
 # Most values are mandatory in production; defaults exist for local dev only.
 
-# Public IP FreeSWITCH advertises in SDP (and in SIP Via/Contact).
-# For local development, your machine's LAN IP. In production, the public IP
-# the upstream SBC routes to.
+# Which SIP gateway the worker drives. It must match the compose profile:
+# freeswitch (default), voiceblender, sipbridge or daily.
+# SIP_GATEWAY=sipbridge
+
+# Public IP the SIP gateway (FreeSWITCH or sipbridge) advertises in SDP and in
+# SIP Via/Contact. For local development, your machine's LAN IP. In production,
+# the public IP your trunk provider or upstream SBC sends calls to.
 EXT_IP_ADDRESS=127.0.0.1
 
 # Shared secrets — generate with `openssl rand -hex 32`.
@@ -42,6 +46,14 @@ WORKER_EVENT_WEBHOOK=http://127.0.0.1:8082/freeswitch/events
 # A regional ElevenLabs endpoint (default https://api.elevenlabs.io).
 # ELEVENLABS_API_BASE=
 # NEUPHONIC_API_KEY=
+
+# sipbridge control API. It listens on 127.0.0.1:8090 by default. If you bind
+# it elsewhere (SIPBRIDGE_API_BIND_ADDR), set a token: it places calls.
+# SIPBRIDGE_API_TOKEN=
+
+# The three PIPECAT_SIP_* settings below are written for Aplisay's own SBC.
+# With your own trunk, read "SBC" as your trunk provider. See
+# docs/self-hosting/byo-trunk-sipbridge.md.
 
 # Platform-wide outbound SBC for trunk-origin outbound calls / WebRTC→telephony
 # transfers (named to line up with the LiveKit stack). The bridge INVITEs this

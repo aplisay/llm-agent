@@ -65,8 +65,10 @@ docker compose --profile daily        up --build
 ```
 
 `docker-compose.yml` is the production-shaped layout (everything in
-containers, host networking so RTP port pinning is straightforward). The
-profile sets `SIP_GATEWAY` on the worker for you.
+containers, host networking so RTP port pinning is straightforward). Set
+`SIP_GATEWAY` in `.env` to match the profile (`freeswitch`, `voiceblender`,
+`sipbridge` or `daily`). The profile does not set it, and the default is
+`freeswitch`. Every variable in `.env` reaches the worker and sipbridge.
 
 ### Dev: worker on the host
 

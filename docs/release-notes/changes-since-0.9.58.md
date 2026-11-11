@@ -91,6 +91,18 @@ Pipecat), and **ci** (build and release pipeline).
   [user-accounts.md](../self-hosting/user-accounts.md).
 - **[core] `CORS_ORIGINS`**: extra browser origins allowed to call the API,
   comma separated, for a front end served from another origin.
+- **[pipecat+sipbridge] `agents/pipecat/docker-compose.yml`**: every
+  variable in `agents/pipecat/.env` now reaches the worker and `sipbridge`.
+  Before, only a fixed list did, so `PIPECAT_SIP_OUTBOUND`, some provider keys
+  and most `SIPBRIDGE_*` settings had no effect. The `sipbridge` control API
+  now listens on `127.0.0.1:8090` by default; set `SIPBRIDGE_API_BIND_ADDR` to
+  change it.
+- **[core] `compose.yaml`**: the API container can reach a worker on the host
+  network at `host.docker.internal`.
+- **[pipecat+sipbridge] Guide**: [byo-trunk-sipbridge.md](../self-hosting/byo-trunk-sipbridge.md)
+  takes a self-hoster from a provider's SIP trunk to inbound and outbound
+  calls on the Pipecat runtime. Draft: the signalling was checked, a call with
+  audio through a provider was not.
 - **[core] `GET /api/health` `features`**: says whether user accounts, the
   agent-set builder and SIP registration are available, so a front end can
   hide what the instance cannot do. The builder is off when the provider of
