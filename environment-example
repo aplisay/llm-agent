@@ -16,6 +16,11 @@
 # Log level: fatal, error, warn, info, debug or trace.
 LOGLEVEL=info
 
+# Extra browser origins allowed to call the API, comma separated. Needed when
+# a front end is served from an origin other than the API's. Not needed behind
+# a same-origin proxy.
+# CORS_ORIGINS=https://app.example.com
+
 # Base URL of the API server, without /api (for example
 # http://localhost:4000), that the voice workers call back to.
 # SERVICE_BASE_URI=http://localhost:4000

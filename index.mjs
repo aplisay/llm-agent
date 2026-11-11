@@ -5,6 +5,7 @@ import express from 'express';
 import openapi from 'express-openapi';
 import Voices from './lib/voices/index.js';
 import cors from "cors";
+import { corsOrigins } from './lib/cors-origins.js';
 import logger from './lib/logger.js';
 import PinoHttp from 'pino-http';
 import { createServer } from 'http';
@@ -73,10 +74,7 @@ else if (process.env.NODE_ENV === 'staging') {
 // the API. `set-auth-token` is exposed so the SPA can capture the bearer token
 // from the cross-origin sign-in response.
 server.use(cors({
-  origin: [
-    'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3030', 'http://localhost:5001', /^https:\/\/([a-z0-9-]+\.)*aplisay\.com$/,
-    'https://feature-registration-db--playground-next.netlify.app'
-  ],
+  origin: corsOrigins(),
   allowedHeaders: ['Cookie', 'Link', 'Content-Type', 'Authorization'],
   exposedHeaders: ['Link', 'set-auth-token'],
   credentials: true,
