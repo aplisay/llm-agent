@@ -27,7 +27,9 @@ spec:
               value: voiceblender
 
         - name: voiceblender
-          image: ghcr.io/voiceblender/voiceblender:v0.7.1
+          # Pinned in four places: here, agents/pipecat/docker-compose*.yml and
+          # deploy/gcp/docker-compose.gcp.yml. Change them together.
+          image: vpbx/voiceblender:0.16.0
           # secretenv-exec decrypts SECRETENV_BUNDLE into the env (Voiceblender
           # can't decrypt natively), then the busybox shell adds the per-node IP
           # and execs voiceblender. The secretenv-exec wrapper is a no-op when
@@ -35,7 +37,7 @@ spec:
           command: ["/etc/node-meta/secretenv-exec", "/etc/node-meta/busybox", "sh", "-c"]
           args:
             - |
-              export EXT_IP_ADDRESS="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
+              export SIP_EXTERNAL_IP="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
               exec voiceblender
           # Voiceblender expects unprefixed env names, so only individual
           # config-map keys go via env. Secrets that the bundle is allowed to
@@ -70,11 +72,16 @@ spec:
                 configMapKeyRef:
                   name: pipecat-config
                   key: VOICEBLENDER_RTP_PORT_MAX
-            - name: API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: pipecat-secrets
-                  key: VOICEBLENDER_API_KEY
+            # Voiceblender binds SIP to 127.0.0.1 unless told otherwise. It has
+            # no API key setting, so VOICEBLENDER_API_KEY is not passed in.
+            - name: SIP_BIND_IP
+              value: "0.0.0.0"
+            # v0.8+ defaults to PCMU,PCMA only. This keeps the v0.7 offer.
+            - name: SIP_CODECS
+              value: "opus,G722,PCMU,PCMA"
+            # SIP_TLS_PORT is set (5061) but voiceblender refuses to start
+            # without SIP_TLS_CERT and SIP_TLS_KEY. Mount the pipecat-sip-tls
+            # Secret and set both before using this overlay.
           ports:
             - name: vb-http
               containerPort: 8080

@@ -11,6 +11,42 @@ This note is the operator's guide for running the voiceblender ingress
 alongside the existing FreeSWITCH and Daily ones.
 
 
+## Version
+
+The gateway is written against upstream **v0.16** (source compared at tag
+v0.16.1). Deploys pin the upstream image `vpbx/voiceblender:0.16.0` on Docker
+Hub. Upstream publishes images there, not on `ghcr.io`, and from 0.8 on its
+image tags have no leading `v`. v0.16.1 has no published image yet. It differs
+from v0.16.0 only by an answering-machine-detection fix that we do not use.
+
+The pin is in four places:
+`agents/pipecat/docker-compose.yml`, `agents/pipecat/docker-compose.dev.yml`,
+`agents/pipecat/deploy/gcp/docker-compose.gcp.yml` and
+`agents/pipecat/deploy/k8s/overlays/voiceblender/daemonset.yaml`.
+
+Upstream behaviour that matters to us at v0.16:
+
+- `POST /v1/legs` takes `custom_data` (any JSON, at most 1024 bytes by
+  default). It is echoed on every event for the leg. Earlier gateway code sent
+  `metadata`, which voiceblender has never read.
+- An outbound leg with no `ring_timeout` is cancelled after 60 s. The gateway
+  stops waiting for an answer at 45 s.
+- An unanswered inbound leg is dropped after 180 s with no SIP response
+  (`SIP_INBOUND_RING_TIMEOUT_SECONDS`).
+- `DELETE /v1/legs/{id}` on a ringing leg accepts only these `reason` values:
+  `busy`, `declined`, `rejected`, `unavailable`, `not_found`, `forbidden`,
+  `server_error`. Any other value returns 400 and the leg keeps ringing.
+- `SIP_CODECS` defaults to `PCMU,PCMA`. v0.7 offered Opus, G.722, PCMU and
+  PCMA. The compose files and the k8s overlay set
+  `SIP_CODECS=opus,G722,PCMU,PCMA` to keep the old offer.
+- There is no API key. `ALLOWED_IPS` (HTTP and VSI) and `SIP_ALLOWED_IPS`
+  (SIP) are the only gates, and both default to allow-all. Keep the HTTP port
+  closed at the firewall.
+- An interruption frame from the worker now flushes agent audio that
+  voiceblender has buffered but not yet played.
+- Inbound `REGISTER` is refused unless a client accepts it. We do not use it.
+
+
 ## Why this exists
 
 The pipecat worker has had a swappable `SipGateway` abstraction since the
@@ -65,7 +101,11 @@ Two long-lived control connections live on the worker side:
    `GET /v1/vsi` (WebSocket) at boot, reconnects with backoff on drop,
    filters events by `app_id`. Drives:
      - `leg.ringing` → agent resolution + `POST /v1/legs/{id}/answer`
-       + `POST /v1/legs/{id}/agent` with our worker's per-session WS URL.
+       + `POST /v1/legs/{id}/agent/pipecat` with our worker's per-session WS URL.
+     - `leg.connected` → releases an outbound or consult leg waiting to
+       have its agent attached.
+     - `dtmf.received` and `stt.text` → DTMF into the pipeline, and
+       transcripts of bridged legs.
      - `leg.disconnected` → releases the per-session leg-done event so the
        WS handler exits.
      - `leg.transfer_initiated|_requested|_progress|_completed|_failed` →
@@ -92,8 +132,8 @@ Two long-lived control connections live on the worker side:
    (`phone_registration` → trunk+number → number). Returns
    `(instance, agent, origin)` or rejects the leg with `DELETE /v1/legs/{id}`.
 3. Worker stashes a `PendingAttach` keyed by a fresh `session_id`, then
-   POSTs `/v1/legs/{id}/answer` and `/v1/legs/{id}/agent` with
-   `agent_id = ws://worker/voiceblender/agent/{session_id}`.
+   POSTs `/v1/legs/{id}/answer` and `/v1/legs/{id}/agent/pipecat` with
+   `websocket_url = ws://worker/voiceblender/agent/{session_id}`.
 4. Voiceblender opens a WebSocket to that URL. The worker's WS handler:
      - finds the pending attach, builds a `FastAPIWebsocketTransport` with
        `ProtobufFrameSerializer`,
@@ -130,12 +170,16 @@ voiceblender emits it.
 1. `lib/handlers/pipecat.js` (llm-agent) POSTs `/dispatch` with kind
    `outbound` to the worker.
 2. Worker calls `setup_outbound_call` → `gateway.originate(params)`.
-3. `originate()` POSTs `/v1/legs` to voiceblender with `agent` set to
-   `ws://worker/voiceblender/agent/{session_id}`, then stashes a pending
-   attach (`agent`/`instance` left empty — the dispatch caller already
-   has them), and **blocks on a future**.
-4. Voiceblender places the outbound call and (on answer) opens the audio
-   WS. The worker's WS handler enters the **outbound branch**: it builds
+3. `originate()` POSTs `/v1/legs` to voiceblender with `to` (a routable
+   SIP URI), `from`, `headers`, `auth` and
+   `custom_data: {aplisay_call_id}`. It stashes a pending attach
+   (`agent`/`instance` left empty, as the dispatch caller already has
+   them), waits for `leg.connected`, then POSTs
+   `/v1/legs/{id}/agent/pipecat` with
+   `websocket_url = ws://worker/voiceblender/agent/{session_id}`, and
+   **blocks on a future**.
+4. Voiceblender opens the audio WS. The worker's WS handler enters the
+   **outbound branch**: it builds
    the transport, calls `gateway.setup_inbound(...)` which constructs the
    `_VbGatewaySession` and **resolves the originate future**.
 5. `setup_outbound_call` returns; the dispatch endpoint spawns
@@ -155,7 +199,14 @@ voiceblender emits it.
 |---|---|
 | `blind` (REFER) | `POST /v1/legs/{id}/transfer` (in-dialog REFER) |
 | `blind` + `force_bridged` | agent-less `POST /v1/legs` + ephemeral room bridge (`_do_dial_bridge`) |
-| `consultative` | agent-attached consult leg; finalise via room bridge (`bridge_with`) |
+| `consultative`, REFER allowed | agent-attached consult leg; finalise by attended REFER: `POST /v1/legs/{caller}/transfer` with `target` (the URI dialled for the consult leg) and `replaces_leg_id` (the consult leg) (`attended_refer_with`) |
+| `consultative`, bridged | agent-attached consult leg; finalise via room bridge (`bridge_with`) |
+
+Whether a consultative transfer ends by REFER or by bridge follows the same
+mode rules as a blind transfer (origin defaults, `forceBridged`,
+`forceRefer`). If the gateway has no dialled URI for the consult leg, it falls
+back to the room bridge. On a 2xx NOTIFY voiceblender hangs up both the
+caller leg and the consult leg itself.
 
 Progress events arrive on VSI:
 `leg.transfer_initiated` → `leg.transfer_progress` (per NOTIFY sipfrag) →
@@ -198,14 +249,20 @@ non-disruptive to the host's port allocation.
 | `SIP_GATEWAY` | `freeswitch` | Set to `voiceblender` to instantiate the voiceblender gateway in the worker. **Must match `COMPOSE_PROFILES`.** |
 | `COMPOSE_PROFILES` | `freeswitch` | `voiceblender` to start the voiceblender container. |
 | `VOICEBLENDER_BASE_URL` | `http://127.0.0.1:8080` | Where the worker reaches the voiceblender REST + VSI endpoints. With host networking this is localhost. |
-| `VOICEBLENDER_API_KEY` | — | Shared secret; sent as Bearer on REST + VSI. Set the same value on the voiceblender container's `API_KEY` env. |
+| `VOICEBLENDER_API_KEY` | — | Sent as Bearer on REST + VSI. Voiceblender does not check it: it has no API key setting. Gate access with `ALLOWED_IPS` and the firewall. |
 | `VOICEBLENDER_APP_ID` | `aplisay-pipecat` | Tag the worker uses to filter VSI events. Voiceblender supports regex matching here for multi-tenancy. |
 | `VOICEBLENDER_WORKER_WS_BASE` | `ws://127.0.0.1:8082` | Where voiceblender will dial the worker's per-session audio WS. On macOS/Windows Docker Desktop, this needs to be `ws://host.docker.internal:8082`. |
-| `VOICEBLENDER_VERSION` | `v0.6.0` | Image tag pulled from `ghcr.io/voiceblender/voiceblender`. |
+| `VOICEBLENDER_VERSION` | `0.16.0` | Image tag pulled from `vpbx/voiceblender` (Docker Hub). No leading `v`. |
 | `VOICEBLENDER_SIP_PORT` | `5060` | UDP. Set to e.g. `5070` if you ever need to co-host with another SIP UA. |
 | `VOICEBLENDER_SIP_TLS_PORT` | `0` | `0` disables TLS. Set to `5061` for WhatsApp / encrypted SIP. |
 | `VOICEBLENDER_RTP_PORT_MIN/MAX` | `10000-20000` | UDP. Configure firewall accordingly. |
 | `VOICEBLENDER_HTTP_PORT` | `8080` | REST + VSI port. Remap if it collides with another service on the host. |
+
+The compose files also set these on the voiceblender container:
+`SIP_BIND_IP=0.0.0.0` (its default is `127.0.0.1`), `SIP_EXTERNAL_IP` from
+`EXT_IP_ADDRESS`, `SIP_DOMAIN` from `PIPECAT_SIP_FROM_DOMAIN`, and
+`SIP_CODECS`. Voiceblender never read `EXT_IP_ADDRESS` or `API_KEY`, which
+earlier versions of these files set.
 
 
 ### What stays in the worker (vs ceded to voiceblender)
@@ -244,7 +301,7 @@ of ingress.
 
 2. **Health checks**
    ```bash
-   curl -s http://127.0.0.1:8080/v1/health      # voiceblender
+   curl -s http://127.0.0.1:8080/v1/legs        # voiceblender ([] when idle)
    curl -s http://127.0.0.1:8082/                # pipecat-worker
    ```
    Worker logs should show `voiceblender VSI subscriber connected`.
@@ -339,6 +396,13 @@ for the user-facing contract. On the voiceblender topology the pieces are:
   (`_do_dial_bridge`) dials the target as an agent-less leg and joins
   both legs in an ephemeral voiceblender room. Bridged legs are marked
   on the gateway session so worker teardown leaves them alive.
+- **Bridge rooms are not removed.** Voiceblender does not delete a room
+  when its last leg leaves, and the gateway does not call
+  `DELETE /v1/rooms/{id}`. Each bridged transfer leaves an empty room.
+- **Answer then attach.** `POST /v1/legs/{id}/answer` returns before the
+  leg is connected, and `POST /v1/legs/{id}/agent/pipecat` needs a
+  connected leg (409 otherwise). On inbound the gateway retries the attach
+  for up to 2 s while the answer is "leg not connected".
 - **Voiceblender's native recording** is left disabled; the worker
   handles recording via `AudioBufferProcessor` and the AES-GCM/GCS
   pipeline that ships in `pipecat_aplisay/recording/`.

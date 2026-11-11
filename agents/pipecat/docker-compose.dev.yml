@@ -114,7 +114,10 @@ services:
   # foreground worker.
   voiceblender:
     profiles: ["voiceblender"]
-    image: ghcr.io/voiceblender/voiceblender:${VOICEBLENDER_VERSION:-v0.7.1}
+    # Pinned in four places: here, docker-compose.yml,
+    # deploy/gcp/docker-compose.gcp.yml and
+    # deploy/k8s/overlays/voiceblender/daemonset.yaml. Change them together.
+    image: vpbx/voiceblender:${VOICEBLENDER_VERSION:-0.16.0}
     network_mode: host
     restart: unless-stopped
     # VB (in container) dials the host-side worker's audio WS at
@@ -130,7 +133,7 @@ services:
       SIP_TLS_PORT: ${VOICEBLENDER_SIP_TLS_PORT:-0}
       RTP_PORT_MIN: ${VOICEBLENDER_RTP_PORT_MIN:-10000}
       RTP_PORT_MAX: ${VOICEBLENDER_RTP_PORT_MAX:-20000}
-      # v0.7.x reads SIP_EXTERNAL_IP (advertised in SDP/Contact/Via for
+      # Voiceblender reads SIP_EXTERNAL_IP (advertised in SDP/Contact/Via for
       # NAT/Docker) and SIP_BIND_IP (socket bind) — NOT the old EXT_IP_ADDRESS.
       SIP_BIND_IP: ${SIP_BIND_IP:-0.0.0.0}
       SIP_EXTERNAL_IP: ${EXT_IP_ADDRESS:-127.0.0.1}
@@ -138,9 +141,13 @@ services:
       # domain. The worker sends only the From user part (the E.164), so VB
       # supplies the host from here.
       SIP_DOMAIN: ${PIPECAT_SIP_FROM_DOMAIN:-}
+      # v0.8+ defaults to PCMU,PCMA only. This keeps the v0.7 offer.
+      SIP_CODECS: "opus,G722,PCMU,PCMA"
       LOG_LEVEL: ${LOGLEVEL:-debug}
-      # NB: v0.7.x has no REST/VSI API_KEY auth on these control routes, so the
-      # worker's optional VOICEBLENDER_API_KEY Bearer is simply ignored here.
+      # NB: voiceblender has no REST/VSI API_KEY auth on these control routes, so
+      # the worker's optional VOICEBLENDER_API_KEY Bearer is simply ignored here.
+      # ALLOWED_IPS (HTTP) and SIP_ALLOWED_IPS (SIP) are its only gates; both
+      # default to allow-all.
 
   # ---- sipbridge ingress (profile: sipbridge) ---------------------------
   #

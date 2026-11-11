@@ -232,7 +232,7 @@ class _VbGatewaySession(GatewaySession):
             "to": self._gateway._target_uri(req.destination),
             "from": (req.caller_id_override or "").lstrip("+"),
             "app_id": self._gateway.app_id,
-            "metadata": {"bridge_of": self.leg_id},
+            "custom_data": {"bridge_of": self.leg_id},
         }
         auth = self._gateway._sip_auth()
         if auth:
@@ -279,7 +279,7 @@ class _VbGatewaySession(GatewaySession):
             "to": self._gateway._target_uri(req.destination),
             "from": (req.caller_id_override or "").lstrip("+"),
             "app_id": self._gateway.app_id,
-            "metadata": {"consult_of": self.leg_id},
+            "custom_data": {"consult_of": self.leg_id},
         }
         auth = self._gateway._sip_auth()
         if auth:
@@ -303,6 +303,8 @@ class _VbGatewaySession(GatewaySession):
                 f"voiceblender consultative: POST /v1/legs did not return a leg id: {resp!r}"
             )
         self._gateway.set_consult_call_id(self.session_id, consult_leg_id)
+        # Kept for attended_refer_with: the Refer-To must name the URI we dialled.
+        self._gateway._consult_targets[consult_leg_id] = body["to"]
 
         # Voiceblender's WS handler discriminates inbound vs outbound vs
         # consult by walking ``pending_attaches`` — we stash a
@@ -369,6 +371,36 @@ class _VbGatewaySession(GatewaySession):
             parent_leg=self.leg_id, consult_leg=other.leg_id, room=room_id,
             monitor_dtmf=monitor_dtmf,
         ).info("voiceblender bridge_with: legs joined in consult-bridge room")
+
+    async def attended_refer_with(self, other: GatewaySession) -> None:
+        """Finalise a consultative transfer by attended REFER with Replaces.
+
+        ``POST /v1/legs/{id}/transfer`` on this (caller) leg with
+        ``replaces_leg_id`` set to the consult leg. Voiceblender builds the
+        ``Refer-To: <target>?Replaces=...`` from the consult leg's dialog,
+        and hangs up both legs once the REFER succeeds. ``target`` is the
+        URI we dialled for the consult leg. Raising ``NotImplementedError``
+        makes the caller fall back to :meth:`bridge_with`.
+        """
+        if not isinstance(other, _VbGatewaySession):
+            raise NotImplementedError(
+                f"voiceblender attended_refer_with: peer must be _VbGatewaySession, "
+                f"got {type(other).__name__}"
+            )
+        target = self._gateway._consult_targets.pop(other.leg_id, None)
+        if not target:
+            raise NotImplementedError(
+                f"voiceblender attended_refer_with: no dialled URI for consult "
+                f"leg {other.leg_id}"
+            )
+        logger.bind(
+            leg_id=self.leg_id, consult_leg_id=other.leg_id, mode="attended"
+        ).info("voiceblender transfer (attended REFER + Replaces)")
+        await self._gateway._call_api(
+            "POST",
+            f"/v1/legs/{self.leg_id}/transfer",
+            {"target": target, "replaces_leg_id": other.leg_id},
+        )
 
     async def _bridge_legs(self, leg_a: str, leg_b: str) -> str:
         """Create a temporary voiceblender room and move both legs into
@@ -533,6 +565,8 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
         # Warm-transfer state (LiveKit-parity) — shared mixin.
         self._init_consult_state()
+        # consult leg_id -> the SIP URI it was dialled at (attended REFER).
+        self._consult_targets: dict[str, str] = {}
 
         # Human-to-agent transfer watchers (``options.bridgedTransferToAgent``):
         # async callbacks keyed by the TRANSFER-TARGET leg id. While a
@@ -718,7 +752,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
     ) -> GatewaySession:
         """Originate an outbound leg via ``POST /v1/legs``.
 
-        Voiceblender (v0.7.x) does **not** accept an inline agent on
+        Voiceblender (v0.7 to v0.16) does **not** accept an inline agent on
         ``POST /v1/legs`` and has no trunk of its own — it dials whatever SIP
         URI we hand it. So the sequence is:
 
@@ -744,7 +778,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             "headers": _custom_headers_for(params),
             "app_id": self.app_id,
             # Carry our call id through so it shows up downstream for correlation.
-            "metadata": {"aplisay_call_id": params.call_id},
+            "custom_data": {"aplisay_call_id": params.call_id},
         }
         auth = self._sip_auth()
         if auth:
@@ -891,6 +925,24 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             f"/v1/legs/{leg_id}/agent/pipecat",
             {"websocket_url": ws_url},
         )
+
+    async def _attach_after_answer(self, leg_id: str, ws_url: str) -> None:
+        # /answer returns 202 before the leg is connected, and the attach
+        # answers 409 "leg not connected" until it is. Retry for up to 2 s.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0
+        while True:
+            try:
+                await self._call_api(
+                    "POST",
+                    f"/v1/legs/{leg_id}/agent/pipecat",
+                    {"websocket_url": ws_url},
+                )
+                return
+            except RuntimeError as e:
+                if "leg not connected" not in str(e) or loop.time() >= deadline:
+                    raise
+                await asyncio.sleep(0.05)
 
     # ---- VSI subscriber -------------------------------------------------
 
@@ -1112,14 +1164,14 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 "leg.ringing arrived but no agent resolver is registered — "
                 "dropping. (worker startup didn't call set_agent_resolver)"
             )
-            await self._reject_leg(leg_id, "configuration_error")
+            await self._reject_leg(leg_id, "server_error")
             return
 
         try:
             resolved = await self._resolve_agent(event)
         except Exception as e:  # noqa: BLE001
             logger.error(f"agent resolution failed for leg {leg_id}: {e}")
-            await self._reject_leg(leg_id, "service_unavailable")
+            await self._reject_leg(leg_id, "unavailable")
             return
 
         if resolved is None:
@@ -1179,20 +1231,17 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
         try:
             await self._call_api("POST", f"/v1/legs/{leg_id}/answer", {})
-            await self._call_api(
-                "POST",
-                f"/v1/legs/{leg_id}/agent/pipecat",
-                {"websocket_url": ws_url},
-            )
+            await self._attach_after_answer(leg_id, ws_url)
         except Exception as e:  # noqa: BLE001
             logger.error(f"failed to answer+attach leg {leg_id}: {e}")
             self.pending_attaches.pop(session_id, None)
-            await self._reject_leg(leg_id, "service_unavailable")
+            await self._reject_leg(leg_id, "unavailable")
 
     async def _on_leg_disconnected(self, event: dict) -> None:
         leg_id = event.get("leg_id") or event.get("id")
         if not leg_id:
             return
+        self._consult_targets.pop(leg_id, None)
         # A bridged-transfer watch ends when either bridged leg drops.
         gone = self._bta_gone_watchers.get(leg_id)
         if gone is not None:
@@ -1286,6 +1335,9 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
     # ---- HTTP plumbing --------------------------------------------------
 
     async def _reject_leg(self, leg_id: str, reason: str) -> None:
+        # ``reason`` must be in voiceblender's DeleteReasonEnum (busy, declined,
+        # rejected, unavailable, not_found, forbidden, server_error). Any other
+        # value on a ringing leg gets a 400 and the leg is not rejected.
         await self._call_api(
             "DELETE",
             f"/v1/legs/{leg_id}",

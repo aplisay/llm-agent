@@ -68,7 +68,9 @@ ESL_POLLER_URL=http://127.0.0.1:4001
 # ---- Voiceblender ingress only ------------------------------------------
 # Pin the image tag to a tested release. SIP_PORT/RTP_PORT_* can be remapped if
 # you ever need to run voiceblender alongside another SIP UA on the same host.
-VOICEBLENDER_VERSION=v0.7.1
+# Tag of the upstream image vpbx/voiceblender (Docker Hub tags have no "v" from
+# 0.8 on).
+VOICEBLENDER_VERSION=0.16.0
 VOICEBLENDER_API_KEY=<NEW256bithexstring>
 VOICEBLENDER_VSI_TOKEN=
 VOICEBLENDER_APP_ID=aplisay-pipecat

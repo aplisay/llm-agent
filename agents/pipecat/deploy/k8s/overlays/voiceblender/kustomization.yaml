@@ -1,6 +1,6 @@
 # Voiceblender ingress overlay (optional / secondary).
 #
-# Voiceblender is a THIRD-PARTY image (ghcr.io/voiceblender/voiceblender) whose
+# Voiceblender is a THIRD-PARTY image (vpbx/voiceblender on Docker Hub) whose
 # entrypoint and shell we don't control, so the node-IP wrapper here is
 # best-effort — read the comments in daemonset.yaml before using in production.
 #
