@@ -330,8 +330,8 @@ Limits and timeouts. The defaults suit most installs.
 | `OPENAI_TIMEOUT_MS` | API | `900000` | OpenAI request timeout. |
 | `OPENAI_COMPAT_TIMEOUT_MS` | API | `300000` | Timeout for OpenAI-compatible providers (DeepSeek, Kimi, OpenRouter, xAI). |
 | `SUBAGENT_TIMEOUT` | API | `60000` | Time limit for a subagent or agent invoke. |
-| `SET_BUILDER_MODEL` | API |  | Model the agent-set builder uses. |
-| `SET_BUILDER_MCP_URL` | API |  | MCP server the agent-set builder uses. |
+| `SET_BUILDER_MODEL` | API | `text:openai/gpt-5.6-terra` | Model the agent-set builder uses. The builder is off, and GET /api/health says so, when this model's provider has no key. |
+| `SET_BUILDER_MCP_URL` | API | `https://mcp.aplisay.com/mcp (https://mcp-next.aplisay.com/mcp when NODE_ENV is development or staging)` | MCP server the agent-set builder reads the API reference and docs from. The builder sends requests to it. |
 | `SET_BUILDER_MAX_TOKENS` | API | `32768` | Output token limit for the builder. |
 | `TEXT_CHAT_MAX_TOOL_HOPS` | API | `16` | Tool call rounds allowed in one text chat turn. |
 | `TEXT_CHAT_HANDOFF_WAIT_MS` | API | `5000` | How long a process waits for another to hand over a chat session. |
