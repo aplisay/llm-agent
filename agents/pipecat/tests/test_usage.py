@@ -316,9 +316,6 @@ def test_gemini_live_speech_is_not_metered():
     _push(obs, MetricsFrame(data=[TTSUsageMetricsData(processor="tts", model="x", value=42)]))
     assert _meter(obs, "tts", "milliseconds") is None
     assert _meter(obs, "tts", "characters") is None
-    # with an external TTS the speech is that vendor's and is metered
+    # Gemini Live has no text-output mode, so an external vendor still speaks natively
     external = usage_vendors({"options": {"tts": {"vendor": "elevenlabs", "voice": "Rachel"}}}, "pipecat:google/gemini-2.5-flash-native-audio-preview-12-2025")
-    assert "skip" not in external["tts"] and external["tts"]["vendor"] == "elevenlabs"
-    obs2 = UsageMeteringObserver(services=external)
-    _push(obs2, TTSAudioRawFrame(audio=b"\x00" * 48000, sample_rate=24000, num_channels=1))
-    assert _meter(obs2, "tts", "milliseconds")["quantity"] == 1000
+    assert external["tts"]["skip"] is True

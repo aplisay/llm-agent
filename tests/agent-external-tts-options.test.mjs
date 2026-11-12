@@ -79,19 +79,13 @@ describe('options.tts.vendor on realtime models (external TTS)', () => {
     return res;
   };
 
-  test('GPT-Live accepts external TTS only with the experimental transcript opt-in', async () => {
+  test('GPT-Live rejects an external TTS vendor, with or without the removed transcript opt-in', async () => {
     const modelName = 'pipecat:openai/gpt-live-1';
     const tts = { vendor: 'deepgram', voice: 'aura-athena-en', language: 'en-GB' };
-    const rejected = await create({ modelName, prompt: 'front desk', options: { tts } });
-    expect(rejected.statusCode).toBe(400);
-    const options = { tts: { ...tts, experimentalTranscript: true } };
-    const accepted = await create({ modelName, prompt: 'front desk', options });
-    expect([accepted.statusCode, JSON.stringify(accepted.body)]).toEqual([200, expect.stringMatching(/"id"/)]);
-    const got = makeRes(user);
-    await getAgent(makeReq({}, { agentId: accepted.body.id }), got);
-    expect(got.body.options.tts).toEqual(options.tts);
-    const badVoice = await create({ modelName, prompt: 'front desk', options: { tts: { ...options.tts, voice: 'vesper' } } });
-    expect(badVoice.statusCode).toBe(400);
+    for (const options of [{ tts }, { tts: { ...tts, experimentalTranscript: true } }]) {
+      const res = await create({ modelName, prompt: 'front desk', options });
+      expect(res.statusCode).toBe(400);
+    }
   }, 60000);
 
   test('a flagged Ultravox row accepts an external vendor and a voice from that catalogue', async () => {
