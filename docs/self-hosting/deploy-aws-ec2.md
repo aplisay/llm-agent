@@ -11,9 +11,10 @@ This puts the whole compose bundle on one EC2 instance: the API server,
 PostgreSQL, a LiveKit server, the LiveKit worker and the test page. It is the
 "single VM" layout. It suits a trial, a pilot or a small private deployment.
 
-Last verified on 2026-11-13, on a new AWS account, with the `next` branch at
-`d4acb57`, in the London region (`eu-west-2`). The AWS steps were done in the
-web console, as written here. They were not run with the AWS command line.
+Last verified on 2026-11-13, on a new AWS account, with the `next` branch,
+in the London region (`eu-west-2`). The AWS steps were done twice: once in
+the web console (steps 1 to 3) and once with the AWS command line
+([the same with the command line](#the-same-with-the-aws-command-line)).
 
 ## What you need
 
@@ -71,6 +72,70 @@ provider needs one that does not.
 
 The address shown is your public IP address. The rest of this page calls it
 `<public IP>`.
+
+## The same with the AWS command line
+
+Steps 1 to 3 as commands, for a script or an assistant. You need the AWS
+command line, version 2, signed in to your account (`aws login`, or
+`aws configure`). Set the region once:
+
+```shell
+export AWS_REGION=eu-west-2
+```
+
+Key pair and firewall. The first rule lets SSH in from your own address only:
+
+```shell
+aws ec2 import-key-pair --key-name aplisay \
+  --public-key-material fileb://$HOME/.ssh/id_ed25519.pub
+
+VPC=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true \
+  --query 'Vpcs[0].VpcId' --output text)
+SG=$(aws ec2 create-security-group --group-name aplisay \
+  --description "Aplisay self-host" --vpc-id "$VPC" \
+  --query GroupId --output text)
+MYIP=$(curl -s https://checkip.amazonaws.com)
+aws ec2 authorize-security-group-ingress --group-id "$SG" \
+  --protocol tcp --port 22 --cidr "$MYIP/32"
+```
+
+The instance. The image is the current Ubuntu 26.04, looked up by name so
+that the command does not go stale:
+
+```shell
+AMI=$(aws ssm get-parameter --query Parameter.Value --output text --name \
+  /aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id)
+ROOTDEV=$(aws ec2 describe-images --image-ids "$AMI" \
+  --query 'Images[0].RootDeviceName' --output text)
+IID=$(aws ec2 run-instances --image-id "$AMI" --instance-type t3.medium \
+  --key-name aplisay --security-group-ids "$SG" \
+  --block-device-mappings "DeviceName=$ROOTDEV,Ebs={VolumeSize=40,VolumeType=gp3}" \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=aplisay}]' \
+  --query 'Instances[0].InstanceId' --output text)
+aws ec2 wait instance-running --instance-ids "$IID"
+```
+
+A fixed address:
+
+```shell
+ALLOC=$(aws ec2 allocate-address --query AllocationId --output text)
+aws ec2 associate-address --instance-id "$IID" --allocation-id "$ALLOC"
+aws ec2 describe-addresses --allocation-ids "$ALLOC" \
+  --query 'Addresses[0].PublicIp' --output text
+```
+
+The last command prints your public IP address. SSH answers about half a
+minute later.
+
+For phone calls ([step 7](#7-phone-calls)), one rule for each of your
+provider's signalling ranges, and one for audio:
+
+```shell
+aws ec2 authorize-security-group-ingress --group-id "$SG" \
+  --protocol udp --port 5060 --cidr <provider signalling range>
+aws ec2 authorize-security-group-ingress --group-id "$SG" \
+  --protocol udp --port 10000-20000 --cidr 0.0.0.0/0
+```
 
 ## 4. Install
 
@@ -182,15 +247,42 @@ In the EC2 console:
 
 Tell your phone provider to stop sending calls to the address first.
 
+With the command line, using the names from
+[the commands above](#the-same-with-the-aws-command-line):
+
+```shell
+aws ec2 terminate-instances --instance-ids "$IID"
+aws ec2 wait instance-terminated --instance-ids "$IID"
+aws ec2 release-address --allocation-id "$ALLOC"
+aws ec2 delete-security-group --group-id "$SG"
+aws ec2 delete-key-pair --key-name aplisay
+```
+
+The security group cannot be deleted until the instance has gone, which is
+why the second line waits.
+
+If you build again soon and want the same address, ask for it by name. This
+works only while nobody else has been given it:
+
+```shell
+aws ec2 allocate-address --address <the old public IP>
+```
+
 ## What was checked
 
-On the date and version above:
+On the date above, twice: once with the console steps and once with the
+command-line steps, each on a new instance.
 
 - Each console step on this page, on a new account.
-- The install commands on Ubuntu 26.04, and a healthy API.
+- Each command in the command-line sections, including removal and taking a
+  released address back.
+- The install commands on Ubuntu 26.04, with Docker run without `sudo` after
+  logging in again, and a healthy API.
+- Adding a model key to `.env` and `docker compose up -d`: the health answer
+  then shows the provider as enabled.
 - The SSH tunnel to the API and the test page.
 - The Pipecat worker and `sipbridge` beside the bundle, and an inbound call
-  from a carrier with audio in both directions.
+  from a carrier with audio in both directions, on both instances.
 
-Not checked: the AWS command line, the `edge` profile with a domain name, a
-managed database, other regions and other instance types.
+Not checked: the `edge` profile with a domain name, a managed database,
+other regions and other instance types.
