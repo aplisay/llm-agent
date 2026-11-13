@@ -53,6 +53,9 @@ test("parser: levels, modes and clamps", () => {
   assert.equal(parse({ volume: "low" }).volume, 0.05);
   assert.equal(parse({ volume: "HIGH" }).volume, 0.2);
   assert.equal(parse({ volume: "loud" }).volume, 0.1);
+  for (const key of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    assert.equal(parse({ volume: key }).volume, 0.1, key);
+  }
   assert.equal(parse({ when: "silent" }).when, "silent");
   assert.equal(parse({ when: "Always" }).when, "always");
   assert.equal(parse({ when: "never" }).when, "thinking");

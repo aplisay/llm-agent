@@ -115,6 +115,10 @@ class BackgroundGate:
         self._turn_ended_at: Optional[float] = None
         self._satisfied_since: Optional[float] = None
 
+    def reconfigure(self, config: BackgroundConfig) -> None:
+        self._config = config
+        self._satisfied_since = None
+
     def note_user_speaking(self, speaking: bool, now: float) -> None:
         if self.user_speaking and not speaking:
             self._turn_ended_at = now
@@ -211,6 +215,12 @@ class LoopReader:
         self._in_step = 1.0 / (rate * FADE_IN_SECS)
         self._out_step = 1.0 / (rate * FADE_OUT_SECS)
 
+    def set_samples(self, samples: np.ndarray) -> None:
+        """Another volume of the same sound, at the same rate."""
+        self._samples = samples
+        self._bytes = samples.tobytes()
+        self.pos %= len(samples)
+
     def set_open(self, open_: bool) -> None:
         self._target = 1.0 if open_ else 0.0
 
@@ -304,11 +314,31 @@ class BackgroundAudioInjector(FrameProcessor):
         self._queued_until = 0.0
         self._audible_until = 0.0
         self._open = False
+        self._silenced = False
         self._plays = 0
         self._sent_chunks = 0
 
     def bind_output(self, output_transport: Any) -> None:
         self._output_transport = output_transport
+
+    async def configure(self, config: Optional[BackgroundConfig]) -> None:
+        """Apply the incoming agent's settings after an in-place handover.
+
+        ``None`` (that agent has no option) fades the sound out and keeps it
+        off. The processor stays in the pipeline, sending nothing.
+        """
+        self._silenced = config is None
+        if config is not None and config != self._config:
+            reader = self._reader
+            if reader is not None and config.volume != self._config.volume:
+                samples = await asyncio.to_thread(scaled_asset, config.sound, reader.rate, config.volume)
+                reader.set_samples(samples)
+            self._config = config
+            self._gate.reconfigure(config)
+        logger.info(
+            f"background audio reconfigured: {'off' if config is None else config.when}"
+        )
+        self._wake_up()
 
     def _out_rate(self) -> Optional[int]:
         # The transport's own rate only: a frame at any other rate latches its
@@ -417,7 +447,7 @@ class BackgroundAudioInjector(FrameProcessor):
         gate.handover_tone = bool(self._handover_tone_active())
         gate.ending = gate.ending or bool(self._is_ending())
         gate.agent_audible = self._bot_speaking or now < self._audible_until
-        open_, wait = gate.evaluate(now)
+        open_, wait = (False, None) if self._silenced else gate.evaluate(now)
         if open_ != self._open:
             self._open = open_
             if open_:
@@ -426,7 +456,8 @@ class BackgroundAudioInjector(FrameProcessor):
         return open_, wait
 
     def _idle_timeout(self, now: float, wait: Optional[float]) -> Optional[float]:
-        candidates = [] if wait is None else [wait]
+        # An open gate reports a wait of 0: that is not something to wait for.
+        candidates = [wait] if wait else []
         if self._queued_until > now:
             candidates.append(self._queued_until - now)
         if self._audible_until > now:

@@ -502,3 +502,124 @@ def test_frames_drive_the_gate() -> None:
         assert inj._bot_speaking is True
 
     asyncio.run(run())
+
+
+class TestIdleWhileAgentAudioIsQueued:
+    def test_always_mode_sleeps_until_the_speech_has_played(self) -> None:
+        """An open gate must not turn the wait for queued speech into a busy loop."""
+
+        async def run():
+            inj = _injector("always", transport=_transport())
+            calls = 0
+            evaluate = inj._evaluate
+
+            def counting(now):
+                nonlocal calls
+                calls += 1
+                return evaluate(now)
+
+            async def speak():
+                await asyncio.sleep(0.1)
+                inj._on_agent_audio(
+                    TTSAudioRawFrame(audio=bytes(2 * RATE), sample_rate=RATE, num_channels=1),
+                    time.monotonic(),
+                )
+                nonlocal calls
+                calls = 0
+                inj._evaluate = counting  # type: ignore[method-assign]
+
+            await _collect(inj, 0.5, during=speak)
+            assert calls <= 5, f"evaluated {calls} times while the speech played"
+
+        asyncio.run(run())
+
+
+class TestReconfigure:
+    def test_none_silences_a_playing_injector(self) -> None:
+        async def run():
+            inj = _injector("always", transport=_transport())
+
+            async def turn_off():
+                await asyncio.sleep(0.2)
+                await inj.configure(None)
+
+            frames = await _collect(inj, 0.6, during=turn_off)
+            before = len(frames)
+            assert before > 0
+            later = await _collect(inj, 0.3)
+            assert later == [], "nothing after the fade out"
+
+        asyncio.run(run())
+
+    def test_new_settings_apply(self) -> None:
+        async def run():
+            inj = _injector("thinking", transport=_transport())
+            assert await _collect(inj, 0.2) == []
+            await inj.configure(BackgroundConfig(when="always", volume=0.2, delay_ms=0))
+            frames = await _collect(inj, 0.3)
+            assert frames
+            assert inj._reader is not None
+            assert inj._reader._samples is scaled_asset("office", RATE, 0.2)
+
+        asyncio.run(run())
+
+
+def _call_session(*, background=None, parent=None):
+    from pipecat_aplisay.call_session import CallSession
+    from pipecat_aplisay import api_client
+
+    call = api_client.CallRecord(
+        id="call-1", userId="u", organisationId="org-1", instanceId="i", agentId="a", persisted=False
+    )
+    session = CallSession(
+        session_id="s1",
+        agent={"id": "a", "modelName": "pipecat:openai/gpt-4o", "prompt": "old"},
+        instance={"streamLog": False},
+        sip_gateway=None,  # type: ignore[arg-type]
+        gateway_session=SimpleNamespace(transport=None),  # type: ignore[arg-type]
+        call=call,
+    )
+    session._active_model_name = "pipecat:openai/gpt-4o"
+    session._background_injector = background
+    session.parent_session = parent
+    return session
+
+
+class TestHandover:
+    ENABLED = {"id": "b", "modelName": "pipecat:openai/gpt-4o", "options": {"backgroundAudio": True}}
+    DISABLED = {"id": "b", "modelName": "pipecat:openai/gpt-4o", "options": {}}
+
+    def test_turning_it_on_needs_a_restart(self) -> None:
+        assert _call_session()._needs_full_handover(self.ENABLED) is True
+
+    def test_no_restart_when_it_stays_off(self) -> None:
+        assert _call_session()._needs_full_handover(self.DISABLED) is False
+
+    def test_no_restart_when_an_injector_can_be_reconfigured(self) -> None:
+        session = _call_session(background=_injector("thinking"))
+        assert session._needs_full_handover(self.ENABLED) is False
+        assert session._needs_full_handover(self.DISABLED) is False
+
+    def test_consult_legs_never_restart_for_it(self) -> None:
+        assert _call_session(parent=object())._needs_full_handover(self.ENABLED) is False
+
+    def test_in_place_swap_applies_the_incoming_setting(self, monkeypatch) -> None:
+        inj = _injector("always", transport=_transport())
+        session = _call_session(background=inj)
+        queued: list = []
+
+        async def queue_frames(frames):
+            queued.extend(frames)
+
+        session._task = SimpleNamespace(queue_frames=queue_frames)
+        session._llm_service = SimpleNamespace(unregister_function=lambda name: None, register_function=lambda *a, **k: None)
+        monkeypatch.setattr(session, "_build_tools_for", lambda agent, **kw: [])
+        asyncio.run(session._apply_agent_transfer(self.DISABLED, "new prompt"))
+        assert queued, "the prompt swap still ran"
+        assert inj._silenced is True
+
+        asyncio.run(session._apply_agent_transfer(
+            {**self.ENABLED, "options": {"backgroundAudio": {"when": "silent"}}}, "new prompt"
+        ))
+        assert inj._silenced is False
+        assert inj._config.when == "silent"

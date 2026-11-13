@@ -1728,6 +1728,8 @@ class CallSession:
         target_model = new_agent.get("modelName") or current_model
         if target_model != current_model:
             return True
+        if self._background_needs_restart(new_agent):
+            return True
         current_id = model_id_from_name(current_model)
         # GPT-Live fixes instructions, voice and delegation mode at session
         # start, so a handover is always a restart (docs/gpt-live.md). Grok
@@ -1740,6 +1742,18 @@ class CallSession:
             or is_xai_voice_model_id(current_id)
             or is_elevenlabs_agents_model_id(current_id)
             or is_gemini_live_model_id(current_id)
+        )
+
+    def _background_needs_restart(self, new_agent: dict) -> bool:
+        """The incoming agent turns ``options.backgroundAudio`` on, and this
+        pipeline has no injector to turn on: one cannot be added to a running
+        pipeline, and an agent without the option gets none (see prepare_run)."""
+        from .background_audio import background_config_from_options
+
+        return (
+            self.parent_session is None
+            and self._background_injector is None
+            and background_config_from_options(new_agent.get("options")) is not None
         )
 
     async def _on_agent_transfer(self, args: dict) -> dict:
@@ -2110,6 +2124,12 @@ class CallSession:
                 ]
             )
             self.agent = apply_instance_transfer_overrides(new_agent, self.instance)
+            if self._background_injector is not None:
+                from .background_audio import background_config_from_options
+
+                await self._background_injector.configure(
+                    background_config_from_options(self.agent.get("options"))
+                )
             logger.bind(agent_id=new_agent.get("id")).info(
                 "agent transfer: prompt and tools swapped"
             )

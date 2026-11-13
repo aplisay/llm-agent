@@ -10,10 +10,12 @@
 # tests/background-audio-options.test.mjs fails if they differ.
 #
 # Run it from the repository root, after `(cd agents/livekit && yarn install)`.
+# Needs ffmpeg and ffprobe, found on PATH. Set FFMPEG to use another ffmpeg;
+# ffprobe is then looked for beside it unless FFPROBE is set too.
 
 set -euo pipefail
 
-FFMPEG=${FFMPEG:-/opt/homebrew/bin/ffmpeg}
+FFMPEG=${FFMPEG:-ffmpeg}
 FFPROBE=${FFPROBE:-${FFMPEG%ffmpeg}ffprobe}
 SRC=${1:-agents/livekit/node_modules/@livekit/agents/resources/office-ambience.ogg}
 

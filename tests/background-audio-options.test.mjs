@@ -55,6 +55,14 @@ describe('the background sound', () => {
     expect(livekit.equals(pipecat)).toBe(true);
   });
 
+  // The clip is Apache-2.0, which asks for its licence to travel with it.
+  test('has its licence beside both copies', () => {
+    const livekitLicence = copy('agents/livekit/assets/background/LICENCE-Apache-2.0.txt');
+    const pipecatLicence = copy('agents/pipecat/pipecat_aplisay/assets/background/LICENCE-Apache-2.0.txt');
+    expect(livekitLicence.toString()).toMatch(/Apache License\s+Version 2\.0/);
+    expect(livekitLicence.equals(pipecatLicence)).toBe(true);
+  });
+
   test('is mono 16-bit PCM at 16 kHz and does not clip', () => {
     const { pcm, sampleRate } = decodeWav(livekit);
     expect(sampleRate).toBe(16000);

@@ -67,6 +67,11 @@ Agents in a set can each set the option differently. After a `transfer_agent`
 handover, the incoming agent's own setting applies. An incoming agent without
 the option plays no sound.
 
+On Pipecat, a handover that keeps the same model normally swaps the prompt and
+tools in place. When the outgoing agent had no background sound and the
+incoming agent has one, the handover restarts the agent stack instead, with a
+child call record, because the sound cannot be added to a running pipeline.
+
 ## Where it works
 
 | Runtime | Supported |
@@ -111,24 +116,33 @@ callers use speakerphones, because it never plays while the caller speaks.
 
 ## Cost
 
-The worker does no work while the sound is off: no timer runs and no audio is
-sent. While the sound plays, the main cost is one more stream of encoded audio
-for the call. At full level each audio frame is a copy of a buffer that already
-has the volume applied. Only the fades scale samples.
+The two workers carry the sound differently, so they cost differently.
 
-So the cost follows how long the sound plays:
+**LiveKit.** The sound has its own audio track, published when the call
+connects and kept for the whole call. While the sound is off the player itself
+does nothing: no timer runs and it writes no audio. But LiveKit's audio source
+still feeds the track's encoder 10 ms of silence every 10 ms, so a call with
+the option carries a second encoded stream from start to end, sound or no
+sound. While the sound plays, each 50 ms frame is a copy of a buffer that
+already has the volume applied.
+
+**Pipecat.** There is no second stream. While the sound is off nothing is sent
+and no timer runs. While it plays, the sound goes out on the agent's existing
+output stream: in the gaps as extra audio frames, and under the agent's speech
+by adding it to the speech frames.
+
+On both workers only the fades scale samples one by one. The rest of the cost
+follows how long the sound plays:
 
 - `thinking` is the cheapest. The sound plays for a small part of the call.
 - `silent` plays whenever the agent is quiet, often half the call or more.
 - `always` is the dearest. On Pipecat it also mixes the sound into every frame
   of the agent's speech.
 
-On the LiveKit worker the sound has its own audio track, published when the
-call connects, for every call that has the option.
-
 ## The sound
 
 The office clip comes from the `@livekit/agents` package (Apache-2.0). It is
 converted to a 16 kHz mono WAV with a crossfaded loop point and committed in
-each worker under `assets/background/`. `scripts/make-background-audio.sh`
-rebuilds it.
+each worker under `assets/background/`, with a copy of the Apache-2.0 licence
+beside it. `scripts/make-background-audio.sh` rebuilds it; it needs `ffmpeg`
+and `ffprobe` on `PATH`.

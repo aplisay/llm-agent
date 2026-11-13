@@ -34,12 +34,17 @@ export interface BackgroundAudioConfig {
 }
 
 // Gains against the asset's -20 dBFS mean level: -46, -40 and -34 dBFS.
-const VOLUME_LEVEL: Record<string, number> = { low: 0.05, medium: 0.1, high: 0.2 };
+// A Map, so a key such as "constructor" finds nothing rather than a prototype member.
+const VOLUME_LEVEL = new Map<string, number>([
+  ["low", 0.05],
+  ["medium", 0.1],
+  ["high", 0.2],
+]);
 const WHEN: BackgroundWhen[] = ["thinking", "silent", "always"];
 
 const DEFAULTS: BackgroundAudioConfig = {
   sound: "office",
-  volume: VOLUME_LEVEL.medium,
+  volume: 0.1,
   when: "thinking",
   delayMs: 600,
 };
@@ -68,7 +73,7 @@ export function backgroundConfigFromOptions(options: any): BackgroundAudioConfig
   }
   const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");
   const when = WHEN.find((w) => w === lower(raw.when)) ?? DEFAULTS.when;
-  const volume = VOLUME_LEVEL[lower(raw.volume)] ?? DEFAULTS.volume;
+  const volume = VOLUME_LEVEL.get(lower(raw.volume)) ?? DEFAULTS.volume;
   const delayMs =
     typeof raw.delayMs === "number" && Number.isFinite(raw.delayMs)
       ? Math.round(Math.min(MAX_DELAY_MS, Math.max(0, raw.delayMs)))
