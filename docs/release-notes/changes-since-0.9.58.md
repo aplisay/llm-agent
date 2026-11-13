@@ -207,6 +207,8 @@ Pipecat), and **ci** (build and release pipeline).
   calls. See [background-audio.md](../background-audio.md).
 - **[livekit+pipecat] Recordings**: Pipecat recordings include the sound.
   LiveKit recordings do not.
+- **[livekit+pipecat] Ultravox realtime models**: in `thinking` mode only a
+  tool call that runs for longer than `delayMs` starts the sound.
 
 ## Upgrade notes
 
