@@ -126,9 +126,8 @@ which is what the LiveKit worker does for every realtime row.
 
 ## Not covered
 
-- GPT-Live has no text-output modality. A separate, explicitly enabled
-  [transcript-synthesis prototype](gpt-live.md#experimental-transcript-tts)
-  discards its native audio and feeds its captions to TTS on Pipecat.
+- GPT-Live has no text-output modality. Use a
+  [custom voice](custom-voices.md) to change how it sounds.
 - The native `ultravox:` handler (browser or Jambonz straight to Ultravox)
   has no worker in the media path, so it cannot host a TTS.
 - The Gemini Live rows, for the reason above.

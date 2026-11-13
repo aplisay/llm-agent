@@ -494,7 +494,6 @@ def build_gpt_live_service(
     api_key: str,
     voice: Optional[str],
     session: GptLiveSession,
-    transcript_tts: bool = False,
 ) -> AplisayOpenAILiveLLMService:
     """Construct the service for one session from its resolved composition."""
     delegate = session.delegate
@@ -515,15 +514,8 @@ def build_gpt_live_service(
     else:
         client_delegate = session.client_delegate
 
-    service_class = AplisayOpenAILiveLLMService
-    if transcript_tts:
-        from .gpt_live_transcript_tts import GptLiveTranscriptTtsService
-
-        service_class = GptLiveTranscriptTtsService
     overrides = session.overrides
-    if transcript_tts:
-        voice = gpt_live.GPT_LIVE_DEFAULT_VOICE
-    elif session.custom_voice_id:
+    if session.custom_voice_id:
         # Upstream's settings take only a voice name, so the custom voice object
         # goes in through the session.start merge; an explicit vendorSpecific value still wins.
         overrides = gpt_live.deep_merge(
@@ -536,7 +528,7 @@ def build_gpt_live_service(
         voice = gpt_live.GPT_LIVE_DEFAULT_VOICE
     else:
         voice = voice or gpt_live.GPT_LIVE_DEFAULT_VOICE
-    llm = service_class(
+    llm = AplisayOpenAILiveLLMService(
         api_key=api_key,
         settings=AplisayOpenAILiveLLMService.Settings(
             system_instruction=session.voice_instructions,

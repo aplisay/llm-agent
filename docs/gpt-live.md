@@ -295,96 +295,15 @@ with `POST /models/pipecat:openai/gpt-live-1/voices/{locale}`. They are listed
 first under `OpenAI`, marked `custom: true`, and only that organisation sees
 them. See [custom-voices.md](custom-voices.md).
 
-By default `options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
+`options.tts.vendor` must be unset or `openai`. GPT-Live has no text-only
 response modality: the row reports `hasExternalTts: false` and any other vendor
-is rejected unless the transcript-synthesis prototype below is enabled. This is
+is rejected. For a voice of your own, use a custom voice instead. This is
 unlike `pipecat:openai/gpt-realtime`, which shares the `openai` provider
 segment but is a different API: the Realtime API takes
 `output_modalities: ["text"]`, and the Live API's `session.start` has no
 modality field at all (its only output events are audio deltas and the
 transcript of that audio). See [realtime-external-tts.md](realtime-external-tts.md)
 for the rows that do support it.
-
-### Experimental transcript TTS
-
-On the Pipecat worker, opt in with `options.tts.experimentalTranscript: true`
-and select an external TTS vendor. For example, this agent configuration uses
-Deepgram to speak GPT-Live's output transcript:
-
-```json
-{
-  "modelName": "pipecat:openai/gpt-live-1",
-  "prompt": "You are a helpful receptionist. Keep replies short.",
-  "options": {
-    "tts": {
-      "experimentalTranscript": true,
-      "vendor": "deepgram",
-      "voice": "aura-athena-en",
-      "language": "en-GB"
-    }
-  }
-}
-```
-
-The worker needs its usual OpenAI credentials and the selected TTS provider's
-credentials (`DEEPGRAM_API_KEY` for this example). Existing delegate configuration
-continues to work. The option is off by default; remove it and the external vendor
-to return to native audio. The model's voice picker and `hasExternalTts` remain
-unchanged because it has no supported text-only modality; choose external voices
-from the corresponding pipeline TTS catalogue.
-
-The worker discards native audio and feeds `session.output_transcript.delta`
-fragments, preserving their spacing, to the external TTS stage. Native TTS text
-and start/stop frames are suppressed so synthesized speech is not duplicated in
-the audit transcript.
-
-For ElevenLabs, the experimental path sends transcript fragments immediately
-using Pipecat's token streaming mode, with `auto_mode=false` and the existing
-Flash v2.5 model. ElevenLabs' default input buffering and chunk scheduling decide
-when there is enough text to synthesize. This gives the synthesizer more context
-for natural emphasis while avoiding Pipecat's full-sentence wait. There is no
-local phrase timer or custom provider chunk schedule. The same ElevenLabs context
-is reused within a response, and response completion flushes any remainder.
-Normal pipeline TTS and Realtime text-output sessions retain their existing
-sentence aggregation. Live trials are needed to assess the latency/prosody tradeoff.
-
-Local VAD interrupts immediately when caller speech begins during external
-playback. Before playback, it allows 600 ms of speech after VAD confirmation
-(the VAD itself also has a speech-onset threshold), so a brief acknowledgment
-does not automatically clear a queued reply. Sustained speech still cancels
-queued synthesis and playback. This is a duration heuristic, not a semantic
-acknowledgment classifier; speech can begin during that grace period. The
-microphone remains connected to GPT-Live, which can independently change its
-answer. Late pre-interruption captions are discarded, and a timestamped new
-answer can resume even without an intervening transcript-gap boundary.
-Delegated tool calls continue through local interruptions. The existing greeting
-guard feeds silence to OpenAI until external playback finishes, with its existing
-timeout as a fallback if synthesis fails.
-
-ElevenLabs trials log `transcript_tts_latency` events with a per-response `trace`,
-`stage`, monotonic timestamp, and milliseconds since `first_transcript`:
-`first_tts_submission`, `first_audio`, and `playback_start`. Subtract consecutive
-stage times to separate local text forwarding, provider buffering/synthesis,
-and local output buffering.
-Playback is measured after the transport successfully writes its first TTS audio
-chunk; it excludes downstream network/jitter buffering and is not proof the
-remote caller heard it. Interrupted responses also log `interrupted`; responses
-that fail or are cancelled may lack later stages. These logs contain no transcript
-text. Stage correlation uses TTS context IDs so queued responses remain separate.
-
-This is a prototype: OpenAI still generates audio and charges for the Live session;
-external TTS usage is additional. Transcript delivery has no guaranteed lead over
-native audio, so synthesis adds latency and its playback can drift from the Live
-model's speech timeline. Transcript turn boundaries are inferred from gaps, not
-authoritative API events. The model may believe words were heard when they were
-discarded or interrupted. No text modality is sent to OpenAI.
-
-For a live trial, check the greeting, multi-sentence replies, interruptions during
-speech and pauses, and a delegated tool call interrupted while running. Compare
-the recording and bot transcript, verify only one voice is audible, and measure
-time to first speech and how much audio continues after barge-in. Offline tests
-exercise frame routing and interruption state; they cannot establish live latency
-or conversational quality.
 
 ## Options
 
@@ -454,7 +373,5 @@ as for a `subagent` call today.
   when it delegates. They are not sent to the backend directly.
 - **Handover history.** With `includeHistory`, the transcript is carried in
   the incoming agent's instructions rather than as startup history.
-- **No transcript TTS.** `options.tts.experimentalTranscript` is Pipecat
-  only.
 - **Barge-in.** The model stops talking when interrupted; audio already
   queued plays out, as there is no VAD to stop it early.

@@ -57,7 +57,6 @@ from .realtime_tts import (
     external_tts_vendor,
     local_vad_required,
     text_output_enabled,
-    transcript_tts_enabled,
 )
 from .tool_log import log_tool_call, log_tool_result
 from .tts_speed import (
@@ -583,7 +582,7 @@ def build_stt_service(agent: dict) -> Any:
 NEUPHONIC_SAMPLE_RATE = 16000
 
 
-def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
+def build_tts_service(agent: dict) -> Any:
     """Construct the pipeline's TTS service from ``agent.options.tts``
     (defaulting to Cartesia).
 
@@ -629,12 +628,6 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
     if tts_vendor == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 
-        service_class = ElevenLabsTTSService
-        if transcript_tts:
-            from .elevenlabs_transcript_tts import ElevenLabsTranscriptTTSService
-
-            service_class = ElevenLabsTranscriptTTSService
-
         # ElevenLabs only honours a language code on its multilingual models;
         # Pipecat's default here (eleven_flash_v2_5) is one of them, so the
         # setting takes effect. If the model is ever pinned to a non-multilingual
@@ -644,7 +637,7 @@ def build_tts_service(agent: dict, *, transcript_tts: bool = False) -> Any:
         # that arg is deprecated in Pipecat 1.x, and since we now pass settings
         # for the language anyway, using both would mean relying on the
         # settings-wins precedence rule between them.
-        return service_class(
+        return ElevenLabsTTSService(
             api_key=_require_env("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
             settings=ElevenLabsTTSSettings(
                 voice=voice or "Rachel",
@@ -1161,10 +1154,7 @@ async def build_voice_session(
     # ``TTSAudioRawFrame`` under ``OutputAudioRawFrame``), so the audit tap keys
     # on the parent class there.
     output_frame_cls = None
-    if (
-        is_gpt_live_model_id(model_id_from_name(model_name))
-        and not transcript_tts_enabled(agent, model_id_from_name(model_name))
-    ):
+    if is_gpt_live_model_id(model_id_from_name(model_name)):
         from pipecat.frames.frames import OutputAudioRawFrame
 
         output_frame_cls = OutputAudioRawFrame
@@ -1523,14 +1513,8 @@ async def _build_realtime(
     # misconfiguration worth a warning, not a dead call: fall back to native
     # audio.
     text_output = text_output_enabled(agent, model_id)
-    transcript_tts = transcript_tts_enabled(agent, model_id)
     requested_tts_vendor = external_tts_vendor(agent, model_id)
-    if transcript_tts:
-        logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
-            "experimental GPT-Live transcript TTS: native audio is generated but discarded; "
-            "external speech timing may diverge from the Live session"
-        )
-    elif requested_tts_vendor and not text_output:
+    if requested_tts_vendor and not text_output:
         logger.bind(vendor=requested_tts_vendor, model=model_id).warning(
             "options.tts.vendor names an external TTS but this realtime provider "
             "has no text-output mode on this worker; using the model's own voice"
@@ -1555,14 +1539,14 @@ async def _build_realtime(
             )
         from .gpt_live_service import build_gpt_live_service
 
-        if not transcript_tts:
-            warn_tts_speed_unsupported(agent, model_id)
+        warn_tts_speed_unsupported(agent, model_id)
 
+        # Agents saved with the removed transcript-TTS prototype still name an
+        # external vendor's voice, which the Live API would refuse.
         llm = build_gpt_live_service(
             api_key=_require_env("OPENAI_API_KEY"),
-            voice=(options.get("tts") or {}).get("voice"),
+            voice=None if requested_tts_vendor else (options.get("tts") or {}).get("voice"),
             session=gpt_live,
-            transcript_tts=transcript_tts,
         )
     elif model_id.startswith("openai/"):
         # OpenAI Realtime: `voice` lives inside SessionProperties → audio →
@@ -1733,11 +1717,7 @@ async def _build_realtime(
     schemas = _register_tools_on_llm(llm, tools)
 
     # External TTS consumes model text and supplies downstream audio at the transport rate.
-    # See docs/realtime-external-tts.md for GPT-Live's transcript-synthesis exception.
-    external_tts = (
-        [build_tts_service(agent, transcript_tts=transcript_tts)]
-        if external_tts_enabled(agent, model_id) else []
-    )
+    external_tts = [build_tts_service(agent)] if external_tts_enabled(agent, model_id) else []
 
     if gpt_live_model or grok_voice_model:
         # Put the system prompt in Settings.system_instruction, not capped startup history; seed only prior turns there.
@@ -1836,10 +1816,6 @@ async def _build_realtime(
         *output,
         transport.output(),
     ]
-    if transcript_tts and requested_tts_vendor == "elevenlabs":
-        from .transcript_tts_latency import TranscriptTtsPlaybackProbe
-
-        processors.append(TranscriptTtsPlaybackProbe())
     # The recording docs require ``AudioBufferProcessor`` to sit AFTER
     # ``transport.output()`` so it sees both the user's input frames and the
     # bot's rendered TTS output frames.

@@ -122,11 +122,6 @@ def test_a_missing_key_names_the_variable(monkeypatch):
         build_tts_service(_agent(tts={"vendor": "neuphonic", "voice": VOICE}))
 
 
-def test_transcript_tts_uses_the_same_service(neuphonic_key):
-    tts = build_tts_service(_agent(tts={"vendor": "neuphonic", "voice": VOICE}), transcript_tts=True)
-    assert type(tts) is AplisayNeuphonicTTSService
-
-
 def test_an_external_tts_on_the_text_output_rows():
     agent = _agent(tts={"vendor": "neuphonic", "voice": VOICE})
     for model_id in ("ultravox/ultravox-v0.7", "openai/gpt-realtime"):

@@ -389,6 +389,31 @@ def test_an_unresolved_custom_voice_id_falls_back_to_the_default_voice():
     assert llm._settings.voice == gpt_live.GPT_LIVE_DEFAULT_VOICE
 
 
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("extra", [{}, {"experimentalTranscript": True}])
+def test_an_external_tts_vendor_falls_back_to_the_native_default_voice(monkeypatch, extra):
+    from pipecat_aplisay import voice_session
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    seen: dict = {}
+
+    def fake_build(**kwargs):
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(live_service, "build_gpt_live_service", fake_build)
+    agent = {"options": {"tts": {"vendor": "deepgram", "voice": "aura-athena-en", **extra}}}
+    with pytest.raises(_Stop):
+        asyncio.run(voice_session.build_voice_session(
+            transport=None, model_name=GPT_LIVE, agent=agent, metadata={}, tools=[],
+            system_prompt="sys", gpt_live=_session()))
+    assert seen["voice"] is None
+    assert usage_vendors(agent, GPT_LIVE)["tts"]["vendor"] == "openai"
+
+
 def test_injection_shim_events_in_responses_mode():
     llm, sent = _build(_session())
     llm._session_started = True

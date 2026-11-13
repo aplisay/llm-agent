@@ -91,13 +91,15 @@ def usage_vendors(
 def _speaks_with_own_voice(agent: dict, model_id: str) -> bool:
     """A realtime row of a provider this worker runs, with no external TTS."""
     from .pipeline_model_ids import is_pipeline_model_id
-    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, external_tts_vendor, realtime_provider
+    from .realtime_tts import REALTIME_NATIVE_TTS_VENDORS, realtime_provider, text_output_enabled
 
     if is_pipeline_model_id(model_id):
         return False
     if realtime_provider(model_id) not in REALTIME_NATIVE_TTS_VENDORS:
         return False
-    return external_tts_vendor(agent, model_id) is None
+    # A vendor the row cannot run in text mode falls back to the native voice
+    # (voice_session.build_voice_session), so meter it as native speech.
+    return not text_output_enabled(agent, model_id)
 
 
 def bundled_speech_vendor(agent: dict, model_id: str) -> str | None:
