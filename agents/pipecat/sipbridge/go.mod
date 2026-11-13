@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.13
-	github.com/emiago/sipgo v1.3.1
+	github.com/emiago/sipgo v1.4.3
 	github.com/google/uuid v1.6.0
 	github.com/pion/dtls/v3 v3.1.4
 	github.com/pion/rtp v1.10.2
