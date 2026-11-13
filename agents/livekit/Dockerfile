@@ -15,6 +15,9 @@ RUN npm install -g pnpm@latest-10
 RUN yarn install --development --frozen-lockfile
 RUN yarn build
 ENV NODE_ENV production
+# Fail the build if the entry point cannot load, for example when a module in dist/ is missing or is the wrong
+# file. Printing the CLI help links every static import and needs no credentials and no network.
+RUN node dist/realtime.js --help > /dev/null
 RUN chmod +x entrypoint.sh
 # entrypoint.sh loads the SECRETENV pair from Secret Manager (see
 # load-secretenv.js) and then execs `node dist/realtime.js "$@"`, so the agent
