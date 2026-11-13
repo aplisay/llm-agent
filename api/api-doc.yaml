@@ -1010,6 +1010,67 @@ components:
             volume: medium
             gapMs: 2750
             graceMs: 1200
+        backgroundAudio:
+          description: |-
+            Background sound: plays a quiet office sound to the caller, so that silence does not
+            sound like a dead line. The main use is while the agent waits for a model reply or a
+            tool result.
+
+            Set to `true` to enable with the defaults, or to an object to tune it. If omitted (or
+            `false` / `enabled: false`) the feature is off and there is no behavioural change.
+
+            The sound never plays while a transfer is in flight, while the caller is bridged to
+            another party, or while the call is ending. It fades in over 300 ms and out over 120 ms.
+
+            Honoured by the LiveKit and Pipecat workers. Ignored by jambonz and by native Ultravox
+            agents. LiveKit call recordings do not include the sound; Pipecat recordings do. See
+            docs/background-audio.md.
+          oneOf:
+            - type: boolean
+            - type: object
+              properties:
+                enabled:
+                  description: Set `false` to disable without removing the object.
+                  type: boolean
+                  default: true
+                sound:
+                  description: The sound to play. `office` is a quiet open-plan office.
+                  type: string
+                  enum: [office]
+                  default: office
+                volume:
+                  description: |-
+                    Loudness of the sound. `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS, `high` ≈ -34 dBFS
+                    (mean level).
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                when:
+                  description: |-
+                    When the sound plays.
+
+                    - `thinking`: only while the agent is working (a tool call is running, or the
+                      reply has taken longer than `delayMs`). It stops when the agent or the caller
+                      speaks.
+                    - `silent`: whenever the agent is not speaking, after `delayMs` of quiet. It
+                      keeps playing while the caller speaks.
+                    - `always`: for the whole call, also under the agent's speech. `delayMs` is
+                      ignored.
+                  type: string
+                  enum: [thinking, silent, always]
+                  default: thinking
+                delayMs:
+                  description: |-
+                    How long, in milliseconds, the condition for `thinking` or `silent` must hold
+                    before the sound starts.
+                  type: number
+                  minimum: 0
+                  maximum: 10000
+                  default: 600
+          example:
+            when: thinking
+            volume: medium
+            delayMs: 600
         bridgedTransferToAgent:
           description: |-
             Human-to-agent transfers: after a **bridged** transfer, let the transfer target hand the
