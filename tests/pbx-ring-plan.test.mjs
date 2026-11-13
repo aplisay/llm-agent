@@ -707,10 +707,10 @@ describe('extension params', () => {
     expect(result.field).toBe(field);
   };
 
-  test('ringSeconds is a whole number from 5 to 300', () => {
+  test('ringSeconds is a whole number from 5 to 90', () => {
     expect(ok('ring_all', { ringSeconds: 5 }, '1').ok).toBe(true);
-    expect(ok('ring_all', { ringSeconds: 300 }, '1').ok).toBe(true);
-    for (const value of [4, 301, 30.5, '30']) refusedAs(ok('ring_all', { ringSeconds: value }, '1'), 'invalid_params', 'params.ringSeconds');
+    expect(ok('ring_all', { ringSeconds: 90 }, '1').ok).toBe(true);
+    for (const value of [4, 91, 300, 30.5, '30']) refusedAs(ok('ring_all', { ringSeconds: value }, '1'), 'invalid_params', 'params.ringSeconds');
   });
 
   test('callWaiting and record are booleans', () => {

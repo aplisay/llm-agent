@@ -3411,7 +3411,7 @@ components:
         forwardTo: { type: string, nullable: true }
         params:
           type: object
-          description: 'Settings: `ringSeconds` (5 to 300, default 30), `callWaiting` (default true), `record` (default false).'
+          description: 'Settings: `ringSeconds` (5 to 90, default 30), `callWaiting` (default true), `record` (default false).'
         outboundNumber: { type: string, nullable: true }
         shownNumber: { type: string, nullable: true, description: "The number calls out from this extension show." }
         shownNumberSource: { type: string, nullable: true, enum: [outbound, only, main] }
