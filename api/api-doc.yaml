@@ -1069,6 +1069,8 @@ components:
                     - `thinking`: only while the agent is working (a tool call is running, or the
                       reply is pending) for at least `delayMs`. It fades out when agent or caller
                       speech is detected; detection and queued audio can briefly overlap speech.
+                      On Ultravox realtime models only tool calls count, and caller speech does
+                      not stop the sound. See docs/background-audio.md.
                     - `silent`: whenever the agent is not speaking, after `delayMs` of quiet. It
                       keeps playing while the caller speaks, which can degrade recognition if
                       playback leaks into the microphone through poor echo cancellation. Use

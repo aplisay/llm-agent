@@ -118,6 +118,19 @@ fade-in, not the total time until the sound reaches full volume.
 A noise that the system takes for the caller speaking, with no reply after it,
 can therefore start the sound for a while. Raise `delayMs` if this happens.
 
+The last rule needs the model to report when the caller starts and stops
+speaking. Ultravox realtime models do not report it when they speak with their
+own voice, which is the default. On those models, on both workers, only tool
+calls count:
+
+- The sound plays during a tool call that runs for longer than `delayMs`. A
+  wait with no tool call stays quiet, however long the reply takes.
+- The sound does not stop when the caller speaks during a tool call. It stops
+  when the tool call ends or the agent speaks.
+
+Other realtime models may have the same limit. Check yours on a test call with
+a slow reply and a slow tool.
+
 ### Agent handovers
 
 Agents in a set can each set the option differently. After a `transfer_agent`
@@ -215,7 +228,9 @@ suppression alone is not a guarantee that playback echo is removed; see LiveKit'
 2. Enable `thinking` at `low` and start a new call. Ask something that takes
    longer than `delayMs` to answer, or exercise one of your existing slower
    tools. Expect sound during the wait and a fade-out when speech is detected.
-   A fast answer may have no sound at all.
+   A fast answer may have no sound at all. On an Ultravox realtime model use a
+   slow tool: a slow reply alone does not start the sound there (see
+   [How the agent counts as working](#how-the-agent-counts-as-working)).
 3. Only if `silent` or `always` is essential, assess the risk using the caller
    devices and phone routes available for testing. Speak names, numbers and
    short answers, then stay quiet. Compare recognition and interruptions with
@@ -238,7 +253,7 @@ route; that test page supports LiveKit only.
 | Symptom | Check and action |
 |---|---|
 | The API accepted the option but there is no sound | Confirm the agent's model uses a supported runtime, the setting is in the agent's options, and you started a new call. Unsupported runtimes silently ignore it. |
-| `thinking` stays quiet | It plays only during a detected wait longer than `delayMs`. Let the agent finish speaking and exercise a slow reply or tool; idle silence alone does not trigger it. |
+| `thinking` stays quiet | It plays only during a detected wait longer than `delayMs`. Let the agent finish speaking and exercise a slow reply or tool; idle silence alone does not trigger it. On Ultravox realtime models only a tool call that runs for longer than `delayMs` triggers it. |
 | A custom LiveKit client plays speech but no background | Play the separate `background-audio` track as well as the speech track. A client that subscribes to or plays only the microphone track will miss it. |
 | Agent speech is harder to understand | Reduce `volume`, or switch from `always` to `thinking`. Compare live audio with the feature off. |
 | Caller recognition worsens or the agent interrupts itself | Playback echo from `silent` or `always` may be entering the caller's microphone. Switch to `thinking` at `low`, or disable the feature; caller-equipment changes are usually impractical. |
