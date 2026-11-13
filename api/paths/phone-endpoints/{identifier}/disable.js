@@ -1,4 +1,5 @@
 import { PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { isDeviceLine } from '../../../../lib/pbx/line-accounts.js';
 import { normalizeE164 } from '../../../../lib/validation.js';
 import { userOwnsRow } from '../../../../lib/scope.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
@@ -27,7 +28,7 @@ const disableRegistration = async (req, res) => {
     }
 
     const registration = await PhoneRegistration.findByPk(identifier);
-    if (!registration) {
+    if (!registration || isDeviceLine(registration)) {
       return res.status(404).send({ error: 'Phone registration not found' });
     }
     if (!userOwnsRow(res.locals.user, registration)) {

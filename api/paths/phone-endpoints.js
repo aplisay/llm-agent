@@ -5,6 +5,7 @@ import { scopeWhereForOrganisation } from '../../lib/scope.js';
 import { requirePermission, can } from '../../lib/auth/permissions.js';
 import { mintRegistrarUsername, mintRegistrarPassword } from '../../lib/utils/credentials.js';
 import { registrarRealm, REGISTRAR_PORT, REGISTRAR_TRANSPORT } from '../../lib/registrar-accounts.js';
+import { notADeviceLine } from '../../lib/pbx/line-accounts.js';
 
 let appParameters, log;
 
@@ -82,7 +83,8 @@ const phoneEndpointList = (async (req, res) => {
         return res.send({ items: [], nextOffset: null });
       }
     }
-    const regWhere = orgScope ? { ...orgScope } : null;
+    // The lines of desk phones are shown under their phones, not here.
+    const regWhere = orgScope ? { ...orgScope, ...notADeviceLine } : null;
     if (regWhere && originate) {
       regWhere.outbound = true;
     }

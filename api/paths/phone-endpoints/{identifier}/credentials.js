@@ -1,4 +1,5 @@
 import { PhoneRegistration } from '../../../../lib/database.js';
+import { isDeviceLine } from '../../../../lib/pbx/line-accounts.js';
 import { userOwnsRow } from '../../../../lib/scope.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { credentialsFor, isRegistrarAccount } from '../../../../lib/registrar-accounts.js';
@@ -106,7 +107,7 @@ export async function loadRegistrarAccount(identifier, res) {
     return null;
   }
   const registration = await PhoneRegistration.findByPk(identifier);
-  if (!registration) {
+  if (!registration || isDeviceLine(registration)) {
     res.status(404).send({ error: 'Phone endpoint not found' });
     return null;
   }
