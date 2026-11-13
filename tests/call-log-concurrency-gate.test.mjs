@@ -71,7 +71,7 @@ describe('call log concurrency gate', () => {
   test('answers 503 with Retry-After when no slot frees up within the wait', async () => {
     const { app, gate, releaseAll } = buildApp({ max: 1, waitMs: 50 });
     const held = logs(app);
-    await tick();
+    await settle(() => gate.stats().active === 1);
     const res = await logs(app);
     expect(res.status).toBe(503);
     expect(res.headers['retry-after']).toBe('1');
@@ -83,11 +83,11 @@ describe('call log concurrency gate', () => {
   });
 
   test('a request that waits gets the slot when one frees up in time', async () => {
-    const { app, parked, releaseOne } = buildApp({ max: 1, waitMs: 5_000 });
+    const { app, gate, parked, releaseOne } = buildApp({ max: 1, waitMs: 5_000 });
     const held = logs(app);
     await settle(() => parked.length === 1);
     const queued = logs(app);
-    await tick();
+    await settle(() => gate.stats().waiting === 1);
     expect(parked).toHaveLength(1);
     releaseOne();
     expect((await held).status).toBe(200);
@@ -98,11 +98,11 @@ describe('call log concurrency gate', () => {
   });
 
   test('a full wait list is refused at once, without waiting', async () => {
-    const { app, gate, releaseAll } = buildApp({ max: 1, waitMs: 5_000, maxQueue: 1 });
+    const { app, gate, parked, releaseAll } = buildApp({ max: 1, waitMs: 5_000, maxQueue: 1 });
     const held = logs(app);
-    await tick();
+    await settle(() => gate.stats().active === 1);
     const queued = logs(app);
-    await tick();
+    await settle(() => gate.stats().waiting === 1);
     expect(gate.stats()).toMatchObject({ active: 1, waiting: 1 });
     const started = Date.now();
     const res = await logs(app);
@@ -110,7 +110,8 @@ describe('call log concurrency gate', () => {
     expect(Date.now() - started).toBeLessThan(1_000);
     releaseAll();
     expect((await held).status).toBe(200);
-    await tick();
+    // The queued read takes the freed slot and parks in its turn.
+    await settle(() => parked.length === 1);
     releaseAll();
     expect((await queued).status).toBe(200);
   });
@@ -118,7 +119,7 @@ describe('call log concurrency gate', () => {
   test('both call-log paths share the gate', async () => {
     const { app, gate, releaseAll } = buildApp({ max: 1, waitMs: 50 });
     const held = get(app, '/api/calls/c1/invocation-log');
-    await tick();
+    await settle(() => gate.stats().active === 1);
     expect((await logs(app)).status).toBe(503);
     expect(gate.stats().active).toBe(1);
     releaseAll();
@@ -133,7 +134,7 @@ describe('call log concurrency gate', () => {
       const aborter = new AbortController();
       const abandoned = fetch(`http://127.0.0.1:${port}/api/calls/c1/logs`, { signal: aborter.signal })
         .catch(() => 'aborted');
-      await tick();
+      await settle(() => gate.stats().active === 1);
       expect(gate.stats().active).toBe(1);
       aborter.abort();
       expect(await abandoned).toBe('aborted');
@@ -148,7 +149,7 @@ describe('call log concurrency gate', () => {
   test('other call routes and CORS preflight never take a slot', async () => {
     const { app, gate, releaseAll } = buildApp({ max: 1, waitMs: 50 });
     const held = logs(app);
-    await tick();
+    await settle(() => gate.stats().active === 1);
     expect((await request(app).get('/api/calls/c1')).status).toBe(200);
     expect((await request(app).options('/api/calls/c1/logs')).status).not.toBe(503);
     expect(gate.stats()).toMatchObject({ active: 1, waiting: 0 });
@@ -164,7 +165,7 @@ describe('call log concurrency gate', () => {
     app.use(PATHS, createCallLogGate({ max: 1, waitMs: 20, maxQueue: 4, retryAfterSeconds: 1 }, logger));
     app.get('/api/calls/:callId/logs', (req, res) => { parked.push(() => res.json({})); });
     const held = logs(app);
-    await tick();
+    await settle(() => parked.length === 1);
     expect((await logs(app)).status).toBe(503);
     expect(warnings).toHaveLength(1);
     expect(warnings[0][0]).toMatchObject({ gate: 'call-log', max: 1 });
