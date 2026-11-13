@@ -49,6 +49,7 @@ to paste into an issue.
 | The call connects, then the agent says nothing | The model's provider key is missing or wrong in the worker | `docker compose logs livekit-worker`. Add the key to `.env` and run `docker compose up -d` |
 | The browser never asks for the microphone | The page is not on `localhost` and not on HTTPS. Browsers block the microphone there | Use `localhost`, or put the instance behind TLS (the `edge` profile) |
 | A pipeline model fails, a speech-to-speech model works | The speech-to-text or text-to-speech key is missing | See "Model keys" in [choose-a-runtime.md](choose-a-runtime.md) |
+| Speech becomes unclear, caller transcripts worsen or false interruptions start after enabling background sound | `always` can mask the agent's voice; `silent` and `always` can leak into the caller's microphone on equipment outside your control | Use the default `thinking` mode at `low`, or disable background sound, and test on a new call. `silent` and `always` are discouraged unless essential. See [background-audio.md](../background-audio.md#audio-quality-what-can-go-wrong) |
 
 ## Recordings
 

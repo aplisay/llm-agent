@@ -17,6 +17,12 @@ You control recording behaviour at:
 - **Agent level**: default for all instances of that agent.
 - **Listener/instance level**: override per instance via the instance's recording object or join options.
 
+With [background sound](background-audio.md) enabled, Pipecat recordings include
+the sound mixed into the agent's output. LiveKit recordings omit the separate
+background track. To judge whether `always` mode masks the agent's voice on
+LiveKit, listen on a live call; a clear recording alone does not establish that
+the caller heard clear combined audio.
+
 ---
 
 ## Recording configuration

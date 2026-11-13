@@ -54,6 +54,12 @@ Models: `GET /models` advertises `hasAuxStt` and `hasOutputStt` per model (both 
 - The entries follow the same path as every other transcript entry — streamed live when the listener sets `streamLog`, otherwise batched onto the call record at the end — and the live progress socket carries them as `{ "user-aux": "<text>", … }` / `{ "agent-speech": "<text>", … }`. Front-ends that render transcripts by type should decide how (or whether) to show the new types; the platform does not merge them into `user` / `agent`.
 - On the agent side only the agent's own speech is audited: the transfer confidence tone, a fixed fallback announcement and relayed audio from a bridged peer are not fed to the engine.
 
+With [background sound](background-audio.md), the output audit differs by worker.
+Pipecat audits the speech after background sound has been mixed into it; LiveKit
+audits the agent's speech before it meets the separate background track at playback.
+LiveKit's audit therefore cannot tell you whether `always` mode makes the combined
+audio harder to understand. Use live listening as well as transcript checks.
+
 ## Lifecycle
 
 - Each engine is armed once the agent session is up: the caller side on the caller's audio only, the agent side on the agent's own output only.

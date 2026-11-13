@@ -1018,6 +1018,20 @@ components:
 
             Set to `true` to enable with the defaults, or to an object to tune it. If omitted (or
             `false` / `enabled: false`) the feature is off and there is no behavioural change.
+            `true` and `{}` mean `when: thinking`, `volume: medium`, `delayMs: 600`.
+
+            Use the default `thinking` mode for normal service deployments, preferably with
+            `volume: low`. `silent` and `always` are discouraged unless their ambience is essential.
+            Both play while the caller speaks: poor acoustic echo cancellation can feed the sound
+            into recognition, causing missed words or false interruptions. `always` can also mask
+            or distort the agent's voice. Callers' equipment and echo cancellation are usually
+            outside the service provider's control, so equipment troubleshooting is rarely a
+            practical remedy. Limited testing cannot establish reliability for every caller.
+
+            This is an agent-level setting for POST /api/agents or PUT /api/agents/{agentId},
+            not a listener option. Saving it affects new calls, not playback in an existing call.
+            Unknown backgroundAudio field names are currently ignored; invalid values for
+            recognised fields are rejected.
 
             The sound never plays while a transfer is in flight, while the caller is bridged to
             another party, or while the call is ending. It fades in over 300 ms and out over 120 ms.
@@ -1034,42 +1048,50 @@ components:
                   type: boolean
                   default: true
                 sound:
-                  description: The sound to play. `office` is a quiet open-plan office.
+                  description: The sound to play. Only the bundled `office` clip is supported; custom files and URLs are not accepted.
                   type: string
                   enum: [office]
                   default: office
                 volume:
                   description: |-
                     Loudness of the sound. `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS, `high` ≈ -34 dBFS
-                    (mean level).
+                    (mean level). This controls background sound, not the agent's voice. Start at
+                    `low`; audibility and speech clarity depend on the caller's device and route.
                   type: string
                   enum: [low, medium, high]
                   default: medium
                 when:
                   description: |-
-                    When the sound plays.
+                    When the sound plays. Keep the default `thinking` mode for normal service use.
+                    `silent` and `always` are discouraged unless their ambience is essential;
+                    caller equipment and echo cancellation are usually outside your control.
 
                     - `thinking`: only while the agent is working (a tool call is running, or the
-                      reply has taken longer than `delayMs`). It stops when the agent or the caller
-                      speaks.
+                      reply is pending) for at least `delayMs`. It fades out when agent or caller
+                      speech is detected; detection and queued audio can briefly overlap speech.
                     - `silent`: whenever the agent is not speaking, after `delayMs` of quiet. It
-                      keeps playing while the caller speaks.
+                      keeps playing while the caller speaks, which can degrade recognition if
+                      playback leaks into the microphone through poor echo cancellation. Use
+                      only when ambience during caller speech is essential.
                     - `always`: for the whole call, also under the agent's speech. `delayMs` is
-                      ignored.
+                      ignored. Can reduce the intelligibility of the agent and carries the same
+                      caller-side echo risk as `silent`. Use only when ambience under the agent's
+                      speech is essential.
                   type: string
                   enum: [thinking, silent, always]
                   default: thinking
                 delayMs:
                   description: |-
                     How long, in milliseconds, the condition for `thinking` or `silent` must hold
-                    before the sound starts.
+                    before the 300 ms fade-in starts. Applies to tool waits too. Ignored in `always`
+                    mode. Send a JSON number, not a duration string such as `"600ms"`.
                   type: number
                   minimum: 0
                   maximum: 10000
                   default: 600
           example:
             when: thinking
-            volume: medium
+            volume: low
             delayMs: 600
         bridgedTransferToAgent:
           description: |-

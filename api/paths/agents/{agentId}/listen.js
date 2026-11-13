@@ -124,7 +124,7 @@ export default function (wsServer) {
                 },
                 options: {
                   type: "object",
-                  description: "Options for this activation instance",
+                  description: "Options for this activation instance. Agent-level background audio is set through POST /api/agents or PUT /api/agents/{agentId}, not here; see options.backgroundAudio in AgentOptions.",
                   properties: {
                     agentLimit: {
                       type: "integer",
@@ -204,7 +204,7 @@ export default function (wsServer) {
                   properties: {
                     options: {
                       type: "object",
-                      description: "Options for this activation instance",
+                      description: "Options for this activation instance. Agent-level background audio is set through POST /api/agents or PUT /api/agents/{agentId}, not here; see options.backgroundAudio in AgentOptions.",
                       properties: {
                         agentLimit: {
                           type: "integer",
