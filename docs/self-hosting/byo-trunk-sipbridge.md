@@ -2,7 +2,7 @@
 title: Your own SIP trunk through sipbridge
 description: Step by step, how to take and place phone calls on a self-hosted instance with a SIP trunk from a provider, the Pipecat worker and the sipbridge gateway.
 audience: operator
-status: draft
+status: current
 ---
 
 # Your own SIP trunk through sipbridge
@@ -12,10 +12,11 @@ Pipecat runtime. `sipbridge` is the SIP gateway in this repo
 (`agents/pipecat/sipbridge`). It takes the call from your provider, opens a
 WebSocket to the Pipecat worker and carries the audio.
 
-Status: draft. The steps and the SIP signalling in both directions were
-checked on a test host with no provider and no model key. No call with audio
-has been made through a provider's trunk with this guide. Please report what
-you find.
+Inbound calls are verified: on 2026-11-13 a call from a UK carrier's trunk
+reached an agent on a new Linux host set up from this guide, with audio in
+both directions. Outbound calls are checked as far as the SIP signalling,
+with a script in place of the provider, and not yet through a provider's
+trunk. Please report what you find.
 
 Read [telephony-routes.md](telephony-routes.md) first if you have not chosen
 a route.
@@ -116,7 +117,7 @@ This step is not optional on a public host. Allow only what is listed.
 |---|---|---|
 | 5060/udp | Your provider's addresses only | SIP. `sipbridge` answers any address that reaches it |
 | 5061/tcp | Your provider's addresses only, or nobody | SIP over TLS. It listens by default |
-| 10000-20000/udp | Your provider's media addresses | Audio |
+| 10000-20000/udp | Your provider's media addresses, or everyone | Audio. Providers often send audio from other addresses than their signalling. If you list addresses, use the media ranges the provider publishes |
 | 8082/tcp | The API server, and browsers only if you use Pipecat WebRTC | The worker |
 | 8090/tcp | Nobody | The `sipbridge` control API. It listens on loopback by default. Keep it there |
 
@@ -225,15 +226,26 @@ To see every SIP message, set `SIPBRIDGE_SIP_TRACE=true` in
 
 ## What was checked
 
+With a real trunk, on 2026-11-13, on one EC2 instance set up from this guide
+([deploy-aws-ec2.md](deploy-aws-ec2.md)):
+
+- An inbound call from a UK carrier was answered by a
+  `pipecat:openai/gpt-realtime` agent, with audio in both directions.
+- The carrier sent the number without `+` in the request line and with `+`
+  in the `To` header. The stored number matched.
+- The carrier's audio came from a different address range than its
+  signalling.
+- It offered six codecs and the call used G.711 (PCMU), with no SRTP.
+- The caller's hangup ended the call cleanly.
+
 On a test host, with a script standing in for the provider:
 
-- An inbound INVITE for a stored number reaches the agent lookup and the
-  model start. For an unknown number, or a number in national form, it is
+- An inbound INVITE for an unknown number, or a number in national form, is
   answered 404.
 - The called number is taken from the `To` header, not the request line.
 - An outbound call reaches the address in `PIPECAT_SIP_OUTBOUND` with the
   `From` header and the extra headers described above.
 - A destination outside the default filter is refused.
 
-Not checked: audio, a provider's real trunk, a trunk with a user name and
-password, SIP over TLS, and transfers.
+Not checked: an outbound call through a provider, a trunk with a user name
+and password, SIP over TLS, SRTP, DTMF and transfers.

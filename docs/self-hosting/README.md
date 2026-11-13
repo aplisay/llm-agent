@@ -19,6 +19,7 @@ one server, or as part of a larger deployment.
 | [configuration.md](configuration.md) | You need the meaning of an environment variable |
 | [telephony-routes.md](telephony-routes.md) | You want phone calls, not only browser calls |
 | [production-checklist.md](production-checklist.md) | The instance will be reachable from the internet |
+| [deploy-aws-ec2.md](deploy-aws-ec2.md) | You want it on AWS: one EC2 instance, from a new account to a working API |
 | [byo-trunk-sipbridge.md](byo-trunk-sipbridge.md) | You have a SIP trunk from a provider and want calls on the Pipecat runtime |
 | [user-accounts.md](user-accounts.md) | Several people need their own sign-in |
 | [upgrading.md](upgrading.md) | You are moving to a newer version |
