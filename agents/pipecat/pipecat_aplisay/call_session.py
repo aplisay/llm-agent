@@ -297,6 +297,8 @@ class CallSession:
     # leg's pipeline; None when the option is unset. Armed when a transfer
     # starts; play/stop is derived from transfer_state. See confidence_tone.py.
     _tone_injector: Optional[Any] = None
+    # options.backgroundAudio injector on the caller leg; None when unset.
+    _background_injector: Optional[Any] = None
 
     # ---- Agent-to-agent transfer (builtin transfer_agent) state ----
     # Handle to the pipeline's LLM service (set in ``prepare_run``) so the
@@ -610,6 +612,7 @@ class CallSession:
         # FrameProcessors of the failed pipeline; see run_prepared.
         self.relay_endpoint = None
         self._tone_injector = None
+        self._background_injector = None
 
     @staticmethod
     def _transport_rebuildable(transport: Any) -> bool:
@@ -771,6 +774,23 @@ class CallSession:
                     get_transfer_state=lambda: self.transfer_state,
                 )
 
+        # Background sound (options.backgroundAudio), caller leg only, as above.
+        if self.parent_session is None and self._background_injector is None:
+            from .background_audio import BackgroundAudioInjector, background_config_from_options
+
+            background_config = background_config_from_options(agent.get("options"))
+            if background_config is not None:
+                self._background_injector = BackgroundAudioInjector(
+                    background_config,
+                    get_transfer_state=lambda: self.transfer_state,
+                    # An engaged WebRTC relay means the caller is bridged to a person.
+                    is_bridged=lambda: bool(getattr(self.relay_endpoint, "engaged", False)),
+                    handover_tone_active=lambda: bool(
+                        self._tone_injector is not None and self._tone_injector.handover_active
+                    ),
+                    is_ending=lambda: self._wants_hangup,
+                )
+
         recording_opts = _resolve_recording_options(agent, self.instance)
         task, audio_buffer, llm_context, llm_service = await build_voice_session(
             transport=self.gateway_session.transport,
@@ -782,6 +802,7 @@ class CallSession:
             enable_recording=recording_opts.enabled,
             relay_endpoint=self.relay_endpoint,
             tone_injector=self._tone_injector,
+            background_injector=self._background_injector,
             on_inactivity_hangup=self._on_inactivity_hangup,
             on_aux_transcript=self._on_aux_transcript,
             on_aux_usage=self._on_aux_usage,
@@ -1148,6 +1169,8 @@ class CallSession:
             # ended pipeline; clear it so prepare_run builds a fresh one (when
             # options.transferTone is set) for the incoming agent's pipeline.
             self._tone_injector = None
+            # Likewise the background injector, from the incoming agent's options.
+            self._background_injector = None
             # A rebuilt SmallWebRTC transport sits on an ALREADY-connected
             # peer, so the connection's "connected" event (which wires the
             # media tracks and fires on_client_connected → greeting /

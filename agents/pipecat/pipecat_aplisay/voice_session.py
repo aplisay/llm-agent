@@ -1074,6 +1074,7 @@ async def build_voice_session(
     enable_recording: bool = False,
     relay_endpoint: "Optional[Any]" = None,
     tone_injector: "Optional[Any]" = None,
+    background_injector: "Optional[Any]" = None,
     on_inactivity_hangup: "Optional[Callable[[], Awaitable[None]]]" = None,
     on_aux_transcript: "Optional[Callable[[str], Awaitable[None]]]" = None,
     on_aux_usage: "Optional[Callable[[str, int, dict], None]]" = None,
@@ -1167,14 +1168,29 @@ async def build_voice_session(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
             on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, gpt_live=gpt_live, history=history,
             opening=opening, on_provider_session_ended=on_provider_session_ended,
-            on_injected_dtmf=on_injected_dtmf,
+            on_injected_dtmf=on_injected_dtmf, background_injector=background_injector,
         )
     else:
         task, context, llm = await _build_pipeline(
             transport, model_name, agent, metadata, tools, system_prompt, audio_buffer, relay_endpoint, tone_injector,
             on_inactivity_hangup, aux_tap=aux_tap, output_tap=output_tap, opening=opening,
+            background_injector=background_injector,
         )
     return task, audio_buffer, context, llm
+
+
+def _background_for(background_injector: "Optional[Any]", transport: BaseTransport) -> list:
+    """The background injector as a splice, bound to the transport it feeds.
+
+    After the rate guard and the aligner, so agent audio is at the transport
+    rate and the aligner never sees our frames; before the cushion interrupt,
+    so they count as audio in flight. It is downstream of the relay injector,
+    so its own ``blocked`` rule, not the relay, keeps it off a bridged call.
+    """
+    if background_injector is None:
+        return []
+    background_injector.bind_output(transport.output())
+    return [background_injector]
 
 
 def _aux_stt_tap_for(
@@ -1499,6 +1515,7 @@ async def _build_realtime(
     opening: Optional[str] = None,
     on_provider_session_ended: "Optional[Callable[[str], Awaitable[None]]]" = None,
     on_injected_dtmf: "Optional[Callable[[str], Awaitable[None]]]" = None,
+    background_injector: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1764,6 +1781,7 @@ async def _build_realtime(
     # that protects against starvation would otherwise become tail-talk over an
     # interrupting caller. Inert unless the cushioned track is installed.
     cushion_interrupt = OutputCushionInterrupt(output_transport=transport.output())
+    background = _background_for(background_injector, transport)
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Without this, InputDTMFFrames are
     # never consumed and digits are dropped. GPT-Live routes the digits through
@@ -1812,6 +1830,7 @@ async def _build_realtime(
         *relay_inject,
         rate_guard,
         aligner,
+        *background,
         cushion_interrupt,
         *output,
         transport.output(),
@@ -1868,6 +1887,7 @@ async def _build_pipeline(
     aux_tap: "Optional[Any]" = None,
     output_tap: "Optional[Any]" = None,
     opening: Optional[str] = None,
+    background_injector: "Optional[Any]" = None,
 ) -> tuple[PipelineTask, LLMContext, Any]:
     model_id = model_id_from_name(model_name)
     options = agent.get("options") or {}
@@ -1943,6 +1963,7 @@ async def _build_pipeline(
         tone_injector.bind_output(transport.output())
     # Normalise before output(): its resampler cannot accept a change of rate pair mid-call. See PR #235.
     rate_guard = OutputRateGuard(output_transport=transport.output())
+    background = _background_for(background_injector, transport)
     # Buffer DTMF keypresses into a single user turn before the context
     # aggregator (see _dtmf_aggregator_for). Sits after STT — STT only consumes
     # audio frames, so ordering relative to it is immaterial.
@@ -1966,6 +1987,7 @@ async def _build_pipeline(
         *tone,
         *relay_inject,
         rate_guard,
+        *background,
         *output,
         transport.output(),
     ]

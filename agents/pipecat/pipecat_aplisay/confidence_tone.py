@@ -246,6 +246,11 @@ class ConfidenceToneInjector(FrameProcessor):
         self._last_voice = time.monotonic()
         logger.info("confidence tone started for agent handover")
 
+    @property
+    def handover_active(self) -> bool:
+        """Whether the handover comfort tone is armed (the background sound waits)."""
+        return self._handover and self._mode is not None
+
     def bind_output(self, output_transport: Any) -> None:
         """Tell the injector which output transport it feeds.
 
