@@ -7,6 +7,9 @@ RUN apt-get -y update
 RUN apt-get install -y ca-certificates git
 COPY agents/livekit ./
 COPY lib/* ./agent-lib/
+# The copy above also flattens each lib/ subdirectory into agent-lib/. Copy the top-level files again so
+# they win over a subdirectory file of the same name (lib/pbx/errors.js against lib/errors.js).
+COPY lib/*.js ./agent-lib/
 RUN npm install -g pnpm@latest-10
 # Fail on lockfile drift so image builds cannot silently change dependency versions. See PR #229.
 RUN yarn install --development --frozen-lockfile
