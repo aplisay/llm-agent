@@ -11,6 +11,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [self-hosting/choose-a-runtime.md](self-hosting/choose-a-runtime.md) | The five runtimes, what each needs, and which to enable first |
 | [self-hosting/telephony-routes.md](self-hosting/telephony-routes.md) | The open routes to the phone network: LiveKit SIP, `sipbridge`, Jambonz |
 | [self-hosting/production-checklist.md](self-hosting/production-checklist.md) | What to check before an instance is reachable from the internet |
+| [self-hosting/deploy-aws-ec2.md](self-hosting/deploy-aws-ec2.md) | The whole platform on one AWS EC2 instance, step by step |
 | [self-hosting/byo-trunk-sipbridge.md](self-hosting/byo-trunk-sipbridge.md) | Your own SIP trunk through the sipbridge gateway, step by step |
 | [self-hosting/user-accounts.md](self-hosting/user-accounts.md) | Sign-in with an email and password beside API keys |
 | [self-hosting/upgrading.md](self-hosting/upgrading.md) | Moving to a newer version, including the database schema step |
