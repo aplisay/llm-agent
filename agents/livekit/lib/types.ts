@@ -9,6 +9,7 @@ import type {
   OutboundInfo,
 } from './api-client.js';
 import { type ParticipantInfo } from "livekit-server-sdk";
+import type { BackgroundAudioControl } from "./background-audio.js";
 
 // Re-export ParticipantInfo for convenience
 export { ParticipantInfo };
@@ -135,6 +136,7 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   modelRef: (model: voice.Agent | null) => voice.Agent | null;
   sessionRef: (session: voice.AgentSession | null) => voice.AgentSession | null;
   setBridgedParticipant: (participant: SipParticipant | null) => void;
+  getBridgedParticipant?: () => SipParticipant | null;
   requestHangup: () => void;
   // consult transfer state management
   setConsultInProgress: (value: boolean) => void;
@@ -210,6 +212,8 @@ export interface RunAgentWorkerParams<TContext = any, TRoom = any> {
    */
   startHandoverTone?: () => void;
   stopHandoverTone?: () => void;
+  /** options.backgroundAudio. Inert unless some agent on the call sets it. */
+  background?: BackgroundAudioControl;
   recordingOptions?: {
     enabled: boolean;
     key?: string;

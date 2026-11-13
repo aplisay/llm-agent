@@ -49,6 +49,7 @@ import {
   ConfidenceTonePlayer,
   toneConfigFromOptions,
 } from "./confidence-tone.js";
+import { createBackgroundAudio } from "./background-audio.js";
 import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { runAgentWorker } from "./voice-agent-runtime.js";
@@ -313,6 +314,7 @@ export default defineAgent({
         getTransferState,
         startHandoverTone,
         stopHandoverTone,
+        background,
         registerBridgedTakeover,
         registerHangupExecutor,
       } = await setupCallAndUtilities({
@@ -341,6 +343,7 @@ export default defineAgent({
           return session;
         },
         setBridgedParticipant: (p) => (bridgedParticipant = p),
+        getBridgedParticipant: () => bridgedParticipant,
         setConsultInProgress: (v: boolean) => (consultInProgress = v),
         getConsultInProgress: () => consultInProgress,
         outbound: outboundCall,
@@ -501,6 +504,7 @@ export default defineAgent({
             setActiveAgentCall,
             startHandoverTone,
             stopHandoverTone,
+            background,
             registerBridgedTakeover,
             registerHangupExecutor,
             endTransferActivityIfNeeded: endTransferActivityFn,
@@ -1455,6 +1459,7 @@ async function setupCallAndUtilities({
   modelRef,
   sessionRef,
   setBridgedParticipant,
+  getBridgedParticipant,
   setConsultInProgress,
   getConsultInProgress,
   outbound,
@@ -1544,6 +1549,11 @@ async function setupCallAndUtilities({
         () => sessionRef(null),
       )
     : null;
+  // options.backgroundAudio. Builds nothing until some agent on the call sets it.
+  const background = createBackgroundAudio(options, {
+    getRoom: () => ctx.room as Room | null | undefined,
+    isBridged: () => Boolean(getBridgedParticipant?.()) || getConsultInProgress(),
+  });
 
   // Human→agent takeover capability (options.bridgedTransferToAgent): the
   // voice runtime registers its live handover machinery here once its stack
@@ -1561,6 +1571,7 @@ async function setupCallAndUtilities({
   ) => {
     transferState = { state, description };
     tonePlayer?.notifyTransferState(state);
+    background.setTransferState(state);
     logger.debug({ state, description }, "Transfer state updated");
   };
 
@@ -1775,6 +1786,7 @@ async function setupCallAndUtilities({
       };
     }
     wantHangup = true;
+    background.noteEnding();
 
     // Drive teardown directly rather than relying solely on the runtime's
     // AgentStateChanged → "listening" edge. That edge only fires on a state
@@ -1834,7 +1846,16 @@ async function setupCallAndUtilities({
     getTransferState,
     // Comfort tone over a full-stack agent handover gap (no-ops when
     // options.transferTone is unset, i.e. tonePlayer is null).
-    startHandoverTone: () => tonePlayer?.startHandover(),
-    stopHandoverTone: () => tonePlayer?.stopHandover(),
+    // The background sound waits while the handover tone plays, not instead of it.
+    startHandoverTone: () => {
+      if (!tonePlayer) return;
+      tonePlayer.startHandover();
+      background.setHandoverTone(true);
+    },
+    stopHandoverTone: () => {
+      tonePlayer?.stopHandover();
+      background.setHandoverTone(false);
+    },
+    background,
   };
 }

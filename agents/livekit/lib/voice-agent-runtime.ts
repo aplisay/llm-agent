@@ -184,6 +184,7 @@ export async function runAgentWorker({
   setActiveAgentCall,
   startHandoverTone,
   stopHandoverTone,
+  background,
   registerBridgedTakeover,
   registerHangupExecutor,
   transferOnly = false,
@@ -866,6 +867,7 @@ export async function runAgentWorker({
       return;
     }
     isCleaningUp = true;
+    background?.noteEnding();
     // Set before the room is deleted: the deletion can start the job's
     // shutdown, which saves the InvocationLog with this reason.
     invocationLogReason = reason;
@@ -1309,6 +1311,10 @@ export async function runAgentWorker({
       },
     );
     wireUserTurnClock(s);
+    background?.attachSession(
+      s,
+      resolveVoiceMode(forAgent.modelName ?? activeModelName, forAgent.options),
+    );
     s.on(
       voice.AgentSessionEventTypes.AgentStateChanged,
       async (ev: voice.AgentStateChangedEvent) => {
@@ -1542,6 +1548,7 @@ export async function runAgentWorker({
       modelRef(newModel);
       activeAgentDef = newAgentDef;
       activeModelName = targetModelName;
+      background?.configure(newAgentDef.options);
       resolvedVoiceMode = voiceMode;
       resolvedTextOutput = voiceMode === "realtime" && textOutputEnabled(newAgentDef, targetModelName);
       setActiveAgentCall?.(newCall);
@@ -1666,6 +1673,7 @@ export async function runAgentWorker({
         voiceMode === "realtime" && activeModelName.includes(":ultravox/");
       activeAgentDef = { ...newAgentDef, modelName: activeModelName };
       inactivityKick.applyAwayTimeout();
+      background?.configure(newAgentDef.options);
       // The incoming agent opens with the handover instruction, not its
       // greeting. The SDK starts it in a new activity on the running session.
       // On Ultravox that activity opens a new Ultravox call from the running
@@ -1815,6 +1823,7 @@ export async function runAgentWorker({
       onSendDtmf,
       onToolLoopDetected,
       onToolInvoked: () => userTurnClock.noteResponseStarted(),
+      onToolStarted: background && (() => background.toolStarted()),
     });
 
   // GPT-Live resolves its delegate (a text agent) before the session is built. See gpt-live.ts.
@@ -1854,11 +1863,18 @@ export async function runAgentWorker({
           role: role === "user" ? ("user" as const) : ("assistant" as const),
           text,
         })),
-      invoke: (task) =>
-        invokeSubagent(delegate.id, { task }, metadata, {
-          organisationId: agentDef.organisationId,
-          callId: forCall.id,
-        }),
+      invoke: async (task) => {
+        // Delegations run outside the SDK's tool path, so they are counted here.
+        const settled = background?.toolStarted();
+        try {
+          return await invokeSubagent(delegate.id, { task }, metadata, {
+            organisationId: agentDef.organisationId,
+            callId: forCall.id,
+          });
+        } finally {
+          settled?.();
+        }
+      },
     });
   };
 
@@ -2013,6 +2029,7 @@ export async function runAgentWorker({
           },
         );
         wireUserTurnClock(setupSession);
+        background?.attachSession(setupSession, voiceMode);
 
         session.on(
           voice.AgentSessionEventTypes.AgentStateChanged,
@@ -2142,6 +2159,9 @@ export async function runAgentWorker({
         operation = "connect";
         await ctx.connect();
         logger.info({ callId: call.id }, "Connected to LiveKit");
+        // Published now, not on first use: the publish round trip would
+        // otherwise make the first fade in late.
+        background?.start();
         if (attemptAbandoned) return;
         logger.debug({ call }, "concurrency reserved, starting session");
 

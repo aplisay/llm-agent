@@ -49,6 +49,7 @@ export function createTools({
   onSendDtmf,
   onToolLoopDetected,
   onToolInvoked,
+  onToolStarted,
 }: {
   agent: Agent;
   call: Call;
@@ -104,6 +105,8 @@ export function createTools({
   }) => void;
   /** Called as each tool call starts, before it runs. */
   onToolInvoked?: () => void;
+  /** Called as each tool call starts; the function it returns, once it settles. */
+  onToolStarted?: () => () => void;
 }): llm.ToolContext {
   const { functions = [], keys = [] } = agent;
 
@@ -159,7 +162,7 @@ export function createTools({
                 .map(([key]) => key),
             };
           })(),
-          execute: async (args: unknown) => {
+          execute: withToolTracking(onToolStarted, async (args: unknown) => {
             // Coarse tool classification for the InvocationLog. The livekit
             // voice worker executes only the agent's own `functions`/builtins
             // (MCP tools are proxied by the pipecat worker, not here), so a
@@ -358,10 +361,26 @@ export function createTools({
               });
               throw new Error(`error executing function: ${message}`);
             }
-          },
+          }),
         }),
       }),
       {},
     ),
   );
+}
+
+/** Wraps a tool body so `start`'s returned function runs however it ends. */
+function withToolTracking<A, R>(
+  start: (() => () => void) | undefined,
+  body: (args: A) => Promise<R>,
+): (args: A) => Promise<R> {
+  if (!start) return body;
+  return async (args: A) => {
+    const settled = start();
+    try {
+      return await body(args);
+    } finally {
+      settled();
+    }
+  };
 }
