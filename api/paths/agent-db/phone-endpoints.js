@@ -1,4 +1,5 @@
 import { PhoneNumber, PhoneRegistration, Trunk, Instance, Sequelize, Op } from '../../../lib/database.js';
+import { notADeviceLine, isDeviceLine } from '../../../lib/pbx/line-accounts.js';
 import { normalizeE164 } from '../../../lib/validation.js';
 
 let appParameters, log;
@@ -157,7 +158,8 @@ const phoneEndpointsList = (async (req, res) => {
       if (id) {
         // ('phone-registration', defined, undefined): return a single registration if exists (filtered by handler)
         const registration = await PhoneRegistration.findByPk(id);
-        if (!registration) {
+        // A desk phone line is not an agent endpoint.
+        if (!registration || isDeviceLine(registration)) {
           return res.status(404).send({ error: 'Phone endpoint not found' });
         }
         // Apply handler filter if provided
@@ -197,7 +199,7 @@ const phoneEndpointsList = (async (req, res) => {
         });
       } else {
         // ('phone-registration', undefined, undefined): return all phone registrations, filtered by handler if specified
-        const whereClause = {};
+        const whereClause = { ...notADeviceLine };
         if (handler) {
           whereClause.handler = handler;
         }

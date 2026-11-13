@@ -37,6 +37,7 @@ The first API key and encryption of stored secrets.
 | `CREDENTIALS_KEY` | API |  | Key that encrypts stored SIP passwords and agent key material. Unset means they are stored in plain text, with a warning. Set it in every real deployment (openssl rand -base64 32) and never change it once data exists. Secret. |
 | `AUTHENTICATE_USERS` | API |  | Removed. If it is still set the server warns and ignores it: every request needs an API key. |
 | `B2BUA_HEARTBEAT_TOKEN` | API |  | Token that B2BUA nodes may use, instead of SHARED_API_TOKEN, to report themselves to POST /api/agent-db/b2bua-nodes. Secret. |
+| `CALLCTL_SHARED_TOKEN` | API |  | Token call control sends as x-callctl-token. It opens /api/agent-db/pbx and nothing else. Unset means those routes are closed. Use a long random value (openssl rand -hex 32). Secret. |
 
 ## Database
 
@@ -253,6 +254,8 @@ Phone numbers, trunks and SIP registrations.
 |---|---|---|---|
 | `APLISAY_OUTBOUND_TRUNK_ID` | API, LiveKit, Pipecat |  | Trunk id that outbound and carried legs leave on, for billing and outbound call authorisation. Set the same value on the API and both workers. |
 | `REGSERVER_REGISTRAR` | API |  | Host name customers' PBXes register to. Unset means registrar accounts cannot be created. Permanent once the first account exists. |
+| `PBX_REGISTRAR_DOMAIN` | API |  | Host name desk phones of the phone system register to. Unset means REGSERVER_REGISTRAR is used. Permanent once the first phone line exists. |
+| `PBX_RELEASE` | API |  | Which phone system features the API accepts: 1, 1c, 2, 3 or 4. Unset means 1. An organisation also needs the phoneSystem capability. |
 | `REGCLIENT_API_TOKEN` | API |  | Token for the B2BUA node API (SIP traces and registration probes). Unset turns those routes off (503). Secret. |
 | `REGCLIENT_API_TOKEN_PREVIOUS` | API |  | The previous token, accepted while a new one rolls out. Secret. |
 | `REGCLIENT_API_PORT` | API | `8443` | B2BUA node API port. |

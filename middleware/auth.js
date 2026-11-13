@@ -185,6 +185,30 @@ function init(app, logger) {
       return;
     }
 
+    // Call control gets its own token and its own paths. It decides routing
+    // for every organisation, so a worker's shared token must not open these
+    // paths, and this token opens nothing else. With no token set the paths
+    // are closed.
+    const isPbxPath = /^\/api\/agent-db\/pbx(\/|$)/i.test(req.path);
+    const callctlToken = process.env.CALLCTL_SHARED_TOKEN;
+    const presentedCallctl = req.headers['x-callctl-token'];
+    const isCallctl = Boolean(callctlToken && presentedCallctl && tokensMatch(presentedCallctl, callctlToken));
+    if (isPbxPath || presentedCallctl) {
+      if (!isPbxPath || !isCallctl) {
+        res.status(403).json({ message: 'Forbidden: these routes take the call control token only' });
+        return;
+      }
+      res.locals.user = {
+        id: 'callctl',
+        user_id: 'callctl',
+        name: 'Call control (internal)',
+        isCallControl: true
+      };
+      res.locals.user.sql = { where: { userId: 'system' } };
+      next();
+      return;
+    }
+
     // Check for shared token for internal API calls
     const sharedToken = process.env.SHARED_API_TOKEN;
     if (sharedToken && req.headers['x-shared-token'] === sharedToken) {

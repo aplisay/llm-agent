@@ -64,6 +64,24 @@ tags:
       Members carry a shortform `label` (unique within the set) and may reference each other in `transfer_agent`,
       `subagent` and `delegate` builtin functions using `label:<label>` references, which the platform fixes up to
       real agent IDs on creation or update.
+  - name: Directory
+    description: |-
+      The directory of an organisation: its people, teams and services, and their extensions.
+      Every organisation has a directory. An extension of type `connection` is a number on the
+      organisation's own phone system, reached through one of its connections.
+
+      An organisation with the phone system (the `phoneSystem` capability) can also give an entry an
+      extension that rings phones registered to this platform, and add people to it as members.
+      Without the capability those requests answer 403 with code `phone_system_disabled`.
+
+      Every write that can change the keys of a phone takes `?dryRun=true`. It then checks the
+      request, changes nothing, and returns the same `effect` document the real write returns.
+  - name: Phones
+    description: |-
+      The phones of the phone system: desk phones, and outside numbers such as mobiles. An admin
+      says which people a phone rings for. The lines (keys) of a desk phone are worked out from
+      that and from each person's extensions, and are never set by hand. Needs the `phoneSystem`
+      capability.
 
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
@@ -2485,6 +2503,20 @@ components:
         provisioned:
           type: boolean
           description: Carrier-side provisioning complete (e164-ddi only; set by the dashboard Buy-number flow)
+        extensionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |-
+            e164-ddi only, and only for an organisation with the phone system. Points the number at an
+            extension of the directory, so calls to it ring that extension, or clears that with null.
+            The number's handler becomes `pbx`, and goes back to its trunk's handler when cleared.
+            A number rings an extension or an agent, never both: 409 code number_in_use while it is
+            attached to an agent, unless `replace` is true. 409 code number_not_held for a number in
+            the unallocated pool. 403 code phone_system_disabled without the phone system.
+        replace:
+          type: boolean
+          description: With `extensionId`, take the number off its agent first.
         organisationId:
           type: string
           format: uuid
@@ -3206,4 +3238,280 @@ components:
         applied:
           type: boolean
           description: Whether `suggestedOptions` was written back to the endpoint
+    DirectoryError:
+      description: A refused directory or phone request.
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: A plain sentence saying what is wrong.
+        code:
+          type: string
+          description: A stable code for the refusal, for example `phone_system_disabled`, `extension_number_taken` or `phone_too_small`.
+        field:
+          type: string
+          description: The field at fault, when there is one.
+        detail:
+          type: object
+          description: More about the refusal, for example the members that block a change.
+    DirectoryChange:
+      description: One row a write touched, with its values before and after.
+      type: object
+      properties:
+        target:
+          type: string
+          enum: [entry, extension, member, keyOrder, huntOrder, phonePerson, phone, number]
+        id:
+          type: string
+        op:
+          type: string
+          enum: [create, update, delete]
+        before:
+          nullable: true
+        after:
+          nullable: true
+    DirectoryEffect:
+      description: |-
+        What a write does to phones. A dry run and the real write return the same document, unless
+        something else changed in between.
+      type: object
+      properties:
+        phones:
+          type: array
+          description: Each phone whose keys change, with its keys before and after.
+          items:
+            type: object
+            properties:
+              phoneId: { type: string }
+              label: { type: string }
+              kind: { type: string }
+              people:
+                type: array
+                items: { type: object, properties: { entryId: { type: string }, name: { type: string } } }
+              before:
+                type: array
+                items: { $ref: '#/components/schemas/DirectoryEffectKey' }
+              after:
+                type: array
+                items: { $ref: '#/components/schemas/DirectoryEffectKey' }
+              added: { type: array, items: { type: object } }
+              removed: { type: array, items: { type: object } }
+              moved: { type: array, items: { type: object } }
+              sipAccounts:
+                type: object
+                properties: { create: { type: integer }, remove: { type: integer } }
+              resync: { type: string, enum: [now, after_call, none] }
+              warnings: { type: array, items: { type: object } }
+        phonesAffected: { type: integer }
+        linesAdded: { type: integer }
+        linesRemoved: { type: integer }
+        keysMoved: { type: integer }
+        affectedUsers:
+          type: array
+          items: { type: object, properties: { entryId: { type: string }, name: { type: string } } }
+        charges:
+          type: object
+          description: Charges the write starts or stops. Empty until extensions are priced.
+        dependents:
+          type: object
+        warnings:
+          type: array
+          description: Things that are allowed but probably not meant, such as a ring delay longer than the ring time.
+          items: { type: object, properties: { code: { type: string }, message: { type: string } } }
+        summary:
+          type: string
+          description: The effect in one or two plain sentences.
+    DirectoryEffectKey:
+      type: object
+      properties:
+        key: { type: integer, description: "The key number on the phone, from 1." }
+        kind: { type: string, enum: [extension, other] }
+        extensionId: { type: string }
+        covers:
+          type: array
+          items: { type: string }
+          description: Kind `other` only. The extensions the overflow line takes calls for.
+        label: { type: string }
+        lineNumber:
+          type: integer
+          nullable: true
+          description: Null for a line that does not exist yet.
+    DirectoryEntry:
+      description: A person, team or service in the directory.
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [person, team, service] }
+        name: { type: string }
+        role: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        about: { type: string, nullable: true, description: "What this person or team handles." }
+        email: { type: string, nullable: true }
+        hours: { type: string, nullable: true, description: "Free text for agents." }
+        notesForAgent: { type: string, nullable: true }
+        discloseNumbers: { type: boolean, description: "Whether an agent may give out this entry's numbers. Never true for a person." }
+        direct: { type: string, nullable: true, description: "A direct number, in E.164 form." }
+        mobile: { type: string, nullable: true, description: "A contact number. It does not ring unless a phone is made from it." }
+        loginUserId: { type: string, nullable: true, description: "Person only. The user this person signs in as." }
+        notes: { type: object, description: "Kept for the client. The server does not read it." }
+        extension: { type: string, nullable: true, description: "The digits of the entry's extension." }
+        extensionId: { type: string, nullable: true }
+        extensionType: { type: string, nullable: true }
+        memberships:
+          type: array
+          description: Phone system only. The shared extensions a person belongs to, in key order.
+          items: { type: object }
+        phones:
+          type: array
+          description: Phone system only. The phones that ring for a person.
+          items: { type: object }
+        onPhoneSystem:
+          type: boolean
+          description: Phone system only. True when the person owns or belongs to an extension that is not of type `connection`.
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DirectoryEntryInput:
+      type: object
+      properties:
+        kind: { type: string, enum: [person, team, service] }
+        name: { type: string }
+        role: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        about: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        hours: { type: string, nullable: true }
+        notesForAgent: { type: string, nullable: true }
+        discloseNumbers: { type: boolean }
+        direct: { type: string, nullable: true }
+        mobile: { type: string, nullable: true }
+        loginUserId: { type: string, nullable: true }
+        notes: { type: object, nullable: true }
+        extension: { type: string, nullable: true, description: "Digits, at most 8." }
+        extensionType: { type: string, description: "The type of the extension made from `extension`. Default `connection`." }
+    DirectoryExtension:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: string }
+        type:
+          type: string
+          enum: [connection, ring_all, hunt, queue, agent, forward]
+          description: |-
+            `connection`: on the organisation's own phone system. `ring_all`: every phone of every
+            member rings at once. Other types are released later.
+        entryId: { type: string, nullable: true }
+        name: { type: string }
+        entryKind: { type: string, nullable: true }
+        personal: { type: boolean, description: "True when the extension belongs to a person." }
+        ownerEntryId: { type: string, nullable: true }
+        connectionId: { type: string, nullable: true }
+        instanceId: { type: string, nullable: true }
+        forwardTo: { type: string, nullable: true }
+        params:
+          type: object
+          description: 'Settings: `ringSeconds` (5 to 300, default 30), `callWaiting` (default true), `record` (default false).'
+        outboundNumber: { type: string, nullable: true }
+        shownNumber: { type: string, nullable: true, description: "The number calls out from this extension show." }
+        shownNumberSource: { type: string, nullable: true, enum: [outbound, only, main] }
+        numbers: { type: array, items: { type: string }, description: The numbers that ring this extension. }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/DirectoryExtensionMember' }
+        phoneCount: { type: integer, description: "How many phones carry this extension as a line." }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DirectoryExtensionInput:
+      type: object
+      properties:
+        number: { type: string, description: "Digits, 1 to 8. Unique in the organisation." }
+        type: { type: string, enum: [connection, ring_all, hunt, queue, agent, forward] }
+        entryId: { type: string, format: uuid, nullable: true }
+        connectionId: { type: string, nullable: true, description: "Type `connection`. Null means the connection the call is on." }
+        instanceId: { type: string, nullable: true }
+        forwardTo: { type: string, nullable: true }
+        params: { type: object, nullable: true }
+        outboundNumber: { type: string, nullable: true, description: "One of the numbers that ring this extension, shown on calls out." }
+        members:
+          type: array
+          items: { type: string, format: uuid }
+          description: On create only. People to add as members.
+    DirectoryExtensionMember:
+      type: object
+      properties:
+        entryId: { type: string }
+        name: { type: string }
+        huntPosition: { type: integer, description: "The person's place in the extension's order." }
+        keyPosition: { type: integer, nullable: true, description: "The extension's place among the person's shared keys. Null for the owner." }
+        owner: { type: boolean }
+    PhoneLine:
+      description: One key on a phone. Worked out by the system, never set by hand.
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: integer }
+        kind: { type: string, enum: [extension, other] }
+        extensionId: { type: string, nullable: true }
+        number: { type: string, nullable: true }
+        label: { type: string }
+        covers: { type: array, nullable: true, items: { type: string } }
+        lineNumber: { type: integer, description: "Unique across the platform. Stays the same when the key moves." }
+        registered: { type: boolean }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+    Phone:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        kind: { type: string, enum: [deskphone, external] }
+        device:
+          type: object
+          nullable: true
+          description: Desk phone only.
+        capacity: { type: integer, description: "How many lines the phone carries." }
+        maxPeople: { type: integer, description: "How many people the phone can ring for." }
+        roomForPerson: { type: boolean }
+        people:
+          type: array
+          items: { type: object, properties: { entryId: { type: string }, name: { type: string }, position: { type: integer } } }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/PhoneLine' }
+        registered:
+          type: object
+          properties:
+            lines: { type: integer }
+            registered: { type: integer }
+            offlineSince: { type: string, format: date-time, nullable: true }
+        number: { type: string, nullable: true }
+        ringDelay: { type: integer, nullable: true }
+        shows: { type: string, nullable: true, enum: [caller, extension] }
+        keyToAnswer: { type: boolean, nullable: true }
+        addedBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    PhoneInput:
+      type: object
+      properties:
+        kind: { type: string, description: "`deskphone` or `external`. Other kinds are refused with 409 `phone_kind_not_available` until they are released." }
+        label: { type: string }
+        mac: { type: string, description: "Desk phone. The MAC address, with or without separators." }
+        model: { type: string, description: "Desk phone. The model, for example D785." }
+        number: { type: string, description: "Outside number. In E.164 form, or national with a leading 0." }
+        ringDelay: { type: integer, minimum: 0, maximum: 60, description: "Outside number. Seconds before it starts to ring." }
+        shows: { type: string, enum: [caller, extension], description: "Outside number. Which number it sees for a call." }
+        keyToAnswer: { type: boolean, description: "Outside number. Whether a key press is needed to take the call." }
+        people:
+          type: array
+          items: { type: string, format: uuid }
+          description: On create. The people the phone rings for, in order.
+    OrganisationPhoneSystem:
+      type: object
+      properties:
+        capabilities: { type: array, items: { type: string } }
+        address: { type: object, nullable: true }
+        mainNumber: { type: string, nullable: true }
+        busyStatusVisible: { type: boolean }
+        numbersUsingAddress: { type: integer }
+        extensionsUsingMainNumber: { type: integer }
 paths: {}

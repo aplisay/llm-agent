@@ -1,4 +1,5 @@
 import { Agent, PhoneNumber, PhoneRegistration } from '../../../../lib/database.js';
+import { isDeviceLine } from '../../../../lib/pbx/line-accounts.js';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import handlers from '../../../../lib/handlers/index.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
@@ -22,7 +23,7 @@ export default function (wsServer) {
       // If id is provided, look up the PhoneRegistration record
       if (id) {
         const phoneRegistration = await PhoneRegistration.findByPk(id);
-        if (!phoneRegistration) {
+        if (!phoneRegistration || isDeviceLine(phoneRegistration)) {
           throw new Error(`Phone endpoint with id ${id} not found`);
         }
         // For registration endpoints, we pass the id to the handler

@@ -2,6 +2,11 @@ import { PhoneNumber, PhoneRegistration, Trunk, Organisation, Op } from '../../.
 import { normalizeE164, validateSipUri, isPlausibleSipHost, hasRoutableRegisterProxy, validateRegistrationTrunkFields } from '../../../lib/validation.js';
 import { createRegistrationTrunk } from '../phone-endpoints.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
+import { isDeviceLine } from '../../../lib/pbx/line-accounts.js';
+import { routeNumber } from '../../../lib/pbx/directory.js';
+import { requirePhoneSystem } from '../../../lib/capabilities.js';
+import { PbxError } from '../../../lib/pbx/errors.js';
+import { Extension, DirectoryEntry } from '../../../lib/database.js';
 import { userOwnsRow } from '../../../lib/scope.js';
 import { requirePermission, can } from '../../../lib/auth/permissions.js';
 
@@ -124,7 +129,7 @@ const getPhoneEndpoint = async (req, res) => {
     } else {
       // registration id lookup
       const registration = await PhoneRegistration.findByPk(identifier);
-      if (!registration) {
+      if (!registration || isDeviceLine(registration)) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
       if (!userOwnsRow(res.locals.user, registration)) {
@@ -167,6 +172,18 @@ const getPhoneEndpoint = async (req, res) => {
       return res.status(403).send({ error: 'Access denied' });
     }
 
+    // The extension this number rings, when it rings one.
+    let extensionFields = {};
+    if (record.extensionId) {
+      const extension = await Extension.findByPk(record.extensionId, { attributes: ['id', 'number', 'entryId'] });
+      const entry = extension?.entryId ? await DirectoryEntry.findByPk(extension.entryId, { attributes: ['name'] }) : null;
+      extensionFields = {
+        extensionId: record.extensionId,
+        extensionNumber: extension?.number ?? null,
+        extensionName: entry?.name ?? null,
+      };
+    }
+
     // Return E.164 DDI endpoint shape
     return res.send({
       number: record.number,
@@ -177,6 +194,7 @@ const getPhoneEndpoint = async (req, res) => {
       trunkId: record.aplisayId || null,
       provisioned: !!record.provisioned,
       callReceived: record.callReceived ? record.callReceived.toISOString() : null,
+      ...extensionFields,
     });
   }
   catch (err) {
@@ -292,8 +310,45 @@ const updatePhoneEndpoint = async (req, res) => {
       if (!phoneNumber) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
+      const routing = updateData.extensionId !== undefined;
+      if (routing && phoneNumber.organisationId == null) {
+        return res.status(409).send({ error: 'Claim this number before pointing it at an extension', code: 'number_not_held' });
+      }
       if (phoneNumber.organisationId !== organisationId) {
         return res.status(403).send({ error: 'Access denied' });
+      }
+
+      // Point the number at an extension of the phone system, or clear that.
+      if (routing) {
+        const organisation = await Organisation.findByPk(organisationId, { attributes: ['id', 'capabilities'] });
+        if (!requirePhoneSystem(res, organisation, 'extensionId')) return;
+        if (updateData.handler !== undefined) {
+          return res.status(400).send({ error: 'handler cannot be set together with extensionId', code: 'invalid_request', field: 'handler' });
+        }
+        if (updateData.extensionId !== null && !(typeof updateData.extensionId === 'string' && UUID.test(updateData.extensionId))) {
+          return res.status(404).send({ error: 'Extension not found', code: 'not_found' });
+        }
+        try {
+          const routed = await routeNumber(
+            { organisation, actor: { kind: 'user', userId: res.locals.user?.id ?? null }, dryRun: false },
+            phoneNumber,
+            { extensionId: updateData.extensionId, replace: updateData.replace === true },
+          );
+          for (const field of ['outbound', 'provisioned']) {
+            if (typeof updateData[field] === 'boolean') await phoneNumber.update({ [field]: updateData[field] });
+          }
+          return res.send({ success: true, extensionId: routed.extensionId, handler: routed.handler });
+        } catch (err) {
+          if (err instanceof PbxError) return res.status(err.status).send(err.body());
+          throw err;
+        }
+      }
+      // While a number rings an extension its handler belongs to that route.
+      if (phoneNumber.extensionId && updateData.handler !== undefined) {
+        return res.status(409).send({
+          error: 'This number rings an extension. Clear that with extensionId: null before changing its handler',
+          code: 'number_in_use',
+        });
       }
 
       // Update allowed fields for numbers. `provisioned` marks carrier-side
@@ -321,7 +376,7 @@ const updatePhoneEndpoint = async (req, res) => {
     } else {
       // Registration ID
       const registration = await PhoneRegistration.findByPk(identifier);
-      if (!registration) {
+      if (!registration || isDeviceLine(registration)) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
       if (registration.organisationId !== organisationId) {
@@ -524,7 +579,7 @@ const deletePhoneEndpoint = async (req, res) => {
     } else {
       // Registration ID - hard delete as per API spec
       const registration = await PhoneRegistration.findByPk(identifier);
-      if (!registration) {
+      if (!registration || isDeviceLine(registration)) {
         return res.status(404).send({ error: 'Phone endpoint not found' });
       }
       if (registration.organisationId !== organisationId) {

@@ -1,4 +1,5 @@
 import { Op } from 'sequelize';
+import { isDeviceLine } from '../../../../lib/pbx/line-accounts.js';
 import { Agent, Instance, PhoneNumber, PhoneRegistration, Trunk } from '../../../../lib/database.js';
 import { AgentConcurrencyLimitExceededError } from '../../../../lib/concurrency/agent-concurrency-limits.js';
 import { getHandler } from '../../../../lib/handlers/index.js';
@@ -106,7 +107,7 @@ const originateCall = (async (req, res) => {
       if (uuidRe.test(callerId)) {
         callerPhoneRegistration = await PhoneRegistration.findByPk(callerId);
       }
-      if (!callerPhoneRegistration || !userOwnsRow(res.locals.user, callerPhoneRegistration)) {
+      if (!callerPhoneRegistration || isDeviceLine(callerPhoneRegistration) || !userOwnsRow(res.locals.user, callerPhoneRegistration)) {
         return res.status(404).send({
           error: `Caller ${callerId} not found in phone numbers or registrations table`
         });
