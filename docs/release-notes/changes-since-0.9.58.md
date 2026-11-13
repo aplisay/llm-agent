@@ -198,6 +198,16 @@ Pipecat), and **ci** (build and release pipeline).
   `time` fields rather than `message`, `severity` and `timestamp`. The Ultravox
   join URL is no longer logged.
 
+## Background sound - core+livekit+pipecat
+
+- **[core+livekit+pipecat] `options.backgroundAudio`**: plays a quiet office
+  sound to the caller while the agent works (`when: thinking`, the default),
+  whenever the agent is quiet (`silent`), or for the whole call (`always`).
+  `volume` and `delayMs` tune it. It is off during transfers and bridged
+  calls. See [background-audio.md](../background-audio.md).
+- **[livekit+pipecat] Recordings**: Pipecat recordings include the sound.
+  LiveKit recordings do not.
+
 ## Upgrade notes
 
 - **[core] Gemini Live rate lines**: run `scripts/add-gemini-live-rate-lines.mjs`

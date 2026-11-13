@@ -61,6 +61,12 @@ microphone.
 
 The test page is for development only. Never publish it on a public host.
 
+For a quiet office sound during slower replies, see
+[background audio](../background-audio.md). Use the default `thinking` mode at
+`low` volume and test on a new call. `silent` and `always` are discouraged
+unless essential: they can degrade speech or caller recognition on equipment
+outside the service provider's control.
+
 ## What runs where
 
 | Service | Port | What it is |
