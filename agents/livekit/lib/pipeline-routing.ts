@@ -3,9 +3,8 @@
  * ("direct"), or LiveKit Inference.
  *
  * Provider keys off: every stage is on Inference. Provider keys on: a stage goes
- * direct when a plugin can build it and its key is set. Any other stage runs on
- * Inference if LIVEKIT_PIPELINE_INFERENCE_FALLBACK is on. If it is off, the direct
- * builder runs and throws its own error. See docs/livekit-agent-architecture.md, 4.4.1.
+ * direct when a plugin can build it and its key is set, and any other stage falls
+ * back to Inference. See docs/livekit-agent-architecture.md, 4.4.1.
  */
 import { inference } from "@livekit/agents";
 import type { llm, stt } from "@livekit/agents";
@@ -20,9 +19,7 @@ import {
 import {
   buildProviderPipelineLlm,
   buildProviderPipelineStt,
-  pipelineInferenceFallbackEnabled,
   pipelineUsesProviderApiKeys,
-  PROVIDER_TTS_VENDORS,
   providerLlmKey,
   providerSttKey,
   providerTtsKey,
@@ -41,8 +38,6 @@ export interface StageRoute {
   fallback: boolean;
   /** The vendor has a plugin, but this variable is not set. */
   missingKey?: string;
-  /** The vendor has a TTS plugin, but its builder does not take a scoped `vendor/model` or a missing voice. */
-  pluginSkipped?: true;
 }
 
 /** `key` is the variable the direct builder needs, or undefined when no plugin builds the stage. */
@@ -50,8 +45,7 @@ function decide(stage: string, vendor: string, key: string | undefined): StageRo
   if (!pipelineUsesProviderApiKeys()) {
     return { stage, vendor, route: "inference", fallback: false };
   }
-  const usable = key !== undefined && Boolean(process.env[key]?.trim());
-  if (usable || !pipelineInferenceFallbackEnabled()) {
+  if (key !== undefined && process.env[key]?.trim()) {
     return { stage, vendor, route: "direct", fallback: false };
   }
   return { stage, vendor, route: "inference", fallback: true, ...(key ? { missingKey: key } : {}) };
@@ -91,10 +85,7 @@ export function pipelineTtsRoute(agent: Agent): StageRoute {
     const route = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS?.trim() ? "inference" : "direct";
     return { stage, vendor: "google", route, fallback: false };
   }
-  const key = providerTtsKey(agent);
-  const route = decide(stage, serviceVendor(() => resolvePipelineTts(agent)), key);
-  if (route.fallback && !key && PROVIDER_TTS_VENDORS.has(route.vendor)) route.pluginSkipped = true;
-  return route;
+  return decide(stage, serviceVendor(() => resolvePipelineTts(agent)), providerTtsKey(agent));
 }
 
 /** Log the route of each stage about to be built. Call it once per session or side engine. */
@@ -104,17 +95,11 @@ export function logPipelineRoutes(routes: StageRoute[], agent?: Agent): void {
     { agentId, routes: routes.map(({ stage, vendor, route }) => ({ stage, vendor, route })) },
     `pipeline routes: ${routes.map((r) => `${r.stage} ${r.vendor} ${r.route}`).join(", ")}`,
   );
-  // Both cases move usage we could have bought direct onto the LiveKit bill.
-  for (const { stage, vendor, missingKey, pluginSkipped } of routes) {
-    const why = missingKey
-      ? `${missingKey} is not set`
-      : pluginSkipped
-        ? `the ${vendor} plugin does not build this configuration (a scoped vendor/model, or no voice)`
-        : undefined;
-    if (!why) continue;
+  for (const { stage, vendor, missingKey } of routes) {
+    if (!missingKey) continue;
     logger.warn(
-      { agentId, stage, vendor, ...(missingKey ? { missingKey } : { pluginSkipped }) },
-      `pipeline ${stage}: ${why}, so ${vendor} runs on LiveKit Inference and is billed to the LiveKit project`,
+      { agentId, stage, vendor, missingKey },
+      `pipeline ${stage}: ${missingKey} is not set, so ${vendor} runs on LiveKit Inference and is billed to the LiveKit project`,
     );
   }
 }

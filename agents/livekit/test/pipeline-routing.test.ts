@@ -39,10 +39,8 @@ const { resolveUsageVendors } = await import("../lib/usage-vendors.js");
 const { makeUsageMeter } = await import("../lib/usage-meter.js");
 
 const KEYS = "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS";
-const FALLBACK = "LIVEKIT_PIPELINE_INFERENCE_FALLBACK";
-const OFF = { [KEYS]: undefined, [FALLBACK]: undefined };
-const KEYS_ONLY = { [KEYS]: "true", [FALLBACK]: undefined };
-const MIXED = { [KEYS]: "true", [FALLBACK]: "true" };
+const KEYS_OFF = { [KEYS]: undefined };
+const KEYS_ON = { [KEYS]: "true" };
 
 const OPENAI = "livekit:openai/gpt-4o-mini";
 const VOICE = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc";
@@ -79,8 +77,7 @@ function logged<T>(fn: () => T): { result: T; lines: Line[] } {
 }
 
 const routesLine = (lines: Line[]) => lines.find((l) => l.msg.startsWith("pipeline routes:"));
-const warnings = (lines: Line[]) =>
-  lines.filter((l) => l.level === "warn" && (l.fields?.missingKey || l.fields?.pluginSkipped));
+const warnings = (lines: Line[]) => lines.filter((l) => l.level === "warn");
 
 function pipelineSession(options: Record<string, unknown>, modelName = OPENAI) {
   return createVoiceModelAndSession({
@@ -96,25 +93,14 @@ test("the route decision: direct needs provider keys on, a plugin and its key", 
   const assembly = makeAgent({ stt: { vendor: "assemblyai" }, tts: CARTESIA_TTS });
   const plain = makeAgent({ tts: CARTESIA_TTS });
 
-  withEnv(OFF, () => {
+  withEnv(KEYS_OFF, () => {
     assert.deepEqual(pipelineSttRoute(plain), { stage: "stt", vendor: "deepgram", route: "inference", fallback: false });
+    assert.deepEqual(pipelineSttRoute(assembly), { stage: "stt", vendor: "assemblyai", route: "inference", fallback: false });
     assert.deepEqual(pipelineLlmRoute(OPENAI), { stage: "llm", vendor: "openai", route: "inference", fallback: false });
     assert.deepEqual(pipelineTtsRoute(plain), { stage: "tts", vendor: "cartesia", route: "inference", fallback: false });
   });
 
-  // The setting does nothing on its own.
-  withEnv({ [KEYS]: undefined, [FALLBACK]: "true" }, () => {
-    assert.deepEqual(pipelineSttRoute(assembly), { stage: "stt", vendor: "assemblyai", route: "inference", fallback: false });
-  });
-
-  // Fallback off: every stage is sent to its direct builder, which reports what it cannot do.
-  withEnv({ ...KEYS_ONLY, DEEPGRAM_API_KEY: undefined }, () => {
-    assert.deepEqual(pipelineSttRoute(plain), { stage: "stt", vendor: "deepgram", route: "direct", fallback: false });
-    assert.deepEqual(pipelineSttRoute(assembly), { stage: "stt", vendor: "assemblyai", route: "direct", fallback: false });
-    assert.equal(pipelineLlmRoute("livekit:xai/grok-4.3").route, "direct");
-  });
-
-  withEnv(MIXED, () => {
+  withEnv(KEYS_ON, () => {
     assert.deepEqual(pipelineSttRoute(plain), { stage: "stt", vendor: "deepgram", route: "direct", fallback: false });
     assert.deepEqual(pipelineSttRoute(assembly), { stage: "stt", vendor: "assemblyai", route: "inference", fallback: true });
     assert.deepEqual(pipelineSttRoute(makeAgent({ stt: { vendor: "cartesia" } }), "aux-stt"), {
@@ -143,7 +129,7 @@ test("the route decision: direct needs provider keys on, a plugin and its key", 
 
 test("a missing key sends the stage to Inference and names the variable", () => {
   const plain = makeAgent({ tts: CARTESIA_TTS });
-  const missing = (key: string, route: () => any) => withEnv({ ...MIXED, [key]: undefined }, route);
+  const missing = (key: string, route: () => any) => withEnv({ ...KEYS_ON, [key]: undefined }, route);
 
   assert.deepEqual(missing("DEEPGRAM_API_KEY", () => pipelineSttRoute(plain)), {
     stage: "stt",
@@ -168,16 +154,16 @@ test("a missing key sends the stage to Inference and names the variable", () => 
   );
 
   // Vertex AI needs the project, not an API key.
-  withEnv({ ...MIXED, GOOGLE_API_KEY: undefined, GOOGLE_GENAI_USE_VERTEXAI: "true", GOOGLE_CLOUD_PROJECT: "p" }, () => {
+  withEnv({ ...KEYS_ON, GOOGLE_API_KEY: undefined, GOOGLE_GENAI_USE_VERTEXAI: "true", GOOGLE_CLOUD_PROJECT: "p" }, () => {
     assert.equal(pipelineLlmRoute("livekit:google/gemini-2.5-flash").route, "direct");
   });
-  withEnv({ ...MIXED, GOOGLE_GENAI_USE_VERTEXAI: "true", GOOGLE_CLOUD_PROJECT: undefined }, () => {
+  withEnv({ ...KEYS_ON, GOOGLE_GENAI_USE_VERTEXAI: "true", GOOGLE_CLOUD_PROJECT: undefined }, () => {
     assert.equal(pipelineLlmRoute("livekit:google/gemini-2.5-flash").missingKey, "GOOGLE_CLOUD_PROJECT");
   });
 });
 
-test("Neuphonic and Google TTS are direct whatever the settings say", () => {
-  for (const env of [OFF, KEYS_ONLY, MIXED]) {
+test("Neuphonic and Google TTS are direct whatever the setting says", () => {
+  for (const env of [KEYS_OFF, KEYS_ON]) {
     withEnv(env, () => {
       assert.deepEqual(pipelineTtsRoute(makeAgent({ tts: { vendor: "neuphonic", voice: "v" } })), {
         stage: "tts",
@@ -196,7 +182,7 @@ test("Neuphonic and Google TTS are direct whatever the settings say", () => {
 });
 
 test("pipeline session: plugin and key present gives the plugins, logged once", () => {
-  const { result: session, lines } = withEnv(MIXED, () => logged(() => pipelineSession({ tts: CARTESIA_TTS })));
+  const { result: session, lines } = withEnv(KEYS_ON, () => logged(() => pipelineSession({ tts: CARTESIA_TTS })));
   assert.ok(session.stt instanceof deepgram.STT);
   assert.ok(session.llm instanceof openai.LLM);
   assert.ok(session.tts instanceof cartesia.TTS);
@@ -216,17 +202,20 @@ test("pipeline session: plugin and key present gives the plugins, logged once", 
   assert.deepEqual(warnings(lines), []);
 });
 
-test("pipeline session: a vendor with no plugin runs on Inference beside direct stages", () => {
+// Each of the next three was a hard failure at call setup under provider keys.
+
+test("provider keys: an STT vendor other than Deepgram runs on Inference (was 'STT must be Deepgram')", () => {
   for (const [vendor, model] of [
     ["assemblyai", "assemblyai/universal-streaming"],
     ["cartesia", "cartesia/ink-whisper"],
   ]) {
-    const { result: session, lines } = withEnv(MIXED, () =>
+    const { result: session, lines } = withEnv(KEYS_ON, () =>
       logged(() => pipelineSession({ stt: { vendor, language: "en-GB" }, tts: CARTESIA_TTS })),
     );
     assert.ok(session.stt instanceof inference.STT, vendor);
     assert.equal(session.stt.model, model);
     assert.equal((session.stt as any).opts.language, "en");
+    // The other two stages stay on their plugins.
     assert.ok(session.llm instanceof openai.LLM);
     assert.ok(session.tts instanceof cartesia.TTS);
     assert.equal(routesLine(lines)!.msg, `pipeline routes: stt ${vendor} inference, llm openai direct, tts cartesia direct`);
@@ -235,21 +224,42 @@ test("pipeline session: a vendor with no plugin runs on Inference beside direct 
   }
 });
 
-test("pipeline session: an LLM or TTS vendor with no plugin runs on Inference under its configured name", () => {
-  const { result: session, lines } = withEnv(MIXED, () =>
-    logged(() => pipelineSession({ tts: { vendor: "rime/mistv3", voice: "luna" } }, "livekit:xai/grok-4.3")),
+test("provider keys: an LLM plugin other than google or openai runs on Inference (was 'unsupported LLM plugin')", () => {
+  const { result: session, lines } = withEnv(KEYS_ON, () =>
+    logged(() => pipelineSession({ tts: CARTESIA_TTS }, "livekit:xai/grok-4.3")),
   );
-  assert.ok(session.stt instanceof deepgram.STT);
   assert.ok(session.llm instanceof inference.LLM);
+  // The configured name, with its vendor, as Inference ids are written.
   assert.equal(session.llm.model, "xai/grok-4.3");
-  assert.ok(session.tts instanceof inference.TTS);
-  assert.equal(session.tts.model, "rime/mistv3");
-  assert.equal((session.tts as any).opts.voice, "luna");
-  assert.equal(routesLine(lines)!.msg, "pipeline routes: stt deepgram direct, llm xai inference, tts rime inference");
+  assert.ok(session.stt instanceof deepgram.STT);
+  assert.ok(session.tts instanceof cartesia.TTS);
+  assert.equal(routesLine(lines)!.msg, "pipeline routes: stt deepgram direct, llm xai inference, tts cartesia direct");
+  assert.deepEqual(warnings(lines), []);
 });
 
-test("pipeline session: a plugin without its key runs on Inference, with a warning", () => {
-  const env = { ...MIXED, DEEPGRAM_API_KEY: undefined, OPENAI_API_KEY: undefined, CARTESIA_API_KEY: undefined };
+test("provider keys: a TTS with no direct builder runs on Inference (was 'not supported for direct API keys')", () => {
+  const cases: Array<[Record<string, unknown>, string, string, string]> = [
+    // A vendor the worker has no plugin for.
+    [{ tts: { vendor: "rime/mistv3", voice: "luna" } }, "rime", "rime/mistv3", "luna"],
+    // The direct builders match a plain vendor name, so a scoped one is not theirs.
+    [{ tts: { vendor: "cartesia/sonic-3", voice: VOICE } }, "cartesia", "cartesia/sonic-3", VOICE],
+    // No voice at all: the default pipeline TTS.
+    [{}, "cartesia", "cartesia/sonic-3", VOICE],
+  ];
+  for (const [options, vendor, model, voice] of cases) {
+    const { result: session, lines } = withEnv(KEYS_ON, () => logged(() => pipelineSession(options)));
+    assert.ok(session.tts instanceof inference.TTS, model);
+    assert.equal(session.tts.model, model);
+    assert.equal((session.tts as any).opts.voice, voice);
+    assert.ok(session.stt instanceof deepgram.STT);
+    assert.ok(session.llm instanceof openai.LLM);
+    assert.equal(routesLine(lines)!.msg, `pipeline routes: stt deepgram direct, llm openai direct, tts ${vendor} inference`);
+    assert.deepEqual(warnings(lines), []);
+  }
+});
+
+test("provider keys: a plugin without its key runs on Inference, with a warning (was a missing-key error)", () => {
+  const env = { ...KEYS_ON, DEEPGRAM_API_KEY: undefined, OPENAI_API_KEY: undefined, CARTESIA_API_KEY: undefined };
   const { result: session, lines } = withEnv(env, () =>
     logged(() => pipelineSession({ tts: { ...CARTESIA_TTS, language: "fr-FR", speed: 1.2 } })),
   );
@@ -273,38 +283,14 @@ test("pipeline session: a plugin without its key runs on Inference, with a warni
       ["tts", "cartesia", "CARTESIA_API_KEY"],
     ],
   );
-  assert.match(warnings(lines)[0]!.msg, /DEEPGRAM_API_KEY is not set, so deepgram runs on LiveKit Inference and is billed to the LiveKit project/);
-});
-
-test("a TTS the plugin builder does not take runs on Inference, with a warning", () => {
-  // The direct builders match a plain vendor name. With the fallback off these two fail, as before.
-  const scoped = makeAgent({ tts: { vendor: "cartesia/sonic-3", voice: VOICE } });
-  const noVoice = makeAgent({});
-  withEnv(KEYS_ONLY, () => {
-    assert.throws(() => buildPipelineTts(scoped), /TTS vendor "cartesia\/sonic-3" is not supported for direct API keys/);
-    assert.throws(() => buildPipelineTts(noVoice), /TTS vendor "unknown" is not supported for direct API keys/);
-  });
-  withEnv(MIXED, () => {
-    for (const agent of [scoped, noVoice]) {
-      assert.deepEqual(pipelineTtsRoute(agent), {
-        stage: "tts",
-        vendor: "cartesia",
-        route: "inference",
-        fallback: true,
-        pluginSkipped: true,
-      });
-      const { result, lines } = logged(() => buildPipelineTts(agent)) as any;
-      assert.ok(result instanceof inference.TTS);
-      assert.equal(result.model, "cartesia/sonic-3");
-      assert.equal(result.opts.voice, VOICE);
-      assert.equal(warnings(lines).length, 1);
-      assert.match(warnings(lines)[0].msg, /^pipeline tts: the cartesia plugin does not build this configuration .* billed to the LiveKit project$/);
-    }
-  });
+  assert.equal(
+    warnings(lines)[0]!.msg,
+    "pipeline stt: DEEPGRAM_API_KEY is not set, so deepgram runs on LiveKit Inference and is billed to the LiveKit project",
+  );
 });
 
 test("fallback TTS reuses the Inference branches: plain string models and Deepgram Aura-2", () => {
-  withEnv({ ...MIXED, CARTESIA_API_KEY: undefined, DEEPGRAM_API_KEY: undefined }, () => {
+  withEnv({ ...KEYS_ON, CARTESIA_API_KEY: undefined, DEEPGRAM_API_KEY: undefined }, () => {
     const plain = buildPipelineTts(makeAgent({ tts: CARTESIA_TTS })) as any;
     assert.ok(plain instanceof inference.TTS);
     assert.equal(plain.model, "cartesia/sonic-3");
@@ -318,67 +304,44 @@ test("fallback TTS reuses the Inference branches: plain string models and Deepgr
   });
 });
 
-test("with the fallback off, provider keys fail as before", () => {
-  const session = (options: Record<string, unknown>, modelName = OPENAI) => () => pipelineSession(options, modelName);
-  withEnv(KEYS_ONLY, () => {
-    assert.throws(session({ stt: { vendor: "assemblyai" }, tts: CARTESIA_TTS }), {
-      message:
-        'LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: STT must be Deepgram (got "assemblyai/universal-streaming:en"). Set options.stt.vendor to "deepgram" or "deepgram/<model>:<lang>"',
+test("provider keys: a model name with no vendor still fails, since there is nothing to route", () => {
+  withEnv(KEYS_ON, () => {
+    assert.throws(() => pipelineSession({ tts: CARTESIA_TTS }, "gpt-4o-mini"), {
+      message: 'LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: expected modelName livekit:<plugin>/<model> (got "gpt-4o-mini")',
     });
-    assert.throws(session({ stt: { vendor: "cartesia" }, tts: CARTESIA_TTS }), /STT must be Deepgram \(got "cartesia\/ink-whisper:en"\)/);
-    assert.throws(session({ tts: CARTESIA_TTS }, "livekit:xai/grok-4.3"), {
-      message:
-        'LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: unsupported LLM plugin "xai" in livekit:xai/grok-4.3. Use livekit:google/... or livekit:openai/...',
-    });
-    assert.throws(session({ tts: { vendor: "rime/mistv3", voice: "luna" } }), {
-      message:
-        'LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: TTS vendor "rime/mistv3" is not supported for direct API keys. Use elevenlabs, cartesia, deepgram (aura-2), or google (Gemini TTS path).',
-    });
-    assert.throws(() => buildAuxStt(makeAgent(), { vendor: "assemblyai" }), /STT must be Deepgram/);
-    assert.throws(() => buildOutputStt(makeAgent(), { vendor: "cartesia" }), /STT must be Deepgram/);
-    assert.throws(() => buildBridgeStt(makeAgent({ stt: { vendor: "assemblyai" } })), /STT must be Deepgram/);
   });
-  withEnv({ ...KEYS_ONLY, DEEPGRAM_API_KEY: undefined }, () => {
-    assert.throws(session({ tts: CARTESIA_TTS }), {
-      message:
-        "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: DEEPGRAM_API_KEY is missing or empty (set it in the environment or .env loaded before the agent runs).",
-    });
-    assert.throws(session({ tts: { vendor: "deepgram", voice: "aura-asteria-en" } }), /DEEPGRAM_API_KEY is missing or empty/);
-  });
-});
-
-test("a model name with no vendor still fails under provider keys, fallback or not", () => {
-  for (const env of [KEYS_ONLY, MIXED]) {
-    withEnv(env, () => {
-      assert.throws(() => pipelineSession({ tts: CARTESIA_TTS }, "gpt-4o-mini"), {
-        message: 'LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: expected modelName livekit:<plugin>/<model> (got "gpt-4o-mini")',
-      });
-    });
-  }
 });
 
 test("with provider keys off, every stage is on Inference as before", () => {
-  // The fallback setting changes nothing here.
-  for (const fallback of [undefined, "true"]) {
-    const { result: session, lines } = withEnv({ ...OFF, [FALLBACK]: fallback }, () =>
+  // No key is read: the stages are on Inference with or without the provider keys.
+  for (const keys of [{}, { DEEPGRAM_API_KEY: undefined, OPENAI_API_KEY: undefined, CARTESIA_API_KEY: undefined }]) {
+    const { result: session, lines } = withEnv({ ...KEYS_OFF, ...keys }, () =>
       logged(() => pipelineSession({ stt: { vendor: "assemblyai" }, tts: CARTESIA_TTS })),
     );
     assert.ok(session.stt instanceof inference.STT);
     assert.equal(session.stt.model, "assemblyai/universal-streaming");
     assert.ok(session.llm instanceof inference.LLM);
+    // The bare model id, as this path has always sent it.
     assert.equal(session.llm.model, "gpt-4o-mini");
     assert.ok(session.tts instanceof inference.TTS);
+    assert.equal(session.tts.model, "cartesia/sonic-3");
     assert.equal(routesLine(lines)!.msg, "pipeline routes: stt assemblyai inference, llm openai inference, tts cartesia inference");
     assert.deepEqual(warnings(lines), []);
+    // No error handler of ours on a stage that is not a fallback.
+    assert.equal(session.stt.listenerCount("error"), 0);
   }
-  withEnv(OFF, () => {
+  withEnv(KEYS_OFF, () => {
+    // TTS is still handed to the session as a model string.
     assert.equal(buildPipelineTts(makeAgent({ tts: CARTESIA_TTS })), `cartesia/sonic-3:${VOICE}`);
     assert.equal(pipelineSession({ tts: CARTESIA_TTS }, "weird-model").llm.model, "openai/gpt-4o-mini");
+    assert.ok(buildAuxStt(makeAgent(), { vendor: "assemblyai" }) instanceof inference.STT);
+    assert.ok(buildOutputStt(makeAgent(), {}) instanceof inference.STT);
+    assert.ok(buildBridgeStt(makeAgent()) instanceof inference.STT);
   });
 });
 
 test("side and bridged STT engines follow the same rule and log their route", () => {
-  withEnv(MIXED, () => {
+  withEnv(KEYS_ON, () => {
     const aux = logged(() => buildAuxStt(makeAgent({ stt: { language: "en-GB" } }), { vendor: "assemblyai" }));
     assert.ok(aux.result instanceof inference.STT);
     assert.equal((aux.result as any).model, "assemblyai/universal-streaming");
@@ -400,7 +363,7 @@ test("side and bridged STT engines follow the same rule and log their route", ()
     assert.ok(buildBridgeStt(makeAgent()) instanceof deepgram.STT);
   });
 
-  withEnv({ ...MIXED, DEEPGRAM_API_KEY: undefined }, () => {
+  withEnv({ ...KEYS_ON, DEEPGRAM_API_KEY: undefined }, () => {
     const { result, lines } = logged(() => buildBridgeStt(makeAgent()));
     assert.ok(result instanceof inference.STT);
     assert.deepEqual(
@@ -408,15 +371,10 @@ test("side and bridged STT engines follow the same rule and log their route", ()
       [["bridge-stt", "DEEPGRAM_API_KEY"]],
     );
   });
-
-  withEnv(OFF, () => {
-    assert.ok(buildAuxStt(makeAgent(), { vendor: "assemblyai" }) instanceof inference.STT);
-    assert.ok(buildBridgeStt(makeAgent()) instanceof inference.STT);
-  });
 });
 
 test("ElevenLabs TTS is direct with its key", () => {
-  withEnv(MIXED, () => {
+  withEnv(KEYS_ON, () => {
     assert.ok(buildPipelineTts(makeAgent({ tts: { vendor: "elevenlabs", voice: "abc" } })) instanceof elevenlabs.TTS);
   });
 });
@@ -425,7 +383,7 @@ test("a fallback stage that fails says which stage, vendor and route", () => {
   const agent = makeAgent({ stt: { vendor: "assemblyai", language: "fr-FR" }, tts: CARTESIA_TTS });
 
   // Inference does not list this model for French. The configured name is passed as it is.
-  const session = withEnv(MIXED, () => pipelineSession(agent.options));
+  const session = withEnv(KEYS_ON, () => pipelineSession(agent.options));
   assert.equal(session.stt.model, "assemblyai/universal-streaming");
   assert.equal((session.stt as any).opts.language, "fr");
 
@@ -454,7 +412,7 @@ test("a fallback stage that fails says which stage, vendor and route", () => {
 
   // No LiveKit credentials: the build itself fails, with the same three facts.
   const noCredentials = {
-    ...MIXED,
+    ...KEYS_ON,
     LIVEKIT_API_KEY: undefined,
     LIVEKIT_API_SECRET: undefined,
     LIVEKIT_INFERENCE_API_KEY: undefined,
@@ -466,10 +424,6 @@ test("a fallback stage that fails says which stage, vendor and route", () => {
         'pipeline stt: vendor "assemblyai" on LiveKit Inference (assemblyai/universal-streaming:fr) could not be built: apiKey is required: pass apiKey or set LIVEKIT_API_KEY',
     });
   });
-
-  // A stage that is on Inference because provider keys are off is left alone.
-  const plain = withEnv(OFF, () => pipelineSession(agent.options));
-  assert.equal(plain.stt.listenerCount("error"), 0);
 });
 
 test("usage vendors name the configured vendor, not the route", async () => {
@@ -479,7 +433,7 @@ test("usage vendors name the configured vendor, not the route", async () => {
     tts: { vendor: "cartesia", detail: "cartesia/sonic-3" },
     stt: { vendor: "assemblyai", detail: "assemblyai/universal-streaming" },
   };
-  for (const env of [OFF, KEYS_ONLY, MIXED]) {
+  for (const env of [KEYS_OFF, KEYS_ON]) {
     withEnv(env, () => {
       assert.deepEqual(resolveUsageVendors(agent, OPENAI), expected);
       assert.deepEqual(resolveAuxSttVendor(agent, { vendor: "cartesia" }), { vendor: "cartesia", detail: "cartesia/ink-whisper" });
@@ -487,9 +441,9 @@ test("usage vendors name the configured vendor, not the route", async () => {
   }
 
   // The stage itself reports the vendor-blind SDK label. The meter must not bill that.
-  const session = withEnv(MIXED, () => pipelineSession(agent.options));
+  const session = withEnv(KEYS_ON, () => pipelineSession(agent.options));
   assert.equal(session.stt.label, "inference.STT");
-  const usageVendors = withEnv(MIXED, () => resolveUsageVendors(agent, OPENAI));
+  const usageVendors = withEnv(KEYS_ON, () => resolveUsageVendors(agent, OPENAI));
 
   const saved: any[] = [];
   const meter = makeUsageMeter({

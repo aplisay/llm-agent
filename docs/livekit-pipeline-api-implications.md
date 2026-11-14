@@ -71,7 +71,7 @@ Supported shape:
 Notes:
 
 - If you omit `options.stt.vendor`, the default is at this time `deepgram` → `deepgram/nova-3:<derivedLang>`.
-- On a worker with `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS`, `deepgram` runs on the worker's own Deepgram key. `assemblyai` and `cartesia` have no plugin there: they run on LiveKit Inference when `LIVEKIT_PIPELINE_INFERENCE_FALLBACK` is on, and fail at call setup when it is off. See [`docs/livekit-agent-architecture.md`](./livekit-agent-architecture.md), section 4.4.1.
+- On a worker with `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS`, `deepgram` runs on the worker's own Deepgram key. `assemblyai` and `cartesia` have no plugin there, so they still run on LiveKit Inference, which needs LiveKit Cloud. See [`docs/livekit-agent-architecture.md`](./livekit-agent-architecture.md), section 4.4.1.
 - `options.stt.aux` (same shape: `vendor`, `language`, plus `enabled`) runs a *second* STT engine over the caller's audio purely for comparison — on realtime models too — logging `user-aux` transcript entries and `stt-aux` usage. `options.tts.output` does the same over the agent's own audio (`agent-speech`, `stt-output`). See [`docs/auxiliary-stt.md`](./auxiliary-stt.md).
 
 #### `options.tts`

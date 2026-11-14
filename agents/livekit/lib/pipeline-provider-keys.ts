@@ -5,6 +5,8 @@
  *
  * Each builder has a `provider*Key` function that names the variable it needs.
  * pipeline-routing.ts reads those to choose a route per stage, so keep the two in step.
+ * A stage these builders cannot build runs on Inference, so their own errors for an
+ * unsupported vendor or a missing key are reached only when a builder is called directly.
  */
 import type { llm, stt, tts } from "@livekit/agents";
 import * as cartesia from "@livekit/agents-plugin-cartesia";
@@ -29,15 +31,6 @@ function truthyEnv(v: string | undefined): boolean {
 /** Use `@livekit/agents-plugin-*` + env API keys instead of LiveKit Inference for the STT–LLM–TTS pipeline. */
 export function pipelineUsesProviderApiKeys(): boolean {
   return truthyEnv(process.env.LIVEKIT_PIPELINE_USE_PROVIDER_KEYS);
-}
-
-/**
- * Whether a stage that no plugin and key can build may run on LiveKit Inference while
- * provider keys are on. Off unless set: Inference needs a LiveKit Cloud project, and a
- * self-hosted LiveKit server has none.
- */
-export function pipelineInferenceFallbackEnabled(): boolean {
-  return truthyEnv(process.env.LIVEKIT_PIPELINE_INFERENCE_FALLBACK);
 }
 
 // Deepgram refuses the connection (400) for region tags it has no model for, such as
@@ -193,9 +186,6 @@ function cartesiaLanguage(agent: Agent): string {
   const p = ttsPrimaryLanguage(agent) || "en";
   return SONIC_3_LANGUAGES.has(p) ? p : "en";
 }
-
-/** The TTS vendors with a direct builder. */
-export const PROVIDER_TTS_VENDORS: ReadonlySet<string> = new Set(["elevenlabs", "cartesia", "deepgram"]);
 
 /** The vendor name the direct TTS builder matches on. A scoped `vendor/model` matches nothing. */
 function providerTtsVendor(agent: Agent): string {

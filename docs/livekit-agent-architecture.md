@@ -233,15 +233,14 @@ In pipeline mode, `agent.options.stt` and `agent.options.tts` select discrete st
 
 #### 4.4.1 Routing optionality
 
-How a stage reaches its provider is an implementation choice, not a contract. A stage can go through an aggregator API (LiveKit Inference, or an equivalent from another vendor) or through the provider's own SDK with operator-supplied keys. The choice exists for commercial reasons (buying through the aggregator or being billed by the provider) and for operational ones such as regional routing, compliance, or dedicated-key isolation. A re-implementer should keep a similar choice through their own configuration if it suits their stack. Neither the aggregator nor the variable names below are prescriptive.
+How a stage reaches its provider is an implementation choice, not a contract. A stage can go through an aggregator API (LiveKit Inference, or an equivalent from another vendor) or through the provider's own SDK with operator-supplied keys. The choice exists for commercial reasons (buying through the aggregator or being billed by the provider) and for operational ones such as regional routing, compliance, or dedicated-key isolation. A re-implementer should keep a similar choice through their own configuration if it suits their stack. Neither the aggregator nor the variable name below is prescriptive.
 
-The LiveKit worker chooses a route for each stage separately, so one session can mix the two. Two environment variables set the rule:
+The LiveKit worker chooses a route for each stage separately, so one session can mix the two. One environment variable sets the rule:
 
-| `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` | `LIVEKIT_PIPELINE_INFERENCE_FALLBACK` | Route |
-|---|---|---|
-| off | ignored | Every stage runs on LiveKit Inference. |
-| on | off | Every stage needs a provider plugin and its key. A stage without them fails at call setup. |
-| on | on | A stage goes direct when the worker has a plugin for its vendor and the key is set. Any other stage runs on LiveKit Inference. |
+| `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` | Route |
+|---|---|
+| off | Every stage runs on LiveKit Inference. |
+| on | A stage goes direct when the worker has a plugin for its vendor and the key is set. Any other stage runs on LiveKit Inference. |
 
 The worker has these plugins:
 
@@ -254,21 +253,23 @@ The worker has these plugins:
 | TTS | Cartesia | `CARTESIA_API_KEY` |
 | TTS | Deepgram Aura-2 | `DEEPGRAM_API_KEY` |
 
-Neuphonic and Google (Gemini) TTS are not on LiveKit Inference. They always use the worker's own key, whatever the two variables say.
+Neuphonic and Google (Gemini) TTS are not on LiveKit Inference. They always use the worker's own key, whatever the variable says.
 
 The same rule covers the auxiliary and output STT engines ([auxiliary-stt.md](auxiliary-stt.md)) and bridged-call transcription.
 
-With the fallback on:
+With provider keys on:
 
-- AssemblyAI and Cartesia STT have no plugin in the worker, so they run on Inference.
+- AssemblyAI and Cartesia STT have no plugin in the worker, so they run on Inference. So does any other vendor with no plugin.
 - A vendor whose key is not set runs on Inference. The worker logs a warning, because LiveKit bills that usage.
-- The TTS plugins take a plain vendor name and a voice. A scoped `vendor/model` such as `cartesia/sonic-3`, or an agent with no voice, runs on Inference. The worker logs a warning when the vendor has a plugin.
+- The TTS plugins take a plain vendor name and a voice. A scoped `vendor/model` such as `cartesia/sonic-3`, or an agent with no voice, runs on Inference.
 - The worker passes the configured model name to Inference as it is. If Inference does not offer that model, the stage fails and the log names the stage, the vendor and the route.
 - Usage records name the configured vendor (for example `assemblyai`), whichever route the stage took.
 
 Each session logs one line with the route of each stage, for example `pipeline routes: stt assemblyai inference, llm openai direct, tts cartesia direct`.
 
-The fallback is off by default because LiveKit Inference needs a LiveKit Cloud project. A self-hosted LiveKit server has no Inference. A worker hosted outside LiveKit Cloud can use Inference with the project's `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`, and LiveKit bills the usage to that project. The project's Inference region restriction applies only to agents deployed to LiveKit Cloud. It does not restrict requests from a worker hosted elsewhere.
+LiveKit Inference needs a LiveKit Cloud project. A worker hosted outside LiveKit Cloud can use it with the project's `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`, and LiveKit bills the usage to that project. The project's Inference region restriction applies only to agents deployed to LiveKit Cloud. It does not restrict requests from a worker hosted elsewhere.
+
+A self-hosted LiveKit server has no Inference. There, with provider keys on, a vendor with no plugin or no key fails with an Inference error when the call starts. Earlier versions failed at call setup with a message such as `STT must be Deepgram`. Use vendors from the plugin table and set their keys.
 
 #### 4.4.2 Turn detection
 
