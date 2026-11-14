@@ -2,6 +2,9 @@
  * When `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` is set, the voice pipeline uses
  * provider plugins and your API keys (Deepgram, OpenAI, Google, ElevenLabs, Cartesia)
  * instead of LiveKit Inference (`inference.*` + agent-gateway).
+ *
+ * Each builder has a `provider*Key` function that names the variable it needs.
+ * pipeline-routing.ts reads those to choose a route per stage, so keep the two in step.
  */
 import type { llm, stt, tts } from "@livekit/agents";
 import * as cartesia from "@livekit/agents-plugin-cartesia";
@@ -26,6 +29,15 @@ function truthyEnv(v: string | undefined): boolean {
 /** Use `@livekit/agents-plugin-*` + env API keys instead of LiveKit Inference for the STT–LLM–TTS pipeline. */
 export function pipelineUsesProviderApiKeys(): boolean {
   return truthyEnv(process.env.LIVEKIT_PIPELINE_USE_PROVIDER_KEYS);
+}
+
+/**
+ * Whether a stage that no plugin and key can build may run on LiveKit Inference while
+ * provider keys are on. Off unless set: Inference needs a LiveKit Cloud project, and a
+ * self-hosted LiveKit server has none.
+ */
+export function pipelineInferenceFallbackEnabled(): boolean {
+  return truthyEnv(process.env.LIVEKIT_PIPELINE_INFERENCE_FALLBACK);
 }
 
 // Deepgram refuses the connection (400) for region tags it has no model for, such as
@@ -53,9 +65,16 @@ export function deepgramSttLanguage(agent: Agent): string {
   return DEEPGRAM_LANGUAGE_ALIASES[primary] ?? primary;
 }
 
+const DEEPGRAM_STT = /^deepgram\/([^:]+):(.+)$/;
+
+/** The variable the direct STT builder needs, or undefined when no plugin builds this agent's STT. */
+export function providerSttKey(agent: Agent): string | undefined {
+  return DEEPGRAM_STT.test(resolvePipelineStt(agent)) ? "DEEPGRAM_API_KEY" : undefined;
+}
+
 function parseDeepgramStt(agent: Agent): { model: string; language: string } {
   const configured = resolvePipelineStt(agent);
-  const m = /^deepgram\/([^:]+):(.+)$/.exec(configured);
+  const m = DEEPGRAM_STT.exec(configured);
   if (!m) {
     throw new Error(
       `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: STT must be Deepgram (got "${configured}"). Set options.stt.vendor to "deepgram" or "deepgram/<model>:<lang>"`,
@@ -89,6 +108,17 @@ function parseLivekitModelName(modelName: string): { plugin: string; modelId: st
     );
   }
   return { plugin: m[1]!.toLowerCase(), modelId: m[2]! };
+}
+
+/** The variable the direct LLM builder needs, or undefined when no plugin builds this model. */
+export function providerLlmKey(modelName: string): string | undefined {
+  const plugin = /^livekit:([^/]+)\/.+$/.exec(modelName)?.[1]?.toLowerCase();
+  if (plugin === "openai") return "OPENAI_API_KEY";
+  if (plugin === "google") {
+    // Vertex AI signs in with the service account, so the project is what must be set.
+    return process.env.GOOGLE_GENAI_USE_VERTEXAI === "true" ? "GOOGLE_CLOUD_PROJECT" : "GOOGLE_API_KEY";
+  }
+  return undefined;
 }
 
 export function buildProviderPipelineLlm(
@@ -164,12 +194,33 @@ function cartesiaLanguage(agent: Agent): string {
   return SONIC_3_LANGUAGES.has(p) ? p : "en";
 }
 
+/** The TTS vendors with a direct builder. */
+export const PROVIDER_TTS_VENDORS: ReadonlySet<string> = new Set(["elevenlabs", "cartesia", "deepgram"]);
+
+/** The vendor name the direct TTS builder matches on. A scoped `vendor/model` matches nothing. */
+function providerTtsVendor(agent: Agent): string {
+  const t = agent.options?.tts;
+  return (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
+}
+
+/** The variable the direct TTS builder needs, or undefined when no plugin builds this agent's TTS. */
+export function providerTtsKey(agent: Agent): string | undefined {
+  const vendor = providerTtsVendor(agent);
+  // The plugin reads ELEVEN_API_KEY. worker.ts copies ELEVENLABS_API_KEY into it at start.
+  if (vendor === "elevenlabs") return "ELEVEN_API_KEY";
+  if (vendor === "cartesia") return "CARTESIA_API_KEY";
+  if (vendor === "deepgram" && resolvePipelineTts(agent).startsWith("deepgram/aura-2:")) {
+    return "DEEPGRAM_API_KEY";
+  }
+  return undefined;
+}
+
 /**
  * Direct-provider TTS (ElevenLabs, Cartesia, Deepgram Aura). Google Gemini TTS is handled separately in `voice-session-factory`.
  */
 export function buildProviderPipelineTts(agent: Agent): tts.TTS {
   const t = agent.options?.tts;
-  const vendor = (t?.vendor || (t?.voice ? inferTtsVendor(t.voice) : "")).toLowerCase();
+  const vendor = providerTtsVendor(agent);
 
   if (vendor === "elevenlabs") {
     const voiceRaw = String(t?.voice || "").trim();

@@ -16,15 +16,19 @@ import {
   agentLanguageTag,
   pipelineTtsVendor,
   pipelineUsesGoogleTts,
-  resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
+import { buildProviderPipelineTts } from "./pipeline-provider-keys.js";
 import {
-  buildProviderPipelineLlm,
-  buildProviderPipelineStt,
-  buildProviderPipelineTts,
-  pipelineUsesProviderApiKeys,
-} from "./pipeline-provider-keys.js";
+  buildOnInference,
+  buildPipelineLlm,
+  buildPipelineStt,
+  logPipelineRoutes,
+  pipelineLlmRoute,
+  pipelineSttRoute,
+  pipelineTtsRoute,
+  type StageRoute,
+} from "./pipeline-routing.js";
 import { textOutputEnabled } from "./realtime-tts.js";
 import logger from "./logger.js";
 import { resolveLivekitModelId } from "./livekit-model-registry.js";
@@ -236,13 +240,20 @@ function inferenceTtsForDeepgramAura2(ttsStr: string, agent: Agent) {
   });
 }
 
-/** LiveKit Inference TTS model string, Deepgram `inference.TTS`, Google Gemini TTS plugin, or Neuphonic. */
-export function buildPipelineTts(agent: Agent) {
-  const useKeys = pipelineUsesProviderApiKeys();
+/**
+ * A provider plugin, a LiveKit Inference model string or `inference.TTS`, Google Gemini TTS, or Neuphonic.
+ * A caller that passes `route` has already logged it.
+ */
+export function buildPipelineTts(agent: Agent, route?: StageRoute) {
+  if (!route) {
+    route = pipelineTtsRoute(agent);
+    logPipelineRoutes([route], agent);
+  }
 
   const t = agent.options?.tts;
 
   // Not on LiveKit Inference, so always a direct key, whatever LIVEKIT_PIPELINE_USE_PROVIDER_KEYS says.
+  // pipelineTtsRoute reports this vendor and google the same way: keep the two in step.
   if (pipelineTtsVendor(agent) === "neuphonic") {
     return buildNeuphonicTts(agent);
   }
@@ -267,10 +278,21 @@ export function buildPipelineTts(agent: Agent) {
     );
   }
 
-  if (useKeys) {
+  if (route.route === "direct") {
     return buildProviderPipelineTts(agent);
   }
+  if (!route.fallback) {
+    return buildInferencePipelineTts(agent);
+  }
+  return buildOnInference(route, resolvePipelineTts(agent), () => {
+    const built = buildInferencePipelineTts(agent);
+    // The error handler needs an instance. This is what AgentSession does with a string `tts`.
+    return typeof built === "string" ? inference.TTS.fromModelString(built) : built;
+  });
+}
 
+/** The TTS on LiveKit Inference: a model string, or `inference.TTS` where a string cannot carry the options. */
+function buildInferencePipelineTts(agent: Agent) {
   const ttsStr = resolvePipelineTts(agent);
   if (ttsStr.startsWith("deepgram/aura-2:")) {
     return inferenceTtsForDeepgramAura2(ttsStr, agent);
@@ -773,17 +795,13 @@ function createPipelineSession(
   vad: VAD | undefined,
   extraOptions: Record<string, unknown> = {},
 ): voice.AgentSession {
-  const providerSeg = parseProviderModelName(modelName);
-  const useProviderKeys = pipelineUsesProviderApiKeys();
-  const sttModel = useProviderKeys
-    ? buildProviderPipelineStt(agent)
-    : resolvePipelineStt(agent);
-  const pipelineLlm = useProviderKeys
-    ? buildProviderPipelineLlm(agent, modelName)
-    : new inference.LLM({
-        model: providerSeg || process.env.LIVEKIT_PIPELINE_LLM || "openai/gpt-4o-mini",
-      });
-  const ttsModel = buildPipelineTts(agent);
+  const sttRoute = pipelineSttRoute(agent);
+  const llmRoute = pipelineLlmRoute(modelName);
+  const ttsRoute = pipelineTtsRoute(agent);
+  logPipelineRoutes([sttRoute, llmRoute, ttsRoute], agent);
+  const sttModel = buildPipelineStt(agent, sttRoute);
+  const pipelineLlm = buildPipelineLlm(agent, modelName, llmRoute);
+  const ttsModel = buildPipelineTts(agent, ttsRoute);
 
   // Prefer Silero VAD + vad turn detection when `proc.userData.vad` is set (optional prewarm);
   // otherwise use STT-based turn detection (no extra native deps).

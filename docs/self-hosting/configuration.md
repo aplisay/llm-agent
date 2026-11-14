@@ -126,6 +126,7 @@ Defaults for pipeline rows on the LiveKit worker.
 | Variable | Components | Default | Description |
 |---|---|---|---|
 | `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` | LiveKit | `false` | true to run pipeline STT, LLM and TTS on your own provider keys instead of LiveKit Inference. |
+| `LIVEKIT_PIPELINE_INFERENCE_FALLBACK` | LiveKit | `false` | true to run a pipeline stage on LiveKit Inference when LIVEKIT_PIPELINE_USE_PROVIDER_KEYS is on and the stage's vendor has no provider plugin here, or its key is not set. Needs LiveKit Cloud: leave it off with a self-hosted LiveKit server. That usage is billed to the LiveKit project. |
 | `LIVEKIT_PIPELINE_LLM` | LiveKit | `openai/gpt-4o-mini` | Default pipeline LLM. |
 | `LIVEKIT_PIPELINE_STT` | LiveKit | `deepgram/nova-3:general` | Default pipeline STT. |
 | `LIVEKIT_PIPELINE_STT_LANG` | LiveKit | `en` | Default STT language. |

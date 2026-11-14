@@ -10,6 +10,7 @@ import {
   createVoiceModelAndSession,
   legacyTurnHandlingOptions,
 } from "../lib/voice-session-factory.js";
+import logger from "../lib/logger.js";
 import { RealtimeModel } from "../plugins/ultravox/src/realtime/realtime_model.js";
 import { UltravoxClient } from "../plugins/ultravox/src/realtime/ultravox_client.js";
 
@@ -19,6 +20,9 @@ import { UltravoxClient } from "../plugins/ultravox/src/realtime/ultravox_client
 // run: npx tsx --test test/realtime-audio-idle-timeout.test.ts
 
 initializeLogger({ pretty: false, level: process.env.TEST_LOG || "fatal" });
+// The worker logger writes through a thread that polls with setTimeout. A line still in flight
+// when a test mocks setTimeout is never flushed, and the process then does not exit.
+logger.level = "silent";
 
 for (const key of ["OPENAI_API_KEY", "ULTRAVOX_API_KEY", "GOOGLE_API_KEY", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]) {
   process.env[key] ??= "test-key";
