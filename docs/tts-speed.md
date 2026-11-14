@@ -77,7 +77,8 @@ catalogue voice, including the default, never takes a speed on either worker. Th
 ### LiveKit gaps
 
 LiveKit Inference has no speed option for ElevenLabs or Deepgram. Those paths log a warning and
-speak at normal speed.
+speak at normal speed. That includes a worker in provider-key mode when the vendor's key is not
+set, because the voice then runs on Inference.
 
 ## Code
 

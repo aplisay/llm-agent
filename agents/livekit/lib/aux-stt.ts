@@ -15,10 +15,10 @@
  * track — the technique bridge-transcription.ts uses for the bridged humans —
  * and pumps it into a fresh STT stream. The AgentSession and this stream consume
  * the same track independently; the session is untouched. STT vendor selection
- * reuses the pipeline resolution with `options.stt.aux` standing in for
- * `options.stt` (`inference.STT.fromModelString(resolvePipelineStt(...))`, or
- * the direct Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS), so the
- * same vendor strings mean the same thing in both places.
+ * reuses the pipeline resolution and routing with `options.stt.aux` standing in
+ * for `options.stt` (LiveKit Inference or the direct Deepgram plugin, chosen as
+ * pipeline-routing.ts chooses for the pipeline STT), so the same vendor strings
+ * mean the same thing in both places.
  *
  * Metering: milliseconds come from the engine's own usage report
  * (`metrics_collected` → `audioDurationMs`, the same event the primary STT
@@ -39,16 +39,13 @@
  * media is detached after a bridged transfer.
  */
 
-import { inference, stt } from "@livekit/agents";
+import { stt } from "@livekit/agents";
 import { AudioStream, RoomEvent } from "@livekit/rtc-node";
 import type { AudioFrame, RemoteParticipant, Room, Track } from "@livekit/rtc-node";
 import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
 import { resolvePipelineStt } from "./pipeline-inference-options.js";
-import {
-  buildProviderPipelineStt,
-  pipelineUsesProviderApiKeys,
-} from "./pipeline-provider-keys.js";
+import { buildStandaloneStt } from "./pipeline-routing.js";
 import { fromServiceString, type VendorDetail } from "./usage-vendors.js";
 import { waitForAudioTrack, waitForRemoteParticipant } from "./bridge-transcription.js";
 
@@ -168,23 +165,24 @@ export function resolveOutputSttVendor(agent: Agent, config: SideSttConfig): Ven
 
 /**
  * A fresh STT instance for a side engine — the pipeline's own resolution
- * applied to the side block: LiveKit Inference by default, or the direct
- * Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS.
+ * and routing applied to the side block: LiveKit Inference, or the direct
+ * Deepgram plugin (see pipeline-routing.ts). `stage` names it in the route log.
  */
-export function buildSideStt(agent: Agent, config: SideSttConfig, order: LanguageSource[]): stt.STT {
-  const effective = sideSttAgent(agent, config, order);
-  if (pipelineUsesProviderApiKeys()) {
-    return buildProviderPipelineStt(effective);
-  }
-  return inference.STT.fromModelString(resolvePipelineStt(effective));
+export function buildSideStt(
+  agent: Agent,
+  config: SideSttConfig,
+  order: LanguageSource[],
+  stage = "side-stt",
+): stt.STT {
+  return buildStandaloneStt(sideSttAgent(agent, config, order), stage);
 }
 
 export function buildAuxStt(agent: Agent, config: SideSttConfig): stt.STT {
-  return buildSideStt(agent, config, AUX_LANGUAGE_ORDER);
+  return buildSideStt(agent, config, AUX_LANGUAGE_ORDER, "aux-stt");
 }
 
 export function buildOutputStt(agent: Agent, config: SideSttConfig): stt.STT {
-  return buildSideStt(agent, config, OUTPUT_LANGUAGE_ORDER);
+  return buildSideStt(agent, config, OUTPUT_LANGUAGE_ORDER, "output-stt");
 }
 
 /** Usage counters shared by both sides. */

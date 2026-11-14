@@ -18,8 +18,9 @@
  * AgentSession does with a string `stt`), defaulting to Deepgram when the
  * agent is a realtime model with no pipeline STT configured — the same
  * default as pipecat's `build_stt_service`. When
- * `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` is set the direct Deepgram plugin is
- * used instead, again matching the pipeline. `options.
+ * `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` is set the route is chosen as for the
+ * pipeline STT (pipeline-routing.ts): the direct Deepgram plugin, or LiveKit
+ * Inference for another vendor when the fallback is on. `options.
  * bridgedTransferTranscribe.provider` is IGNORED on LiveKit (it tunes the
  * voiceblender container's native STT); `language` is honoured best-effort
  * by threading it through the agent's STT options.
@@ -37,7 +38,7 @@
  * docs/call-transfers.md ("Transcribing the bridged segment").
  */
 
-import { inference, stt } from "@livekit/agents";
+import { stt } from "@livekit/agents";
 import { AudioStream, RoomEvent, TrackKind } from "@livekit/rtc-node";
 import type {
   AudioFrame,
@@ -51,11 +52,7 @@ import type { ReadableStream } from "node:stream/web";
 import logger from "./logger.js";
 import { createTransactionLog } from "./api-client.js";
 import type { Agent, Call } from "./api-client.js";
-import { resolvePipelineStt } from "./pipeline-inference-options.js";
-import {
-  buildProviderPipelineStt,
-  pipelineUsesProviderApiKeys,
-} from "./pipeline-provider-keys.js";
+import { buildStandaloneStt } from "./pipeline-routing.js";
 
 /** Speaker labels — the exact strings pipecat's collector renders. */
 export const CALLER = "caller";
@@ -174,8 +171,9 @@ export class BridgeTranscriptCollector {
  * pipeline does — `inference.STT.fromModelString(resolvePipelineStt(...))`
  * (what AgentSession does with a string `stt`), whose default is Deepgram
  * nova-3 when `options.stt` is absent (realtime models) — or the direct
- * Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS. A `language`
- * from the transcribe option overrides the agent's STT language.
+ * Deepgram plugin under LIVEKIT_PIPELINE_USE_PROVIDER_KEYS (routed as
+ * pipeline-routing.ts routes the pipeline STT). A `language` from the
+ * transcribe option overrides the agent's STT language.
  */
 export function buildBridgeStt(agent: Agent, language?: string | null): stt.STT {
   const effectiveAgent: Agent = language
@@ -187,10 +185,7 @@ export function buildBridgeStt(agent: Agent, language?: string | null): stt.STT 
         },
       } as Agent)
     : agent;
-  if (pipelineUsesProviderApiKeys()) {
-    return buildProviderPipelineStt(effectiveAgent);
-  }
-  return inference.STT.fromModelString(resolvePipelineStt(effectiveAgent));
+  return buildStandaloneStt(effectiveAgent, "bridge-stt");
 }
 
 function findRemoteParticipant(
