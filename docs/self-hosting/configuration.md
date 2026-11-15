@@ -182,6 +182,7 @@ How the Pipecat worker reaches the phone network.
 | `VOICEBLENDER_APP_ID` | Pipecat | `aplisay-pipecat` | Voiceblender application id. |
 | `VOICEBLENDER_WORKER_WS_BASE` | Pipecat | `ws://pipecat-worker:8082` | WebSocket base URL Voiceblender uses to reach the worker. |
 | `VOICEBLENDER_VSI_TOKEN` | Pipecat |  | Token for the Voiceblender event subscription. Falls back to VOICEBLENDER_API_KEY. Secret. |
+| `VOICEBLENDER_INBOUND` | Pipecat | `events` | Who acts on a ringing call in: `events` (the worker itself) or `dispatch` (call control, which then hands the call to the worker). |
 | `DAILY_API_KEY` | Pipecat |  | Daily API key (SIP_GATEWAY=daily). Secret. |
 | `DAILY_API_URL` | Pipecat | `https://api.daily.co/v1` | Daily API URL. |
 

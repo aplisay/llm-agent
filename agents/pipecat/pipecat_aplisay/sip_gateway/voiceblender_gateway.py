@@ -59,6 +59,10 @@ import uuid
 # check cheap.
 _PENDING_SWEEP_INTERVAL_SECS = 60.0
 _PENDING_MAX_AGE_SECS = 120.0
+
+# VOICEBLENDER_INBOUND: who acts on a ringing call in.
+INBOUND_EVENTS = "events"  # this gateway, on leg.ringing
+INBOUND_DISPATCH = "dispatch"  # call control, which then hands the leg over
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -521,6 +525,14 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         self.sip_username = os.environ.get("PIPECAT_SIP_USERNAME")
         self.sip_password = os.environ.get("PIPECAT_SIP_PASSWORD")
         self.sip_from_domain = os.environ.get("PIPECAT_SIP_FROM_DOMAIN")
+
+        mode = (os.environ.get("VOICEBLENDER_INBOUND") or INBOUND_EVENTS).strip().lower()
+        if mode not in (INBOUND_EVENTS, INBOUND_DISPATCH):
+            raise RuntimeError(
+                f"unsupported VOICEBLENDER_INBOUND={mode!r} "
+                f"(expected {INBOUND_EVENTS!r} or {INBOUND_DISPATCH!r})"
+            )
+        self.inbound_mode = mode
 
         self.pending_attaches: dict[str, PendingAttach] = {}
         self._sweeper_task: Optional[asyncio.Task] = None
@@ -1157,6 +1169,11 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         # don't need to re-answer or re-attach.
         if any(p.leg_id == leg_id for p in self.pending_attaches.values()):
             logger.bind(leg_id=leg_id).debug("leg.ringing for outbound originate, ignoring")
+            return
+
+        if self.inbound_mode == INBOUND_DISPATCH:
+            # Call control owns a ringing call in until it hands the leg to
+            # us. No lookup, no answer, no reject.
             return
 
         if self._resolve_agent is None:
