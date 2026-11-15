@@ -15,6 +15,7 @@ import { buildInfo, describeBuild } from './lib/build-info.js';
 import { listenPort } from './lib/listen-port.js';
 import { clearPlaceholders } from './lib/env-placeholders.js';
 import { writeGoogleCredential } from './lib/google-credential.js';
+import { componentsForValidation } from './lib/openapi-validation-doc.js';
 
 logger.info('starting up');
 // Which code is this? (baked BUILD_COMMIT/BRANCH/TAG in images, git in dev) —
@@ -167,10 +168,16 @@ server.use(['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'], cal
   );
 }
 
+// The validators hold a copy of every component schema per operation, so they get
+// the schemas without prose; /api-docs serves the full ones. See lib/openapi-validation-doc.js.
+const publishedComponents = apiDoc.components;
+apiDoc.components = componentsForValidation(apiDoc.components);
+
 // Check for private API exposure flag (support multiple naming conventions)
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
 // Create a path filter to exclude private endpoints when not exposed
 const securityFilter = (req, res) => {
+  req.apiDoc.components = publishedComponents;
   // Hide all /agent-db* paths from Swagger output unless explicitly enabled
   if (!shouldExposePrivateApis && req?.apiDoc?.paths) {
     for (const path of Object.keys(req.apiDoc.paths)) {
