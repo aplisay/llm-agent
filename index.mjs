@@ -172,12 +172,17 @@ server.use(['/api/calls/:callId/logs', '/api/calls/:callId/invocation-log'], cal
 // the schemas without prose; /api-docs serves the full ones. See lib/openapi-validation-doc.js.
 const publishedComponents = apiDoc.components;
 apiDoc.components = componentsForValidation(apiDoc.components);
+// Nothing calls res.validateResponse, so don't build a response validator per operation:
+// they cost about 50 MB of heap and part of every start.
+const NO_RESPONSE_VALIDATION = 'x-express-openapi-disable-response-validation-middleware';
+apiDoc[NO_RESPONSE_VALIDATION] = true;
 
 // Check for private API exposure flag (support multiple naming conventions)
 const shouldExposePrivateApis = process.env.EXPOSE_PRIVATE_APIS === 'true' || process.env.EXPOSE_PRIVATE_APIS === '1';
 // Create a path filter to exclude private endpoints when not exposed
 const securityFilter = (req, res) => {
   req.apiDoc.components = publishedComponents;
+  delete req.apiDoc[NO_RESPONSE_VALIDATION];
   // Hide all /agent-db* paths from Swagger output unless explicitly enabled
   if (!shouldExposePrivateApis && req?.apiDoc?.paths) {
     for (const path of Object.keys(req.apiDoc.paths)) {
@@ -188,7 +193,7 @@ const securityFilter = (req, res) => {
   res.status(200).json(req.apiDoc);
 };
 
-openapi.initialize({
+const openapiReady = openapi.initialize({
   app: server,
   apiDoc,
   exposeApiDocs: true,
@@ -206,6 +211,13 @@ openapi.initialize({
   const { bootstrapFromEnv } = await import('./lib/bootstrap.js');
   bootstrapFromEnv({ log: logger })
     .catch((err) => logger.error({ err: err.message }, 'bootstrap failed: no API key was created'));
+}
+
+// Listen only once the routes and boot-time schema work are done: initialize() builds the
+// routes after it returns, so an earlier listen passes a TCP probe while nothing can answer.
+{
+  const { databaseStarted } = await import('./lib/database.js');
+  await Promise.all([openapiReady, databaseStarted]);
 }
 
 httpServer.listen(port, () => {
