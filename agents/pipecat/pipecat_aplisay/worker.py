@@ -3,7 +3,12 @@
 Endpoints:
 
 - ``POST /dispatch`` — called by ``lib/handlers/pipecat.js`` to start an
-  outbound call. Bearer-authenticated with ``PIPECAT_DISPATCH_TOKEN``.
+  outbound call (``kind: "outbound"``), and by call control to hand over a
+  ringing call in (``kind: "inbound"``, voiceblender gateway with
+  ``VOICEBLENDER_INBOUND=dispatch``). Bearer-authenticated with
+  ``PIPECAT_DISPATCH_TOKEN``.
+- ``POST /drain``: from the pod itself, before it stops. Refuse new calls
+  from call control.
 - ``POST /webrtc/offer`` — browser join entry. Validates a join token minted by
   ``Handler.join`` and negotiates a peer-to-peer WebRTC session via
   ``SmallWebRTCTransport``. Independent of the SIP gateway.
@@ -50,6 +55,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 from aiortc.sdp import candidate_from_sdp
 from loguru import logger
 from pipecat.pipeline.runner import PipelineRunner
@@ -91,6 +97,7 @@ from .sip_gateway import (
     collect_sip_headers,
     normalise_display_name,
 )
+from .sip_gateway.voiceblender_gateway import INBOUND_DISPATCH
 from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
@@ -166,6 +173,8 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"unsupported SIP_GATEWAY={gateway_name!r}")
     app.state.live_calls: dict[str, CallSession] = {}
     app.state.calls_by_channel: dict[str, str] = {}
+    # Set by POST /drain when the pod is about to stop.
+    app.state.draining = False
     # W10: asyncio keeps only WEAK references to tasks, so a
     # fire-and-forget ``create_task`` can be collected mid-flight if
     # nothing else happens to be awaiting it. Hold them here (and drop
@@ -350,15 +359,8 @@ async def _voiceblender_resolve_agent(
     field (voiceblender ``LegRingingData.SIPHeaders``), the same field
     ``_on_leg_ringing`` reads to build the ctx.
     """
-    headers = event.get("sip_headers") or {}
-    to_number = headers.get("X-Aplisay-Called") or event.get("to")
-    aplisay_id = headers.get("X-Aplisay-Trunk")
-    phone_registration = headers.get("X-Aplisay-PhoneRegistration")
-
     instance, origin = await _lookup_instance_for_inbound(
-        phone_registration=phone_registration,
-        to_number=to_number,
-        aplisay_id=aplisay_id,
+        **_voiceblender_lookup_keys(event)
     )
     if not instance:
         return None
@@ -366,6 +368,16 @@ async def _voiceblender_resolve_agent(
     if not agent:
         return None
     return instance, agent, origin
+
+
+def _voiceblender_lookup_keys(event: dict) -> dict:
+    """What the inbound lookup is keyed on, read from a ``leg.ringing`` event."""
+    headers = event.get("sip_headers") or {}
+    return {
+        "phone_registration": headers.get("X-Aplisay-PhoneRegistration"),
+        "to_number": headers.get("X-Aplisay-Called") or event.get("to"),
+        "aplisay_id": headers.get("X-Aplisay-Trunk"),
+    }
 
 
 def _voiceblender_session_lookup(app: FastAPI, session_id: str):
@@ -621,6 +633,7 @@ async def healthz(request: Request) -> JSONResponse:
             "tasks": tasks,
             "all_tasks": len(asyncio.all_tasks()),
             "gateway_maps": gateway_maps,
+            "draining": bool(getattr(request.app.state, "draining", False)),
             "problems": problems,
         },
         status_code=200 if not problems else 503,
@@ -639,6 +652,7 @@ _GATEWAY_MAP_ATTRS = (
     "_takeover_payloads",
     "_pending_outbound",
     "pending_attaches",
+    "_handed_legs",
 )
 
 
@@ -659,6 +673,8 @@ def _gateway_map_sizes(gateway: Any) -> dict[str, int]:
 
 @app.post("/dispatch")
 async def dispatch(request: Request, authorization: Optional[str] = Header(default=None)):
+    # Before anything else: an inbound hand-over is timed from its arrival.
+    received_at = asyncio.get_running_loop().time()
     require_dispatch_token(authorization)
     payload = await request.json()
     kind = payload.get("kind")
@@ -666,8 +682,149 @@ async def dispatch(request: Request, authorization: Optional[str] = Header(defau
 
     if kind == "outbound":
         return await _handle_outbound_dispatch(request.app, payload)
+    if kind == "inbound":
+        return await _handle_inbound_dispatch(request.app, payload, received_at)
 
     raise HTTPException(status_code=400, detail=f"unknown dispatch kind {kind!r}")
+
+
+@app.post("/drain")
+async def drain(request: Request) -> dict:
+    """Refuse calls from call control from now on. For the pod's preStop
+    hook, so a pod that is waiting for its calls to end is not sent more.
+    Taken from this host only."""
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="local requests only")
+    request.app.state.draining = True
+    logger.info("draining: refusing new calls from call control")
+    return {"draining": True}
+
+
+# How long call control waits for the reply to an inbound hand-over when it
+# does not say.
+DISPATCH_ACCEPT_WITHIN_MS = 2000
+# The part of that wait kept back, so that the answer goes out well before
+# call control stops waiting: a quarter of the wait, at most this.
+_ACCEPT_MARGIN_SECS = 0.5
+_TAKEABLE_LEG_STATES = ("ringing", "early_media")
+
+
+def _refused(status: int, reason: str) -> tuple[int, dict, None]:
+    return status, {"accepted": False, "reason": reason}, None
+
+
+async def _handle_inbound_dispatch(app: FastAPI, payload: dict, received_at: float) -> JSONResponse:
+    """Call control asks this worker to take a ringing call in.
+
+    200 means the leg is ours: it is answered right after the reply and call
+    control sends it no more commands. Any other status means the leg was
+    not touched. See ``docs/voiceblender-integration.md``.
+    """
+    required = [payload.get(key) for key in ("handoffId", "legId", "instanceId")]
+    if not all(isinstance(value, str) and value for value in required):
+        raise HTTPException(status_code=400, detail="handoffId, legId and instanceId are required")
+
+    gateway = app.state.sip_gateway
+    if not isinstance(gateway, VoiceblenderSipGateway) or gateway.inbound_mode != INBOUND_DISPATCH:
+        # This worker acts on ringing calls itself, or has no such engine.
+        status, body, then = _refused(409, "inbound_dispatch_not_enabled")
+    else:
+        status, body, then = await gateway.handoff_once(
+            payload["handoffId"],
+            lambda: _decide_inbound_dispatch(app, gateway, payload, received_at),
+        )
+    logger.bind(
+        handoff_id=payload["handoffId"], leg_id=payload["legId"], status=status, **body
+    ).info("inbound dispatch answered")
+    return JSONResponse(
+        body, status_code=status, background=BackgroundTask(then) if then else None
+    )
+
+
+async def _decide_inbound_dispatch(
+    app: FastAPI, gateway: VoiceblenderSipGateway, payload: dict, received_at: float
+):
+    """Work out the answer to one hand-over. Reads only: the leg is not touched."""
+    leg_id = payload["legId"]
+    try:
+        within = float(payload.get("acceptWithinMs") or DISPATCH_ACCEPT_WITHIN_MS) / 1000.0
+    except (TypeError, ValueError):
+        within = DISPATCH_ACCEPT_WITHIN_MS / 1000.0
+    answer_by = received_at + within
+    decide_by = answer_by - min(_ACCEPT_MARGIN_SECS, within / 4)
+
+    if app.state.draining:
+        return _refused(503, "stopping")
+    if len(app.state.live_calls) >= HEALTHZ_MAX_SESSIONS:
+        return _refused(503, "full")
+    if gateway.holds_leg(leg_id):
+        return _refused(409, "leg_already_held")
+
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+    try:
+        async with asyncio.timeout_at(decide_by):
+            leg, instance, looked_up = await asyncio.gather(
+                gateway.read_leg(leg_id),
+                api_client.get_instance_by_id(payload["instanceId"]),
+                # Not for the agent, which the plan named: for the transfer
+                # rules of the registration or trunk the call came in on.
+                _lookup_instance_for_inbound(**_voiceblender_lookup_keys(event)),
+                return_exceptions=True,
+            )
+    except TimeoutError:
+        return _refused(503, "not_ready_in_time")
+
+    if isinstance(leg, BaseException):
+        logger.warning(f"inbound dispatch: cannot read leg {leg_id}: {leg}")
+        return _refused(503, "engine_not_reachable")
+    # 404, not 409: call control acts on a 404 at once, and waits out a 409
+    # in case this worker has the leg after all.
+    if leg is None:
+        return _refused(404, "leg_not_on_this_engine")
+    if leg.get("state") not in _TAKEABLE_LEG_STATES or "outbound" in (leg.get("type") or ""):
+        return _refused(404, "leg_not_ringing")
+
+    if isinstance(instance, api_client.ApiRequestError) and instance.status == 404:
+        return _refused(404, "instance_not_found")
+    if isinstance(instance, BaseException):
+        return _refused(503, "instance_lookup_failed")
+    agent = (instance or {}).get("Agent")
+    if not agent:
+        return _refused(404, "agent_not_found")
+    organisation_id = payload.get("organisationId")
+    if organisation_id and agent.get("organisationId") not in (None, organisation_id):
+        return _refused(404, "instance_not_in_organisation")
+
+    if isinstance(looked_up, BaseException):
+        logger.warning(f"inbound dispatch: origin lookup failed for leg {leg_id}: {looked_up}")
+        return _refused(503, "origin_lookup_failed")
+    found, origin = looked_up
+    if (found or {}).get("id") != instance.get("id"):
+        logger.bind(
+            leg_id=leg_id, plan_instance=instance.get("id"), lookup_instance=(found or {}).get("id")
+        ).warning("inbound dispatch: the lookup by number names another instance; the plan's is used")
+    if payload.get("agentId") and payload["agentId"] != agent.get("id"):
+        logger.bind(
+            leg_id=leg_id, plan_agent=payload["agentId"], instance_agent=agent.get("id")
+        ).warning("inbound dispatch: the instance now has another agent; the instance's is used")
+
+    # Another request may have taken the leg while the lookups ran.
+    if gateway.holds_leg(leg_id):
+        return _refused(409, "leg_already_held")
+    session_id = gateway.accept_leg(
+        leg_id=leg_id,
+        event=event,
+        instance=instance,
+        agent=agent,
+        origin=origin,
+        call_control_id=payload.get("callId"),
+    )
+
+    async def take() -> None:
+        _spawn(app, gateway.take_leg(leg_id, session_id, answer_by=answer_by), name=f"vb-take-{leg_id}")
+
+    return 200, {"accepted": True, "sessionId": session_id}, take
 
 
 async def _handle_outbound_dispatch(app: FastAPI, payload: dict) -> dict:

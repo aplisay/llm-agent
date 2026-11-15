@@ -35,6 +35,12 @@ Architecture (see `docs/voiceblender-integration.md` for the long-form note):
   the WS, the worker's WS handler resolves the pending entry to find the
   agent + leg id and brings up a :class:`CallSession`.
 
+- **Inbound by dispatch** (``VOICEBLENDER_INBOUND=dispatch``): call control
+  sits in front of the engine and owns every ringing call in. The subscriber
+  then does nothing on an inbound ``leg.ringing``. Call control hands a leg
+  over with ``POST /dispatch`` (``kind: "inbound"``), and from the answer on
+  the flow is the one above. See ``docs/voiceblender-integration.md``.
+
 - **Outbound originate**: ``POST /v1/legs`` is called with the agent
   WebSocket URL pre-set, then we wait for the resulting WS attach the same
   way the FreeSWITCH path waits for mod_audio_stream to call back.
@@ -59,6 +65,10 @@ import uuid
 # check cheap.
 _PENDING_SWEEP_INTERVAL_SECS = 60.0
 _PENDING_MAX_AGE_SECS = 120.0
+
+# VOICEBLENDER_INBOUND: who acts on a ringing call in.
+INBOUND_EVENTS = "events"  # this gateway, on leg.ringing
+INBOUND_DISPATCH = "dispatch"  # call control, which then hands the leg over
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -100,6 +110,18 @@ class PendingAttach:
     instance: dict
     agent: dict
     inbound_ctx: InboundCallContext
+    created_at: float
+
+
+@dataclass
+class Handoff:
+    """The answer given to one "take this leg" request from call control.
+
+    Kept for a while so that a repeat of the same request gets the same
+    answer and has no second effect.
+    """
+
+    result: "asyncio.Future[tuple[int, dict]]"
     created_at: float
 
 
@@ -418,8 +440,10 @@ class _VbGatewaySession(GatewaySession):
         # caller-chosen naming; if the server doesn't honour it, we
         # fall back to the server-assigned id from the response.
         try:
+            # Marked like our legs, so another controller of the same engine
+            # can tell the room is ours.
             resp = await self._gateway._call_api(
-                "POST", "/v1/rooms", {"id": room_id}
+                "POST", "/v1/rooms", {"id": room_id, "app_id": self._gateway.app_id}
             )
             if resp and isinstance(resp.get("id"), str):
                 room_id = resp["id"]
@@ -472,6 +496,7 @@ class _VbGatewaySession(GatewaySession):
         # P6: ``set_consult_call_id`` had no matching clear on this
         # gateway either — one id per completed warm transfer, forever.
         self._gateway.clear_consult_call_id(self.session_id)
+        self._gateway._handed_legs.pop(self.leg_id, None)
 
 
 class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
@@ -521,6 +546,18 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         self.sip_username = os.environ.get("PIPECAT_SIP_USERNAME")
         self.sip_password = os.environ.get("PIPECAT_SIP_PASSWORD")
         self.sip_from_domain = os.environ.get("PIPECAT_SIP_FROM_DOMAIN")
+
+        mode = (os.environ.get("VOICEBLENDER_INBOUND") or INBOUND_EVENTS).strip().lower()
+        if mode not in (INBOUND_EVENTS, INBOUND_DISPATCH):
+            raise RuntimeError(
+                f"unsupported VOICEBLENDER_INBOUND={mode!r} "
+                f"(expected {INBOUND_EVENTS!r} or {INBOUND_DISPATCH!r})"
+            )
+        self.inbound_mode = mode
+        # Dispatch mode: answers given, by handoff id, and the legs taken
+        # (leg id -> session id).
+        self._handoffs: dict[str, Handoff] = {}
+        self._handed_legs: dict[str, str] = {}
 
         self.pending_attaches: dict[str, PendingAttach] = {}
         self._sweeper_task: Optional[asyncio.Task] = None
@@ -702,7 +739,9 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             if pending.created_at < cutoff
         ]
         for sid in stale:
-            self.pending_attaches.pop(sid, None)
+            pending = self.pending_attaches.pop(sid, None)
+            if pending is not None and self._handed_legs.get(pending.leg_id) == sid:
+                self._handed_legs.pop(pending.leg_id, None)
             # A stale pending attach is by definition a leg whose WS never
             # arrived, so any consult state keyed to it is stale too.
             self.clear_consult_session(sid)
@@ -711,6 +750,12 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 "voiceblender: expired pending attach — the leg's WebSocket "
                 f"never arrived within {_PENDING_MAX_AGE_SECS:g}s"
             )
+        for handoff_id in [
+            hid
+            for hid, handoff in self._handoffs.items()
+            if handoff.created_at < cutoff and handoff.result.done()
+        ]:
+            self._handoffs.pop(handoff_id, None)
 
     # ---- SipGateway protocol --------------------------------------------
 
@@ -946,6 +991,16 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
     # ---- VSI subscriber -------------------------------------------------
 
+    def _vsi_url(self) -> str:
+        url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        vsi_url = f"{url}/v1/vsi"
+        # A leg that call control hands over does not carry our app id, and
+        # the engine sets that id only when a leg is made. So in dispatch mode
+        # the stream is not filtered: the handlers act only on leg ids we hold.
+        if self.app_id and self.inbound_mode == INBOUND_EVENTS:
+            vsi_url += f"?app_id={self.app_id}"
+        return vsi_url
+
     async def _vsi_loop(self) -> None:
         """Long-lived loop that reconnects on disconnect.
 
@@ -953,10 +1008,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         stream. We treat reconnect as a normal lifecycle event — back off
         modestly so we don't hammer a restart.
         """
-        url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        vsi_url = f"{url}/v1/vsi"
-        if self.app_id:
-            vsi_url += f"?app_id={self.app_id}"
+        vsi_url = self._vsi_url()
         headers = {}
         if self.vsi_token:
             headers["Authorization"] = f"Bearer {self.vsi_token}"
@@ -1159,6 +1211,11 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             logger.bind(leg_id=leg_id).debug("leg.ringing for outbound originate, ignoring")
             return
 
+        if self.inbound_mode == INBOUND_DISPATCH:
+            # Call control owns a ringing call in until it hands the leg to
+            # us. No lookup, no answer, no reject.
+            return
+
         if self._resolve_agent is None:
             logger.warning(
                 "leg.ringing arrived but no agent resolver is registered — "
@@ -1183,8 +1240,32 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
         instance, agent, origin = resolved
         session_id = f"vb-{uuid.uuid4()}"
-        ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
+        # Stash the pending attach BEFORE we tell voiceblender to dial us,
+        # to avoid a race where the WS arrives before we registered the
+        # pending entry.
+        self._stash_inbound(
+            session_id=session_id,
+            leg_id=leg_id,
+            event=event,
+            instance=instance,
+            agent=agent,
+            origin=origin,
+        )
+        await self._answer_and_attach(leg_id, session_id)
 
+    def _stash_inbound(
+        self,
+        *,
+        session_id: str,
+        leg_id: str,
+        event: dict,
+        instance: dict,
+        agent: dict,
+        origin: Any,
+        call_control_id: Optional[str] = None,
+    ) -> None:
+        """Register the pending attach of a call in, built from its
+        ``leg.ringing`` event."""
         # The INVITE X- headers ride in the ``leg.ringing`` event's ``sip_headers``
         # field (voiceblender ``LegRingingData.SIPHeaders`` — its SIP ingress
         # extracts every ``X-*`` INVITE header; original header case preserved).
@@ -1194,9 +1275,6 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         raw_sip_headers = event.get("sip_headers") or {}
         sip_headers = collect_sip_headers(raw_sip_headers.items())
 
-        # Stash the pending attach BEFORE we tell voiceblender to dial us,
-        # to avoid a race where the WS arrives before we registered the
-        # pending entry.
         self.pending_attaches[session_id] = PendingAttach(
             session_id=session_id,
             leg_id=leg_id,
@@ -1217,6 +1295,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
                 b2bua_gateway_ip=raw_sip_headers.get("X-Lk-RealIp"),
                 b2bua_gateway_transport=raw_sip_headers.get("X-Lk-Transport"),
                 call_id=raw_sip_headers.get("X-Aplisay-Call-Id"),
+                call_control_id=call_control_id,
                 # Transfer-mode context resolved during agent lookup (mirrors the
                 # sipbridge resolver): registration → REFER default, trunk →
                 # bridged; force_* / username carry endpoint overrides.
@@ -1229,19 +1308,120 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
             created_at=asyncio.get_running_loop().time(),
         )
 
+    async def _answer_and_attach(self, leg_id: str, session_id: str) -> None:
+        """Answer a call in and attach our agent. On failure the call is ended."""
+        ws_url = f"{self.worker_ws_base}/voiceblender/agent/{session_id}"
         try:
             await self._call_api("POST", f"/v1/legs/{leg_id}/answer", {})
             await self._attach_after_answer(leg_id, ws_url)
         except Exception as e:  # noqa: BLE001
             logger.error(f"failed to answer+attach leg {leg_id}: {e}")
             self.pending_attaches.pop(session_id, None)
+            self._handed_legs.pop(leg_id, None)
             await self._reject_leg(leg_id, "unavailable")
+
+    # ---- Legs handed over by call control (dispatch mode) ---------------
+
+    async def handoff_once(
+        self,
+        handoff_id: str,
+        decide: Callable[[], Awaitable[tuple[int, dict, Optional[Callable[[], Awaitable[None]]]]]],
+    ) -> tuple[int, dict, Optional[Callable[[], Awaitable[None]]]]:
+        """Answer one "take this leg" request.
+
+        ``decide`` works out ``(status, body, then)``. ``then`` is what to do
+        once the reply is sent. A repeat of the same ``handoff_id`` gets the
+        same status and body and no ``then``, so it has no second effect.
+        """
+        known = self._handoffs.get(handoff_id)
+        if known is not None:
+            status, body = await asyncio.shield(known.result)
+            return status, body, None
+        loop = asyncio.get_running_loop()
+        handoff = Handoff(result=loop.create_future(), created_at=loop.time())
+        self._handoffs[handoff_id] = handoff
+        try:
+            status, body, then = await decide()
+        except BaseException:
+            # The first caller sees the failure. A repeat is told "not accepted".
+            handoff.result.set_result((500, {"accepted": False, "reason": "handoff_failed"}))
+            raise
+        handoff.result.set_result((status, body))
+        return status, body, then
+
+    def holds_leg(self, leg_id: str) -> bool:
+        """True when this worker already has, or is taking, the leg."""
+        return (
+            leg_id in self._handed_legs
+            or leg_id in self._leg_to_session
+            or any(p.leg_id == leg_id for p in self.pending_attaches.values())
+        )
+
+    async def read_leg(self, leg_id: str) -> Optional[dict]:
+        """The engine's view of a leg, or ``None`` when it has no such leg.
+        A read only: it changes nothing on the leg."""
+        client = await http_client.get_client("voiceblender")
+        resp = await client.request(
+            "GET", f"{self.base_url}/v1/legs/{leg_id}", timeout=5.0
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"voiceblender GET /v1/legs/{leg_id} -> {resp.status_code} {resp.text}"
+            )
+        return resp.json()
+
+    def accept_leg(
+        self,
+        *,
+        leg_id: str,
+        event: dict,
+        instance: dict,
+        agent: dict,
+        origin: Any,
+        call_control_id: Optional[str],
+    ) -> str:
+        """Record that this worker takes ``leg_id``. Returns the session id.
+
+        Nothing is sent to the engine: the leg is touched only by
+        :meth:`take_leg`, after call control has its answer.
+        """
+        session_id = f"vb-{uuid.uuid4()}"
+        self._stash_inbound(
+            session_id=session_id,
+            leg_id=leg_id,
+            event=event,
+            instance=instance,
+            agent=agent,
+            origin=origin,
+            call_control_id=call_control_id,
+        )
+        self._handed_legs[leg_id] = session_id
+        return session_id
+
+    async def take_leg(self, leg_id: str, session_id: str, *, answer_by: float) -> None:
+        """Answer an accepted leg and attach our agent.
+
+        ``answer_by`` is a loop time. Past it call control has stopped
+        waiting and may have moved the call on, so the leg is left alone:
+        not answered and not rejected.
+        """
+        if asyncio.get_running_loop().time() > answer_by:
+            self.pending_attaches.pop(session_id, None)
+            self._handed_legs.pop(leg_id, None)
+            logger.bind(leg_id=leg_id, session_id=session_id).error(
+                "voiceblender: accepted leg not answered, the time limit had passed"
+            )
+            return
+        await self._answer_and_attach(leg_id, session_id)
 
     async def _on_leg_disconnected(self, event: dict) -> None:
         leg_id = event.get("leg_id") or event.get("id")
         if not leg_id:
             return
         self._consult_targets.pop(leg_id, None)
+        self._handed_legs.pop(leg_id, None)
         # A bridged-transfer watch ends when either bridged leg drops.
         gone = self._bta_gone_watchers.get(leg_id)
         if gone is not None:

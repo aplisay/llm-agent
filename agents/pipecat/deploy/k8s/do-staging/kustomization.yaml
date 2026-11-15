@@ -1,9 +1,16 @@
 # DigitalOcean staging deploy target for the SIP gateway.
 #
-# = sipbridge gateway (default, TLS-only) + DigitalOcean LB settings (TCP mode) +
-# a stable load-balancer name so the DO-assigned IP persists (see below).
+# = voiceblender gateway, behind call control (VOICEBLENDER_INBOUND=dispatch) +
+# DigitalOcean LB settings (TCP mode) + a stable load-balancer name so the
+# DO-assigned IP persists (see below).
+#
+# Staging shares its engines with the phone system's call control, which owns
+# every ringing call in and hands agent calls to the worker. Production
+# (do-production) stays on sipbridge.
 #
 # Images default to :next (staging) from the base — no env-production component.
+# The engine is our own build of voiceblender, named by the upstream commit it
+# was built from. The overlay's Docker Hub image stays the default elsewhere.
 #
 #     kubectl apply -k do-staging
 #
@@ -17,13 +24,52 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../overlays/sipbridge
+  - ../overlays/voiceblender
 
 components:
   - ../components/cloud-digitalocean
   - ../components/webrtc-do        # adds 443 -> :8082 (WebRTC) on the SAME LB
 
+# The tag is an upstream commit id and never moves, so a cached image is the image.
+images:
+  - name: vpbx/voiceblender
+    newName: europe-west1-docker.pkg.dev/llm-voice/containers/aplisay-b2bua/voiceblender
+    newTag: c3cfd41e5fac3c83d9cc9328981adcd63787a499
+
 patches:
+  - target:
+      kind: ConfigMap
+      name: pipecat-config
+    patch: |-
+      # Call control acts on a ringing call in and hands agent calls over.
+      - op: add
+        path: /data/VOICEBLENDER_INBOUND
+        value: dispatch
+  - target:
+      kind: ConfigMap
+      name: voiceblender-config
+    patch: |-
+      # Call control is a pod with no fixed address, and a pod reaches a node
+      # with its own address as the source here. So: the cluster's pod range.
+      - op: replace
+        path: /data/ALLOWED_IPS
+        value: "10.108.0.0/16"
+      # The private address of the SIP edge node. A recycled node gets a new
+      # one. Add the address the SBC's calls arrive from before this is
+      # applied. Through the load balancer that is the balancer's own address,
+      # which says nothing about the caller.
+      - op: replace
+        path: /data/SIP_ALLOWED_IPS
+        value: "10.110.0.6"
+      # Not 10000-20000 or 32768-60999: both are open to every address on
+      # this cluster's nodes. This range is open only to private addresses
+      # until a firewall rule admits the SBC's media.
+      - op: replace
+        path: /data/RTP_PORT_MIN
+        value: "22000"
+      - op: replace
+        path: /data/RTP_PORT_MAX
+        value: "23999"
   - target:
       kind: Service
       name: pipecat-sip
@@ -54,4 +100,4 @@ patches:
       #     '{.metadata.annotations.service\.beta\.kubernetes\.io/do-loadbalancer-certificate-id}'
       - op: add
         path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-id
-        value: 4ca3a6bb-3516-4b7c-901d-7648c42916c3
+        value: 3a8b9adb-24db-4114-8f19-aaf66ec4f341

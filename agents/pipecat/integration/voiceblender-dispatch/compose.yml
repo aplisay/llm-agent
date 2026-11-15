@@ -1,0 +1,68 @@
+# The worker behind call control, against a real voiceblender. run.sh drives it.
+#
+#   engine   the worker's voiceblender. calls.py runs the worker and a
+#            stand-in for call control against it, on the host.
+#   far      a second voiceblender that plays the far end: it places the call
+#            in and answers the call out.
+#
+# The addresses are fixed because each engine has to be told its own.
+name: pipecat-vb-dispatch-test
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.78.0/24
+
+x-engine: &engine
+  build:
+    context: .
+    dockerfile: engine.Dockerfile
+    args:
+      VOICEBLENDER_COMMIT: ${VOICEBLENDER_COMMIT:?set by run.sh}
+  image: pipecat-vb-dispatch-test-engine:${VOICEBLENDER_COMMIT}
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/v1/legs"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+services:
+  engine:
+    <<: *engine
+    networks:
+      default:
+        ipv4_address: 172.31.78.10
+    # The API is published to this host only, and the lists are left open:
+    # nothing but this test can reach the test network.
+    ports:
+      - "127.0.0.1:${ENGINE_API_PORT:-18080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HTTP_ADDR: ":8080"
+      SIP_BIND_IP: 172.31.78.10
+      SIP_PORT: "5060"
+      RTP_PORT_MIN: "10000"
+      RTP_PORT_MAX: "10100"
+      SIP_ALLOWED_IPS: 172.31.78.20
+      LOG_LEVEL: ${ENGINE_LOG_LEVEL:-info}
+
+  far:
+    <<: *engine
+    networks:
+      default:
+        ipv4_address: 172.31.78.20
+    ports:
+      - "127.0.0.1:${FAR_API_PORT:-18081}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      SIP_BIND_IP: 172.31.78.20
+      SIP_PORT: "5060"
+      RTP_PORT_MIN: "10000"
+      RTP_PORT_MAX: "10100"
+      SIP_ALLOWED_IPS: 172.31.78.10
+      RECORDING_DIR: /recordings
+      LOG_LEVEL: ${ENGINE_LOG_LEVEL:-info}
+    volumes:
+      - ${RECORDINGS_DIR:?set by run.sh}:/recordings

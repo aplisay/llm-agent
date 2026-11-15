@@ -72,6 +72,10 @@ class InboundCallContext:
     # Pre-existing platform call UUID if the gateway can stamp one through.
     call_id: Optional[str] = None  # X-Aplisay-Call-Id
 
+    # Call control's id for the call, when call control handed the call over.
+    # Surfaced as ``metadata.aplisay.callControlId`` so the two logs can be joined.
+    call_control_id: Optional[str] = None
+
     # All X- headers from the inbound SIP INVITE, lowercased, as
     # ``{"x-header-name": value}``. Only the sipbridge and voiceblender gateways
     # populate this — they carry the raw INVITE headers (sipbridge on the WS

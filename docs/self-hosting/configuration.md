@@ -155,6 +155,7 @@ The Pipecat worker. Unset means the pipecat models are not listed.
 | `HOST` | Pipecat | `0.0.0.0` | Address the Pipecat worker binds to. |
 | `RELOAD` | Pipecat |  | Set to reload the Pipecat worker when its code changes (development). |
 | `GRACEFUL_SHUTDOWN_SECONDS` | Pipecat | `15` | How long the Pipecat worker waits for calls to end at shutdown. |
+| `LIFECYCLE_DRAIN_SECONDS` | Pipecat | `1200` | How long the preStop hook of a Pipecat pod waits for live calls to end, in seconds. |
 | `HEALTHZ_MAX_SESSIONS` | Pipecat | `64` | Sessions above which the Pipecat health check fails. |
 | `HEALTHZ_MAX_THREADS` | Pipecat | `400` | Threads above which the Pipecat health check fails. |
 | `HEALTHZ_MAX_GATEWAY_ENTRIES` | Pipecat | `512` | Gateway entries above which the Pipecat health check fails. |
@@ -182,6 +183,7 @@ How the Pipecat worker reaches the phone network.
 | `VOICEBLENDER_APP_ID` | Pipecat | `aplisay-pipecat` | Voiceblender application id. |
 | `VOICEBLENDER_WORKER_WS_BASE` | Pipecat | `ws://pipecat-worker:8082` | WebSocket base URL Voiceblender uses to reach the worker. |
 | `VOICEBLENDER_VSI_TOKEN` | Pipecat |  | Token for the Voiceblender event subscription. Falls back to VOICEBLENDER_API_KEY. Secret. |
+| `VOICEBLENDER_INBOUND` | Pipecat | `events` | Who acts on a ringing call in: `events` (the worker itself) or `dispatch` (call control, which then hands the call to the worker). |
 | `DAILY_API_KEY` | Pipecat |  | Daily API key (SIP_GATEWAY=daily). Secret. |
 | `DAILY_API_URL` | Pipecat | `https://api.daily.co/v1` | Daily API URL. |
 

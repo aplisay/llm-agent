@@ -1,8 +1,9 @@
-# Voiceblender ingress overlay (optional / secondary).
+# voiceblender ingress overlay.
 #
-# Voiceblender is a THIRD-PARTY image (vpbx/voiceblender on Docker Hub) whose
-# entrypoint and shell we don't control, so the node-IP wrapper here is
-# best-effort — read the comments in daemonset.yaml before using in production.
+# voiceblender is a third-party engine. The image is vpbx/voiceblender on
+# Docker Hub, pinned in daemonset.yaml. It has no credential of its own, so
+# before you apply this, set SIP_ALLOWED_IPS in configmap.yaml (or in your
+# own overlay): the engine does not start without it.
 #
 #     kubectl apply -k overlays/voiceblender
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -10,6 +11,22 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - configmap.yaml
+  - service-engine.yaml
 
 patches:
   - path: daemonset.yaml
+
+# The make-sip-cert initContainer runs the worker's image. The base sets the
+# worker's tag before this overlay adds that container, so it is set again.
+images:
+  - name: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker
+    newTag: next
+
+# The name-suffix hash means that editing a script rolls the DaemonSet.
+configMapGenerator:
+  - name: voiceblender-scripts
+    namespace: pipecat
+    files:
+      - scripts/start.sh
+      - scripts/wait-for-calls.sh

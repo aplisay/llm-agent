@@ -385,9 +385,49 @@ same wrapper baked in and point the overlay at it instead.)
   call-control sidecar (3 containers). TLS 5061 is preconfigured; **RTP range is
   16384-16484**, not 10000-20000 — open that range instead.
 - **voiceblender** — `overlays/voiceblender`. Uses the third-party
-  `vpbx/voiceblender` image (Docker Hub); the node-IP wrapper assumes the
-  binary is on `PATH` as `voiceblender`. Review `overlays/voiceblender/daemonset.yaml`
-  before production use.
+  `vpbx/voiceblender` image (Docker Hub); the start script assumes the binary
+  is on `PATH` as `voiceblender`. See [voiceblender](#voiceblender) below
+  before you apply it.
+
+## voiceblender
+
+voiceblender has no credential of its own. Two address lists are the only
+check on who may use it, and an empty list means "any address". The overlay's
+start script (`overlays/voiceblender/scripts/start.sh`) does not start an
+engine with an open list. Its settings are in
+`overlays/voiceblender/configmap.yaml` (`voiceblender-config`), under
+voiceblender's own variable names.
+
+- **`SIP_ALLOWED_IPS`: you must set it.** The addresses that may send SIP: your
+  SBC, and anything else that sends calls to the engine. The engine does not
+  start while it is empty or holds a `/0` range. A request from any other
+  address gets no answer. Behind a TCP load balancer the engine sees the
+  balancer's address, not the caller's, so the list cannot tell callers apart
+  there: limit who can reach the balancer, or send SIP to the nodes.
+- **`ALLOWED_IPS`: the API and the event stream.** The API listens on the
+  node's private address only (port 8080), and the node itself is always on
+  the list, which covers the worker. Add an address only for something else
+  that drives the engine, such as call control.
+- **SIP listens on UDP and TCP 5060 and on TLS 5061.** The TLS certificate is
+  the `pipecat-sip-tls` Secret when it exists. Without it the pod makes a
+  self-signed pair when it starts.
+- **Addresses.** A peer inside `SIP_LOCAL_NETS` is told the node's private
+  address. Every other peer is told its public address.
+- **RTP.** `RTP_PORT_MIN` to `RTP_PORT_MAX`, UDP, 10000 to 20000 unless you
+  change it. On a plain RTP leg voiceblender sends its audio to whoever last
+  sent that port a packet. Open the range only to where audio comes from.
+- **Stopping.** A preStop hook holds the pod while the engine has calls, for
+  at most `ENGINE_DRAIN_SECONDS`. voiceblender has no drain mode: new calls
+  still arrive at a pod that is waiting to stop.
+- **The engine runs as a user that is not root, with a read-only root file
+  system.** This was run with an image built from voiceblender's source. It
+  was not run with the Docker Hub image.
+- **`pipecat-engine`** is a headless Service with one address for each engine.
+  It is for call control and for a SIP edge. Nothing here uses it.
+
+With call control in front of the engine, set `VOICEBLENDER_INBOUND=dispatch`
+on the worker: see
+[voiceblender-integration.md](../../../../docs/voiceblender-integration.md#behind-call-control).
 
 ## TLS
 

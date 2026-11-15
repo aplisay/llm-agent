@@ -110,6 +110,8 @@ A number rings an extension or an agent, never both. So a `number` request has t
 
 The agent answer does not need the phone system. It is given for every organisation, whatever its capabilities and whatever `PBX_RELEASE` is.
 
+Call control hands the call to the Pipecat worker beside the engine that holds it. [voiceblender-integration.md](voiceblender-integration.md#behind-call-control) has that request.
+
 The number is found by number and trunk, with the same lookup the agent workers use (`GET /agent-db/phone-endpoints?number=&trunkId=`). So call control and a worker find the same agent for the same call. `trunkId` may hold several candidates separated by `;`, as it may there.
 
 A `registration` request is for a call that arrives from a registration and not on a trunk. `registrationId` is the id of the registration (the value of the call's `X-Aplisay-PhoneRegistration` header). The answer follows the workers' order:
