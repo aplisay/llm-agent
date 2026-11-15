@@ -422,8 +422,10 @@ class _VbGatewaySession(GatewaySession):
         # caller-chosen naming; if the server doesn't honour it, we
         # fall back to the server-assigned id from the response.
         try:
+            # Marked like our legs, so another controller of the same engine
+            # can tell the room is ours.
             resp = await self._gateway._call_api(
-                "POST", "/v1/rooms", {"id": room_id}
+                "POST", "/v1/rooms", {"id": room_id, "app_id": self._gateway.app_id}
             )
             if resp and isinstance(resp.get("id"), str):
                 room_id = resp["id"]
@@ -958,6 +960,16 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
 
     # ---- VSI subscriber -------------------------------------------------
 
+    def _vsi_url(self) -> str:
+        url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        vsi_url = f"{url}/v1/vsi"
+        # A leg that call control hands over does not carry our app id, and
+        # the engine sets that id only when a leg is made. So in dispatch mode
+        # the stream is not filtered: the handlers act only on leg ids we hold.
+        if self.app_id and self.inbound_mode == INBOUND_EVENTS:
+            vsi_url += f"?app_id={self.app_id}"
+        return vsi_url
+
     async def _vsi_loop(self) -> None:
         """Long-lived loop that reconnects on disconnect.
 
@@ -965,10 +977,7 @@ class VoiceblenderSipGateway(ConsultStateMixin, SipGateway):
         stream. We treat reconnect as a normal lifecycle event — back off
         modestly so we don't hammer a restart.
         """
-        url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        vsi_url = f"{url}/v1/vsi"
-        if self.app_id:
-            vsi_url += f"?app_id={self.app_id}"
+        vsi_url = self._vsi_url()
         headers = {}
         if self.vsi_token:
             headers["Authorization"] = f"Bearer {self.vsi_token}"

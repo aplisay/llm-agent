@@ -89,3 +89,48 @@ def test_events_a_ringing_call_in_is_still_answered(make_gateway, mode):
         ("POST", "/v1/legs/leg-9/answer"),
         ("POST", "/v1/legs/leg-9/agent/pipecat"),
     ]
+
+
+# ---- what the worker hears ---------------------------------------------------
+
+
+def test_the_event_stream_is_filtered_by_app_id_only_in_events_mode(make_gateway):
+    assert make_gateway(None)._vsi_url() == "ws://voiceblender:8080/v1/vsi?app_id=aplisay-pipecat"
+    assert make_gateway("dispatch")._vsi_url() == "ws://voiceblender:8080/v1/vsi"
+
+
+def test_dispatch_events_of_legs_that_are_not_ours_do_nothing(make_gateway):
+    gateway = make_gateway("dispatch")
+
+    async def run():
+        for event_type in (
+            "leg.ringing",
+            "leg.connected",
+            "leg.disconnected",
+            "dtmf.received",
+            "leg.transfer_requested",
+            "stt.text",
+            "room.created",
+        ):
+            await gateway._handle_vsi_event(
+                {
+                    "type": event_type,
+                    "leg_id": "someone-elses-leg",
+                    "leg_type": "sip_outbound",
+                    "digit": "1",
+                    "text": "hi",
+                }
+            )
+
+    asyncio.run(run())
+    assert gateway.calls == []
+    assert gateway.resolved == []
+
+
+def test_rooms_the_worker_makes_carry_its_app_id(make_gateway):
+    gateway = make_gateway("dispatch")
+    session = _VbGatewaySession(transport=None, session_id="s", leg_id="leg-a", _gateway=gateway)
+    asyncio.run(session._bridge_legs("leg-a", "leg-b"))
+    method, path, body = gateway.calls[0]
+    assert (method, path) == ("POST", "/v1/rooms")
+    assert body["app_id"] == "aplisay-pipecat"
