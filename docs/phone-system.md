@@ -8,9 +8,9 @@ This page describes the part of the API that lets desk phones register to the pl
 - **Phones.** Desk phones and outside numbers such as mobiles, and the people each one rings for.
 - **Lines.** The keys of a desk phone, worked out by the platform. Each line has its own SIP account.
 - **Number routing.** A number can ring an extension in place of an agent.
-- **Internal routes for call control.** A separate service decides what each call does by asking this API.
+- **Internal routes for call control.** A separate service decides what each call does by asking this API. For a call that belongs to an agent, the answer names the agent.
 
-Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside these calls, and charging.
+Not here yet: the service that carries the calls, phone provisioning, hunt groups, queues, agents inside phone system calls, and charging.
 
 ## The two switches
 
@@ -80,7 +80,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 
 | Route | Use |
 |---|---|
-| `POST /agent-db/pbx/resolve` | What should this call do? The body is `{ callId, request }`. `request.kind` is `number` (a call in: `calledNumber`, `trunkId`, `callerId`), `dialled` (digits from a line: `fromEndpoint`, `digits`), `extension` or `line` (follow-ups about a call in progress) |
+| `POST /agent-db/pbx/resolve` | What should this call do? The body is `{ callId, request }`. `request.kind` is `number` (a call in on a trunk: `calledNumber`, `trunkId`, `callerId`), `registration` (a call in from a registration: `registrationId`, `calledNumber`, `callerId`), `dialled` (digits from a line: `fromEndpoint`, `digits`), `extension` or `line` (follow-ups about a call in progress) |
 | `POST /agent-db/pbx/outbound-authorisation` | May this leg to an outside number be placed? The same policy the agent workers use. The caller must fail closed |
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered |
@@ -94,9 +94,36 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `outside` | A call from a line to an outside number. `outside.presentNumber` is the number to show |
 | `emergency` | A 999 or 112 call. Always answered, whatever the organisation's switches |
 | `connection` | Send the digits to the organisation's own phone system |
-| `forward`, `agent` | Later releases |
+| `agent` | Hand the call to an agent. `agent` names it: `instanceId`, `agentId` and `runtime`. Today only for a call that goes straight to an agent (see below). An agent as an extension, or as a destination of one, is a later release |
+| `forward` | Later releases |
 | `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed` or `phone_system_disabled` |
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
+
+### A call that belongs to an agent
+
+A number rings an extension or an agent, never both. So a `number` request has three answers:
+
+- The number rings an extension: the plan of that extension, as above.
+- An agent listens on the number: `action: "agent"`. The plan has `planId`, `ttlSeconds`, `organisationId` and the `agent` block, and nothing else.
+- Neither: `refuse` with `number_not_routed`.
+
+The agent answer does not need the phone system. It is given for every organisation, whatever its capabilities and whatever `PBX_RELEASE` is.
+
+The number is found by number and trunk, with the same lookup the agent workers use (`GET /agent-db/phone-endpoints?number=&trunkId=`). So call control and a worker find the same agent for the same call. `trunkId` may hold several candidates separated by `;`, as it may there.
+
+A `registration` request is for a call that arrives from a registration and not on a trunk. `registrationId` is the id of the registration (the value of the call's `X-Aplisay-PhoneRegistration` header). The answer follows the workers' order:
+
+1. The agent that listens on the registration.
+2. If there is none and the registration is a trunk, the agent that listens on `calledNumber` on that trunk.
+
+A number is never looked up without a trunk. A call from a registration to an extension is not supported yet.
+
+| `reason` | Meaning |
+|---|---|
+| `agent_not_available` | The instance is gone, or its agent is |
+| `runtime_not_supported` | The agent runs on a runtime that call control cannot hand a call to. Only `pipecat` is supported |
+| `registration_not_found` | No registration has that id. The SIP account of a desk phone line is not a registration |
+| `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. These calls write no usage yet.
