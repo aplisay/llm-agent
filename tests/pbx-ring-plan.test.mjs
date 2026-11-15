@@ -5,7 +5,7 @@
  * a Sales team (200) with all three as members. Line keys are worked out
  * with workOutLines, the same way the reconciler does it.
  */
-import { buildRingPlan, MAX_HOPS } from '../lib/pbx/ring-plan.js';
+import { buildRingPlan, agentStep, MAX_HOPS } from '../lib/pbx/ring-plan.js';
 import { indexSnapshot, linesInput, shownNumber } from '../lib/pbx/snapshot.js';
 import { workOutLines } from '../lib/pbx/lines.js';
 import { scheduleInForce, localDayAndMinute } from '../lib/pbx/schedule.js';
@@ -463,6 +463,19 @@ describe('the other actions', () => {
     const result = plan(baseSnapshot(), toExtension('x-401'));
     expect(result.action).toBe('refuse');
     expect(result.reason).toBe('runtime_not_supported');
+  });
+
+  test('agent whose instance is gone is refused', () => {
+    const s = baseSnapshot();
+    s.instances = s.instances.filter((instance) => instance.id !== 'i-pipe');
+    expect(plan(s, toExtension('x-400'))).toMatchObject({ action: 'refuse', reason: 'agent_not_available' });
+  });
+
+  test('the agent step is the same with no extension in front of it', () => {
+    expect(agentStep({ id: 'i-pipe', agentId: 'a-1', runtime: 'pipecat' }))
+      .toEqual({ action: 'agent', agent: { instanceId: 'i-pipe', agentId: 'a-1', runtime: 'pipecat' } });
+    expect(agentStep({ id: 'i-lk', agentId: 'a-2', runtime: 'livekit' })).toEqual({ action: 'refuse', reason: 'runtime_not_supported' });
+    expect(agentStep(undefined)).toEqual({ action: 'refuse', reason: 'agent_not_available' });
   });
 });
 

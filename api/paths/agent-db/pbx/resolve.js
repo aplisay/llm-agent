@@ -24,7 +24,7 @@ export default function (logger) {
     }
   };
   resolve.apiDoc = {
-    summary: 'Work out the ring plan for a call to a number, or for digits dialled on a line (internal).',
+    summary: 'Work out the plan for a call to a number, a call from a registration, or digits dialled on a line (internal).',
     operationId: 'resolvePbxCall',
     tags: ['agent-db'],
     requestBody: {
@@ -40,9 +40,10 @@ export default function (logger) {
                 type: 'object',
                 required: ['kind'],
                 properties: {
-                  kind: { type: 'string', enum: ['number', 'dialled', 'extension', 'line'] },
-                  calledNumber: { type: 'string', description: 'kind number: the number that was called.' },
-                  trunkId: { type: 'string', description: 'kind number: the trunk the call came in on.' },
+                  kind: { type: 'string', enum: ['number', 'registration', 'dialled', 'extension', 'line'] },
+                  calledNumber: { type: 'string', description: 'kinds number and registration: the number that was called.' },
+                  trunkId: { type: 'string', description: 'kind number: the trunk the call came in on. Several candidates may be separated by ";".' },
+                  registrationId: { type: 'string', description: 'kind registration: the id of the registration the call came from.' },
                   callerId: { type: 'string', nullable: true },
                   fromEndpoint: { type: 'string', description: 'kind dialled: the SIP username of the line that dialled.' },
                   digits: { type: 'string', description: 'kind dialled: the digits dialled.' },
@@ -59,7 +60,7 @@ export default function (logger) {
       },
     },
     responses: {
-      200: { description: 'The plan. `action` is one of ring, forward, connection, agent, outside, emergency, release, refuse.', content: { 'application/json': { schema: { type: 'object' } } } },
+      200: { description: 'The plan. `action` is one of ring, forward, connection, agent, outside, emergency, release, refuse. `agent` names the agent to hand the call to: `agent.instanceId`, `agent.agentId` and `agent.runtime`.', content: { 'application/json': { schema: { type: 'object' } } } },
       400: { description: 'The request is not valid', content: { 'application/json': { schema: { $ref: '#/components/schemas/DirectoryError' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
