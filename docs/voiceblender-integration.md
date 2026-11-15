@@ -235,7 +235,9 @@ What changes with `VOICEBLENDER_INBOUND=dispatch`:
   and the handlers act only on leg ids the worker holds: legs it accepted and
   legs it made.
 - **The worker still marks what it makes.** Legs and rooms it creates carry
-  `VOICEBLENDER_APP_ID`, so call control can tell them from its own.
+  `VOICEBLENDER_APP_ID`, so call control can tell them from its own. Its
+  rooms are named `bridge-<uuid>`. A call in is never the worker's because
+  of the id it carries: that id can come from a header the sender chose.
 - **The worker never writes a handed leg's `custom_data`.** It sets
   `custom_data` only on legs it creates, and its answer request carries none,
   which leaves what is there.
@@ -301,6 +303,15 @@ The rules the worker keeps:
 hand-overs with 503 from then on. `python -m pipecat_aplisay.drain` is a
 preStop hook that calls it and then waits for the worker's live calls to end.
 `GET /healthz` reports `draining`.
+
+### Trying it against a real voiceblender
+
+`agents/pipecat/integration/voiceblender-dispatch/run.sh` builds voiceblender
+from its source at one commit and runs two of them in Docker: the worker's
+engine and a far end. It then runs the worker in dispatch mode with stand-ins
+for the API and for call control, and places a call in (handed over, with
+audio both ways) and a call out. It needs Docker and `uv`, and no model key:
+the agent is replaced by one that plays the caller's audio back.
 
 
 ## Operations
