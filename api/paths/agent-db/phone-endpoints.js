@@ -1,6 +1,7 @@
 import { PhoneNumber, PhoneRegistration, Trunk, Instance, Sequelize, Op } from '../../../lib/database.js';
 import { notADeviceLine, isDeviceLine } from '../../../lib/pbx/line-accounts.js';
 import { normalizeE164 } from '../../../lib/validation.js';
+import { inboundNumberWhere } from '../../../lib/inbound-number.js';
 
 let appParameters, log;
 
@@ -48,9 +49,7 @@ const phoneEndpointsList = (async (req, res) => {
         // 61 the same number can legitimately exist on several trunks — and
         // an unqualified one takes whichever row exists.
         const phoneNumber = await PhoneNumber.findOne({
-          where: trunkCandidates.length
-            ? { number: normalizedNumber, aplisayId: trunkCandidates }
-            : { number: normalizedNumber },
+          where: inboundNumberWhere(number, trunkId),
           include: [
             {
               model: Trunk,
