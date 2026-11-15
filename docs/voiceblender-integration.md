@@ -215,6 +215,94 @@ Progress events arrive on VSI:
 tool reflects the current SIP-side state.
 
 
+## Behind call control
+
+A deployment can put a second controller on the same voiceblender: the call
+control service of the [phone system](phone-system.md). Call control then owns
+every ringing call in. It asks the API what the call should do
+(`POST /agent-db/pbx/resolve`), and for a call that belongs to a Pipecat agent
+it hands the leg to the worker. Set `VOICEBLENDER_INBOUND=dispatch` on the
+worker for this. The default, `events`, is the flow above, and nothing here
+applies to it.
+
+What changes with `VOICEBLENDER_INBOUND=dispatch`:
+
+- **The worker does not act on an inbound `leg.ringing`.** No lookup, no
+  answer, no reject.
+- **The worker listens to every event.** A leg that call control hands over
+  does not carry the worker's `app_id`, and voiceblender sets that id only
+  when a leg is made. So the event stream is opened with no `app_id` filter,
+  and the handlers act only on leg ids the worker holds: legs it accepted and
+  legs it made.
+- **The worker still marks what it makes.** Legs and rooms it creates carry
+  `VOICEBLENDER_APP_ID`, so call control can tell them from its own.
+- **The worker never writes a handed leg's `custom_data`.** It sets
+  `custom_data` only on legs it creates, and its answer request carries none,
+  which leaves what is there.
+
+### The hand-over request
+
+`POST /dispatch` on the worker, with the dispatch token
+(`Authorization: Bearer $PIPECAT_DISPATCH_TOKEN`):
+
+```json
+{
+  "kind": "inbound",
+  "handoffId": "h-1",
+  "callId": "call control's id for the call",
+  "legId": "the voiceblender leg",
+  "instanceId": "from the plan",
+  "agentId": "from the plan",
+  "organisationId": "from the plan",
+  "acceptWithinMs": 2000,
+  "event": { "from": "…", "to": "…", "from_display_name": "…", "sip_headers": { "X-Aplisay-Trunk": "…" } }
+}
+```
+
+- `event` is the `leg.ringing` event as call control received it. The worker
+  builds the call's context from it as it does in the `events` flow, so the
+  agent sees the same caller, number and `X-` headers.
+- The worker loads the instance by `instanceId`. It does not choose the agent
+  by the number again. It still looks the registration or number up, by the
+  event's headers, for the transfer rules of that registration or trunk. If
+  that lookup names another instance, the plan's instance is used and the
+  worker logs it.
+- `callId` is kept on the call record as `metadata.aplisay.callControlId`.
+- `acceptWithinMs` is how long call control waits for the reply. Default 2000.
+
+| Status | Body | Meaning |
+|---|---|---|
+| 200 | `{ "accepted": true, "sessionId": "…" }` | The worker takes the call |
+| 404 | `{ "accepted": false, "reason": "…" }` | No such instance, it has no agent, or it is not in `organisationId`. Or the leg is not on this worker's voiceblender, or is not a ringing call in |
+| 409 | as above | The worker already holds the leg, or is taking it. Also when the worker is not in `dispatch` mode. Call control cannot tell from a 409 whether the worker has the leg, so it reads the leg before it moves on |
+| 503 | as above | The worker is not taking calls: it is stopping, it is full, it could not reach voiceblender or the API, or it was not ready in time |
+| 401 | | Bad or missing token |
+| 400 | | `handoffId`, `legId` or `instanceId` missing |
+
+The rules the worker keeps:
+
+1. **Before it replies 200 it has not touched the leg.** It only reads it
+   (`GET /v1/legs/{id}`). A refusal leaves the leg as call control had it.
+2. **After 200 the leg is the worker's.** It answers the leg and attaches the
+   agent right after the reply is sent.
+3. **It never rejects or deletes a leg it did not accept.**
+4. **If the answer or the attach fails after 200, the worker ends the call.**
+5. **It does not answer after the time limit.** The worker times the request
+   from its arrival. It says yes only while at least a quarter of
+   `acceptWithinMs` (at most 500 ms) is left, and it sends no answer once the
+   whole time has passed. In that case the leg is left alone: not answered and
+   not rejected.
+6. **A repeat of one `handoffId` gets the same reply and has no second
+   effect.** Replies are remembered for about two minutes.
+
+### Stopping
+
+`POST /drain`, from the worker's own host only, makes the worker refuse
+hand-overs with 503 from then on. `python -m pipecat_aplisay.drain` is a
+preStop hook that calls it and then waits for the worker's live calls to end.
+`GET /healthz` reports `draining`.
+
+
 ## Operations
 
 ### Compose profiles
@@ -251,6 +339,7 @@ non-disruptive to the host's port allocation.
 | `VOICEBLENDER_BASE_URL` | `http://127.0.0.1:8080` | Where the worker reaches the voiceblender REST + VSI endpoints. With host networking this is localhost. |
 | `VOICEBLENDER_API_KEY` | — | Sent as Bearer on REST + VSI. Voiceblender does not check it: it has no API key setting. Gate access with `ALLOWED_IPS` and the firewall. |
 | `VOICEBLENDER_APP_ID` | `aplisay-pipecat` | Tag the worker uses to filter VSI events. Voiceblender supports regex matching here for multi-tenancy. |
+| `VOICEBLENDER_INBOUND` | `events` | Who acts on a ringing call in. `events`: the worker. `dispatch`: call control, which hands each call over. See [Behind call control](#behind-call-control). |
 | `VOICEBLENDER_WORKER_WS_BASE` | `ws://127.0.0.1:8082` | Where voiceblender will dial the worker's per-session audio WS. On macOS/Windows Docker Desktop, this needs to be `ws://host.docker.internal:8082`. |
 | `VOICEBLENDER_VERSION` | `0.16.0` | Image tag pulled from `vpbx/voiceblender` (Docker Hub). No leading `v`. |
 | `VOICEBLENDER_SIP_PORT` | `5060` | UDP. Set to e.g. `5070` if you ever need to co-host with another SIP UA. |
@@ -354,7 +443,8 @@ of ingress.
 |---|---|
 | `agents/pipecat/pipecat_aplisay/sip_gateway/voiceblender_gateway.py` | `VoiceblenderSipGateway` + `_VbGatewaySession` |
 | `agents/pipecat/pipecat_aplisay/sip_gateway/__init__.py` | Exports the new gateway alongside Daily/FreeSWITCH |
-| `agents/pipecat/pipecat_aplisay/worker.py` | `SIP_GATEWAY=voiceblender` branch in `lifespan`, `_voiceblender_resolve_agent`, `WS /voiceblender/agent/{session_id}` handler |
+| `agents/pipecat/pipecat_aplisay/worker.py` | `SIP_GATEWAY=voiceblender` branch in `lifespan`, `_voiceblender_resolve_agent`, `WS /voiceblender/agent/{session_id}` handler, the `kind: "inbound"` branch of `POST /dispatch`, `POST /drain` |
+| `agents/pipecat/pipecat_aplisay/drain.py` | The preStop hook for a worker behind call control |
 | `agents/pipecat/docker-compose.yml` | Profiles: `freeswitch`, `voiceblender`, `daily` |
 | `agents/pipecat/docker-compose.dev.yml` | Same profile layout for the dev stack |
 | `agents/pipecat/deploy/gcp/docker-compose.gcp.yml` | Production / staging compose with profiles |

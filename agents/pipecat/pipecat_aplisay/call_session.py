@@ -3513,6 +3513,11 @@ async def setup_inbound_call(
                     "callerId": inbound.caller_id,
                     "calledId": inbound.called_id,
                     "callId": inbound.call_id,
+                    **(
+                        {"callControlId": inbound.call_control_id}
+                        if inbound.call_control_id
+                        else {}
+                    ),
                     "model": agent["modelName"],
                     # Inbound SIP INVITE X- headers, keyed lowercased. Only the
                     # sipbridge / voiceblender gateways populate inbound.sip_headers

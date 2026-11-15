@@ -155,6 +155,7 @@ The Pipecat worker. Unset means the pipecat models are not listed.
 | `HOST` | Pipecat | `0.0.0.0` | Address the Pipecat worker binds to. |
 | `RELOAD` | Pipecat |  | Set to reload the Pipecat worker when its code changes (development). |
 | `GRACEFUL_SHUTDOWN_SECONDS` | Pipecat | `15` | How long the Pipecat worker waits for calls to end at shutdown. |
+| `LIFECYCLE_DRAIN_SECONDS` | Pipecat | `1200` | How long the preStop hook of a Pipecat pod waits for live calls to end, in seconds. |
 | `HEALTHZ_MAX_SESSIONS` | Pipecat | `64` | Sessions above which the Pipecat health check fails. |
 | `HEALTHZ_MAX_THREADS` | Pipecat | `400` | Threads above which the Pipecat health check fails. |
 | `HEALTHZ_MAX_GATEWAY_ENTRIES` | Pipecat | `512` | Gateway entries above which the Pipecat health check fails. |
