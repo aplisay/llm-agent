@@ -80,6 +80,14 @@ def test_dispatch_a_ringing_call_in_causes_no_call_to_the_engine(make_gateway):
     assert gateway.pending_attaches == {}
 
 
+def test_dispatch_a_call_in_that_carries_our_app_id_is_not_ours_either(make_gateway):
+    # The id on a call in comes from a header its sender chose.
+    gateway = make_gateway("dispatch")
+    asyncio.run(gateway._handle_vsi_event({**RINGING, "app_id": gateway.app_id}))
+    assert gateway.resolved == []
+    assert gateway.calls == []
+
+
 @pytest.mark.parametrize("mode", [None, "events"])
 def test_events_a_ringing_call_in_is_still_answered(make_gateway, mode):
     gateway = make_gateway(mode)
@@ -134,3 +142,6 @@ def test_rooms_the_worker_makes_carry_its_app_id(make_gateway):
     method, path, body = gateway.calls[0]
     assert (method, path) == ("POST", "/v1/rooms")
     assert body["app_id"] == "aplisay-pipecat"
+    # Call control names its rooms "pbx-…", and deleting a room hangs up the
+    # legs in it: the worker's rooms must not look like those.
+    assert body["id"].startswith("bridge-")
