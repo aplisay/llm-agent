@@ -89,6 +89,8 @@ steps:
         --image=$_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_MAIN_SERVICE:$COMMIT_SHA
       - >-
         --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      # Send traffic only once /api/health answers (up to 240 s), not when the port opens.
+      - '--startup-probe=httpGet.path=/api/health,httpGet.port=8080,periodSeconds=3,timeoutSeconds=3,failureThreshold=80'
       - '--region=$_DEPLOY_REGION'
       - '--quiet'
 
