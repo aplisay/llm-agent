@@ -1,0 +1,34 @@
+# One address for each voiceblender engine: the private address of its node.
+# For another controller of the same engines (call control), and for a SIP
+# edge that sends calls to them. Not needed by the worker.
+#
+# A pod is listed whether it is ready or not. A pod that is stopping, or
+# whose worker is restarting, still has calls on its engine, and their
+# requests must still be taken. pipecat-worker-peers lists ready pods only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipecat-engine
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: pipecat-agent
+    app.kubernetes.io/component: sip-node
+  ports:
+    - name: sip-tcp
+      port: 5060
+      targetPort: 5060
+      protocol: TCP
+    - name: vb-http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: worker-http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP

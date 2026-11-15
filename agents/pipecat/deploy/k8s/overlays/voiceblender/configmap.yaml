@@ -1,0 +1,57 @@
+# Settings of the voiceblender engine in the Pipecat pod. Nothing here is
+# secret. Every key but the two ENGINE_* ones is voiceblender's own variable,
+# read in its internal/config/config.go. scripts/start.sh sets the addresses
+# that differ on each node. A key of the same name in the secretenv bundle
+# wins over the value here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: voiceblender-config
+  namespace: pipecat
+  labels:
+    app.kubernetes.io/name: pipecat-agent
+data:
+  # voiceblender has no credential of its own: these two lists are the only
+  # check on who may use it, and to voiceblender an empty list means "any
+  # address". Addresses or CIDR ranges, comma-separated, as the engine sees
+  # them. Behind a TCP load balancer it sees the balancer's address.
+  #
+  # Who may use the REST API and the event stream. The worker is in the same
+  # pod and start.sh adds the node's own address, so this stays empty unless
+  # something else (call control) drives the engine too.
+  ALLOWED_IPS: ""
+  # Who may send SIP, on every transport: your SBC, and anything else that
+  # sends calls here. start.sh refuses to start while this is empty.
+  SIP_ALLOWED_IPS: ""
+
+  SIP_PORT: "5060"
+  # SIP over TCP on SIP_PORT, beside UDP.
+  SIP_TCP_ENABLED: "true"
+  # The certificate is the pipecat-sip-tls Secret when it exists, or else a
+  # self-signed pair made when the pod starts.
+  SIP_TLS_PORT: "5061"
+  SIP_LISTEN_IP: "0.0.0.0"
+  # A peer in these ranges is told the node's private address in Contact and
+  # SDP. Every other peer is told its public address.
+  SIP_LOCAL_NETS: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  # voiceblender's defaults, stated so that a new version cannot change them
+  # unseen.
+  SIP_AUTO_RINGING: "false"
+  SIP_REFER_AUTO_DIAL: "false"
+  SIP_INBOUND_RING_TIMEOUT_SECONDS: "180"
+  SIP_SRTP: "optional"
+  # v0.8+ defaults to PCMU,PCMA only. This keeps the v0.7 offer.
+  SIP_CODECS: "opus,G722,PCMU,PCMA"
+  # One UDP port for each leg. Open it only to where audio comes from: on a
+  # plain RTP leg voiceblender sends its audio to whoever last sent that port
+  # a packet.
+  RTP_PORT_MIN: "10000"
+  RTP_PORT_MAX: "20000"
+  LOG_LEVEL: "info"
+
+  # Not voiceblender's. The port of its API, which listens on the node's
+  # private address only.
+  ENGINE_API_PORT: "8080"
+  # How long a pod with calls is held when it is told to stop. Keep it under
+  # the DaemonSet's terminationGracePeriodSeconds (1260).
+  ENGINE_DRAIN_SECONDS: "1200"

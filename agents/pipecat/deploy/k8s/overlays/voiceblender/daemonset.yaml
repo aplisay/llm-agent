@@ -1,17 +1,9 @@
-# Adds the Voiceblender SIP/media container to the per-node pod and points the
+# Adds the voiceblender SIP/media engine to the per-node pod and points the
 # worker at the voiceblender gateway.
 #
-# Voiceblender expects UNPREFIXED env (HTTP_ADDR, SIP_PORT, ...), so we map them
-# explicitly from the VOICEBLENDER_* keys in pipecat-config rather than using a
-# bare envFrom.
-#
-# CAVEAT — node external IP: Voiceblender is a third-party image and we can't
-# assume its base has /bin/sh or know its entrypoint path. We launch it via the
-# static busybox shim (as for sipbridge) and `exec voiceblender` from PATH. If
-# your voiceblender image puts the binary elsewhere, adjust the `exec` target.
-# If you'd rather not wrap it at all, drop the command/args and instead pin a
-# per-node external IP another way (e.g. one DaemonSet per node with NODE_EXT_IP
-# set) — but auto-detection via the wrapper is the supported path.
+# voiceblender's settings are its own (unprefixed) variables, in the
+# voiceblender-config ConfigMap. scripts/start.sh adds the addresses of the
+# node and refuses to start an engine that any address could use.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -20,86 +12,126 @@ metadata:
 spec:
   template:
     spec:
+      initContainers:
+        # voiceblender will not start its TLS listener without a certificate
+        # and cannot make one. This makes a self-signed pair, which start.sh
+        # uses when the pipecat-sip-tls Secret is absent.
+        - name: make-sip-cert
+          image: europe-west1-docker.pkg.dev/llm-voice/containers/llm-agent/pipecat-worker:latest
+          command: ["uv", "run", "--no-sync", "python", "-m", "pipecat_aplisay.selfsigned", "/etc/node-meta/sip-tls"]
+          volumeMounts:
+            - name: node-meta
+              mountPath: /etc/node-meta
+
       containers:
         - name: pipecat-worker
           env:
             - name: SIP_GATEWAY
               value: voiceblender
+            # voiceblender's API listens on the node's private address, not on
+            # loopback, so this replaces the URL in pipecat-config.
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: VOICEBLENDER_BASE_URL
+              value: "http://$(HOST_IP):8080"
+          # As the base hook, and it first tells the worker to refuse calls
+          # that call control hands over (VOICEBLENDER_INBOUND=dispatch).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["python", "-m", "pipecat_aplisay.drain"]
 
         - name: voiceblender
           # Pinned in four places: here, agents/pipecat/docker-compose*.yml and
           # deploy/gcp/docker-compose.gcp.yml. Change them together.
           image: vpbx/voiceblender:0.16.0
-          # secretenv-exec decrypts SECRETENV_BUNDLE into the env (Voiceblender
-          # can't decrypt natively), then the busybox shell adds the per-node IP
-          # and execs voiceblender. The secretenv-exec wrapper is a no-op when
-          # SECRETENV_KEY / SECRETENV_BUNDLE are unset.
-          command: ["/etc/node-meta/secretenv-exec", "/etc/node-meta/busybox", "sh", "-c"]
-          args:
-            - |
-              export SIP_EXTERNAL_IP="$(/etc/node-meta/busybox cat /etc/node-meta/ext-ip)"
-              exec voiceblender
-          # Voiceblender expects unprefixed env names, so only individual
-          # config-map keys go via env. Secrets that the bundle is allowed to
-          # override come in via envFrom on a wrapper layer below.
+          # secretenv-exec decrypts SECRETENV_BUNDLE into the env (voiceblender
+          # can't decrypt natively) and is a no-op when it is unset. The static
+          # busybox then runs start.sh, which execs voiceblender from PATH.
+          command: ["/etc/node-meta/secretenv-exec", "/etc/node-meta/busybox", "sh", "/opt/voiceblender-scripts/start.sh"]
           envFrom:
+            - configMapRef:
+                name: voiceblender-config
             - secretRef:
                 name: pipecat-secretenv
                 optional: true
           env:
-            - name: HTTP_ADDR
+            # The node's private address on the clouds this is used on.
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: PIPECAT_SIP_FROM_DOMAIN
               valueFrom:
                 configMapKeyRef:
                   name: pipecat-config
-                  key: VOICEBLENDER_HTTP_ADDR
-            - name: SIP_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: pipecat-config
-                  key: VOICEBLENDER_SIP_PORT
-            - name: SIP_TLS_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: pipecat-config
-                  key: VOICEBLENDER_SIP_TLS_PORT
-            - name: RTP_PORT_MIN
-              valueFrom:
-                configMapKeyRef:
-                  name: pipecat-config
-                  key: VOICEBLENDER_RTP_PORT_MIN
-            - name: RTP_PORT_MAX
-              valueFrom:
-                configMapKeyRef:
-                  name: pipecat-config
-                  key: VOICEBLENDER_RTP_PORT_MAX
-            # Voiceblender binds SIP to 127.0.0.1 unless told otherwise. It has
-            # no API key setting, so VOICEBLENDER_API_KEY is not passed in.
-            - name: SIP_BIND_IP
-              value: "0.0.0.0"
-            # v0.8+ defaults to PCMU,PCMA only. This keeps the v0.7 offer.
-            - name: SIP_CODECS
-              value: "opus,G722,PCMU,PCMA"
-            # SIP_TLS_PORT is set (5061) but voiceblender refuses to start
-            # without SIP_TLS_CERT and SIP_TLS_KEY. Mount the pipecat-sip-tls
-            # Secret and set both before using this overlay.
+                  key: PIPECAT_SIP_FROM_DOMAIN
+          # Informational under hostNetwork.
           ports:
             - name: vb-http
               containerPort: 8080
               protocol: TCP
+            - name: sip-tcp
+              containerPort: 5060
+              protocol: TCP
+            - name: sip-udp
+              containerPort: 5060
+              protocol: UDP
             - name: sip-tls
               containerPort: 5061
               protocol: TCP
+          # No liveness probe, on purpose: a restart cuts every call.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /v1/legs
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          # Kubernetes runs preStop per container and sends each its SIGTERM
+          # when its own hook returns. Without this, voiceblender would hang
+          # every call up while the worker was still waiting for them to end.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/etc/node-meta/busybox", "sh", "/opt/voiceblender-scripts/wait-for-calls.sh"]
           volumeMounts:
             - name: node-meta
               mountPath: /etc/node-meta
+            - name: voiceblender-scripts
+              mountPath: /opt/voiceblender-scripts
+              readOnly: true
+            - name: sip-tls
+              mountPath: /etc/sip-tls
+              readOnly: true
+            # voiceblender's recording and cache directories.
+            - name: voiceblender-tmp
+              mountPath: /tmp
+          # No CPU limit: a throttled engine adds delay to every call on it.
           resources:
             requests:
               cpu: 200m
               memory: 128Mi
             limits:
-              memory: 512Mi
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: voiceblender-scripts
+          configMap:
+            name: voiceblender-scripts
+            defaultMode: 0755
+        - name: voiceblender-tmp
+          emptyDir: {}
