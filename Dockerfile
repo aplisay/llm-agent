@@ -11,8 +11,8 @@
 # floats onto whatever is newest at build time. The committed lockfile (and
 # every lockfile-only Dependabot patch) then has no effect on what actually
 # ships. That is how better-auth silently moved 1.6.25 to 1.7.1 and took its
-# breaking `account.issuer` schema change to beta/staging (see
-# scripts/auth-issuer-backfill.mjs). --frozen-lockfile makes any drift between
+# breaking `account.issuer` schema change to beta/staging (1.7.3 undid it: see
+# relaxAccountIssuer() in lib/database.js). --frozen-lockfile makes any drift between
 # package.json and yarn.lock fail the build instead of shipping a surprise.
 #
 # Nothing in this stage reads a build arg, so the layer is reusable between
