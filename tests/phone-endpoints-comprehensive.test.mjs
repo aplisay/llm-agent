@@ -2560,8 +2560,10 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
     });
 
     test('should create E.164 DDI endpoint with trunk validation', async () => {
-      // Use a unique phone number for this test
-      const uniquePhoneNumber = `1555999${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+      // A unique number, on a prefix no fixed number in this file has. On a
+      // shared prefix the random digits can equal a fixed number, and the
+      // create then answers 409.
+      const uniquePhoneNumber = `1555997${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
       
       // Test 1: Create E.164 DDI endpoint with valid trunk (should succeed)
       const validDdiReq = createMockRequest({
