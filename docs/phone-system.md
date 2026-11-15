@@ -117,7 +117,9 @@ A `registration` request is for a call that arrives from a registration and not 
 1. The agent that listens on the registration.
 2. If there is none and the registration is a trunk, the agent that listens on `calledNumber` on that trunk.
 
-A number is never looked up without a trunk. A call from a registration to an extension is not supported yet.
+A number is never looked up without a trunk. The request names none: the trunk is the registration's own. A call from a registration to an extension is not supported yet.
+
+The four refusals below carry no `organisationId`. Call control records a refused call that names an organisation as a phone system call, and these are not phone system calls.
 
 | `reason` | Meaning |
 |---|---|

@@ -169,10 +169,11 @@ describe('the resolve route names the agent of a call', () => {
     });
 
     test('an instance on another runtime, or with no agent, is refused with its reason', async () => {
+      // No organisation on these: call control would record them as phone system calls.
       expect(await resolve({ kind: 'number', calledNumber: ddi(2), trunkId: TRUNK_A }))
-        .toMatchObject({ action: 'refuse', reason: 'runtime_not_supported', organisationId: orgs.plain });
+        .toMatchObject({ action: 'refuse', reason: 'runtime_not_supported', organisationId: null });
       expect(await resolve({ kind: 'number', calledNumber: ddi(3), trunkId: TRUNK_A }))
-        .toMatchObject({ action: 'refuse', reason: 'agent_not_available', organisationId: orgs.plain });
+        .toMatchObject({ action: 'refuse', reason: 'agent_not_available', organisationId: null });
     });
 
     test('a number that nothing listens on, or that is not on the trunk, is still refused', async () => {
@@ -227,8 +228,9 @@ describe('the resolve route names the agent of a call', () => {
 
     test('the refusals', async () => {
       expect(await fromRegistration(registrations.idle, '8092'))
-        .toMatchObject({ action: 'refuse', reason: 'registration_not_routed', organisationId: orgs.plain });
-      expect(await fromRegistration(registrations.livekit, '8092')).toMatchObject({ action: 'refuse', reason: 'runtime_not_supported' });
+        .toMatchObject({ action: 'refuse', reason: 'registration_not_routed', organisationId: null });
+      expect(await fromRegistration(registrations.livekit, '8092'))
+        .toMatchObject({ action: 'refuse', reason: 'runtime_not_supported', organisationId: null });
       expect(await fromRegistration(randomUUID(), '8092')).toMatchObject({ action: 'refuse', reason: 'registration_not_found', organisationId: null });
       expect(await fromRegistration('not-an-id', '8092')).toMatchObject({ action: 'refuse', reason: 'registration_not_found' });
       // The SIP account of a desk phone line is not a registration connection.
