@@ -1456,7 +1456,11 @@ class CallSession:
             # batched call's rows all share the end-of-call time and lose order.
             "createdAt": created_at or datetime.now(timezone.utc),
         }
-        if self.instance.get("streamLog"):
+        # After the record has ended its batch is already sent, so a late row goes out on
+        # its own. Ultravox sends the transcript of the line that made a consult leg accept
+        # 0 to 0.7 s after the tool call, by when that leg's record has ended.
+        late = call.end_called and call.persisted
+        if self.instance.get("streamLog") or late:
             try:
                 created = await api_client.create_transaction_log(entry)
             except Exception as e:  # noqa: BLE001
