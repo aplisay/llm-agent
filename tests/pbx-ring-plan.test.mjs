@@ -564,6 +564,45 @@ describe('dialled digits', () => {
     });
   });
 
+  test('a shared extension does not ring the phone the call comes from', () => {
+    const result = plan(baseSnapshot(), { kind: 'dialled', lineId: ROB_LINE, digits: '200' }, WED_NOON);
+    expect(result.action).toBe('ring');
+    // Rob's other desk phone still rings, and so does every other member.
+    expect(allLegs(result).map((leg) => leg.phoneId)).toEqual(['p-rob-home', 'p-priya-desk', 'p-ellie-desk']);
+    expect(skippedFor(result, 'p-rob-desk')).toEqual([{ entryId: 'e-rob', phoneId: 'p-rob-desk', reason: 'caller_phone' }]);
+
+    const fromOutside = plan(baseSnapshot(), toExtension('x-200'), WED_NOON);
+    expect(legFor(fromOutside, 'p-rob-desk')).toBeDefined();
+    expect(fromOutside.skipped.some((entry) => entry.reason === 'caller_phone')).toBe(false);
+  });
+
+  test('a person who dials their own extension rings their other phones only', () => {
+    const result = plan(baseSnapshot(), { kind: 'dialled', lineId: ROB_LINE, digits: '100' }, WED_NOON);
+    expect(allLegs(result).map((leg) => leg.phoneId)).toEqual(['p-rob-home', 'p-rob-mobile', 'p-priya-desk']);
+    expect(skippedFor(result, 'p-rob-desk')).toEqual([{ entryId: 'e-rob', phoneId: 'p-rob-desk', reason: 'caller_phone' }]);
+  });
+
+  test('in a hunt the caller\'s phone is left out of its member\'s step', () => {
+    const s = baseSnapshot();
+    ext(s, 'x-200').type = 'hunt';
+    const result = plan(s, { kind: 'dialled', lineId: 'ln-p-priya-desk-1', digits: '200' }, WED_NOON);
+    expect(result.ring.steps.map((step) => step.legs.map((leg) => leg.phoneId))).toEqual([
+      ['p-rob-desk', 'p-rob-home'],
+      [],
+      ['p-ellie-desk'],
+    ]);
+    expect(skippedFor(result, 'p-priya-desk')).toEqual([{ entryId: 'e-priya', phoneId: 'p-priya-desk', reason: 'caller_phone' }]);
+  });
+
+  test('a calling phone shared by two members is skipped once', () => {
+    const s = baseSnapshot();
+    s.phones.push({ id: 'p-front', kind: 'deskphone', label: 'Front desk', capacity: 6, labelChars: 12 });
+    s.phonePeople.push({ phoneId: 'p-front', entryId: 'e-rob', position: 1 }, { phoneId: 'p-front', entryId: 'e-priya', position: 2 });
+    const result = plan(s, { kind: 'dialled', lineId: 'ln-p-front-1', digits: '200' }, WED_NOON);
+    expect(legFor(result, 'p-front')).toBeUndefined();
+    expect(skippedFor(result, 'p-front')).toEqual([{ entryId: 'e-rob', phoneId: 'p-front', reason: 'caller_phone' }]);
+  });
+
   test.each(['02079460999', '+442079460999', '00442079460999'])('%s goes out as +442079460999', (digits) => {
     const result = dial(baseSnapshot(), digits);
     expect(result.action).toBe('outside');
