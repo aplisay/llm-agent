@@ -46,7 +46,8 @@ import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
 import { resolvePipelineStt } from "./pipeline-inference-options.js";
 import { buildStandaloneStt } from "./pipeline-routing.js";
-import { pickSttFormatting, selfFinalizeAfterMs, type SttFormattingFields } from "./stt-formatting.js";
+import { sendingAllAudio } from "./deepgram-send-all-audio.js";
+import { pickSttFormatting, sideEngineTiming, type SideEngineTiming, type SttFormattingFields } from "./stt-formatting.js";
 import { fromServiceString, type VendorDetail } from "./usage-vendors.js";
 import { waitForAudioTrack, waitForRemoteParticipant } from "./bridge-transcription.js";
 
@@ -239,8 +240,8 @@ export interface StartSideSttEngineParams {
   onUsage: (unit: "milliseconds" | "characters", quantity: number) => void;
   /** Invoked when the engine stops itself on a non-recoverable error. */
   onEngineStopped?: () => void;
-  /** Flush the engine this long after the last speech frame (see selfFinalizeAfterMs). */
-  finalizeAfterSilenceMs?: number;
+  /** Long-pause settings (see sideEngineTiming); omitted fields keep the default behaviour. */
+  timing?: Partial<SideEngineTiming>;
 }
 
 /**
@@ -254,8 +255,8 @@ export interface StartSideSttEngineParams {
  * failing, so a rejected credential cannot become a bill.
  */
 export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEngine {
-  const { label, roomName, subject, stt: sttInstance, onTranscript, onUsage, onEngineStopped, finalizeAfterSilenceMs } =
-    params;
+  const { label, roomName, subject, stt: sttInstance, onTranscript, onUsage, onEngineStopped } = params;
+  const { sendAllAudio = false, finalizeAfterIdleMs, drainMs } = params.timing ?? {};
   let heardSinceFinalize = false;
   let finalizeTimer: ReturnType<typeof setTimeout> | undefined;
   const finalizeNow = (): void => {
@@ -270,8 +271,10 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
   };
   const usage: SideSttUsage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
   let disposed = false;
+  // Finals are still taken while a dispose drains the engine; `disposed` alone stops new audio.
+  let stopped = false;
   let disposing: Promise<void> | null = null;
-  const sttStream = sttInstance.stream();
+  const sttStream = sendAllAudio ? sendingAllAudio(() => sttInstance.stream()) : sttInstance.stream();
 
   const onMetrics = (m: any): void => {
     const ms = Math.round(Number(m?.audioDurationMs) || 0);
@@ -306,7 +309,7 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
   const consumer = (async (): Promise<void> => {
     try {
       for await (const ev of sttStream) {
-        if (disposed) break;
+        if (stopped) break;
         if (ev.type !== stt.SpeechEventType.FINAL_TRANSCRIPT) continue;
         const text = (ev.alternatives?.[0]?.text ?? "").trim();
         if (!text) continue;
@@ -333,11 +336,14 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
     if (disposed) return;
     const rate = frame.sampleRate || AUX_STT_SAMPLE_RATE;
     usage.streamedMilliseconds += (frame.samplesPerChannel / rate) * 1000;
-    if (finalizeAfterSilenceMs && frameHasSpeech(frame)) {
-      heardSinceFinalize = true;
-      if (finalizeTimer) clearTimeout(finalizeTimer);
-      finalizeTimer = setTimeout(finalizeNow, finalizeAfterSilenceMs);
-      finalizeTimer.unref?.();
+    if (finalizeAfterIdleMs) {
+      if (frameHasSpeech(frame)) heardSinceFinalize = true;
+      // Re-armed by every frame, so it fires only when the audio stops arriving.
+      if (heardSinceFinalize) {
+        if (finalizeTimer) clearTimeout(finalizeTimer);
+        finalizeTimer = setTimeout(finalizeNow, finalizeAfterIdleMs);
+        finalizeTimer.unref?.();
+      }
     }
     try {
       sttStream.pushFrame(frame);
@@ -350,12 +356,24 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
     if (disposing) return disposing;
     disposing = (async () => {
       disposed = true;
+      if (!drainMs) stopped = true;
       if (finalizeTimer) clearTimeout(finalizeTimer);
       try {
         sttStream.flush(); // FLUSH_SENTINEL → the engine reports its last partial usage interval
         await sleep(USAGE_FLUSH_GRACE_MS);
       } catch {
         /* engine already gone */
+      }
+      if (drainMs) {
+        // With a long pause the last words can still be held: ending the input makes the engine
+        // finalize them. Wait for its stream to end, bounded.
+        try {
+          sttStream.endInput();
+        } catch {
+          /* already ended */
+        }
+        await Promise.race([consumer.catch(() => {}), sleep(drainMs)]);
+        stopped = true;
       }
       try {
         sttInstance.off("metrics_collected", onMetrics);
@@ -519,7 +537,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       const track = await resolveTrack(room, callerIdentity);
       if (disposed) return;
       const sttInstance = buildStt(agent, config);
-      const finalizeAfterSilenceMs = selfFinalizeAfterMs(sttInstance.label, config, true);
+      const timing = sideEngineTiming(sttInstance.label, config, true);
       engine = startSideSttEngine({
         label: "auxStt",
         roomName,
@@ -528,7 +546,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
         onTranscript,
         onUsage,
         onEngineStopped: () => void dispose(),
-        ...(finalizeAfterSilenceMs ? { finalizeAfterSilenceMs } : {}),
+        timing,
       });
       const audio = openAudioStream(track);
       cleanups.push(() => {
@@ -540,7 +558,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
         return;
       }
       logger.info(
-        { roomName, callerIdentity, label: sttInstance.label, config },
+        { roomName, callerIdentity, label: sttInstance.label, config, timing },
         "auxStt: auxiliary transcription armed on the caller track",
       );
       // Pump the caller's audio into the engine ourselves (rather than handing

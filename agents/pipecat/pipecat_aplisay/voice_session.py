@@ -1230,10 +1230,13 @@ def _aux_stt_tap_for(
         if on_usage is not None:
             on_usage(unit, quantity, vendor)
 
+    from .stt_formatting import side_drain_secs
+
     return AuxSttTap(
         stt_factory=lambda: build_stt_service(effective_agent, long_pause=True),
         on_final=on_transcript,
         on_usage=_report,
+        drain_secs=side_drain_secs(config, long_pause=True),
     )
 
 
@@ -1263,12 +1266,15 @@ def _output_stt_tap_for(
         if on_usage is not None:
             on_usage(unit, quantity, vendor)
 
+    from .stt_formatting import side_drain_secs
+
     return AuxSttTap(
         stt_factory=lambda: build_stt_service(effective_agent),
         on_final=on_transcript,
         on_usage=_report,
         frame_cls=frame_cls or TTSAudioRawFrame,
         label="outputStt",
+        drain_secs=side_drain_secs(config, long_pause=False),
     )
 
 

@@ -15,7 +15,7 @@ const {
   deepgramPluginFormatting,
   inferenceSttModelOptions,
   pickSttFormatting,
-  selfFinalizeAfterMs,
+  sideEngineTiming,
 } = await import("../lib/stt-formatting.js");
 const { auxSttAgent, frameHasSpeech, outputSttAgent, parseAuxSttOption, parseOutputSttOption, startSideSttEngine } =
   await import("../lib/aux-stt.js");
@@ -123,12 +123,23 @@ test("an Inference build sends the options as modelOptions", () => {
   assert.deepEqual(plain.opts.modelOptions, {});
 });
 
-test("only the Deepgram plugin with a pause of 1000 ms or more finalizes itself", () => {
-  assert.equal(selfFinalizeAfterMs("deepgram.STT", { formatted: true }, true), 1500);
-  assert.equal(selfFinalizeAfterMs("deepgram.STT", { formatted: true }, false), undefined);
-  assert.equal(selfFinalizeAfterMs("deepgram.STT", { endpointing: 800 }, true), undefined);
-  assert.equal(selfFinalizeAfterMs("deepgram.STT", { endpointing: 2000 }, false), 2000);
-  assert.equal(selfFinalizeAfterMs("inference.STT", { formatted: true }, true), undefined);
+test("sideEngineTiming: long-pause settings only where a long pause is asked for", () => {
+  assert.deepEqual(sideEngineTiming("deepgram.STT", { formatted: true }, true), {
+    sendAllAudio: true,
+    finalizeAfterIdleMs: 2500,
+    drainMs: 2000,
+  });
+  assert.deepEqual(sideEngineTiming("inference.STT", { formatted: true }, true), { sendAllAudio: false, drainMs: 2000 });
+  // The output engine (no long pause) and unformatted blocks keep the default behaviour.
+  assert.deepEqual(sideEngineTiming("deepgram.STT", { formatted: true }, false), { sendAllAudio: false });
+  assert.deepEqual(sideEngineTiming("deepgram.STT", {}, true), { sendAllAudio: false });
+  assert.deepEqual(sideEngineTiming("deepgram.STT", { endpointing: 800 }, true), { sendAllAudio: false });
+  // An explicit long endpointing gets the same treatment on any side engine.
+  assert.deepEqual(sideEngineTiming("deepgram.STT", { endpointing: 2000 }, false), {
+    sendAllAudio: true,
+    finalizeAfterIdleMs: 3000,
+    drainMs: 2000,
+  });
 });
 
 test("frameHasSpeech uses the plugin's energy threshold", () => {
@@ -138,39 +149,99 @@ test("frameHasSpeech uses the plugin's energy threshold", () => {
   assert.equal(frameHasSpeech(frame(1000)), true);
 });
 
-test("a side engine flushes itself once speech has been quiet for the pause, and only once", async () => {
-  let flushes = 0;
+function fakeStream() {
+  const state = { flushes: 0, ended: false, events: [] as any[], waiters: [] as Array<(r: IteratorResult<any>) => void> };
+  const put = (ev: any) => {
+    const w = state.waiters.shift();
+    if (w) w({ value: ev, done: false });
+    else state.events.push(ev);
+  };
+  const finish = () => {
+    state.ended = true;
+    for (const w of state.waiters.splice(0)) w({ value: undefined, done: true });
+  };
   const stream = {
     pushFrame() {},
     flush() {
-      flushes += 1;
+      state.flushes += 1;
     },
-    endInput() {},
-    close() {},
-    async *[Symbol.asyncIterator]() {},
+    endInput() {
+      // A real engine finalizes held words when its input ends, then closes.
+      put({ type: 2, alternatives: [{ text: "the last words" }] });
+      setTimeout(finish, 20);
+    },
+    close() {
+      finish();
+    },
+    next(): Promise<IteratorResult<any>> {
+      if (state.events.length) return Promise.resolve({ value: state.events.shift(), done: false });
+      if (state.ended) return Promise.resolve({ value: undefined, done: true });
+      return new Promise((r) => state.waiters.push(r));
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
   };
-  const engineStt = { label: "deepgram.STT", stream: () => stream, on() {}, off() {}, close: async () => {} } as any;
+  return { state, stream };
+}
+
+const loud = () => ({ data: new Int16Array(320).fill(2000), sampleRate: 16000, samplesPerChannel: 320 }) as any;
+const quiet = () => ({ data: new Int16Array(320), sampleRate: 16000, samplesPerChannel: 320 }) as any;
+const engineFor = (stream: unknown, label = "deepgram.STT") =>
+  ({ label, stream: () => stream, on() {}, off() {}, close: async () => {} }) as any;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("the idle backstop flushes only when frames stop arriving after speech", async () => {
+  const { state, stream } = fakeStream();
   const engine = startSideSttEngine({
     label: "auxStt",
     roomName: "r",
     subject: "s",
-    stt: engineStt,
+    stt: engineFor(stream),
     onTranscript: () => {},
     onUsage: () => {},
-    finalizeAfterSilenceMs: 60,
+    timing: { finalizeAfterIdleMs: 60 },
   });
-  const loud = { data: new Int16Array(320).fill(2000), sampleRate: 16000, samplesPerChannel: 320 } as any;
-  const quiet = { data: new Int16Array(320), sampleRate: 16000, samplesPerChannel: 320 } as any;
-  engine.push(loud);
-  engine.push(quiet);
-  await new Promise((r) => setTimeout(r, 30));
-  engine.push(loud); // speech again: the timer starts over
-  await new Promise((r) => setTimeout(r, 40));
-  assert.equal(flushes, 0);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(flushes, 1);
-  engine.push(quiet);
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(flushes, 1, "silence alone does not flush again");
+  engine.push(loud());
+  for (let i = 0; i < 6; i++) {
+    await sleep(20);
+    engine.push(quiet()); // silence still arriving: no flush
+  }
+  assert.equal(state.flushes, 0);
+  await sleep(100); // frames stopped
+  assert.equal(state.flushes, 1);
+  await sleep(100);
+  assert.equal(state.flushes, 1, "no second flush without new speech");
   await engine.dispose();
+});
+
+test("with drainMs, a dispose waits for the final the engine sends when its input ends", async () => {
+  const got: string[] = [];
+  const { stream } = fakeStream();
+  const engine = startSideSttEngine({
+    label: "auxStt",
+    roomName: "r",
+    subject: "s",
+    stt: engineFor(stream),
+    onTranscript: (text) => got.push(text),
+    onUsage: () => {},
+    timing: { drainMs: 500 },
+  });
+  await engine.dispose();
+  assert.deepEqual(got, ["the last words"]);
+});
+
+test("without drainMs, a dispose keeps the old behaviour and takes no final", async () => {
+  const got: string[] = [];
+  const { stream } = fakeStream();
+  const engine = startSideSttEngine({
+    label: "auxStt",
+    roomName: "r",
+    subject: "s",
+    stt: engineFor(stream),
+    onTranscript: (text) => got.push(text),
+    onUsage: () => {},
+  });
+  await engine.dispose();
+  assert.deepEqual(got, []);
 });

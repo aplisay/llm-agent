@@ -29,6 +29,7 @@ import type { stt } from "@livekit/agents";
 import type { AudioFrame } from "@livekit/rtc-node";
 import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
+import { sideEngineTiming } from "./stt-formatting.js";
 import {
   buildOutputStt,
   errorText,
@@ -140,6 +141,8 @@ export function armOutputStt(params: ArmOutputSttParams): OutputSttHandle {
     return disposing;
   };
 
+  // No long pause here unless the block sets one: this engine hears audio only while the agent speaks.
+  const timing = sideEngineTiming(sttInstance.label, config, false);
   const engine = startSideSttEngine({
     label: "outputStt",
     roomName,
@@ -148,11 +151,12 @@ export function armOutputStt(params: ArmOutputSttParams): OutputSttHandle {
     onTranscript,
     onUsage,
     onEngineStopped: () => void dispose(),
+    timing,
   });
   tee = teeAudioOutput(original, engine);
   session.output.audio = tee;
   logger.info(
-    { roomName, label: sttInstance.label, config, output: (original as any)?.constructor?.name },
+    { roomName, label: sttInstance.label, config, timing, output: (original as any)?.constructor?.name },
     "outputStt: output audit armed on the session's audio output",
   );
 

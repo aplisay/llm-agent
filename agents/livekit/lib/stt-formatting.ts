@@ -142,15 +142,31 @@ export function deepgramPluginFormatting(
   };
 }
 
+/** At teardown, how long a side engine with a long pause waits for its last final. */
+export const SIDE_DRAIN_MS = 2000;
+
+export interface SideEngineTiming {
+  /** Create the stream with the Deepgram plugin's silence drop off (deepgram-send-all-audio.ts). */
+  sendAllAudio: boolean;
+  /** Flush when no frame at all has arrived for this long after speech (the plugin sends `Finalize`). */
+  finalizeAfterIdleMs?: number;
+  /** At teardown, end the input and wait up to this long for the last final. */
+  drainMs?: number;
+}
+
 /**
- * When a side engine must finalize its own transcripts, the pause in ms after
- * the last speech it pushed; otherwise undefined. The Deepgram plugin stops
- * sending audio 1 s after speech, so Deepgram never hears a longer pause and
- * holds the transcript until the next speech. The plugin sends Deepgram a
- * `Finalize` when the stream is flushed.
+ * How a side engine runs when its block asks for a long pause: `formatted` on the caller-side
+ * engine, or an explicit Deepgram `endpointing` of 1000 ms or more. Otherwise as before.
  */
-export function selfFinalizeAfterMs(engineLabel: string, block: unknown, longPause: boolean): number | undefined {
-  if (engineLabel !== "deepgram.STT") return undefined;
+export function sideEngineTiming(engineLabel: string, block: unknown, longPause: boolean): SideEngineTiming {
   const { endpointing } = deepgramFormatting(block, longPause);
-  return typeof endpointing === "number" && endpointing >= DEEPGRAM_PLUGIN_SILENCE_CUTOFF_MS ? endpointing : undefined;
+  const deepgramLong = typeof endpointing === "number" && endpointing >= DEEPGRAM_PLUGIN_SILENCE_CUTOFF_MS;
+  if (!deepgramLong && !(longPause && pickSttFormatting(block).formatted === true)) return { sendAllAudio: false };
+  // Above the plugin's 1 s silence drop its endpointing cannot fire unless it sends all audio.
+  const plugin = engineLabel === "deepgram.STT" && deepgramLong;
+  return {
+    sendAllAudio: plugin,
+    ...(plugin ? { finalizeAfterIdleMs: (endpointing as number) + 1000 } : {}),
+    drainMs: SIDE_DRAIN_MS,
+  };
 }
