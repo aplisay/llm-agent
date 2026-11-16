@@ -18,6 +18,15 @@ def _truthy(value: str | None) -> bool:
     return (value or "").lower() in ("1", "true", "yes", "on")
 
 
+def _ws_keepalive() -> dict[str, float | None]:
+    # The VoiceBlender engine never answers a WebSocket ping, so uvicorn's
+    # default keepalive closed its audio socket 40 s into every call. No
+    # ping for that gateway: a dead leg is reported on its event stream.
+    if os.environ.get("SIP_GATEWAY", "freeswitch").lower() == "voiceblender":
+        return {"ws_ping_interval": None}
+    return {}
+
+
 def main() -> None:
     # Log which code this actually is, first thing — so a running worker always
     # says its commit (catches a rebuilt :next that never rolled, or pods that
@@ -76,6 +85,7 @@ def main() -> None:
         reload=reload,
         reload_dirs=reload_dirs,
         timeout_graceful_shutdown=graceful_shutdown,
+        **_ws_keepalive(),
     )
 
 
