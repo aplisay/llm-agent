@@ -3,8 +3,7 @@
 Drives ``UsageMeteringObserver.on_push_frame`` with synthesised frames and
 asserts the accumulated (technology, provider, detail, unit, quantity) meters —
 no live worker, no network. Covers vendor normalisation (R3), STT chars+ms and
-TTS ms (the dual-basis additions), dedup, and the flush payload shape. The real
-VAD/SDK frame cadence is validated separately via the eval harness.
+TTS ms (the dual-basis additions), dedup, and the flush payload shape.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import (
+    InputAudioRawFrame,
     MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
@@ -22,9 +22,12 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import LLMTokenUsage, LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import FramePushed
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import STTService
+from pipecat.tests.utils import run_test
 
 from pipecat_aplisay import api_client
 from pipecat_aplisay.usage import UsageMeteringObserver, usage_vendors
@@ -32,6 +35,9 @@ from pipecat_aplisay.usage import UsageMeteringObserver, usage_vendors
 
 class _FakeSTT(STTService):
     """A concrete STTService so a frame can be attributed to an STT source."""
+
+    def __init__(self, **kwargs):
+        super().__init__(settings=STTSettings(model=None, language=None), **kwargs)
 
     async def run_stt(self, audio: bytes):  # pragma: no cover - never driven
         if False:
@@ -45,16 +51,27 @@ class _FakeLLM(LLMService):
         raise NotImplementedError
 
 
-def _push(observer: UsageMeteringObserver, *frames, source=None) -> None:
+class _Passthrough(FrameProcessor):
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+
+def _push(observer: UsageMeteringObserver, *frames, source=None, destination=None) -> None:
     async def run():
         for fr in frames:
             await observer.on_push_frame(
                 FramePushed(
-                    source=source, destination=None, frame=fr,
+                    source=source, destination=destination, frame=fr,
                     direction=FrameDirection.DOWNSTREAM, timestamp=0,
                 )
             )
     asyncio.run(run())
+
+
+def _caller_audio(ms: int, sample_rate: int = 8000) -> InputAudioRawFrame:
+    """``ms`` of 16-bit mono silence: the STT vendor bills silence too."""
+    return InputAudioRawFrame(audio=b"\x00" * (sample_rate * ms // 1000 * 2), sample_rate=sample_rate, num_channels=1)
 
 
 def _meter(observer, technology, unit):
@@ -224,16 +241,95 @@ def test_add_meter_accumulates_external_usage_for_flush():
     assert _meter(obs, "stt-aux", "characters")["quantity"] == 11
 
 
-def test_stt_milliseconds_from_vad_window():
+def test_stt_milliseconds_from_audio_pushed_into_the_stt_service():
+    obs = UsageMeteringObserver(services=usage_vendors({}, "pipecat:openai/gpt-4o-mini"))
+    stt = _FakeSTT()
+    _push(obs, *[_caller_audio(20) for _ in range(50)], destination=stt)
+    ms = _meter(obs, "stt", "milliseconds")
+    assert ms["quantity"] == 1000
+    assert ms["provider"] == "deepgram"
+
+
+def test_stt_milliseconds_do_not_drift_on_odd_frame_sizes():
     obs = UsageMeteringObserver(services={"stt": {"vendor": "deepgram", "model": None}})
+    stt = _FakeSTT()
+    # 10 samples at 16 kHz is 0.625 ms: eight frames make exactly 5 ms.
+    frames = [InputAudioRawFrame(audio=b"\x00" * 20, sample_rate=16000, num_channels=1) for _ in range(8)]
+    _push(obs, *frames, destination=stt)
+    assert _meter(obs, "stt", "milliseconds")["quantity"] == 5
+
+
+def test_stt_milliseconds_only_on_the_hop_into_the_stt_service():
+    # The same frame is seen again on every later hop (the STT passes audio
+    # downstream); those hops, and audio that never reaches an STT, are not STT usage.
+    obs = UsageMeteringObserver(services={"stt": {"vendor": "deepgram", "model": None}})
+    stt = _FakeSTT()
+    frame = _caller_audio(20)
+    _push(obs, frame, source=_Passthrough(), destination=stt)
+    _push(obs, frame, source=stt, destination=_Passthrough())
+    _push(obs, _caller_audio(20), destination=_FakeLLM())
+    _push(obs, _caller_audio(20), destination=None)
+    assert _meter(obs, "stt", "milliseconds")["quantity"] == 20
+
+
+def test_muted_or_failed_stt_meters_no_audio():
+    # STTService.process_audio_frame sends nothing to the vendor in either state.
+    class _StateSTT(_FakeSTT):
+        def __init__(self, *, muted: bool, usable: bool):
+            super().__init__()
+            self._state = (muted, usable)
+
+        @property
+        def is_muted(self):
+            return self._state[0]
+
+        @property
+        def is_usable(self):
+            return self._state[1]
+
+    obs = UsageMeteringObserver(services={"stt": {"vendor": "deepgram", "model": None}})
+    _push(obs, _caller_audio(20), destination=_StateSTT(muted=True, usable=True))
+    _push(obs, _caller_audio(20), destination=_StateSTT(muted=False, usable=False))
+    assert _meter(obs, "stt", "milliseconds") is None
+
+
+def test_vad_frames_write_no_stt_rows():
+    # A text-output realtime session runs a local VAD but no STT service; its
+    # speech windows used to be metered as stt under the pipeline default vendor.
+    agent = {"options": {"tts": {"vendor": "deepgram", "voice": "aura-asteria-en"}}}
+    obs = UsageMeteringObserver(services=usage_vendors(agent, "pipecat:ultravox/ultravox-v0.7"))
     _push(
         obs,
         VADUserStartedSpeakingFrame(start_secs=0.0, timestamp=1.0),
         VADUserStoppedSpeakingFrame(stop_secs=0.0, timestamp=2.5),
     )
-    ms = _meter(obs, "stt", "milliseconds")
-    assert ms["quantity"] == 1500
-    assert ms["provider"] == "deepgram"
+    assert [m for m in obs._meters.values() if m["technology"] == "stt"] == []
+
+
+def test_pipeline_meters_the_audio_its_stt_service_receives():
+    obs = UsageMeteringObserver(services=usage_vendors({}, "pipecat:openai/gpt-4o-mini"))
+    pipeline = Pipeline([_Passthrough(), _FakeSTT(), _Passthrough()])
+    asyncio.run(
+        run_test(pipeline, frames_to_send=[_caller_audio(20) for _ in range(25)], observers=[obs])
+    )
+    assert {(m["technology"], m["unit"]): m["quantity"] for m in obs._meters.values()} == {
+        ("stt", "milliseconds"): 500
+    }
+
+
+def test_text_output_realtime_chain_writes_no_stt_rows():
+    # The local VAD's frames and the caller's audio pass through a chain with
+    # no STT service; the model's own transcript is bundled into its charge.
+    agent = {"options": {"tts": {"vendor": "deepgram", "voice": "aura-asteria-en"}}}
+    obs = UsageMeteringObserver(services=usage_vendors(agent, "pipecat:ultravox/ultravox-v0.7"))
+    frames = [
+        VADUserStartedSpeakingFrame(start_secs=0.0, timestamp=1.0),
+        *[_caller_audio(20) for _ in range(25)],
+        VADUserStoppedSpeakingFrame(stop_secs=0.0, timestamp=1.5),
+        TranscriptionFrame(user_id="u", text="hello", timestamp=""),
+    ]
+    asyncio.run(run_test(Pipeline([_Passthrough(), _Passthrough()]), frames_to_send=frames, observers=[obs]))
+    assert [m for m in obs._meters.values() if m["technology"] == "stt"] == []
 
 
 # --- dedup + flush payload ----------------------------------------------------
