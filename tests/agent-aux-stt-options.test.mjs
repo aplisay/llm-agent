@@ -202,6 +202,10 @@ describe('options.stt.aux (auxiliary STT)', () => {
     bad({}, /Model m does not support auxiliary STT/, { hasAuxStt: false, modelName: 'm' });
     bad({ bogus: 1 }, /unknown field\(s\) bogus/);
     bad({ language: 'en_GB' }, /BCP-47/);
+    ok({ vendor: 'deepgram', formatted: true, endpointing: 1500, no_delay: false });
+    ok({ vendor: 'assemblyai', formatted: true });
+    bad({ vendor: 'assemblyai', smart_format: true }, /only Deepgram takes/);
+    bad({ formatted: 'yes' }, /options\.stt\.aux\.formatted must be a boolean/);
     // The context label is threaded into every message (listener-override reuse).
     bad({ bogus: 1 }, /^listener\.stt\.aux has unknown/, { hasAuxStt: true, modelName: 'm', context: 'listener.stt.aux' });
   });

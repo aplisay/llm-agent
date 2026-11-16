@@ -50,6 +50,19 @@ export interface Instance {
   };
 }
 
+/** `options.stt.aux` and `options.tts.output`: the shape of `options.stt` plus `enabled`. */
+export interface SideSttBlock {
+  enabled?: boolean;
+  language?: string;
+  vendor?: string;
+  formatted?: boolean;
+  smart_format?: boolean;
+  punctuate?: boolean;
+  numerals?: boolean;
+  no_delay?: boolean;
+  endpointing?: number | false;
+}
+
 export interface Agent {
   id: string;
   userId: string;
@@ -158,17 +171,21 @@ export interface Agent {
        * e.g. `deepgram/nova-3:en` (defaults to language derived from `stt.language`).
        */
       vendor?: string;
+      /** Ask for written form; see docs/stt-formatting.md and lib/stt-formatting.ts. */
+      formatted?: boolean;
+      /** Deepgram pass-through options (docs/stt-formatting.md). */
+      smart_format?: boolean;
+      punctuate?: boolean;
+      numerals?: boolean;
+      no_delay?: boolean;
+      endpointing?: number | false;
       /**
        * Auxiliary ("second opinion") STT: a second engine run over the caller's
        * audio alongside the agent's own recognition, logged as `user-aux` and
        * metered as `stt-aux`. Same shape as `stt`; `enabled: false` switches it
        * off without removing the block. See lib/aux-stt.ts.
        */
-      aux?: {
-        enabled?: boolean;
-        language?: string;
-        vendor?: string;
-      };
+      aux?: SideSttBlock;
     };
     tts?: {
     
@@ -180,11 +197,7 @@ export interface Agent {
        * logged as `agent-speech` and metered as `stt-output`. Same shape as
        * `stt`; `enabled: false` switches it off. See lib/output-stt.ts.
        */
-      output?: {
-        enabled?: boolean;
-        language?: string;
-        vendor?: string;
-      };
+      output?: SideSttBlock;
       /**
        * TTS vendor for LiveKit pipeline (e.g. cartesia, google, elevenlabs).
        * `google` uses Gemini TTS on Node (`@livekit/agents-plugin-google`), not Google Cloud

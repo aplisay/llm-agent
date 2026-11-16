@@ -606,8 +606,9 @@ components:
                 `agent-speech` transaction-log entry beside the `agent` entry, so what the agent said can be
                 compared with what the model thought it said. Observation only: it never affects the call.
 
-                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the platform's
-                default STT engine; `language` defaults to `tts.language`, then `stt.language`.
+                Same shape as `stt` (`vendor`, `language`, `formatted` and the Deepgram options), plus
+                `enabled`. `vendor` defaults to the platform's default STT engine; `language` defaults to
+                `tts.language`, then `stt.language`. `formatted` and the Deepgram options are not taken from `stt`.
 
                 Its consumption is metered separately as `stt-output` usage (audio the engine accepted, and
                 transcript characters) and priced by that component's own rate lines. Supported on
@@ -625,6 +626,18 @@ components:
                   description: |-
                     Audit STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`, `assemblyai`,
                     `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally scoped as `vendor/model[:lang]`.
+                formatted:
+                  $ref: "#/components/schemas/SttFormatted"
+                smart_format:
+                  $ref: "#/components/schemas/DeepgramSmartFormat"
+                punctuate:
+                  $ref: "#/components/schemas/DeepgramPunctuate"
+                numerals:
+                  $ref: "#/components/schemas/DeepgramNumerals"
+                no_delay:
+                  $ref: "#/components/schemas/DeepgramNoDelay"
+                endpointing:
+                  $ref: "#/components/schemas/DeepgramEndpointing"
               example:
                 vendor: deepgram
         stt:
@@ -637,6 +650,18 @@ components:
               description: |-
                 STT provider for pipeline models (e.g. deepgram, assemblyai, cartesia).
                 You may optionally scope the inference model (and suffix) using `vendor/model[:lang]`, e.g. `deepgram/nova-3:en`.
+            formatted:
+              $ref: "#/components/schemas/SttFormatted"
+            smart_format:
+              $ref: "#/components/schemas/DeepgramSmartFormat"
+            punctuate:
+              $ref: "#/components/schemas/DeepgramPunctuate"
+            numerals:
+              $ref: "#/components/schemas/DeepgramNumerals"
+            no_delay:
+              $ref: "#/components/schemas/DeepgramNoDelay"
+            endpointing:
+              $ref: "#/components/schemas/DeepgramEndpointing"
             aux:
               type: object
               description: |-
@@ -647,8 +672,9 @@ components:
                 entry, so two recognitions of the same speech can be compared. The auxiliary engine
                 never feeds the model; it is observation only.
 
-                Same shape as `stt` (`vendor`, `language`), plus `enabled`. `vendor` defaults to the
-                platform's default STT engine; `language` defaults to `stt.language`, then `tts.language`.
+                Same shape as `stt` (`vendor`, `language`, `formatted` and the Deepgram options), plus
+                `enabled`. `vendor` defaults to the platform's default STT engine; `language` defaults to
+                `stt.language`, then `tts.language`. `formatted` and the Deepgram options are not taken from `stt`.
 
                 Its consumption is metered separately as `stt-aux` usage — the audio streamed to the
                 auxiliary engine (milliseconds, silence included) and the transcript characters it
@@ -668,6 +694,18 @@ components:
                     Auxiliary STT provider, with the same semantics as `stt.vendor` (e.g. `deepgram`,
                     `assemblyai`, `cartesia` on LiveKit; `deepgram`, `google` on Pipecat), optionally
                     scoped as `vendor/model[:lang]`.
+                formatted:
+                  $ref: "#/components/schemas/SttFormatted"
+                smart_format:
+                  $ref: "#/components/schemas/DeepgramSmartFormat"
+                punctuate:
+                  $ref: "#/components/schemas/DeepgramPunctuate"
+                numerals:
+                  $ref: "#/components/schemas/DeepgramNumerals"
+                no_delay:
+                  $ref: "#/components/schemas/DeepgramNoDelay"
+                endpointing:
+                  $ref: "#/components/schemas/DeepgramEndpointing"
               example:
                 vendor: assemblyai
                 language: en-GB
@@ -1749,6 +1787,59 @@ components:
             type: string
             description: The password for the key. Meaningful only for keys in the \"basic\" auth header.
             example: <PASSWORD>
+    SttFormatted:
+      type: boolean
+      description: |-
+        Ask the STT engine for written form: punctuation and capital letters, with numbers, phone numbers,
+        dates, times, money, email addresses and web addresses written the way people write them. Portable:
+        the worker sends each engine the settings that get it (Deepgram `smart_format`, `punctuate` and
+        `no_delay`; AssemblyAI Universal-Streaming `format_turns`; nothing for Cartesia Ink Whisper or
+        Google, which already format). In `stt.aux`, which hears the caller and is not on the call path,
+        it also lengthens the pause that ends a transcript (Deepgram `endpointing=1500`, Cartesia
+        `max_silence_duration_secs=1.5`), so details a caller reads out in pieces are formatted whole.
+        Unset or `false` sends nothing and leaves the engine's defaults. A Deepgram option set in the
+        same block wins over what this sends. See docs/stt-formatting.md.
+    DeepgramSmartFormat:
+      type: boolean
+      description: |-
+        Deepgram only: sent as Deepgram's `smart_format`. Punctuation, plus numbers, dates, times, money,
+        phone numbers, email and web addresses in written form. Refused (400) when the block's `vendor`
+        names another engine. See docs/stt-formatting.md.
+    DeepgramPunctuate:
+      type: boolean
+      description: |-
+        Deepgram only: sent as Deepgram's `punctuate`. Punctuation and capital letters. Refused (400) when
+        the block's `vendor` names another engine. See docs/stt-formatting.md.
+    DeepgramNumerals:
+      type: boolean
+      description: |-
+        Deepgram only: sent as Deepgram's `numerals`. Spoken numbers as digits. `formatted` does not set it,
+        because with `smart_format` it turns English times such as "half past seven" into "0.5 past 7".
+        Refused (400) when the block's `vendor` names another engine. See docs/stt-formatting.md.
+    DeepgramNoDelay:
+      type: boolean
+      description: |-
+        Deepgram only: sent as Deepgram's `no_delay`. When on, each final transcript is sent at once,
+        without waiting to see whether a number or address is complete, so some are left in spoken form.
+        When off, a final that might end in a number or address can be held for several seconds.
+        `formatted` sets it on. Refused (400) when the block's `vendor` names another engine.
+        See docs/stt-formatting.md.
+    DeepgramEndpointing:
+      oneOf:
+        - type: integer
+          minimum: 10
+          maximum: 10000
+        - type: boolean
+          enum: [false]
+      description: |-
+        Deepgram only: sent as Deepgram's `endpointing`. How many milliseconds of pause end a final
+        transcript, or `false` to leave the timing to Deepgram. Deepgram formats each final on its own,
+        so a short value splits details a caller reads out in pieces. `formatted` sets 1500 in `stt.aux`
+        and leaves it alone in `stt`, where a longer value slows every reply, and in `tts.output`, which
+        hears audio only while the agent speaks. On the LiveKit Deepgram plugin, which sends no audio
+        more than 1 second after speech, only `stt.aux` takes 1000 or more without holding transcripts
+        until the next speech. Refused (400) when the block's `vendor` names another engine.
+        See docs/stt-formatting.md.
     Language:
       description: >-
         Language and country dialect specified as an ISO639-1 language code

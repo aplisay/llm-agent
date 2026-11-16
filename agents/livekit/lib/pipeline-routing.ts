@@ -24,6 +24,7 @@ import {
   providerSttKey,
   providerTtsKey,
 } from "./pipeline-provider-keys.js";
+import { inferenceSttModelOptions } from "./stt-formatting.js";
 import { fromServiceString } from "./usage-vendors.js";
 
 export type PipelineRoute = "direct" | "inference";
@@ -132,11 +133,17 @@ export function buildOnInference<T>(route: StageRoute, model: string, build: () 
   return built;
 }
 
-export function buildPipelineStt(agent: Agent, route: StageRoute): stt.STT {
-  if (route.route === "direct") return buildProviderPipelineStt(agent);
+/** `longPause`: the caller-side auxiliary engine, which waits longer for a pause (docs/stt-formatting.md). */
+export function buildPipelineStt(agent: Agent, route: StageRoute, { longPause = false } = {}): stt.STT {
+  if (route.route === "direct") return buildProviderPipelineStt(agent, { longPause, stage: route.stage });
   const model = resolvePipelineStt(agent);
-  // What AgentSession does with a string `stt`.
-  return buildOnInference(route, model, () => inference.STT.fromModelString(model));
+  const modelOptions = inferenceSttModelOptions(model, agent.options?.stt, longPause, route.stage);
+  if (Object.keys(modelOptions).length === 0) {
+    // What AgentSession does with a string `stt`.
+    return buildOnInference(route, model, () => inference.STT.fromModelString(model));
+  }
+  logger.info({ stage: route.stage, model, modelOptions }, `${route.stage}: STT settings ${JSON.stringify(modelOptions)}`);
+  return buildOnInference(route, model, () => new inference.STT({ model, modelOptions }));
 }
 
 export function buildPipelineLlm(agent: Agent, modelName: string, route: StageRoute): llm.LLM {
@@ -152,8 +159,8 @@ export function buildPipelineLlm(agent: Agent, modelName: string, route: StageRo
 }
 
 /** An STT outside an AgentSession (auxiliary, output audit, bridged call), routed as the pipeline STT is. */
-export function buildStandaloneStt(agent: Agent, stage: string): stt.STT {
+export function buildStandaloneStt(agent: Agent, stage: string, { longPause = false } = {}): stt.STT {
   const route = pipelineSttRoute(agent, stage);
   logPipelineRoutes([route], agent);
-  return buildPipelineStt(agent, route);
+  return buildPipelineStt(agent, route, { longPause });
 }

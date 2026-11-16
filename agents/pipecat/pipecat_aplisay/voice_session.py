@@ -521,13 +521,14 @@ def _dtmf_aggregator_for(
     )
 
 
-def build_stt_service(agent: dict) -> Any:
+def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
     """Construct a fresh STT service from ``agent.options.stt`` (defaulting
     to Deepgram). Used by the pipeline build below and by the bridged-
     transfer transcription tap (``bridged_transfer.py``), which runs extra
     STT streams over the human↔human segment of a monitored bridge —
     each call returns a NEW service instance, safe to run alongside the
-    pipeline's own."""
+    pipeline's own. ``long_pause`` marks the caller-side auxiliary engine,
+    which waits longer for a pause (docs/stt-formatting.md)."""
     stt_opts = (agent.get("options") or {}).get("stt") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
     # ``options.stt.language`` (falling back to ``options.tts.language``). Each
@@ -536,20 +537,33 @@ def build_stt_service(agent: dict) -> Any:
     # Google ships [Language.EN_US]) and an explicit None would clear them.
     language = _language_setting(agent, "stt")
     if stt_vendor == "deepgram":
-        from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
+        from pipecat.services.deepgram.stt import DeepgramSTTSettings
 
+        from .stt_formatting import deepgram_formatting, deepgram_stt_service
+
+        settings: dict = {}
         # Deepgram takes the full regional tag — nova-3 accepts en-GB/en-AU/…
         # alongside the bare primary tags, so there is nothing to truncate.
-        return DeepgramSTTService(
+        if language is not None:
+            settings["language"] = language
+        formatting = deepgram_formatting(stt_opts, long_pause)
+        if formatting:
+            logger.info(f"Deepgram STT settings: {formatting}")
+        no_delay = formatting.pop("no_delay", None)
+        settings.update(formatting)
+        return deepgram_stt_service(
+            {"no_delay": no_delay} if no_delay is not None else {},
             api_key=_require_env("DEEPGRAM_API_KEY"),
-            **(
-                {"settings": DeepgramSTTSettings(language=language)}
-                if language is not None
-                else {}
-            ),
+            **({"settings": DeepgramSTTSettings(**settings)} if settings else {}),
         )
     if stt_vendor == "google":
         from pipecat.services.google.stt import GoogleSTTService
+
+        from .stt_formatting import has_deepgram_options
+
+        # ``formatted`` needs nothing here: automatic punctuation is on by default.
+        if has_deepgram_options(stt_opts):
+            logger.warning("Deepgram STT options ignored on Google STT")
 
         # GoogleSTTService accepts credentials JSON or credentials_path. Source
         # of truth is GOOGLE_APPLICATION_CREDENTIALS_JSON (a JSON string) or
@@ -1217,7 +1231,7 @@ def _aux_stt_tap_for(
             on_usage(unit, quantity, vendor)
 
     return AuxSttTap(
-        stt_factory=lambda: build_stt_service(effective_agent),
+        stt_factory=lambda: build_stt_service(effective_agent, long_pause=True),
         on_final=on_transcript,
         on_usage=_report,
     )

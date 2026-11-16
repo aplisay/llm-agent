@@ -46,6 +46,7 @@ import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
 import { resolvePipelineStt } from "./pipeline-inference-options.js";
 import { buildStandaloneStt } from "./pipeline-routing.js";
+import { pickSttFormatting, selfFinalizeAfterMs, type SttFormattingFields } from "./stt-formatting.js";
 import { fromServiceString, type VendorDetail } from "./usage-vendors.js";
 import { waitForAudioTrack, waitForRemoteParticipant } from "./bridge-transcription.js";
 
@@ -68,7 +69,7 @@ const USAGE_FLUSH_GRACE_MS = 300;
 const SILENT_ENGINE_WARN_MS = 3000;
 
 /** Normalised side-STT block: the same fields as `options.stt`. */
-export interface SideSttConfig {
+export interface SideSttConfig extends SttFormattingFields {
   vendor?: string;
   language?: string;
 }
@@ -100,7 +101,11 @@ export function parseSideSttBlock(raw: unknown): SideSttConfig | null {
     typeof block.language === "string" && block.language.trim()
       ? block.language.trim()
       : undefined;
-  return { ...(vendor ? { vendor } : {}), ...(language ? { language } : {}) };
+  return {
+    ...(vendor ? { vendor } : {}),
+    ...(language ? { language } : {}),
+    ...pickSttFormatting(block),
+  };
 }
 
 /** `options.stt.aux` → config or null (off). */
@@ -127,7 +132,7 @@ export function sideSttAgent(agent: Agent, config: SideSttConfig, order: Languag
     const declared = options[source]?.language;
     language = typeof declared === "string" && declared.trim() ? declared.trim() : undefined;
   }
-  const sttBlock: Record<string, string> = {};
+  const sttBlock: Record<string, unknown> = { ...pickSttFormatting(config) };
   if (config.vendor) sttBlock.vendor = config.vendor;
   if (language) sttBlock.language = language;
   return { ...agent, options: { ...options, stt: sttBlock } } as Agent;
@@ -173,16 +178,26 @@ export function buildSideStt(
   config: SideSttConfig,
   order: LanguageSource[],
   stage = "side-stt",
+  longPause = false,
 ): stt.STT {
-  return buildStandaloneStt(sideSttAgent(agent, config, order), stage);
+  return buildStandaloneStt(sideSttAgent(agent, config, order), stage, { longPause });
 }
 
 export function buildAuxStt(agent: Agent, config: SideSttConfig): stt.STT {
-  return buildSideStt(agent, config, AUX_LANGUAGE_ORDER, "aux-stt");
+  return buildSideStt(agent, config, AUX_LANGUAGE_ORDER, "aux-stt", true);
 }
 
 export function buildOutputStt(agent: Agent, config: SideSttConfig): stt.STT {
   return buildSideStt(agent, config, OUTPUT_LANGUAGE_ORDER, "output-stt");
+}
+
+/** The same test the Deepgram plugin's AudioEnergyFilter makes: RMS above 0.004 of full scale. */
+export function frameHasSpeech(frame: AudioFrame): boolean {
+  const data = frame.data;
+  if (!data?.length) return false;
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i]! * data[i]!;
+  return Math.sqrt(sum / data.length) / 32768 > 0.004;
 }
 
 /** Usage counters shared by both sides. */
@@ -224,6 +239,8 @@ export interface StartSideSttEngineParams {
   onUsage: (unit: "milliseconds" | "characters", quantity: number) => void;
   /** Invoked when the engine stops itself on a non-recoverable error. */
   onEngineStopped?: () => void;
+  /** Flush the engine this long after the last speech frame (see selfFinalizeAfterMs). */
+  finalizeAfterSilenceMs?: number;
 }
 
 /**
@@ -237,7 +254,20 @@ export interface StartSideSttEngineParams {
  * failing, so a rejected credential cannot become a bill.
  */
 export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEngine {
-  const { label, roomName, subject, stt: sttInstance, onTranscript, onUsage, onEngineStopped } = params;
+  const { label, roomName, subject, stt: sttInstance, onTranscript, onUsage, onEngineStopped, finalizeAfterSilenceMs } =
+    params;
+  let heardSinceFinalize = false;
+  let finalizeTimer: ReturnType<typeof setTimeout> | undefined;
+  const finalizeNow = (): void => {
+    finalizeTimer = undefined;
+    if (disposed || !heardSinceFinalize) return;
+    heardSinceFinalize = false;
+    try {
+      sttStream.flush();
+    } catch {
+      /* stream closed underneath us */
+    }
+  };
   const usage: SideSttUsage = { milliseconds: 0, characters: 0, streamedMilliseconds: 0 };
   let disposed = false;
   let disposing: Promise<void> | null = null;
@@ -303,6 +333,12 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
     if (disposed) return;
     const rate = frame.sampleRate || AUX_STT_SAMPLE_RATE;
     usage.streamedMilliseconds += (frame.samplesPerChannel / rate) * 1000;
+    if (finalizeAfterSilenceMs && frameHasSpeech(frame)) {
+      heardSinceFinalize = true;
+      if (finalizeTimer) clearTimeout(finalizeTimer);
+      finalizeTimer = setTimeout(finalizeNow, finalizeAfterSilenceMs);
+      finalizeTimer.unref?.();
+    }
     try {
       sttStream.pushFrame(frame);
     } catch {
@@ -314,6 +350,7 @@ export function startSideSttEngine(params: StartSideSttEngineParams): SideSttEng
     if (disposing) return disposing;
     disposing = (async () => {
       disposed = true;
+      if (finalizeTimer) clearTimeout(finalizeTimer);
       try {
         sttStream.flush(); // FLUSH_SENTINEL → the engine reports its last partial usage interval
         await sleep(USAGE_FLUSH_GRACE_MS);
@@ -482,6 +519,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
       const track = await resolveTrack(room, callerIdentity);
       if (disposed) return;
       const sttInstance = buildStt(agent, config);
+      const finalizeAfterSilenceMs = selfFinalizeAfterMs(sttInstance.label, config, true);
       engine = startSideSttEngine({
         label: "auxStt",
         roomName,
@@ -490,6 +528,7 @@ export function armAuxStt(params: ArmAuxSttParams): AuxSttHandle {
         onTranscript,
         onUsage,
         onEngineStopped: () => void dispose(),
+        ...(finalizeAfterSilenceMs ? { finalizeAfterSilenceMs } : {}),
       });
       const audio = openAudioStream(track);
       cleanups.push(() => {

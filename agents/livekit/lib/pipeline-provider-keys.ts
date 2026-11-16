@@ -21,6 +21,8 @@ import {
   resolvePipelineStt,
   resolvePipelineTts,
 } from "./pipeline-inference-options.js";
+import logger from "./logger.js";
+import { deepgramPluginFormatting } from "./stt-formatting.js";
 import { deepgramTtsSpeed, ttsSpeedFor } from "./tts-speed.js";
 
 function truthyEnv(v: string | undefined): boolean {
@@ -76,7 +78,11 @@ function parseDeepgramStt(agent: Agent): { model: string; language: string } {
   return { model: m[1]!, language: deepgramSttLanguage(agent) };
 }
 
-export function buildProviderPipelineStt(agent: Agent): stt.STT {
+/** `longPause`: the caller-side auxiliary engine, which waits longer for a pause (docs/stt-formatting.md). */
+export function buildProviderPipelineStt(
+  agent: Agent,
+  { longPause = false, stage = "stt" }: { longPause?: boolean; stage?: string } = {},
+): stt.STT {
   const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
@@ -84,12 +90,18 @@ export function buildProviderPipelineStt(agent: Agent): stt.STT {
     );
   }
   const { model, language } = parseDeepgramStt(agent);
+  const formatting = deepgramPluginFormatting(model, agent.options?.stt, longPause, stage);
+  if (Object.keys(formatting).length > 0) {
+    logger.info({ stage, model, formatting }, `${stage}: Deepgram STT settings ${JSON.stringify(formatting)}`);
+  }
   // Pass apiKey at construct time: the Deepgram plugin snapshots env in its module defaults when first imported.
   return new deepgram.STT({
     apiKey,
     model: model as never,
     language,
     detectLanguage: false,
+    // The plugin types endpointing as a number but sends `endpointing || false`, so false passes through.
+    ...(formatting as { endpointing?: number }),
   });
 }
 
