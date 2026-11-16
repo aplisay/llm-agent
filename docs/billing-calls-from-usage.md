@@ -357,8 +357,12 @@ LiveKit browser call of 60.79 s (66 s, 1.1 min):
 
 Total 110,009 micros, about 11p.
 
-A Pipecat pipeline call has the same rows. See
-[Known issues](#known-issues-in-the-current-release).
+A Pipecat pipeline call has the same rows. Its `stt` `milliseconds` row is
+all the caller audio sent to the STT engine, silence included, so it is
+close to the call length. On LiveKit the row is the audio the STT plugin
+reports sending. LiveKit Inference sends all of it. The Deepgram plugin,
+used when `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` is set, does not send quiet
+audio, so its row can be much shorter than the call.
 
 ## Checklist for a rate card
 
@@ -381,9 +385,6 @@ The examples above show how charging works once these are fixed.
   (example 4). Rows from the subagent endpoint (client delegation, and
   `subagent` functions) stay provisional. Only the sweep prices them, after
   24 hours without change, and nothing schedules the sweep.
-- **Pipecat pipeline STT is not charged** (example 5). The Pipecat worker
-  writes no `stt` `milliseconds` row for a pipeline call, only the
-  `characters` row, which cards price at 0.
 - **Pipecat browser bridges charge the model minute through the bridge**
   (example 2). The caller's leg stays open, with the agent's model name,
   until the caller hangs up. Its `voice` row is charged the audio path and
