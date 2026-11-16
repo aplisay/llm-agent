@@ -12,6 +12,10 @@ export default {
     ".claude",
   ],
   setupFilesAfterEnv: [],
+  // No test may reach a real LiveKit server. See tests/mocks/livekit-server-sdk.js.
+  moduleNameMapper: {
+    '^livekit-server-sdk$': '<rootDir>/tests/mocks/livekit-server-sdk.js',
+  },
   globalSetup: './tests/setup/global-setup.js',
   // Opt in to the per-worker databases created by tests/setup/global-setup.js.
   // That file is shared with the jambonz image build, which has no database.
