@@ -1,5 +1,6 @@
 import { can, roles, actorCanGrant, effectivePermissions, statementsFor } from '../../lib/auth/permissions.js';
 import { isSuperAdmin } from '../../lib/admin-gate.js';
+import { principalBrand } from '../../lib/brands.js';
 
 /**
  * GET /api/me — the caller's own identity + resolved RBAC view.
@@ -23,6 +24,18 @@ export default function (logger) {
       // don't need the admin-gated GET /organisations just to label the shell
       // (member sessions were 403ing that on every layout load).
       organisationName: u.Organisation?.name ?? null,
+      // What a front end needs to guard its pages: the organisation's brand and
+      // the features switched on for it. Null with no organisation.
+      organisation: u.Organisation
+        ? {
+          id: u.Organisation.id ?? u.organisationId ?? null,
+          name: u.Organisation.name ?? null,
+          brand: u.Organisation.brand ?? null,
+          capabilities: Array.isArray(u.Organisation.capabilities) ? u.Organisation.capabilities : [],
+        }
+        : null,
+      // The brand a service key acts for. Null for a person's session or key.
+      brand: principalBrand(u),
       role: u.role ?? null,
       status: u.status ?? null,
       // Prefer the memoised map; fall back to a live computation so principals
@@ -43,7 +56,7 @@ export default function (logger) {
     responses: {
       200: {
         description: 'Caller identity + effective permissions',
-        content: { 'application/json': { schema: { type: 'object' } } },
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/Me' } } },
       },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },

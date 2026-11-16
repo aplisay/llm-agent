@@ -196,7 +196,8 @@ describe('phone system directory API', () => {
     test('only a platform operator can switch it on', async () => {
       expect((await put('ownerOff', `/organisations/${orgs.off}/capabilities`, { capabilities: ['phoneSystem'] })).status).toBe(403);
       expect((await put('operator', `/organisations/${orgs.off}/capabilities`, { capabilities: ['teleport'] })).status).toBe(400);
-      expect((await get('ownerOff', `/organisations/${orgs.off}/phone-system`)).status).toBe(403);
+      // An owner reads the settings of its own organisation, and cannot switch the capability on.
+      expect((await get('ownerOff', `/organisations/${orgs.off}/phone-system`)).status).toBe(200);
       const before = await ok(get('adminOff', `/organisations/${orgs.off}/phone-system`));
       expect(before.capabilities).toEqual([]);
       await ok(put('operator', `/organisations/${orgs.off}/capabilities`, { capabilities: ['phoneSystem'] }));

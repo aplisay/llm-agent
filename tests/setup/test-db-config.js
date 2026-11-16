@@ -13,9 +13,11 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const inContainer = process.env.USE_CONTAINER_NETWORKING === 'true';
 
+// TEST_POSTGRES_HOST and TEST_POSTGRES_PORT point the suite at another server,
+// such as a throwaway one, without touching the shared container on 5433.
 export const testDbConnection = {
-  host: inContainer ? 'postgres' : 'localhost',
-  port: inContainer ? 5432 : 5433,
+  host: process.env.TEST_POSTGRES_HOST || (inContainer ? 'postgres' : 'localhost'),
+  port: Number(process.env.TEST_POSTGRES_PORT) || (inContainer ? 5432 : 5433),
   user: 'testuser',
   password: 'testpass',
 };
