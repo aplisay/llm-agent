@@ -58,6 +58,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [transfer-back-plan.md](transfer-back-plan.md) | Delivery plan for transfer-back: listener override, transfer metadata, summariser pattern, bridged recording |
 | [call-recording.md](call-recording.md) | Recording lifecycle, encryption, storage and retrieval |
 | [call-hooks.md](call-hooks.md) | Webhooks on call milestones |
+| [billing-calls-from-usage.md](billing-calls-from-usage.md) | Reading usage rows, how rate cards price them, and worked examples of what each call type costs |
 | [originate-api.md](originate-api.md) | Placing outbound calls from an agent/listener |
 | [phone-endpoints-api.md](phone-endpoints-api.md) | DDIs, trunks and registrations as first-class endpoints |
 | [phone-system.md](phone-system.md) | Under development: the directory, phones and worked-out lines, the `phoneSystem` capability, and the internal routes for call control |
