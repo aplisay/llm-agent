@@ -196,10 +196,13 @@ class AuxSttTap(FrameProcessor):
         label: str = "auxStt",
         stream_factory: Optional[Callable[..., Any]] = None,
         name: Optional[str] = None,
+        drain_secs: float = 0.0,
     ) -> None:
         super().__init__(name=name or f"{label}Tap")
         self._frame_cls = frame_cls
         self._label = label
+        # At stop, how long to wait for words the engine still holds (long-pause blocks only).
+        self._drain_secs = drain_secs
         self._stt_factory = stt_factory
         self._on_final = on_final
         self._on_usage: OnUsage = on_usage or (lambda _unit, _qty: None)
@@ -320,6 +323,12 @@ class AuxSttTap(FrameProcessor):
         self._stop_task = asyncio.create_task(self._stop_stream(stream))
 
     async def _stop_stream(self, stream: Any) -> None:
+        drain = getattr(stream, "drain", None)
+        if self._drain_secs and drain is not None:
+            try:
+                await drain(self._drain_secs)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"{self._label}: side pipeline drain raised: {e}")
         try:
             await stream.stop()
         except Exception as e:  # noqa: BLE001

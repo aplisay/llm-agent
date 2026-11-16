@@ -126,3 +126,99 @@ def test_side_blocks_carry_the_fields_and_do_not_inherit_them():
     agent = {"options": options}
     assert aux_stt_agent(agent, aux)["options"]["stt"] == {"vendor": "deepgram", "formatted": True}
     assert output_stt_agent(agent, output)["options"]["stt"] == {"no_delay": False}
+
+
+# --- the last final at teardown -------------------------------------------------
+
+from pipecat_aplisay.bridge_transcript import SttStream  # noqa: E402
+from pipecat_aplisay.stt_formatting import side_drain_secs  # noqa: E402
+
+
+def test_side_drain_secs_only_for_a_long_pause():
+    assert side_drain_secs({"formatted": True}, long_pause=True) == 2.0
+    assert side_drain_secs({"formatted": True}, long_pause=False) == 0.0
+    assert side_drain_secs({}, long_pause=True) == 0.0
+    assert side_drain_secs({"endpointing": 800}, long_pause=True) == 0.0
+    assert side_drain_secs({"endpointing": 2000}, long_pause=False) == 2.0
+
+
+class _QueueRecorder:
+    def __init__(self, on_queue=None):
+        self.queued: list = []
+        self._on_queue = on_queue
+
+    async def queue_frames(self, frames):
+        self.queued.extend(frames)
+        if self._on_queue:
+            self._on_queue()
+
+
+def test_drain_asks_for_the_held_words_and_waits_for_the_final():
+    from pipecat.frames.frames import VADUserStoppedSpeakingFrame
+
+    async def run():
+        stream = SttStream("stt", lambda _t: asyncio.sleep(0))
+        stream._collector.pending = True
+        stream._task = _QueueRecorder(on_queue=stream._collector.final_seen.set)
+        started = asyncio.get_running_loop().time()
+        await stream.drain(2.0)
+        assert [type(f) for f in stream._task.queued] == [VADUserStoppedSpeakingFrame]
+        assert asyncio.get_running_loop().time() - started < 0.5
+
+    asyncio.run(run())
+
+
+def test_drain_does_nothing_without_pending_speech_and_gives_up_at_the_timeout():
+    async def run():
+        idle = SttStream("stt", lambda _t: asyncio.sleep(0))
+        idle._task = _QueueRecorder()
+        await idle.drain(2.0)
+        assert idle._task.queued == []
+
+        held = SttStream("stt", lambda _t: asyncio.sleep(0))
+        held._collector.pending = True
+        held._task = _QueueRecorder()  # no final ever arrives
+        started = asyncio.get_running_loop().time()
+        await held.drain(0.2)
+        assert 0.15 < asyncio.get_running_loop().time() - started < 1.0
+
+    asyncio.run(run())
+
+
+def test_the_tap_drains_before_it_stops():
+    from pipecat.frames.frames import InputAudioRawFrame
+    from pipecat.tests.utils import run_test
+
+    from pipecat_aplisay.aux_stt import AuxSttTap
+
+    calls: list = []
+
+    class _Stream:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def start(self):
+            pass
+
+        async def feed(self, _pcm):
+            pass
+
+        async def drain(self, timeout):
+            calls.append(("drain", timeout))
+
+        async def stop(self):
+            calls.append(("stop",))
+
+    async def run():
+        tap = AuxSttTap(
+            stt_factory=lambda: "stt",
+            on_final=lambda _t: asyncio.sleep(0),
+            stream_factory=_Stream,
+            drain_secs=2.0,
+        )
+        frame = InputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=8000, num_channels=1)
+        await run_test(tap, frames_to_send=[frame], expected_down_frames=[InputAudioRawFrame])
+        await asyncio.sleep(0.05)
+        assert calls == [("drain", 2.0), ("stop",)]
+
+    asyncio.run(run())

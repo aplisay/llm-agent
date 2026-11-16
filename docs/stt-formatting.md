@@ -121,38 +121,63 @@ pieces ("four five six", "fifty") and returned "dot com" as ".". At 1.5 seconds 
 and returned "My email address is jane.smith." then "at example.com.". So `formatted` sets 1.5 on
 a Cartesia auxiliary engine.
 
+### Longer pauses do not help hesitant dictation
+
+Deepgram also ends a final transcript on its own when a speaker hesitates, before the endpointing
+pause has passed. It marks those finals `speech_final: false` and the real end of the utterance
+`speech_final: true`, and the workers log each final as its own entry. With hesitations of 1.2 to
+1.8 seconds inside each item, "My email address is" came back as its own entry at 1500, 2000 and
+2500 ms alike, and the mobile number and booking reference stayed as words at all three. Raising
+the pause past 1500 ms only made entries arrive later, and at 2500 ms items said 2.5 seconds
+apart were joined. So the auxiliary engine stays at 1500 ms.
+
 ### The LiveKit Deepgram plugin
 
 With `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` on, as on staging and production, LiveKit runs Deepgram
-through its Deepgram plugin. The plugin stops sending audio 1 second after speech, to save audio
-that is only silence. Deepgram then never hears a pause longer than 1 second, so with a longer
-`endpointing` it holds each transcript until the caller speaks again, and joins each turn to the
-next.
+through its Deepgram plugin. Plugin 1.9.0, the version the worker uses, stops sending audio 1
+second after speech, to save audio that is only silence. Deepgram then never hears a pause longer
+than 1 second, so a longer `endpointing` never fires: each transcript waits until the caller
+speaks again. Plugin 1.9.1 and later send all the audio.
 
-So when the plugin runs an auxiliary engine with a pause of 1000 ms or more, the worker finalizes
-the transcript itself: it asks Deepgram for the final transcript once that long has passed since
-the last speech it sent. On the dictation this returned one entry per sentence, about 1.5 to 2
-seconds after the speech, with nothing lost or joined:
+So an auxiliary engine with a pause of 1000 ms or more makes the plugin send all its audio,
+as later plugins do, and Deepgram's own endpointing works as it does on LiveKit Inference and
+Pipecat. On the dictation this returned the same as Deepgram directly:
 
 ```
 My email address is jane.smith@example.com.
-My mobile number is o seven seven zero zero nine double o one two three.
-The booking reference is four five six. Seven eight nine
-I paid £42.50.
+My mobile number is 07700900123.
+The booking reference is 456789.
+I paid £42.
+Fifty.
 My date of birth is the 07/04/1986.
 ```
 
-The email address, the money and the date come out formatted. Digit strings read out in groups
-stay as words, because Deepgram formats them only after a pause of about 1.5 seconds, which the
-plugin never sends. Deepgram on LiveKit Inference and the Pipecat worker send all the audio, so
-they format the digit strings too.
+The cost is metering: the plugin's auxiliary engine is metered on all the caller's audio instead
+of only the speech, as on LiveKit Inference and Pipecat. On a staging call that was 104 seconds
+against 38. Every other plugin stream (the pipeline STT, the output engine, and any unformatted
+auxiliary engine) still drops silence until the worker moves to plugin 1.9.1 or later.
+
+If the caller's audio stops arriving after speech, the worker asks Deepgram for the final
+transcript itself, 1 second after the pause. Audio from a caller's track does not stop during
+silence, so this is a backstop.
+
+### The last words of a call
+
+With a 1.5 second pause, a caller who speaks and then hangs up at once leaves words that Deepgram
+has not yet finalized. When a block asks for a long pause, both workers ask the engine for those
+words as the call ends and wait up to 2 seconds for them. In a test that ended the audio 0.3
+seconds after the last word, the last item ("the 07/04/1986.") was lost without this and arrived
+with it, on both workers. Teardown takes up to 2 seconds longer only when words are still held.
 
 ### The output engine
 
 `formatted` sets no longer pause on `options.tts.output`. The output engine hears audio only while
 the agent speaks, so after the agent's last word there is no silence to end the transcript, and a
 longer pause would hold it until the agent speaks again. The agent's speech is synthesised from
-text and has few pauses inside a number or address, so the default pause serves it.
+text and has few pauses inside a number or address, so the default pause serves it. An explicit
+`endpointing` of 1000 ms or more on the output engine holds each transcript until the agent speaks
+again, except on the LiveKit Deepgram plugin, where the worker finalizes it 1 second after the
+pause.
 
 ### The pipeline STT
 
@@ -181,10 +206,10 @@ The API refuses these fields with HTTP 400 in a block whose `vendor` names anoth
 with no `vendor` uses Deepgram, so it accepts them.
 
 Setting `endpointing` on `options.stt` changes when the pipeline STT sends finals, and so how soon
-the agent replies. Test turn-taking before you raise it there. On the LiveKit Deepgram plugin,
-a value of 1000 ms or more on `options.stt` or `options.tts.output` holds each transcript until
-the next speech (see [The LiveKit Deepgram plugin](#the-livekit-deepgram-plugin)). Only the
-auxiliary engine finalizes itself.
+the agent replies. Test turn-taking before you raise it there. On the LiveKit Deepgram plugin, a
+value of 1000 ms or more on `options.stt` holds each transcript until the next speech, because the
+pipeline STT's plugin stream still drops silence (see
+[The LiveKit Deepgram plugin](#the-livekit-deepgram-plugin)).
 
 The Deepgram Flux models (`deepgram/flux-*`) take none of these settings. The worker leaves them
 out and logs a warning.
@@ -271,12 +296,13 @@ ignore `options.stt.formatted` and the Deepgram options.
   in `lib/database.js` for `options.stt` and both side blocks.
 - LiveKit: `agents/livekit/lib/stt-formatting.ts` maps the fields to the Deepgram plugin's
   options and to LiveKit Inference `modelOptions`. `pipeline-routing.ts` and
-  `pipeline-provider-keys.ts` apply them. `aux-stt.ts` carries them from the side blocks, asks
-  for the longer pause on the auxiliary engine, and finalizes it on the Deepgram plugin
-  (`selfFinalizeAfterMs`, `startSideSttEngine`).
+  `pipeline-provider-keys.ts` apply them. `aux-stt.ts` carries them from the side blocks and asks
+  for the longer pause on the auxiliary engine. `sideEngineTiming` decides, per side engine,
+  whether the plugin sends all audio (`deepgram-send-all-audio.ts`, to remove when the plugin is
+  1.9.1 or later), the idle backstop, and the teardown wait (`startSideSttEngine`).
 - Pipecat: `agents/pipecat/pipecat_aplisay/stt_formatting.py`, applied in `build_stt_service`
-  (`voice_session.py`). `aux_stt.py` carries the fields from the side blocks. `no_delay` goes on
-  the Deepgram URL through the SDK's `additional_query_parameters`, because the SDK has no
-  argument for it.
+  (`voice_session.py`). `aux_stt.py` carries the fields from the side blocks and drains the engine
+  at stop (`SttStream.drain` in `bridge_transcript.py`). `no_delay` goes on the Deepgram URL
+  through the SDK's `additional_query_parameters`, because the SDK has no argument for it.
 
 The engine mapping is written out in both workers. Keep the two in step with the tables above.

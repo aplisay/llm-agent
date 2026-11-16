@@ -1836,9 +1836,10 @@ components:
         transcript, or `false` to leave the timing to Deepgram. Deepgram formats each final on its own,
         so a short value splits details a caller reads out in pieces. `formatted` sets 1500 in `stt.aux`
         and leaves it alone in `stt`, where a longer value slows every reply, and in `tts.output`, which
-        hears audio only while the agent speaks. On the LiveKit Deepgram plugin, which sends no audio
-        more than 1 second after speech, only `stt.aux` takes 1000 or more without holding transcripts
-        until the next speech. Refused (400) when the block's `vendor` names another engine.
+        hears audio only while the agent speaks. On the LiveKit Deepgram plugin a side engine with
+        1000 or more sends all its audio so that the pause can be heard; the pipeline STT's plugin
+        stream does not, so there a value of 1000 or more holds transcripts until the next speech.
+        Refused (400) when the block's `vendor` names another engine.
         See docs/stt-formatting.md.
     Language:
       description: >-

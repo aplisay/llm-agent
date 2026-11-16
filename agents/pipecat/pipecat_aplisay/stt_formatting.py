@@ -53,6 +53,21 @@ def deepgram_formatting(block: Any, long_pause: bool) -> dict:
     return out
 
 
+#: At stop, how long a side engine with a long pause waits for its last final.
+SIDE_DRAIN_SECS = 2.0
+
+
+def side_drain_secs(block: Any, long_pause: bool) -> float:
+    """``SIDE_DRAIN_SECS`` when the block asks for a long pause (``formatted``
+    on the caller-side engine, or ``endpointing`` of 1000 ms or more), else 0."""
+    endpointing = deepgram_formatting(block, long_pause).get("endpointing")
+    long_endpointing = (
+        isinstance(endpointing, int) and not isinstance(endpointing, bool) and endpointing >= 1000
+    )
+    formatted = long_pause and pick_stt_formatting(block).get("formatted") is True
+    return SIDE_DRAIN_SECS if long_endpointing or formatted else 0.0
+
+
 def deepgram_stt_service(query_params: dict, **kwargs: Any) -> Any:
     """A ``DeepgramSTTService`` that also sends ``query_params`` on the
     WebSocket URL. Plain service when there are none.

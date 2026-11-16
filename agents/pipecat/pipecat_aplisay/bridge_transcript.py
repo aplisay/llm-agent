@@ -108,17 +108,24 @@ class _TranscriptionCollector:
     forwards each final TranscriptionFrame's text to a callback."""
 
     def __new__(cls, on_final: Callable[[str], Awaitable[None]]):
-        from pipecat.frames.frames import TranscriptionFrame
+        from pipecat.frames.frames import InterimTranscriptionFrame, TranscriptionFrame
         from pipecat.processors.frame_processor import FrameProcessor
 
         class _Impl(FrameProcessor):
             def __init__(self) -> None:
                 super().__init__()
                 self._on_final = on_final
+                # Speech heard but not yet final, for SttStream.drain.
+                self.pending = False
+                self.final_seen = asyncio.Event()
 
             async def process_frame(self, frame, direction):  # noqa: ANN001
                 await super().process_frame(frame, direction)
+                if isinstance(frame, InterimTranscriptionFrame) and frame.text.strip():
+                    self.pending = True
                 if isinstance(frame, TranscriptionFrame):
+                    self.pending = False
+                    self.final_seen.set()
                     try:
                         await self._on_final(frame.text)
                     except Exception as e:  # noqa: BLE001
@@ -187,6 +194,22 @@ class SttStream:
                 )
             ]
         )
+
+    async def drain(self, timeout: float) -> None:
+        """Ask the engine for words it still holds and wait up to ``timeout``
+        seconds for the final. Does nothing when no speech is pending."""
+        collector = self._collector
+        if self._task is None or not getattr(collector, "pending", False):
+            return
+        from pipecat.frames.frames import VADUserStoppedSpeakingFrame
+
+        collector.final_seen.clear()
+        # DeepgramSTTService sends Deepgram `Finalize` on this frame.
+        await self._task.queue_frames([VADUserStoppedSpeakingFrame()])
+        try:
+            await asyncio.wait_for(collector.final_seen.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
 
     async def stop(self) -> None:
         task = self._task
