@@ -167,7 +167,7 @@ authoriseOutbound.apiDoc = {
               allowed: { type: 'boolean' },
               code: {
                 type: 'string',
-                enum: ['ok', 'agent_filter', 'default_filter', 'trunk_filter', 'not_rateable', 'invalid_destination'],
+                enum: ['ok', 'agent_filter', 'default_filter', 'trunk_filter', 'not_rateable', 'invalid_destination', 'internal_extension_not_reachable'],
               },
               reason: { type: 'string', nullable: true },
               chargeable: { type: 'boolean', description: 'Whether the leg egresses one of our carrier trunks' },
