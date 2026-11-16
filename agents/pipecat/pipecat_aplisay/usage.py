@@ -23,14 +23,14 @@ from typing import Any
 
 from loguru import logger
 from pipecat.frames.frames import (
+    InputAudioRawFrame,
     MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
-    VADUserStartedSpeakingFrame,
-    VADUserStoppedSpeakingFrame,
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import STTService
 
 from . import api_client
@@ -152,7 +152,9 @@ class UsageMeteringObserver(BaseObserver):
     - LLM tokens + TTS characters from ``MetricsFrame`` (usage metrics);
     - TTS milliseconds from synthesised ``TTSAudioRawFrame`` durations;
     - STT characters from final ``TranscriptionFrame`` text;
-    - STT milliseconds from VAD user-speech windows.
+    - STT milliseconds from the caller audio pushed into the pipeline's STT
+      service, silence included (what streaming STT vendors bill). A realtime
+      session has no STT service in its chain, so it writes no ``stt`` rows.
 
     ``provider``/``detail`` come from ``services`` (the configured vendor/model),
     falling back to the metric label only when a technology is unmapped.
@@ -167,8 +169,9 @@ class UsageMeteringObserver(BaseObserver):
         # call. See PR #285.
         self._seen_frame_ids: set[int] = set()
         self._seen_frame_order: deque[int] = deque()
-        # Open VAD user-speech window start timestamp (seconds), for stt/ms.
-        self._vad_start_ts: float | None = None
+        # Audio pushed into the STT service, and the whole ms of it already metered.
+        self._stt_audio_ms: float = 0.0
+        self._stt_audio_ms_metered = 0
 
     def _seen(self, frame_id: int | None) -> bool:
         """True if this frame id was already counted; records it otherwise."""
@@ -229,8 +232,36 @@ class UsageMeteringObserver(BaseObserver):
             self._meters[key] = meter
         meter["quantity"] += quantity
 
+    def _meter_stt_audio(self, frame: InputAudioRawFrame, stt: STTService) -> None:
+        """Meter one caller audio frame on its way into the STT service. A
+        muted or failed service sends nothing to the vendor
+        (``STTService.process_audio_frame``), so that audio is not metered."""
+        if getattr(stt, "is_muted", False) or not getattr(stt, "is_usable", True):
+            return
+        sr = getattr(frame, "sample_rate", 0) or 0
+        nf = getattr(frame, "num_frames", 0) or 0
+        if not sr or not nf:
+            return
+        self._stt_audio_ms += nf / sr * 1000.0
+        delta = int(self._stt_audio_ms) - self._stt_audio_ms_metered
+        if delta <= 0:
+            return
+        self._stt_audio_ms_metered += delta
+        provider, detail = self._resolve("stt", None)
+        self._add("stt", "milliseconds", delta, provider=provider, detail=detail)
+
     async def on_push_frame(self, data: FramePushed) -> None:
         frame = data.frame
+
+        # STT milliseconds. Pipecat's own STTUsageMetricsData has this figure,
+        # but its Deepgram service reports it only once, at stop or cancel.
+        # Not deduplicated by frame id: only one hop of a frame ends at the STT
+        # service, and audio ids would flood the dedupe window.
+        if isinstance(frame, InputAudioRawFrame):
+            if isinstance(data.destination, STTService) and data.direction == FrameDirection.DOWNSTREAM:
+                self._meter_stt_audio(frame, data.destination)
+            return
+
         frame_id = getattr(frame, "id", None)
 
         if isinstance(frame, MetricsFrame):
@@ -252,9 +283,8 @@ class UsageMeteringObserver(BaseObserver):
                     logger.debug(f"usage metrics accumulation failed: {e}")
             return
 
-        # STT characters — the final transcript text length (Pipecat has no
-        # STTUsageMetricsData). A TranscriptionFrame is by definition final
-        # (interims are InterimTranscriptionFrame), so every one counts — its
+        # STT characters — the final transcript text length. A TranscriptionFrame
+        # is by definition final (interims are InterimTranscriptionFrame), so every one counts — its
         # `finalized` flag only records a commit/finalize handshake, which the
         # Deepgram service never sets in normal streaming (gating on it counted
         # nothing). Count only frames an STT *service* originated: a realtime
@@ -267,24 +297,6 @@ class UsageMeteringObserver(BaseObserver):
                 return
             provider, detail = self._resolve("stt", None)
             self._add("stt", "characters", len(frame.text or ""), provider=provider, detail=detail)
-            return
-
-        # STT milliseconds — user-speech duration from VAD windows (approximates
-        # the audio the STT transcribed; how streaming STT vendors bill). Real VAD
-        # frame cadence is validated via the eval harness, not here.
-        if isinstance(frame, VADUserStartedSpeakingFrame):
-            if self._seen(frame_id):
-                return
-            self._vad_start_ts = getattr(frame, "timestamp", None)
-            return
-        if isinstance(frame, VADUserStoppedSpeakingFrame):
-            if self._seen(frame_id):
-                return
-            start, self._vad_start_ts = self._vad_start_ts, None
-            stop = getattr(frame, "timestamp", None)
-            if start is not None and stop is not None and stop > start:
-                provider, detail = self._resolve("stt", None)
-                self._add("stt", "milliseconds", int((stop - start) * 1000), provider=provider, detail=detail)
             return
 
         # TTS milliseconds — synthesised audio duration (num_frames / sample_rate).
