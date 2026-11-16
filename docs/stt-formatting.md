@@ -230,18 +230,19 @@ sentence. So `formatted` keeps it on everywhere.
 
 ## AssemblyAI
 
-LiveKit sends AssemblyAI requests through LiveKit Inference. The model the platform uses,
-Universal-Streaming (`assemblyai/universal-streaming`), returns lower-case text with no punctuation
-unless `format_turns` is on. `formatted: true` turns it on.
+LiveKit sends AssemblyAI requests through LiveKit Inference. The model the platform uses is
+Universal-Streaming (`assemblyai/universal-streaming`). AssemblyAI documents its `format_turns`
+setting as off by default, and `formatted: true` turns it on.
 
-With `format_turns` on, AssemblyAI sends a formatted copy of each turn after the turn ends. This
-may add a short delay at the end of each turn.
+In the dictation test on Inference, Universal-Streaming already returned capital letters and
+digits without `format_turns` ("My mobile number is 07700."). Turning it on added end punctuation
+and the dot in "Jane.smith.", and changed little else. Neither setting joined the pieces: the
+email address and the mobile number each came back in three entries.
 
 AssemblyAI ends turns by its own model, not by a fixed pause. LiveKit lowers AssemblyAI's
-end-of-turn threshold from 0.4 to 0.01, so turns may end at short pauses and split dictated
-details as Deepgram does. This has not been tested. The side-engine turn settings
-(`end_of_turn_confidence_threshold`, `min_end_of_turn_silence_when_confident`, `max_turn_silence`)
-will be chosen from a test on staging.
+end-of-turn threshold from 0.4 to 0.01, so turns end at short pauses. The auxiliary engine's turn
+settings (`end_of_turn_confidence_threshold`, `min_end_of_turn_silence_when_confident`,
+`max_turn_silence`) will be chosen from a test on staging.
 
 Universal-3.5 Pro and Universal-3.6 Pro always return formatted text and have no setting for it.
 Pipecat does not offer AssemblyAI.
