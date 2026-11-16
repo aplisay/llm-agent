@@ -61,6 +61,7 @@ from pipecat.frames.frames import CancelFrame, EndFrame, InputAudioRawFrame, TTS
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from .bridge_transcript import SttStream
+from .stt_formatting import pick_stt_formatting
 
 #: Ledger technology for auxiliary-STT usage rows (distinct from the primary ``stt``).
 AUX_STT_TECHNOLOGY = "stt-aux"
@@ -90,6 +91,7 @@ def _parse_side_stt_block(raw: Any) -> Optional[dict]:
     return {
         "vendor": vendor.strip() if isinstance(vendor, str) and vendor.strip() else None,
         "language": language.strip() if isinstance(language, str) and language.strip() else None,
+        **pick_stt_formatting(raw),
     }
 
 
@@ -121,7 +123,7 @@ def _side_stt_agent(agent: dict, config: dict, language_order: tuple[str, ...]) 
             break
         block = options.get(key)
         language = block.get("language") if isinstance(block, dict) else None
-    block: dict = {}
+    block: dict = pick_stt_formatting(config)
     if config.get("vendor"):
         block["vendor"] = config["vendor"]
     if language:
