@@ -100,6 +100,8 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
 
+A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
+
 ### A call that belongs to an agent
 
 A number rings an extension or an agent, never both. So a `number` request has three answers:
