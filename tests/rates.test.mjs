@@ -9,7 +9,7 @@ import {
   finaliseStaleSessions, attributeOrphanRow, previewRowCost,
   BILLING_INCREMENT_SECONDS, STALE_SESSION_HOURS,
 } from '../lib/rates.js';
-import { recordUsage, finaliseSession } from '../lib/usage.js';
+import { recordUsage, finaliseSession, finaliseCallUsage, recordCallSubagentUsage } from '../lib/usage.js';
 
 // Phase-2 costing engine (lib/rates.js): the additive-by-dimension resolver,
 // temporal rate lookup, the idempotent balance settle(), and the never-throw
@@ -329,6 +329,107 @@ describe('rates: settle + resolveRateCard + costUsageRow (DB-backed)', () => {
     expect(row.media).toBe('telephony');
     expect(Number(row.costMicros)).toBe(7_000_000); // telephony 1M + Ultravox 6M
     expect(Number((await Organisation.findByPk(orgId)).balance)).toBe(43_000_000);
+  });
+
+  // Subagent rows (GPT-Live client delegation, `subagent` functions) have no end
+  // signal of their own: before Call.end() finalised them they stayed provisional.
+  describe('subagent token rows on a call', () => {
+    const haiku = (unit, priceMicros) => (
+      { dim: 'model', match: { technology: 'llm', provider: 'anthropic', detail: 'claude-haiku-4-5', unit }, unit: 'token', priceMicros }
+    );
+    const LINES = [
+      { dim: 'audio-path', match: { technology: 'voice', provider: 'livekit', media: 'telephony' }, unit: 'minute', priceMicros: 1_000_000 },
+      { dim: 'model', match: { technology: 'voice', detail: 'livekit:ultravox/ultravox-v0.6' }, unit: 'minute', priceMicros: 6_000_000 },
+      haiku('input_tokens', 1_000), haiku('output_tokens', 5_000), haiku('cache_read_tokens', 100),
+    ];
+    let delegateId;
+    const delegation = (tokens) => [{ agentId: delegateId, provider: 'anthropic', model: 'claude-haiku-4-5', ...tokens }];
+    const llmRows = (callId) => UsageRecord.findAll({ where: { callId, technology: 'llm' }, order: [['unit', 'ASC']] });
+    const balance = async () => Number((await Organisation.findByPk(orgId)).balance);
+
+    beforeAll(async () => {
+      delegateId = randomUUID();
+      await Agent.create(
+        { id: delegateId, name: 'Delegate', modelName: 'text:anthropic/claude-haiku-4-5', userId, organisationId: orgId },
+        { validate: false },
+      );
+    });
+
+    // A one-minute phone call that started 60 s ago, on a card with a later version
+    // starting 30 s ago that doubles the input price. Rows must take the first version.
+    const startCall = async (name) => {
+      await assignRate(name, LINES, 50_000_000);
+      await RateCard.create({
+        name, startDate: new Date(Date.now() - 30_000),
+        detail: { lines: [...LINES.slice(0, 2), haiku('input_tokens', 2_000), ...LINES.slice(3)] },
+      });
+      const call = await Call.create({
+        instanceId, agentId, organisationId: orgId, userId, callerId: '441234567890', calledId: '447700900000',
+        platform: 'livekit', modelName: 'livekit:ultravox/ultravox-v0.6',
+      });
+      const startedAt = new Date(Date.now() - 60_000);
+      await call.update({ startedAt });
+      return { call, startedAt, endedAt: new Date(startedAt.valueOf() + 60_000) };
+    };
+
+    it('Call.end() finalises and prices them on the card in force at the call start', async () => {
+      const { call, startedAt, endedAt } = await startCall(`${PREFIX}sub-end`);
+      await recordCallSubagentUsage({ callId: call.id, organisationId: orgId, usage: delegation({ inputTokens: 3_000, outputTokens: 250 }) });
+      for (const r of await llmRows(call.id)) {
+        expect(r).toMatchObject({ sessionId: call.id, agentId: delegateId, finalised: false, costStatus: null });
+      }
+
+      await call.end(undefined, { endedAt });
+      const rows = await llmRows(call.id);
+      expect(rows.map((r) => [r.unit, r.finalised, r.costStatus, Number(r.costMicros)])).toEqual([
+        ['input_tokens', true, 'matched', 3_000_000], ['output_tokens', true, 'matched', 1_250_000],
+      ]);
+      for (const r of rows) expect(new Date(r.billedAt).valueOf()).toBe(startedAt.valueOf());
+      expect(await balance()).toBe(50_000_000 - 7_000_000 - 4_250_000);
+    });
+
+    it('a delegation that finishes after Call.end() is priced, and only the difference is settled', async () => {
+      const { call, startedAt, endedAt } = await startCall(`${PREFIX}sub-late`);
+      await recordCallSubagentUsage({ callId: call.id, organisationId: orgId, usage: delegation({ inputTokens: 3_000, outputTokens: 250 }) });
+      await call.end(undefined, { endedAt });
+      expect(await balance()).toBe(50_000_000 - 7_000_000 - 4_250_000);
+
+      // Adds to the two priced rows, and brings a unit the call has no row for yet.
+      await recordCallSubagentUsage({
+        callId: call.id, organisationId: orgId, usage: delegation({ inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500 }),
+      });
+      const rows = await llmRows(call.id);
+      expect(rows.map((r) => [r.unit, Number(r.quantity), r.finalised, r.costStatus, Number(r.costMicros), Number(r.appliedCostMicros)])).toEqual([
+        ['cache_read_tokens', 500, true, 'matched', 50_000, 50_000],
+        ['input_tokens', 4_000, true, 'matched', 4_000_000, 4_000_000],
+        ['output_tokens', 350, true, 'matched', 1_750_000, 1_750_000],
+      ]);
+      for (const r of rows) expect(new Date(r.billedAt).valueOf()).toBe(startedAt.valueOf());
+      expect(await balance()).toBe(50_000_000 - 7_000_000 - 5_800_000);
+
+      // Ending the call again moves nothing.
+      await call.end(undefined, { endedAt });
+      expect(await balance()).toBe(50_000_000 - 7_000_000 - 5_800_000);
+    });
+
+    it('two finalisers at once price each row once', async () => {
+      const { call } = await startCall(`${PREFIX}sub-race`);
+      await recordCallSubagentUsage({ callId: call.id, organisationId: orgId, usage: delegation({ inputTokens: 3_000, outputTokens: 250 }) });
+      const counts = await Promise.all([finaliseCallUsage(call.id), finaliseCallUsage(call.id)]);
+      expect(counts[0] + counts[1]).toBe(2);
+      expect(await balance()).toBe(50_000_000 - 4_250_000);
+    });
+
+    it('without a callId the invocation is its own session and is priced at once', async () => {
+      await assignRate(`${PREFIX}sub-nocall`, LINES, 50_000_000);
+      await recordCallSubagentUsage({ organisationId: orgId, usage: delegation({ inputTokens: 3_000, outputTokens: 250 }) });
+      const rows = await UsageRecord.findAll({ where: { organisationId: orgId, technology: 'llm' }, order: [['unit', 'ASC']] });
+      expect(rows.map((r) => [r.unit, r.callId, r.finalised, r.costStatus, Number(r.costMicros)])).toEqual([
+        ['input_tokens', null, true, 'matched', 3_000_000], ['output_tokens', null, true, 'matched', 1_250_000],
+      ]);
+      expect(rows[0].sessionId).toBe(rows[1].sessionId);
+      expect(await balance()).toBe(50_000_000 - 4_250_000);
+    });
   });
 
   it('RateCard is immutable once referenced; cosmetic edits + unreferenced cards are free', async () => {

@@ -345,7 +345,9 @@ the rate-component catalogue). The
 backend's tokens are metered as `llm` rows against the delegate's model, so
 the existing token line for that text model prices them. In client
 delegation the tokens are attributed to the call by the subagent endpoint,
-as for a `subagent` call today.
+as for a `subagent` call. They are finalised and priced when the call ends,
+on the card in force at the call's start. A delegation that finishes after
+the call has ended is priced when it finishes.
 
 ## Limits and caveats
 

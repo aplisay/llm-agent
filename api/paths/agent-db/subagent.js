@@ -1,6 +1,5 @@
-import crypto from 'crypto';
 import { runSubagentById, SubagentError } from '../../../lib/subagent.js';
-import { recordSubagentUsage } from '../../../lib/usage.js';
+import { recordCallSubagentUsage } from '../../../lib/usage.js';
 
 let log;
 
@@ -50,27 +49,15 @@ const subagentInvoke = async (req, res) => {
     ]);
     log.info({ agentId, callId, complete }, 'subagent invocation complete');
     res.send({ result, complete });
-    // Attribute the subagent's token usage to the originating call/session
+    // Attribute the subagent's token usage to the originating call
     //  (best-effort; never blocks the response and never throws).
-    recordSubagentUsage({
-      sessionId: callId || crypto.randomUUID(),
-      callId: callId || null,
-      organisationId,
-      usage,
-      log,
-    });
+    recordCallSubagentUsage({ callId, organisationId, usage, log });
   }
   catch (err) {
     // A failed invocation still billed the tokens of its completed turns —
     // runSubagent rides them on the error (best-effort; never throws).
     if (Array.isArray(err?.usage)) {
-      recordSubagentUsage({
-        sessionId: callId || crypto.randomUUID(),
-        callId: callId || null,
-        organisationId,
-        usage: err.usage,
-        log,
-      });
+      recordCallSubagentUsage({ callId, organisationId, usage: err.usage, log });
     }
     if (err instanceof SubagentError) {
       log.info({ agentId, callId, message: err.message }, 'subagent invocation failed');
@@ -118,7 +105,7 @@ subagentInvoke.apiDoc = {
             },
             callId: {
               type: 'string',
-              description: 'Calling call ID, for log correlation'
+              description: 'Calling call ID. The subagent\'s token usage is recorded on this call and priced when the call ends.'
             }
           },
           required: ['agentId', 'organisationId']
