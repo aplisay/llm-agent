@@ -110,8 +110,12 @@ class _AgentDb:
         self.fail_create_for_model: Optional[str] = None
         self.hold_start_of: Optional[str] = None
         self.release_start = asyncio.Event()
+        self.logs: list[dict] = []
 
     async def request(self, method: str, endpoint: str, *, params=None, body=None, timeout=30.0):
+        if endpoint == "/api/agent-db/transaction-log":
+            self.logs.append(body)
+            return {"id": len(self.logs)}
         if endpoint == "/api/agent-db/outbound-authorisation":
             return {"allowed": True, "code": "allowed", "chargeable": True,
                     "trunkId": CHARGEABLE_TRUNK, "destination": TARGET}
@@ -384,3 +388,25 @@ def test_consult_record_covers_the_leg_if_the_bridged_record_cannot_be_created(m
 
     assert list(db.created) == ["leg-1"]
     assert db.lifecycle("leg-1") == ["create", "start", "end"]
+
+
+def test_the_line_that_made_the_target_accept_lands_on_the_consult_record(monkeypatch):
+    """On Ultravox the target's final transcript comes up to 0.7 s after the
+    tool call it led to, by when ``accept_transfer`` has ended the
+    consultation record and sent its batched rows."""
+    db, builds = _install(monkeypatch)
+    browser = _browser_session("consultative")
+
+    async def body() -> None:
+        await builds[0]["tools"]["transfer"]["execute"]({})
+        consult = await _consult_leg_up(browser, builds)
+        await builds[1]["tools"]["accept_transfer"]["execute"]({"reason": "Yes"})
+        assert ("end", "leg-1") in db.ops
+        # What the transcript observer does when the model's transcript lands.
+        await consult._send_message({"user": "Yes, I will take the call."}, user_turn=True)
+        await browser.sip_gateway.legs[0].transport.disconnect()
+
+    _run_call(browser, body)
+
+    lines = [(log["callId"], log["data"]) for log in db.logs if log["type"] == "user"]
+    assert lines == [("leg-1", "Yes, I will take the call.")]
