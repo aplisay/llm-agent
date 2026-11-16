@@ -202,7 +202,7 @@ All payloads include:
 - **`listenerId`**: ID of the listener/instance (if available)
 - **`organisationId`**: The organisation that owns the call, so a receiver serving several organisations can check the payload against the URL or secret it was configured with
 - **`parentId`**: The parent call when this call is one leg of a transfer, hand-back or bridged transfer; `null` on a root call. Lineage needs no lookup: follow `parentId` to the root, or use `GET /calls/{id}/linked`
-- **`modelName`**: The model this leg ran on, from the call record. A telephony bridged transfer creates its human-to-human segment as its own leg with the sentinel `telephony:bridged-call`, so a receiver that only wants agent conversations can skip it; a WebRTC relay leg carries the agent's model, so check `parentId` and the transcript as well
+- **`modelName`**: The model this leg ran on, from the call record. A bridged transfer, from a phone or a browser caller, creates its human-to-human segment as its own leg with the sentinel `telephony:bridged-call`, so a receiver that only wants agent conversations can skip it
 - **`callerId`**: Phone number or identifier of the caller
 - **`calledId`**: Phone number or identifier that was called
 - **`timestamp`**: ISO 8601 timestamp when the callback was generated
