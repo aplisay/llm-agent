@@ -238,9 +238,7 @@ describe('billing guide: subagent tokens on a call (DB-backed)', () => {
     for (const r of priced) expect(new Date(r.billedAt).valueOf()).toBe(startedAt.valueOf());
   });
 
-  // A known issue in the doc. When the fix lands this starts passing, which jest
-  // reports as a failure: turn it into an ordinary test and drop the doc entry.
-  it.failing('are finalised and priced when the call ends', async () => {
+  it('are finalised and priced when the call ends', async () => {
     const { call } = await callWithDelegation();
     expect((await subRows(call.id)).map((r) => [r.unit, r.finalised, Number(r.costMicros)])).toEqual([
       ['input_tokens', true, 3_300], ['output_tokens', true, 1_375],

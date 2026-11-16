@@ -335,8 +335,7 @@ rows. For 3,000 input and 250 output tokens:
 
 These rows are finalised when the call ends and priced on the card in force
 at the call's start. The same applies to a `subagent` function called from
-any voice agent. See
-[Known issues](#known-issues-in-the-current-release).
+any voice agent.
 
 ## 5. Pipeline agents (STT, LLM, TTS)
 
@@ -381,10 +380,6 @@ audio, so its row can be much shorter than the call.
 
 The examples above show how charging works once these are fixed.
 
-- **Subagent tokens on a call are not priced when the call ends**
-  (example 4). Rows from the subagent endpoint (client delegation, and
-  `subagent` functions) stay provisional. Only the sweep prices them, after
-  24 hours without change, and nothing schedules the sweep.
 - **Pipecat browser bridges charge the model minute through the bridge**
   (example 2). The caller's leg stays open, with the agent's model name,
   until the caller hangs up. Its `voice` row is charged the audio path and
