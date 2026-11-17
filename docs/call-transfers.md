@@ -108,6 +108,8 @@ Whether a transfer is completed by **bridging** (media stays on the platform) or
    - `bridged_transfer: true` in a **registration endpoint's** options — make this endpoint default to bridging instead of REFER. (Registration options are snake_case to match the other keys on that structure; in code the value surfaces as the camelCase `forceBridged`. See [phone-endpoints-api.md](./phone-endpoints-api.md).)
 3. **Origin default** from the table above.
 
+**Caller identity on the transfer leg.** A bridged or consultative transfer leg presents the agent's number in `From`. On the LiveKit worker, the trunk flags `sendPai`, `sendRpid` and `fromOriginalCaller` add `P-Asserted-Identity` or `Remote-Party-ID` with the agent's number, and can put the original caller in `From`. See [Trunk flags](./phone-endpoints-api.md#trunk-flags).
+
 ### Consultative Transfers
 
 Consultative transfers run a consultation phase first and then finalise either by **bridging** the two legs together or, where the origin supports it, by an **attended SIP REFER (REFER-with-Replaces, RFC 3891)** that hands both legs off to the upstream and drops the platform out of the media path entirely. The choice follows exactly the same [Transfer mode selection](#transfer-mode-selection) rules as blind transfers: bridging is the default on SIP trunks, attended REFER is the default for registration endpoints, and `forceRefer` / `forceBridged` (per transfer) or `forceReferTransfer` (trunk) / `bridged_transfer` (registration) override it.

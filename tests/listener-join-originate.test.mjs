@@ -358,6 +358,38 @@ describe('Listener Join and Originate Endpoints Test', () => {
       outbound: true,
       callMetadata: { test: 'data' },
     });
+    expect(JSON.parse(metadata)).not.toHaveProperty('trunkFlags');
+  });
+
+  test('originate passes the caller number trunk flags to the worker', async () => {
+    await models.Trunk.update(
+      { flags: { sendPai: true, fromOriginalCaller: true } },
+      { where: { id: testTrunkId } },
+    );
+    await createTestAgent();
+    await createTestPhoneNumber();
+
+    const listenerReq = createMockRequest({
+      params: { agentId: testAgentId },
+      body: { number: testPhoneNumberId }
+    });
+    const listenerRes = createMockResponse();
+    listenerRes.locals.user = { role: 'owner', id: testUserId, organisationId: testOrgId };
+    await createListener(listenerReq, listenerRes);
+    expect(listenerRes._body).toHaveProperty('id');
+
+    const originateReq = createMockRequest({
+      params: { listenerId: listenerRes._body.id },
+      body: { calledId: '+447700900123', callerId: testPhoneNumberId }
+    });
+    const originateRes = createMockResponse();
+    originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
+    await originateCall(originateReq, originateRes);
+
+    expect(originateRes._body).toHaveProperty('success', true);
+    expect(livekitApiCalls).toHaveLength(1);
+    const [{ args: [, , { metadata }] }] = livekitApiCalls;
+    expect(JSON.parse(metadata).trunkFlags).toEqual({ sendPai: true, fromOriginalCaller: true });
   });
 
   test('should reject originate with 429 when instance.options.agentLimit=0', async () => {

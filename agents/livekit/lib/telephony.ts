@@ -2,6 +2,7 @@ import { SipClient } from "livekit-server-sdk";
 import { SIPMediaEncryption, SIPHeaderOptions, SIPTransport } from "@livekit/protocol";
 import logger from "./logger.js";
 import { getPhoneNumbers } from "./api-client.js";
+import { applySipIdentity, type SipIdentity } from "./sip-identity.js";
 
 const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, LIVEKIT_SIP_PASSWORD } = process.env;
 
@@ -16,6 +17,22 @@ const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_USERNAME, 
 export function chargeableOutboundTrunkId(registrationOriginated?: boolean): string | undefined {
   if (registrationOriginated) return undefined;
   return process.env.APLISAY_OUTBOUND_TRUNK_ID || undefined;
+}
+
+function sipIdentityFor(
+  identity: SipIdentity | null | undefined,
+  fromNumber: string,
+  roomName: string,
+  host: string | null | undefined,
+) {
+  const result = applySipIdentity(identity, fromNumber, host);
+  if (result.assertedNumberRejected) {
+    logger.warn(
+      { roomName, assertedNumber: identity?.assertedNumber, flags: identity?.flags },
+      "trunk flags ask for caller identity headers but the agent number is not E.164; sending none",
+    );
+  }
+  return result;
 }
 
 export async function transferParticipant(
@@ -208,6 +225,7 @@ async function findOrCreateRegistrationTrunk(
  * @param aLegEncrypted - Whether the A-leg media is encrypted (SRTP). Drives
  *   registration-trunk media-encryption policy selection. Defaults to true to
  *   preserve prior behaviour (offer SRTP) when the signal is unavailable.
+ * @param identity - Egress trunk identity flags and the numbers they use (see sip-identity.ts)
  * @returns The created SIP participant
  */
 export async function bridgeParticipant(
@@ -223,6 +241,7 @@ export async function bridgeParticipant(
   originatingCallId: string | null | undefined = null,
   aLegEncrypted: boolean = true,
   registrationUsername: string | null | undefined = null,
+  identity: SipIdentity | null = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -249,6 +268,11 @@ export async function bridgeParticipant(
       aLegEncrypted,
     );
 
+    // Present the registration's own trunk username (the A-leg's To-user /
+    // SIP extension) as the calling number toward the gateway, rather than
+    // the placeholder. Avoids 603 Decline from PBXs that reject an unknown
+    // calling number. Falls back to the placeholder when unavailable.
+    const regIdentity = sipIdentityFor(identity, registrationUsername || '00000', roomName, b2buaGatewayIp);
     // For registration endpoints, we dial the destination number directly
     // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const sipParticipantOptions = {
@@ -258,14 +282,11 @@ export async function bridgeParticipant(
         // A number on a registration trunk keeps its trunk identity too.
         ...(aplisayId ? { "X-Aplisay-Trunk": aplisayId } : {}),
         "X-Aplisay-Origin-Caller-Id": originCallerId || 'unknown',
-        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
+        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
+        ...regIdentity.headers,
       },
       participantName: 'Aplisay Bridged Transfer',
-      // Present the registration's own trunk username (the A-leg's To-user /
-      // SIP extension) as the calling number toward the gateway, rather than
-      // the placeholder. Avoids 603 Decline from PBXs that reject an unknown
-      // calling number. Falls back to the placeholder when unavailable.
-      fromNumber: registrationUsername || '00000',
+      fromNumber: regIdentity.fromNumber,
       krispEnabled: true,
       waitUntilAnswered: true
     };
@@ -293,16 +314,18 @@ export async function bridgeParticipant(
     throw new Error('No livekit outbound SIP trunk found');
   }
 
+  const trunkIdentity = sipIdentityFor(identity, origin, roomName, outboundSipTrunk.address);
   // Outbound trunk to use for the call
   const sipParticipantOptions = {
     participantIdentity: 'sip-outbound-call',
     headers: {
       'X-Aplisay-Trunk': aplisayId,
       'X-Aplisay-Origin-Caller-Id': originCallerId || 'unknown',
-      ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
+      ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
+      ...trunkIdentity.headers,
     },
     participantName: 'Aplisay Bridged Transfer',
-    fromNumber: origin,
+    fromNumber: trunkIdentity.fromNumber,
     krispEnabled: true,
     waitUntilAnswered: true
   };
@@ -334,6 +357,7 @@ export async function bridgeParticipant(
  * @param aLegEncrypted - Whether the A-leg media is encrypted (SRTP). Drives
  *   registration-trunk media-encryption policy selection. Defaults to true to
  *   preserve prior behaviour (offer SRTP) when the signal is unavailable.
+ * @param identity - Egress trunk identity flags and the numbers they use (see sip-identity.ts)
  * @returns The created SIP participant
  */
 export async function dialTransferTargetToConsultation(
@@ -350,6 +374,7 @@ export async function dialTransferTargetToConsultation(
   originatingCallId: string | null | undefined = null,
   aLegEncrypted: boolean = true,
   registrationUsername: string | null | undefined = null,
+  identity: SipIdentity | null = null,
 ): Promise<any> {
   const sipClient = new SipClient(
     LIVEKIT_URL!,
@@ -375,6 +400,12 @@ export async function dialTransferTargetToConsultation(
       aLegEncrypted,
     );
     
+    // Present the registration's own trunk username (e.g. the A-leg's
+    // To-user / SIP extension) as the calling number toward the gateway,
+    // rather than the placeholder CLI. Some PBXs (e.g. Wildix) 603-Decline
+    // an outbound/transfer call whose calling number is unrecognised. Fall
+    // back to the previous behaviour when the username is unavailable.
+    const regIdentity = sipIdentityFor(identity, registrationUsername || origin, consultRoomName, b2buaGatewayIp);
     // For registration endpoints, we dial the destination number directly
     // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const transferTargetParticipant = await sipClient.createSipParticipant(
@@ -387,15 +418,11 @@ export async function dialTransferTargetToConsultation(
           "X-Aplisay-PhoneRegistration": registrationEndpointId, // Include registration endpoint ID in headers
           ...(effectiveAplisayId ? { "X-Aplisay-Trunk": effectiveAplisayId } : {}),
           "X-Aplisay-Origin-Caller-Id": callerId || 'unknown',
-          ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
+          ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
+          ...regIdentity.headers,
         },
         participantName: "Transfer Target",
-        // Present the registration's own trunk username (e.g. the A-leg's
-        // To-user / SIP extension) as the calling number toward the gateway,
-        // rather than the placeholder CLI. Some PBXs (e.g. Wildix) 603-Decline
-        // an outbound/transfer call whose calling number is unrecognised. Fall
-        // back to the previous behaviour when the username is unavailable.
-        fromNumber: registrationUsername || origin,
+        fromNumber: regIdentity.fromNumber,
         krispEnabled: true,
         waitUntilAnswered: true,
         // Map all SIP response headers (incl. To/From dialog tags + Call-ID and
@@ -420,6 +447,7 @@ export async function dialTransferTargetToConsultation(
     throw new Error("No livekit outbound SIP trunk found");
   }
 
+  const trunkIdentity = sipIdentityFor(identity, origin, consultRoomName, outboundSipTrunk.address);
   const transferTargetParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
     destination,
@@ -429,10 +457,11 @@ export async function dialTransferTargetToConsultation(
       headers: {
         "X-Aplisay-Trunk": effectiveAplisayId || '',
         "X-Aplisay-Origin-Caller-Id": callerId || 'unknown',
-        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {})
+        ...(originatingCallId ? { "X-Aplisay-Call-Id": originatingCallId } : {}),
+        ...trunkIdentity.headers,
       },
       participantName: "Transfer Target",
-      fromNumber: origin,
+      fromNumber: trunkIdentity.fromNumber,
       krispEnabled: true,
       waitUntilAnswered: true,
       // Map all SIP response headers (incl. To/From dialog tags + Call-ID) to
