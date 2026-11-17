@@ -2,13 +2,17 @@ import { jest } from '@jest/globals';
 
 /**
  * A database that has not had the brand upgrade (schema 74). lib/database.js
- * finds this at boot and switches brands off. The brand routes then answer 503,
- * and everything else must work without the brand columns.
+ * finds this at boot (lib/schema-guards.js) and switches brands off. The brand
+ * routes then answer 503, and everything else must work without the brand
+ * columns.
  */
 const calls = { findAll: [], create: [] };
 
 jest.unstable_mockModule('../lib/database.js', () => ({
   Organisation: {
+    // As lib/database.js leaves it at boot: no `brand` attribute.
+    getAttributes: () => Object.fromEntries(['id', 'name', 'status', 'role', 'permissions', 'allowedModels', 'capabilities',
+      'agentLimit', 'chargeableNumberLimit', 'customVoiceLimit'].map((name) => [name, {}])),
     findAll: async (opts) => { calls.findAll.push(opts); return []; },
     create: async (values) => { calls.create.push(values); return { ...values }; },
     findByPk: async (id) => ({ id, name: 'Acme', status: 'active', save: async () => {} }),
@@ -20,8 +24,8 @@ jest.unstable_mockModule('../lib/database.js', () => ({
 }));
 jest.unstable_mockModule('../lib/rates.js', () => ({ defaultRateHistoryEntry: async () => null }));
 
-const { missingBrandSchema, brandsMissing, brandsReady, organisationAttributes } = await import('../lib/brands.js');
-const { ORGANISATION_RBAC_ATTRIBUTES } = await import('../lib/auth/permissions.js');
+const { stepOff } = await import('../lib/schema-guards.js');
+const { brandsReady } = await import('../lib/brands.js');
 const { default: organisationsRoute } = await import('../api/paths/organisations.js');
 const { default: organisationRoute } = await import('../api/paths/organisations/{organisationId}.js');
 const { default: brandsRoute } = await import('../api/paths/brands.js');
@@ -39,32 +43,11 @@ async function call(handler, { user = operator, params = {}, query = {}, body = 
   return res;
 }
 
-describe('which parts of the brand upgrade are missing', () => {
-  const columns = [
-    { table_name: 'organisations', column_name: 'brand' },
-    { table_name: 'auth_keys', column_name: 'brand' },
-    { table_name: 'brands', column_name: 'id' },
-  ];
-
-  test('none on an upgraded database', () => {
-    expect(missingBrandSchema(columns)).toEqual([]);
-  });
-
-  test('each missing column and the missing table', () => {
-    expect(missingBrandSchema([])).toEqual(['organisations.brand', 'auth_keys.brand', 'brands']);
-    expect(missingBrandSchema(columns.slice(1))).toEqual(['organisations.brand']);
-    expect(missingBrandSchema(columns.slice(0, 2))).toEqual(['brands']);
-  });
-});
-
 describe('with brands off', () => {
-  test('until switched off, the organisation columns are left as they are', () => {
+  test('brands are on until the boot finds the step missing', () => {
     expect(brandsReady()).toBe(true);
-    expect(organisationAttributes(ORGANISATION_RBAC_ATTRIBUTES)).toContain('brand');
-    brandsMissing();
+    stepOff('brands');
     expect(brandsReady()).toBe(false);
-    expect(organisationAttributes(ORGANISATION_RBAC_ATTRIBUTES)).not.toContain('brand');
-    expect(organisationAttributes(ORGANISATION_RBAC_ATTRIBUTES)).toContain('capabilities');
   });
 
   test('the brand routes answer 503 brands_not_ready', async () => {

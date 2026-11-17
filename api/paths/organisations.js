@@ -3,7 +3,8 @@ import { Organisation, Brand } from '../../lib/database.js';
 import { requirePermission, actorCanGrant, validateRbacFields, can } from '../../lib/auth/permissions.js';
 import { adminScope } from '../../lib/auth/admin-scope.js';
 import { defaultRateHistoryEntry } from '../../lib/rates.js';
-import { principalBrand, capabilitiesForNewOrganisation, brandsReady, organisationAttributes, BRANDS_NOT_READY } from '../../lib/brands.js';
+import { principalBrand, capabilitiesForNewOrganisation, brandsReady, BRANDS_NOT_READY } from '../../lib/brands.js';
+import { presentAttributes } from '../../lib/schema-guards.js';
 
 /**
  * /api/organisations (collection) — RBAC-gated (`organisation:*`), org-scoped.
@@ -49,7 +50,7 @@ export default function (logger) {
       }
       const rows = await Organisation.findAll({
         where,
-        attributes: organisationAttributes(LIST_ATTRS),
+        attributes: presentAttributes(Organisation, LIST_ATTRS),
         order: [['name', 'ASC']],
       });
       return res.send({ organisations: rows });
