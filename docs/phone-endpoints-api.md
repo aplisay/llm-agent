@@ -320,9 +320,12 @@ They are off by default, so other trunks see no change.
 | `sendPai: true` | Adds `P-Asserted-Identity: <sip:+E164@host;user=phone>` with the agent's own number. |
 | `sendRpid: true` | Adds `Remote-Party-ID: <sip:+E164@host;user=phone>;party=calling;screen=yes;privacy=off` with the agent's own number. |
 | `fromOriginalCaller: true` | On a transfer leg, `From` carries the original caller instead of the agent's number. |
+| `useTelUriId: true` | `P-Asserted-Identity` and `Remote-Party-ID` use `tel:+E164` instead of the `sip:` URI. |
 
 `host` is the next hop the worker sends the leg to: the SBC address on the LiveKit outbound trunk,
-or the registration's B2BUA. If no host is known the URI is `tel:+E164` instead.
+or the registration's B2BUA. It is not the carrier's own host, which only the SBC knows. Use
+`useTelUriId` for a carrier that wants no host of ours in the identity. If no host is known the URI
+is `tel:+E164` anyway.
 
 The usual setting for "From: caller, P-Asserted-Identity: our number" is `sendPai` with
 `fromOriginalCaller`. `fromOriginalCaller` also works on its own, but that is unusual: the carrier

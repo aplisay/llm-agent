@@ -20,9 +20,10 @@ test("pickSipIdentityFlags keeps only the identity flags set to true", () => {
       sendPai: true,
       sendRpid: "yes",
       fromOriginalCaller: true,
+      useTelUriId: true,
       canRefer: true,
     }),
-    { sendPai: true, fromOriginalCaller: true },
+    { sendPai: true, fromOriginalCaller: true, useTelUriId: true },
   );
   assert.equal(pickSipIdentityFlags({ canRefer: true }), null);
   assert.equal(pickSipIdentityFlags(null), null);
@@ -78,6 +79,18 @@ test("sendPai adds P-Asserted-Identity as a sip URI on the next hop", () => {
 test("with no host the URI is tel:", () => {
   const r = applySipIdentity({ flags: { sendPai: true }, assertedNumber: AGENT }, AGENT);
   assert.deepEqual(r.headers, { "P-Asserted-Identity": "<tel:+441632960001>" });
+});
+
+test("useTelUriId keeps the tel: URI even with a host", () => {
+  const r = applySipIdentity(
+    { flags: { sendPai: true, sendRpid: true, useTelUriId: true }, assertedNumber: AGENT },
+    AGENT,
+    SBC,
+  );
+  assert.deepEqual(r.headers, {
+    "P-Asserted-Identity": "<tel:+441632960001>",
+    "Remote-Party-ID": "<tel:+441632960001>;party=calling;screen=yes;privacy=off",
+  });
 });
 
 test("sendRpid adds Remote-Party-ID", () => {
