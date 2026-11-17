@@ -38,6 +38,8 @@ A change to the defaults applies to organisations created afterwards. It does no
 
 `scripts/provision-brand-service.mjs --brand acme` mints a service key for that brand. The key may create organisations, which take its brand and the brand's defaults, list and read the organisations of its brand, and set their capabilities. It reaches no organisation of another brand. An organisation's brand is fixed once set. A platform operator may give a brand to an organisation that has none, with `PATCH /organisations/{id}`.
 
+An organisation with no brand works as before. Brands need the schema 74 database upgrade (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until it has run, the API server starts with brands off: the brand routes, and a `brand` field on the organisation routes, answer 503 `brands_not_ready`. Restart the API server after the upgrade.
+
 The owner of an organisation may read and change its phone system settings (`/organisations/{id}/phone-system`), for its own organisation only. It cannot change the organisation's status.
 
 ## How it fits together

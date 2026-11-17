@@ -1,7 +1,7 @@
 import { Brand } from '../../../lib/database.js';
 import { requirePermission } from '../../../lib/auth/permissions.js';
-import { principalBrand, validateBrandId, validateBrandFields } from '../../../lib/brands.js';
-import { brandView } from '../brands.js';
+import { principalBrand, validateBrandId, validateBrandFields, brandsReady, BRANDS_NOT_READY } from '../../../lib/brands.js';
+import { brandView, brandsNotReadyResponse } from '../brands.js';
 
 const pathParameter = { in: 'path', name: 'brandId', required: true, schema: { type: 'string' } };
 
@@ -13,6 +13,7 @@ const pathParameter = { in: 'path', name: 'brandId', required: true, schema: { t
 export default function (logger) {
   const get = async (req, res) => {
     if (!requirePermission(res, 'brand', 'read')) return;
+    if (!brandsReady()) return res.status(503).send(BRANDS_NOT_READY);
     const own = principalBrand(res.locals.user);
     const row = (!own || own === req.params.brandId) ? await Brand.findByPk(req.params.brandId) : null;
     if (!row) return res.status(404).send({ error: 'Brand not found', code: 'not_found' });
@@ -26,12 +27,14 @@ export default function (logger) {
     responses: {
       200: { description: 'The brand', content: { 'application/json': { schema: { $ref: '#/components/schemas/Brand' } } } },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
+      503: brandsNotReadyResponse,
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
 
   const put = async (req, res) => {
     if (!requirePermission(res, 'brand', 'update')) return;
+    if (!brandsReady()) return res.status(503).send(BRANDS_NOT_READY);
     const { brandId } = req.params;
     const idProblem = validateBrandId(brandId);
     if (idProblem) return res.status(400).send({ error: idProblem, code: 'invalid_brand', field: 'brandId' });
@@ -70,6 +73,7 @@ export default function (logger) {
     responses: {
       200: { description: 'The brand after the change', content: { 'application/json': { schema: { $ref: '#/components/schemas/Brand' } } } },
       201: { description: 'The brand, created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Brand' } } } },
+      503: brandsNotReadyResponse,
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

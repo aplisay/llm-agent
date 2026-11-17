@@ -3,7 +3,7 @@ import { Organisation, Brand } from '../../lib/database.js';
 import { requirePermission, actorCanGrant, validateRbacFields, can } from '../../lib/auth/permissions.js';
 import { adminScope } from '../../lib/auth/admin-scope.js';
 import { defaultRateHistoryEntry } from '../../lib/rates.js';
-import { principalBrand, capabilitiesForNewOrganisation } from '../../lib/brands.js';
+import { principalBrand, capabilitiesForNewOrganisation, brandsReady, organisationAttributes, BRANDS_NOT_READY } from '../../lib/brands.js';
 
 /**
  * /api/organisations (collection) — RBAC-gated (`organisation:*`), org-scoped.
@@ -32,6 +32,7 @@ async function brandForNewOrganisation(user, requested) {
   }
   const id = own || named;
   if (!id) return { brand: null };
+  if (!brandsReady()) return { error: { status: 503, body: BRANDS_NOT_READY } };
   const brand = typeof id === 'string' ? await Brand.findByPk(id) : null;
   if (!brand) return { error: { status: 400, body: { error: `Unknown brand: ${String(id)}`, code: 'unknown_brand', field: 'brand' } } };
   return { brand };
@@ -42,10 +43,13 @@ export default function (logger) {
     if (!requirePermission(res, 'organisation', 'read')) return;
     try {
       const where = { ...adminScope(res.locals.user, 'organisation') };
-      if (typeof req.query.brand === 'string' && req.query.brand && where.brand === undefined) where.brand = req.query.brand;
+      if (typeof req.query.brand === 'string' && req.query.brand && where.brand === undefined) {
+        if (!brandsReady()) return res.status(503).send(BRANDS_NOT_READY);
+        where.brand = req.query.brand;
+      }
       const rows = await Organisation.findAll({
         where,
-        attributes: LIST_ATTRS,
+        attributes: organisationAttributes(LIST_ATTRS),
         order: [['name', 'ASC']],
       });
       return res.send({ organisations: rows });
@@ -76,6 +80,7 @@ export default function (logger) {
           },
         },
       },
+      503: { description: '`brands_not_ready`: `brand` was given, and the database lacks the upgrade that adds brands', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };
@@ -112,7 +117,7 @@ export default function (logger) {
         permissions,
         allowedModels: req.body?.allowedModels ?? null,
         ...(rateHistory ? { rateHistory } : {}),
-        brand: brand?.id ?? null,
+        ...(brand ? { brand: brand.id } : {}),
         capabilities: capabilitiesForNewOrganisation(brand),
       });
       if (brand) {
@@ -155,6 +160,7 @@ export default function (logger) {
       201: { description: 'Created organisation' },
       400: { description: '`unknown_brand`', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       403: { description: '`brand_not_allowed`', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      503: { description: '`brands_not_ready`: a brand was named, and the database lacks the upgrade that adds brands', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

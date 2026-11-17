@@ -1,6 +1,7 @@
 import { Organisation, Brand } from '../../../lib/database.js';
 import { requirePermission, can, actorCanGrant, validateRbacFields } from '../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../lib/auth/admin-scope.js';
+import { brandsReady, BRANDS_NOT_READY } from '../../../lib/brands.js';
 
 /**
  * /api/organisations/{organisationId} (item) — RBAC-gated (`organisation:*`),
@@ -84,6 +85,7 @@ export default function (logger) {
       if (!can(res.locals.user, 'brand', 'update')) {
         return res.status(403).json({ error: 'Only a platform operator can set the brand of an organisation.', code: 'brand_not_allowed', field: 'brand' });
       }
+      if (!brandsReady()) return res.status(503).json(BRANDS_NOT_READY);
       if (req.body.brand !== org.brand) {
         if (org.brand) {
           return res.status(409).json({ error: 'The brand of an organisation cannot be changed once set.', code: 'brand_already_set', field: 'brand' });
@@ -145,6 +147,7 @@ export default function (logger) {
     responses: {
       200: { description: 'Updated organisation' },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
+      503: { description: '`brands_not_ready`: `brand` was given, and the database lacks the upgrade that adds brands', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

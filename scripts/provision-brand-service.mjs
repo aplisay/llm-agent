@@ -61,7 +61,10 @@ async function main() {
   console.log(`provisioning against postgres ${process.env.POSTGRES_HOST}/${process.env.POSTGRES_DB}`);
   await client.connect();
 
-  const brand = await client.query('SELECT id FROM brands WHERE id = $1', [BRAND]);
+  const brand = await client.query('SELECT id FROM brands WHERE id = $1', [BRAND]).catch((e) => {
+    if (e?.code === '42P01') throw new Error('No brands table. Run tools/agent-admin.js upgrade-db first.');
+    throw e;
+  });
   if (!brand.rows.length) throw new Error(`No brand "${BRAND}". Create it with PUT /api/brands/${BRAND} first.`);
 
   const email = `brand-service+${BRAND}@aplisay.internal`;
