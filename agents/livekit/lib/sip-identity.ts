@@ -11,6 +11,8 @@ export interface SipIdentityFlags {
   sendRpid?: boolean;
   /** On a transfer leg, present the original caller in From. */
   fromOriginalCaller?: boolean;
+  /** PAI / RPID as a tel: URI instead of sip: on the next hop. */
+  useTelUriId?: boolean;
 }
 
 export interface SipIdentity {
@@ -46,6 +48,7 @@ export function pickSipIdentityFlags(flags: unknown): SipIdentityFlags | null {
   if (f.sendPai === true) picked.sendPai = true;
   if (f.sendRpid === true) picked.sendRpid = true;
   if (f.fromOriginalCaller === true) picked.fromOriginalCaller = true;
+  if (f.useTelUriId === true) picked.useTelUriId = true;
   return Object.keys(picked).length ? picked : null;
 }
 
@@ -80,8 +83,8 @@ export function sipHost(address: string | null | undefined): string | null {
  * The From number and extra INVITE headers for one dialled leg.
  *
  * @param host - The next hop this leg is sent to (our SBC or a registration's
- *   B2BUA); it becomes the host of the PAI / RPID URI. Without one the URI
- *   is `tel:`.
+ *   B2BUA); it becomes the host of the PAI / RPID URI. Without one, or with
+ *   `useTelUriId`, the URI is `tel:`.
  */
 export function applySipIdentity(
   identity: SipIdentity | null | undefined,
@@ -104,7 +107,7 @@ export function applySipIdentity(
     if (!asserted) {
       assertedNumberRejected = true;
     } else {
-      const h = sipHost(host);
+      const h = flags.useTelUriId ? null : sipHost(host);
       const uri = h ? `sip:${asserted}@${h};user=phone` : `tel:${asserted}`;
       if (flags.sendPai) {
         headers["P-Asserted-Identity"] = `<${uri}>`;
