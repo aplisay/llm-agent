@@ -15,6 +15,30 @@ Feature pages describe their own meters in more detail:
 charges on the platform's own trunks). The design history is in
 [implementation/rate-cards-implementation-plan.md](implementation/rate-cards-implementation-plan.md).
 
+## Who can call which route
+
+A customer reads their usage, costs, rate card and balance with
+`usage:read`. Every organisation role (`owner`, `member`, `orgAdmin`) holds
+it, so a customer's existing key is enough. The usage and balance routes
+show only the caller's own organisation, unless the caller holds
+`usage:readAll`. `GET /api/me/rates` always shows the caller's own.
+
+The rate card routes need `rate:read`, which only the platform operator
+holds (`superAdmin`, and the `billingService` machine role). The cards are
+not scoped to an organisation: `GET /api/rates` lists every organisation's
+card. Do not grant `rate:read` to a customer. A customer key that calls one
+of these routes gets `403` with `"detail": "Requires rate:read"`. Send the
+customer to `GET /api/me/rates` instead.
+
+| Route | Needs | Who |
+|---|---|---|
+| `GET /api/usage`, `GET /api/usage/records` | `usage:read` | Customer |
+| `GET /api/me/rates` | `usage:read` | Customer |
+| `GET /api/organisations/{id}/balance` | `usage:read` | Customer |
+| `GET /api/rates`, `GET /api/rates/{id}`, `GET /api/rates/default`, `GET /api/rate-components` | `rate:read` | Operator |
+| `POST /api/rates`, `PATCH`/`DELETE /api/rates/{id}`, `PUT /api/rates/default` | `rate:create`, `rate:update`, `rate:delete` | Operator |
+| `POST /api/agent-db/sweep` | The shared token | Internal |
+
 ## How charging works
 
 1. **Metering.** Each thing a call uses is one row: one row per call leg (or
@@ -43,7 +67,7 @@ first, then the organisation's, and takes the entry with the latest
 `startDate` at or before `billedAt`. That gives a card name. It then takes
 the version of that card with the latest `startDate` at or before `billedAt`
 (and no `endDate` before it). A new organisation gets the platform default
-card name (`GET`/`PUT /api/rates/default`) if one is set.
+card name (`GET`/`PUT /api/rates/default`, operator only) if one is set.
 
 ## Reading a row
 
@@ -114,9 +138,9 @@ Two rules that are easy to miss:
   subagents write the bare model id (`claude-haiku-4-5`). A model used both
   ways needs lines for both forms.
 
-`GET /api/rate-components` lists a match template for each priceable
-component. Its `tts` and `stt` templates do not include `unit`, so add it
-when you build a line.
+`GET /api/rate-components` (operator only) lists a match template for each
+priceable component. Its `tts` and `stt` templates do not include `unit`, so
+add it when you build a line.
 
 **Destination.** A leg carried out on one of the platform's own trunks
 (`Trunk.chargeable`) has the dialled number on its `voice` row
@@ -129,6 +153,9 @@ this way. See
 [outbound-call-authorisation.md](outbound-call-authorisation.md).
 
 ## Getting the numbers out
+
+A customer key can call the four routes below. The sweep at the end of this
+section is internal. See [Who can call which route](#who-can-call-which-route).
 
 - `GET /api/usage` gives totals. Group with `groupBy` (for example
   `technology,provider,detail,unit` or `call`), bucket with
@@ -143,6 +170,10 @@ this way. See
   `costStatus`, `priced=true|false` and others.
 - Both are scoped to the caller's organisation. A `usage:readAll` holder sees
   every organisation.
+- `GET /api/me/rates` gives the card in force now for the caller's own
+  organisation: its `name`, `startDate` and `lines`, in the same form as
+  above. If no card is in force it returns `rated: false` and a `reason`.
+  The usage is then metered but not charged.
 - `GET /api/organisations/{id}/balance` gives the balance in pence.
 
 For an invoice period, filter `/api/usage/records` by `startDate` and
