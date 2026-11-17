@@ -23,7 +23,7 @@ Taking the capability away deletes nothing. Calls are refused and the routes ans
 
 An organisation without the capability still has the directory, and extensions of type `connection`: numbers on its own phone system, reached through one of its connections.
 
-The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. Restart the API server after the upgrade.
+The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. The outbound refusal of extension digits and the daily purge of removed rows do nothing until then. Restart the API server after the upgrade.
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -57,6 +57,39 @@ Everything else is worked out. For each desk phone the platform takes the people
 A phone rings for at most one person fewer than it has lines, and a one-line phone for one. More is refused with `phone_too_small`.
 
 A line is known by its phone and its extension. While that pair lasts, the line keeps its SIP account and its line number, even when its key moves. Lines are read-only: `GET /phones/{id}/lines`. `GET /phones/{id}/changes` records why a phone's keys changed.
+
+## Changing several things at once
+
+`POST /directory/batch` applies a list of changes in one go: all of them, or none. Each op is one of `entry.create`, `entry.update`, `entry.delete`, `entry.restore`, `extension.create`, `extension.update`, `extension.delete`, `extension.restore`, `member.add`, `member.remove`, `keyOrder.set` and `huntOrder.set`. An op may name the row it creates with `ref`, and a later op may use `"$name"` in place of that row's id:
+
+```json
+{
+  "actor": "import",
+  "ops": [
+    { "op": "entry.create", "ref": "dan", "entry": { "kind": "person", "name": "Dan Price" } },
+    { "op": "extension.create", "extension": { "number": "106", "type": "ring_all", "entryId": "$dan" } },
+    { "op": "member.add", "extensionId": "<id of Sales>", "entryId": "$dan" }
+  ]
+}
+```
+
+A batch holds at most 500 ops. When one is refused nothing is changed, and the answer is 400 `batch_failed` with a result for each op up to and including the refused one. A batch takes `?dryRun=true` like any other write.
+
+## Removing and restoring
+
+Removing an entry or an extension keeps it for 30 days. `POST /directory/entries/{id}/restore` brings an entry back with the extension removed with it, and with its memberships and phones. `POST /directory/extensions/{id}/restore` brings back an extension on its own. A restore is refused when the extension's number has been taken since. After 30 days the server purges removed rows for good.
+
+`GET /directory/extensions/next-number` gives the lowest free number of the usual length, or of the length of `?near=`.
+
+`GET /directory/extensions/{id}/rings-now` shows what a call to an extension would ring now, phone by phone, with each phone that is not registered marked offline. Whether a phone is in a call is not known there.
+
+## The directory for agents
+
+`GET /directory/lookup?query=` and `GET /directory/resolve?query=` (or `?contact_id=`) answer the agent tools `directory_lookup` and `directory_resolve`. They need `directory:lookup`. A lookup never shows a person's numbers or anyone's email. A resolve gives the numbers of its one match for the transfer step, and saved agents hide them from the model by name. With the phone system on, an entry whose extension is one of ours and who has no direct number gets the number that extension shows as `direct`, so an agent that cannot ring the extension rings that number.
+
+The knowledge service has its own key, minted by `scripts/provision-knowledge-service.mjs`. It reads any organisation's directory when it names it with `?organisationId=`. It writes only through `POST /directory/batch` with `"actor": "crawl"`, and then only `entry.create`, `entry.update` and `extension.create` of type `connection`.
+
+An agent that is not in a phone system call cannot ring one of our extensions. The outbound authorisation refuses digits that are the number of a live extension of the organisation, of any type but `connection`, with the code `internal_extension_not_reachable`. The agent then tries its next target.
 
 ## Dry runs
 

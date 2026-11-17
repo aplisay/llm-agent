@@ -1,0 +1,1171 @@
+{
+  "order": [
+    "accounts",
+    "supportTeam",
+    "engineers",
+    "jane",
+    "johnSales",
+    "johnOps",
+    "jose",
+    "outOfHours",
+    "priyaK",
+    "reception",
+    "salesTeam",
+    "sue",
+    "tom"
+  ],
+  "lookup": [
+    {
+      "query": "Jane Andrews",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "jane",
+            "kind": "person",
+            "name": "Jane Andrews",
+            "role": "Head of Support",
+            "department": "Support",
+            "about": null,
+            "hours": "Mon-Fri 9-6",
+            "notes_for_agent": "Only urgent cases.",
+            "can_transfer": true,
+            "can_take_message": true
+          }
+        ]
+      }
+    },
+    {
+      "query": "John Smith",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "john",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "John",
+      "kind": "team",
+      "answer": {
+        "count": 0,
+        "matches": []
+      }
+    },
+    {
+      "query": "put me through to the head of support please",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "jane",
+            "kind": "person",
+            "name": "Jane Andrews",
+            "role": "Head of Support",
+            "department": "Support",
+            "about": null,
+            "hours": "Mon-Fri 9-6",
+            "notes_for_agent": "Only urgent cases.",
+            "can_transfer": true,
+            "can_take_message": true
+          },
+          {
+            "id": "supportTeam",
+            "kind": "team",
+            "name": "Customer Support",
+            "role": null,
+            "department": "Support",
+            "about": "Help with orders, returns and faults",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "Sue Smith",
+      "answer": {
+        "count": 3,
+        "matches": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "sue",
+            "kind": "person",
+            "name": "Sue Sinclair",
+            "role": "Sales Executive",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "accounts",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "accounts",
+            "kind": "team",
+            "name": "Accounts",
+            "role": null,
+            "department": "Finance",
+            "about": "Invoices, payments and refunds",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": null,
+            "direct": "+442045258850",
+            "mobile": null
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "refunds",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "accounts",
+            "kind": "team",
+            "name": "Accounts",
+            "role": null,
+            "department": "Finance",
+            "about": "Invoices, payments and refunds",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": null,
+            "direct": "+442045258850",
+            "mobile": null
+          }
+        ]
+      }
+    },
+    {
+      "query": "emergency",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "outOfHours",
+            "kind": "service",
+            "name": "Out of hours line",
+            "role": null,
+            "department": null,
+            "about": "Emergencies outside office hours",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "Priya Nair",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "priyaK",
+            "kind": "person",
+            "name": "Priya Kapoor",
+            "role": "Finance Director",
+            "department": "Finance",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": false,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "priya",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "priyaK",
+            "kind": "person",
+            "name": "Priya Kapoor",
+            "role": "Finance Director",
+            "department": "Finance",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": false,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "jose nunez",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "jose",
+            "kind": "person",
+            "name": "José Núñez",
+            "role": "Warehouse Supervisor",
+            "department": "Logistics",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "sales",
+      "answer": {
+        "count": 3,
+        "matches": [
+          {
+            "id": "salesTeam",
+            "kind": "team",
+            "name": "Sales",
+            "role": null,
+            "department": "Sales",
+            "about": "New orders and quotes",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": "200",
+            "direct": null,
+            "mobile": null
+          },
+          {
+            "id": "sue",
+            "kind": "person",
+            "name": "Sue Sinclair",
+            "role": "Sales Executive",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "sales team",
+      "answer": {
+        "count": 3,
+        "matches": [
+          {
+            "id": "salesTeam",
+            "kind": "team",
+            "name": "Sales",
+            "role": null,
+            "department": "Sales",
+            "about": "New orders and quotes",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": "200",
+            "direct": null,
+            "mobile": null
+          },
+          {
+            "id": "sue",
+            "kind": "person",
+            "name": "Sue Sinclair",
+            "role": "Sales Executive",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "support",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "supportTeam",
+            "kind": "team",
+            "name": "Customer Support",
+            "role": null,
+            "department": "Support",
+            "about": "Help with orders, returns and faults",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "jane",
+            "kind": "person",
+            "name": "Jane Andrews",
+            "role": "Head of Support",
+            "department": "Support",
+            "about": null,
+            "hours": "Mon-Fri 9-6",
+            "notes_for_agent": "Only urgent cases.",
+            "can_transfer": true,
+            "can_take_message": true
+          }
+        ]
+      }
+    },
+    {
+      "query": "customer support",
+      "kind": "team",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "supportTeam",
+            "kind": "team",
+            "name": "Customer Support",
+            "role": null,
+            "department": "Support",
+            "about": "Help with orders, returns and faults",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "I'd like to speak to someone about a boiler repair",
+      "answer": {
+        "count": 0,
+        "matches": []
+      }
+    },
+    {
+      "query": "finance",
+      "answer": {
+        "count": 2,
+        "matches": [
+          {
+            "id": "accounts",
+            "kind": "team",
+            "name": "Accounts",
+            "role": null,
+            "department": "Finance",
+            "about": "Invoices, payments and refunds",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": null,
+            "direct": "+442045258850",
+            "mobile": null
+          },
+          {
+            "id": "priyaK",
+            "kind": "person",
+            "name": "Priya Kapoor",
+            "role": "Finance Director",
+            "department": "Finance",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": false,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "driver",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "tom",
+            "kind": "person",
+            "name": "Tom Baker",
+            "role": "Delivery Driver",
+            "department": "Logistics",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": true
+          }
+        ]
+      }
+    },
+    {
+      "query": "warehouse supervisor",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "jose",
+            "kind": "person",
+            "name": "José Núñez",
+            "role": "Warehouse Supervisor",
+            "department": "Logistics",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "recepton",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "reception",
+            "kind": "service",
+            "name": "Reception",
+            "role": null,
+            "department": null,
+            "about": "General enquiries and visitors",
+            "hours": "Mon-Sat 8-8",
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": "100",
+            "direct": null,
+            "mobile": null
+          }
+        ]
+      }
+    },
+    {
+      "query": "the office",
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "outOfHours",
+            "kind": "service",
+            "name": "Out of hours line",
+            "role": null,
+            "department": null,
+            "about": "Emergencies outside office hours",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "",
+      "answer": {
+        "count": 8,
+        "matches": [
+          {
+            "id": "accounts",
+            "kind": "team",
+            "name": "Accounts",
+            "role": null,
+            "department": "Finance",
+            "about": "Invoices, payments and refunds",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": null,
+            "direct": "+442045258850",
+            "mobile": null
+          },
+          {
+            "id": "supportTeam",
+            "kind": "team",
+            "name": "Customer Support",
+            "role": null,
+            "department": "Support",
+            "about": "Help with orders, returns and faults",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "engineers",
+            "kind": "team",
+            "name": "Field Engineers",
+            "role": null,
+            "department": "Operations",
+            "about": "Boiler servicing and repairs",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": false,
+            "can_take_message": false
+          },
+          {
+            "id": "jane",
+            "kind": "person",
+            "name": "Jane Andrews",
+            "role": "Head of Support",
+            "department": "Support",
+            "about": null,
+            "hours": "Mon-Fri 9-6",
+            "notes_for_agent": "Only urgent cases.",
+            "can_transfer": true,
+            "can_take_message": true
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "jose",
+            "kind": "person",
+            "name": "José Núñez",
+            "role": "Warehouse Supervisor",
+            "department": "Logistics",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "outOfHours",
+            "kind": "service",
+            "name": "Out of hours line",
+            "role": null,
+            "department": null,
+            "about": "Emergencies outside office hours",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "",
+      "kind": "person",
+      "limit": 3,
+      "answer": {
+        "count": 3,
+        "matches": [
+          {
+            "id": "jane",
+            "kind": "person",
+            "name": "Jane Andrews",
+            "role": "Head of Support",
+            "department": "Support",
+            "about": null,
+            "hours": "Mon-Fri 9-6",
+            "notes_for_agent": "Only urgent cases.",
+            "can_transfer": true,
+            "can_take_message": true
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations",
+            "about": null,
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false
+          }
+        ]
+      }
+    },
+    {
+      "query": "a",
+      "limit": 2,
+      "answer": {
+        "count": 0,
+        "matches": []
+      }
+    },
+    {
+      "query": "sales",
+      "limit": 1,
+      "answer": {
+        "count": 1,
+        "matches": [
+          {
+            "id": "salesTeam",
+            "kind": "team",
+            "name": "Sales",
+            "role": null,
+            "department": "Sales",
+            "about": "New orders and quotes",
+            "hours": null,
+            "notes_for_agent": null,
+            "can_transfer": true,
+            "can_take_message": false,
+            "extension": "200",
+            "direct": null,
+            "mobile": null
+          }
+        ]
+      }
+    }
+  ],
+  "resolve": [
+    {
+      "query": "Jane Andrews",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "jane",
+          "kind": "person",
+          "name": "Jane Andrews",
+          "role": "Head of Support",
+          "department": "Support",
+          "about": null,
+          "hours": "Mon-Fri 9-6",
+          "notes_for_agent": "Only urgent cases.",
+          "extension": "310",
+          "direct": "+442045258830",
+          "mobile": "+447700900310",
+          "message_to": "jane@example.co.uk"
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "John Smith",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales"
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations"
+          }
+        ]
+      }
+    },
+    {
+      "query": "John Smith in operations",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales"
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations"
+          }
+        ]
+      }
+    },
+    {
+      "query": "put me through to the head of support please",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "jane",
+          "kind": "person",
+          "name": "Jane Andrews",
+          "role": "Head of Support",
+          "department": "Support",
+          "about": null,
+          "hours": "Mon-Fri 9-6",
+          "notes_for_agent": "Only urgent cases.",
+          "extension": "310",
+          "direct": "+442045258830",
+          "mobile": "+447700900310",
+          "message_to": "jane@example.co.uk"
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "Sue Smith",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales"
+          },
+          {
+            "id": "johnOps",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Engineer",
+            "department": "Operations"
+          },
+          {
+            "id": "sue",
+            "kind": "person",
+            "name": "Sue Sinclair",
+            "role": "Sales Executive",
+            "department": "Sales"
+          }
+        ]
+      }
+    },
+    {
+      "query": "accounts",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "accounts",
+          "kind": "team",
+          "name": "Accounts",
+          "role": null,
+          "department": "Finance",
+          "about": "Invoices, payments and refunds",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": null,
+          "direct": "+442045258850",
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "refunds",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "accounts",
+            "kind": "team",
+            "name": "Accounts",
+            "role": null,
+            "department": "Finance"
+          }
+        ]
+      }
+    },
+    {
+      "query": "Priya Nair",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "priyaK",
+            "kind": "person",
+            "name": "Priya Kapoor",
+            "role": "Finance Director",
+            "department": "Finance"
+          }
+        ]
+      }
+    },
+    {
+      "query": "jose nunez",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "jose",
+          "kind": "person",
+          "name": "José Núñez",
+          "role": "Warehouse Supervisor",
+          "department": "Logistics",
+          "about": null,
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": null,
+          "direct": null,
+          "mobile": "+447700900411",
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "sales",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "salesTeam",
+          "kind": "team",
+          "name": "Sales",
+          "role": null,
+          "department": "Sales",
+          "about": "New orders and quotes",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": "200",
+          "direct": null,
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "sales",
+      "kind": "person",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "sue",
+            "kind": "person",
+            "name": "Sue Sinclair",
+            "role": "Sales Executive",
+            "department": "Sales"
+          },
+          {
+            "id": "johnSales",
+            "kind": "person",
+            "name": "John Smith",
+            "role": "Account Manager",
+            "department": "Sales"
+          }
+        ]
+      }
+    },
+    {
+      "query": "customer support",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "supportTeam",
+          "kind": "team",
+          "name": "Customer Support",
+          "role": null,
+          "department": "Support",
+          "about": "Help with orders, returns and faults",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": "210",
+          "direct": "+442045258810",
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "tom",
+      "answer": {
+        "status": "ambiguous",
+        "match": null,
+        "candidates": [
+          {
+            "id": "tom",
+            "kind": "person",
+            "name": "Tom Baker",
+            "role": "Delivery Driver",
+            "department": "Logistics"
+          }
+        ]
+      }
+    },
+    {
+      "query": "reception",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "reception",
+          "kind": "service",
+          "name": "Reception",
+          "role": null,
+          "department": null,
+          "about": "General enquiries and visitors",
+          "hours": "Mon-Sat 8-8",
+          "notes_for_agent": null,
+          "extension": "100",
+          "direct": null,
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "out of hours",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "outOfHours",
+          "kind": "service",
+          "name": "Out of hours line",
+          "role": null,
+          "department": null,
+          "about": "Emergencies outside office hours",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": null,
+          "direct": "+442045258899",
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "query": "field engineers",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "engineers",
+          "kind": "team",
+          "name": "Field Engineers",
+          "role": null,
+          "department": "Operations",
+          "about": "Boiler servicing and repairs",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": null,
+          "direct": null,
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "contact": "jane",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "jane",
+          "kind": "person",
+          "name": "Jane Andrews",
+          "role": "Head of Support",
+          "department": "Support",
+          "about": null,
+          "hours": "Mon-Fri 9-6",
+          "notes_for_agent": "Only urgent cases.",
+          "extension": "310",
+          "direct": "+442045258830",
+          "mobile": "+447700900310",
+          "message_to": "jane@example.co.uk"
+        },
+        "candidates": []
+      }
+    },
+    {
+      "contact": "accounts",
+      "answer": {
+        "status": "ok",
+        "match": {
+          "id": "accounts",
+          "kind": "team",
+          "name": "Accounts",
+          "role": null,
+          "department": "Finance",
+          "about": "Invoices, payments and refunds",
+          "hours": null,
+          "notes_for_agent": null,
+          "extension": null,
+          "direct": "+442045258850",
+          "mobile": null,
+          "message_to": null
+        },
+        "candidates": []
+      }
+    },
+    {
+      "contactId": "00000000-0000-4000-8000-000000000000",
+      "answer": {
+        "status": "none",
+        "match": null,
+        "candidates": []
+      }
+    }
+  ]
+}

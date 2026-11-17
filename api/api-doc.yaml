@@ -3685,6 +3685,128 @@ components:
           type: array
           items: { type: string, format: uuid }
           description: On create. The people the phone rings for, in order.
+    DirectoryBatch:
+      type: object
+      required: [ops]
+      properties:
+        actor:
+          type: string
+          enum: [user, assistant, import, crawl]
+          default: user
+          description: Who made the changes. `crawl` is for the knowledge service only.
+        instructionText: { type: string, description: "What the person asked for, when the batch comes from an instruction. Not stored here." }
+        ops:
+          type: array
+          description: At most 500. More is refused with 413 `too_many_ops`.
+          items:
+            type: object
+            required: [op]
+            properties:
+              op:
+                type: string
+                enum: [entry.create, entry.update, entry.delete, entry.restore, extension.create, extension.update, extension.delete, extension.restore, member.add, member.remove, keyOrder.set, huntOrder.set]
+              ref: { type: string, description: "A name for the row this op creates. A later op uses \"$name\" for its id." }
+              id: { type: string, description: "The entry or extension of an update, delete or restore." }
+              entry: { type: object, description: "For `entry.create`: the fields of DirectoryEntryInput." }
+              extension: { type: object, description: "For `extension.create`: the fields of DirectoryExtensionInput. `entryId` may be \"$name\"." }
+              fields: { type: object, description: "The fields an update changes, as the PATCH route takes them." }
+              extensionId: { type: string }
+              entryId: { type: string }
+              huntPosition: { type: integer }
+              keyPosition: { type: integer }
+              extensionIds: { type: array, items: { type: string } }
+              entryIds: { type: array, items: { type: string } }
+    DirectoryBatchResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        id: { type: string, nullable: true, description: "The row the op created or acted on." }
+        code: { type: string, description: "When refused: why." }
+        field: { type: string }
+        error: { type: string }
+    DirectoryLookup:
+      type: object
+      description: The answer of the agent tool `directory_lookup`.
+      properties:
+        count: { type: integer }
+        matches:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [person, team, service] }
+              name: { type: string }
+              role: { type: string, nullable: true }
+              department: { type: string, nullable: true }
+              about: { type: string, nullable: true }
+              hours: { type: string, nullable: true }
+              notes_for_agent: { type: string, nullable: true }
+              can_transfer: { type: boolean }
+              can_take_message: { type: boolean }
+              extension: { type: string, nullable: true, description: "A team or service that gives out its numbers only." }
+              direct: { type: string, nullable: true, description: "A team or service that gives out its numbers only." }
+              mobile: { type: string, nullable: true, description: "A team or service that gives out its numbers only." }
+    DirectoryResolve:
+      type: object
+      description: The answer of the agent tool `directory_resolve`. A saved agent hides `extension`, `direct` and `mobile` from its model, so no other field holds a number.
+      properties:
+        status: { type: string, enum: [ok, ambiguous, none] }
+        match:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            kind: { type: string }
+            name: { type: string }
+            role: { type: string, nullable: true }
+            department: { type: string, nullable: true }
+            about: { type: string, nullable: true }
+            hours: { type: string, nullable: true }
+            notes_for_agent: { type: string, nullable: true }
+            extension: { type: string, nullable: true }
+            direct: { type: string, nullable: true, description: "With the phone system, an entry with an extension of its own and no direct number gets the number its extension shows." }
+            mobile: { type: string, nullable: true }
+            message_to: { type: string, nullable: true }
+        candidates:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              kind: { type: string }
+              name: { type: string }
+              role: { type: string, nullable: true }
+              department: { type: string, nullable: true }
+    DirectoryRingsNow:
+      type: object
+      properties:
+        extensionId: { type: string }
+        number: { type: string }
+        name: { type: string }
+        type: { type: string }
+        at: { type: string, format: date-time }
+        open: { type: boolean }
+        action: { type: string, enum: [ring, forward, agent, connection, refuse] }
+        reason: { type: string, description: "When `action` is `refuse`." }
+        forward: { type: object, properties: { number: { type: string } } }
+        rings:
+          type: array
+          items:
+            type: object
+            properties:
+              entryId: { type: string }
+              name: { type: string, nullable: true }
+              phoneId: { type: string }
+              label: { type: string }
+              kind: { type: string }
+              key: { type: integer }
+              lineNumber: { type: integer }
+              number: { type: string, description: "An outside number." }
+              state: { type: string, enum: [rings, not_connected, do_not_ring, mobile_not_for_shared, no_line] }
+              afterSeconds: { type: integer }
+              since: { type: string, format: date-time, description: "When an offline line was last seen." }
+        summary: { type: string }
     OrganisationPhoneSystem:
       type: object
       properties:

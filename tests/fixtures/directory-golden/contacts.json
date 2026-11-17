@@ -1,0 +1,15 @@
+[
+  { "key": "jane", "kind": "person", "name": "Jane Andrews", "role": "Head of Support", "department": "Support", "extension": "310", "direct": "+442045258830", "mobile": "+447700900310", "email": "jane@example.co.uk", "login": true, "hours": "Mon-Fri 9-6", "notesForAgent": "Only urgent cases." },
+  { "key": "johnSales", "kind": "person", "name": "John Smith", "role": "Account Manager", "department": "Sales", "extension": "220" },
+  { "key": "johnOps", "kind": "person", "name": "John Smith", "role": "Engineer", "department": "Operations", "extension": "231" },
+  { "key": "sue", "kind": "person", "name": "Sue Sinclair", "role": "Sales Executive", "department": "Sales", "direct": "+442045258840" },
+  { "key": "accounts", "kind": "team", "name": "Accounts", "department": "Finance", "about": "Invoices, payments and refunds", "direct": "+442045258850", "discloseNumbers": true },
+  { "key": "outOfHours", "kind": "service", "name": "Out of hours line", "about": "Emergencies outside office hours", "direct": "+442045258899" },
+  { "key": "jose", "kind": "person", "name": "José Núñez", "role": "Warehouse Supervisor", "department": "Logistics", "mobile": "+447700900411" },
+  { "key": "salesTeam", "kind": "team", "name": "Sales", "department": "Sales", "about": "New orders and quotes", "extension": "200", "discloseNumbers": true },
+  { "key": "supportTeam", "kind": "team", "name": "Customer Support", "department": "Support", "about": "Help with orders, returns and faults", "extension": "210", "direct": "+442045258810", "discloseNumbers": false },
+  { "key": "priyaK", "kind": "person", "name": "Priya Kapoor", "role": "Finance Director", "department": "Finance", "email": "priya@example.co.uk" },
+  { "key": "tom", "kind": "person", "name": "Tom Baker", "role": "Delivery Driver", "department": "Logistics", "mobile": "+447700900422", "email": "tom@example.co.uk", "login": true },
+  { "key": "reception", "kind": "service", "name": "Reception", "about": "General enquiries and visitors", "extension": "100", "hours": "Mon-Sat 8-8", "discloseNumbers": true },
+  { "key": "engineers", "kind": "team", "name": "Field Engineers", "department": "Operations", "about": "Boiler servicing and repairs" }
+]

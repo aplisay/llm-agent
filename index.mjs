@@ -237,6 +237,9 @@ startChatSessionReaper({ log: logger });
 // Settles custom voice creates whose background work was lost (docs/implementation/custom-voices.md).
 const { startCustomVoiceSweeper } = await import('./lib/custom-voices/index.js');
 startCustomVoiceSweeper({ log: logger });
+// Removed directory entries and extensions are purged after 30 days.
+const { startDirectoryPurge } = await import('./lib/pbx/purge.js');
+startDirectoryPurge({ log: logger });
 // Answer other processes asking for a chat session this one holds (a client
 // reconnected through the load balancer to a different pod). Server only,
 // for the same reason as the reaper.
