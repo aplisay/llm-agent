@@ -14,7 +14,7 @@ import {
 
 // Internal modules
 import logger, { captureSdkLogs } from "./logger.js";
-import { agentForLog, instanceForLog } from "./log-fields.js";
+import { agentForLog, instanceForLog, scenarioForLog } from "./log-fields.js";
 import { invocationLogs, trimIdleLines } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
 import { pickSipIdentityFlags } from "./sip-identity.js";
@@ -243,11 +243,7 @@ export default defineAgent({
         { ms: Date.now() - tGetCallInfo, room: room?.name },
         "timing: getCallInfo done",
       );
-      // Call metadata can hold customer secrets, so log its keys only.
-      logger.info(
-        { scenario: { ...scenario, callMetadata: Object.keys(scenario.callMetadata) } },
-        "scenario",
-      );
+      logger.info({ scenario: scenarioForLog(scenario) }, "scenario");
 
       let {
         instance,

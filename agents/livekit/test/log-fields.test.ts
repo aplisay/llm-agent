@@ -21,7 +21,15 @@ const ENV = {
   LIVEKIT_API_SECRET: standIn("livekit-secret"),
 };
 const PUBLIC_OPTIONS_KEY = standIn("public-options");
-const RECORD_VALUES = [standIn("tool"), standIn("tool-password"), standIn("recording"), standIn("instance")];
+const RECORD_VALUES = [
+  standIn("tool"),
+  standIn("tool-password"),
+  standIn("recording"),
+  standIn("instance"),
+  standIn("call-hook"),
+  standIn("instance-metadata"),
+  standIn("call-metadata"),
+];
 const STAND_INS = [...Object.values(ENV), PUBLIC_OPTIONS_KEY, ...RECORD_VALUES];
 
 // Set before the imports below: some plugins read the environment when their module loads.
@@ -38,9 +46,8 @@ const { OpenAIRealtimeModel } = await import("../lib/openai-realtime.js");
 const { SentenceStreamTTS } = await import("../lib/sentence-stream-tts.js");
 const { NeuphonicTTS } = await import("../lib/neuphonic-tts.js");
 const { logOptions, setInvocationLogBuffer } = await import("../lib/logger.js");
-const { agentForLog, instanceForLog, labelOf, sessionEventForLog, sessionModelsForLog } = await import(
-  "../lib/log-fields.js"
-);
+const { agentForLog, instanceForLog, labelOf, scenarioForLog, sessionEventForLog, sessionModelsForLog } =
+  await import("../lib/log-fields.js");
 
 initializeLogger({ pretty: false, level: "fatal" });
 
@@ -188,34 +195,81 @@ test("a session logs its models by label", () => {
   assert.equal(typeof pipeline.tts, "string");
 });
 
-test("an agent or instance logs without its key values or recording key", () => {
-  const agent = {
-    id: "agent-1",
-    prompt: "You are a helpful assistant.",
-    options: { tts: { voice: "alloy" }, recording: { enabled: true, key: standIn("recording") } },
-    keys: [
-      { name: "crm", in: "bearer", value: standIn("tool") },
-      { name: "legacy", in: "basic", username: "user", password: standIn("tool-password") },
-    ],
-  };
-  const instance = {
-    id: "instance-1",
-    key: standIn("instance"),
+const testAgent = () => ({
+  id: "agent-1",
+  prompt: "You are a helpful assistant.",
+  options: {
+    tts: { voice: "alloy" },
     recording: { enabled: true, key: standIn("recording") },
-    Agent: agent,
-  };
+    callHook: { url: "https://hooks.example.test/call", hashKey: standIn("call-hook") },
+  },
+  keys: [
+    { name: "crm", in: "bearer", value: standIn("tool") },
+    { name: "legacy", in: "basic", username: "user", password: standIn("tool-password") },
+  ],
+});
 
-  const loggedAgent = agentForLog(agent) as typeof agent;
-  const loggedInstance = instanceForLog(instance) as typeof instance;
+const testInstance = (agent: ReturnType<typeof testAgent>) => ({
+  id: "instance-1",
+  key: standIn("instance"),
+  recording: { enabled: true, key: standIn("recording") },
+  metadata: { crm: { account: "acme", agent_key: standIn("instance-metadata") }, region: "eu" },
+  Agent: agent,
+});
 
-  assert.deepEqual(standInsIn(serialised([loggedAgent, loggedInstance])), []);
-  assert.deepEqual(loggedAgent.keys, ["crm", "legacy"]);
-  assert.equal(loggedAgent.prompt, agent.prompt);
-  assert.deepEqual(loggedAgent.options, { tts: { voice: "alloy" }, recording: { enabled: true } });
-  assert.deepEqual(loggedInstance.recording, { enabled: true });
-  assert.deepEqual(loggedInstance.Agent.keys, ["crm", "legacy"]);
-  assert.equal(loggedInstance.id, "instance-1");
+test("an agent logs without its key values, recording key or call hook key", () => {
+  const agent = testAgent();
+  const logged = agentForLog(agent) as Record<string, any>;
+
+  assert.deepEqual(standInsIn(serialised(logged)), []);
+  assert.deepEqual(logged.keys, ["crm", "legacy"]);
+  assert.equal(logged.prompt, agent.prompt);
+  assert.deepEqual(logged.options, {
+    tts: { voice: "alloy" },
+    recording: { enabled: true },
+    callHook: { url: "https://hooks.example.test/call" },
+  });
   assert.equal(agent.keys[0]!.value, standIn("tool"), "the record itself is unchanged");
+  assert.equal(agent.options.callHook.hashKey, standIn("call-hook"), "the record itself is unchanged");
+});
+
+test("an instance logs its agent by id and its metadata by field name", () => {
+  const agent = testAgent();
+  const logged = instanceForLog(testInstance(agent)) as Record<string, any>;
+
+  assert.deepEqual(standInsIn(serialised(logged)), []);
+  assert.equal(logged.id, "instance-1");
+  assert.equal(logged.Agent, undefined);
+  assert.equal(logged.agentId, "agent-1");
+  assert.deepEqual(logged.recording, { enabled: true });
+  assert.deepEqual(logged.metadata, { crm: ["account", "agent_key"], region: "string" });
+  assert.equal(
+    (instanceForLog({ ...testInstance(agent), agentId: "agent-2" }) as Record<string, any>).agentId,
+    "agent-2",
+    "an instance's own agentId wins",
+  );
+});
+
+test("a scenario logs its agent and instance by id and its call metadata by field name", () => {
+  const agent = testAgent();
+  const scenario = {
+    agent,
+    instance: testInstance(agent),
+    callerId: "+442079460810",
+    callMetadata: { orderId: standIn("call-metadata") },
+    sipHeaders: { "x-aplisay-trunk": "trunk-1" },
+  };
+  const logged = scenarioForLog(scenario) as Record<string, any>;
+
+  assert.deepEqual(standInsIn(serialised(logged)), []);
+  assert.deepEqual(logged, {
+    agentId: "agent-1",
+    instanceId: "instance-1",
+    callerId: "+442079460810",
+    callMetadata: ["orderId"],
+    sipHeaders: { "x-aplisay-trunk": "trunk-1" },
+  });
+  assert.ok(!serialised(logged).includes(agent.prompt), "no copy of the agent definition");
 });
 
 test("the logger masks secret-named fields and the environment's secret values in any line", () => {
