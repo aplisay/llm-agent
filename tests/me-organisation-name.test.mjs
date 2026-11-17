@@ -24,9 +24,9 @@ async function getMe(user) {
 describe('/api/me organisation name (#203)', () => {
   test('the RBAC organisation load selects name alongside the RBAC inputs', () => {
     expect(ORGANISATION_RBAC_ATTRIBUTES).toContain('name');
-    // still narrow — the RBAC inputs are all that may join it
+    // still narrow: the RBAC inputs, and what /api/me reports
     expect([...ORGANISATION_RBAC_ATTRIBUTES].sort())
-      .toEqual(['allowedModels', 'id', 'name', 'permissions', 'role', 'status']);
+      .toEqual(['allowedModels', 'brand', 'capabilities', 'id', 'name', 'permissions', 'role', 'status']);
   });
 
   test('returns the organisation name for a user attached to a named org', async () => {

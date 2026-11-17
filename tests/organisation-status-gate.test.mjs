@@ -15,6 +15,7 @@ jest.unstable_mockModule('../lib/database.js', () => ({
   Organisation: {
     findByPk: async (id) => rows.get(id) || null,
   },
+  Brand: { findByPk: async () => null },
 }));
 
 const { default: orgItem } = await import('../api/paths/organisations/{organisationId}.js');

@@ -1,6 +1,7 @@
-import { Organisation } from '../../../lib/database.js';
+import { Organisation, Brand } from '../../../lib/database.js';
 import { requirePermission, can, actorCanGrant, validateRbacFields } from '../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../lib/auth/admin-scope.js';
+import { brandsReady, BRANDS_NOT_READY } from '../../../lib/brands.js';
 
 /**
  * /api/organisations/{organisationId} (item) — RBAC-gated (`organisation:*`),
@@ -73,6 +74,27 @@ export default function (logger) {
       && !can(res.locals.user, 'organisation', 'delete')) {
       return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:delete to change status cross-tenant' });
     }
+    // An owner holds organisation:update for the phone system settings of its
+    // own organisation. That must not let it suspend or deactivate the
+    // organisation, so status needs an organisation admin's setLimits too.
+    if ('status' in req.body && !can(res.locals.user, 'organisation', 'setLimits')) {
+      return res.status(403).json({ message: 'forbidden', detail: 'Requires organisation:setLimits to change status' });
+    }
+    // A brand is set once. This gives an organisation made before brands existed its brand.
+    if ('brand' in req.body) {
+      if (!can(res.locals.user, 'brand', 'update')) {
+        return res.status(403).json({ error: 'Only a platform operator can set the brand of an organisation.', code: 'brand_not_allowed', field: 'brand' });
+      }
+      if (!brandsReady()) return res.status(503).json(BRANDS_NOT_READY);
+      if (req.body.brand !== org.brand) {
+        if (org.brand) {
+          return res.status(409).json({ error: 'The brand of an organisation cannot be changed once set.', code: 'brand_already_set', field: 'brand' });
+        }
+        if (typeof req.body.brand !== 'string' || !(await Brand.findByPk(req.body.brand))) {
+          return res.status(400).json({ error: `Unknown brand: ${String(req.body.brand)}`, code: 'unknown_brand', field: 'brand' });
+        }
+      }
+    }
     const baselineKeys = ['role', 'permissions', 'allowedModels'];
     if (baselineKeys.some((k) => k in req.body)) {
       if (!can(res.locals.user, 'organisation', 'setPermissions')) {
@@ -86,7 +108,7 @@ export default function (logger) {
     const rbacErr = validateRbacFields(req.body);
     if (rbacErr) return res.status(400).send({ message: rbacErr });
 
-    const EDITABLE = ['name', 'agentLimit', 'chargeableNumberLimit', 'customVoiceLimit', 'status', 'role', 'permissions', 'allowedModels'];
+    const EDITABLE = ['name', 'agentLimit', 'chargeableNumberLimit', 'customVoiceLimit', 'status', 'role', 'permissions', 'allowedModels', 'brand'];
     for (const k of EDITABLE) if (k in req.body) org[k] = req.body[k];
     try {
       await org.save();
@@ -115,6 +137,7 @@ export default function (logger) {
               role: { type: 'string', nullable: true },
               permissions: { type: 'object', nullable: true },
               allowedModels: { type: 'array', items: { type: 'string' }, nullable: true },
+              brand: { type: 'string', description: 'Platform operator only, and only while the organisation has no brand. Its capabilities are not changed.' },
             },
             required: [],
           },
@@ -124,6 +147,7 @@ export default function (logger) {
     responses: {
       200: { description: 'Updated organisation' },
       404: { description: 'Not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFound' } } } },
+      503: { description: '`brands_not_ready`: `brand` was given, and the database lacks the upgrade that adds brands', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       default: { description: 'An error occurred', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
     },
   };

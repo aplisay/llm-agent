@@ -3691,4 +3691,46 @@ components:
         busyStatusVisible: { type: boolean }
         numbersUsingAddress: { type: integer }
         extensionsUsingMainNumber: { type: integer }
+    Brand:
+      type: object
+      properties:
+        id: { type: string, description: "The brand id: lower case letters, digits and hyphens." }
+        name: { type: string, nullable: true }
+        defaultCapabilities:
+          type: array
+          items: { type: string }
+          description: The capabilities a new organisation of this brand starts with.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    BrandInput:
+      type: object
+      properties:
+        name: { type: string, nullable: true, maxLength: 120 }
+        defaultCapabilities: { type: array, items: { type: string } }
+    Me:
+      type: object
+      description: The caller's identity and resolved permissions.
+      properties:
+        id: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        name: { type: string, nullable: true }
+        organisationId: { type: string, nullable: true }
+        organisationName: { type: string, nullable: true }
+        organisation:
+          type: object
+          nullable: true
+          description: The caller's organisation. A front end reads `capabilities` to decide which features to offer.
+          properties:
+            id: { type: string }
+            name: { type: string, nullable: true }
+            brand: { type: string, nullable: true }
+            capabilities: { type: array, items: { type: string } }
+        brand: { type: string, nullable: true, description: "The brand a service key acts for. Null for a person." }
+        role: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        permissions: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        allowedModels: { type: array, items: { type: string }, nullable: true }
+        isAdmin: { type: boolean }
+        isSuperAdmin: { type: boolean }
+        assignableRoles: { type: array, items: { type: string } }
 paths: {}

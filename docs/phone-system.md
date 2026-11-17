@@ -16,12 +16,31 @@ Not here yet: the service that carries the calls, phone provisioning, hunt group
 
 | Switch | Where | What it does |
 |---|---|---|
-| The `phoneSystem` capability | `PUT /organisations/{id}/capabilities` with `{ "capabilities": ["phoneSystem"] }`. Needs `organisation:setCapabilities`, which only a platform operator holds | Switches the phone system on for one organisation. Without it every phone system request answers 403 with code `phone_system_disabled` |
+| The `phoneSystem` capability | `PUT /organisations/{id}/capabilities` with `{ "capabilities": ["phoneSystem"] }`. Needs `organisation:setCapabilities`: a platform operator for any organisation, or a brand's service key for the organisations of its brand. A new organisation starts with its brand's defaults (see below) | Switches the phone system on for one organisation. Without it every phone system request answers 403 with code `phone_system_disabled` |
 | `PBX_RELEASE` | An environment variable of the API server | Which extension types and phone kinds the deployment accepts. Unset means `1`: types `connection` and `ring_all`, phones `deskphone` and `external` |
 
 Taking the capability away deletes nothing. Calls are refused and the routes answer 403 until it is given back.
 
 An organisation without the capability still has the directory, and extensions of type `connection`: numbers on its own phone system, reached through one of its connections.
+
+`GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
+
+### Brands
+
+A brand is a label on an organisation that says which front end its customers use. A platform operator creates a brand and sets the capabilities a new organisation of that brand starts with:
+
+```shell
+curl -s -X PUT -H "$H" -H 'Content-Type: application/json' $API/brands/acme \
+  -d '{"name":"Acme","defaultCapabilities":["phoneSystem"]}'
+```
+
+A change to the defaults applies to organisations created afterwards. It does not touch existing ones.
+
+`scripts/provision-brand-service.mjs --brand acme` mints a service key for that brand. The key may create organisations, which take its brand and the brand's defaults, list and read the organisations of its brand, and set their capabilities. It reaches no organisation of another brand. An organisation's brand is fixed once set. A platform operator may give a brand to an organisation that has none, with `PATCH /organisations/{id}`.
+
+An organisation with no brand works as before. Brands need the schema 74 database upgrade (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until it has run, the API server starts with brands off: the brand routes, and a `brand` field on the organisation routes, answer 503 `brands_not_ready`. Restart the API server after the upgrade.
+
+The owner of an organisation may read and change its phone system settings (`/organisations/{id}/phone-system`), for its own organisation only. It cannot change the organisation's status.
 
 ## How it fits together
 
