@@ -1,6 +1,7 @@
 import { setupRealDatabase, teardownRealDatabase, Agent, Instance, PhoneNumber, PhoneRegistration, Call, TransactionLog, User, Organisation, AuthKey, Trunk, Op, Sequelize, databaseStarted, stopDatabase } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import aplisayTestAgentBase from './fixtures/agents/test-agent-base.js';
+import { livekitApiCalls } from './mocks/livekit-server-sdk.js';
 
 describe('Listener Join and Originate Endpoints Test', () => {
   let models;
@@ -92,7 +93,8 @@ describe('Listener Join and Originate Endpoints Test', () => {
 
   beforeEach(async () => {
     const { Organisation, User, Trunk } = models;
-    
+    livekitApiCalls.length = 0;
+
     // Create test organisation
     const testOrg = await Organisation.create({
       id: randomUUID(),
@@ -331,7 +333,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: testPhoneNumberId, // Use the phone number as caller
         metadata: { test: 'data' }
       }
@@ -346,6 +348,16 @@ describe('Listener Join and Originate Endpoints Test', () => {
     expect(originateRes._body).toHaveProperty('success', true);
     expect(originateRes._body).toHaveProperty('data');
 
+    expect(livekitApiCalls).toHaveLength(1);
+    const [{ client, method, args: [room, agentName, { metadata }] }] = livekitApiCalls;
+    expect({ client, method, agentName }).toEqual({ client: 'AgentDispatchClient', method: 'createDispatch', agentName: 'realtime' });
+    expect(room).toMatch(/^outbound-/);
+    expect(JSON.parse(metadata)).toMatchObject({
+      calledId: '+447700900123',
+      callerId: testPhoneNumberId,
+      outbound: true,
+      callMetadata: { test: 'data' },
+    });
   });
 
   test('should reject originate with 429 when instance.options.agentLimit=0', async () => {
@@ -376,7 +388,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: listenerRes._body.id },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: testPhoneNumberId, // Use the phone number as caller
         metadata: { test: 'data' }
       }
@@ -388,11 +400,12 @@ describe('Listener Join and Originate Endpoints Test', () => {
 
     expect(originateRes._status).toBe(429);
     expect(originateRes._body).toHaveProperty('code', 'AGENT_CONCURRENCY_LIMIT_EXCEEDED');
+    expect(livekitApiCalls).toEqual([]);
     const failedCall = await Call.findOne({
       where: {
         instanceId,
         callerId: testPhoneNumberId,
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         agentId: testAgentId,
       },
     });
@@ -424,7 +437,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: testRegistrationListenerId },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: testRegistrationId, // Use the registration ID as caller
         metadata: { test: 'data' }
       }
@@ -480,7 +493,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
 
     const originateReq = createMockRequest({
       params: { listenerId: listenerRes._body.id },
-      body: { calledId: '+447911123456', callerId: '+442079460555', metadata: {} }
+      body: { calledId: '+447700900123', callerId: '+442079460555', metadata: {} }
     });
     const originateRes = createMockResponse();
     originateRes.locals.user = { role: 'owner', organisationId: testOrgId };
@@ -522,7 +535,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: regListenerId },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: regId,
         metadata: {}
       }
@@ -566,7 +579,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: regListenerId },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: regId,
         metadata: {}
       }
@@ -667,7 +680,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: testWebRTCListenerId },
       body: {
-        calledId: '+447911123456',
+        calledId: '+447700900123',
         callerId: testPhoneNumberId,
         metadata: { test: 'data' }
       }
@@ -726,7 +739,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq2 = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+447911123456'
+        calledId: '+447700900123'
         // missing callerId
       }
     });
@@ -796,7 +809,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq1 = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+447911123456', // Valid UK mobile
+        calledId: '+447700900123', // Valid UK mobile
         callerId: testPhoneNumberId
       }
     });
@@ -810,7 +823,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq2 = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+442080996945', // Valid UK geographic
+        calledId: '+442079460810', // Valid UK geographic
         callerId: testPhoneNumberId
       }
     });
@@ -886,7 +899,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+61234567890', // Valid Australian number
+        calledId: '+61255501234', // Valid Australian number (ACMA's range for fiction)
         callerId: testPhoneNumberId
       }
     });
@@ -928,7 +941,8 @@ describe('Listener Join and Originate Endpoints Test', () => {
     testPhoneListenerId = listenerRes._body.id;
 
     // Test valid extension numbers
-    const validExtensions = ['123', '4567', '123456'];
+    // Not 123: that is a real UK service number (the speaking clock).
+    const validExtensions = ['201', '4567', '123456'];
     for (const ext of validExtensions) {
       const originateReq = createMockRequest({
         params: { listenerId: testPhoneListenerId },
@@ -982,7 +996,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq1 = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+447911123456', // Valid UK mobile
+        calledId: '+447700900123', // Valid UK mobile
         callerId: testPhoneNumberId
       }
     });
@@ -1041,7 +1055,7 @@ describe('Listener Join and Originate Endpoints Test', () => {
     const originateReq1 = createMockRequest({
       params: { listenerId: testPhoneListenerId },
       body: {
-        calledId: '+447911123456', // Valid UK mobile
+        calledId: '+447700900123', // Valid UK mobile
         callerId: testPhoneNumberId
       }
     });
