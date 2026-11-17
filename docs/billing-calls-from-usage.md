@@ -254,15 +254,19 @@ Total 201,000 micros. A consultative transfer that completes by REFER has the
 first two legs and no bridged leg.
 
 **Pipecat, browser caller.** The worker relays the caller's browser audio to
-the target. As on LiveKit, the agent's leg ends when the bridge starts and
-the bridged leg carries the rest:
+the target. As on LiveKit, the agent leaves when the bridge starts: the
+worker closes the model session and ends the agent's leg, and the bridged
+leg carries the rest. The bridged leg starts when the worker dials the
+target, so the ring time is on both legs.
 
 | Leg | Quantity | Lines | Cost |
 |---|---|---|---|
-| Agent | 11,643 ms | 0.2 × (40,000 + 90,000) | 26,000 |
+| Agent | 12,459 ms | 0.3 × (40,000 + 90,000) | 39,000 |
 | Bridged | 53,487 ms | 0.9 × 20,000 | 18,000 |
 
-Total 44,000 micros. See [Known issues](#known-issues-in-the-current-release).
+Total 57,000 micros. A consultative transfer from a browser caller has the
+same three legs as the LiveKit one above: the agent's leg and the consult leg
+both end when the target accepts.
 
 On Pipecat a consult leg also carries its own component rows, as the agent's
 leg does (for Ultravox with side STT: `tts`, `stt-aux` and `stt-output`). On
@@ -375,13 +379,3 @@ audio, so its row can be much shorter than the call.
 - Zero `tts` lines for `ultravox`, `openai` and `xai` (speech the model makes
   with its own voice on Pipecat).
 - Then look for `no_line` rows: `GET /api/usage/records?costStatus=no_line`.
-
-## Known issues in the current release
-
-The examples above show how charging works once these are fixed.
-
-- **Pipecat browser bridges charge the model minute through the bridge**
-  (example 2). The caller's leg stays open, with the agent's model name,
-  until the caller hangs up. Its `voice` row is charged the audio path and
-  the model minute for the whole call, bridged time included, on top of the
-  bridged leg.

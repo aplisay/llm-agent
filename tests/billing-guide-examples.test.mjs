@@ -122,9 +122,9 @@ describe('billing guide: worked examples', () => {
   });
 
   it('2. Pipecat browser caller, bridged (agent leg ends at the bridge)', () => {
-    const legs = [voice('pipecat', PC_ULTRAVOX, 'webrtc', 11_643), voice('pipecat', BRIDGED, 'telephony', 53_487)];
-    expect(legs.map((l) => cost(l))).toEqual([26_000, 18_000]);
-    expect(total(legs)).toBe(44_000);
+    const legs = [voice('pipecat', PC_ULTRAVOX, 'webrtc', 12_459), voice('pipecat', BRIDGED, 'telephony', 53_487)];
+    expect(legs.map((l) => cost(l))).toEqual([39_000, 18_000]);
+    expect(total(legs)).toBe(57_000);
   });
 
   it('3. side STT engines, and an stt line does not price stt-aux', () => {

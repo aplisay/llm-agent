@@ -75,6 +75,7 @@ Bridging (Case 1) and REFER (Case 2) both rely on the original caller being a **
 1. The worker resolves the egress trunk + caller ID (see below), then **originates a new outbound telephony leg** to the target through the configured SIP gateway.
 2. A pair of lightweight processors (a *tap* after the transport input, an *injector* before the transport output — see `agents/pipecat/pipecat_aplisay/media_relay.py`) are spliced into both legs' Pipecat pipelines. Engaging them relays raw PCM audio between the browser peer and the telephony leg in both directions; the agent goes silent and idle, and the two parties hear only each other.
 3. **Nothing is torn down** to install the relay — both pipelines keep running — so the WebRTC peer connection (which would otherwise disconnect on pipeline end) stays up across the cutover.
+4. **The agent then leaves, as on LiveKit.** The worker closes the realtime model session and ends the agent's call record with the reason `Agent left call, new bridged call: <id>`. The `telephony:bridged-call` record carries the rest of the call. The browser pipeline keeps running only to carry the relay. After a consultative finalise, the TransferAgent's model session is closed too.
 
 Because the relay carries decoded PCM, the browser's Opus/48 kHz audio and the telephony leg's G.711/8 kHz audio are reconciled by Pipecat's normal resampling at each transport sink — there is no same-codec constraint (unlike the in-gateway bridge, which is G.711-only).
 

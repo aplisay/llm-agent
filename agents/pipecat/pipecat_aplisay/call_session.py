@@ -160,6 +160,32 @@ class _RelayLeg:
     endpoint: Any  # media_relay.RelayEndpoint for the leg
 
 
+async def release_model_after_bridge(llm: Any) -> bool:
+    """Close a realtime model's provider session but leave its pipeline running.
+
+    A browser bridge keeps the pipeline up to carry the relay, so the service is
+    never stopped, and the provider bills the muted session until the caller
+    hangs up. ``_disconnect`` is private Pipecat API, pinned per service in
+    tests/test_webrtc_bridged_call_records.py. The agent never comes back to a
+    bridged browser call, so later connects are turned off as well.
+    """
+    disconnect = getattr(llm, "_disconnect", None)
+    if disconnect is None:
+        return False
+
+    async def _stay_closed(*_args: Any, **_kwargs: Any) -> None:
+        logger.debug(f"{llm}: model session was released at a bridge; not connecting again")
+
+    for name in ("_connect", "_reconnect"):
+        if hasattr(llm, name):
+            setattr(llm, name, _stay_closed)
+    try:
+        await disconnect()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"closing the model session at the bridge failed: {e}")
+    return True
+
+
 def _result_cap_for(model_name: str) -> int:
     """The tool-result cap for a model, in UTF-8 bytes.
 
@@ -2966,6 +2992,7 @@ class CallSession:
         logger.bind(call_id=self.call.id, leg_call_id=leg_call.id).info(
             "webrtc blind bridged transfer established"
         )
+        await self._leave_for_bridge(leg_call.id)
 
     async def _run_relay_leg(self) -> None:
         """Drive the blind relay leg's pipeline to completion. When it ends (the
@@ -3124,19 +3151,49 @@ class CallSession:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"end_call failed for {getattr(call, 'id', '?')}: {e}")
 
-    async def _start_consult_bridged_segment(self, consult: "CallSession") -> None:
+    async def _start_consult_bridged_segment(
+        self, consult: "CallSession"
+    ) -> Optional[api_client.CallRecord]:
         """``accept_transfer`` on a WebRTC consult: the TransferAgent steps aside
         and the two humans talk over the relay. End the consultation record and
         carry the rest of the leg on a ``telephony:bridged-call`` record, as the
         LiveKit worker's ``finaliseBridgedCall`` does. Best-effort: the relay is
-        already up and stays up whatever happens here."""
+        already up and stays up whatever happens here. Returns the bridged
+        record, or None if there is none."""
         handover = self._hold_task(
             asyncio.create_task(self._consult_to_bridged_record(consult))
         )
         # Teardown waits for this task before ending the record, so a leg that
         # drops mid-hand-over cannot leave a started record that is never ended.
         consult._bridged_handover = handover
-        await asyncio.shield(handover)
+        return await asyncio.shield(handover)
+
+    async def _release_model(self) -> None:
+        """Close this session's realtime model session (see
+        :func:`release_model_after_bridge`). A pipeline model has no session
+        that bills by the minute, so it is left alone."""
+        from .voice_mode import resolve_voice_mode
+
+        model_name = self._active_model_name or self.agent.get("modelName") or ""
+        if resolve_voice_mode(model_name, self.agent.get("options")) != "realtime":
+            return
+        if await release_model_after_bridge(self._llm_service):
+            logger.bind(call_id=self.call.id, model=model_name).info(
+                "bridged transfer: model session closed, the agent has left"
+            )
+
+    async def _leave_for_bridge(self, bridged_call_id: Optional[str]) -> None:
+        """The browser caller is now bridged to a person, so the agent leaves,
+        as LiveKit's ``finaliseBridgedCall`` does: close its model session and
+        end its call record. The relay keeps the browser leg up, and the
+        bridged record carries the rest of the call."""
+        await self._release_model()
+        reason = (
+            f"Agent left call, new bridged call: {bridged_call_id}"
+            if bridged_call_id
+            else "Agent left call"
+        )
+        await self._safe_end_call(self.call, reason)
 
     async def _consult_to_bridged_record(
         self, consult: "CallSession"
@@ -3251,7 +3308,11 @@ def _builtin_consult_accept(consult_session: CallSession):
                 media_relay.bridge(
                     parent.relay_endpoint, consult_session.relay_endpoint
                 )
-                await parent._start_consult_bridged_segment(consult_session)
+                bridged = await parent._start_consult_bridged_segment(consult_session)
+                await parent._leave_for_bridge(bridged.id if bridged is not None else None)
+                # The TransferAgent leaves too. Its record has already moved
+                # onto the bridged record.
+                await consult_session._release_model()
             elif parent._consult_use_refer:
                 try:
                     await parent.gateway_session.attended_refer_with(

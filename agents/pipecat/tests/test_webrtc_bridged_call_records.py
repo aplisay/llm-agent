@@ -7,6 +7,10 @@ worker's media relay. That segment must carry ``modelName:
 the bridged telephony tail leg rather than as minutes on the agent's model, and
 so call-hook receivers can tell it from an agent leg.
 
+Once the humans are bridged the agent leaves, as on LiveKit: its realtime model
+session is closed and its own call record ends, so neither the provider nor the
+rate card counts model minutes for the bridged time.
+
 These tests run the real transfer: the agent's ``transfer`` tool, the
 TransferAgent's ``accept_transfer`` tool, both sessions' pipelines and their
 teardown. Only the network edges are fake: the agent-db HTTP API, the gateway's
@@ -16,7 +20,10 @@ teardown. Only the network edges are fake: the agent-db HTTP API, the gateway's
 from __future__ import annotations
 
 import asyncio
+import importlib
 from typing import Any, Awaitable, Callable, Optional
+
+import pytest
 
 from pipecat.frames.frames import EndFrame, Frame, StartFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -29,6 +36,7 @@ from pipecat_aplisay.call_session import CallSession
 
 BRIDGED = "telephony:bridged-call"
 AGENT_MODEL = "pipecat:openai/gpt-4o"
+REALTIME_MODEL = "pipecat:ultravox/ultravox-v0.6"
 CLI = "+442080996945"
 TARGET = "+447700900123"
 CHARGEABLE_TRUNK = "trunk-public"
@@ -45,6 +53,20 @@ class _Passthrough(FrameProcessor):
         if self._started is not None and isinstance(frame, StartFrame):
             self._started.set()
         await self.push_frame(frame, direction)
+
+
+class _RealtimeModel:
+    """The parts of a realtime model service that the bridge touches."""
+
+    def __init__(self) -> None:
+        self.connects = 0
+        self.disconnects = 0
+
+    async def _connect(self) -> None:
+        self.connects += 1
+
+    async def _disconnect(self) -> None:
+        self.disconnects += 1
 
 
 class _Transport:
@@ -149,15 +171,17 @@ class _AgentDb:
 def _record_pipelines(monkeypatch) -> list[dict]:
     """Build each session's pipeline without model services: transport input,
     the relay tap and injector when present, transport output. Records the
-    tools each session's model would have been given."""
+    tools each session's model would have been given, and the stand-in model
+    service it was given."""
     builds: list[dict] = []
 
     async def build_voice_session(*, transport, tools, relay_endpoint, **_kwargs):
         relay = [relay_endpoint.tap, relay_endpoint.inject] if relay_endpoint is not None else []
         pipeline = Pipeline([transport.input(), *relay, transport.output()])
         task = PipelineTask(pipeline, params=PipelineParams(), idle_timeout_secs=None)
-        builds.append({"tools": {t["schema"]["name"]: t for t in tools}})
-        return task, None, None, None
+        model = _RealtimeModel()
+        builds.append({"tools": {t["schema"]["name"]: t for t in tools}, "model": model})
+        return task, None, None, model
 
     monkeypatch.setattr(cs, "build_voice_session", build_voice_session)
     return builds
@@ -174,12 +198,12 @@ def _static(value: str) -> dict:
     return {"type": "string", "source": "static", "from": value}
 
 
-def _browser_session(operation: str) -> CallSession:
+def _browser_session(operation: str, model_name: str = AGENT_MODEL) -> CallSession:
     agent = {
         "id": "agent-1",
         "userId": "user-1",
         "organisationId": "org-1",
-        "modelName": AGENT_MODEL,
+        "modelName": model_name,
         "prompt": "You answer calls for the surgery.",
         "options": {},
         "functions": [
@@ -278,6 +302,11 @@ def test_blind_transfer_records_the_relay_leg_as_a_bridged_call(monkeypatch):
         await asyncio.wait_for(browser._webrtc_bg_task, 5)
         assert browser.transfer_state.state == "talking"
         assert browser.relay_endpoint.engaged
+        # The agent has left: its record ends while the relay runs on.
+        assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
+        assert db.end_reasons[BROWSER_CALL_ID] == "Agent left call, new bridged call: leg-1"
+        # A pipeline model has no session billed by the minute to close.
+        assert builds[0]["model"].disconnects == 0
         # The target hangs up: the relay leg's pipeline ends, which drops the
         # browser caller too.
         await browser._relay_leg.task.queue_frame(EndFrame())
@@ -313,12 +342,14 @@ def test_accepted_consult_moves_the_human_segment_onto_a_bridged_call(monkeypatc
         assert browser.relay_endpoint.engaged
         [bridged_id] = db.created_with(BRIDGED)
         # The consultation ends before its successor starts, so the leg never
-        # holds two concurrency slots.
+        # holds two concurrency slots. Then the agent leaves the caller's leg.
         assert db.ops == [
             ("create", consult_id), ("start", consult_id),
             ("create", bridged_id), ("end", consult_id), ("start", bridged_id),
+            ("end", BROWSER_CALL_ID),
         ]
         assert bridged_id in db.end_reasons[consult_id]
+        assert db.end_reasons[BROWSER_CALL_ID] == f"Agent left call, new bridged call: {bridged_id}"
         # The target hangs up.
         await browser.sip_gateway.legs[0].transport.disconnect()
 
@@ -382,12 +413,14 @@ def test_consult_record_covers_the_leg_if_the_bridged_record_cannot_be_created(m
         assert browser.relay_endpoint.engaged
         assert browser.transfer_state.state == "none"
         assert db.lifecycle("leg-1") == ["create", "start"]
+        assert db.end_reasons[BROWSER_CALL_ID] == "Agent left call"
         await browser.sip_gateway.legs[0].transport.disconnect()
 
     _run_call(browser, body)
 
     assert list(db.created) == ["leg-1"]
     assert db.lifecycle("leg-1") == ["create", "start", "end"]
+    assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
 
 
 def test_the_line_that_made_the_target_accept_lands_on_the_consult_record(monkeypatch):
@@ -410,3 +443,115 @@ def test_the_line_that_made_the_target_accept_lands_on_the_consult_record(monkey
 
     lines = [(log["callId"], log["data"]) for log in db.logs if log["type"] == "user"]
     assert lines == [("leg-1", "Yes, I will take the call.")]
+
+
+def test_blind_transfer_closes_the_realtime_model_when_the_bridge_starts(monkeypatch):
+    db, builds = _install(monkeypatch)
+    browser = _browser_session("blind", REALTIME_MODEL)
+
+    async def body() -> None:
+        await builds[0]["tools"]["transfer"]["execute"]({})
+        await asyncio.wait_for(browser._webrtc_bg_task, 5)
+        assert browser.relay_endpoint.engaged
+        model = builds[0]["model"]
+        # The provider session is closed, and stays closed.
+        assert model.disconnects == 1
+        await model._connect()
+        assert model.connects == 0
+        assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
+        assert db.end_reasons[BROWSER_CALL_ID] == "Agent left call, new bridged call: leg-1"
+        # A line that arrives after the record ended is posted on its own: the
+        # batch already went with the end.
+        await browser._send_message({"agent": "Putting you through now."})
+        assert [log["data"] for log in db.logs] == ["Putting you through now."]
+        assert db.logs[0]["callId"] == BROWSER_CALL_ID
+        await browser._relay_leg.task.queue_frame(EndFrame())
+
+    _run_call(browser, body)
+
+    # Teardown does not end the agent's record a second time.
+    assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
+    assert db.lifecycle("leg-1") == ["create", "start", "end"]
+
+
+def test_accepted_consult_closes_both_realtime_models(monkeypatch):
+    db, builds = _install(monkeypatch)
+    browser = _browser_session("consultative", REALTIME_MODEL)
+
+    async def body() -> None:
+        await builds[0]["tools"]["transfer"]["execute"]({})
+        await _consult_leg_up(browser, builds)
+        # During the consultation both agents are live.
+        assert builds[0]["model"].disconnects == 0
+        assert builds[1]["model"].disconnects == 0
+        await builds[1]["tools"]["accept_transfer"]["execute"]({"reason": "Happy to take it"})
+        assert browser.relay_endpoint.engaged
+        assert builds[0]["model"].disconnects == 1
+        assert builds[1]["model"].disconnects == 1
+        [bridged_id] = db.created_with(BRIDGED)
+        assert db.end_reasons[BROWSER_CALL_ID] == f"Agent left call, new bridged call: {bridged_id}"
+        await browser.sip_gateway.legs[0].transport.disconnect()
+
+    _run_call(browser, body)
+
+    [consult_id] = db.created_with(REALTIME_MODEL)
+    [bridged_id] = db.created_with(BRIDGED)
+    assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
+    assert db.lifecycle(consult_id) == ["create", "start", "end"]
+    assert db.lifecycle(bridged_id) == ["create", "start", "end"]
+
+
+_REALTIME_SERVICES = [
+    ("pipecat_aplisay.ultravox_compat", "AplisayUltravoxRealtimeLLMService"),
+    ("pipecat_aplisay.openai_realtime_service", "AplisayOpenAIRealtimeLLMService"),
+    ("pipecat_aplisay.gpt_live_service", "AplisayOpenAILiveLLMService"),
+    ("pipecat_aplisay.gemini_service", "AplisayGeminiLiveLLMService"),
+    ("pipecat_aplisay.grok_service", "AplisayGrokRealtimeLLMService"),
+    ("pipecat_aplisay.elevenlabs_agents_service", "ElevenLabsAgentsLLMService"),
+]
+
+
+@pytest.mark.parametrize("module,name", _REALTIME_SERVICES)
+def test_each_realtime_service_still_has_the_private_disconnect(module, name):
+    """``release_model_after_bridge`` calls Pipecat's private ``_disconnect``.
+    A Pipecat upgrade that renames it would leave the model session open
+    through every browser bridge, so fail here instead."""
+    cls = getattr(importlib.import_module(module), name)
+    assert callable(getattr(cls, "_disconnect", None))
+
+
+def test_releasing_an_ultravox_session_closes_its_socket_and_drops_later_sends():
+    pytest.importorskip("pipecat.services.ultravox.llm")
+    from pipecat_aplisay.ultravox_compat import AplisayUltravoxRealtimeLLMService
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.closed = False
+            self.sent: list = []
+
+        async def close(self) -> None:
+            self.closed = True
+
+        async def send(self, data) -> None:
+            self.sent.append(data)
+
+    # No-init instance: only the attributes _disconnect and _send read.
+    service = object.__new__(AplisayUltravoxRealtimeLLMService)
+    socket = _Socket()
+    service._socket = socket
+    service._receive_task = None
+    service._disconnecting = False
+    service._completed_tool_calls = set()
+    service._started_placeholder_sent = set()
+
+    async def scenario() -> None:
+        assert await cs.release_model_after_bridge(service) is True
+        assert socket.closed
+        await service._send({"type": "input_text_message", "text": "hello"})
+        assert socket.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_releasing_nothing_is_a_no_op():
+    assert asyncio.run(cs.release_model_after_bridge(None)) is False
