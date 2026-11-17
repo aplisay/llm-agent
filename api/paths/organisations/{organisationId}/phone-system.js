@@ -1,7 +1,7 @@
 import { Organisation, PhoneNumber, Extension } from '../../../../lib/database.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../../lib/auth/admin-scope.js';
-import { requirePhoneSystem } from '../../../../lib/capabilities.js';
+import { requirePhoneSystem, requirePhoneSystemSchema } from '../../../../lib/capabilities.js';
 import { toE164 } from '../../../../lib/directory/fields.js';
 
 const ADDRESS_FIELDS = ['name', 'premises', 'thoroughfare', 'locality', 'postcode', 'businessSuffix'];
@@ -27,6 +27,7 @@ function cleanAddress(address) {
 export default function (logger) {
   const load = async (req, res, action) => {
     if (!requirePermission(res, 'organisation', action)) return null;
+    if (!requirePhoneSystemSchema(res)) return null;
     const organisation = await Organisation.findByPk(req.params.organisationId);
     // 404 for another organisation too, so its existence is not confirmed.
     if (!organisation || !targetInScope(res.locals.user, 'organisation', organisation)) {

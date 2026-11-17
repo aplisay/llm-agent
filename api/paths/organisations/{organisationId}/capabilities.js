@@ -2,7 +2,7 @@ import { Organisation } from '../../../../lib/database.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../../lib/auth/admin-scope.js';
 import { principalBrand } from '../../../../lib/brands.js';
-import { validateCapabilities, CAPABILITIES } from '../../../../lib/capabilities.js';
+import { validateCapabilities, CAPABILITIES, requirePhoneSystemSchema } from '../../../../lib/capabilities.js';
 
 /**
  * PUT /api/organisations/{id}/capabilities: switch whole features on or off
@@ -16,6 +16,7 @@ export default function (logger) {
     const list = req.body?.capabilities;
     const problem = validateCapabilities(list);
     if (problem) return res.status(400).send({ error: problem, code: 'unknown_capability', field: 'capabilities' });
+    if (!requirePhoneSystemSchema(res)) return;
     const organisation = await Organisation.findByPk(req.params.organisationId);
     if (!organisation || !targetInScope(res.locals.user, 'organisation', organisation)) return res.status(404).send({ error: 'Organisation not found', code: 'not_found' });
     const before = organisation.capabilities || [];

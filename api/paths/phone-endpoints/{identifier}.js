@@ -4,7 +4,7 @@ import { createRegistrationTrunk } from '../phone-endpoints.js';
 import { TELEPHONY_HANDLER_NAMES } from '../../../lib/handlers/index.js';
 import { isDeviceLine } from '../../../lib/pbx/line-accounts.js';
 import { routeNumber } from '../../../lib/pbx/directory.js';
-import { requirePhoneSystem } from '../../../lib/capabilities.js';
+import { requirePhoneSystem, requirePhoneSystemSchema } from '../../../lib/capabilities.js';
 import { PbxError } from '../../../lib/pbx/errors.js';
 import { Extension, DirectoryEntry } from '../../../lib/database.js';
 import { userOwnsRow } from '../../../lib/scope.js';
@@ -320,6 +320,7 @@ const updatePhoneEndpoint = async (req, res) => {
 
       // Point the number at an extension of the phone system, or clear that.
       if (routing) {
+        if (!requirePhoneSystemSchema(res)) return;
         const organisation = await Organisation.findByPk(organisationId, { attributes: ['id', 'capabilities'] });
         if (!requirePhoneSystem(res, organisation, 'extensionId')) return;
         if (updateData.handler !== undefined) {

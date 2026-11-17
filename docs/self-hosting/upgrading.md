@@ -39,7 +39,11 @@ with the one stored in the database.
 - **The code is newer than the database.** In production mode the server does
   not change an existing schema by itself. It logs
   `version mismatch, wont upgrade` and carries on with the old schema. New
-  features that need new columns will fail until you upgrade.
+  features that need new columns will fail until you upgrade. From schema 72
+  on, the server switches such a feature off instead and logs
+  `Schema N is not applied, so its feature is off`. Its routes answer 503 with
+  a code that ends in `_not_ready`, for example `phone_system_not_ready`, until
+  you upgrade and restart.
 - **The database is newer than the code.** The server logs
   `Database version mismatch`. You are running an older version against a
   newer database. Go back to the newer version.
@@ -55,7 +59,8 @@ node tools/agent-admin.js upgrade-db
 ```
 
 It alters the tables to match the new version, then records the new version
-number. Run it before, or straight after, you start the new API server. If you
+number. Run it before you start the new API server. If you run it after, restart
+the API server, so that any feature switched off at start comes on. If you
 run several API server replicas, run it once: the schema work is serialised by
 a database lock.
 

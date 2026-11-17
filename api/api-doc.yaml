@@ -73,6 +73,8 @@ tags:
       An organisation with the phone system (the `phoneSystem` capability) can also give an entry an
       extension that rings phones registered to this platform, and add people to it as members.
       Without the capability those requests answer 403 with code `phone_system_disabled`.
+      On a database that has not had the phone system upgrade (`tools/agent-admin.js upgrade-db`),
+      every directory and phone request answers 503 with code `phone_system_not_ready`.
 
       Every write that can change the keys of a phone takes `?dryRun=true`. It then checks the
       request, changes nothing, and returns the same `effect` document the real write returns.
@@ -81,7 +83,8 @@ tags:
       The phones of the phone system: desk phones, and outside numbers such as mobiles. An admin
       says which people a phone rings for. The lines (keys) of a desk phone are worked out from
       that and from each person's extensions, and are never set by hand. Needs the `phoneSystem`
-      capability.
+      capability, and answers 503 `phone_system_not_ready` until the database has had the phone system
+      upgrade.
 
 # All operations require a bearer token unless stated otherwise on the operation.
 security:
