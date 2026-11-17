@@ -23,7 +23,7 @@ Taking the capability away deletes nothing. Calls are refused and the routes ans
 
 An organisation without the capability still has the directory, and extensions of type `connection`: numbers on its own phone system, reached through one of its connections.
 
-The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. Restart the API server after the upgrade.
+The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. The outbound refusal of extension digits and the daily purge of removed rows do nothing until then. Restart the API server after the upgrade.
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 

@@ -70,7 +70,7 @@ The decision returns `{ allowed, code, reason, chargeable, trunkId, destination 
 | `trunk_filter` | Failed the egress trunk's operator allow-pattern |
 | `not_rateable` | We hold no rate/tariff that prices this destination for this organisation |
 | `invalid_destination` | Not a dialable number at all |
-| `internal_extension_not_reachable` | The digits are the number of one of the organisation's phone system extensions, which only a phone system call can ring ([phone-system.md](phone-system.md)) |
+| `internal_extension_not_reachable` | The digits are the number of one of the organisation's phone system extensions, which only a phone system call can ring ([phone-system.md](phone-system.md)). Not checked until the database has the phone system schema |
 
 The originate API returns these as a `400` with `error` and `code`. In a worker
 the refusal surfaces to the model as the `transfer` tool's failure reason, so the
