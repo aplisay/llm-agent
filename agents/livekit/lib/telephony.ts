@@ -19,8 +19,13 @@ export function chargeableOutboundTrunkId(registrationOriginated?: boolean): str
   return process.env.APLISAY_OUTBOUND_TRUNK_ID || undefined;
 }
 
-function sipIdentityFor(identity: SipIdentity | null | undefined, fromNumber: string, roomName: string) {
-  const result = applySipIdentity(identity, fromNumber);
+function sipIdentityFor(
+  identity: SipIdentity | null | undefined,
+  fromNumber: string,
+  roomName: string,
+  host: string | null | undefined,
+) {
+  const result = applySipIdentity(identity, fromNumber, host);
   if (result.assertedNumberRejected) {
     logger.warn(
       { roomName, assertedNumber: identity?.assertedNumber, flags: identity?.flags },
@@ -267,7 +272,7 @@ export async function bridgeParticipant(
     // SIP extension) as the calling number toward the gateway, rather than
     // the placeholder. Avoids 603 Decline from PBXs that reject an unknown
     // calling number. Falls back to the placeholder when unavailable.
-    const regIdentity = sipIdentityFor(identity, registrationUsername || '00000', roomName);
+    const regIdentity = sipIdentityFor(identity, registrationUsername || '00000', roomName, b2buaGatewayIp);
     // For registration endpoints, we dial the destination number directly
     // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const sipParticipantOptions = {
@@ -309,7 +314,7 @@ export async function bridgeParticipant(
     throw new Error('No livekit outbound SIP trunk found');
   }
 
-  const trunkIdentity = sipIdentityFor(identity, origin, roomName);
+  const trunkIdentity = sipIdentityFor(identity, origin, roomName, outboundSipTrunk.address);
   // Outbound trunk to use for the call
   const sipParticipantOptions = {
     participantIdentity: 'sip-outbound-call',
@@ -400,7 +405,7 @@ export async function dialTransferTargetToConsultation(
     // rather than the placeholder CLI. Some PBXs (e.g. Wildix) 603-Decline
     // an outbound/transfer call whose calling number is unrecognised. Fall
     // back to the previous behaviour when the username is unavailable.
-    const regIdentity = sipIdentityFor(identity, registrationUsername || origin, consultRoomName);
+    const regIdentity = sipIdentityFor(identity, registrationUsername || origin, consultRoomName, b2buaGatewayIp);
     // For registration endpoints, we dial the destination number directly
     // The trunk is configured to route to the registrar, and we include the registration endpoint ID in headers
     const transferTargetParticipant = await sipClient.createSipParticipant(
@@ -442,7 +447,7 @@ export async function dialTransferTargetToConsultation(
     throw new Error("No livekit outbound SIP trunk found");
   }
 
-  const trunkIdentity = sipIdentityFor(identity, origin, consultRoomName);
+  const trunkIdentity = sipIdentityFor(identity, origin, consultRoomName, outboundSipTrunk.address);
   const transferTargetParticipant = await sipClient.createSipParticipant(
     outboundSipTrunk.sipTrunkId,
     destination,

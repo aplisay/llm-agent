@@ -317,9 +317,17 @@ They are off by default, so other trunks see no change.
 
 | Flag | Effect |
 |---|---|
-| `sendPai: true` | Adds `P-Asserted-Identity: <tel:+E164>` with the agent's own number. |
-| `sendRpid: true` | Adds `Remote-Party-ID: <tel:+E164>;party=calling;screen=yes;privacy=off` with the agent's own number. |
-| `fromOriginalCaller: true` | On a transfer leg, `From` carries the original caller instead of the agent's number. It only takes effect on a leg that also carries `P-Asserted-Identity` or `Remote-Party-ID`, so the carrier always sees our own number beside it. |
+| `sendPai: true` | Adds `P-Asserted-Identity: <sip:+E164@host;user=phone>` with the agent's own number. |
+| `sendRpid: true` | Adds `Remote-Party-ID: <sip:+E164@host;user=phone>;party=calling;screen=yes;privacy=off` with the agent's own number. |
+| `fromOriginalCaller: true` | On a transfer leg, `From` carries the original caller instead of the agent's number. |
+
+`host` is the next hop the worker sends the leg to: the SBC address on the LiveKit outbound trunk,
+or the registration's B2BUA. If no host is known the URI is `tel:+E164` instead.
+
+The usual setting for "From: caller, P-Asserted-Identity: our number" is `sendPai` with
+`fromOriginalCaller`. `fromOriginalCaller` also works on its own, but that is unusual: the carrier
+then sees only a third party's number and none of ours. Many carriers reject such a call or replace
+the number, so only set it alone if the carrier has asked for it.
 
 The flags of the trunk the leg goes out on apply (the trunk named in `X-Aplisay-Trunk`):
 

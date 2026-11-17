@@ -65,39 +65,56 @@ export function toE164(number: string | null | undefined): string | null {
   return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
 }
 
+/** The host part of a SIP address such as `sip:sbc.example.com:5061;transport=tls`. */
+export function sipHost(address: string | null | undefined): string | null {
+  if (typeof address !== "string") return null;
+  let h = address.trim().replace(/^(sip|sips):/i, "");
+  h = h.split(";")[0];
+  h = h.includes("@") ? h.slice(h.lastIndexOf("@") + 1) : h;
+  if (h.startsWith("[")) h = h.slice(0, h.indexOf("]") + 1);
+  else h = h.split(":")[0];
+  return h || null;
+}
+
 /**
  * The From number and extra INVITE headers for one dialled leg.
  *
- * From switches to the original caller only on a leg that also carries PAI
- * or RPID, so the network never sees a third party's number with no
- * identity of ours beside it.
+ * @param host - The next hop this leg is sent to (our SBC or a registration's
+ *   B2BUA); it becomes the host of the PAI / RPID URI. Without one the URI
+ *   is `tel:`.
  */
 export function applySipIdentity(
   identity: SipIdentity | null | undefined,
   fromNumber: string,
+  host?: string | null,
 ): SipIdentityResult {
   const headers: Record<string, string> = {};
   const flags = identity?.flags;
-  if (!flags || !(flags.sendPai || flags.sendRpid)) {
+  if (!flags) {
     return { fromNumber, headers, assertedNumberRejected: false };
-  }
-  const asserted = toE164(identity?.assertedNumber);
-  if (!asserted) {
-    return { fromNumber, headers, assertedNumberRejected: true };
-  }
-  if (flags.sendPai) {
-    headers["P-Asserted-Identity"] = `<tel:${asserted}>`;
-  }
-  if (flags.sendRpid) {
-    headers["Remote-Party-ID"] =
-      `<tel:${asserted}>;party=calling;screen=yes;privacy=off`;
   }
   let from = fromNumber;
   if (flags.fromOriginalCaller) {
     const caller = toE164(identity?.originalCaller);
     if (caller) from = caller;
   }
-  return { fromNumber: from, headers, assertedNumberRejected: false };
+  let assertedNumberRejected = false;
+  if (flags.sendPai || flags.sendRpid) {
+    const asserted = toE164(identity?.assertedNumber);
+    if (!asserted) {
+      assertedNumberRejected = true;
+    } else {
+      const h = sipHost(host);
+      const uri = h ? `sip:${asserted}@${h};user=phone` : `tel:${asserted}`;
+      if (flags.sendPai) {
+        headers["P-Asserted-Identity"] = `<${uri}>`;
+      }
+      if (flags.sendRpid) {
+        headers["Remote-Party-ID"] = `<${uri}>;party=calling;screen=yes;privacy=off`;
+      }
+    }
+  }
+  return { fromNumber: from, headers, assertedNumberRejected };
 }
 
 /**
