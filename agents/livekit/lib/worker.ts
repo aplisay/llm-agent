@@ -17,6 +17,7 @@ import logger, { captureSdkLogs } from "./logger.js";
 import { agentForLog, instanceForLog } from "./log-fields.js";
 import { invocationLogs, trimIdleLines } from "./invocation-log-buffer.js";
 import { bridgeParticipant, chargeableOutboundTrunkId } from "./telephony.js";
+import { pickSipIdentityFlags } from "./sip-identity.js";
 import {
   createCall,
   createTransactionLog,
@@ -272,6 +273,7 @@ export default defineAgent({
         forceBridged,
         sipHeaders = {},
         callerIdName,
+        sipIdentityFlags = null,
       } = scenario;
 
       // Store B2BUA gateway info for use in onTransfer closure
@@ -349,6 +351,7 @@ export default defineAgent({
         outbound: outboundCall,
         registrationOriginated,
         trunkInfo,
+        sipIdentityFlags,
         registrationRegistrar,
         registrationTransport,
         registrationUsername,
@@ -389,6 +392,7 @@ export default defineAgent({
             call?.id,
             aLegEncrypted,
             registrationUsername,
+            { flags: sipIdentityFlags, assertedNumber: outboundInfo.fromNumber },
           );
           if (!participant) {
             throw new Error("Outbound call failed to create participant");
@@ -895,6 +899,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     registrationEndpointId: metaRegistrationEndpointId,
     b2buaGatewayIp: metaB2buaGatewayIp,
     b2buaGatewayTransport: metaB2buaGatewayTransport,
+    trunkFlags: metaTrunkFlags,
   } = jobMetadata || {};
   logger.info(
     {
@@ -1341,6 +1346,7 @@ async function getCallInfo(ctx: JobContext, room: Room): Promise<CallScenario> {
     outboundInfo,
     registrationOriginated,
     trunkInfo,
+    sipIdentityFlags: pickSipIdentityFlags(outboundCall ? metaTrunkFlags : trunkInfo?.flags),
     registrationRegistrar,
     registrationTransport,
     registrationUsername,
@@ -1465,6 +1471,7 @@ async function setupCallAndUtilities({
   outbound,
   registrationOriginated,
   trunkInfo,
+  sipIdentityFlags = null,
   registrationRegistrar,
   registrationTransport,
   registrationUsername,
@@ -1718,8 +1725,10 @@ async function setupCallAndUtilities({
         callerId,
         calledId,
         aplisayId,
+        outbound: outbound === true,
         registrationOriginated: registrationOriginated || false,
         trunkInfo,
+        sipIdentityFlags,
         registrationRegistrar,
         registrationTransport,
         registrationUsername,

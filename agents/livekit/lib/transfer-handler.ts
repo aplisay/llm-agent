@@ -22,6 +22,12 @@ import {
 } from "./api-client.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
+import {
+  pickSipIdentityFlags,
+  transferSipIdentity,
+  type SipIdentity,
+  type SipIdentityFlags,
+} from "./sip-identity.js";
 import { makeUsageMeter, type UsageMeter } from "./usage-meter.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { createConsultSession } from "./voice-session-factory.js";
@@ -186,8 +192,14 @@ export interface TransferContext {
   callerId: string;
   calledId: string;
   aplisayId: string;
+  /** True for an originated call: callerId is then the agent's number and calledId the far party. */
+  outbound?: boolean;
   registrationOriginated: boolean;
   trunkInfo: TrunkInfo | null | undefined;
+  /** Identity flags of the trunk the session's own number is on. */
+  sipIdentityFlags?: SipIdentityFlags | null;
+  /** Set by handleTransfer for the legs this transfer dials. */
+  sipIdentity?: SipIdentity | null;
   registrationRegistrar: string | null | undefined;
   registrationTransport: string | null | undefined;
   registrationUsername: string | null | undefined; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
@@ -312,10 +324,13 @@ async function validateTransferArgs(
   effectiveAplisayId: string;
   /** Set when the caller-ID is a phone_registration: the B-leg must egress via its B2BUA gateway. */
   registrationEgress?: RegistrationEgress;
+  /** Set when args.callerId moves the leg onto another egress: that egress's identity flags. */
+  egressIdentityFlags?: SipIdentityFlags | null;
 }> {
   let effectiveCallerId = args.callerId || calledId;
   let effectiveAplisayId = aplisayId;
   let registrationEgress: RegistrationEgress | undefined;
+  let egressIdentityFlags: SipIdentityFlags | null | undefined;
 
   // Validate overridden callerId if provided
   if (args.callerId) {
@@ -378,6 +393,7 @@ async function validateTransferArgs(
         }
       }
       effectiveCallerId = pn.number;
+      egressIdentityFlags = pickSipIdentityFlags(pn.trunk?.flags);
     } else {
       // ---- Phone-registration caller-ID ----
       // A registration endpoint can originate a transfer (e.g. a WebRTC origin
@@ -432,6 +448,7 @@ async function validateTransferArgs(
         registrationUsername: reg.username ?? null,
       };
       effectiveCallerId = regCallerNumber;
+      egressIdentityFlags = null;
     }
   }
 
@@ -477,6 +494,7 @@ async function validateTransferArgs(
     effectiveCallerId,
     effectiveAplisayId,
     ...(registrationEgress ? { registrationEgress } : {}),
+    ...(egressIdentityFlags !== undefined ? { egressIdentityFlags } : {}),
   };
 }
 
@@ -723,6 +741,7 @@ async function handleBlindBridgeTransfer(
       context.call?.id,
       aLegEncrypted,
       registrationUsername,
+      context.sipIdentity ?? null,
     );
 
     logger.info({ p }, "new participant created (blind bridge)");
@@ -1025,6 +1044,7 @@ async function startConsultativeTransfer(
       context.call?.id,
       context.aLegEncrypted,
       context.registrationUsername,
+      context.sipIdentity ?? null,
     );
     setBridgedParticipant(transferTargetParticipant);
 
@@ -2211,8 +2231,9 @@ export async function handleTransfer(
   const operation = args.operation || "blind";
 
   // Validate and resolve transfer arguments
-  const { effectiveCallerId, effectiveAplisayId, registrationEgress } =
+  const { effectiveCallerId, effectiveAplisayId, registrationEgress, egressIdentityFlags } =
     await validateTransferArgs(args, agent, calledId, aplisayId, registrationOriginated);
+  context.sipIdentity = transferSipIdentity(context, effectiveCallerId, egressIdentityFlags);
 
   // A registration caller-ID must egress via the registration's B2BUA gateway
   // (X-Aplisay-PhoneRegistration header + the registration username as the

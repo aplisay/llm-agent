@@ -224,7 +224,7 @@ listTrunks.apiDoc = {
                     outbound: { type: 'boolean', description: 'Whether this trunk can be used for outbound calls' },
                     chargeable: { type: 'boolean', description: 'Whether outbound minutes on this trunk are destination-billed to the org (our carrier trunks); false for BYO/inbound/registration trunks' },
                     outboundCallFilter: { type: 'string', nullable: true, description: `Operator allow-pattern (regex) for outbound destinations carried on this trunk, applied to the canonical +E.164 form. Authoritative on a chargeable trunk: an agent's own options.outboundCallFilter may only narrow it. Null = the UK geographic/mobile default (${DEFAULT_TRUNK_OUTBOUND_FILTER})` },
-                    flags: { type: 'object', nullable: true, description: 'JSON object containing trunk flags (e.g., canRefer, provider)' },
+                    flags: { type: 'object', nullable: true, description: 'JSON object containing trunk flags (e.g., canRefer, provider, sendPai, sendRpid, fromOriginalCaller)' },
                     organisationIds: { type: 'array', items: { type: 'string' }, description: 'Organisations this trunk is assigned to (only present for scope=all)' }
                   }
                 }

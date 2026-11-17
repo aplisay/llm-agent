@@ -71,6 +71,7 @@ const originateCall = (async (req, res) => {
     // worker gets the B2BUA explicitly rather than inferring it from the
     // caller id (which stays the number).
     let registrationEgress = null;
+    let trunkFlags = null;
 
     if (callerPhoneNumber && userOwnsPhoneNumber(res.locals.user, callerPhoneNumber)) {
       // Found in phone numbers table
@@ -80,7 +81,7 @@ const originateCall = (async (req, res) => {
         });
       }
       aplisayId = callerPhoneNumber.aplisayId;
-      const trunkFlags = callerPhoneNumber.Trunk?.flags;
+      trunkFlags = callerPhoneNumber.Trunk?.flags ?? null;
       if (trunkFlags?.provider === 'registration' && trunkFlags.registrationId) {
         const registration = await PhoneRegistration.findByPk(String(trunkFlags.registrationId));
         if (!registration || !userOwnsRow(res.locals.user, registration)) {
@@ -156,7 +157,7 @@ const originateCall = (async (req, res) => {
     }
 
     const { callId } = await handler.outbound({
-      instance, callerId, calledId, metadata, aplisayId, srtp: decision.srtp,
+      instance, callerId, calledId, metadata, aplisayId, srtp: decision.srtp, trunkFlags,
       ...(registrationEgress || {}),
     });
 

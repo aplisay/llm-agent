@@ -64,6 +64,7 @@ import { voice } from "@livekit/agents";
 
 
 import type { TrunkInfo } from './api-client.js';
+import type { SipIdentityFlags } from './sip-identity.js';
 import type { LoggedTransactionLog } from './user-turn-corrections.js';
 
 export interface CallScenario {
@@ -80,6 +81,9 @@ export interface CallScenario {
   outboundInfo: OutboundInfo | null;
   registrationOriginated?: boolean;
   trunkInfo?: TrunkInfo | null;
+  // Identity flags of the trunk this call's own number is on: the inbound
+  // trunk, or for an originated call the caller number's trunk.
+  sipIdentityFlags?: SipIdentityFlags | null;
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
   registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway
@@ -106,6 +110,8 @@ export interface JobMetadata {
   b2buaGatewayIp?: string | null;
   b2buaGatewayTransport?: string | null;
   srtp?: boolean | null;
+  /** Originate only: `flags` of the caller number's trunk. */
+  trunkFlags?: Record<string, unknown> | null;
   callId?: string;
   callerId?: string;
   calledId?: string;
@@ -147,6 +153,7 @@ export interface SetupCallParams<TContext = any, TRoom = any> {
   outbound?: boolean;
   registrationOriginated?: boolean;
   trunkInfo?: TrunkInfo | null;
+  sipIdentityFlags?: SipIdentityFlags | null; // See CallScenario.sipIdentityFlags.
   registrationRegistrar?: string | null;
   registrationTransport?: string | null;
   registrationUsername?: string | null; // Registration trunk username (e.g. 8092); used as calling number toward the gateway

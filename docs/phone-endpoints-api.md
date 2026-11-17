@@ -304,6 +304,41 @@ Trunks are a curated platform resource. Ordinary callers get the org-scoped list
   created trunk incl. `organisationIds`.
 - Editing name / chargeable / provider / org assignments is `PATCH /api/trunks/{id}` (`trunk:assign`).
 
+### Trunk flags
+
+A trunk's `flags` is a JSON object. The API only writes `flags.provider`; set other flags on the
+trunk row directly. Flag names are camelCase.
+
+#### Caller identity on outbound legs (LiveKit)
+
+Some carriers want a `P-Asserted-Identity` or `Remote-Party-ID` header on calls we send them, or
+want the original caller in `From` on a transferred call. These flags turn that on for one trunk.
+They are off by default, so other trunks see no change.
+
+| Flag | Effect |
+|---|---|
+| `sendPai: true` | Adds `P-Asserted-Identity: <tel:+E164>` with the agent's own number. |
+| `sendRpid: true` | Adds `Remote-Party-ID: <tel:+E164>;party=calling;screen=yes;privacy=off` with the agent's own number. |
+| `fromOriginalCaller: true` | On a transfer leg, `From` carries the original caller instead of the agent's number. It only takes effect on a leg that also carries `P-Asserted-Identity` or `Remote-Party-ID`, so the carrier always sees our own number beside it. |
+
+The flags of the trunk the leg goes out on apply (the trunk named in `X-Aplisay-Trunk`):
+
+- **Originate:** the trunk of the `callerId` number.
+- **Transfer:** the trunk of the number the call came in on, or of the transfer's `callerId` number
+  when one is given.
+
+The agent's own number is the number the call came in on, or the `callerId` of an originated call.
+It is never a caller ID that the model passes to the transfer tool. A browser (WebRTC) session has no
+such number, so it uses the transfer's validated `callerId`. The number is normalised to `+E.164`;
+if it is not a valid E.164 number (for example a short extension), no header is sent and the worker
+logs a warning.
+
+These flags apply to every leg the LiveKit worker dials: originated calls, blind bridged transfers
+and consultative transfer targets, through the SBC or a registration's B2BUA. They do not apply to
+transfers done by SIP REFER (the far end places that call), or to the Pipecat or Jambonz workers.
+The SBC passes these headers through unchanged. It still rewrites the `From` user to the trunk's
+number format.
+
 ---
 
 ## Using the API for managing telephone numbers
