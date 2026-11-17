@@ -317,10 +317,10 @@ They are off by default, so other trunks see no change.
 
 | Flag | Effect |
 |---|---|
-| `sendPai: true` | Adds `P-Asserted-Identity: <sip:+E164@host;user=phone>` with the agent's own number. |
-| `sendRpid: true` | Adds `Remote-Party-ID: <sip:+E164@host;user=phone>;party=calling;screen=yes;privacy=off` with the agent's own number. |
+| `sendPai: true` | Adds `P-Asserted-Identity: "+E164" <sip:+E164@host>` with the agent's own number. |
+| `sendRpid: true` | Adds `Remote-Party-ID: "+E164" <sip:+E164@host>;party=calling;screen=yes;privacy=off` with the agent's own number. |
 | `fromOriginalCaller: true` | On a transfer leg, `From` carries the original caller instead of the agent's number. |
-| `useTelUriId: true` | `P-Asserted-Identity` and `Remote-Party-ID` use `tel:+E164` instead of the `sip:` URI. |
+| `useTelUriId: true` | `P-Asserted-Identity` and `Remote-Party-ID` use `<tel:+E164>` instead of the named `sip:` URI. |
 
 `host` is the next hop the worker sends the leg to: the SBC address on the LiveKit outbound trunk,
 or the registration's B2BUA. It is not the carrier's own host, which only the SBC knows. Use

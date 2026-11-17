@@ -68,10 +68,10 @@ test("sipHost takes the host from an address", () => {
   assert.equal(sipHost(null), null);
 });
 
-test("sendPai adds P-Asserted-Identity as a sip URI on the next hop", () => {
+test("sendPai adds P-Asserted-Identity as a named sip URI on the next hop", () => {
   const r = applySipIdentity({ flags: { sendPai: true }, assertedNumber: AGENT }, "+441632960001", SBC);
   assert.deepEqual(r.headers, {
-    "P-Asserted-Identity": "<sip:+441632960001@sbc.example.com;user=phone>",
+    "P-Asserted-Identity": '"+441632960001" <sip:+441632960001@sbc.example.com>',
   });
   assert.equal(r.fromNumber, "+441632960001");
 });
@@ -97,7 +97,7 @@ test("sendRpid adds Remote-Party-ID", () => {
   const r = applySipIdentity({ flags: { sendRpid: true }, assertedNumber: AGENT }, AGENT, SBC);
   assert.deepEqual(r.headers, {
     "Remote-Party-ID":
-      "<sip:+441632960001@sbc.example.com;user=phone>;party=calling;screen=yes;privacy=off",
+      '"+441632960001" <sip:+441632960001@sbc.example.com>;party=calling;screen=yes;privacy=off',
   });
 });
 
@@ -112,7 +112,7 @@ test("fromOriginalCaller with PAI: From is the caller, PAI the agent", () => {
     SBC,
   );
   assert.equal(r.fromNumber, "+447700900123");
-  assert.equal(r.headers["P-Asserted-Identity"], "<sip:+441632960001@sbc.example.com;user=phone>");
+  assert.equal(r.headers["P-Asserted-Identity"], '"+441632960001" <sip:+441632960001@sbc.example.com>');
 });
 
 test("fromOriginalCaller alone changes From and adds no headers", () => {

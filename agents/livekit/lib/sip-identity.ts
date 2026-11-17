@@ -108,12 +108,14 @@ export function applySipIdentity(
       assertedNumberRejected = true;
     } else {
       const h = flags.useTelUriId ? null : sipHost(host);
-      const uri = h ? `sip:${asserted}@${h};user=phone` : `tel:${asserted}`;
+      const identityValue = h
+        ? `"${asserted}" <sip:${asserted}@${h}>`
+        : `<tel:${asserted}>`;
       if (flags.sendPai) {
-        headers["P-Asserted-Identity"] = `<${uri}>`;
+        headers["P-Asserted-Identity"] = identityValue;
       }
       if (flags.sendRpid) {
-        headers["Remote-Party-ID"] = `<${uri}>;party=calling;screen=yes;privacy=off`;
+        headers["Remote-Party-ID"] = `${identityValue};party=calling;screen=yes;privacy=off`;
       }
     }
   }
