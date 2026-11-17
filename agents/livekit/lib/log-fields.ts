@@ -59,26 +59,59 @@ export function sessionModelsForLog(
   return { llm: labelOf(session.llm), stt: labelOf(session.stt), tts: labelOf(session.tts) };
 }
 
-function withoutRecordingKey(x: unknown): unknown {
-  if (!isRow(x) || !isRow(x.recording)) return x;
-  const { key: _key, ...recording } = x.recording;
-  return { ...x, recording };
+/** `x` without `x[field][key]`. */
+function withoutNested(x: unknown, field: string, key: string): unknown {
+  if (!isRow(x) || !isRow(x[field])) return x;
+  const { [key]: _omit, ...inner } = x[field];
+  return { ...x, [field]: inner };
 }
 
-/** An agent definition with its tool `keys` by name and no `options.recording.key`. */
+/** Field names in place of values, two levels deep: `{ crm: ["id", "region"] }`. */
+function fieldNames(x: unknown): unknown {
+  if (!isRow(x)) return undefined;
+  return Object.fromEntries(
+    Object.entries(x).map(([k, v]) => [k, isRow(v) ? Object.keys(v) : typeof v]),
+  );
+}
+
+/**
+ * An agent definition with its tool `keys` by name, and no `options.recording.key` or
+ * `options.callHook.hashKey`.
+ */
 export function agentForLog(agent: unknown): unknown {
   if (!isRow(agent)) return agent;
   const { keys, options, ...rest } = agent;
   return {
     ...rest,
-    ...(options !== undefined && { options: withoutRecordingKey(options) }),
+    ...(options !== undefined && {
+      options: withoutNested(withoutNested(options, "recording", "key"), "callHook", "hashKey"),
+    }),
     ...(Array.isArray(keys) && { keys: keys.map((k) => (isRow(k) ? k.name : undefined)) }),
   };
 }
 
-/** An instance without its `key` or `recording.key`, and its `Agent` through agentForLog. */
+/**
+ * An instance without its `key` or `recording.key`, with `metadata` by field name, and its agent
+ * by `agentId` only: log the agent itself once, through agentForLog.
+ */
 export function instanceForLog(instance: unknown): unknown {
   if (!isRow(instance)) return instance;
-  const { key: _key, Agent: agent, ...rest } = withoutRecordingKey(instance) as Row;
-  return agent === undefined ? rest : { ...rest, Agent: agentForLog(agent) };
+  const { key: _key, Agent: agent, metadata, ...rest } = withoutNested(instance, "recording", "key") as Row;
+  return {
+    ...rest,
+    ...(rest.agentId === undefined && isRow(agent) && { agentId: agent.id }),
+    ...(metadata != null && { metadata: fieldNames(metadata) }),
+  };
+}
+
+/** A call scenario with its agent and instance by id, and `callMetadata` by field name. */
+export function scenarioForLog(scenario: unknown): unknown {
+  if (!isRow(scenario)) return scenario;
+  const { agent, instance, callMetadata, ...rest } = scenario;
+  return {
+    ...rest,
+    agentId: isRow(agent) ? agent.id : undefined,
+    instanceId: isRow(instance) ? instance.id : undefined,
+    callMetadata: isRow(callMetadata) ? Object.keys(callMetadata) : undefined,
+  };
 }
