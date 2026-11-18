@@ -187,3 +187,20 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. These calls write no usage yet.
+
+## Who sees calls
+
+The calls routes (`GET /calls`, `GET /calls/{callId}`, `/linked`, `/logs`, `/invocation-log` and `/recording`) apply one rule to phone system calls. Agent calls show as before.
+
+| Who | Sees |
+|---|---|
+| A principal with `call: readOthers`: the `owner`, `orgAdmin`, `superAdmin` and `support` roles | Every call in its scope |
+| Anyone else, such as a `member` | Agent calls, and a phone system call that involves the directory person linked to their login |
+
+A phone system call involves a person when:
+
+- it was made to an extension the person owns (the extension's `entryId` is the person);
+- it was placed from one of the person's phones, or from a line of an extension the person owns;
+- its answered leg rang for the person. On a shared extension, such as a team's, only the member who answered sees the call. A call to a shared extension that nobody answered shows only to those who see every call.
+
+A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call: otherwise the recording route answers 404, and the transcript and invocation log routes answer an empty list.

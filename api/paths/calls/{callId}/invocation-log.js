@@ -1,6 +1,7 @@
 import { InvocationLog } from '../../../../lib/database.js';
 import { gunzipSync } from 'zlib';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { callVisibility, findVisibleCall } from '../../../../lib/call-visibility.js';
 
 export default function (logger) {
   const getInvocationLog = async (req, res) => {
@@ -9,6 +10,10 @@ export default function (logger) {
 
     const where = { callId, ...res.locals.user.sql.where };
     logger.debug({ callId, where }, 'getInvocationLog');
+    const visibility = await callVisibility(res.locals.user);
+    if (!visibility.all && !(await findVisibleCall(res.locals.user, callId, { attributes: ['id'], visibility }))) {
+      return res.send([]);
+    }
 
     const records = await InvocationLog.findAll({
       where,

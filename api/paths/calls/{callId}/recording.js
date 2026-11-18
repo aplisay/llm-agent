@@ -1,5 +1,6 @@
-import { Call, CallRecordingDownload } from '../../../../lib/database.js';
+import { CallRecordingDownload } from '../../../../lib/database.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { findVisibleCall } from '../../../../lib/call-visibility.js';
 import {
   GcmDecryptStream,
   recordingStorageConfig,
@@ -11,10 +12,9 @@ export default function (logger) {
     if (!requirePermission(res, 'recording', 'download')) return;
     const { callId } = req.params;
 
-    const where = { id: callId, ...res.locals.user.sql.where };
-    logger.debug({ callId, where }, 'getCallRecording');
+    logger.debug({ callId }, 'getCallRecording');
 
-    const call = await Call.findOne({ where });
+    const call = await findVisibleCall(res.locals.user, callId);
 
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
@@ -173,10 +173,8 @@ async function deleteCallRecording(req, res) {
   if (!requirePermission(res, 'recording', 'delete')) return;
   const { callId } = req.params;
 
-  const where = { id: callId, ...res.locals.user.sql.where };
-
   try {
-    const call = await Call.findOne({ where });
+    const call = await findVisibleCall(res.locals.user, callId);
 
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
