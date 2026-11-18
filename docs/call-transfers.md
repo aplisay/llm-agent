@@ -336,6 +336,8 @@ The `transfer_status` function returns an object with the following states:
 - **`rejected`**: The transfer target declined the transfer (consultative transfers only)
 - **`failed`**: The transfer failed
 
+On the Pipecat worker, a transfer from a browser (WebRTC) caller dials in the background after the `transfer` tool returns. If that dial fails, the worker tells the agent at once, so the agent does not have to call `transfer_status` to find out. The `failed` description is then a short reason the agent can pass on to the caller, such as "Transfer failed. The line was busy." It holds no internal ids or SIP detail; those go to the worker log.
+
 ### Response Format
 
 ```json

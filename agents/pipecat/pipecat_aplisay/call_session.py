@@ -68,13 +68,15 @@ from .sip_gateway.base import (
     SipGateway,
     TransferRequest,
 )
+from .transfer_prompts import TRANSFER_FAILED_NOTICE, TRANSFER_NOT_PLACED, transfer_failure_reason
 from .voice_session import build_voice_session
 from .user_turn_times import UserTurnClock, reconcile_user_rows
 
 
 class _WebrtcEgressError(Exception):
     """Raised when a WebRTC-origin transfer's caller-ID / egress trunk can't be
-    resolved or validated. Surfaced to the agent as a FAILED transfer."""
+    resolved or validated. Logged; the agent is told the transfer could not be
+    placed."""
 
 
 def _org_owns(agent: dict, organisation_id: Optional[str]) -> bool:
@@ -2319,8 +2321,9 @@ class CallSession:
     async def _on_provider_session_ended(self, reason: str) -> None:
         """The provider closed the realtime session (GPT-Live: expiry, a
         content policy close, a lost connection; Grok: a server close, a fatal
-        error, the concurrent-session limit): end the call cleanly with that
-        reason. Before the bot has spoken it is a start failure instead."""
+        error, the concurrent-session limit; Ultravox: a server close): end the
+        call cleanly with that reason. Before the bot has spoken it is a start
+        failure instead."""
         window = self._start_window
         if window is not None and window.fail(f"realtime provider ended the session: {reason}"):
             logger.bind(reason=reason).warning(
@@ -2667,11 +2670,40 @@ class CallSession:
 
     # ---- WebRTC-origin transfer (worker-side media relay) ----
 
-    def _transfer_failed(self, reason: str) -> dict:
-        """Record a failed transfer_state and return the tool-result dict."""
-        logger.bind(session_id=self.session_id).warning(f"transfer failed: {reason}")
+    def _transfer_failed(self, reason: str, *, detail: Optional[str] = None) -> dict:
+        """Record a failed transfer_state and return the tool-result dict.
+
+        ``reason`` is what the model sees. ``detail`` (the gateway's error, with
+        its internal ids) goes to the log only."""
+        logger.bind(session_id=self.session_id).warning(f"transfer failed: {detail or reason}")
         self.transfer_state = TransferState("failed", reason)
         return {"error": reason, "status": "FAILED", "reason": reason}
+
+    async def _background_transfer_failed(self, reason: str, detail: str) -> None:
+        """A WebRTC transfer running in the background failed. Its tool call
+        returned "initiated" long ago, and the model may never poll
+        ``transfer_status``, so tell it now."""
+        self._transfer_failed(reason, detail=detail)
+        await self._notify_model(TRANSFER_FAILED_NOTICE.format(reason=reason))
+
+    async def _notify_model(self, text: str) -> None:
+        """Give the model a platform notice mid-call and have it respond.
+
+        A service that drops developer messages appended to the context
+        (Ultravox, ElevenLabs, GPT-Live) takes it through its own
+        ``inject_platform_notice``."""
+        try:
+            inject = getattr(self._llm_service, "inject_platform_notice", None)
+            if inject is not None:
+                await inject(text)
+            elif self._task is not None:
+                from pipecat.frames.frames import LLMMessagesAppendFrame
+
+                await self._task.queue_frames(
+                    [LLMMessagesAppendFrame([{"role": "developer", "content": text}], run_llm=True)]
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"could not give the model a platform notice: {e}")
 
     async def _resolve_webrtc_egress(self, args: dict) -> _WebrtcEgress:
         """Resolve outbound routing for a WebRTC-origin transfer leg.
@@ -2686,8 +2718,8 @@ class CallSession:
           - an **E.164 number** → dial the global Aplisay outbound SBC; CLI = the
             number; stamp ``X-Aplisay-Trunk`` with the number's ``aplisayId``.
 
-        Raises :class:`_WebrtcEgressError` on any violation (surfaced to the
-        agent as a FAILED transfer).
+        Raises :class:`_WebrtcEgressError` on any violation (logged; the agent
+        is told the transfer could not be placed).
         """
         caller_id = args.get("callerId")
         if not caller_id:
@@ -2930,10 +2962,10 @@ class CallSession:
         try:
             egress = await self._resolve_webrtc_egress(args)
         except _WebrtcEgressError as e:
-            self._transfer_failed(str(e))
+            await self._background_transfer_failed(TRANSFER_NOT_PLACED, str(e))
             return
         except Exception as e:  # noqa: BLE001
-            self._transfer_failed(f"egress resolution failed: {e}")
+            await self._background_transfer_failed(TRANSFER_NOT_PLACED, f"egress resolution failed: {e}")
             return
 
         try:
@@ -2942,7 +2974,9 @@ class CallSession:
                 outbound_trunk_id=_chargeable_outbound_trunk_id(egress),
             )
         except Exception as e:  # noqa: BLE001
-            self._transfer_failed(f"could not create bridged call record: {e}")
+            await self._background_transfer_failed(
+                TRANSFER_NOT_PLACED, f"could not create bridged call record: {e}"
+            )
             return
 
         # Originate the bare outbound leg. ``originate`` resolves once the leg's
@@ -2970,7 +3004,9 @@ class CallSession:
             gw_session = await self.sip_gateway.originate(params, session_params)
         except Exception as e:  # noqa: BLE001
             await self._safe_end_call(leg_call, f"originate failed: {e}")
-            self._transfer_failed(f"could not reach transfer target: {e}")
+            await self._background_transfer_failed(
+                transfer_failure_reason(str(e)), f"could not reach transfer target: {e}"
+            )
             return
 
         # Bot-less relay pipeline on the leg, bridged to the browser endpoint.
@@ -3076,10 +3112,10 @@ class CallSession:
         try:
             egress = await self._resolve_webrtc_egress(args)
         except _WebrtcEgressError as e:
-            self._transfer_failed(str(e))
+            await self._background_transfer_failed(TRANSFER_NOT_PLACED, str(e))
             return
         except Exception as e:  # noqa: BLE001
-            self._transfer_failed(f"egress resolution failed: {e}")
+            await self._background_transfer_failed(TRANSFER_NOT_PLACED, f"egress resolution failed: {e}")
             return
 
         outbound_trunk_id = _chargeable_outbound_trunk_id(egress)
@@ -3089,7 +3125,9 @@ class CallSession:
                 outbound_trunk_id=outbound_trunk_id,
             )
         except Exception as e:  # noqa: BLE001
-            self._transfer_failed(f"could not create consult call record: {e}")
+            await self._background_transfer_failed(
+                TRANSFER_NOT_PLACED, f"could not create consult call record: {e}"
+            )
             return
 
         try:
@@ -3109,7 +3147,9 @@ class CallSession:
             )
         except Exception as e:  # noqa: BLE001
             await self._safe_end_call(leg_call, f"consult originate failed: {e}")
-            self._transfer_failed(f"could not reach transfer target: {e}")
+            await self._background_transfer_failed(
+                transfer_failure_reason(str(e)), f"could not reach transfer target: {e}"
+            )
             return
 
         consult_session._bridged_route = {

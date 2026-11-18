@@ -214,6 +214,13 @@ class AplisayOpenAILiveLLMService(OpenAILiveLLMService):
             return
         await self.append_commentary(gpt_live.inactivity_commentary(message))
 
+    async def inject_platform_notice(self, text: str) -> None:
+        """A platform notice mid-call, such as a failed transfer: spoken
+        context the model passes on in its own words."""
+        if not self._session_started:
+            return
+        await self.append_commentary(text)
+
     # ---- greeting guard ----------------------------------------------------
 
     @property

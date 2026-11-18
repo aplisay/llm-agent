@@ -435,6 +435,17 @@ def test_injection_shim_events_in_responses_mode():
     assert sent == []
 
 
+def test_a_platform_notice_is_spoken_context():
+    llm, sent = _build(_session())
+    asyncio.run(llm.inject_platform_notice("Transfer failed. The line was busy."))
+    assert sent == [], "nothing is sent before the session has started"
+    llm._session_started = True
+    asyncio.run(llm.inject_platform_notice("Transfer failed. The line was busy."))
+    assert [(p["type"], p["content"]) for p in sent] == [
+        ("session.commentary.append", "Transfer failed. The line was busy.")
+    ]
+
+
 def test_long_appends_are_chunked():
     llm, sent = _build(_session())
     llm._session_started = True

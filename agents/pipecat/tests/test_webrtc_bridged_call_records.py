@@ -15,6 +15,8 @@ These tests run the real transfer: the agent's ``transfer`` tool, the
 TransferAgent's ``accept_transfer`` tool, both sessions' pipelines and their
 teardown. Only the network edges are fake: the agent-db HTTP API, the gateway's
 ``originate``, and the model services inside the voice pipeline.
+
+A transfer whose dial fails is here too: the agent is told, in plain words.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 import pytest
 
-from pipecat.frames.frames import EndFrame, Frame, StartFrame
+from pipecat.frames.frames import EndFrame, Frame, LLMMessagesAppendFrame, StartFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -168,7 +170,7 @@ class _AgentDb:
         return [cid for cid, body in self.created.items() if body["modelName"] == model_name]
 
 
-def _record_pipelines(monkeypatch) -> list[dict]:
+def _record_pipelines(monkeypatch, model_cls: type = _RealtimeModel) -> list[dict]:
     """Build each session's pipeline without model services: transport input,
     the relay tap and injector when present, transport output. Records the
     tools each session's model would have been given, and the stand-in model
@@ -179,7 +181,7 @@ def _record_pipelines(monkeypatch) -> list[dict]:
         relay = [relay_endpoint.tap, relay_endpoint.inject] if relay_endpoint is not None else []
         pipeline = Pipeline([transport.input(), *relay, transport.output()])
         task = PipelineTask(pipeline, params=PipelineParams(), idle_timeout_secs=None)
-        model = _RealtimeModel()
+        model = model_cls()
         builds.append({"tools": {t["schema"]["name"]: t for t in tools}, "model": model})
         return task, None, None, model
 
@@ -187,11 +189,11 @@ def _record_pipelines(monkeypatch) -> list[dict]:
     return builds
 
 
-def _install(monkeypatch) -> tuple[_AgentDb, list[dict]]:
+def _install(monkeypatch, model_cls: type = _RealtimeModel) -> tuple[_AgentDb, list[dict]]:
     db = _AgentDb()
     monkeypatch.setattr(api_client, "_request", db.request)
     monkeypatch.setenv("APLISAY_OUTBOUND_TRUNK_ID", CHARGEABLE_TRUNK)
-    return db, _record_pipelines(monkeypatch)
+    return db, _record_pipelines(monkeypatch, model_cls)
 
 
 def _static(value: str) -> dict:
@@ -499,6 +501,103 @@ def test_accepted_consult_closes_both_realtime_models(monkeypatch):
     assert db.lifecycle(BROWSER_CALL_ID) == ["end"]
     assert db.lifecycle(consult_id) == ["create", "start", "end"]
     assert db.lifecycle(bridged_id) == ["create", "start", "end"]
+
+
+# --- a transfer whose dial fails ------------------------------------------------
+
+# What VoiceBlender reports when the SBC refuses the outbound leg with 403.
+REFUSED = "voiceblender leg 6b1d0c4e-2f7a-4e1b-9c3d-8a5e7f9b0c21 ended before answer: forbidden"
+UNREACHABLE = "Transfer failed. The number could not be reached."
+
+
+class _RefusingSipGateway(_SipGateway):
+    async def originate(self, _params: Any, _session_params: Any) -> _GatewaySession:
+        raise RuntimeError(REFUSED)
+
+
+class _NoticedModel(_RealtimeModel):
+    """A model service that takes platform notices itself, as Ultravox does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.notices: list[str] = []
+
+    async def inject_platform_notice(self, text: str) -> None:
+        self.notices.append(text)
+
+
+def _assert_plain(text: str) -> None:
+    assert text.startswith(UNREACHABLE)
+    assert "6b1d0c4e" not in text
+    assert "voiceblender" not in text
+    assert "forbidden" not in text
+
+
+@pytest.mark.parametrize("operation", ["blind", "consultative"])
+def test_a_refused_transfer_tells_the_model_in_plain_words(monkeypatch, operation):
+    _db, builds = _install(monkeypatch, _NoticedModel)
+    browser = _browser_session(operation, REALTIME_MODEL)
+    browser.sip_gateway = _RefusingSipGateway()
+
+    async def body() -> None:
+        result = await builds[0]["tools"]["transfer"]["execute"]({})
+        # The dial runs in the background, so the tool has only started it.
+        assert result["status"] == "OK"
+        await asyncio.wait_for(browser._webrtc_bg_task, 5)
+        # What transfer_status returns.
+        assert browser.transfer_state.state == "failed"
+        assert browser.transfer_state.description == UNREACHABLE
+        # The model is told without having to ask.
+        [notice] = builds[0]["model"].notices
+        _assert_plain(notice)
+        assert not browser.relay_endpoint.engaged
+        await browser.gateway_session.transport.disconnect()
+
+    _run_call(browser, body)
+
+
+def test_a_model_without_its_own_notice_path_gets_a_developer_message(monkeypatch):
+    _db, builds = _install(monkeypatch)
+    browser = _browser_session("blind")
+    browser.sip_gateway = _RefusingSipGateway()
+    queued: list = []
+
+    async def body() -> None:
+        queue_frames = browser._task.queue_frames
+
+        async def capture(frames) -> None:
+            queued.extend(frames)
+            await queue_frames(frames)
+
+        browser._task.queue_frames = capture
+        await builds[0]["tools"]["transfer"]["execute"]({})
+        await asyncio.wait_for(browser._webrtc_bg_task, 5)
+        await browser.gateway_session.transport.disconnect()
+
+    _run_call(browser, body)
+
+    [frame] = [f for f in queued if isinstance(f, LLMMessagesAppendFrame)]
+    assert frame.run_llm is True
+    [message] = frame.messages
+    assert message["role"] == "developer"
+    _assert_plain(message["content"])
+
+
+@pytest.mark.parametrize(
+    "detail,reason",
+    [
+        (REFUSED, UNREACHABLE),
+        ("voiceblender leg 0a1b ended before answer: busy", "Transfer failed. The line was busy."),
+        ("voiceblender leg 0a1b did not answer within 30s", "Transfer failed. There was no answer."),
+        ("voiceblender leg 0a1b ended before answer: no_answer", "Transfer failed. There was no answer."),
+        ("voiceblender leg 0a1b ended before answer: declined", "Transfer failed. The call was declined."),
+        ("connection refused", UNREACHABLE),
+    ],
+)
+def test_the_dial_error_becomes_a_plain_reason(detail, reason):
+    from pipecat_aplisay.transfer_prompts import transfer_failure_reason
+
+    assert transfer_failure_reason(detail) == reason
 
 
 _REALTIME_SERVICES = [

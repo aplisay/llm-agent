@@ -362,6 +362,10 @@ class ElevenLabsAgentsLLMService(LLMService):
         """The inactivity kick: an instruction to say the configured message."""
         await self._send_user_message(el.inactivity_message(message))
 
+    async def inject_platform_notice(self, text: str) -> None:
+        """A platform notice mid-call, such as a failed transfer."""
+        await self._send_user_message(el.instruction_message(text))
+
     # ---- the socket ---------------------------------------------------------------
 
     async def _send(self, message: dict) -> None:

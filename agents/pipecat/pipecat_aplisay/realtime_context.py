@@ -10,6 +10,10 @@ from typing import Any, Optional
 #: What the model is told when the caller presses keypad digits.
 DTMF_MESSAGE = "The caller pressed the keypad digits: {digits}"
 
+#: A platform notice sent as user-side text, on a model that takes no
+#: developer messages mid-call.
+PLATFORM_NOTICE = "(Instruction from the system, not the caller: {text})"
+
 
 def text_of(content: Any) -> str:
     """The text of a message's content: a string, or its text parts joined."""
