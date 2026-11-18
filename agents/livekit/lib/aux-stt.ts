@@ -44,11 +44,10 @@ import { AudioStream, RoomEvent } from "@livekit/rtc-node";
 import type { AudioFrame, RemoteParticipant, Room, Track } from "@livekit/rtc-node";
 import logger from "./logger.js";
 import type { Agent } from "./api-client.js";
-import { resolvePipelineStt } from "./pipeline-inference-options.js";
 import { buildStandaloneStt } from "./pipeline-routing.js";
 import { sendingAllAudio } from "./deepgram-send-all-audio.js";
 import { pickSttFormatting, sideEngineTiming, type SideEngineTiming, type SttFormattingFields } from "./stt-formatting.js";
-import { fromServiceString, type VendorDetail } from "./usage-vendors.js";
+import { sttUsageVendor, type VendorDetail } from "./usage-vendors.js";
 import { waitForAudioTrack, waitForRemoteParticipant } from "./bridge-transcription.js";
 
 /** Ledger technology for auxiliary-STT usage rows (distinct from the primary `stt`). */
@@ -154,7 +153,7 @@ export function resolveSideSttVendor(
   order: LanguageSource[],
 ): VendorDetail {
   try {
-    return fromServiceString(resolvePipelineStt(sideSttAgent(agent, config, order)));
+    return sttUsageVendor(sideSttAgent(agent, config, order));
   } catch {
     const vendor = config.vendor?.split("/")[0]?.split(":")[0]?.trim().toLowerCase();
     return vendor ? { vendor } : {};

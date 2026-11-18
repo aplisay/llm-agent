@@ -14,6 +14,7 @@ import { promptWithMetadata } from "../agent-lib/prompt-metadata.js";
 import { resolveVoiceMode, type VoiceMode } from "./voice-mode.js";
 import {
   agentLanguageTag,
+  geminiTtsModel,
   pipelineTtsVendor,
   pipelineUsesGoogleTts,
   resolvePipelineTts,
@@ -265,11 +266,9 @@ export function buildPipelineTts(agent: Agent, route?: StageRoute) {
       const voice = String(t?.voice || "").trim();
       return custom.includes("{voice}") ? custom.replace("{voice}", voice) : custom;
     }
-    const model =
-      process.env.LIVEKIT_PIPELINE_GEMINI_TTS_MODEL?.trim() || "gemini-2.5-flash-preview-tts";
     return new SentenceStreamTTS(
       new google.beta.TTS({
-        model,
+        model: geminiTtsModel(),
         voiceName: geminiVoiceNameForGoogleTtsOption(agent),
         vertexai: process.env.GOOGLE_GENAI_USE_VERTEXAI === "true",
         project: process.env.GOOGLE_CLOUD_PROJECT,

@@ -11,6 +11,7 @@ import type { llm, stt } from "@livekit/agents";
 import type { Agent } from "./api-client.js";
 import logger from "./logger.js";
 import {
+  fromServiceString,
   pipelineTtsVendor,
   pipelineUsesGoogleTts,
   resolvePipelineStt,
@@ -25,7 +26,6 @@ import {
   providerTtsKey,
 } from "./pipeline-provider-keys.js";
 import { inferenceSttModelOptions } from "./stt-formatting.js";
-import { fromServiceString } from "./usage-vendors.js";
 
 export type PipelineRoute = "direct" | "inference";
 

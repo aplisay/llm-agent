@@ -67,7 +67,8 @@ export function providerSttKey(agent: Agent): string | undefined {
   return DEEPGRAM_STT.test(resolvePipelineStt(agent)) ? "DEEPGRAM_API_KEY" : undefined;
 }
 
-function parseDeepgramStt(agent: Agent): { model: string; language: string } {
+/** The Deepgram model and language the direct STT builder asks for. Usage rows name this model. */
+export function providerSttModel(agent: Agent): { model: string; language: string } {
   const configured = resolvePipelineStt(agent);
   const m = DEEPGRAM_STT.exec(configured);
   if (!m) {
@@ -89,7 +90,7 @@ export function buildProviderPipelineStt(
       "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: DEEPGRAM_API_KEY is missing or empty (set it in the environment or .env loaded before the agent runs).",
     );
   }
-  const { model, language } = parseDeepgramStt(agent);
+  const { model, language } = providerSttModel(agent);
   const formatting = deepgramPluginFormatting(model, agent.options?.stt, longPause, stage);
   if (Object.keys(formatting).length > 0) {
     logger.info({ stage, model, formatting }, `${stage}: Deepgram STT settings ${JSON.stringify(formatting)}`);
@@ -170,16 +171,13 @@ function deepgramAuraModelFromSuffix(suffix: string): string {
   return `aura-${s}-en`;
 }
 
-function buildDeepgramPluginTtsFromAuraDescriptor(descriptor: string, agent: Agent): tts.TTS {
+function buildDeepgramPluginTts(model: string, agent: Agent): tts.TTS {
   const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
       "LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: DEEPGRAM_API_KEY is required for Deepgram TTS (aura).",
     );
   }
-  const idx = descriptor.lastIndexOf(":");
-  const voice = idx === -1 ? "" : descriptor.slice(idx + 1);
-  const model = deepgramAuraModelFromSuffix(voice);
   return new deepgram.TTS({
     apiKey,
     model,
@@ -218,19 +216,39 @@ export function providerTtsKey(agent: Agent): string | undefined {
 }
 
 /**
+ * The vendor and model the direct TTS builder gives its plugin, or undefined when no plugin
+ * builds this agent's TTS. Usage rows name this model, so the builder must not choose another.
+ */
+export function providerTtsModel(agent: Agent): { vendor: string; model: string } | undefined {
+  const vendor = providerTtsVendor(agent);
+  if (vendor === "elevenlabs") {
+    return { vendor, model: process.env.LIVEKIT_PIPELINE_ELEVENLABS_MODEL?.trim() || "eleven_turbo_v2_5" };
+  }
+  if (vendor === "cartesia") {
+    return { vendor, model: process.env.LIVEKIT_PIPELINE_CARTESIA_TTS_MODEL?.trim() || "sonic-3" };
+  }
+  if (vendor === "deepgram") {
+    const ttsStr = resolvePipelineTts(agent);
+    if (ttsStr.startsWith("deepgram/aura-2:")) {
+      return { vendor, model: deepgramAuraModelFromSuffix(ttsStr.slice(ttsStr.lastIndexOf(":") + 1)) };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Direct-provider TTS (ElevenLabs, Cartesia, Deepgram Aura). Google Gemini TTS is handled separately in `voice-session-factory`.
  */
 export function buildProviderPipelineTts(agent: Agent): tts.TTS {
   const t = agent.options?.tts;
   const vendor = providerTtsVendor(agent);
+  const model = providerTtsModel(agent)?.model;
 
   if (vendor === "elevenlabs") {
     const voiceRaw = String(t?.voice || "").trim();
     const id = voiceRaw.includes(":")
       ? voiceRaw.split(":").pop()!.trim()
       : voiceRaw;
-    const model =
-      process.env.LIVEKIT_PIPELINE_ELEVENLABS_MODEL?.trim() || "eleven_turbo_v2_5";
     const speed = ttsSpeedFor(agent, "elevenlabs");
     return new elevenlabs.TTS({
       voiceId: id,
@@ -245,22 +263,17 @@ export function buildProviderPipelineTts(agent: Agent): tts.TTS {
     const id = voiceRaw.includes(":")
       ? voiceRaw.split(":").pop()!.trim()
       : voiceRaw;
-    const model =
-      process.env.LIVEKIT_PIPELINE_CARTESIA_TTS_MODEL?.trim() || "sonic-3";
     return new cartesia.TTS({
       voice: id,
-      model,
+      model: model!,
       language: cartesiaLanguage(agent),
       speed: ttsSpeedFor(agent, "cartesia"),
     });
   }
   if (vendor === "deepgram") {
-    const ttsStr = resolvePipelineTts(agent);
-    if (ttsStr.startsWith("deepgram/aura-2:")) {
-      return buildDeepgramPluginTtsFromAuraDescriptor(ttsStr, agent);
-    }
+    if (model) return buildDeepgramPluginTts(model, agent);
     throw new Error(
-      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.tts.vendor to be "deepgram/aura-2" (or voice config to infer deepgram) so it resolves to deepgram/aura-2:... (got "${ttsStr}")`,
+      `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS: Deepgram TTS expects options.tts.vendor to be "deepgram/aura-2" (or voice config to infer deepgram) so it resolves to deepgram/aura-2:... (got "${resolvePipelineTts(agent)}")`,
     );
   }
 

@@ -143,10 +143,10 @@ def output_stt_agent(agent: dict, config: dict) -> dict:
 
 
 def _side_stt_vendor(effective_agent: dict) -> dict:
-    """Canonical ``{vendor, model}`` for a side engine's usage rows: ``vendor``
-    is the bare engine name (what the rate lines match on); ``model`` is
-    ``vendor/model`` when the vendor string was scoped (``deepgram/nova-3``),
-    else ``None``."""
+    """``{vendor, model}`` as the side block asks for them: ``vendor`` is the bare
+    engine name; ``model`` is ``vendor/model`` when the vendor string was scoped
+    (``deepgram/nova-3``), else ``None``. The usage rows carry the model the
+    engine was built with (``voice_session._build_side_stt``)."""
     stt_opts = (effective_agent.get("options") or {}).get("stt") or {}
     raw = str(stt_opts.get("vendor") or DEFAULT_AUX_STT_VENDOR)
     head = raw.split(":", 1)[0]
