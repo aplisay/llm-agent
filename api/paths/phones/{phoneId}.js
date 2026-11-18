@@ -1,5 +1,6 @@
 import { getPhone } from '../../../lib/pbx/directory-views.js';
 import { updatePhone, deletePhone } from '../../../lib/pbx/directory.js';
+import { can } from '../../../lib/auth/permissions.js';
 import { directoryContext, attempt, sendWrite, sendNotFound } from '../../../lib/pbx/route-helpers.js';
 import { PHONES_TAG, organisationIdQuery, dryRunQuery, pathId, errorResponses, ok, body, ref } from '../../../lib/pbx/api-docs.js';
 
@@ -24,12 +25,16 @@ export default function (logger) {
   const patch = (req, res) => attempt(res, logger, async () => {
     const ctx = await directoryContext(req, res, 'phone', 'update', { gate: true });
     if (!ctx) return;
+    if (req.body?.lineLimit !== undefined && !can(res.locals.user, 'system', 'manage')) {
+      return res.status(403).send({ error: 'Only a platform operator can set a line limit.', code: 'operator_only', field: 'lineLimit' });
+    }
     sendWrite(res, await updatePhone(ctx, req.params.phoneId, req.body || {}));
   });
   patch.apiDoc = {
     summary: 'Change a phone.',
     description: 'Any phone: `label`. An outside number: `number`, `ringDelay`, `shows`, `keyToAnswer`. A desk phone: '
-      + '`model`, until the phone has reported its own model (`phone_model_reported`).',
+      + '`model`, until the phone has reported its own model (`phone_model_reported`). A platform operator can also set '
+      + '`lineLimit` on a desk phone.',
     operationId: 'updatePhone',
     tags: [PHONES_TAG],
     parameters: [phoneId, dryRunQuery, organisationIdQuery],
@@ -44,7 +49,8 @@ export default function (logger) {
   });
   remove.apiDoc = {
     summary: 'Remove a phone.',
-    description: 'Its lines and their SIP accounts are removed at once. The same organisation can add the phone again.',
+    description: 'The phone is wiped first: its settings address stops working. Its lines and their SIP accounts are '
+      + 'removed at once. The same organisation can add the phone again.',
     operationId: 'deletePhone',
     tags: [PHONES_TAG],
     parameters: [phoneId, dryRunQuery, organisationIdQuery],

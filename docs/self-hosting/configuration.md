@@ -259,6 +259,14 @@ Phone numbers, trunks and SIP registrations.
 | `PBX_REGISTRAR_DOMAIN` | API |  | Host name desk phones of the phone system register to. Unset means REGSERVER_REGISTRAR is used. Permanent once the first phone line exists. |
 | `PBX_RELEASE` | API |  | Which phone system features the API accepts: 1, 1c, 2, 3 or 4. Unset means 1. An organisation also needs the phoneSystem capability. |
 | `PBX_LINE_PASSWORD_RESET` | API |  | Set to true to let an admin reset the SIP password of a desk phone line and read the new one once, to set a phone up by hand. Unset means off. Leave it off where every phone is provisioned. |
+| `PROV_PUBLIC_URL` | API |  | The https address desk phones fetch their settings from, for example https://prov.example.net. The API server puts it in each phone's settings address, and the provisioning service (provisioning.mjs) needs it to start. Unset means phones cannot be provisioned. |
+| `PROV_PORT` | API | `4010` | Provisioning service: listen port. |
+| `PROV_SNOM_CA_FILE` | API |  | Provisioning service: path of a PEM file with the Snom CA certificates (root and intermediate) that sign the factory certificates of Snom phones. |
+| `PROV_SNOM_CA_FINGERPRINTS` | API |  | Provisioning service: comma-separated SHA-256 fingerprints of the Snom roots to trust. Unset means the root of Snom's SHA-256 CA. A root in the file that is not listed is ignored. |
+| `PROV_TLS_CERT_FILE` | API |  | Provisioning service: path of its TLS certificate chain (PEM), when it ends TLS itself and asks the phone for its certificate. Set with PROV_TLS_KEY_FILE. Not with PROV_CLIENT_CERT_HEADER. |
+| `PROV_TLS_KEY_FILE` | API |  | Provisioning service: path of the private key for PROV_TLS_CERT_FILE. |
+| `PROV_CLIENT_CERT_HEADER` | API |  | Provisioning service: the header a TLS proxy puts the phone's certificate in (PEM, URL-encoded), for example ssl-client-cert. The proxy must remove any copy a client sends. Set with PROV_TRUSTED_PROXIES. Not with PROV_TLS_CERT_FILE. |
+| `PROV_TRUSTED_PROXIES` | API |  | Provisioning service: comma-separated addresses or CIDR ranges of the proxy. The certificate header is read only on connections from these. |
 | `REGCLIENT_API_TOKEN` | API |  | Token for the B2BUA node API (SIP traces and registration probes). Unset turns those routes off (503). Secret. |
 | `REGCLIENT_API_TOKEN_PREVIOUS` | API |  | The previous token, accepted while a new one rolls out. Secret. |
 | `REGCLIENT_API_PORT` | API | `8443` | B2BUA node API port. |

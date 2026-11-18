@@ -13,6 +13,7 @@
     "develop": "NODE_ENV=development LOGLEVEL=debug nodemon -e js,mjs,json,yaml index.mjs",
     "prestart": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "start": "NODE_ENV=production node index.mjs",
+    "provisioning": "NODE_ENV=production node provisioning.mjs",
     "prestage": "[ -n \"$LIVEKIT_WORKER_PREBUILT\" ] && [ -f agents/livekit/dist/lib/livekit-model-registry.js ] || (cd agents/livekit && yarn build)",
     "stage": "NODE_ENV=staging LOGLEVEL=debug node index.mjs",
     "test": "LOGLEVEL=fatal node --experimental-vm-modules node_modules/.bin/jest --config jest.config.db.js --verbose",

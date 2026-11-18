@@ -622,7 +622,7 @@ describe('phone system directory API', () => {
       expect(back.device.id).toBe(spare.device.id);
       expect(keys(back)).toEqual(['106']);
       expect((await patch('ownerA', `/phones/${back.id}`, { model: 'D717', label: 'Spare D717' })).status).toBe(200);
-      expect((await ok(get('ownerA', `/phones/${back.id}`))).capacity).toBe(6);
+      expect((await ok(get('ownerA', `/phones/${back.id}`))).capacity).toBe(3);
       await db.Device.update({ reportedModel: 'D717' }, { where: { id: back.device.id } });
       expect((await patch('ownerA', `/phones/${back.id}`, { model: '710' })).body.code).toBe('phone_model_reported');
     });
