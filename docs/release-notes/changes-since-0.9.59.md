@@ -143,8 +143,8 @@ Pipecat), and **ci** (build and release pipeline).
 
 - **[livekit] Consult call records**: a call that ends while a consult is live
   now ends the consult leg's record and the agent's record before the worker
-  exits. Before, either could stay `in progress`, which kept its
-  agent-concurrency slot and left its minutes unbilled.
+  exits. Before, either could stay `in progress`, unbilled, and holding an
+  agent-concurrency slot until its listener was deleted.
 - **[livekit] Session close**: when the provider ends the agent's session, the
   worker now flushes usage before it ends the call, and ends any live consult.
 - **[pipecat] Ultravox close**: a server close of an Ultravox session now ends
@@ -219,8 +219,9 @@ Pipecat), and **ci** (build and release pipeline).
   stage with no plugin or no key now runs on LiveKit Inference and is billed to
   the LiveKit project. A LiveKit server without Inference fails such a stage.
 - **[livekit] Old stuck call records**: records that earlier versions left
-  `in progress` stay open, and each still holds an agent-concurrency slot.
-  This release stops new ones. It does not close old ones.
+  `in progress` stay open. Each holds an agent-concurrency slot until its
+  listener is deleted, so a listener that stays, such as a phone number, can
+  lose capacity. This release stops new ones. It does not close old ones.
 - **[pipecat] `do-staging`**: apply it only together with call control set to
   hand agent calls to the worker. With one side switched and not the other,
   agent calls fail.
