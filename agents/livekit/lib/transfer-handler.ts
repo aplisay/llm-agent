@@ -22,6 +22,7 @@ import {
 } from "./api-client.js";
 import { resolveUsageVendors } from "./usage-vendors.js";
 import { sipAttribute } from "./sip-attributes.js";
+import { isReferFalseFailure } from "./refer-quirks.js";
 import {
   pickSipIdentityFlags,
   transferSipIdentity,
@@ -840,10 +841,7 @@ async function handleBlindReferTransfer(
     // it has actually succeeded due to a couple of race conditions.
     // We can detect these by checking for specific error messages.
     // And then tell the caller it succeeded really.
-    if (
-      error.message?.includes("500: Internal Server Error") ||
-      error.message?.includes("twirp error unknown: participant does not exist")
-    ) {
+    if (isReferFalseFailure(e)) {
       logger.info(
         { message: error.message },
         "transfer failed quirk, succeeded really",
@@ -1645,10 +1643,7 @@ async function finaliseConsultativeTransfer(
       } catch (referError: any) {
         const e =
           referError instanceof Error ? referError : new Error(String(referError));
-        if (
-          e.message?.includes("500: Internal Server Error") ||
-          e.message?.includes("twirp error unknown: participant does not exist")
-        ) {
+        if (isReferFalseFailure(referError)) {
           logger.info(
             { message: e.message, replaces },
             "consult REFER reported failure but actually succeeded; continuing"
