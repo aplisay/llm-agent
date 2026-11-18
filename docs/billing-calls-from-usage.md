@@ -123,6 +123,16 @@ billing `unit` and a `priceMicros`:
 - **Units.** A `minute` line rounds the row's milliseconds **up to the next
   6 seconds**, then divides by 60. Each row is rounded on its own. A `token`
   or `character` line uses the quantity as it is, with no conversion.
+- **Minimum.** A `minute` line may set `minimumSeconds`. A row with a
+  non-zero duration is then billed at least that long, and in 6-second steps
+  above it. A row with zero duration still costs nothing. With
+  `"minimumSeconds": 60`, a 20 second row bills 1 minute and a 61 second row
+  bills 1.1 minutes. The minimum is per line and per row: a line without
+  the field has no minimum, and each row gets its own minimum. A call leg
+  that moves to another agent has one row per agent, so each of those rows
+  is billed at least the minimum. The breakdown entry for the line shows
+  `minimumSeconds` and `minimumApplied`. The field is rejected on any other
+  unit and on `destination` lines, which have the tariff's own minimum.
 - **Results.** At least one dimension matched: `matched`. A card was found
   but no line matched: `no_line`, cost `null`. No card name or no card
   version covers `billedAt`: `no_rate`, cost `null`. An error: `errored`.

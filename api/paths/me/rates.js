@@ -109,6 +109,14 @@ export default function (logger) {
                       match: { type: 'object' },
                       unit: { type: 'string' },
                       priceMicros: { type: 'number', description: 'Micro-pence (1e-6 GBP) per `unit`.' },
+                      minimumSeconds: {
+                        type: 'number',
+                        minimum: 0,
+                        description:
+                          '`minute` lines only, optional: a usage row with a non-zero duration is billed at least '
+                          + 'this many seconds, then in `billingIncrementSeconds` steps above it. A zero duration '
+                          + 'still bills nothing. Absent means no minimum.',
+                      },
                       tariff: { type: 'string', description: 'Destination lines only: the named prefix tariff that prices outbound carrier legs.' },
                     },
                   },
