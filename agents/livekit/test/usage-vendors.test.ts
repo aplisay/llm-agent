@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveUsageVendors } from "../lib/usage-vendors.js";
 
-// Unit tests for the canonical billing-vendor resolver (R3). Pure / SDK-free:
+// Unit tests for the canonical billing-vendor resolver (R3). The model each row names is in
+// test/usage-detail.test.ts.
 // run with `node --import tsx --test test/usage-vendors.test.ts`.
 
 const agent = (opts: unknown) => ({ options: opts }) as never;

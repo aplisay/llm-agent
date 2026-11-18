@@ -72,6 +72,8 @@ function stubGemini(gemini: google.beta.TTS, { delayMs = () => 0, fail = () => u
 
 const rawGemini = () => new google.beta.TTS({ apiKey: "test-key", vertexai: false });
 
+const GEMINI_DETAIL = "google/gemini-2.5-flash-preview-tts";
+
 const agent = (ttsOptions: Record<string, unknown>) =>
   ({ prompt: "Test agent.", options: { tts: ttsOptions } }) as any;
 
@@ -167,8 +169,8 @@ async function onSession(
   {
     sink = new FakeAudioOutput(),
     llm: model,
-    // resolvePipelineTts throws for google, so a Gemini row resolves no vendor and takes the SDK label.
-    usageVendors = { llm: {}, tts: {}, stt: {} },
+    // What resolveUsageVendors gives a google agent: the Gemini model, not the SDK label.
+    usageVendors = { llm: {}, tts: { vendor: "google", detail: GEMINI_DETAIL }, stt: {} },
   }: { sink?: FakeAudioOutput; llm?: llm.LLM; usageVendors?: UsageVendors } = {},
 ) {
   const session = new voice.AgentSession({ tts: ttsInstance, ...(model ? { llm: model } : {}) } as any);
@@ -333,8 +335,8 @@ test("a Gemini TTS session meters each reply once, with its characters and all i
     assert.equal(m.label, "google.gemini.TTS");
   }
   assert.deepEqual(await ledger(), {
-    characters: { quantity: 2 * REPLY.length, provider: "google", detail: "google.gemini.TTS" },
-    milliseconds: { quantity: 2 * REPLY_AUDIO_MS, provider: "google", detail: "google.gemini.TTS" },
+    characters: { quantity: 2 * REPLY.length, provider: "google", detail: GEMINI_DETAIL },
+    milliseconds: { quantity: 2 * REPLY_AUDIO_MS, provider: "google", detail: GEMINI_DETAIL },
   });
 });
 
@@ -342,8 +344,9 @@ test("Gemini TTS usage is billed to google with or without a voice, never to the
   for (const ttsOptions of [{ vendor: "google" }, { vendor: "google", voice: "Kore" }]) {
     const { built } = builtGemini({}, ttsOptions);
     assert.equal((built.inner as google.beta.TTS).opts.voiceName, "Kore");
-    const usageVendors = withEnv({ LIVEKIT_PIPELINE_GOOGLE_TTS: undefined }, () =>
-      resolveUsageVendors(agent(ttsOptions), "livekit:openai/gpt-4o-mini"),
+    const usageVendors = withEnv(
+      { LIVEKIT_PIPELINE_GOOGLE_TTS: undefined, LIVEKIT_PIPELINE_GEMINI_TTS_MODEL: undefined },
+      () => resolveUsageVendors(agent(ttsOptions), "livekit:openai/gpt-4o-mini"),
     );
 
     const { ttsMetrics, ledger } = await speakOnSession(built, REPLY, { usageVendors });
@@ -353,12 +356,35 @@ test("Gemini TTS usage is billed to google with or without a voice, never to the
     assert.deepEqual(
       await ledger(),
       {
-        characters: { quantity: REPLY.length, provider: "google", detail: "google.gemini.TTS" },
-        milliseconds: { quantity: REPLY_AUDIO_MS, provider: "google", detail: "google.gemini.TTS" },
+        characters: { quantity: REPLY.length, provider: "google", detail: GEMINI_DETAIL },
+        milliseconds: { quantity: REPLY_AUDIO_MS, provider: "google", detail: GEMINI_DETAIL },
       },
       JSON.stringify(ttsOptions),
     );
   }
+});
+
+test("a Gemini TTS row names the model LIVEKIT_PIPELINE_GEMINI_TTS_MODEL selects, which is the model built", () => {
+  const env = {
+    GOOGLE_API_KEY: "test-key",
+    GOOGLE_GENAI_USE_VERTEXAI: undefined,
+    LIVEKIT_PIPELINE_GOOGLE_TTS: undefined,
+    LIVEKIT_PIPELINE_GEMINI_TTS_MODEL: "gemini-3-flash-tts",
+  };
+  const google_ = agent({ vendor: "google", voice: "Kore" });
+  const built = withEnv(env, () => buildPipelineTts(google_)) as SentenceStreamTTS;
+  assert.equal((built.inner as google.beta.TTS).opts.model, "gemini-3-flash-tts");
+  assert.deepEqual(
+    withEnv(env, () => resolveUsageVendors(google_, "livekit:openai/gpt-4o-mini").tts),
+    { vendor: "google", detail: "google/gemini-3-flash-tts" },
+  );
+  // LIVEKIT_PIPELINE_GOOGLE_TTS swaps Gemini TTS for an Inference model, and the row names that one.
+  assert.deepEqual(
+    withEnv({ ...env, LIVEKIT_PIPELINE_GOOGLE_TTS: "cartesia/sonic-3:{voice}" }, () =>
+      resolveUsageVendors(google_, "livekit:openai/gpt-4o-mini").tts,
+    ),
+    { vendor: "cartesia", detail: "cartesia/sonic-3" },
+  );
 });
 
 test("with LIVEKIT_PIPELINE_GOOGLE_TTS, a google agent without a voice is billed for the TTS it is built with", () => {

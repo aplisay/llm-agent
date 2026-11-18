@@ -15,6 +15,25 @@ function deepgramCatalogToInferenceVoice(voiceId: string): string {
   return id.toLowerCase();
 }
 
+/** What a usage row carries as `provider` and `detail` for one stage. */
+export interface VendorDetail {
+  vendor?: string;
+  detail?: string;
+}
+
+/** Split a "vendor/model:suffix" service string into {vendor, detail="vendor/model"}. */
+export function fromServiceString(s: string | undefined): VendorDetail {
+  if (!s) return {};
+  const head = s.split(":")[0]!; // strip any :lang / :voice suffix
+  const vendor = head.split("/")[0]!.trim().toLowerCase() || undefined;
+  return { vendor, detail: head || undefined };
+}
+
+/** The Gemini TTS model a google pipeline agent speaks with. */
+export function geminiTtsModel(): string {
+  return process.env.LIVEKIT_PIPELINE_GEMINI_TTS_MODEL?.trim() || "gemini-2.5-flash-preview-tts";
+}
+
 /**
  * UI / legacy values that mean "no fixed language" but are not valid Inference
  * provider language tags (Deepgram rejects e.g. `any`).
@@ -191,7 +210,7 @@ export function resolvePipelineTts(agent: Agent): string {
 
 /**
  * The `LIVEKIT_PIPELINE_GOOGLE_TTS` id for this voice. Without it this throws: Gemini TTS has no Inference id,
- * so resolveUsageVendors leaves google usage to the plugin's `google.gemini.TTS` label.
+ * so ttsUsageVendor names the Gemini model itself.
  */
 function googlePipelineTts(voice: string): string {
   const full = process.env.LIVEKIT_PIPELINE_GOOGLE_TTS;

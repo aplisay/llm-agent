@@ -521,6 +521,13 @@ def _dtmf_aggregator_for(
     )
 
 
+def _scoped_stt_model(vendor: Any) -> Optional[str]:
+    """The model in a scoped ``vendor/model[:lang]`` string, or ``None``."""
+    head = str(vendor or "").split(":", 1)[0]
+    model = head.split("/", 1)[1].strip() if "/" in head else ""
+    return model or None
+
+
 def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
     """Construct a fresh STT service from ``agent.options.stt`` (defaulting
     to Deepgram). Used by the pipeline build below and by the bridged-
@@ -528,9 +535,14 @@ def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
     STT streams over the human↔human segment of a monitored bridge —
     each call returns a NEW service instance, safe to run alongside the
     pipeline's own. ``long_pause`` marks the caller-side auxiliary engine,
-    which waits longer for a pause (docs/stt-formatting.md)."""
+    which waits longer for a pause (docs/stt-formatting.md).
+
+    A scoped vendor (``deepgram/nova-2``) sets the model; a bare one runs the
+    Pipecat default. The ``:lang`` suffix is not read: the language comes from
+    ``options.stt.language``."""
     stt_opts = (agent.get("options") or {}).get("stt") or {}
     stt_vendor = (stt_opts.get("vendor") or "deepgram").split("/")[0].lower()
+    stt_model = _scoped_stt_model(stt_opts.get("vendor"))
     # ``options.stt.language`` (falling back to ``options.tts.language``). Each
     # branch OMITS the setting entirely when this is None rather than passing
     # None: the vendor defaults are non-null (Deepgram ships Language.EN,
@@ -542,6 +554,8 @@ def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
         from .stt_formatting import deepgram_formatting, deepgram_stt_service
 
         settings: dict = {}
+        if stt_model is not None:
+            settings["model"] = stt_model
         # Deepgram takes the full regional tag — nova-3 accepts en-GB/en-AU/…
         # alongside the bare primary tags, so there is nothing to truncate.
         if language is not None:
@@ -575,9 +589,11 @@ def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
         # recognition codes from ``settings.languages`` (a LIST of enums) and
         # ignores the base class's ``settings.language``, so a raw string cannot
         # be threaded through. An unresolvable tag therefore keeps the default.
-        google_settings = None
+        google_settings: dict = {}
+        if stt_model is not None:
+            google_settings["model"] = stt_model
         if isinstance(language, Language):
-            google_settings = GoogleSTTService.Settings(languages=[language])
+            google_settings["languages"] = [language]
         elif language is not None:
             logger.warning(
                 f"STT language {language!r} does not map to a Pipecat Language; "
@@ -587,7 +603,7 @@ def build_stt_service(agent: dict, long_pause: bool = False) -> Any:
             credentials=creds_json,
             credentials_path=creds_path,
             location=os.environ.get("GOOGLE_STT_LOCATION", "global"),
-            **({"settings": google_settings} if google_settings is not None else {}),
+            **({"settings": GoogleSTTService.Settings(**google_settings)} if google_settings else {}),
         )
     raise RuntimeError(f"Unsupported STT vendor {stt_vendor!r} for pipeline mode")
 
@@ -1207,6 +1223,18 @@ def _background_for(background_injector: "Optional[Any]", transport: BaseTranspo
     return [background_injector]
 
 
+def _build_side_stt(effective_agent: dict, vendor: dict, long_pause: bool = False) -> Any:
+    """Build a side STT engine and put the model it was built with on
+    ``vendor``, the dict its usage reports carry: a bare vendor names no model,
+    and the rows must name the one that ran. The tap reports usage only after
+    this, so the rows of one call carry one ``detail``."""
+    from .usage import stt_detail
+
+    service = build_stt_service(effective_agent, long_pause=long_pause)
+    vendor["model"] = stt_detail(vendor.get("vendor"), service) or vendor.get("model")
+    return service
+
+
 def _aux_stt_tap_for(
     agent: dict,
     on_transcript: "Optional[Callable[[str], Awaitable[None]]]",
@@ -1233,7 +1261,7 @@ def _aux_stt_tap_for(
     from .stt_formatting import side_drain_secs
 
     return AuxSttTap(
-        stt_factory=lambda: build_stt_service(effective_agent, long_pause=True),
+        stt_factory=lambda: _build_side_stt(effective_agent, vendor, long_pause=True),
         on_final=on_transcript,
         on_usage=_report,
         drain_secs=side_drain_secs(config, long_pause=True),
@@ -1269,7 +1297,7 @@ def _output_stt_tap_for(
     from .stt_formatting import side_drain_secs
 
     return AuxSttTap(
-        stt_factory=lambda: build_stt_service(effective_agent),
+        stt_factory=lambda: _build_side_stt(effective_agent, vendor),
         on_final=on_transcript,
         on_usage=_report,
         frame_cls=frame_cls or TTSAudioRawFrame,

@@ -78,7 +78,7 @@ card name (`GET`/`PUT /api/rates/default`, operator only) if one is set.
 | `agentId` | The agent whose usage this is. A subagent's rows carry the subagent's id. |
 | `technology` | `voice`, `llm`, `tts`, `stt`, `stt-aux` or `stt-output`. |
 | `provider` | For `voice`, the runtime (for example `livekit` or `pipecat`). Otherwise the vendor. |
-| `detail` | For `voice`, the call's model name, for example `livekit:ultravox/ultravox-v0.6`. Otherwise the vendor's model or voice. |
+| `detail` | For `voice`, the call's model name, for example `livekit:ultravox/ultravox-v0.6`. For `llm`, the model. For the speech rows, the model or voice that ran: see [`detail` on speech rows](#detail-on-speech-rows). |
 | `unit` | `milliseconds`, `characters`, `input_tokens`, `output_tokens`, `cache_read_tokens` or `cache_write_tokens`. |
 | `media` | `voice` rows only: `telephony` or `webrtc`, from the leg's own caller and called ids. A bridged leg is always `telephony`. |
 | `quantity` | The total, in `unit`. |
@@ -100,6 +100,39 @@ The rows a call can have:
 `llm` `input_tokens` are the tokens that were not read from or written to the
 prompt cache. Cached tokens are on their own rows, so each token is counted
 once.
+
+### `detail` on speech rows
+
+A `tts`, `stt`, `stt-aux` or `stt-output` row names the model that ran, so a
+line can price it by its exact `detail`. The value is what the worker built
+the engine with, not what the agent asked for. Rows written before this rule
+keep their old `detail`.
+
+Pipecat worker:
+
+| Rows | `detail` | Examples |
+|---|---|---|
+| `stt`, `stt-aux`, `stt-output` | `vendor/model`. A plain vendor runs the Pipecat default model. A scoped vendor (`deepgram/nova-2`) runs that model. | `deepgram/nova-3-general`, `deepgram/nova-2`, `google/latest_long` |
+| `tts`, Cartesia or ElevenLabs | The model. | `sonic-3.6`, `eleven_flash_v2_5` |
+| `tts`, Deepgram | The voice, which is the Deepgram model. No voice set: `aura-asteria-en`. | `aura-asteria-en`, `aura-2-thalia-en` |
+| `tts`, Neuphonic | The voice id. No voice set: `neuphonic`. | |
+| `tts`, a realtime model's own speech (`ultravox`, `openai`, `xai`) | The configured voice, or none. | `Mark` |
+
+LiveKit worker (always `vendor/model`):
+
+| Rows | `detail` | Examples |
+|---|---|---|
+| `stt`, `stt-aux`, `stt-output` | The STT model. Deepgram with language `multi` adds `-multilingual`, because Deepgram prices it apart. | `deepgram/nova-3`, `deepgram/nova-3-multilingual`, `assemblyai/universal-streaming`, `cartesia/ink-whisper` |
+| `tts` on LiveKit Inference | The Inference model. | `cartesia/sonic-3`, `elevenlabs/eleven_turbo_v2_5`, `deepgram/aura-2` |
+| `tts` on the worker's own key (`LIVEKIT_PIPELINE_USE_PROVIDER_KEYS`) | The model the plugin is given, which `LIVEKIT_PIPELINE_ELEVENLABS_MODEL` or `LIVEKIT_PIPELINE_CARTESIA_TTS_MODEL` can change. Deepgram: `deepgram/aura-2` for an Aura-2 voice, else the Aura-1 model, which is the voice. | `elevenlabs/eleven_flash_v2_5`, `cartesia/sonic-3`, `deepgram/aura-asteria-en` |
+| `tts`, Google (Gemini TTS) | The Gemini TTS model (`LIVEKIT_PIPELINE_GEMINI_TTS_MODEL`). | `google/gemini-2.5-flash-preview-tts` |
+| `tts`, Neuphonic | `neuphonic`. | |
+
+The two workers do not write the same string for the same engine: a Pipecat
+STT row is `deepgram/nova-3-general` and a LiveKit one is `deepgram/nova-3`.
+A model default comes from the worker's SDK, so an SDK upgrade can change it.
+`GET /api/usage?groupBy=technology,provider,detail,unit` shows the values your
+rows carry.
 
 ## How a rate card prices a row
 
@@ -137,12 +170,16 @@ billing `unit` and a `priceMicros`:
   but no line matched: `no_line`, cost `null`. No card name or no card
   version covers `billedAt`: `no_rate`, cost `null`. An error: `errored`.
 
-Two rules that are easy to miss:
+Three rules that are easy to miss:
 
 - **A TTS or STT line must name the row unit** (`"unit": "characters"` or
   `"unit": "milliseconds"` in `match`). The workers write both units for an
   engine. A character line with no `match.unit` also matches the
   `milliseconds` row and charges each millisecond as a character.
+- **A TTS or STT line with no `detail` prices every model of that vendor.**
+  Two models of one vendor can cost different amounts. Name `detail` in
+  `match` to price one model. A model with no line then stays `no_line`,
+  which is easier to see than a wrong price.
 - **A model's token lines must match the `detail` the row carries.** The
   voice workers write `vendor/model` (`openai/gpt-4o-mini`). Text agents and
   subagents write the bare model id (`claude-haiku-4-5`). A model used both
@@ -415,7 +452,8 @@ audio, so its row can be much shorter than the call.
 - A `model` minute line for each per-minute model name you allow (Ultravox,
   GPT-Live, Grok voice, ElevenLabs Agents).
 - Token lines for each text model, in each `detail` form your rows carry.
-- `tts` and `stt` lines with `match.unit`, for both units of each engine.
+- `tts` and `stt` lines with `match.unit`, for both units of each engine,
+  and with `match.detail` where two models of a vendor have different prices.
 - `stt-aux` and `stt-output` lines if agents use side engines.
 - Zero `tts` lines for `ultravox`, `openai` and `xai` (speech the model makes
   with its own voice on Pipecat).

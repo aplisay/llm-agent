@@ -263,7 +263,7 @@ With provider keys on:
 - A vendor whose key is not set runs on Inference. The worker logs a warning, because LiveKit bills that usage.
 - The TTS plugins take a plain vendor name and a voice. A scoped `vendor/model` such as `cartesia/sonic-3`, or an agent with no voice, runs on Inference.
 - The worker passes the configured model name to Inference as it is. If Inference does not offer that model, the stage fails and the log names the stage, the vendor and the route.
-- Usage records name the configured vendor (for example `assemblyai`), whichever route the stage took.
+- Usage records name the configured vendor (for example `assemblyai`), whichever route the stage took. Their `detail` names the model that ran on that route: the Inference model, or the model the plugin was given (see [billing-calls-from-usage.md](billing-calls-from-usage.md#detail-on-speech-rows)). The two can differ for one agent. A Deepgram catalogue voice such as `aura-asteria-en` is an Aura-2 voice on Inference and the Aura-1 model of that name on the plugin, and the plugin takes the STT language from `options.stt.language`, not from a `:lang` suffix.
 
 Each session logs one line with the route of each stage, for example `pipeline routes: stt assemblyai inference, llm openai direct, tts cartesia direct`.
 

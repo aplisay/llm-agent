@@ -7,10 +7,11 @@ Mirrors ``transcript_observer.py`` (a :class:`BaseObserver`) and
 built with ``PipelineParams(enable_metrics=True, enable_usage_metrics=True)``
 (see ``voice_session.py``).
 
-``provider``/``detail`` are taken from the *configured* services
-(``usage_vendors``), not the metric label, so rows carry the real vendor (e.g.
-``cartesia``/``deepgram``) even on paths where the SDK metric only knows a bare
-model id. The per-call ``voice``/``milliseconds`` row recorded server-side in
+``provider`` is taken from the *configured* services (``usage_vendors``), not
+the metric label, so rows carry the real vendor (e.g. ``cartesia``/``deepgram``)
+even on paths where the SDK metric only knows a bare model id. On ``stt`` and
+``tts`` rows ``detail`` is read from the service that ran (``stt_detail``,
+``tts_detail``), so a rate line can price the row by its exact model. The per-call ``voice``/``milliseconds`` row recorded server-side in
 ``Call.end()`` still covers wall-clock call minutes; this observer captures the
 per-component meters (llm tokens, tts chars+ms, stt chars+ms) so each can be
 priced per vendor on either basis.
@@ -32,6 +33,7 @@ from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import STTService
+from pipecat.services.tts_service import TTSService
 
 from . import api_client
 
@@ -43,6 +45,34 @@ _SEEN_FRAME_WINDOW = 4096
 from .voice_mode import model_id_from_name
 
 
+#: Deepgram prices ``language=multi`` apart from one language, so the row says which ran.
+#: Keep in step with MULTILINGUAL_SUFFIX in agents/livekit/lib/usage-vendors.ts.
+MULTILINGUAL_SUFFIX = "-multilingual"
+
+
+def _service_setting(service: Any, name: str) -> str | None:
+    value = getattr(getattr(service, "settings", None), name, None)
+    return str(value) if isinstance(value, str) and value else None
+
+
+def stt_detail(vendor: str | None, service: Any) -> str | None:
+    """``detail`` for the rows of an STT service: the model it was built with,
+    spelt ``vendor/model`` as LiveKit rows are (``deepgram/nova-3-general``).
+    ``None`` when the service names no model."""
+    model = _service_setting(service, "model")
+    if not vendor or not model:
+        return None
+    multilingual = vendor == "deepgram" and (_service_setting(service, "language") or "").lower() == "multi"
+    return f"{vendor}/{model}{MULTILINGUAL_SUFFIX if multilingual else ''}"
+
+
+def tts_detail(vendor: str | None, service: Any) -> str | None:
+    """``detail`` for both rows of a TTS service: its model (``sonic-3.6``), else
+    its voice (on Deepgram the voice is the model: ``aura-asteria-en``), else the
+    vendor (Neuphonic with no voice set), so the value is never empty."""
+    return _service_setting(service, "model") or _service_setting(service, "voice") or vendor
+
+
 def usage_vendors(
     agent: dict, model_name: str, backend: dict[str, str | None] | None = None
 ) -> dict[str, dict[str, str | None]]:
@@ -51,6 +81,10 @@ def usage_vendors(
     rows carry the real vendor rather than a bare metric label. Keep the vendor
     defaults aligned with that build (stt=deepgram, tts=cartesia). Realtime mode
     has no separate STT/TTS stage, so only ``llm`` is meaningful there.
+
+    The ``stt`` entry names no model, and the ``tts`` model is used only for a
+    realtime model's own speech: the rows of an STT or TTS service take their
+    ``detail`` from the service (``stt_detail``, ``tts_detail``).
 
     The ``llm`` model is authoritative over the metric label (``_resolve``): it
     is the roster id (``xai/grok-4.3``), which is what the rate lines match
@@ -83,7 +117,7 @@ def usage_vendors(
         tts["skip"] = True
     return {
         "llm": {"vendor": llm_vendor, "model": llm_model, "authoritative": True},
-        "stt": {"vendor": stt_vendor, "model": stt_opts.get("model")},
+        "stt": {"vendor": stt_vendor},
         "tts": tts,
     }
 
@@ -156,8 +190,9 @@ class UsageMeteringObserver(BaseObserver):
       service, silence included (what streaming STT vendors bill). A realtime
       session has no STT service in its chain, so it writes no ``stt`` rows.
 
-    ``provider``/``detail`` come from ``services`` (the configured vendor/model),
-    falling back to the metric label only when a technology is unmapped.
+    ``provider`` comes from ``services`` (the configured vendor), falling back
+    to the metric label only when a technology is unmapped. ``detail`` on ``stt``
+    and ``tts`` rows comes from the service that ran.
     """
 
     def __init__(self, services: dict[str, dict[str, str | None]] | None = None) -> None:
@@ -201,6 +236,19 @@ class UsageMeteringObserver(BaseObserver):
         detail = svc.get("model") if svc.get("authoritative") else (model or svc.get("model"))
         if provider is None and model and "/" in model:
             provider = model.split("/", 1)[0]
+        return provider, detail
+
+    def _resolve_stt(self, service: Any) -> tuple[str | None, str | None]:
+        provider, detail = self._resolve("stt", None)
+        return provider, stt_detail(provider, service) or detail
+
+    def _resolve_tts(self, source: Any, model: str | None) -> tuple[str | None, str | None]:
+        """A TTS service names its own model, so its characters and milliseconds
+        rows carry one value. A realtime model's own speech (source = the LLM
+        service) keeps the configured voice."""
+        provider, detail = self._resolve("tts", model)
+        if isinstance(source, TTSService):
+            detail = tts_detail(provider, source)
         return provider, detail
 
     def add_meter(
@@ -247,7 +295,7 @@ class UsageMeteringObserver(BaseObserver):
         if delta <= 0:
             return
         self._stt_audio_ms_metered += delta
-        provider, detail = self._resolve("stt", None)
+        provider, detail = self._resolve_stt(stt)
         self._add("stt", "milliseconds", delta, provider=provider, detail=detail)
 
     async def on_push_frame(self, data: FramePushed) -> None:
@@ -277,7 +325,7 @@ class UsageMeteringObserver(BaseObserver):
                         self._add("llm", "cache_read_tokens", getattr(tokens, "cache_read_input_tokens", 0), provider=provider, detail=detail)
                         self._add("llm", "cache_write_tokens", getattr(tokens, "cache_creation_input_tokens", 0), provider=provider, detail=detail)
                     elif isinstance(m, TTSUsageMetricsData) and not self._tts_skipped:
-                        provider, detail = self._resolve("tts", m.model)
+                        provider, detail = self._resolve_tts(data.source, m.model)
                         self._add("tts", "characters", m.value, provider=provider, detail=detail)
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"usage metrics accumulation failed: {e}")
@@ -295,7 +343,7 @@ class UsageMeteringObserver(BaseObserver):
                 return
             if self._seen(frame_id):
                 return
-            provider, detail = self._resolve("stt", None)
+            provider, detail = self._resolve_stt(data.source)
             self._add("stt", "characters", len(frame.text or ""), provider=provider, detail=detail)
             return
 
@@ -308,7 +356,7 @@ class UsageMeteringObserver(BaseObserver):
             sr = getattr(frame, "sample_rate", 0) or 0
             nf = getattr(frame, "num_frames", 0) or 0
             if sr and nf:
-                provider, detail = self._resolve("tts", None)
+                provider, detail = self._resolve_tts(data.source, None)
                 self._add("tts", "milliseconds", int(nf / sr * 1000), provider=provider, detail=detail)
             return
 
@@ -339,9 +387,9 @@ class UsageMeteringObserver(BaseObserver):
                 "finalised": finalised,
             }
             # The ledger schema types provider and detail as strings; an
-            # unknown one (a side STT engine with no scoped model) is omitted
-            # rather than sent as null, which fails validation and takes every
-            # other record in the batch down with it.
+            # unknown one (a realtime model's own speech with no voice set) is
+            # omitted rather than sent as null, which fails validation and takes
+            # every other record in the batch down with it.
             records.append({k: v for k, v in record.items() if not (k in ("provider", "detail") and v is None)})
         if not records:
             return
