@@ -118,7 +118,11 @@ curl -s -X PUT -H "$H" -H 'Content-Type: application/json' \
   $API/phone-endpoints/442079460810 -d "{\"extensionId\":\"$SALES_EXTENSION_ID\"}"
 ```
 
-Until phones are provisioned automatically, `GET /phones/{phoneId}/lines/{lineId}/credentials` shows the SIP account of one line so a phone can be set up by hand. It needs `phone:provision` and each read is written to the audit log.
+The platform keeps only a digest hash of a line's SIP password. The password is never stored, and no route shows it or the hash.
+
+To set a phone up by hand, `POST /phones/{phoneId}/lines/{lineId}/password-reset` gives the line a new password and returns it once. It needs `phone:provision` and the setting `PBX_LINE_PASSWORD_RESET=true`, and each reset is written to the audit log. The old password stops working at once. With the setting off (the default) the route answers 403 `line_password_reset_disabled`.
+
+After an upgrade from a version that stored line passwords, `tools/agent-admin.js upgrade-db` empties them (schema 75).
 
 ## Settings
 
@@ -126,6 +130,7 @@ Until phones are provisioned automatically, `GET /phones/{phoneId}/lines/{lineId
 |---|---|
 | `PBX_RELEASE` | See above |
 | `PBX_REGISTRAR_DOMAIN` | The host name desk phones register to. It is the digest realm of every line's SIP account, so it cannot change once lines exist. Unset means `REGSERVER_REGISTRAR` |
+| `PBX_LINE_PASSWORD_RESET` | `true` lets an admin reset a line's SIP password and read the new one once. Unset means off |
 | `CALLCTL_SHARED_TOKEN` | The token call control sends as `x-callctl-token` |
 
 ## Internal routes for call control

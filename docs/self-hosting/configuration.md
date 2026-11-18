@@ -258,6 +258,7 @@ Phone numbers, trunks and SIP registrations.
 | `REGSERVER_REGISTRAR` | API |  | Host name customers' PBXes register to. Unset means registrar accounts cannot be created. Permanent once the first account exists. |
 | `PBX_REGISTRAR_DOMAIN` | API |  | Host name desk phones of the phone system register to. Unset means REGSERVER_REGISTRAR is used. Permanent once the first phone line exists. |
 | `PBX_RELEASE` | API |  | Which phone system features the API accepts: 1, 1c, 2, 3 or 4. Unset means 1. An organisation also needs the phoneSystem capability. |
+| `PBX_LINE_PASSWORD_RESET` | API |  | Set to true to let an admin reset the SIP password of a desk phone line and read the new one once, to set a phone up by hand. Unset means off. Leave it off where every phone is provisioned. |
 | `REGCLIENT_API_TOKEN` | API |  | Token for the B2BUA node API (SIP traces and registration probes). Unset turns those routes off (503). Secret. |
 | `REGCLIENT_API_TOKEN_PREVIOUS` | API |  | The previous token, accepted while a new one rolls out. Secret. |
 | `REGCLIENT_API_PORT` | API | `8443` | B2BUA node API port. |
