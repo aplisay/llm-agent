@@ -17,7 +17,8 @@ in sync if either side changes.
 It also holds the first turn of an agent that takes over a live call:
 :data:`HANDOVER_OPENING_INSTRUCTION` after the ``transfer_agent`` builtin, and
 :data:`TAKEOVER_OPENING_INSTRUCTION` after a person hands the call back
-(``options.bridgedTransferToAgent``).
+(``options.bridgedTransferToAgent``), and what the model is told when a
+transfer it started fails (:func:`transfer_failure_reason`).
 """
 
 from __future__ import annotations
@@ -148,3 +149,36 @@ def render_parent_transcript(turns: Iterable[tuple[str, str]]) -> str:
         elif role == "assistant":
             lines.append(f"> agent: {text}\n")
     return "".join(lines)
+
+
+# What the model sees when a transfer fails: in ``transfer_status``, in the
+# tool result, and in the notice it gets when a transfer running in the
+# background fails. The model reads these to the caller, so they are short and
+# carry no internal ids or SIP detail. Those go to the log.
+TRANSFER_NOT_PLACED = "Transfer failed. The call could not be placed."
+TRANSFER_BUSY = "Transfer failed. The line was busy."
+TRANSFER_NO_ANSWER = "Transfer failed. There was no answer."
+TRANSFER_DECLINED = "Transfer failed. The call was declined."
+TRANSFER_UNREACHABLE = "Transfer failed. The number could not be reached."
+
+TRANSFER_FAILED_NOTICE = (
+    "{reason} The caller is still on the line with you. Tell them the transfer "
+    "did not go through, and offer to help in another way."
+)
+
+
+def transfer_failure_reason(detail: str) -> str:
+    """The plain reason for a transfer dial that failed with ``detail``.
+
+    ``detail`` is the gateway's error, for example "voiceblender leg <id>
+    ended before answer: busy". It matches words only. A leg id is hex, so
+    it cannot match one by chance.
+    """
+    text = (detail or "").lower()
+    if "busy" in text:
+        return TRANSFER_BUSY
+    if any(word in text for word in ("no_answer", "no answer", "did not answer", "timeout", "timed out")):
+        return TRANSFER_NO_ANSWER
+    if "declin" in text or "reject" in text:
+        return TRANSFER_DECLINED
+    return TRANSFER_UNREACHABLE

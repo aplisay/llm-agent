@@ -1126,8 +1126,8 @@ async def build_voice_session(
     inside the prompt).
 
     ``on_provider_session_ended`` is called with the provider's reason when a
-    Grok voice session ends on xAI's side (a server close, a fatal error, the
-    concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
+    realtime session ends on the provider's side (a server close, a fatal
+    error, the concurrent-session limit) so the call ends cleanly; ``on_injected_dtmf``
     receives the aggregated keypad digits on a Grok voice row and on OpenAI
     Realtime, where they reach the model through the service rather than a
     transcription frame.
@@ -1748,6 +1748,7 @@ async def _build_realtime(
                 if ultravox_tools_schema.standard_tools
                 else None
             ),
+            on_session_ended=on_provider_session_ended,
         )
 
         # Workaround for a Pipecat 1.x bug: ``UltravoxRealtimeLLMService``

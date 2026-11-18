@@ -574,6 +574,20 @@ def test_user_transcripts_go_upstream_and_injected_echoes_are_dropped():
     assert socket.sent[-2] == {"type": "user_message", "text": "12#", "source_medium": "dtmf"}
 
 
+def test_a_platform_notice_is_an_instruction_from_the_system():
+    llm, socket, _, _ = _service()
+
+    async def scenario():
+        await _init(llm)
+        await llm.inject_platform_notice("Transfer failed. The line was busy.")
+
+    asyncio.run(scenario())
+    assert socket.sent[-1] == {
+        "type": "user_message",
+        "text": "(Instruction from the system, not the caller: Transfer failed. The line was busy.)",
+    }
+
+
 def test_ping_is_answered_with_a_pong():
     llm, socket, _, _ = _service()
     asyncio.run(llm._handle_message({"type": "ping", "ping_event": {"event_id": 42, "ping_ms": 120}}))

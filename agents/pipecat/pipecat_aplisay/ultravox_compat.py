@@ -1,17 +1,20 @@
 """Upstream compatibility for teardown, native tool results, timeouts and text transcripts; remove overrides as fixes
-land. See PRs #115, #169, #176 and #305."""
+land. See PRs #115, #169, #176 and #305. Also reports a server close to the call session, as the other realtime
+subclasses do."""
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import LLMFullResponseEndFrame, LLMFullResponseStartFrame, LLMTextFrame
 from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.services.ultravox.llm import UltravoxRealtimeLLMService
+from websockets.exceptions import ConnectionClosed
 
+from .realtime_context import PLATFORM_NOTICE
 from .user_turn_times import ultravox_call_id
 
 # Ultravox's client-tool execution window (protobuf Duration string, 40s max).
@@ -30,6 +33,20 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
     #: (text medium only). Compared against Ultravox's ``text`` snapshots so a
     #: snapshot is never spoken twice and a snapshot-only turn is spoken once.
     _text_turn_streamed: str = ""
+
+    # Class defaults so the no-init instances the tests build have them too.
+    _on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None
+    _ended_reported: bool = False
+    _socket_closed: bool = False
+
+    def __init__(
+        self,
+        *args: Any,
+        on_session_ended: Optional[Callable[[str], Awaitable[None]]] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_session_ended = on_session_ended
 
     async def _handle_agent_transcript(
         self, medium: str, text: str | None, delta: str | None, final: bool
@@ -123,6 +140,11 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
         self._completed_tool_calls.add(tool_call_id)
         await self._send_tool_result(tool_call_id, payload)
 
+    async def inject_platform_notice(self, text: str) -> None:
+        """A platform notice mid-call. Ultravox ignores developer messages in
+        the context, so it goes as user text, marked as not from the caller."""
+        await self._send_user_text(PLATFORM_NOTICE.format(text=text.strip()), urgency="soon")
+
     async def _handle_tool_invocation(self, tool_name: str, invocation_id: str, parameters: dict) -> None:
         """Suppress the async placeholder: Ultravox accepts one native result per invocation, so it must be the real answer.
         See PR #169."""
@@ -137,11 +159,42 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
             ]
         )
 
-    async def _receive_messages(self) -> None:
-        if not self._socket:
+    async def _send(self, content: bytes | dict[str, Any]) -> None:
+        """Upstream's send, except that a send after the server closed the
+        socket is dropped quietly. Upstream logs an error for every audio frame
+        until the call ends; the receive loop reports the close once."""
+        if self._disconnecting or self._socket_closed or not self._socket:
             return
         try:
-            async for message in self._socket:
+            if isinstance(content, bytes):
+                await self._socket.send(content)
+            else:
+                await self._socket.send(json.dumps(content))
+        except ConnectionClosed:
+            self._socket_closed = True
+        except Exception as e:  # noqa: BLE001
+            if self._disconnecting or not self._socket:
+                return
+            await self.push_error("Ultravox websocket send error", e, force_treat_as_permanent=True)
+
+    async def _session_ended(self, reason: str) -> None:
+        if self._ended_reported or self._disconnecting or self._on_session_ended is None:
+            return
+        self._ended_reported = True
+        logger.bind(event="session_ended", reason=reason).warning(
+            f"Ultravox session ended by the provider ({reason})"
+        )
+        try:
+            await self._on_session_ended(reason)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"{self}: on_session_ended raised: {e}")
+
+    async def _receive_messages(self) -> None:
+        socket = self._socket
+        if not socket:
+            return
+        try:
+            async for message in socket:
                 if isinstance(message, bytes):
                     await self._handle_audio(message)
                     continue
@@ -186,7 +239,16 @@ class AplisayUltravoxRealtimeLLMService(UltravoxRealtimeLLMService):
                                 )
                     case _:
                         logger.debug(f"Received unhandled Ultravox message: {data}")
+        except ConnectionClosed:
+            # An abnormal close. A normal one (1000) just ends the loop.
+            pass
         except Exception as e:
             if self._disconnecting or not self._socket:
                 return
             await self.push_error("Ultravox websocket receive error", e, fatal=True)
+            return
+        if self._disconnecting:
+            return
+        self._socket_closed = True
+        code = getattr(socket, "close_code", None)
+        await self._session_ended(f"connection_closed (code {code})" if code is not None else "connection_closed")
