@@ -23,6 +23,27 @@ The address alone opens nothing. A file is served only when all of these hold:
 
 Every refusal is a 404 with an empty body, so an address that names no phone looks the same as a refused one. Every request is written to `device_fetch_logs` with its result.
 
+## Zero touch with Snom's redirection service
+
+A factory-reset Snom phone asks Snom's redirection service (SRAPS) where to fetch its settings. With an SRAPS company API token set, `POST /phones/{phoneId}/provision` also tells SRAPS the phone's settings address, so the phone finds it with nobody touching it.
+
+| Variable | Use |
+|---|---|
+| `SNOM_SRAPS_KEY_ID` | The access key id of the company API token |
+| `SNOM_SRAPS_KEY_SECRET` | Its secret |
+| `SNOM_SRAPS_COMPANY_ID` | The SRAPS company the phones are added to |
+
+Set them on the API server. With any of them unset nothing is sent to Snom.
+
+- The answer of the provision route has `redirect`: `{ service, bound }`. When `bound` is false, `error` says why, and the address can still be typed into the phone.
+- `mac_taken` means another SRAPS company holds the phone. The phone then shows the failure `other_provider`. Only Snom or that company can free it.
+- A bound address lasts 30 days before its first use, not 7.
+- `GET /phones/{phoneId}/redirect` asks SRAPS what it holds, and when the phone last called in.
+- A wipe or a removal takes the phone out of SRAPS again.
+- SRAPS is asked only at a factory reset. A new address does not reach a phone that is already running.
+
+The adapter has been tested against a stand-in service only, not against Snom.
+
 ## What the file holds
 
 For each line: `user_name`, `user_pname`, `user_hash`, `user_host`, `user_outbound` (TLS), SRTP required, and a `line` key with the line's label. `user_hash` is the digest hash of the line's account. `user_pass` is empty: the file never holds a password, and neither does the database.

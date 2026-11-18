@@ -21,7 +21,7 @@ export default function (logger) {
     description: 'Needs `phone:provision`. The answer holds the address the phone fetches its settings from, and it can '
       + 'not be read again. An earlier address of the phone stops working at once. The phone must present its factory '
       + 'certificate when it fetches: the address alone opens nothing. Until its first use the address stops working at '
-      + '`expiresAt`. A wiped phone is brought back by this.',
+      + '`expiresAt`: 7 days, or 30 when a redirect service was told the address. A wiped phone is brought back by this.',
     operationId: 'provisionPhone',
     tags: [PHONES_TAG],
     parameters: [pathId('phoneId', 'The id of the phone.'), organisationIdQuery],
@@ -34,6 +34,14 @@ export default function (logger) {
             url: { type: 'string', description: 'The settings address. `{mac}` is filled in by the phone.' },
             expiresAt: { type: 'string', format: 'date-time' },
           },
+        },
+        redirect: {
+          type: 'object',
+          nullable: true,
+          description: 'Null when no redirect service is set up. `bound` true: a factory-reset phone finds the address by '
+            + 'itself. `bound` false: `error` says why (`mac_taken` when another company holds the phone at the vendor), '
+            + 'and the address can still be typed into the phone.',
+          properties: { service: { type: 'string' }, bound: { type: 'boolean' }, error: { type: 'string' } },
         },
       }),
       ...errorResponses,

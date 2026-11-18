@@ -1,4 +1,5 @@
 import { getPhone } from '../../../lib/pbx/directory-views.js';
+import { releaseRedirect } from '../../../lib/provisioning/phones.js';
 import { updatePhone, deletePhone } from '../../../lib/pbx/directory.js';
 import { can } from '../../../lib/auth/permissions.js';
 import { directoryContext, attempt, sendWrite, sendNotFound } from '../../../lib/pbx/route-helpers.js';
@@ -45,7 +46,11 @@ export default function (logger) {
   const remove = (req, res) => attempt(res, logger, async () => {
     const ctx = await directoryContext(req, res, 'phone', 'delete', { gate: true });
     if (!ctx) return;
-    sendWrite(res, await deletePhone(ctx, req.params.phoneId));
+    const before = ctx.dryRun ? null : await getPhone(ctx.organisation.id, req.params.phoneId);
+    const result = await deletePhone(ctx, req.params.phoneId);
+    // After the removal: take the phone out of the vendor's redirect service too.
+    if (before?.device?.redirected) await releaseRedirect(before.device.id);
+    sendWrite(res, result);
   });
   remove.apiDoc = {
     summary: 'Remove a phone.',
