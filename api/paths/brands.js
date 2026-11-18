@@ -1,6 +1,7 @@
 import { Brand } from '../../lib/database.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 import { principalBrand, brandsReady, BRANDS_NOT_READY } from '../../lib/brands.js';
+import { ceilingFor } from '../../lib/outbound-policy.js';
 
 /** The 503 a brand route gives on a database without the brand upgrade. */
 export const brandsNotReadyResponse = {
@@ -14,6 +15,7 @@ export function brandView(row) {
     id: row.id,
     name: row.name ?? null,
     defaultCapabilities: Array.isArray(row.defaultCapabilities) ? row.defaultCapabilities : [],
+    outboundCeiling: ceilingFor(row.outboundCeiling),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

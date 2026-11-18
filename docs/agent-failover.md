@@ -245,7 +245,7 @@ A fallback number is configured by the agent's author rather than chosen by a mo
 
 What that means for a number you are about to configure:
 
-- **On an egress we do not pay for** — a registration B2BUA to the customer's own PBX, a BYO trunk — the agent's `options.outboundCallFilter` is authoritative, defaulting to UK geographic, non-geographic and mobile numbers (`^(\+44|44|0)[1237]\d{6,15}$`). A fallback number outside that range needs the filter widened to admit it. Note what the default excludes: any international destination, and UK `08`/`09` ranges — an `0800` overflow line does **not** pass the default filter.
+- **On an egress we do not pay for** (a registration B2BUA to the customer's own PBX, a BYO trunk), the agent's `options.outboundCallFilter` is authoritative, defaulting to UK geographic, non-geographic and mobile numbers without 070 and 076 (`^(\+44|44|0)(?!7[06])[1237]\d{6,15}$`). A fallback number outside that range needs the filter widened to admit it. Note what the default excludes: any international destination, and UK `08`/`09` ranges. An `0800` overflow line does **not** pass the default filter.
 - **On one of our chargeable carrier trunks** the operator's per-trunk filter plus a rateable destination decide, and the agent's own filter may only narrow that further, never widen it. A number the operator's filter does not admit is refused whatever the agent is configured with.
 - **The gate fails closed.** If the authorisation decision cannot be obtained at all, the destination is refused rather than allowed.
 

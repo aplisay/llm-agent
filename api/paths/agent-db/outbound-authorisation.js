@@ -167,7 +167,11 @@ authoriseOutbound.apiDoc = {
               allowed: { type: 'boolean' },
               code: {
                 type: 'string',
-                enum: ['ok', 'agent_filter', 'default_filter', 'trunk_filter', 'not_rateable', 'invalid_destination', 'internal_extension_not_reachable'],
+                enum: [
+                  'ok', 'agent_filter', 'default_filter', 'trunk_filter', 'not_rateable', 'invalid_destination', 'internal_extension_not_reachable',
+                  'destination_class', 'outside_hours', 'calls_in_progress_limit', 'calls_per_minute_limit', 'daily_spend_limit',
+                  'monthly_spend_limit', 'outbound_policy_unavailable', 'outbound_policy_not_ready',
+                ],
               },
               reason: { type: 'string', nullable: true },
               chargeable: { type: 'boolean', description: 'Whether the leg egresses one of our carrier trunks' },

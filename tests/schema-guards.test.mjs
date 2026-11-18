@@ -13,15 +13,15 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system and brands, in version order', () => {
+  test('registrar HA1, the phone system, brands and the outbound policy, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['outboundPolicy', 75]]);
   });
 
   test('the boot reads each table a step adds or changes, once', () => {
     const tables = guardedTables();
     expect(new Set(tables).size).toBe(tables.length);
-    for (const table of ['phone_registrations', 'organisations', 'phone_numbers', 'auth_keys', 'brands', 'lines', 'call_events']) {
+    for (const table of ['phone_registrations', 'organisations', 'phone_numbers', 'auth_keys', 'brands', 'lines', 'call_events', 'outbound_events']) {
       expect(tables).toContain(table);
     }
   });
