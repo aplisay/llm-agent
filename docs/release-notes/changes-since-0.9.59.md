@@ -1,7 +1,7 @@
 # Release 0.9.60 (draft) - brands, phone system directory, caller identity flags, speech metering
 
 > Draft. Covers changes merged to `next` since the 0.9.59 release point
-> (28 pull requests, 14 - 18 November 2026, up to #503). The version number is
+> (30 pull requests, 14 - 18 November 2026, up to #505). The version number is
 > provisional.
 
 Each item is tagged by subsystem: **core** (API server, REST API, database,
@@ -139,6 +139,24 @@ Pipecat), and **ci** (build and release pipeline).
   pauses. At teardown the worker waits up to 2 s for the engine's last final.
 - **[core] Documentation**: new [stt-formatting.md](../stt-formatting.md).
 
+## Call teardown - livekit+pipecat
+
+- **[livekit] Consult call records**: a call that ends while a consult is live
+  now ends the consult leg's record and the agent's record before the worker
+  exits. Before, either could stay `in progress`, which kept its
+  agent-concurrency slot and left its minutes unbilled.
+- **[livekit] Session close**: when the provider ends the agent's session, the
+  worker now flushes usage before it ends the call, and ends any live consult.
+- **[pipecat] Ultravox close**: a server close of an Ultravox session now ends
+  the call, or goes to the fallback chain before the agent has spoken, as on
+  the other realtime models. Before, the caller heard silence until the
+  session timeout, and send errors filled the call's invocation log.
+- **[pipecat] Failed browser transfer**: when a transfer from a browser caller
+  fails to dial, the agent is told at once, with a short reason such as busy
+  or no answer. The gateway's error and leg id go to the log only.
+- **[core] Documentation**: [call-transfers.md](../call-transfers.md) is
+  updated.
+
 ## Usage and billing - core+livekit+pipecat
 
 - **[livekit+pipecat] Speech row `detail`**: `tts`, `stt`, `stt-aux`, and
@@ -200,6 +218,9 @@ Pipecat), and **ci** (build and release pipeline).
 - **[livekit] Provider keys**: with `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` on, a
   stage with no plugin or no key now runs on LiveKit Inference and is billed to
   the LiveKit project. A LiveKit server without Inference fails such a stage.
+- **[livekit] Old stuck call records**: records that earlier versions left
+  `in progress` stay open, and each still holds an agent-concurrency slot.
+  This release stops new ones. It does not close old ones.
 - **[pipecat] `do-staging`**: apply it only together with call control set to
   hand agent calls to the worker. With one side switched and not the other,
   agent calls fail.
