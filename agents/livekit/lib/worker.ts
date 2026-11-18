@@ -39,7 +39,7 @@ import {
 } from "./transfer-handler.js";
 import type { BridgedTakeoverRuntime } from "./bridged-transfer-to-agent.js";
 import type { LoggedTransactionLog } from "./user-turn-corrections.js";
-import { withTimeout } from "./utils.js";
+import { singleFlight, withTimeout } from "./utils.js";
 import {
   SetupLookups,
   SetupLookupTimeoutError,
@@ -1808,8 +1808,9 @@ async function setupCallAndUtilities({
     };
   }
 
-  // Helper function to destroy any in-progress transfer when original caller disconnects
-  const endTransferActivityIfNeeded = async (reason: string) => {
+  // Helper function to destroy any in-progress transfer when original caller disconnects.
+  // Single flight: session close, caller disconnect and job shutdown race to call it.
+  const endTransferActivityIfNeeded = singleFlight(async (reason: string) => {
     await destroyInProgressTransfer(
       getConsultInProgress,
       getConsultRoomName,
@@ -1821,7 +1822,7 @@ async function setupCallAndUtilities({
       reason,
       setTransferState,
     );
-  };
+  });
   // Attach batched transaction logs to the call object for access during end()
   (call as any).batchedTransactionLogs = batchedTransactionLogs;
 

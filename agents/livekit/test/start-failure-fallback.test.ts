@@ -186,6 +186,7 @@ function countWarns(message: string) {
 
 const teardownRequests = () =>
   requests.filter((r) => r.includes("livekit.test") || r.includes("/call/call-1/end"));
+const roomDeletes = () => requests.filter((r) => r.endsWith("/DeleteRoom")).length;
 
 test("an Ultravox refusal after the session started goes to the fallback loop, not teardown", async () => {
   ultravoxCalls = refuseAfter(50);
@@ -220,11 +221,12 @@ for (const [name, options] of [
     }
     assert.deepEqual(a.ends, ["Session closed"]);
     assert.ok(teardownRequests().some((r) => r.includes("livekit.test")), "the room was deleted");
-    // End the attempt as the job would, so its timers stop.
+    // End the attempt as the job would, so its timers stop. The call has ended
+    // already, so the full teardown's room deletion shows it has run.
+    const deletes = roomDeletes();
     ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: { sid: "PA_caller", identity: "caller" } } as any);
-    while (a.ends.length < 2) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitFor(() => roomDeletes() > deletes);
+    assert.deepEqual(a.ends, ["Session closed"], "the call ended once");
   });
 });
 
@@ -368,10 +370,10 @@ test("a session closed for another reason during start-up ends the call as befor
     assert.deepEqual(a.ends, ["Session closed"]);
     assert.ok(teardownRequests().some((r) => r.includes("livekit.test")), "the room was deleted");
     // ...and the room reports it, which runs the full teardown (and stops the attempt's timers).
+    const deletes = roomDeletes();
     ctx.room.emit(RoomEvent.ParticipantDisconnected, { info: { sid: "PA_caller", identity: "caller" } } as any);
-    while (a.ends.length < 2) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitFor(() => roomDeletes() > deletes);
+    assert.deepEqual(a.ends, ["Session closed"], "the call ended once");
   });
 });
 
