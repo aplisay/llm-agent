@@ -30,6 +30,7 @@ import { DISCONNECT_REASONS, getRoomService } from "./livekit-constants.js";
 import { deleteRoomWithRetry } from "./livekit-helpers.js";
 import { invocationLogs, invocationLogTime } from "./invocation-log-buffer.js";
 import { finaliseJobBeforeExit, setJobFinaliser } from "./job-finaliser.js";
+import { createCallRecordsTeardown } from "./call-records-teardown.js";
 import { createTools } from "./agent-tools.js";
 import { resolveVoiceMode } from "./voice-mode.js";
 import { textOutputEnabled } from "./realtime-tts.js";
@@ -591,9 +592,27 @@ export async function runAgentWorker({
     }
   };
 
+  // Every teardown path ends the call's records through this, and the job's
+  // shutdown callback waits for it (call-records-teardown.ts).
+  const callRecords = createCallRecordsTeardown({
+    endTransfer: endTransferActivityIfNeeded,
+    beforeEnd: async () => {
+      // Stop the side STTs first, and wait for each engine's last usage
+      // report, so their final counts are in the meters the flush writes.
+      await stopSideStt();
+      // Flush accumulated usage (tokens / characters / audio) to the ledger
+      // before ending the call so it lands as the finalised session total.
+      await flushUsage(true);
+    },
+    endCall: (reason) => getActiveCall().end(reason),
+  });
+
   // A later fallback attempt's finaliser replaces this one (job-finaliser.ts).
   setJobFinaliser(ctx, async (endReason) => {
     const reason = invocationLogReason || endReason || "shutdown";
+    if (!attemptAbandoned) {
+      await callRecords.settle(reason);
+    }
     const captureStats = getCaptureStats();
     console.log(
       "shutdown callback: starting finalization and InvocationLog persistence",
@@ -938,20 +957,7 @@ export async function runAgentWorker({
         }
       }
 
-
-      // Stop the side STTs first — and wait for each engine's last usage
-      // report — so their final counts are in the meters the flush below writes.
-      await stopSideStt();
-
-      // Flush accumulated usage (tokens / characters / audio) to the ledger
-      // before ending the call so it lands as the finalised session total.
-      await flushUsage(true);
-
-      await getActiveCall()
-        .end(reason)
-        .catch((e) => {
-          logger.error({ e }, "error ending call");
-        });
+      await callRecords.end(reason);
       exitStatus.callEnded = true;
       logger.debug("cleanup and close: call ended, deleting room");
       await deleteRoomWithRetry(room.name).catch((e) => {
@@ -1358,22 +1364,10 @@ export async function runAgentWorker({
         return;
       }
       logger.info({ ev: sessionEventForLog(ev) }, "session closed");
-      void endTransferActivityIfNeeded(DISCONNECT_REASONS.SESSION_CLOSED).catch(
-        (transferError) => {
-          logger.error(
-            { transferError },
-            "error ending transfer activity during session close",
-          );
-        },
-      );
+      void callRecords.end(DISCONNECT_REASONS.SESSION_CLOSED);
       void deleteRoomWithRetry(room.name).catch((e) => {
         logger.error({ e }, "error deleting room on session close");
       });
-      void getActiveCall()
-        .end(DISCONNECT_REASONS.SESSION_CLOSED)
-        .catch((e) => {
-          logger.error({ e }, "error ending call on session close");
-        });
     });
   };
 
@@ -2099,29 +2093,14 @@ export async function runAgentWorker({
             }
             logger.info({ ev: sessionEventForLog(ev) }, "session closed");
             startup.close();
-            // Fire-and-forget transfer activity teardown so this listener stays synchronous.
-            void endTransferActivityIfNeeded(
-              DISCONNECT_REASONS.SESSION_CLOSED,
-            ).catch((transferError) => {
-              logger.error(
-                { transferError },
-                "error ending transfer activity during session close",
-              );
-            });
-            // Best-effort room/call teardown. Our ParticipantDisconnected
-            // handler always also calls cleanupAndClose (which deletes the
-            // room and ends the active call awaited), so these are belt-and-
-            // braces in case session close arrives without a participant
-            // disconnect (e.g. SDK auto-close on shutdown). deleteRoomWithRetry
-            // treats 404 as success so double-delete is harmless.
+            // Not awaited, so this listener stays synchronous. Deleting the
+            // room makes agents-js shut the job down; its shutdown callback
+            // waits for these records to end before the process exits.
+            // deleteRoomWithRetry treats 404 as success so double-delete is harmless.
+            void callRecords.end(DISCONNECT_REASONS.SESSION_CLOSED);
             void deleteRoomWithRetry(room.name).catch((e) => {
               logger.error({ e }, "error deleting room on session close");
             });
-            void getActiveCall()
-              .end(DISCONNECT_REASONS.SESSION_CLOSED)
-              .catch((e) => {
-                logger.error({ e }, "error ending call on session close");
-              });
           },
         );
 
@@ -2598,17 +2577,9 @@ export async function runAgentWorker({
             { sid: p.info?.sid, identity: p.info?.identity },
             "original participant disconnected, initiating graceful shutdown",
           );
-          // End transfer activity if in progress
-          try {
-            await endTransferActivityIfNeeded(
-              DISCONNECT_REASONS.ORIGINAL_PARTICIPANT,
-            );
-          } catch (transferError) {
-            logger.error(
-              { transferError },
-              "error ending transfer activity during original participant disconnect",
-            );
-          }
+          // No awaited endTransferActivityIfNeeded first: cleanupAndClose ends
+          // the consult alongside the call, so the call's end is under way
+          // before the SDK's own session close deletes the room.
 
           // Don't call session.close() here. With `closeOnDisconnect: true`
           // the SDK has already started closing the session in its own

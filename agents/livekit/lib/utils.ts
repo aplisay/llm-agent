@@ -37,6 +37,22 @@ export async function withTimeout<T>(
 }
 
 /**
+ * Calls made while a run of `fn` is in flight share that run and its result.
+ * A call after it settles starts a new run.
+ */
+export function singleFlight<A extends unknown[]>(
+  fn: (...args: A) => Promise<void>,
+): (...args: A) => Promise<void> {
+  let running: Promise<void> | null = null;
+  return (...args: A) => {
+    running ??= fn(...args).finally(() => {
+      running = null;
+    });
+    return running;
+  };
+}
+
+/**
  * Bound session.close() and absorb failures so a stalled provider cannot prevent call-record teardown. See PR #183.
  *
  * @param session - Anything with a `close()`; `null`/`undefined` is a no-op.
