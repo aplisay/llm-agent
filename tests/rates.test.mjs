@@ -4,7 +4,7 @@ import {
 } from './setup/database-test-wrapper.js';
 import { randomUUID } from 'crypto';
 import {
-  resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName,
+  resolveRowCost, toLineUnits, lineMatchesRow, resolveOrgRateName, validateRateLines,
   resolveRateCard, settle, costUsageRow, sweepUncostedRows,
   finaliseStaleSessions, attributeOrphanRow, previewRowCost,
   BILLING_INCREMENT_SECONDS, STALE_SESSION_HOURS,
@@ -130,6 +130,106 @@ describe('rates: pure additive resolver', () => {
     ] } };
     // 10_000ms rounds up to 12 billed seconds = 0.2 min; 7 * 0.2 = 1.4 -> 1
     expect(resolveRowCost(voiceRow({ quantity: 10_000 }), card).costMicros).toBe(1);
+  });
+});
+
+describe('rates: per-line minimumSeconds', () => {
+  // Minimum on the model and audio-path lines only; the token line has none.
+  const MIN_CARD = { detail: { lines: [
+    { dim: 'audio-path', match: { technology: 'voice', media: 'webrtc' }, unit: 'minute', priceMicros: 500_000, minimumSeconds: 60 },
+    { dim: 'model', match: { technology: 'voice', detail: 'livekit:ultravox/ultravox-v0.6' }, unit: 'minute', priceMicros: 6_000_000, minimumSeconds: 60 },
+    { dim: 'model', match: { technology: 'llm', unit: 'output_tokens' }, unit: 'token', priceMicros: 8_000 },
+  ] } };
+  const byDim = (breakdown) => Object.fromEntries(breakdown.map((b) => [b.dim, b]));
+
+  it('bills a sub-minute row at the minimum on each line that sets it', () => {
+    const { costMicros, breakdown } = resolveRowCost(voiceRow({ quantity: 20_000 }), MIN_CARD);
+    // 20 s → 1 minute on both lines: 500_000 + 6_000_000.
+    expect(costMicros).toBe(6_500_000);
+    for (const b of breakdown) {
+      expect(b.quantity).toBe(1);
+      expect(b).toMatchObject({ minimumSeconds: 60, minimumApplied: true });
+    }
+  });
+
+  it('a row exactly at the minimum bills the minimum, minimumApplied false', () => {
+    const { costMicros, breakdown } = resolveRowCost(voiceRow({ quantity: 60_000 }), MIN_CARD);
+    expect(costMicros).toBe(6_500_000);
+    expect(byDim(breakdown).model).toMatchObject({ quantity: 1, minimumSeconds: 60, minimumApplied: false });
+  });
+
+  it('above the minimum, bills in 6-second increments as before', () => {
+    const { costMicros, breakdown } = resolveRowCost(voiceRow({ quantity: 61_000 }), MIN_CARD);
+    // 61 s → 66 s = 1.1 min, same as a line with no minimum.
+    expect(costMicros).toBe(7_150_000);
+    expect(byDim(breakdown).model.quantity).toBeCloseTo(1.1);
+    expect(byDim(breakdown).model.minimumApplied).toBe(false);
+  });
+
+  it('a zero-duration row still bills nothing', () => {
+    const { costMicros, status, breakdown } = resolveRowCost(voiceRow({ quantity: 0 }), MIN_CARD);
+    expect(status).toBe('matched');
+    expect(costMicros).toBe(0);
+    for (const b of breakdown) expect(b).toMatchObject({ quantity: 0, costMicros: 0, minimumApplied: false });
+  });
+
+  it('a line without the field is unchanged: no minimum and no extra breakdown keys', () => {
+    const { costMicros, breakdown } = resolveRowCost(voiceRow({ quantity: 20_000 }), ULTRAVOX_CARD);
+    // 20 s rounds to 24 s = 0.4 min: 0.4 × (500_000 + 6_000_000).
+    expect(costMicros).toBe(2_600_000);
+    for (const b of breakdown) {
+      expect(b.quantity).toBeCloseTo(0.4);
+      expect(b).not.toHaveProperty('minimumSeconds');
+      expect(b).not.toHaveProperty('minimumApplied');
+    }
+  });
+
+  it('only lines that set it get the minimum (token line on the same card has none)', () => {
+    const row = { technology: 'llm', provider: 'openai', detail: 'openai/gpt-4o', unit: 'output_tokens', quantity: 10 };
+    const { costMicros, breakdown } = resolveRowCost(row, MIN_CARD);
+    expect(costMicros).toBe(80_000);
+    expect(breakdown[0]).not.toHaveProperty('minimumSeconds');
+  });
+
+  it('minimumSeconds: 0 behaves like no minimum', () => {
+    const card = { detail: { lines: [
+      { dim: 'audio-path', match: { technology: 'voice' }, unit: 'minute', priceMicros: 600_000, minimumSeconds: 0 },
+    ] } };
+    const { costMicros, breakdown } = resolveRowCost(voiceRow({ quantity: 20_000 }), card);
+    expect(costMicros).toBe(240_000); // 0.4 min
+    expect(breakdown[0]).toMatchObject({ minimumSeconds: 0, minimumApplied: false });
+  });
+
+  it('applies to a seconds-metered row too', () => {
+    const card = { detail: { lines: [
+      { dim: 'stt', match: { technology: 'stt' }, unit: 'minute', priceMicros: 600_000, minimumSeconds: 30 },
+    ] } };
+    const row = { technology: 'stt', provider: 'deepgram', unit: 'seconds', quantity: 7 };
+    expect(resolveRowCost(row, card).costMicros).toBe(300_000); // 0.5 min
+  });
+
+  it('ignores a minimum on a non-minute line written past the validator', () => {
+    const card = { detail: { lines: [
+      { dim: 'model', match: { technology: 'llm' }, unit: 'token', priceMicros: 1, minimumSeconds: 60 },
+    ] } };
+    const row = { technology: 'llm', unit: 'output_tokens', quantity: 5 };
+    const { costMicros, breakdown } = resolveRowCost(row, card);
+    expect(costMicros).toBe(5);
+    expect(breakdown[0]).not.toHaveProperty('minimumSeconds');
+  });
+
+  it('validateRateLines accepts a non-negative minimum on a minute line only', () => {
+    const line = (over) => ({ lines: [{ dim: 'model', match: {}, unit: 'minute', priceMicros: 1, ...over }] });
+    expect(validateRateLines(line({}))).toBeNull();
+    expect(validateRateLines(line({ minimumSeconds: 60 }))).toBeNull();
+    expect(validateRateLines(line({ minimumSeconds: 0 }))).toBeNull();
+    expect(validateRateLines(line({ minimumSeconds: null }))).toBeNull();
+    expect(validateRateLines(line({ minimumSeconds: -1 }))).toMatch(/non-negative number/);
+    expect(validateRateLines(line({ minimumSeconds: '60' }))).toMatch(/non-negative number/);
+    expect(validateRateLines(line({ minimumSeconds: Infinity }))).toMatch(/non-negative number/);
+    expect(validateRateLines(line({ unit: 'token', minimumSeconds: 60 }))).toMatch(/only valid on a unit 'minute' line/);
+    expect(validateRateLines({ lines: [{ dim: 'destination', tariff: 'uk', minimumSeconds: 60 }] }))
+      .toMatch(/only valid on a unit 'minute' line/);
   });
 });
 

@@ -94,7 +94,10 @@ export default function (logger) {
               currency: { type: 'string', default: 'gbp' },
               detail: {
                 type: 'object',
-                description: 'Additive per-dimension rate lines: { lines: [{ dim, match, unit, priceMicros }] }.',
+                description:
+                  'Additive per-dimension rate lines: { lines: [{ dim, match, unit, priceMicros, minimumSeconds? }] }. '
+                  + '`minimumSeconds` (optional, non-negative, `unit: "minute"` lines only) bills a non-zero row '
+                  + 'at least that many seconds.',
               },
               description: { type: 'string', nullable: true },
             },

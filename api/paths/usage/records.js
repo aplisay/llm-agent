@@ -228,7 +228,26 @@ export default function (logger) {
                           + 'the billing instant; no_line = the card priced no dimension of this row; '
                           + 'errored = costing threw and will be retried; uncosted = finalised but never valued.',
                       },
-                      costBreakdown: { type: 'array', nullable: true, items: { type: 'object' } },
+                      costBreakdown: {
+                        type: 'array',
+                        nullable: true,
+                        description:
+                          'One entry per dimension that priced this row. A `destination` entry has the tariff '
+                          + 'fields (`tariff`, `prefix`, `billedSeconds` and others) in place of `unit`, `priceMicros` and `quantity`.',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            dim: { type: 'string' },
+                            match: { type: 'object' },
+                            unit: { type: 'string' },
+                            priceMicros: { type: 'number' },
+                            quantity: { type: 'number', description: 'Billed quantity in `unit`, after rounding and any minimum.' },
+                            costMicros: { type: 'number' },
+                            minimumSeconds: { type: 'number', description: 'Only when the rate line sets a minimum: its value.' },
+                            minimumApplied: { type: 'boolean', description: 'Only when the rate line sets a minimum: true when it raised `quantity`.' },
+                          },
+                        },
+                      },
                     },
                   },
                 },
