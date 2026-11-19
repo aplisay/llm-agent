@@ -195,6 +195,7 @@ Browser sessions on the Pipecat worker. The defaults suit most installs.
 |---|---|---|---|
 | `WEBRTC_ICE_SERVERS` | Pipecat |  | STUN and TURN URLs, comma separated. Empty disables them. |
 | `WEBRTC_ALLOWED_ORIGINS` | Pipecat |  | Browser origins allowed to open a session, comma separated. |
+| `WEBRTC_CLIENT_GONE_SECS` | Pipecat | `20` | Seconds with no ping and no packet from a browser before its call is ended. Keep it above the time the browser client takes to reconnect after a network change. 0 turns it off. |
 | `WEBRTC_PEER_HOST` | Pipecat |  | Host name that resolves to every worker, used to route a browser's follow-up requests to the worker that owns its session. |
 | `WEBRTC_PEER_PORT` | Pipecat | `8082` | Port of the other workers. |
 | `WEBRTC_PEER_DNS_TTL_S` | Pipecat |  | How long a peer lookup is cached. |

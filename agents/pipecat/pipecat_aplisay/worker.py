@@ -98,6 +98,7 @@ from .sip_gateway import (
     normalise_display_name,
 )
 from .sip_gateway.voiceblender_gateway import INBOUND_DISPATCH
+from .webrtc_client_watch import close_when_client_gone
 from .webrtc_peers import forward_to_owner
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
@@ -118,6 +119,11 @@ WEBRTC_ICE_SERVERS = [
     ).split(",")
     if s.strip()
 ]
+
+# Seconds with no client ping and no packet before a browser call is ended
+# (webrtc_client_watch.py). Keep it above the pipecat client's reconnect time
+# after a network change (about 10 to 15 s), or those calls drop. 0 turns it off.
+WEBRTC_CLIENT_GONE_SECS = float(os.environ.get("WEBRTC_CLIENT_GONE_SECS", "20"))
 
 
 @asynccontextmanager
@@ -1226,7 +1232,18 @@ async def webrtc_offer(request: Request) -> JSONResponse:
     async def _drop_webrtc_connection(conn):
         request.app.state.webrtc_connections.pop(conn.pc_id, None)
 
+    client_gone = asyncio.Event()
+
     async def _run_browser_session():
+        watch = (
+            _spawn(
+                request.app,
+                close_when_client_gone(pc, WEBRTC_CLIENT_GONE_SECS, client_gone, call.id),
+                name=f"webrtc-watch-{call.id}",
+            )
+            if WEBRTC_CLIENT_GONE_SECS > 0
+            else None
+        )
         try:
             await session.run_prepared(prepared_task, max_duration_secs)
         except Exception as e:  # noqa: BLE001
@@ -1239,6 +1256,10 @@ async def webrtc_offer(request: Request) -> JSONResponse:
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            # Never cancel a watch that is closing the peer: a cancelled aiortc
+            # close() never resolves, and the shutdown() below would wait on it.
+            if watch and not client_gone.is_set():
+                watch.cancel()
             request.app.state.live_calls.pop(call.id, None)
             # Safety net: the "closed" event handler normally drops this, but
             # aiortc has no "disconnected" state, so a vanished browser might

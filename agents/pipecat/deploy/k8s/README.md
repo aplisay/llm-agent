@@ -542,6 +542,16 @@ public IP is already on the NIC so the host candidate also works; STUN matters o
 GCP/AWS (public IP is 1:1-NAT'd off the NIC). No TURN — media is direct, which is
 why step 2's UDP range must be open.
 
+**4. A browser that vanishes.** A tab that closes with no hang-up sends the
+worker nothing, and aiortc only closes the peer when ICE consent expires (about
+30 s). The worker ends the call sooner: after `WEBRTC_CLIENT_GONE_SECS` (default
+`20`) with no client ping and no packet from the browser
+(`pipecat_aplisay/webrtc_client_watch.py`). Keep it above the time the pipecat
+client takes to reconnect after a network change (about 10 to 15 s), or those
+calls drop. `0` turns it off. Clients that never ping are not affected. This is
+the fallback for a crash, a killed browser or a lost network: a client should
+still hang up itself when its page goes away.
+
 ## Verification
 
 ```bash
