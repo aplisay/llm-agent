@@ -286,7 +286,7 @@ describe('phone system directory API', () => {
       expect(after.ha1).toBe(before.ha1);
     });
 
-    test('a password reset stores the new hash, keeps the old one for the grace time and shows the password once', async () => {
+    test('a password reset stores the new hash, keeps no old one and shows the password once', async () => {
       process.env.PBX_LINE_PASSWORD_RESET = 'true';
       try {
         const line = lineOn(made.robDesk, '200');
@@ -297,7 +297,6 @@ describe('phone system directory API', () => {
         expect((await post('memberA', path)).status).toBe(403);
         expect((await post('ownerB', path)).status).toBe(404);
 
-        const started = Date.now();
         const shown = await ok(post('ownerA', path));
         expect(shown).toMatchObject({ lineId: line.id, lineNumber: line.lineNumber, registrar: REALM, port: 5061, transport: 'tls', username: before.username });
         expect(shown.password).toHaveLength(32);
@@ -307,17 +306,17 @@ describe('phone system directory API', () => {
         expect(after.ha1).toBe(createHash('md5').update(`${before.username}:${REALM}:${shown.password}`).digest('hex'));
         expect(after.ha1).not.toBe(before.ha1);
         expect(after.getDataValue('password')).toBe('');
-        expect(after.previousHa1).toBe(before.ha1);
-        const grace = after.previousHa1Until.getTime() - started;
-        expect(grace).toBeGreaterThan(24 * 3600 * 1000 - 5000);
-        expect(grace).toBeLessThan(24 * 3600 * 1000 + 60000);
+        expect(after.previousHa1).toBeNull();
+        expect(after.previousHa1Until).toBeNull();
         // The settings file carries the hash, so the phone has a new version to fetch.
         expect((await db.Device.findByPk(device.id)).configVersion).toBe(device.configVersion + 1);
 
         // A second reset gives a different password. The first can not be read again.
         const again = await ok(post('ownerA', path));
         expect(again.password).not.toBe(shown.password);
-        expect((await PhoneRegistration.findByPk(before.id)).previousHa1).toBe(after.ha1);
+        const second = await PhoneRegistration.findByPk(before.id);
+        expect(second.ha1).not.toBe(after.ha1);
+        expect(second.previousHa1).toBeNull();
       } finally {
         delete process.env.PBX_LINE_PASSWORD_RESET;
       }
@@ -359,6 +358,31 @@ describe('phone system directory API', () => {
       expect((await PhoneRegistration.findByPk(pbx.id)).ha1).toBe(pbx.ha1);
       expect((await PhoneRegistration.findByPk(client.id)).password).toBe('client-secret');
       await PhoneRegistration.destroy({ where: { id: [pbx.id, client.id, old.id] } });
+    });
+
+    test('the schema step clears a line password it cannot open when the row has a hash', async () => {
+      // Sealed under a key this process does not hold: the right shape, and it will not open.
+      const sealed = `enc:${Buffer.alloc(12, 1).toString('base64')}:${Buffer.alloc(16, 2).toString('base64')}:${Buffer.alloc(24, 3).toString('base64')}`;
+      const row = (name, ha1) => PhoneRegistration.create({
+        mode: 'registrar', kind: 'device', organisationId: orgs.a, registrar: REALM, username: `l${stamp}${name}`, password: sealed, handler: 'pbx', ha1,
+      });
+      const hashed = await row('hashed', 'a'.repeat(32));
+      const bare = await row('bare', null);
+      const pbx = await PhoneRegistration.create({
+        mode: 'registrar', kind: 'pbx', organisationId: orgs.a, registrar: REALM, username: `p${stamp}sealed`, password: sealed, handler: 'livekit',
+      });
+      expect((await PhoneRegistration.findByPk(hashed.id)).password).toBeNull();
+
+      await db.clearLinePasswords();
+      // The hash it had stands, and the password is gone.
+      const after = await PhoneRegistration.findByPk(hashed.id);
+      expect(after.getDataValue('password')).toBe('');
+      expect(after.ha1).toBe('a'.repeat(32));
+      // With no hash the password is all the row has, so it stays.
+      expect((await PhoneRegistration.findByPk(bare.id)).getDataValue('password')).toBe(sealed);
+      // A pbx account is never touched.
+      expect((await PhoneRegistration.findByPk(pbx.id)).getDataValue('password')).toBe(sealed);
+      await PhoneRegistration.destroy({ where: { id: [hashed.id, bare.id, pbx.id] } });
     });
 
     test('a number routed to an extension takes the pbx handler and says what it rings', async () => {

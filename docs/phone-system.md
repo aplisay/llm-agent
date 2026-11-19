@@ -124,7 +124,7 @@ A Snom desk phone fetches its lines from the provisioning service: see [phone-pr
 
 To set a phone up by hand, `POST /phones/{phoneId}/lines/{lineId}/password-reset` gives the line a new password and returns it once. It needs `phone:provision` and the setting `PBX_LINE_PASSWORD_RESET=true`, and each reset is written to the audit log. The old password stops working at once. With the setting off (the default) the route answers 403 `line_password_reset_disabled`.
 
-After an upgrade from a version that stored line passwords, `tools/agent-admin.js upgrade-db` empties them (schema 75).
+After an upgrade from a version that stored line passwords, `tools/agent-admin.js upgrade-db` empties them (schema 75). A stored password that cannot be opened (the upgrade ran without the right `CREDENTIALS_KEY`) is emptied too when the line has its hash, which is all a phone needs.
 
 ## Settings
 
