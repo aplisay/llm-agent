@@ -113,6 +113,7 @@ Rules:
 | Path | What |
 |---|---|
 | `index.mjs` | Server entry |
+| `provisioning.mjs`, `lib/provisioning/` | The desk phone provisioning service, a process of its own |
 | `api/api-doc.yaml`, `api/paths/` | REST contract and handlers |
 | `lib/models/` | Model and runtime adapters |
 | `lib/handlers/` | Per-runtime call handling in the API server |

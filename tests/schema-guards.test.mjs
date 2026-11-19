@@ -13,9 +13,18 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system and brands, in version order', () => {
+  test('registrar HA1, the phone system, brands and phone provisioning, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76]]);
+  });
+
+  test('a schema 75 database lacks the provisioning step, and its features stay off', () => {
+    const rows = upgradedRows().filter((row) => row.table_name !== 'device_fetch_logs' && !(row.table_name === 'devices' && row.column_name !== 'id'));
+    expect(missingParts('phoneSystem', [...rows, { table_name: 'devices', column_name: 'id' }])).toEqual([]);
+    expect(missingParts('phoneProvisioning', rows)).toEqual([
+      'device_fetch_logs', 'devices.token_expires_at', 'devices.token_used_at', 'devices.certificate_fingerprint',
+      'devices.certificate_serial', 'devices.certificate_issuer', 'devices.line_limit',
+    ]);
   });
 
   test('the boot reads each table a step adds or changes, once', () => {

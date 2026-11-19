@@ -3649,7 +3649,11 @@ components:
         device:
           type: object
           nullable: true
-          description: Desk phone only.
+          description: >-
+            Desk phone only. `state` is one of `waiting` (for the phone to fetch its settings), `fetched`,
+            `updating`, `wiping` or `wiped`. `failure` is null or one of `other_provider`, `wrong_device`
+            (a different phone asked for the settings), `line_not_registered`, `model_not_supported`.
+            `reportedModel` is what the phone says it is, and it wins over `model`.
         capacity: { type: integer, description: "How many lines the phone carries." }
         maxPeople: { type: integer, description: "How many people the phone can ring for." }
         roomForPerson: { type: boolean }
@@ -3682,6 +3686,7 @@ components:
         ringDelay: { type: integer, minimum: 0, maximum: 60, description: "Outside number. Seconds before it starts to ring." }
         shows: { type: string, enum: [caller, extension], description: "Outside number. Which number it sees for a call." }
         keyToAnswer: { type: boolean, description: "Outside number. Whether a key press is needed to take the call." }
+        lineLimit: { type: integer, minimum: 1, nullable: true, description: "Desk phone, on update, platform operators only. Fewer lines than the model takes. Null removes the limit." }
         people:
           type: array
           items: { type: string, format: uuid }
