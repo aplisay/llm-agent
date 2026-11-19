@@ -4,6 +4,7 @@ import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { runSubagent, organisationAllowsModel, SubagentError } from '../../../../lib/subagent.js';
 import { recordSubagentUsage } from '../../../../lib/usage.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { callVisibility, withVisibility } from '../../../../lib/call-visibility.js';
 import { isModelAllowed } from '../../../../lib/auth/model-access.js';
 
 let log;
@@ -84,7 +85,11 @@ const agentInvoke = async (req, res) => {
       // The usage rows reference the call, so it must exist in the tenant they are charged to
       // (the organisation, or the user when the principal has none).
       const callScope = attribution.organisationId ? { organisationId: attribution.organisationId } : { userId: attribution.userId };
-      const call = await Call.findOne({ where: { id: callId, ...callScope }, attributes: ['id'] });
+      // A person may cite only a call they can see. A service acting for the organisation may cite any of its calls.
+      const where = onBehalf
+        ? { id: callId, ...callScope }
+        : withVisibility({ id: callId, ...callScope }, await callVisibility(principal));
+      const call = await Call.findOne({ where, attributes: ['id'] });
       if (!call) {
         return res.status(404).send({ message: `Call ${callId} not found` });
       }

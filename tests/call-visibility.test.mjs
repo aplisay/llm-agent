@@ -5,6 +5,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { jest } from '@jest/globals';
 import express from 'express';
 import openapi from 'express-openapi';
 import request from 'supertest';
@@ -15,6 +16,11 @@ import {
 import { scopeWhereForUser } from '../lib/scope.js';
 
 const log = { info() {}, warn() {}, error() {}, debug() {}, child() { return this; } };
+
+// POST /agents/{id}/invoke runs a model; the runner is stubbed so only the call check is under test.
+const runSubagent = jest.fn(async () => ({ result: { ok: true }, complete: true, transcript: [], usage: [] }));
+class SubagentError extends Error {}
+jest.unstable_mockModule('../lib/subagent.js', () => ({ runSubagent, SubagentError, organisationAllowsModel: async () => true }));
 
 describe('who sees calls', () => {
   const stamp = `${Date.now()}`.slice(-6);
@@ -32,20 +38,22 @@ describe('who sees calls', () => {
     return new Set(res.body.calls.map((c) => c.id));
   };
 
-  const pbxCall = (fields = {}, pbx = {}) => Call.create({
-    id: randomUUID(), organisationId: ORG, platform: 'pbx', modelName: 'telephony:pbx-call',
-    callerId: '+442079460123', calledId: '201', live: false, status: 'ended normally', startedAt: new Date(),
-    metadata: { pbx }, ...fields,
-  });
-  const pbxLeg = (parent, pbx) => Call.create({
-    id: randomUUID(), organisationId: ORG, parentId: parent.id, platform: 'pbx', modelName: 'telephony:pbx-leg',
-    callerId: parent.callerId, calledId: '201', live: false, status: 'ended normally', startedAt: new Date(), metadata: { pbx },
-  });
+  // Phone system rows are written as call control writes them (lib/pbx/call-records.js): a leg's row
+  // when the network answers it, with no `answered`, which comes only with the leg's end.
+  let records;
+  const pbxCall = async (fields = {}, pbx = {}) => (await records.upsertCall({
+    id: randomUUID(), organisationId: ORG, callerId: '+442079460123', calledId: '201', ...fields, metadata: pbx,
+  })).call;
+  const pbxLeg = async (parent, pbx) => (await records.upsertCall({
+    id: randomUUID(), organisationId: ORG, parentId: parent.id, callerId: parent.callerId, calledId: '201', metadata: pbx,
+  })).call;
+  const end = (call, answered, reason) => records.endCall(call.id, { answered, reason });
 
   beforeAll(async () => {
     await setupRealDatabase();
     await databaseStarted;
     db = await import('../lib/database.js');
+    records = await import('../lib/pbx/call-records.js');
     await Organisation.create({ id: ORG, name: 'Visibility', capabilities: ['phoneSystem'] });
     await Organisation.create({ id: OTHER, name: 'Elsewhere', capabilities: ['phoneSystem'] });
 
@@ -86,14 +94,25 @@ describe('who sees calls', () => {
 
     // Calls in, all with no instance and no agent.
     calls.toAlice = await pbxCall({}, { direction: 'in', extensionId: extAlice.id, extensionNumber: '201' });
-    calls.toAliceLeg = await pbxLeg(calls.toAlice, { kind: 'line', entryId: alice.id, phoneId: phoneAlice.id, answered: true });
+    calls.toAliceLeg = await pbxLeg(calls.toAlice, { kind: 'line', entryId: alice.id, phoneId: phoneAlice.id });
+    await end(calls.toAliceLeg, true, 'hangup');
+    await end(calls.toAlice, true, 'caller_hangup');
     calls.missedAlice = await pbxCall({}, { direction: 'in', extensionId: extAlice.id });
+    await end(calls.missedAlice, false, 'no_answer');
     calls.salesBob = await pbxCall({}, { direction: 'in', extensionId: extSales.id });
-    calls.salesBobLeg = await pbxLeg(calls.salesBob, { kind: 'line', entryId: bob.id, answered: true });
-    await pbxLeg(calls.salesBob, { kind: 'line', entryId: alice.id, phoneId: phoneAlice.id, answered: false });
+    calls.salesBobLeg = await pbxLeg(calls.salesBob, { kind: 'line', entryId: bob.id });
+    await end(calls.salesBobLeg, true, 'hangup');
+    await end(calls.salesBob, true, 'callee_hangup');
+    // Nobody took it. Alice's mobile answered and waited for its key, which never came.
     calls.salesMissed = await pbxCall({}, { direction: 'in', extensionId: extSales.id });
-    await pbxLeg(calls.salesMissed, { kind: 'line', entryId: alice.id, answered: false });
-    await pbxLeg(calls.salesMissed, { kind: 'line', entryId: bob.id, answered: false });
+    const mobile = await pbxLeg(calls.salesMissed, { kind: 'external', entryId: alice.id, keyToAnswer: true });
+    await end(mobile, false, 'no_key');
+    await end(calls.salesMissed, false, 'no_answer');
+    // In progress: Bob has answered a call to Sales, and Alice's mobile waits for its key on another.
+    calls.salesNow = await pbxCall({}, { direction: 'in', extensionId: extSales.id });
+    calls.salesNowLeg = await pbxLeg(calls.salesNow, { kind: 'line', entryId: bob.id });
+    calls.salesWaiting = await pbxCall({}, { direction: 'in', extensionId: extSales.id });
+    calls.salesWaitingLeg = await pbxLeg(calls.salesWaiting, { kind: 'external', entryId: alice.id, keyToAnswer: true });
     // Calls out from Alice's phone, and from her line on another phone.
     calls.aliceOut = await pbxCall({ callerId: '201', calledId: '+442079460999' }, { direction: 'out', fromPhoneId: phoneAlice.id, fromLineId: lineAlice.id });
     calls.aliceLineOut = await pbxCall({ callerId: '201', calledId: '+442079460998' }, { direction: 'out', fromPhoneId: randomUUID(), fromLineId: lineAlice.id });
@@ -164,7 +183,7 @@ describe('who sees calls', () => {
       for (const key of ['agent', 'toAlice', 'toAliceLeg', 'missedAlice', 'aliceOut', 'aliceLineOut']) {
         expect([key, seen.has(calls[key].id)]).toEqual([key, true]);
       }
-      for (const key of ['salesBob', 'salesBobLeg', 'salesMissed', 'elsewhere']) {
+      for (const key of ['salesBob', 'salesBobLeg', 'salesMissed', 'salesNow', 'salesWaiting', 'elsewhere']) {
         expect([key, seen.has(calls[key].id)]).toEqual([key, false]);
       }
     });
@@ -187,6 +206,20 @@ describe('who sees calls', () => {
       expect((await listed('bob')).has(calls.salesBob.id)).toBe(true);
       expect((await listed('bob')).has(calls.salesBobLeg.id)).toBe(true);
       expect((await listed('alice')).has(calls.salesBob.id)).toBe(false);
+    });
+
+    test('the member who answered sees the call while it is in progress', async () => {
+      expect((await listed('bob')).has(calls.salesNow.id)).toBe(true);
+      expect((await get('bob', `/calls/${calls.salesNow.id}`)).status).toBe(200);
+      expect((await get('bob', `/calls/${calls.salesNowLeg.id}`)).status).toBe(200);
+      expect((await get('alice', `/calls/${calls.salesNow.id}`)).status).toBe(404);
+    });
+
+    test('a mobile waiting for its key does not count until the key comes', async () => {
+      expect((await get('alice', `/calls/${calls.salesWaiting.id}`)).status).toBe(404);
+      await records.upsertCall({ id: calls.salesWaitingLeg.id, organisationId: ORG, parentId: calls.salesWaiting.id, metadata: { keyPressedAt: new Date().toISOString() } });
+      expect((await get('alice', `/calls/${calls.salesWaiting.id}`)).status).toBe(200);
+      expect((await get('bob', `/calls/${calls.salesWaiting.id}`)).status).toBe(404);
     });
 
     test('a call nobody answered shows only to those who see every call', async () => {
@@ -246,6 +279,47 @@ describe('who sees calls', () => {
       expect(bob.body.error).toBe('Call not found');
       expect((await request(server).delete(`/api/calls/${calls.toAlice.id}/recording`).set('x-test-user', 'bobDeletes')).status).toBe(404);
       expect((await Call.findByPk(calls.toAlice.id)).recordingId).toBe('test/recording.enc');
+    });
+  });
+
+  describe('POST /agents/{id}/invoke with a call', () => {
+    let invoke;
+    let agent;
+    const call = async (user, callId) => {
+      const res = {
+        _status: 200, _body: null, locals: { user: users[user] },
+        status(code) { this._status = code; return this; },
+        send(body) { this._body = body; return this; },
+        json(body) { this._body = body; return this; },
+      };
+      await invoke({ params: { agentId: agent.id }, body: { input: 'summarise', callId }, query: {}, headers: {}, log }, res);
+      return res;
+    };
+
+    beforeAll(async () => {
+      invoke = (await import('../api/paths/agents/{agentId}/invoke.js')).default(log).POST;
+      agent = await db.Agent.create({
+        name: 'Summary', type: 'text', modelName: 'text:anthropic/claude-opus-4-8', prompt: 'Summarise.',
+        organisationId: ORG, userId: users.owner.id,
+      });
+    });
+    afterAll(() => db.Agent.destroy({ where: { id: agent.id } }));
+
+    test('answers a hidden call as it answers a missing one, and runs nothing', async () => {
+      runSubagent.mockClear();
+      const hidden = await call('bob', calls.toAlice.id);
+      const missingId = randomUUID();
+      const missing = await call('bob', missingId);
+      expect([hidden._status, missing._status]).toEqual([404, 404]);
+      expect(hidden._body.message.replace(calls.toAlice.id, 'X')).toBe(missing._body.message.replace(missingId, 'X'));
+      expect(runSubagent).not.toHaveBeenCalled();
+    });
+
+    test('runs for a call its caller can see', async () => {
+      runSubagent.mockClear();
+      expect((await call('alice', calls.toAlice.id))._status).toBe(200);
+      expect((await call('owner', calls.salesMissed.id))._status).toBe(200);
+      expect(runSubagent).toHaveBeenCalledTimes(2);
     });
   });
 
