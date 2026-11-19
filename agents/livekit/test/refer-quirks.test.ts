@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SipCallError } from "livekit-server-sdk";
+import { ServerError, SipCallError } from "livekit-server-sdk";
 import { isReferFalseFailure } from "../lib/refer-quirks.js";
 
 // run: npx tsx --test test/refer-quirks.test.ts
@@ -30,6 +30,15 @@ test("the same text without the SipCallError type is a false failure", () => {
     isReferFalseFailure(new Error("SIP call failed: 500 Internal Server Error (failed_precondition)")),
     true,
   );
+});
+
+test("a call that ended before the transfer result is a false failure", () => {
+  const err = new ServerError("Internal Server Error", "call ended before transfer completed", 500, "unknown", {
+    sip_transfer_id: "STR_test",
+    sip_transfer_reason: "STR_CALL_ENDED",
+  });
+  assert.equal(isReferFalseFailure(err), true);
+  assert.equal(isReferFalseFailure(new Error("call ended before transfer completed")), true);
 });
 
 test("the message format of livekit-server-sdk before 2.17 is still a false failure", () => {

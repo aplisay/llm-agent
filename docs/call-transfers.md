@@ -60,7 +60,7 @@ The decision on which to use is transparent to the LLM tools call and the most a
 - The original call leg is replaced by the new call leg
 - The Agent simply sees the call drop as if the original caller had hungup.
 - All billing from the AI platform stops as the call is now gone off the platform.
-- Some PBXs report a completed REFER as a failure: a SIP 500 as the transfer result, or the caller's participant already gone. The platform treats these two cases as a successful transfer.
+- Some PBXs report a completed REFER as a failure: a SIP 500 as the transfer result, or the caller's leg ending before the result arrives. The platform treats these cases as a successful transfer.
 
 **Advantages:**
 - More efficient - the transfer happens at the SIP level
