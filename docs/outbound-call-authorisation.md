@@ -100,16 +100,30 @@ refusals by code (`notices`). If a stored hours rule no longer checks, every
 outside call is refused: `effective.hoursValid` is then false and
 `effective.hours` shows the rule as stored.
 
-**What it counts.** For each organisation, the count and the write of the
+**What it counts.** For each organisation, the two counts and the write of the
 decision are one step under a lock, so calls decided at the same moment cannot
-all pass a limit. A call is in progress from the decision that allowed it.
-Until the call has a row, the decision holds its place for up to two minutes.
-A phone system leg has a row once the network answers it; a leg that rings out
-gives its place back when the two minutes end. After that the live call row,
-on a chargeable trunk, holds the place until the call ends. A row older than
-four hours is not counted, so a call record left open by a lost write does not
-hold a place for good. Calls a minute counts the allowed decisions of the last
-60 seconds.
+all pass a limit. The decision takes its time from the database once it holds
+the lock, so decisions are stamped in the order they were made, whichever API
+server made them. A decision that waits more than a second for the lock is
+refused with `outbound_policy_unavailable`. A refusal by destination class or
+by hours is written without the lock, and the spend is read before it.
+
+A call is in progress from the decision that allowed it. Until the call has a
+row, the decision holds its place, for up to two minutes. A phone system leg
+has a row once the network answers it. When call control reports that an
+outside leg was not answered, was cancelled, or could not be dialled
+(`leg_not_answered`, or `leg_skipped` with `dial_failed`), the place is given
+back at once. So a call that rings five mobiles holds one place once one has
+answered and the others have stopped ringing. A leg of an agent's call has no
+such report: its place is held until its call row is written, or for the two
+minutes. Decisions are matched to call rows by trunk and by the last nine
+digits of the number, one row to one decision, so a quick redial of the same
+number holds its own place.
+
+After that the live call row, on a chargeable trunk, holds the place until the
+call ends. A row older than four hours is not counted, so a call record left
+open by a lost write does not hold a place for good. Calls a minute counts the
+allowed decisions of the last 60 seconds, answered or not.
 
 **Spend.** Spend is read through `lib/outbound-spend.js`. It counts the costed
 usage rows of finished calls that carry a destination charge. **Phone system
@@ -121,13 +135,15 @@ until it ends and is costed.
 by a limit on a day for an organisation sends one `outboundLimitReached` event
 to the organisation's billing callback (`billingConfig.callbackUrl`), signed
 with its `hashKey` over `hashKey|organisationId|outboundLimitReached|code|day`.
-One notice a day covers every limit. If the send fails, the next refusal by a
-limit that day sends it. The front end sends the email to the organisation's
-admins. Decisions are kept for 40 days.
+One notice a day covers every limit. If the send fails, it is tried again by
+the first refusal by a limit after a minute, then after 2, 4 and 8 minutes, and
+so on up to an hour between tries, until it is sent or the day ends. The front
+end sends the email to the organisation's admins. Decisions are kept for 40
+days.
 
 **It fails closed.** If the policy cannot be read, or a count cannot be made, or
-the decision cannot be written, the call is refused with
-`outbound_policy_unavailable`.
+the decision cannot be written, or the decision cannot take the organisation's
+lock within a second, the call is refused with `outbound_policy_unavailable`.
 
 **Deploying it.** The policy needs the schema 77 upgrade
 (`tools/agent-admin.js upgrade-db`) and then a restart of the API server, which
@@ -162,7 +178,7 @@ The decision returns `{ allowed, code, reason, chargeable, trunkId, destination 
 | `destination_class` | The organisation's outbound policy does not allow the destination's class. `destinationClass` names it, or is null for a UK number in no class |
 | `outside_hours` | Outside the hours of the organisation's outbound policy |
 | `calls_in_progress_limit`, `calls_per_minute_limit`, `daily_spend_limit`, `monthly_spend_limit` | A limit of the organisation's outbound policy is reached. `limit`, `value` and `current` say which and by how much |
-| `outbound_policy_unavailable` | The policy could not decide, so the call is refused |
+| `outbound_policy_unavailable` | The policy could not decide, or waited more than a second for the organisation's lock, so the call is refused |
 | `outbound_policy_not_ready` | The database lacks the schema 77 upgrade |
 
 The originate API returns these as a `400` with `error` and `code`. In a worker

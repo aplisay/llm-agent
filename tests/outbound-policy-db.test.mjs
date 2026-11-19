@@ -31,11 +31,12 @@ describe('the outbound policy of an organisation', () => {
   const users = {};
   let db;
   let oa;
+  let records;
   let app;
   let server;
 
   const authorise = (organisationId, calledId, extra = {}, models = {}) => oa.authoriseOutboundDestination(
-    { calledId, organisationId, outboundTrunkId: WIDE, at: new Date(), ...extra },
+    { calledId, organisationId, outboundTrunkId: WIDE, ...extra },
     { ...NO_ENV, log, ...models },
   );
   const setPolicy = (organisationId, policy) => Organisation.update({ outboundPolicy: policy }, { where: { id: organisationId } });
@@ -44,6 +45,26 @@ describe('the outbound policy of an organisation', () => {
     organisationId, platform: 'pbx', modelName: 'telephony:pbx-leg', callerId: '201', calledId: '+442079460123',
     outboundTrunkId: WIDE, live: true, status: 'in progress', startedAt: new Date(), ...fields,
   });
+
+  const pbxCall = async (organisationId) => (await records.upsertCall({ id: randomUUID(), organisationId, callerId: '201' })).call;
+  const legEvent = (type, number, data = {}) => ({
+    id: randomUUID(), type, at: new Date().toISOString(), data: { kind: 'external', legId: 'leg', number, ...data },
+  });
+  const holding = (organisationId) => db.OutboundEvent.count({ where: { organisationId, allowed: true, releasedAt: null } });
+  const holdLock = async (organisationId) => {
+    let release;
+    let locked;
+    const held = new Promise((resolve) => { locked = resolve; });
+    const done = Call.sequelize.transaction(async (transaction) => {
+      await Call.sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:space), hashtext(:organisationId))', {
+        replacements: { space: 'outbound_policy', organisationId }, transaction,
+      });
+      locked();
+      await new Promise((resolve) => { release = resolve; });
+    });
+    await held;
+    return async () => { release(); await done; };
+  };
 
   const http = (method) => (user, path, body) => {
     const req = request(server)[method](`/api${path}`).set('x-test-user', user);
@@ -57,6 +78,7 @@ describe('the outbound policy of an organisation', () => {
     await databaseStarted;
     db = await import('../lib/database.js');
     oa = await import('../lib/outbound-authorisation.js');
+    records = await import('../lib/pbx/call-records.js');
 
     await db.Brand.create({
       id: BRAND,
@@ -284,6 +306,197 @@ describe('the outbound policy of an organisation', () => {
       expect(decisions.filter((d) => d.allowed)).toHaveLength(2);
     });
 
+    describe('requests stamped at different times', () => {
+      // Each request carries its own time, as from servers whose clocks differ by a few milliseconds.
+      let base;
+      beforeEach(() => { base = Date.now(); });
+      const stamped = (i, step) => new Date(base + i * step);
+      const number = (i) => `+4420794603${String(i).padStart(2, '0')}`;
+
+      test('one after another, each stamped earlier than the last, the calls a minute limit holds', async () => {
+        await setPolicy(orgs.phone, { callsPerMinute: 3 });
+        const decisions = [];
+        for (let i = 0; i < 8; i += 1) decisions.push(await authorise(orgs.phone, number(i), { at: stamped(-i, 2) }));
+        expect(decisions.filter((d) => d.allowed)).toHaveLength(3);
+      });
+
+      test('one after another, each stamped earlier than the last, the calls in progress limit holds', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 2 });
+        const decisions = [];
+        for (let i = 0; i < 8; i += 1) decisions.push(await authorise(orgs.phone, number(i), { at: stamped(-i, 2) }));
+        expect(decisions.filter((d) => d.allowed)).toHaveLength(2);
+      });
+
+      test('at once, stamped a few milliseconds apart, both limits hold', async () => {
+        for (let run = 0; run < 5; run += 1) {
+          base = Date.now();
+          await clearEvents(orgs.phone);
+          await setPolicy(orgs.phone, { callsPerMinute: 3 });
+          const order = Array.from({ length: 20 }, (_, i) => (run % 2 ? i : -i));
+          const decisions = await Promise.all(order.map((step, i) => authorise(orgs.phone, number(i), { at: stamped(step, 3) })));
+          expect(decisions.filter((d) => d.allowed)).toHaveLength(3);
+        }
+        base = Date.now();
+        await clearEvents(orgs.phone);
+        await setPolicy(orgs.phone, { callsInProgress: 2 });
+        const decisions = await Promise.all(Array.from({ length: 10 }, (_, i) => authorise(orgs.phone, number(i), { at: stamped(-i, 3) })));
+        expect(decisions.filter((d) => d.allowed)).toHaveLength(2);
+      });
+
+      test('with no time given, a decision takes the database time once it holds the lock', async () => {
+        const before = Date.now();
+        await authorise(orgs.phone, '+442079460123');
+        const [row] = await db.OutboundEvent.findAll({ where: { organisationId: orgs.phone } });
+        expect(row.at.valueOf()).toBeGreaterThanOrEqual(before - 1000);
+        expect(row.at.valueOf()).toBeLessThanOrEqual(Date.now() + 1000);
+      });
+    });
+
+    describe('waiting for the lock', () => {
+      // A test that waits for ever would keep the lock held and stop the suite.
+      const soon = (promise) => Promise.race([promise, new Promise((resolve) => { setTimeout(() => resolve('still waiting'), 3000); })]);
+
+      test('a decision that cannot take the lock in time is refused, and frees its connection', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 3 });
+        const release = await holdLock(orgs.phone);
+        try {
+          const refused = await soon(authorise(orgs.phone, '+442079460123', {}, { lockWaitMs: 200 }));
+          expect(refused).toMatchObject({ allowed: false, code: 'outbound_policy_unavailable', chargeable: true });
+          expect(refused.reason).toMatch(/busy/);
+          // Nothing was written, and the database still answers.
+          expect(await db.OutboundEvent.count({ where: { organisationId: orgs.phone } })).toBe(0);
+          await expect(Organisation.findByPk(orgs.other, { attributes: ['id'] })).resolves.toBeTruthy();
+        } finally {
+          await release();
+        }
+        await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: true });
+      });
+
+      test('another organisation does not wait for it', async () => {
+        await setPolicy(orgs.other, { callsInProgress: 3 });
+        const release = await holdLock(orgs.phone);
+        try {
+          await expect(soon(authorise(orgs.other, '+442079460123', {}, { lockWaitMs: 200 }))).resolves.toMatchObject({ allowed: true });
+        } finally {
+          await release();
+          await clearEvents(orgs.other);
+          await setPolicy(orgs.other, null);
+        }
+      });
+
+      test('a refusal by destination class takes neither the lock nor a transaction', async () => {
+        const release = await holdLock(orgs.phone);
+        try {
+          await expect(soon(authorise(orgs.phone, '+15550100123', {}, { lockWaitMs: 200 })))
+            .resolves.toMatchObject({ allowed: false, code: 'destination_class' });
+          expect(await db.OutboundEvent.count({ where: { organisationId: orgs.phone, code: 'destination_class' } })).toBe(1);
+        } finally {
+          await release();
+        }
+      });
+
+      test('the spend is read before the lock, outside the transaction', async () => {
+        await setPolicy(orgs.phone, { spendPerDayMicros: 2_000_000 });
+        const asked = [];
+        const release = await holdLock(orgs.phone);
+        try {
+          const refused = await soon(authorise(orgs.phone, '+442079460123', {}, {
+            lockWaitMs: 200,
+            spendSource: async (query) => { asked.push(query); return 0; },
+          }));
+          expect(refused).toMatchObject({ code: 'outbound_policy_unavailable' });
+        } finally {
+          await release();
+        }
+        expect(asked).toHaveLength(2);
+        expect(asked.every((query) => query.transaction === undefined)).toBe(true);
+      });
+    });
+
+    describe('a leg that is not answered gives back its place', () => {
+      test('one call that rings five mobiles holds one place once four have not answered and one has', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 5 });
+        const mobiles = ['+447700900001', '+447700900002', '+447700900003', '+447700900004', '+447700900005'];
+        for (const mobile of mobiles) await expect(authorise(orgs.phone, mobile)).resolves.toMatchObject({ allowed: true });
+        await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: false, code: 'calls_in_progress_limit', current: 5 });
+        const call = await pbxCall(orgs.phone);
+        // The first answers: call control writes its row. The rest are cancelled.
+        await records.upsertCall({
+          id: randomUUID(), organisationId: orgs.phone, parentId: call.id, calledId: mobiles[0], outboundTrunkId: WIDE,
+          metadata: { kind: 'external', number: mobiles[0] },
+        });
+        await records.addEvents(call.id, mobiles.slice(1).map((mobile) => legEvent('leg_not_answered', mobile, { reason: 'answered_elsewhere' })));
+        expect(await holding(orgs.phone)).toBe(1);
+        const usage = await oa.outboundUsage({ organisationId: orgs.phone });
+        expect(usage.callsInProgress).toBe(1);
+        await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: true });
+      });
+
+      test('a leg that rang out frees its place at once, not after two minutes', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 1 });
+        await expect(authorise(orgs.phone, '+447700900001')).resolves.toMatchObject({ allowed: true });
+        await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: false });
+        const call = await pbxCall(orgs.phone);
+        await records.addEvents(call.id, [legEvent('leg_not_answered', '+447700900001', { kind: 'outside', reason: 'no_answer' })]);
+        await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: true });
+      });
+
+      test('a leg that could not be dialled frees its place', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 1 });
+        await authorise(orgs.phone, '+447700900001');
+        const call = await pbxCall(orgs.phone);
+        await records.addEvents(call.id, [legEvent('leg_skipped', '+447700900001', { reason: 'dial_failed' })]);
+        expect(await holding(orgs.phone)).toBe(0);
+      });
+
+      test('one event gives back one place, once', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 5 });
+        await authorise(orgs.phone, '+447700900001');
+        await authorise(orgs.phone, '+447700900001');
+        const call = await pbxCall(orgs.phone);
+        const event = legEvent('leg_not_answered', '+447700900001', { reason: 'no_answer' });
+        await records.addEvents(call.id, [event]);
+        await records.addEvents(call.id, [event]);
+        await Promise.all([1, 2, 3].map(() => records.addEvents(call.id, [{ ...event }])));
+        expect(await holding(orgs.phone)).toBe(1);
+        const released = await db.OutboundEvent.findAll({ where: { organisationId: orgs.phone, releasedBy: event.id } });
+        expect(released).toHaveLength(1);
+      });
+
+      test('the same event for a phone on a line, or a leg to another number, gives back nothing', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 5 });
+        await authorise(orgs.phone, '+447700900001');
+        const call = await pbxCall(orgs.phone);
+        await records.addEvents(call.id, [
+          legEvent('leg_not_answered', '+447700900001', { kind: 'line', reason: 'no_answer' }),
+          legEvent('leg_not_answered', '+447700900009', { reason: 'no_answer' }),
+          legEvent('leg_skipped', '+447700900001', { reason: 'busy' }),
+          legEvent('leg_rang', '+447700900001'),
+        ]);
+        expect(await holding(orgs.phone)).toBe(1);
+      });
+
+      test('an event older than the decisions it could match gives back nothing', async () => {
+        await setPolicy(orgs.phone, { callsInProgress: 5 });
+        await authorise(orgs.phone, '+447700900001');
+        const call = await pbxCall(orgs.phone);
+        const old = { ...legEvent('leg_not_answered', '+447700900001'), at: new Date(Date.now() - 60_000).toISOString() };
+        await records.addEvents(call.id, [old]);
+        expect(await holding(orgs.phone)).toBe(1);
+      });
+    });
+
+    test('a redial of a number whose call has just ended holds its own place', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 1 });
+      await expect(authorise(orgs.phone, '+442079460001')).resolves.toMatchObject({ allowed: true });
+      const leg = await liveLeg(orgs.phone, { calledId: '+442079460001' });
+      await leg.update({ live: false, endedAt: new Date(), status: 'ended normally' });
+      // Within five seconds of the first call's row, the same number again.
+      await expect(authorise(orgs.phone, '+442079460001')).resolves.toMatchObject({ allowed: true });
+      await expect(authorise(orgs.phone, '+442079460002'))
+        .resolves.toMatchObject({ allowed: false, code: 'calls_in_progress_limit', current: 1 });
+    });
+
     test('daily spend, from the spend source', async () => {
       await setPolicy(orgs.phone, { spendPerDayMicros: 2_000_000 });
       const spendSource = async () => 2_000_000;
@@ -369,17 +582,57 @@ describe('the outbound policy of an organisation', () => {
       expect(rows.filter((r) => r.noticeDay)).toHaveLength(1);
     });
 
-    test('a notice whose send fails is sent by the next refusal by a limit', async () => {
+    test('a notice whose send fails is tried again once its retry time has passed, and not before', async () => {
       await setPolicy(orgs.phone, { callsInProgress: 0 });
       const notify = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
       await authorise(orgs.phone, '+442079460123', {}, { notify });
-      // The failed send gives the day back in the background.
-      for (let i = 0; i < 50 && await db.OutboundEvent.count({ where: { organisationId: orgs.phone, noticeDay: { [db.Op.ne]: null } } }); i += 1) {
-        await new Promise((resolve) => { setTimeout(resolve, 20); });
-      }
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      const [held] = await db.OutboundEvent.findAll({ where: { organisationId: orgs.phone, noticeDay: { [db.Op.ne]: null } } });
+      expect(held.noticeAttempts).toBe(1);
+      expect(held.noticeRetryAt.valueOf() - held.at.valueOf()).toBe(oa.NOTICE_RETRY_MS);
+      // Refusals inside the retry time send nothing.
       await authorise(orgs.phone, '+442079460123', {}, { notify });
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      expect(notify).toHaveBeenCalledTimes(1);
+      await held.update({ noticeRetryAt: new Date(Date.now() - 1000) });
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      expect(notify).toHaveBeenCalledTimes(2);
+      expect(notify.mock.calls.map((call) => call[1].attempt)).toEqual([1, 2]);
+      // Sent: it is not tried again.
+      await held.reload();
+      expect(held.noticeRetryAt).toBeNull();
       await authorise(orgs.phone, '+442079460123', {}, { notify });
       expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    test('the retry time doubles with each try, up to an hour', () => {
+      expect([1, 2, 3, 4, 7, 20].map((attempt) => oa.noticeRetryAfter(attempt) / 1000)).toEqual([60, 120, 240, 480, 3600, 3600]);
+    });
+
+    test('a second failure waits twice as long', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 0 });
+      const notify = jest.fn(async () => false);
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      const [held] = await db.OutboundEvent.findAll({ where: { organisationId: orgs.phone, noticeDay: { [db.Op.ne]: null } } });
+      await held.update({ noticeRetryAt: new Date(Date.now() - 1000) });
+      const before = Date.now();
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      await held.reload();
+      expect(held.noticeAttempts).toBe(2);
+      expect(held.noticeRetryAt.valueOf() - before).toBeGreaterThanOrEqual(oa.noticeRetryAfter(2) - 1000);
+      expect(held.noticeRetryAt.valueOf() - before).toBeLessThan(oa.noticeRetryAfter(2) + 5000);
+    });
+
+    test('only the first try logs that the limit was reached for the first time today', async () => {
+      const { sendOutboundNotice } = await import('../lib/outbound-notice.js');
+      const spy = { info: jest.fn(), warn: jest.fn() };
+      const organisation = { id: orgs.phone, billingConfig: { callbackUrl: 'https://example.com/hook', hashKey: 'k' } };
+      const refusal = { code: 'calls_in_progress_limit', reason: 'r', day: '2026-11-19', at: new Date() };
+      await sendOutboundNotice(organisation, { ...refusal, attempt: 1 }, { log: spy, send: async () => false });
+      await sendOutboundNotice(organisation, { ...refusal, attempt: 2 }, { log: spy, send: async () => false });
+      expect(spy.warn.mock.calls.filter(([, text]) => /first time today/.test(text))).toHaveLength(1);
+      expect(spy.info).toHaveBeenCalledWith(expect.objectContaining({ attempt: 2 }), 'outbound notice: trying again');
     });
 
     test('with nowhere to send it, the day is kept and nothing is sent again', async () => {
