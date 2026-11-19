@@ -267,6 +267,7 @@ Phone numbers, trunks and SIP registrations.
 | `PROV_TLS_KEY_FILE` | API |  | Provisioning service: path of the private key for PROV_TLS_CERT_FILE. |
 | `PROV_CLIENT_CERT_HEADER` | API |  | Provisioning service: the header a TLS proxy puts the phone's certificate in (PEM, URL-encoded), for example ssl-client-cert. The proxy must remove any copy a client sends. Set with PROV_TRUSTED_PROXIES. Not with PROV_TLS_CERT_FILE. |
 | `PROV_TRUSTED_PROXIES` | API |  | Provisioning service: comma-separated addresses or CIDR ranges of the proxy. The certificate header is read only on connections from these. |
+| `PROV_FETCH_LOG_DAYS` | API | `90` | Provisioning service: days a row of the fetch log is kept before the daily purge deletes it. |
 | `REGCLIENT_API_TOKEN` | API |  | Token for the B2BUA node API (SIP traces and registration probes). Unset turns those routes off (503). Secret. |
 | `REGCLIENT_API_TOKEN_PREVIOUS` | API |  | The previous token, accepted while a new one rolls out. Secret. |
 | `REGCLIENT_API_PORT` | API | `8443` | B2BUA node API port. |

@@ -33,6 +33,7 @@ describe('desk phone provisioning', () => {
   let otherCa;
   let trust;
   let handleFetch;
+  let service;
   let serverModule;
   const users = {};
   const orgs = {};
@@ -73,7 +74,8 @@ describe('desk phone provisioning', () => {
     delete process.env.PBX_RELEASE;
     await setupRealDatabase();
     db = await import('../lib/database.js');
-    ({ handleFetch } = await import('../lib/provisioning/service.js'));
+    service = await import('../lib/provisioning/service.js');
+    ({ handleFetch } = service);
     serverModule = await import('../lib/provisioning/server.js');
     const { loadTrust } = await import('../lib/provisioning/certificate.js');
     ca = makeTestCa('Test Phone');
@@ -207,7 +209,9 @@ describe('desk phone provisioning', () => {
       expect((await fetchFile({ ...base(), certificate: second.certificate, file: `${mac(2)}.xml` })).result).toBe('mac_mismatch');
     });
 
-    test('of an address that names no phone, or a file that is not one, is refused the same way', async () => {
+    test('of an address that names no phone, or a file that is not one, is refused the same way and only counted', async () => {
+      const rows = await db.DeviceFetchLog.count();
+      service.takeUnnamedCount();
       const unknown = await fetchFile({ ...base(), token: 'a'.repeat(26) });
       const junk = await fetchFile({ ...base(), file: '../secrets.xml' });
       const vendor = await fetchFile({ ...base(), vendor: 'acme' });
@@ -215,6 +219,8 @@ describe('desk phone provisioning', () => {
         expect({ status: answer.status, body: answer.body, headers: answer.headers }).toEqual({ status: 404, body: '', headers: { 'Cache-Control': 'no-store' } });
       }
       expect([unknown.result, junk.result, vendor.result]).toEqual(['unknown_path', 'bad_request', 'bad_request']);
+      expect(await db.DeviceFetchLog.count()).toBe(rows);
+      expect(service.takeUnnamedCount()).toBe(3);
     });
 
     test('with the right certificate gets a file with every line and no password', async () => {
@@ -231,7 +237,9 @@ describe('desk phone provisioning', () => {
       expect([...answer.body.matchAll(/<user_pass idx="\d+" perm="R">([^<]*)<\/user_pass>/g)].every((m) => m[1] === '')).toBe(true);
       expect(answer.body).toContain(`<user_host idx="1" perm="R">${REALM}</user_host>`);
       expect(answer.body).toContain(`<setting_server perm="R">${made.url}</setting_server>`);
-      expect([...answer.body.matchAll(/<fkey [^>]*label="([^"]*)"/g)].map((m) => m[1])).toEqual(made.phone.lines.map((line) => line.label));
+      expect([...answer.body.matchAll(/<fkey [^>]*label="([^"]*)" perm="R">line</g)].map((m) => m[1])).toEqual(made.phone.lines.map((line) => line.label));
+      // A D735 has eight keys on its first page. The four with no line are cleared.
+      expect(answer.body.match(/>none<\/fkey>/g)).toHaveLength(4);
 
       const device = await db.Device.findByPk(made.phone.device.id);
       expect(device).toMatchObject({ provisioningState: 'fetched', fetchedVersion: device.configVersion, firmware: '10.1.184.14', reportedModel: 'D735' });
@@ -267,6 +275,34 @@ describe('desk phone provisioning', () => {
       expect((await fetchFile(base())).status).toBe(200);
       // Once used it does not run out: the phone fetches from it every day.
       expect((await fetchFile({ ...base(), now: late })).status).toBe(200);
+    });
+  });
+
+  describe('two first fetches at once', () => {
+    test('only one certificate becomes the pin, and the other is refused', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(8), model: 'D735', label: 'Raced phone', people: [made.ada.id] }), 201)).phone;
+      const token = tokenOf((await ok(post('ownerA', `/phones/${phone.id}/provision`))).provisioning.url);
+      const certs = [ca.issue(mac(8).toUpperCase()), ca.issue(mac(8).toUpperCase())];
+      const answers = await Promise.all(certs.map((cert) => fetchFile({ token, file: `${mac(8)}.xml`, certificate: cert.certificate })));
+      expect(answers.map((answer) => answer.result).sort()).toEqual(['certificate_changed', 'served']);
+      const winner = certs[answers.findIndex((answer) => answer.result === 'served')];
+      const device = await db.Device.findByPk(phone.device.id);
+      expect(device.certificateFingerprint).toBe(winner.certificate.fingerprint256.replace(/:/g, '').toLowerCase());
+      await ok(del('ownerA', `/phones/${phone.id}`));
+    });
+  });
+
+  describe('the fetch log', () => {
+    test('rows older than the keep time are purged, and the keep time is a setting', async () => {
+      const old = await db.DeviceFetchLog.create({ deviceId: made.phone.device.id, organisationId: orgs.a, result: 'served', statusCode: 200 });
+      await db.DeviceFetchLog.update({ createdAt: new Date(Date.now() - 100 * 86400000) }, { where: { id: old.id }, silent: true });
+      const recent = await db.DeviceFetchLog.count({ where: { deviceId: made.phone.device.id } });
+      expect(service.fetchLogDays({})).toBe(90);
+      expect(service.fetchLogDays({ PROV_FETCH_LOG_DAYS: '14' })).toBe(14);
+      expect(service.fetchLogDays({ PROV_FETCH_LOG_DAYS: '0' })).toBe(90);
+      expect(await service.purgeFetchLogs({ days: 200 })).toBe(0);
+      expect(await service.purgeFetchLogs()).toBe(1);
+      expect(await db.DeviceFetchLog.count({ where: { deviceId: made.phone.device.id } })).toBe(recent - 1);
     });
   });
 
@@ -345,6 +381,54 @@ describe('desk phone provisioning', () => {
       }
     });
 
+    test('refused requests from one address shut it out for a minute, with one log row, and served ones never count', async () => {
+      const config = { publicUrl: PUBLIC_URL, trust, certificateHeader: 'ssl-client-cert', proxies: { check: () => true } };
+      const server = await listen(serverModule.createProvisioningServer(config, {
+        handleFetch, logRateLimited: service.logRateLimited, logger: log, limiter: serverModule.refusalLimiter({ max: 3 }),
+      }));
+      const good = (from) => request(server).get(path()).set('ssl-client-cert', encodeURIComponent(made.cert.pem)).set('User-Agent', UA('D717')).set('X-Forwarded-For', from);
+      const bad = (from) => request(server).get(path()).set('X-Forwarded-For', from);
+      try {
+        // An office: more good fetches than the limit, all served.
+        for (let i = 0; i < 5; i += 1) expect((await good('203.0.113.50')).status).toBe(200);
+        for (let i = 0; i < 3; i += 1) expect((await bad('203.0.113.60')).status).toBe(404);
+        const before = await db.DeviceFetchLog.count({ where: { result: 'rate_limited', sourceIp: '203.0.113.60' } });
+        // Now even a good request from that address is refused.
+        expect((await good('203.0.113.60')).status).toBe(404);
+        expect((await bad('203.0.113.60')).status).toBe(404);
+        expect(await db.DeviceFetchLog.count({ where: { result: 'rate_limited', sourceIp: '203.0.113.60' } })).toBe(before + 1);
+        // Another address is not held back.
+        expect((await good('203.0.113.50')).status).toBe(200);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+        await db.DeviceFetchLog.destroy({ where: { result: 'rate_limited', sourceIp: '203.0.113.60' } });
+      }
+    });
+
+    test('ending TLS itself: a second request on the same connection still has the certificates the phone sent', async () => {
+      const host = ca.issue('localhost');
+      const { loadTrust } = await import('../lib/provisioning/certificate.js');
+      // Only the root is in the bundle, so the intermediate must come from the phone.
+      const rootOnly = { snom: loadTrust(ca.rootPem, [ca.fingerprint]) };
+      const server = await listen(serverModule.createProvisioningServer(
+        { publicUrl: PUBLIC_URL, trust: rootOnly, tls: { cert: host.pem, key: host.key } }, { handleFetch: (args) => handleFetch({ ...args, trust: rootOnly }), logger: log },
+      ));
+      const agent = new https.Agent({ keepAlive: true, maxSockets: 1, cert: `${made.cert.pem}\n${ca.intermediatePem}`, key: made.cert.key, rejectUnauthorized: false });
+      const once = () => new Promise((resolve, reject) => {
+        https.get({ host: '127.0.0.1', port: server.address().port, path: path(), agent, headers: { 'User-Agent': UA('D717') } }, (res) => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode, reused: res.req.reusedSocket }));
+        }).on('error', reject);
+      });
+      try {
+        expect((await once()).status).toBe(200);
+        expect(await once()).toEqual({ status: 200, reused: true });
+      } finally {
+        agent.destroy();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
     test('ending TLS itself: the phone\'s own key and certificate fetch, and a client with none does not', async () => {
       const host = ca.issue('localhost');
       const server = await listen(serverModule.createProvisioningServer(
@@ -389,6 +473,13 @@ describe('desk phone provisioning', () => {
       expect(after.map((account) => account.status)).toEqual(before.map(() => 'disabled'));
       after.forEach((account, i) => expect(account.ha1).not.toBe(before[i].ha1));
       expect(after.every((account) => account.previousHa1 === null)).toBe(true);
+
+      // A directory change while the phone is wiped: it gets a line more, and stays wiped.
+      const extra = (await ok(post('ownerA', '/directory/entries', { kind: 'team', name: 'Returns' }), 201)).entry;
+      await ok(post('ownerA', '/directory/extensions', { number: '203', type: 'ring_all', entryId: extra.id, members: [made.ada.id] }), 201);
+      const changed = await ok(get('ownerA', `/phones/${made.phone.id}`));
+      expect(changed.device.state).toBe('wiped');
+      expect(await fetchFile(base())).toMatchObject({ status: 404, body: '' });
 
       const back = await ok(post('ownerA', `/phones/${made.phone.id}/provision`));
       made.token = tokenOf(back.provisioning.url);
