@@ -25,7 +25,7 @@ An organisation without the capability still has the directory, and extensions o
 
 The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. The outbound refusal of extension digits and the daily purge of removed rows do nothing until then. Restart the API server after the upgrade.
 
-The organisation's outbound policy also needs the schema 75 upgrade. Until it has run, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
+The organisation's outbound policy also needs the schema 75 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 

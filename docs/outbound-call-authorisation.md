@@ -34,8 +34,8 @@ unchanged from before this policy existed:
 
 * `options.outboundCallFilter` if the agent sets one;
 * otherwise the historical default: a UK geographic, non-geographic or mobile
-  number in any of the accepted dialled forms, without 070 and 076
-  (`^(\+44|44|0)(?!7[06])[1237]\d{6,15}$`). See [Narrowings](#narrowings).
+  number in any of the accepted dialled forms, without 070 and 076 but with
+  07624 (`^(\+44|44|0)(?!70|76(?!24))[1237]\d{6,15}$`). See [Narrowings](#narrowings).
 
 ### 2. Our chargeable carrier trunk — the operator's policy is authoritative
 
@@ -46,7 +46,7 @@ destination must satisfy **all** of:
 
 | # | Gate | Source |
 |---|------|--------|
-| a | `Trunk.outboundCallFilter`: the operator's allow-pattern, applied to the canonical `+E.164` destination. Unset ⇒ UK geographic/mobile without 070 and 076: `^\+44(?!7[06])[1237]\d{8,9}$` | operator (superAdmin) |
+| a | `Trunk.outboundCallFilter`: the operator's allow-pattern, applied to the canonical `+E.164` destination. Unset ⇒ UK geographic/mobile without 070 and 076 but with 07624: `^\+44(?!70|76(?!24))[1237]\d{8,9}$` | operator (superAdmin) |
 | b | **Rateable** — the destination longest-prefix-matches a prefix in the tariff named by the `destination` line of the rate card in force for this org/user | operator (rate cards + tariffs) |
 | c | `options.outboundCallFilter`, when the agent sets one | tenant — **narrows only** |
 | d | The organisation's outbound policy, for an organisation with the phone system. See below | the organisation's admin, within the brand's ceiling |
@@ -69,11 +69,21 @@ apply on a trunk we do not pay for, or to an organisation without the phone syst
 
 | Part | Default |
 |---|---|
-| Destination classes: `ukLandline` (01, 02, 03), `ukMobile` (07 without 070 and 076), `freephone` (0800, 0808), `service` (084, 087), `premium` (09, 118, 070, 076), `crownDependencies` (the Channel Islands and the Isle of Man), `international` | The first three open, the rest closed. A UK number in no class, such as 05, is refused |
+| Destination classes, below | The first three open, the rest closed. A UK number in no class, such as 05, is refused |
 | `callsInProgress`: outside calls in progress at once. Calls inside the organisation do not count | The ceiling |
 | `callsPerMinute`: outside calls started in any 60 seconds | The ceiling |
-| `spendPerDayMicros`, `spendPerMonthMicros`: what outside calls cost, in micros of a pound, by the local day and month | The ceiling |
+| `spendPerDayMicros`, `spendPerMonthMicros`: what outside calls cost, in micros of a pound, by the local day and month. See "Spend" below: they do not yet move for phone system calls | The ceiling |
 | `hours`: the days and times outside calls may be made, in a time zone | None: any time |
+
+| Class | Numbers |
+|---|---|
+| `ukLandline` | 01, 02, 03, including Reading's 0118 |
+| `ukMobile` | 07, without 070 and 076 |
+| `freephone` | 0800, 0808 |
+| `service` | 084, 087 |
+| `premium` | 09, directory enquiries (the six digits 118xxx), 070 personal numbers, 076 pagers |
+| `crownDependencies` | The area codes 01481 (Guernsey), 01534 (Jersey) and 01624 (Isle of Man), and the 07 blocks Ofcom lists as allocated to the islands' providers, which include the Isle of Man's 07624. The list is from Ofcom's number file of 18 November 2026, in `lib/outbound-policy.js` |
+| `international` | Any number outside +44 |
 
 **The ceiling.** Each brand has a ceiling, `outboundCeiling` on
 `PUT /api/brands/{brandId}` (platform operator only). An organisation's admin or
@@ -86,30 +96,46 @@ applies at once.
 
 `GET /api/organisations/{id}/outbound-policy` shows the policy, the ceiling,
 what applies (`effective`), what the limits count now (`usage`) and today's
-refusals by code (`notices`).
+refusals by code (`notices`). If a stored hours rule no longer checks, every
+outside call is refused: `effective.hoursValid` is then false and
+`effective.hours` shows the rule as stored.
 
-**What it counts.** Calls in progress are live call rows whose outbound trunk is
-chargeable. A phone system leg has a row once the network answers it, so a leg
-still ringing is not counted; the calls a minute limit covers a burst. A row
-older than four hours is not counted, so a call record left open by a lost write
-does not hold a place for good. Spend is read through `lib/outbound-spend.js`.
-Today that counts the costed usage rows of finished calls that carry a
-destination charge, so it does not see phone system legs yet, which write no
-usage.
+**What it counts.** For each organisation, the count and the write of the
+decision are one step under a lock, so calls decided at the same moment cannot
+all pass a limit. A call is in progress from the decision that allowed it.
+Until the call has a row, the decision holds its place for up to two minutes.
+A phone system leg has a row once the network answers it; a leg that rings out
+gives its place back when the two minutes end. After that the live call row,
+on a chargeable trunk, holds the place until the call ends. A row older than
+four hours is not counted, so a call record left open by a lost write does not
+hold a place for good. Calls a minute counts the allowed decisions of the last
+60 seconds.
+
+**Spend.** Spend is read through `lib/outbound-spend.js`. It counts the costed
+usage rows of finished calls that carry a destination charge. **Phone system
+calls write no usage yet, so until billing writes their usage the daily and
+monthly spend limits do not move for them.** A call in progress is not counted
+until it ends and is costed.
 
 **The notice.** Each decision is written to `outbound_events`. The first refusal
 by a limit on a day for an organisation sends one `outboundLimitReached` event
 to the organisation's billing callback (`billingConfig.callbackUrl`), signed
 with its `hashKey` over `hashKey|organisationId|outboundLimitReached|code|day`.
-The front end sends the email to the organisation's admins. Decisions are kept
-for 40 days.
+One notice a day covers every limit. If the send fails, the next refusal by a
+limit that day sends it. The front end sends the email to the organisation's
+admins. Decisions are kept for 40 days.
 
 **It fails closed.** If the policy cannot be read, or a count cannot be made, or
 the decision cannot be written, the call is refused with
-`outbound_policy_unavailable`. Until the schema 75 upgrade has run
-(`tools/agent-admin.js upgrade-db`), every outside call of an organisation with
-the phone system on our chargeable trunks is refused with
-`outbound_policy_not_ready`, and the policy route answers 503.
+`outbound_policy_unavailable`.
+
+**Deploying it.** The policy needs the schema 75 upgrade
+(`tools/agent-admin.js upgrade-db`) and then a restart of the API server, which
+reads the schema at start. Until both are done, every outside call on our
+chargeable trunks of an organisation with the phone system is refused with
+`outbound_policy_not_ready`: its agents' calls as well as its phones'. The
+policy route answers 503. Run the upgrade and the restart together with the
+deploy.
 
 ## Narrowings
 
@@ -118,7 +144,7 @@ tests (`tests/outbound-policy.test.mjs`).
 
 | Since | What |
 |---|---|
-| Schema 75 | 070 (personal numbers) and 076 (pagers) are closed in both default filters, the agent default and the trunk default, for every brand. They are charged like premium numbers. An agent or trunk filter that names them still opens them on a trunk we do not pay for, or on a trunk whose operator filter allows them |
+| The release with the organisation's outbound policy. It applies as soon as the code runs, with no upgrade | 070 (personal numbers) and 076 (pagers) are closed in both default filters, the agent default and the trunk default, for every brand. They are charged like premium numbers. The Isle of Man's mobiles, 07624, stay open. An agent or trunk filter that names them still opens them on a trunk we do not pay for, or on a trunk whose operator filter allows them |
 
 ## Refusal codes
 

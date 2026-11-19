@@ -13,12 +13,16 @@ import {
 
 // One number of each class. Ofcom's drama ranges where there is one.
 const NUMBERS = {
-  ukLandline: ['+442079460123', '+441134960123', '+443069990123'],
-  ukMobile: ['+447700900123', '+447912123456'],
+  ukLandline: ['+442079460123', '+441134960123', '+443069990123', '+441184960000'],
+  // 07911 0 and 07829 0 sit in ranges the islands share, but are not theirs.
+  ukMobile: ['+447700900123', '+447912123456', '+447911012345', '+447829012345'],
   freephone: ['+448081570123', '+448001234567'],
   service: ['+448449790123', '+448712345678'],
   premium: ['+449098790123', '+44118500', '+447012345678', '+447640123456'],
-  crownDependencies: ['+441481123456', '+441534123456', '+441624123456', '+447624123456', '+447781123456'],
+  crownDependencies: [
+    '+441481123456', '+441534123456', '+441624123456', '+447624123456', '+447624501234', '+447781123456',
+    '+447911123456', '+447700312345', '+447452012345', '+447937123456',
+  ],
   international: ['+15550100123', '+33199001234'],
 };
 
@@ -35,6 +39,13 @@ describe('narrowing: 070 and 076 are closed in both default filters', () => {
     }
   });
 
+  test("the Isle of Man's mobiles, 07624, stay open in both default filters", () => {
+    for (const number of ['07624123456', '+447624123456', '447624123456']) {
+      expect([number, filterAllows(DEFAULT_AGENT_OUTBOUND_FILTER, number)]).toEqual([number, true]);
+    }
+    expect(filterAllows(DEFAULT_TRUNK_OUTBOUND_FILTER, '+447624123456')).toBe(true);
+  });
+
   test('both still allow other UK landlines and mobiles', () => {
     for (const number of ['02079460123', '+442079460123', '07700900123', '+447700900123', '07123456789', '+447812345678']) {
       expect([number, filterAllows(DEFAULT_AGENT_OUTBOUND_FILTER, number)]).toEqual([number, true]);
@@ -48,6 +59,12 @@ describe('narrowing: 070 and 076 are closed in both default filters', () => {
 describe('destination classes', () => {
   test.each(Object.entries(NUMBERS))('%s', (name, numbers) => {
     for (const number of numbers) expect([number, classifyDestination(number)]).toEqual([number, name]);
+  });
+
+  test('0118 is a landline: only the six digits 118xxx are directory enquiries', () => {
+    expect(classifyDestination('+441184960000')).toBe('ukLandline');
+    expect(classifyDestination('+44118500')).toBe('premium');
+    expect(classifyDestination('+44118118')).toBe('premium');
   });
 
   test('a UK number in no class, and junk, have no class', () => {

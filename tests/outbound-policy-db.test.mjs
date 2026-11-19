@@ -73,7 +73,7 @@ describe('the outbound policy of an organisation', () => {
     await make('other', { capabilities: ['phoneSystem'], brand: BRAND });
 
     const tariff = await Tariff.create({ name: tariffName, startDate: START });
-    await TariffPrefix.bulkCreate(['4420', '4477', '4470', '4476', '4480', '4484', '449', '1'].map((prefix) => ({
+    await TariffPrefix.bulkCreate(['4411', '4420', '4477', '4470', '4476', '4480', '4484', '449', '1'].map((prefix) => ({
       tariffId: tariff.id, prefix, connectMicros: 0, peakPerMinuteMicros: 100_000, offPeakPerMinuteMicros: 100_000,
     })));
     await RateCard.create({
@@ -151,6 +151,18 @@ describe('the outbound policy of an organisation', () => {
         .resolves.toMatchObject({ allowed: false, code: 'default_filter', chargeable: false });
     });
 
+    test("but the Isle of Man's mobiles, 07624, pass both default filters", async () => {
+      await expect(authorise(orgs.plain, '+447624123456', { outboundTrunkId: PLAIN_TRUNK }))
+        .resolves.toMatchObject({ allowed: true, chargeable: true });
+      await expect(authorise(orgs.plain, '07624123456', { outboundTrunkId: BYO }))
+        .resolves.toMatchObject({ allowed: true, chargeable: false });
+    });
+
+    test('and the policy can still close 07624 by its class', async () => {
+      await expect(authorise(orgs.phone, '+447624123456', { outboundTrunkId: PLAIN_TRUNK }))
+        .resolves.toMatchObject({ allowed: false, code: 'destination_class', destinationClass: 'crownDependencies' });
+    });
+
     test('by the destination classes when an operator opened them on the trunk', async () => {
       for (const number of ['+447012345678', '+447640123456']) {
         await expect(authorise(orgs.phone, number))
@@ -169,6 +181,10 @@ describe('the outbound policy of an organisation', () => {
         expect(decision).toMatchObject({ allowed: false, code: 'destination_class', destinationClass, chargeable: true });
         expect(decision.reason).toContain(number);
       }
+    });
+
+    test('a Reading number (0118) is a landline', async () => {
+      await expect(authorise(orgs.phone, '+441184960000')).resolves.toMatchObject({ allowed: true, code: 'ok' });
     });
 
     test('a class the organisation opens within the ceiling passes', async () => {
@@ -231,6 +247,41 @@ describe('the outbound policy of an organisation', () => {
       // Older than a minute: no longer counted.
       await db.OutboundEvent.update({ at: new Date(Date.now() - 61_000) }, { where: { organisationId: orgs.phone } });
       await expect(authorise(orgs.phone, '+442079460123')).resolves.toMatchObject({ allowed: true });
+    });
+
+    test('a call is in progress from its decision until its call row ends', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 2 });
+      await expect(authorise(orgs.phone, '+442079460001')).resolves.toMatchObject({ allowed: true });
+      await expect(authorise(orgs.phone, '+442079460002')).resolves.toMatchObject({ allowed: true });
+      // Neither call has a row yet: both still hold their place.
+      await expect(authorise(orgs.phone, '+442079460003'))
+        .resolves.toMatchObject({ allowed: false, code: 'calls_in_progress_limit', current: 2 });
+      // The first is answered, as call control writes it, and then ends: its place is free.
+      const leg = await liveLeg(orgs.phone, { calledId: '+442079460001' });
+      await expect(authorise(orgs.phone, '+442079460003')).resolves.toMatchObject({ allowed: false, current: 2 });
+      await leg.update({ live: false, endedAt: new Date(), status: 'ended normally' });
+      await expect(authorise(orgs.phone, '+442079460003')).resolves.toMatchObject({ allowed: true });
+    });
+
+    test('a decision whose call never gets a row gives its place back after two minutes', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 1 });
+      await expect(authorise(orgs.phone, '+442079460001')).resolves.toMatchObject({ allowed: true });
+      await expect(authorise(orgs.phone, '+442079460002')).resolves.toMatchObject({ allowed: false });
+      await db.OutboundEvent.update({ at: new Date(Date.now() - oa.DECISION_HOLDS_PLACE_MS - 1000) }, { where: { organisationId: orgs.phone } });
+      await expect(authorise(orgs.phone, '+442079460002')).resolves.toMatchObject({ allowed: true });
+    });
+
+    test('calls decided at the same moment cannot pass the calls a minute limit', async () => {
+      await setPolicy(orgs.phone, { callsPerMinute: 3 });
+      const decisions = await Promise.all(Array.from({ length: 20 }, (_, i) => authorise(orgs.phone, `+4420794601${String(i).padStart(2, '0')}`)));
+      expect(decisions.filter((d) => d.allowed)).toHaveLength(3);
+      expect(decisions.filter((d) => d.code === 'calls_per_minute_limit')).toHaveLength(17);
+    });
+
+    test('calls decided at the same moment cannot pass the calls in progress limit', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 2 });
+      const decisions = await Promise.all(Array.from({ length: 10 }, (_, i) => authorise(orgs.phone, `+4420794602${String(i).padStart(2, '0')}`)));
+      expect(decisions.filter((d) => d.allowed)).toHaveLength(2);
     });
 
     test('daily spend, from the spend source', async () => {
@@ -318,6 +369,28 @@ describe('the outbound policy of an organisation', () => {
       expect(rows.filter((r) => r.noticeDay)).toHaveLength(1);
     });
 
+    test('a notice whose send fails is sent by the next refusal by a limit', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 0 });
+      const notify = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      // The failed send gives the day back in the background.
+      for (let i = 0; i < 50 && await db.OutboundEvent.count({ where: { organisationId: orgs.phone, noticeDay: { [db.Op.ne]: null } } }); i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+      }
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    test('with nowhere to send it, the day is kept and nothing is sent again', async () => {
+      await setPolicy(orgs.phone, { callsInProgress: 0 });
+      const notify = jest.fn(async () => null);
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      await authorise(orgs.phone, '+442079460123', {}, { notify });
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
     test('two servers refusing at once still send one notice', async () => {
       await setPolicy(orgs.phone, { callsPerMinute: 0 });
       const notify = jest.fn(async () => true);
@@ -327,10 +400,11 @@ describe('the outbound policy of an organisation', () => {
 
     test('the notice goes to the billing callback, signed', async () => {
       const { sendOutboundNotice, signOutboundNotice } = await import('../lib/outbound-notice.js');
-      const send = jest.fn(async () => {});
+      const send = jest.fn(async () => true);
       const organisation = { id: orgs.phone, billingConfig: { callbackUrl: 'https://example.com/hook', hashKey: 'k' } };
       const at = new Date('2026-11-18T10:00:00Z');
-      await sendOutboundNotice(organisation, { code: 'daily_spend_limit', reason: 'r', limit: 'spendPerDayMicros', value: 5, day: '2026-11-18', at }, { log, send });
+      const refusal = { code: 'daily_spend_limit', reason: 'r', limit: 'spendPerDayMicros', value: 5, day: '2026-11-18', at };
+      await expect(sendOutboundNotice(organisation, refusal, { log, send })).resolves.toBe(true);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         callHook: { url: 'https://example.com/hook' },
         payload: expect.objectContaining({
@@ -338,9 +412,11 @@ describe('the outbound policy of an organisation', () => {
           hash: signOutboundNotice({ hashKey: 'k', organisationId: orgs.phone, code: 'daily_spend_limit', day: '2026-11-18' }),
         }),
       }));
+      // The receiver refused it: the answer says so, to be tried again.
+      await expect(sendOutboundNotice(organisation, refusal, { log, send: async () => false })).resolves.toBe(false);
       // No callback set: nothing is sent, and nothing throws.
       send.mockClear();
-      await expect(sendOutboundNotice({ id: orgs.phone }, { code: 'x', reason: 'r', day: 'd', at }, { log, send })).resolves.toBe(false);
+      await expect(sendOutboundNotice({ id: orgs.phone }, { code: 'x', reason: 'r', day: 'd', at }, { log, send })).resolves.toBeNull();
       expect(send).not.toHaveBeenCalled();
     });
   });
@@ -395,6 +471,23 @@ describe('the outbound policy of an organisation', () => {
       expect(res.status).toBe(200);
       expect(res.body.policy).toMatchObject({ callsPerMinute: 4, classes: { international: true }, hours: { timeZone: 'Europe/London' } });
       expect((await Organisation.findByPk(orgs.phone)).outboundPolicy).toMatchObject({ callsPerMinute: 4 });
+    });
+
+    test('two changes at once both stick', async () => {
+      const [a, b] = await Promise.all([
+        put('owner', `/organisations/${orgs.phone}/outbound-policy`, { classes: { service: true } }),
+        put('admin', `/organisations/${orgs.phone}/outbound-policy`, { callsPerMinute: 4 }),
+      ]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect((await Organisation.findByPk(orgs.phone)).outboundPolicy).toMatchObject({ classes: { service: true }, callsPerMinute: 4 });
+    });
+
+    test('a stored hours rule that no longer checks shows as it is stored, not as any time', async () => {
+      await setPolicy(orgs.phone, { hours: { days: 'weekdays' } });
+      const res = await get('owner', `/organisations/${orgs.phone}/outbound-policy`);
+      expect(res.body.effective).toMatchObject({ hours: { days: 'weekdays' }, hoursValid: false });
+      await setPolicy(orgs.phone, null);
+      expect((await get('owner', `/organisations/${orgs.phone}/outbound-policy`)).body.effective).toMatchObject({ hours: null, hoursValid: true });
     });
 
     test('a value above the ceiling is refused with the field', async () => {

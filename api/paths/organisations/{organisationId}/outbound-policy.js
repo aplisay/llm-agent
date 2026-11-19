@@ -49,7 +49,8 @@ export default function (logger) {
     return {
       policy,
       ceiling,
-      effective: applied,
+      // A stored hours rule that no longer checks refuses every call, so it is shown as stored, not as "any time".
+      effective: { ...applied, hours: hoursUnusable ? policy.hours : applied.hours, hoursValid: !hoursUnusable },
       usage: {
         callsInProgress: usage.callsInProgress,
         callsLastMinute: usage.callsLastMinute,
@@ -88,14 +89,22 @@ export default function (logger) {
       const organisation = await load(req, res, 'update');
       if (!organisation) return;
       const change = req.body;
-      const merged = mergePolicy(organisation.outboundPolicy, change);
-      if (merged.error) return res.status(400).send({ error: merged.error, code: 'invalid_request', field: merged.field });
+      const firstCheck = mergePolicy(organisation.outboundPolicy, change);
+      if (firstCheck.error) return res.status(400).send({ error: firstCheck.error, code: 'invalid_request', field: firstCheck.field });
       // Only what this change opens or raises is held to the ceiling, so a lowered
       // ceiling does not block an unrelated change. effectivePolicy clips the rest.
       const ceiling = await brandCeiling(organisation.brand);
       const over = aboveCeiling(change, ceiling);
       if (over) return res.status(400).send({ error: over.error, code: 'above_ceiling', field: over.field });
-      await organisation.update({ outboundPolicy: merged.policy });
+      // Merge onto the row as it is under a lock, so two changes at once both stick.
+      await Organisation.sequelize.transaction(async (transaction) => {
+        const row = await Organisation.findByPk(organisation.id, {
+          attributes: ['id', 'outboundPolicy'], transaction, lock: transaction.LOCK.UPDATE,
+        });
+        const { policy } = mergePolicy(row.outboundPolicy, change);
+        await row.update({ outboundPolicy: policy }, { transaction });
+        organisation.outboundPolicy = policy;
+      });
       logger.info({
         audit: 'organisation-outbound-policy-set',
         organisationId: organisation.id,
