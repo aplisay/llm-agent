@@ -9,7 +9,7 @@ import {
 } from '../lib/provisioning/certificate.js';
 import { renderSnomSettings, parseSnomUserAgent } from '../lib/provisioning/snom.js';
 import { mintToken, hashToken, TOKEN_RE } from '../lib/provisioning/token.js';
-import { provisioningConfig, SNOM_ROOT_FINGERPRINTS } from '../lib/provisioning/server.js';
+import { provisioningConfig, refusalLimiter, SNOM_ROOT_FINGERPRINTS } from '../lib/provisioning/server.js';
 import { deviceAdminPassword, provisioningPublicUrl } from '../lib/provisioning/address.js';
 
 const MAC = '000413a1b2c3';
@@ -76,6 +76,8 @@ describe('the phone certificate check', () => {
     expect(certificateFromHeader(encodeURIComponent(phone.pem)).fingerprint256).toBe(phone.certificate.fingerprint256);
     expect(certificateFromHeader(phone.pem).fingerprint256).toBe(phone.certificate.fingerprint256);
     expect(certificateFromHeader('not a certificate')).toBeNull();
+    // Two certificates in one header: it was added to, not replaced.
+    expect(certificateFromHeader(encodeURIComponent(`${phone.pem}\n${ca.issue(MAC).pem}`))).toBeNull();
     expect(certificateFromHeader(undefined)).toBeNull();
     expect(parsePemBundle('')).toEqual([]);
   });
@@ -101,6 +103,9 @@ describe('the phone certificate check', () => {
       expect(proxied.certificateHeader).toBe('ssl-client-cert');
       expect(proxied.proxies.check('10.20.30.40')).toBe(true);
       expect(proxied.proxies.check('192.168.1.6')).toBe(false);
+      for (const bad of ['10.0.0.0/', '10.0.0.0/33', '10.0.0.0/x', 'proxy.example']) {
+        expect(() => provisioningConfig({ ...base(), PROV_CLIENT_CERT_HEADER: 'ssl-client-cert', PROV_TRUSTED_PROXIES: bad }, read)).toThrow(/PROV_TRUSTED_PROXIES/);
+      }
     });
 
     test('it will not start without an https address, a CA file and a pinned root in it', () => {
@@ -155,6 +160,12 @@ describe('the Snom settings file', () => {
     expect(xml).toContain('<challenge_checksync perm="R">on</challenge_checksync>');
   });
 
+  test('a key with no line is cleared', () => {
+    const xml = renderSnomSettings({ ...profile, keys: 6, lines: profile.lines.slice(0, 2) });
+    expect([...xml.matchAll(/<fkey idx="(\d+)" context="active" label="" perm="R">none<\/fkey>/g)].map((m) => m[1])).toEqual(['2', '3', '4', '5']);
+    expect(renderSnomSettings(profile)).not.toContain('>none</fkey>');
+  });
+
   test('labels are escaped, and a D8xx phone gets its own web login names', () => {
     const xml = renderSnomSettings({ ...profile, family: 'd8', lines: [{ ...profile.lines[0], key: 1, label: 'R&D <"lab">' }] });
     expect(xml).toContain('label="R&amp;D &lt;&quot;lab&quot;&gt;"');
@@ -168,6 +179,37 @@ describe('the Snom settings file', () => {
     expect(parseSnomUserAgent('snom710-SIP 8.9.3.80')).toEqual({ model: '710', firmware: '8.9.3.80' });
     expect(parseSnomUserAgent('curl/8.0')).toBeNull();
     expect(parseSnomUserAgent(undefined)).toBeNull();
+  });
+});
+
+describe('the limit on refused requests', () => {
+  test('an address is shut out after the limit, for the rest of that minute only', () => {
+    let at = 0;
+    const limiter = refusalLimiter({ now: () => at, max: 3 });
+    expect(limiter.blocked('a')).toEqual({ blocked: false });
+    limiter.hit('a');
+    limiter.hit('a');
+    expect(limiter.blocked('a').blocked).toBe(false);
+    limiter.hit('a');
+    expect(limiter.blocked('a')).toEqual({ blocked: true, first: true });
+    expect(limiter.blocked('a')).toEqual({ blocked: true, first: false });
+    expect(limiter.blocked('b').blocked).toBe(false);
+    at = 61000;
+    expect(limiter.blocked('a').blocked).toBe(false);
+  });
+
+  test('a full table drops ended windows and the oldest address, never every count', () => {
+    let at = 0;
+    const limiter = refusalLimiter({ now: () => at, max: 2, addresses: 3 });
+    for (const key of ['old', 'b', 'c']) {
+      limiter.hit(key);
+      limiter.hit(key);
+      at += 1000;
+    }
+    limiter.hit('d');
+    expect(limiter.blocked('old').blocked).toBe(false);
+    expect(limiter.blocked('b').blocked).toBe(true);
+    expect(limiter.blocked('c').blocked).toBe(true);
   });
 });
 

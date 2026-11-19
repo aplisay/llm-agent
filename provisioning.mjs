@@ -24,15 +24,17 @@ if (!phoneProvisioningReady()) {
   await stopDatabase?.();
   process.exit(1);
 }
-const { handleFetch } = await import('./lib/provisioning/service.js');
+const { handleFetch, logRateLimited, startFetchLogPurge } = await import('./lib/provisioning/service.js');
 
-const server = createProvisioningServer(config, { handleFetch, logger });
+const server = createProvisioningServer(config, { handleFetch, logRateLimited, logger });
+const stopPurge = startFetchLogPurge();
 server.listen(config.port, () => {
   logger.info({ port: config.port, mode: config.tls ? 'tls' : 'behind a proxy' }, 'provisioning service listening');
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
+    stopPurge();
     server.close(async () => {
       await stopDatabase?.();
       process.exit(0);

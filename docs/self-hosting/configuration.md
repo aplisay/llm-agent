@@ -267,6 +267,7 @@ Phone numbers, trunks and SIP registrations.
 | `PROV_TLS_KEY_FILE` | API |  | Provisioning service: path of the private key for PROV_TLS_CERT_FILE. |
 | `PROV_CLIENT_CERT_HEADER` | API |  | Provisioning service: the header a TLS proxy puts the phone's certificate in (PEM, URL-encoded), for example ssl-client-cert. The proxy must remove any copy a client sends. Set with PROV_TRUSTED_PROXIES. Not with PROV_TLS_CERT_FILE. |
 | `PROV_TRUSTED_PROXIES` | API |  | Provisioning service: comma-separated addresses or CIDR ranges of the proxy. The certificate header is read only on connections from these. |
+| `PROV_FETCH_LOG_DAYS` | API | `90` | Provisioning service: days a row of the fetch log is kept before the daily purge deletes it. |
 | `SNOM_SRAPS_KEY_ID` | API |  | Snom redirection service (SRAPS): the access key id of a company API token. With SNOM_SRAPS_KEY_SECRET and SNOM_SRAPS_COMPANY_ID it lets a factory-reset Snom phone find its settings address by itself. Unset means the address is typed into the phone. |
 | `SNOM_SRAPS_KEY_SECRET` | API |  | Snom redirection service: the secret of the company API token. Secret. |
 | `SNOM_SRAPS_COMPANY_ID` | API |  | Snom redirection service: the id of the SRAPS company the phones are added to. |
