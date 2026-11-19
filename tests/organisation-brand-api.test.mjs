@@ -181,15 +181,18 @@ describe('brands on organisations', () => {
       expect((await Organisation.findByPk(orgs.plain)).capabilities).toEqual([]);
     });
 
-    test('cannot give or take a capability that only a platform operator gives', async () => {
+    test('cannot give a capability that only a platform operator gives, and cannot take it away', async () => {
       const path = `/organisations/${orgs.acmeByKey}/capabilities`;
       const refused = await put('acmeKey', path, { capabilities: ['phoneSystem', 'phoneRedirect'] });
       expect(refused.status).toBe(403);
       expect(refused.body.code).toBe('operator_only_capability');
+      expect((await Organisation.findByPk(orgs.acmeByKey)).capabilities).toEqual(['phoneSystem']);
       expect(await ok(put('operator', path, { capabilities: ['phoneSystem', 'phoneRedirect'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
-      // The brand's key may still change the others, as long as it sends this one as it is.
-      expect((await put('acmeKey', path, { capabilities: ['phoneSystem'] })).status).toBe(403);
-      expect(await ok(put('acmeKey', path, { capabilities: ['phoneRedirect'] }))).toEqual({ capabilities: ['phoneRedirect'] });
+      // The brand's key goes on sending the list it always sent. It works, and the operator's capability stays.
+      expect(await ok(put('acmeKey', path, { capabilities: ['phoneSystem'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
+      expect(await ok(put('acmeKey', path, { capabilities: [] }))).toEqual({ capabilities: ['phoneRedirect'] });
+      expect(await ok(put('acmeKey', path, { capabilities: ['phoneSystem', 'phoneRedirect'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
+      // Only the operator takes it away.
       expect(await ok(put('operator', path, { capabilities: ['phoneSystem'] }))).toEqual({ capabilities: ['phoneSystem'] });
       // Nor is it a brand default.
       const asDefault = await put('operator', `/brands/${ACME}`, { name: 'Acme', defaultCapabilities: ['phoneSystem', 'phoneRedirect'] });

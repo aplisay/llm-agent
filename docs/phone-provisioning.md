@@ -41,13 +41,13 @@ A factory-reset Snom phone asks Snom's redirection service (SRAPS) where to fetc
 
 Set them on the API server. With any of them unset nothing is sent to Snom.
 
-A binding is made in the name of the platform's SRAPS company, so a platform operator decides which organisations may make one. Give the organisation the `phoneRedirect` capability with `PUT /organisations/{id}/capabilities`. Only a platform operator can give or take it, and it cannot be a brand default. For any other organisation nothing is sent, and `redirect.error` is `not_allowed`.
+A binding is made in the name of the platform's SRAPS company, so a platform operator decides which organisations may make one. Give the organisation the `phoneRedirect` capability with `PUT /organisations/{id}/capabilities`. Only a platform operator can give or take it, and it cannot be a brand default. For any other organisation nothing is sent, and `redirect.error` is `not_allowed`. Taking the capability away leaves the phones that are already bound as they are. A wipe or a removal still releases them: a release needs no capability. A caller that is not a platform operator cannot take the capability away: it is kept whatever list that caller sends.
 
 - The answer of the provision route has `redirect`: `{ service, bound }`. When `bound` is false, `error` says why, and the address can still be typed into the phone.
 - `mac_taken` means another SRAPS company holds the phone. The phone then shows the failure `other_provider`. Only Snom or that company can free it.
 - A bound address lasts 30 days before its first use, not 7.
 - `GET /phones/{phoneId}/redirect` asks SRAPS what it holds, and when the phone last called in.
-- A wipe or a removal takes the phone out of SRAPS again. If SRAPS cannot be reached then, the API server tries again once a day.
+- A wipe or a removal takes the phone out of SRAPS again. If SRAPS cannot be reached then, the API server tries again once a day. If the phone has since been added and bound again, the old record is dropped and the new binding is left alone.
 - SRAPS holds the phone's whole settings address, for up to 30 days before its first use. The address alone opens nothing: the phone's certificate is what is checked.
 - `clock_skew` means this server's clock is more than a minute from Snom's, so every signed call is refused. Fix the clock.
 - SRAPS is asked only at a factory reset. A new address does not reach a phone that is already running.

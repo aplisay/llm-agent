@@ -570,6 +570,62 @@ describe('desk phone provisioning', () => {
       await sweepRedirects();
       expect(sraps.state.endpoints.has(mac(10))).toBe(true);
     });
+
+    test('the sweep leaves a binding that a later record of the same phone holds', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      // Organisation A removes a phone while the service is down, so its record still says bound.
+      const first = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(11), model: 'D735', label: 'Passed on', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${first.id}/provision`));
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      await ok(del('ownerA', `/phones/${first.id}`));
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      // An operator frees the phone, and organisation B adds and provisions it.
+      await db.Device.update({ releasedAt: new Date() }, { where: { id: first.device.id } });
+      await Organisation.update({ capabilities: ['phoneSystem', 'phoneRedirect'] }, { where: { id: orgs.b } });
+      const second = (await ok(post('ownerB', '/phones', { kind: 'deskphone', mac: mac(11), model: 'D735', label: 'Taken on', people: [] }), 201)).phone;
+      expect(second.device.id).not.toBe(first.device.id);
+      const bound = await ok(post('ownerB', `/phones/${second.id}/provision`));
+      expect(bound.redirect).toEqual({ service: 'snom-sraps', bound: true });
+      const sent = sraps.state.requests.length;
+
+      await sweepRedirects();
+      // Nothing was sent for it, B's binding is still there, and A's old record is cleared.
+      expect(sraps.state.requests.slice(sent).filter((call) => call.url.endsWith(mac(11)))).toEqual([]);
+      expect(sraps.state.endpoints.get(mac(11)).setting_server).toBe(bound.provisioning.url);
+      expect((await db.Device.findByPk(first.device.id)).srapsEndpointId).toBeNull();
+      expect((await db.Device.findByPk(second.device.id)).srapsEndpointId).toBe(mac(11));
+      await ok(del('ownerB', `/phones/${second.id}`));
+      expect(sraps.state.endpoints.has(mac(11))).toBe(false);
+    });
+
+    test('with the service down the sweep stops at the first phone', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      const ids = [];
+      for (const n of [12, 13]) {
+        const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(n), model: 'D735', label: `Stuck ${n}`, people: [] }), 201)).phone;
+        await db.Device.update({ srapsEndpointId: mac(n) }, { where: { id: phone.device.id } });
+        await ok(del('ownerA', `/phones/${phone.id}`));
+        ids.push(phone.device.id);
+      }
+      expect(await sweepRedirects()).toEqual({ tried: 1, released: 0 });
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      // Both are released once the service is back. Neither was ever bound there, which counts as done.
+      expect((await sweepRedirects()).released).toBe(2);
+      expect(await db.Device.count({ where: { id: ids, srapsEndpointId: null } })).toBe(2);
+    });
+
+    test('taking the capability away leaves what is bound, and a release still works without it', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(14), model: 'D735', label: 'Bound before', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      await Organisation.update({ capabilities: ['phoneSystem'] }, { where: { id: orgs.a } });
+      expect(sraps.state.endpoints.has(mac(14))).toBe(true);
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device.redirected).toBe(true);
+      expect((await ok(post('ownerA', `/phones/${phone.id}/provision`))).redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'not_allowed' });
+      const wiped = await ok(post('ownerA', `/phones/${phone.id}/wipe`));
+      expect(wiped.redirect).toMatchObject({ bound: false });
+      expect(sraps.state.endpoints.has(mac(14))).toBe(false);
+    });
   });
 
   describe('wipe and removal', () => {
