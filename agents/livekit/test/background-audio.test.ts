@@ -64,6 +64,8 @@ test("parser: levels, modes and clamps", () => {
   assert.equal(parse({ delayMs: 250.4 }).delayMs, 250);
   assert.equal(parse({ delayMs: "300" }).delayMs, 600);
   assert.equal(parse({ sound: "cafe" }).sound, "office");
+  assert.equal(parse({ sound: "typing" }).sound, "typing");
+  assert.equal(parse({ sound: "Typing" }).sound, "typing");
 });
 
 test("gate: shut while the session is starting, except in always mode", () => {
@@ -263,6 +265,18 @@ test("asset: loads, is 16 kHz mono and is scaled once per volume", () => {
   for (const v of high) peak = Math.max(peak, Math.abs(v));
   // The asset peaks near -2 dBFS, so 0.2 keeps it well below a quarter of full scale.
   assert.ok(peak > 1_000 && peak < 8_192, `peak ${peak}`);
+});
+
+test("asset: the typing sound loads from its own file and is cached apart", () => {
+  const office = scaledAsset(config({ volume: 0.1 }));
+  const typing = scaledAsset(config({ sound: "typing", volume: 0.1 }));
+  assert.notEqual(typing, office);
+  assert.equal(typing, scaledAsset(config({ sound: "typing", volume: 0.1 })), "cached per sound");
+  assert.ok(typing.length > RATE * 10, `length ${typing.length}`);
+  let peak = 0;
+  for (const v of typing) peak = Math.max(peak, Math.abs(v));
+  // Peaks at -1 dBFS before the 0.1 gain.
+  assert.ok(peak > 2_500 && peak < 3_300, `peak ${peak}`);
 });
 
 test("control: builds nothing and touches no room when the option is off", () => {

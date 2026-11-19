@@ -1,6 +1,6 @@
 # Background sound: `options.backgroundAudio`
 
-`options.backgroundAudio` plays a quiet office sound to the caller. A few
+`options.backgroundAudio` plays a quiet office or typing sound to the caller. A few
 seconds of silence while the agent waits for a model reply or a tool result can
 sound like a dropped call. The sound tells the caller the line is still open.
 
@@ -61,8 +61,8 @@ override in `POST /api/agents/{agentId}/listen`.
 | Field | Values | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `true`, `false` | `true` | `false` turns the sound off without removing the object. |
-| `sound` | `office` | `office` | The sound to play. Only one is available. |
-| `volume` | `low`, `medium`, `high` | `medium` | About -46, -40 and -34 dBFS mean level. This sets the background sound, not the agent's voice. Start at `low` and listen on the target device. |
+| `sound` | `office`, `typing` | `office` | `office` is a room of people working. `typing` is one person typing, in bursts with short pauses. |
+| `volume` | `low`, `medium`, `high` | `medium` | For `office`, about -46, -40 and -34 dBFS mean level. `typing` is quieter at each setting (see [The sounds](#the-sounds)). This sets the background sound, not the agent's voice. Start at `low` and listen on the target device. |
 | `when` | `thinking`, `silent`, `always` | `thinking` | Keep the default for normal service use. `silent` and `always` are discouraged unless essential because they can degrade speech or recognition. |
 | `delayMs` | JSON number from `0` to `10000` | `600` | How long the condition for `thinking` or `silent` must hold before the fade-in starts. It applies to tool waits too. Ignored in `always` mode. |
 
@@ -76,8 +76,8 @@ Likewise, `enable: false` does not disable the sound; use `enabled: false` or
 `backgroundAudio: false`. Check spelling even when a save succeeds.
 
 Both `true` and `{}` enable the defaults. `enabled: false` still needs valid
-values for any other fields you include. The sound is always the bundled
-office clip; custom files, URLs, numeric volume levels and per-call random
+values for any other fields you include. The sound is always one of the
+bundled clips; custom files, URLs, numeric volume levels and per-call random
 sound choices are not supported.
 
 ## When the sound plays
@@ -288,10 +288,25 @@ follows how long the sound plays:
 - `always` is the dearest. On Pipecat it also mixes the sound into every frame
   of the agent's speech.
 
-## The sound
+## The sounds
 
-The office clip comes from the `@livekit/agents` package (Apache-2.0). It is
-converted to a 16 kHz mono WAV with a crossfaded loop point and committed in
-each worker under `assets/background/`, with a copy of the Apache-2.0 licence
-beside it. `scripts/make-background-audio.sh` rebuilds it; it needs `ffmpeg`
-and `ffprobe` on `PATH`.
+Both clips are 16 kHz mono WAV files, committed in each worker under
+`assets/background/`. The scripts that rebuild them need `ffmpeg` and
+`ffprobe` on `PATH`.
+
+**`office`** comes from the `@livekit/agents` package (Apache-2.0). It has a
+crossfaded loop point and is set to a -20 dBFS mean level. A copy of the
+Apache-2.0 licence is beside it. `scripts/make-background-audio.sh` rebuilds
+it.
+
+**`typing`** comes from "Keyboard Soundpack #1" by Unicae Games on
+OpenGameArt, released under CC0 (public domain). The author recorded it on a
+Cherry KC 1000 keyboard. It is 23 seconds of bursts cut from three of the
+pack's recordings, with pauses of 0.4 to 1.2 seconds between them.
+`scripts/make-background-typing.sh` rebuilds it from the downloaded pack.
+
+Typing is short clicks with silence between them, so its mean level says
+little about how loud it sounds. It is set by its peak instead (-1 dBFS).
+At the same `volume` setting it measures about 9 dB quieter than `office`
+(-29 against -20 LUFS for the clips as stored). If it is too quiet on your
+route, try one setting higher.
