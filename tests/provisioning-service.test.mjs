@@ -477,6 +477,15 @@ describe('desk phone provisioning', () => {
       });
       phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(5), model: 'D735', label: 'Boxed phone', people: [] }), 201)).phone;
     });
+
+    test('nothing is sent for an organisation an operator has not marked', async () => {
+      const answer = await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      expect(answer.redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'not_allowed' });
+      expect(answer.provisioning.url).toMatch(/\/snom\/[a-z2-7]{26}\/\{mac\}\.xml$/);
+      expect(answer.phone.device).toMatchObject({ state: 'waiting', failure: null, redirected: false });
+      expect(sraps.state.requests).toEqual([]);
+      await Organisation.update({ capabilities: ['phoneSystem', 'phoneRedirect'] }, { where: { id: orgs.a } });
+    });
     afterAll(async () => {
       for (const name of ['SNOM_SRAPS_KEY_ID', 'SNOM_SRAPS_KEY_SECRET', 'SNOM_SRAPS_COMPANY_ID', 'SNOM_SRAPS_URL']) delete process.env[name];
       await sraps.close();
@@ -537,6 +546,29 @@ describe('desk phone provisioning', () => {
       expect(sraps.state.endpoints.has(mac(5))).toBe(false);
       expect((await db.Device.findByPk(phone.device.id)).srapsEndpointId).toBeNull();
       expect(sraps.state.refusals).toEqual([]);
+    });
+
+    test('a phone removed while the service was down is released by the sweep', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      const gone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(9), model: 'D735', label: 'Leaving phone', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${gone.id}/provision`));
+      expect(sraps.state.endpoints.has(mac(9))).toBe(true);
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      await ok(del('ownerA', `/phones/${gone.id}`));
+      expect((await db.Device.findByPk(gone.device.id)).srapsEndpointId).toBe(mac(9));
+      expect(await sweepRedirects()).toMatchObject({ released: 0 });
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      expect(sraps.state.endpoints.has(mac(9))).toBe(true);
+
+      const swept = await sweepRedirects();
+      expect(swept.released).toBeGreaterThanOrEqual(1);
+      expect(sraps.state.endpoints.has(mac(9))).toBe(false);
+      expect((await db.Device.findByPk(gone.device.id)).srapsEndpointId).toBeNull();
+      // A phone that is still in use is never swept.
+      const kept = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(10), model: 'D735', label: 'Staying phone', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${kept.id}/provision`));
+      await sweepRedirects();
+      expect(sraps.state.endpoints.has(mac(10))).toBe(true);
     });
   });
 

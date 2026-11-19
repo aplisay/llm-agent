@@ -47,7 +47,7 @@ export async function startSrapsStandIn({ keyId, keySecret, companyId }) {
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
       const send = (status, value) => {
-        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Api-Date': new Date().toUTCString() });
         res.end(value === undefined ? '' : JSON.stringify(value));
       };
       const problem = check(req, body);

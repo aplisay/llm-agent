@@ -1,8 +1,8 @@
 import { Organisation } from '../../../../lib/database.js';
-import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { requirePermission, can } from '../../../../lib/auth/permissions.js';
 import { targetInScope } from '../../../../lib/auth/admin-scope.js';
 import { principalBrand } from '../../../../lib/brands.js';
-import { validateCapabilities, CAPABILITIES, requirePhoneSystemSchema } from '../../../../lib/capabilities.js';
+import { validateCapabilities, CAPABILITIES, OPERATOR_ONLY_CAPABILITIES, operatorOnlyChanges, requirePhoneSystemSchema } from '../../../../lib/capabilities.js';
 
 /**
  * PUT /api/organisations/{id}/capabilities: switch whole features on or off
@@ -20,6 +20,14 @@ export default function (logger) {
     const organisation = await Organisation.findByPk(req.params.organisationId);
     if (!organisation || !targetInScope(res.locals.user, 'organisation', organisation)) return res.status(404).send({ error: 'Organisation not found', code: 'not_found' });
     const before = organisation.capabilities || [];
+    const operatorOnly = operatorOnlyChanges(before, list);
+    if (operatorOnly.length && !can(res.locals.user, 'system', 'manage')) {
+      return res.status(403).send({
+        error: `Only a platform operator can give or take: ${operatorOnly.join(', ')}. Send it as it is now.`,
+        code: 'operator_only_capability',
+        field: 'capabilities',
+      });
+    }
     // Taking a capability away deletes nothing. Its routes are refused from now on.
     await organisation.update({ capabilities: [...new Set(list)] });
     logger.info({
@@ -36,7 +44,9 @@ export default function (logger) {
     summary: "Set an organisation's capabilities.",
     description: `The whole list is replaced. Known capabilities: ${CAPABILITIES.join(', ')}. Removing one deletes nothing: `
       + 'its routes answer 403 `phone_system_disabled` and reads of what exists still work for an operator. '
-      + 'A platform operator may set them on any organisation, and a brand\'s service key on the organisations of its brand.',
+      + 'A platform operator may set them on any organisation, and a brand\'s service key on the organisations of its brand. '
+      + `Only a platform operator may give or take ${OPERATOR_ONLY_CAPABILITIES.join(', ')}: any other caller must send it as it `
+      + 'is now (403 `operator_only_capability`).',
     operationId: 'setOrganisationCapabilities',
     tags: ['Organisations'],
     parameters: [{ in: 'path', name: 'organisationId', required: true, schema: { type: 'string' } }],

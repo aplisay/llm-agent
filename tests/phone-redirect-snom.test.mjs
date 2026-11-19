@@ -114,7 +114,10 @@ describe('the adapter against the stand-in', () => {
     const wrongKey = createSrapsAdapter({ ...KEY, keySecret: 'not-the-secret', baseUrl: sraps.url });
     expect(await wrongKey.status(MAC)).toMatchObject({ ok: false, status: 401, code: 'not_authorised', message: 'bad mac' });
     const slowClock = createSrapsAdapter({ ...KEY, baseUrl: sraps.url }, { now: () => Date.now() - 5 * 60 * 1000 });
-    expect(await slowClock.status(MAC)).toMatchObject({ ok: false, code: 'not_authorised', message: 'stale timestamp' });
+    // The service says its own time, so the refusal names the clock.
+    const slow = await slowClock.status(MAC);
+    expect(slow).toMatchObject({ ok: false, status: 401, code: 'clock_skew' });
+    expect(slow.message).toMatch(/clock differs from the service's by -(29\d|30\d) seconds/);
     const tamper = createSrapsAdapter({ ...KEY, baseUrl: sraps.url }, {
       fetch: (url, options) => fetch(url, options.body ? { ...options, body: options.body.replace('prov.example.net', 'evil.example.net') } : options),
     });
