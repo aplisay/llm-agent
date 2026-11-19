@@ -38,9 +38,13 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from .fallback_message.wav import decode_wav
 
-# Gains against the asset's -20 dBFS mean level: -46, -40 and -34 dBFS.
+# Gains against the office asset's -20 dBFS mean level: -46, -40 and -34 dBFS.
+# The typing asset is set by its peak, so it comes out quieter: see
+# scripts/make-background-typing.sh.
 _VOLUME = {"low": 0.05, "medium": 0.10, "high": 0.20}
 _WHEN = ("thinking", "silent", "always")
+# Each names a committed asset, assets/background/<sound>-16k.wav.
+_SOUNDS = ("office", "typing")
 _MAX_DELAY_MS = 10000
 _ASSET_DIR = Path(__file__).parent / "assets" / "background"
 _ASSET_RATE = 16000
@@ -80,6 +84,7 @@ def background_config_from_options(options: Any) -> Optional[BackgroundConfig]:
     def lower(value: Any) -> str:
         return value.lower() if isinstance(value, str) else ""
 
+    sound = lower(raw.get("sound"))
     when = lower(raw.get("when"))
     delay = raw.get("delayMs")
     if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay):
@@ -88,7 +93,7 @@ def background_config_from_options(options: Any) -> Optional[BackgroundConfig]:
         # floor(x + 0.5) rounds halves up, as Math.round does on the LiveKit side.
         delay_ms = int(math.floor(min(_MAX_DELAY_MS, max(0.0, float(delay))) + 0.5))
     return BackgroundConfig(
-        sound="office",
+        sound=sound if sound in _SOUNDS else "office",
         volume=_VOLUME.get(lower(raw.get("volume")), _VOLUME["medium"]),
         when=when if when in _WHEN else "thinking",
         delay_ms=delay_ms,
@@ -216,7 +221,7 @@ class LoopReader:
         self._out_step = 1.0 / (rate * FADE_OUT_SECS)
 
     def set_samples(self, samples: np.ndarray) -> None:
-        """Another volume of the same sound, at the same rate."""
+        """Another sound or volume, at the same rate."""
         self._samples = samples
         self._bytes = samples.tobytes()
         self.pos %= len(samples)
@@ -330,7 +335,7 @@ class BackgroundAudioInjector(FrameProcessor):
         self._silenced = config is None
         if config is not None and config != self._config:
             reader = self._reader
-            if reader is not None and config.volume != self._config.volume:
+            if reader is not None and (config.sound, config.volume) != (self._config.sound, self._config.volume):
                 samples = await asyncio.to_thread(scaled_asset, config.sound, reader.rate, config.volume)
                 reader.set_samples(samples)
             self._config = config
