@@ -1,5 +1,6 @@
 import { TransactionLog  } from '../../../../lib/database.js';;
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { callVisibility, findVisibleCall } from '../../../../lib/call-visibility.js';
 
 
 
@@ -11,6 +12,11 @@ export default function (logger) {
 
     let where = { callId, ...res.locals.user.sql.where };
     logger.debug({ callId, where }, 'callTransactionLog');
+    // A transcript shows to whoever may see its call. The extra read is only for a principal limited to its own calls.
+    const visibility = await callVisibility(res.locals.user);
+    if (!visibility.all && !(await findVisibleCall(res.locals.user, callId, { attributes: ['id'], visibility }))) {
+      return res.send([]);
+    }
     let transactionLogs = await TransactionLog.findAll({
       where,
       order: [['createdAt', 'ASC']],

@@ -30,6 +30,7 @@ const LOOKALIKE = 'enc:not-a-real-blob';
 describe('classifyStoredSecret', () => {
   test('classifies plaintext, round-trip encrypted, lookalike, and foreign values', () => {
     expect(classifyStoredSecret(null)).toBe('empty');
+    expect(classifyStoredSecret('')).toBe('empty');
     expect(classifyStoredSecret(42)).toBe('non-string');
     expect(classifyStoredSecret('hunter2')).toBe('plaintext');
     expect(classifyStoredSecret(LOOKALIKE)).toBe('enc-lookalike');

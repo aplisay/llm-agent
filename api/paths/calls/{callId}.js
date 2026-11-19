@@ -1,6 +1,7 @@
 import { Call } from '../../../lib/database.js';
 import { Sequelize } from 'sequelize';
 import { requirePermission } from '../../../lib/auth/permissions.js';
+import { callVisibility, withVisibility } from '../../../lib/call-visibility.js';
 
 /** Finalised per-call cost in micro-pounds — see api/paths/calls.js. */
 const COST_MICROS_LITERAL =
@@ -12,10 +13,9 @@ export default function (logger) {
     if (!requirePermission(res, 'call', 'read')) return;
     const { callId } = req.params;
 
-    const where = { id: callId, ...res.locals.user.sql.where };
-    logger.debug({ callId, where }, 'getCall');
-
     try {
+      const where = withVisibility({ id: callId, ...res.locals.user.sql.where }, await callVisibility(res.locals.user));
+      logger.debug({ callId }, 'getCall');
       const call = await Call.findOne({
         where,
         attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],

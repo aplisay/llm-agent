@@ -1054,8 +1054,8 @@ components:
             graceMs: 1200
         backgroundAudio:
           description: |-
-            Background sound: plays a quiet office sound to the caller, so that silence does not
-            sound like a dead line. The main use is while the agent waits for a model reply or a
+            Background sound: plays a quiet office or typing sound to the caller, so that silence
+            does not sound like a dead line. The main use is while the agent waits for a model reply or a
             tool result.
 
             Set to `true` to enable with the defaults, or to an object to tune it. If omitted (or
@@ -1090,15 +1090,20 @@ components:
                   type: boolean
                   default: true
                 sound:
-                  description: The sound to play. Only the bundled `office` clip is supported; custom files and URLs are not accepted.
+                  description: |-
+                    The sound to play: `office` (a room of people working) or `typing` (one person
+                    typing, in bursts). Only these bundled clips are supported; custom files and URLs
+                    are not accepted.
                   type: string
-                  enum: [office]
+                  enum: [office, typing]
                   default: office
                 volume:
                   description: |-
-                    Loudness of the sound. `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS, `high` ≈ -34 dBFS
-                    (mean level). This controls background sound, not the agent's voice. Start at
-                    `low`; audibility and speech clarity depend on the caller's device and route.
+                    Loudness of the sound. For `office`, `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS,
+                    `high` ≈ -34 dBFS (mean level). `typing` has a lower mean level at each setting,
+                    because it is short clicks with silence between them. This controls background
+                    sound, not the agent's voice. Start at `low`; audibility and speech clarity depend
+                    on the caller's device and route.
                   type: string
                   enum: [low, medium, high]
                   default: medium
@@ -3649,7 +3654,11 @@ components:
         device:
           type: object
           nullable: true
-          description: Desk phone only.
+          description: >-
+            Desk phone only. `state` is one of `waiting` (for the phone to fetch its settings), `fetched`,
+            `updating`, `wiping` or `wiped`. `failure` is null or one of `other_provider`, `wrong_device`
+            (a different phone asked for the settings), `line_not_registered`, `model_not_supported`.
+            `reportedModel` is what the phone says it is, and it wins over `model`.
         capacity: { type: integer, description: "How many lines the phone carries." }
         maxPeople: { type: integer, description: "How many people the phone can ring for." }
         roomForPerson: { type: boolean }
@@ -3682,6 +3691,7 @@ components:
         ringDelay: { type: integer, minimum: 0, maximum: 60, description: "Outside number. Seconds before it starts to ring." }
         shows: { type: string, enum: [caller, extension], description: "Outside number. Which number it sees for a call." }
         keyToAnswer: { type: boolean, description: "Outside number. Whether a key press is needed to take the call." }
+        lineLimit: { type: integer, minimum: 1, nullable: true, description: "Desk phone, on update, platform operators only. Fewer lines than the model takes. Null removes the limit." }
         people:
           type: array
           items: { type: string, format: uuid }

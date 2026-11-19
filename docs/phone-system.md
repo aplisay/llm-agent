@@ -25,7 +25,7 @@ An organisation without the capability still has the directory, and extensions o
 
 The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. The outbound refusal of extension digits and the daily purge of removed rows do nothing until then. Restart the API server after the upgrade.
 
-The organisation's outbound policy also needs the schema 75 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
+The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
@@ -120,7 +120,13 @@ curl -s -X PUT -H "$H" -H 'Content-Type: application/json' \
   $API/phone-endpoints/442079460810 -d "{\"extensionId\":\"$SALES_EXTENSION_ID\"}"
 ```
 
-Until phones are provisioned automatically, `GET /phones/{phoneId}/lines/{lineId}/credentials` shows the SIP account of one line so a phone can be set up by hand. It needs `phone:provision` and each read is written to the audit log.
+The platform keeps only a digest hash of a line's SIP password. The password is never stored, and no route shows it or the hash.
+
+A Snom desk phone fetches its lines from the provisioning service: see [phone-provisioning.md](phone-provisioning.md).
+
+To set a phone up by hand, `POST /phones/{phoneId}/lines/{lineId}/password-reset` gives the line a new password and returns it once. It needs `phone:provision` and the setting `PBX_LINE_PASSWORD_RESET=true`, and each reset is written to the audit log. The old password stops working at once. With the setting off (the default) the route answers 403 `line_password_reset_disabled`.
+
+After an upgrade from a version that stored line passwords, `tools/agent-admin.js upgrade-db` empties them (schema 75). A stored password that cannot be opened (the upgrade ran without the right `CREDENTIALS_KEY`) is emptied too when the line has its hash, which is all a phone needs.
 
 ## Settings
 
@@ -128,6 +134,8 @@ Until phones are provisioned automatically, `GET /phones/{phoneId}/lines/{lineId
 |---|---|
 | `PBX_RELEASE` | See above |
 | `PBX_REGISTRAR_DOMAIN` | The host name desk phones register to. It is the digest realm of every line's SIP account, so it cannot change once lines exist. Unset means `REGSERVER_REGISTRAR` |
+| `PBX_LINE_PASSWORD_RESET` | `true` lets an admin reset a line's SIP password and read the new one once. Unset means off |
+| `PROV_PUBLIC_URL` | The https address desk phones fetch their settings from. See [phone-provisioning.md](phone-provisioning.md) for the other `PROV_*` settings |
 | `CALLCTL_SHARED_TOKEN` | The token call control sends as `x-callctl-token` |
 
 ## Internal routes for call control
@@ -189,3 +197,20 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. These calls write no usage yet.
+
+## Who sees calls
+
+The calls routes (`GET /calls`, `GET /calls/{callId}`, `/linked`, `/logs`, `/invocation-log` and `/recording`) apply one rule to phone system calls. Agent calls show as before.
+
+| Who | Sees |
+|---|---|
+| A principal with `call: readOthers`: the `owner`, `textOnly`, `audioOnly`, `orgAdmin`, `superAdmin` and `support` roles | Every call in its scope |
+| Anyone else, such as a `member` | Agent calls, and a phone system call that involves the directory person linked to their login |
+
+A phone system call involves a person when:
+
+- it was made to an extension the person owns (the extension's `entryId` is the person);
+- it was placed from one of the person's phones, or from a line of an extension the person owns;
+- its answered leg rang for the person. On a shared extension, such as a team's, only the member who answered sees the call, from the moment the leg answers. A mobile that waits for its key counts once the key comes. A call to a shared extension that nobody answered shows only to those who see every call.
+
+A login with no linked person sees no phone system calls. A leg row shows when its call does. A recording or a transcript shows to whoever sees its call: otherwise the recording route answers 404, and the transcript and invocation log routes answer an empty list. `POST /agents/{id}/invoke` with a `callId` answers 404 for a call its caller cannot see, as for a call that does not exist.

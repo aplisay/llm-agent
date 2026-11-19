@@ -129,7 +129,7 @@ admins. Decisions are kept for 40 days.
 the decision cannot be written, the call is refused with
 `outbound_policy_unavailable`.
 
-**Deploying it.** The policy needs the schema 75 upgrade
+**Deploying it.** The policy needs the schema 77 upgrade
 (`tools/agent-admin.js upgrade-db`) and then a restart of the API server, which
 reads the schema at start. Until both are done, every outside call on our
 chargeable trunks of an organisation with the phone system is refused with
@@ -163,7 +163,7 @@ The decision returns `{ allowed, code, reason, chargeable, trunkId, destination 
 | `outside_hours` | Outside the hours of the organisation's outbound policy |
 | `calls_in_progress_limit`, `calls_per_minute_limit`, `daily_spend_limit`, `monthly_spend_limit` | A limit of the organisation's outbound policy is reached. `limit`, `value` and `current` say which and by how much |
 | `outbound_policy_unavailable` | The policy could not decide, so the call is refused |
-| `outbound_policy_not_ready` | The database lacks the schema 75 upgrade |
+| `outbound_policy_not_ready` | The database lacks the schema 77 upgrade |
 
 The originate API returns these as a `400` with `error` and `code`. In a worker
 the refusal surfaces to the model as the `transfer` tool's failure reason, so the

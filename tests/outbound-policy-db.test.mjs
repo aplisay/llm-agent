@@ -536,7 +536,7 @@ describe('the outbound policy of an organisation', () => {
   });
 
   // Last: switching a schema step off cannot be undone in this process.
-  describe('before the schema 75 upgrade', () => {
+  describe('before the schema 77 upgrade', () => {
     test('outside calls of an organisation with the phone system are refused, and others are not', async () => {
       const { stepOff } = await import('../lib/schema-guards.js');
       stepOff('outboundPolicy');

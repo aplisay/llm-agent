@@ -249,9 +249,13 @@ describe('phone system directory API', () => {
       for (const account of accounts) {
         expect(account).toMatchObject({ mode: 'registrar', kind: 'device', handler: 'pbx', registrar: REALM, status: 'active', organisationId: orgs.a });
         expect(account.username).toMatch(/^l[a-z2-7]{15}$/);
-        expect(account.password).toHaveLength(32);
-        expect(account.ha1).toBe(createHash('md5').update(`${account.username}:${REALM}:${account.password}`).digest('hex'));
+        // Only the hash is kept. The password is never stored.
+        expect(account.password).toBe('');
+        expect(account.getDataValue('password')).toBe('');
+        expect(account.ha1).toMatch(/^[0-9a-f]{32}$/);
+        expect(account.previousHa1).toBeNull();
       }
+      expect(new Set(accounts.map((account) => account.ha1)).size).toBe(2);
       // Not in the phone-endpoint lists, and not reachable by id there.
       for (const path of ['/phone-endpoints', '/phone-endpoints?type=phone-registration']) {
         const listed = await ok(get('ownerA', path));
@@ -262,12 +266,123 @@ describe('phone system directory API', () => {
       expect((await del('ownerA', `/phone-endpoints/${accounts[0].id}`)).status).toBe(404);
       expect((await post('ownerA', '/phone-endpoints', { type: 'phone-registration', mode: 'registrar', kind: 'device', name: 'x' })).status).toBe(400);
 
+    });
+
+    test('no route shows the password or the hash of a line', async () => {
       const line = lineOn(made.robDesk, '200');
-      const shown = await ok(get('ownerA', `/phones/${made.robDesk.id}/lines/${line.id}/credentials`));
-      const account = accounts.find((a) => a.username === shown.username);
-      expect(shown).toMatchObject({ lineNumber: line.lineNumber, registrar: REALM, transport: 'tls', password: account.password, ha1: account.ha1 });
-      expect((await get('memberA', `/phones/${made.robDesk.id}/lines/${line.id}/credentials`)).status).toBe(403);
-      expect((await get('ownerB', `/phones/${made.robDesk.id}/lines/${line.id}/credentials`)).status).toBe(404);
+      expect((await get('ownerA', `/phones/${made.robDesk.id}/lines/${line.id}/credentials`)).status).toBe(404);
+      for (const path of [`/phones/${made.robDesk.id}`, `/phones/${made.robDesk.id}/lines`, '/phones']) {
+        expect(JSON.stringify(await ok(get('ownerA', path)))).not.toMatch(/password|ha1/i);
+      }
+    });
+
+    test('a password reset is off unless the deployment switches it on', async () => {
+      const line = lineOn(made.robDesk, '200');
+      const before = await PhoneRegistration.findByPk((await db.Line.findByPk(line.id)).endpointId);
+      const res = await post('ownerA', `/phones/${made.robDesk.id}/lines/${line.id}/password-reset`);
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('line_password_reset_disabled');
+      const after = await PhoneRegistration.findByPk(before.id);
+      expect(after.ha1).toBe(before.ha1);
+    });
+
+    test('a password reset stores the new hash, keeps no old one and shows the password once', async () => {
+      process.env.PBX_LINE_PASSWORD_RESET = 'true';
+      try {
+        const line = lineOn(made.robDesk, '200');
+        const path = `/phones/${made.robDesk.id}/lines/${line.id}/password-reset`;
+        const row = await db.Line.findByPk(line.id);
+        const before = await PhoneRegistration.findByPk(row.endpointId);
+        const device = await db.Device.findOne({ where: { organisationId: orgs.a, mac: mac(1) } });
+        expect((await post('memberA', path)).status).toBe(403);
+        expect((await post('ownerB', path)).status).toBe(404);
+
+        const shown = await ok(post('ownerA', path));
+        expect(shown).toMatchObject({ lineId: line.id, lineNumber: line.lineNumber, registrar: REALM, port: 5061, transport: 'tls', username: before.username });
+        expect(shown.password).toHaveLength(32);
+        expect(shown).not.toHaveProperty('ha1');
+
+        const after = await PhoneRegistration.findByPk(before.id);
+        expect(after.ha1).toBe(createHash('md5').update(`${before.username}:${REALM}:${shown.password}`).digest('hex'));
+        expect(after.ha1).not.toBe(before.ha1);
+        expect(after.getDataValue('password')).toBe('');
+        expect(after.previousHa1).toBeNull();
+        expect(after.previousHa1Until).toBeNull();
+        // The settings file carries the hash, so the phone has a new version to fetch.
+        expect((await db.Device.findByPk(device.id)).configVersion).toBe(device.configVersion + 1);
+
+        // A second reset gives a different password. The first can not be read again.
+        const again = await ok(post('ownerA', path));
+        expect(again.password).not.toBe(shown.password);
+        const second = await PhoneRegistration.findByPk(before.id);
+        expect(second.ha1).not.toBe(after.ha1);
+        expect(second.previousHa1).toBeNull();
+      } finally {
+        delete process.env.PBX_LINE_PASSWORD_RESET;
+      }
+    });
+
+    test('the repair at start-up and the schema step treat line accounts and other accounts apart', async () => {
+      const md5 = (value) => createHash('md5').update(value).digest('hex');
+      const pbx = await PhoneRegistration.create({
+        mode: 'registrar', kind: 'pbx', organisationId: orgs.a, registrar: REALM, username: `p${stamp}pbx`, password: 'pbx-secret', handler: 'livekit',
+      });
+      const client = await PhoneRegistration.create({
+        organisationId: orgs.a, registrar: 'sip.provider.example', username: `c${stamp}`, password: 'client-secret', handler: 'livekit',
+      });
+      // A line account as an earlier version wrote it: a stored password.
+      const old = await PhoneRegistration.create({
+        mode: 'registrar', kind: 'device', organisationId: orgs.a, registrar: REALM, username: `l${stamp}old`, password: 'old-secret', handler: 'pbx',
+      });
+      await PhoneRegistration.update({ ha1: md5(`${old.username}:${REALM}:old-secret`) }, { where: { id: old.id }, hooks: false });
+      expect(pbx.ha1).toBe(md5(`${pbx.username}:${REALM}:pbx-secret`));
+
+      // The repair mends a pbx account from its password, and leaves a line account alone.
+      const line = await PhoneRegistration.findOne({ where: { kind: 'device', organisationId: orgs.a, password: '' } });
+      await PhoneRegistration.update({ ha1: 'f'.repeat(32) }, { where: { id: [pbx.id, line.id] }, hooks: false });
+      await db.backfillRegistrarHA1();
+      expect((await PhoneRegistration.findByPk(pbx.id)).ha1).toBe(pbx.ha1);
+      expect((await PhoneRegistration.findByPk(line.id)).ha1).toBe('f'.repeat(32));
+      await PhoneRegistration.update({ ha1: line.ha1 }, { where: { id: line.id }, hooks: false });
+
+      // A save of a line account does not make a hash from its empty password.
+      line.name = 'renamed';
+      await line.save();
+      expect((await PhoneRegistration.findByPk(line.id)).ha1).toBe(line.ha1);
+
+      await db.clearLinePasswords();
+      const cleared = await PhoneRegistration.findByPk(old.id);
+      expect(cleared.getDataValue('password')).toBe('');
+      expect(cleared.ha1).toBe(md5(`${old.username}:${REALM}:old-secret`));
+      expect((await PhoneRegistration.findByPk(pbx.id)).password).toBe('pbx-secret');
+      expect((await PhoneRegistration.findByPk(pbx.id)).ha1).toBe(pbx.ha1);
+      expect((await PhoneRegistration.findByPk(client.id)).password).toBe('client-secret');
+      await PhoneRegistration.destroy({ where: { id: [pbx.id, client.id, old.id] } });
+    });
+
+    test('the schema step clears a line password it cannot open when the row has a hash', async () => {
+      // Sealed under a key this process does not hold: the right shape, and it will not open.
+      const sealed = `enc:${Buffer.alloc(12, 1).toString('base64')}:${Buffer.alloc(16, 2).toString('base64')}:${Buffer.alloc(24, 3).toString('base64')}`;
+      const row = (name, ha1) => PhoneRegistration.create({
+        mode: 'registrar', kind: 'device', organisationId: orgs.a, registrar: REALM, username: `l${stamp}${name}`, password: sealed, handler: 'pbx', ha1,
+      });
+      const hashed = await row('hashed', 'a'.repeat(32));
+      const bare = await row('bare', null);
+      const pbx = await PhoneRegistration.create({
+        mode: 'registrar', kind: 'pbx', organisationId: orgs.a, registrar: REALM, username: `p${stamp}sealed`, password: sealed, handler: 'livekit',
+      });
+      expect((await PhoneRegistration.findByPk(hashed.id)).password).toBeNull();
+
+      await db.clearLinePasswords();
+      // The hash it had stands, and the password is gone.
+      const after = await PhoneRegistration.findByPk(hashed.id);
+      expect(after.getDataValue('password')).toBe('');
+      expect(after.ha1).toBe('a'.repeat(32));
+      // With no hash the password is all the row has, so it stays.
+      expect((await PhoneRegistration.findByPk(bare.id)).getDataValue('password')).toBe(sealed);
+      // A pbx account is never touched.
+      expect((await PhoneRegistration.findByPk(pbx.id)).getDataValue('password')).toBe(sealed);
+      await PhoneRegistration.destroy({ where: { id: [hashed.id, bare.id, pbx.id] } });
     });
 
     test('a number routed to an extension takes the pbx handler and says what it rings', async () => {
@@ -531,7 +646,7 @@ describe('phone system directory API', () => {
       expect(back.device.id).toBe(spare.device.id);
       expect(keys(back)).toEqual(['106']);
       expect((await patch('ownerA', `/phones/${back.id}`, { model: 'D717', label: 'Spare D717' })).status).toBe(200);
-      expect((await ok(get('ownerA', `/phones/${back.id}`))).capacity).toBe(6);
+      expect((await ok(get('ownerA', `/phones/${back.id}`))).capacity).toBe(3);
       await db.Device.update({ reportedModel: 'D717' }, { where: { id: back.device.id } });
       expect((await patch('ownerA', `/phones/${back.id}`, { model: '710' })).body.code).toBe('phone_model_reported');
     });

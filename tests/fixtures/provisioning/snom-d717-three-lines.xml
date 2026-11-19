@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<settings>
+  <phone-settings e="2">
+    <setting_server perm="R">https://prov.example.net/snom/abcdefghijklmnopqrstuvwxyz/{mac}.xml</setting_server>
+    <update_policy perm="R">settings_only</update_policy>
+    <settings_refresh_timer perm="R">86400</settings_refresh_timer>
+    <challenge_checksync perm="R">on</challenge_checksync>
+    <webserver_type perm="R">https</webserver_type>
+    <use_hidden_tags perm="R">on</use_hidden_tags>
+    <admin_mode_password perm="R">phone-admin-secret</admin_mode_password>
+    <http_user perm="R">admin</http_user>
+    <http_pass perm="R">phone-admin-secret</http_pass>
+    <user_active idx="1" perm="R">on</user_active>
+    <user_realname idx="1" perm="R">Ada B. 100</user_realname>
+    <user_name idx="1" perm="R">laaaaaaaaaaaaaaa</user_name>
+    <user_pname idx="1" perm="R">laaaaaaaaaaaaaaa</user_pname>
+    <user_hash idx="1" perm="R">11111111111111111111111111111111</user_hash>
+    <user_pass idx="1" perm="R"></user_pass>
+    <user_host idx="1" perm="R">sip.example.net</user_host>
+    <user_outbound idx="1" perm="R">sip.example.net:5061;transport=tls</user_outbound>
+    <user_server_type idx="1" perm="R">default</user_server_type>
+    <user_expiry idx="1" perm="R">300</user_expiry>
+    <user_srtp idx="1" perm="R">on</user_srtp>
+    <user_savp idx="1" perm="R">mandatory</user_savp>
+    <user_symmetrical_rtp idx="1" perm="R">on</user_symmetrical_rtp>
+    <user_dtmf_info idx="1" perm="R">off</user_dtmf_info>
+    <keepalive_interval idx="1" perm="R">30</keepalive_interval>
+    <user_active idx="2" perm="R">on</user_active>
+    <user_realname idx="2" perm="R">Sales</user_realname>
+    <user_name idx="2" perm="R">lbbbbbbbbbbbbbbb</user_name>
+    <user_pname idx="2" perm="R">lbbbbbbbbbbbbbbb</user_pname>
+    <user_hash idx="2" perm="R">22222222222222222222222222222222</user_hash>
+    <user_pass idx="2" perm="R"></user_pass>
+    <user_host idx="2" perm="R">sip.example.net</user_host>
+    <user_outbound idx="2" perm="R">sip.example.net:5061;transport=tls</user_outbound>
+    <user_server_type idx="2" perm="R">default</user_server_type>
+    <user_expiry idx="2" perm="R">300</user_expiry>
+    <user_srtp idx="2" perm="R">on</user_srtp>
+    <user_savp idx="2" perm="R">mandatory</user_savp>
+    <user_symmetrical_rtp idx="2" perm="R">on</user_symmetrical_rtp>
+    <user_dtmf_info idx="2" perm="R">off</user_dtmf_info>
+    <keepalive_interval idx="2" perm="R">30</keepalive_interval>
+    <user_active idx="3" perm="R">on</user_active>
+    <user_realname idx="3" perm="R">Other</user_realname>
+    <user_name idx="3" perm="R">lccccccccccccccc</user_name>
+    <user_pname idx="3" perm="R">lccccccccccccccc</user_pname>
+    <user_hash idx="3" perm="R">33333333333333333333333333333333</user_hash>
+    <user_pass idx="3" perm="R"></user_pass>
+    <user_host idx="3" perm="R">sip.example.net</user_host>
+    <user_outbound idx="3" perm="R">sip.example.net:5061;transport=tls</user_outbound>
+    <user_server_type idx="3" perm="R">default</user_server_type>
+    <user_expiry idx="3" perm="R">300</user_expiry>
+    <user_srtp idx="3" perm="R">on</user_srtp>
+    <user_savp idx="3" perm="R">mandatory</user_savp>
+    <user_symmetrical_rtp idx="3" perm="R">on</user_symmetrical_rtp>
+    <user_dtmf_info idx="3" perm="R">off</user_dtmf_info>
+    <keepalive_interval idx="3" perm="R">30</keepalive_interval>
+    <user_active idx="4" perm="R">off</user_active>
+    <user_realname idx="4" perm="R"></user_realname>
+    <user_name idx="4" perm="R"></user_name>
+    <user_pname idx="4" perm="R"></user_pname>
+    <user_hash idx="4" perm="R"></user_hash>
+    <user_pass idx="4" perm="R"></user_pass>
+    <user_host idx="4" perm="R"></user_host>
+    <user_outbound idx="4" perm="R"></user_outbound>
+    <user_active idx="5" perm="R">off</user_active>
+    <user_realname idx="5" perm="R"></user_realname>
+    <user_name idx="5" perm="R"></user_name>
+    <user_pname idx="5" perm="R"></user_pname>
+    <user_hash idx="5" perm="R"></user_hash>
+    <user_pass idx="5" perm="R"></user_pass>
+    <user_host idx="5" perm="R"></user_host>
+    <user_outbound idx="5" perm="R"></user_outbound>
+    <user_active idx="6" perm="R">off</user_active>
+    <user_realname idx="6" perm="R"></user_realname>
+    <user_name idx="6" perm="R"></user_name>
+    <user_pname idx="6" perm="R"></user_pname>
+    <user_hash idx="6" perm="R"></user_hash>
+    <user_pass idx="6" perm="R"></user_pass>
+    <user_host idx="6" perm="R"></user_host>
+    <user_outbound idx="6" perm="R"></user_outbound>
+  </phone-settings>
+  <functionKeys e="2">
+    <fkey idx="0" context="1" label="Ada B. 100" perm="R">line</fkey>
+    <fkey idx="1" context="2" label="Sales" perm="R">line</fkey>
+    <fkey idx="2" context="3" label="Other" perm="R">line</fkey>
+  </functionKeys>
+</settings>

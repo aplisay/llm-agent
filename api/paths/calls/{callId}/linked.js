@@ -1,5 +1,5 @@
 import { Call, Agent, Op } from '../../../../lib/database.js';
-import { scopeWhereForUser } from '../../../../lib/scope.js';
+import { visibleCallsWhere } from '../../../../lib/call-visibility.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
 
 // Safety caps: a single call's transfer chain is small in practice.
@@ -32,7 +32,7 @@ export default function (logger) {
       const { callId } = req.params;
       const { limit } = req.query;
       const cap = Math.min(parseInt(limit, 10) || MAX_LINKED, MAX_LINKED);
-      const scope = scopeWhereForUser(res.locals.user);
+      const scope = await visibleCallsWhere(res.locals.user);
 
       // 1. Resolve the root by walking up parentId (minimal columns — navigation
       //    only). Cycle- and depth-guarded.
