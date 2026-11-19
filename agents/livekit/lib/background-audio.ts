@@ -23,17 +23,21 @@ import type { TransferState } from "./transfer-handler.js";
 import type { VoiceMode } from "./voice-mode.js";
 
 export type BackgroundWhen = "thinking" | "silent" | "always";
+/** Each names a committed asset, `assets/background/<sound>-16k.wav`. */
+export type BackgroundSound = "office" | "typing";
 
 /** Resolved settings. Not the public interface: see backgroundConfigFromOptions. */
 export interface BackgroundAudioConfig {
-  sound: "office";
+  sound: BackgroundSound;
   /** Linear gain on the asset. */
   volume: number;
   when: BackgroundWhen;
   delayMs: number;
 }
 
-// Gains against the asset's -20 dBFS mean level: -46, -40 and -34 dBFS.
+// Gains against the office asset's -20 dBFS mean level: -46, -40 and -34 dBFS.
+// The typing asset is set by its peak, so it comes out quieter: see
+// scripts/make-background-typing.sh.
 // A Map, so a key such as "constructor" finds nothing rather than a prototype member.
 const VOLUME_LEVEL = new Map<string, number>([
   ["low", 0.05],
@@ -41,6 +45,7 @@ const VOLUME_LEVEL = new Map<string, number>([
   ["high", 0.2],
 ]);
 const WHEN: BackgroundWhen[] = ["thinking", "silent", "always"];
+const SOUNDS: BackgroundSound[] = ["office", "typing"];
 
 const DEFAULTS: BackgroundAudioConfig = {
   sound: "office",
@@ -72,13 +77,14 @@ export function backgroundConfigFromOptions(options: any): BackgroundAudioConfig
     return null;
   }
   const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");
+  const sound = SOUNDS.find((s) => s === lower(raw.sound)) ?? DEFAULTS.sound;
   const when = WHEN.find((w) => w === lower(raw.when)) ?? DEFAULTS.when;
   const volume = VOLUME_LEVEL.get(lower(raw.volume)) ?? DEFAULTS.volume;
   const delayMs =
     typeof raw.delayMs === "number" && Number.isFinite(raw.delayMs)
       ? Math.round(Math.min(MAX_DELAY_MS, Math.max(0, raw.delayMs)))
       : DEFAULTS.delayMs;
-  return { sound: "office", volume, when, delayMs };
+  return { sound, volume, when, delayMs };
 }
 
 export interface GateDecision {

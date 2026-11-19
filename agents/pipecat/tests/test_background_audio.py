@@ -69,6 +69,8 @@ class TestParser:
         assert _parse({"delayMs": "300"}).delay_ms == 600
         assert _parse({"delayMs": float("nan")}).delay_ms == 600
         assert _parse({"sound": "cafe"}).sound == "office"
+        assert _parse({"sound": "typing"}).sound == "typing"
+        assert _parse({"sound": "Typing"}).sound == "typing"
 
     def test_halves_round_up_as_on_livekit(self) -> None:
         assert _parse({"delayMs": 250.5}).delay_ms == 251
@@ -190,6 +192,15 @@ class TestAsset:
         # The level survives the resample.
         rms = lambda a: float(np.sqrt(np.mean(a.astype(np.float64) ** 2)))  # noqa: E731
         assert abs(rms(wide) - rms(base)) / rms(base) < 0.05
+
+    def test_typing_loads_from_its_own_file(self) -> None:
+        typing = scaled_asset("typing", 16000, 0.10)
+        assert typing is not scaled_asset("office", 16000, 0.10)
+        assert 10 * RATE < len(typing) < 30 * RATE
+        # Peaks at -1 dBFS before the 0.1 gain.
+        assert 2500 < int(np.abs(typing).max()) < 3300
+        wide = scaled_asset("typing", 24000, 0.10)
+        assert len(wide) == round(len(typing) * 1.5)
 
 
 class TestLoopReader:
@@ -560,6 +571,16 @@ class TestReconfigure:
             assert frames
             assert inj._reader is not None
             assert inj._reader._samples is scaled_asset("office", RATE, 0.2)
+
+        asyncio.run(run())
+
+    def test_another_sound_at_the_same_volume_loads_its_file(self) -> None:
+        async def run():
+            inj = _injector("always", transport=_transport())
+            assert await _collect(inj, 0.2)
+            assert inj._reader is not None
+            await inj.configure(BackgroundConfig(sound="typing", when="always", delay_ms=0))
+            assert inj._reader._samples is scaled_asset("typing", RATE, 0.10)
 
         asyncio.run(run())
 

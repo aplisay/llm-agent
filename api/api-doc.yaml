@@ -1054,8 +1054,8 @@ components:
             graceMs: 1200
         backgroundAudio:
           description: |-
-            Background sound: plays a quiet office sound to the caller, so that silence does not
-            sound like a dead line. The main use is while the agent waits for a model reply or a
+            Background sound: plays a quiet office or typing sound to the caller, so that silence
+            does not sound like a dead line. The main use is while the agent waits for a model reply or a
             tool result.
 
             Set to `true` to enable with the defaults, or to an object to tune it. If omitted (or
@@ -1090,15 +1090,20 @@ components:
                   type: boolean
                   default: true
                 sound:
-                  description: The sound to play. Only the bundled `office` clip is supported; custom files and URLs are not accepted.
+                  description: |-
+                    The sound to play: `office` (a room of people working) or `typing` (one person
+                    typing, in bursts). Only these bundled clips are supported; custom files and URLs
+                    are not accepted.
                   type: string
-                  enum: [office]
+                  enum: [office, typing]
                   default: office
                 volume:
                   description: |-
-                    Loudness of the sound. `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS, `high` ≈ -34 dBFS
-                    (mean level). This controls background sound, not the agent's voice. Start at
-                    `low`; audibility and speech clarity depend on the caller's device and route.
+                    Loudness of the sound. For `office`, `low` ≈ -46 dBFS, `medium` ≈ -40 dBFS,
+                    `high` ≈ -34 dBFS (mean level). `typing` has a lower mean level at each setting,
+                    because it is short clicks with silence between them. This controls background
+                    sound, not the agent's voice. Start at `low`; audibility and speech clarity depend
+                    on the caller's device and route.
                   type: string
                   enum: [low, medium, high]
                   default: medium
