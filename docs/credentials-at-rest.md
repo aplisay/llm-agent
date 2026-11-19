@@ -36,7 +36,8 @@ the audit and sweep.
 
 A desk phone line account (`kind` `device`) holds the hash only. Its `password`
 is an empty string, which the audit counts as `empty` and the sweep leaves
-alone. The password is made in memory, hashed and dropped.
+alone. The password is made in memory, hashed and dropped. A reset keeps no
+old hash: `previous_ha1` stays empty on such a row.
 
 (Organisation BYOK provider keys — `organisation_keys.value` — are fail-closed
 from birth and never have plaintext rows, so they are not part of this sweep.)
