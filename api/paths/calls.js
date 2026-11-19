@@ -1,6 +1,6 @@
 import { Call, Op } from '../../lib/database.js';
 import { Sequelize } from 'sequelize';
-import { scopeWhereForUser } from '../../lib/scope.js';
+import { visibleCallsWhere } from '../../lib/call-visibility.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
 let appParameters, log;
 
@@ -26,7 +26,7 @@ export default function (logger) {
       let where = {
         [Op.and]: [
           { index: { [Op.gt]: lastIndex } },
-          scopeWhereForUser(res.locals.user)
+          await visibleCallsWhere(res.locals.user)
         ]
       };
       startDate = startDate ? new Date(startDate) : new Date(0);
@@ -59,7 +59,9 @@ export default function (logger) {
   listAllCalls.apiDoc = {
     summary: 'Returns list of all calls to agents owned by the user or organisation',
     description:
-      'Returns a paginated list of calls across all agents in scope for the authenticated principal.',
+      'Returns a paginated list of calls across all agents in scope for the authenticated principal. '
+      + 'A principal without `call: readOthers` sees a phone system call only when it involves the directory person linked to its login '
+      + '(docs/phone-system.md, "Who sees calls").',
     operationId: 'listAllCalls',
     tags: ["Calls"],
     responses: {
