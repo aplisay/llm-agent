@@ -3659,8 +3659,8 @@ components:
             `updating`, `wiping` or `wiped`. `failure` is null or one of `other_provider`, `wrong_device`
             (a different phone asked for the settings), `line_not_registered`, `model_not_supported`.
             `reportedModel` is what the phone says it is, and it wins over `model`.
-            `resync` is null, or while the state is `updating` the last time the phone was asked to fetch
-            its settings: `requestedAt`, `attempts` and `state`.
+            `resync` is null, or while the state is `updating` the last time call control took the phone
+            to tell it to fetch its settings: `requestedAt`, `attempts` and `state`.
         capacity: { type: integer, description: "How many lines the phone carries." }
         maxPeople: { type: integer, description: "How many people the phone can ring for." }
         roomForPerson: { type: boolean }

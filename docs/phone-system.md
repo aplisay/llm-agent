@@ -151,6 +151,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended |
+| `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
 

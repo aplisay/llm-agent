@@ -244,9 +244,6 @@ startDirectoryPurge({ log: logger });
 const { startRedirectSweep } = await import('./lib/provisioning/phones.js');
 const { databaseStarted: redirectSweepReady } = await import('./lib/database.js');
 startRedirectSweep({ log: logger, databaseStarted: redirectSweepReady });
-// Desk phones whose settings changed are asked to fetch them, again until they have.
-const { startResyncSweep } = await import('./lib/pbx/resync.js');
-startResyncSweep({ log: logger, databaseStarted: redirectSweepReady });
 // Answer other processes asking for a chat session this one holds (a client
 // reconnected through the load balancer to a different pod). Server only,
 // for the same reason as the reaper.

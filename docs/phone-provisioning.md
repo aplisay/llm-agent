@@ -72,20 +72,17 @@ A platform operator can set `lineLimit` on a desk phone with `PATCH /phones/{pho
 
 ## Telling a phone that its settings changed
 
-When a directory change gives a phone different lines, the phone's state becomes `updating` and the API server asks call control to tell the phone. Call control waits while a line of that phone is in a call, then has the SIP edge send the phone a check-sync NOTIFY. The phone fetches its file again and does not restart.
+When a directory change gives a phone different lines, the phone's state becomes `updating`. Call control asks the API server which phones to tell, with `POST /api/agent-db/pbx/resync/claim` and its token (`CALLCTL_SHARED_TOKEN`). The API server never calls out to call control, and there is nothing else to set. Call control waits while the phone is in a call, then has the SIP edge send the phone a check-sync NOTIFY. The phone fetches its file again and does not restart.
 
-| Variable | Use |
-|---|---|
-| `CALLCTL_URL` | Base address of call control, for example `http://callctl:8090`. Set it on the API server |
-| `CALLCTL_SHARED_TOKEN` | Sent to call control as `x-callctl-token`. The same token call control sends to the API server |
-
-With `CALLCTL_URL` unset nothing is sent, and a phone picks a change up at its daily refresh.
-
-- The request is sent after the write has committed. The API answer does not wait for it.
-- Nothing reports that the phone was told. The API server knows when the phone fetches. Until then it asks again after 1, 5, 15 and 60 minutes and 6 hours: six times in all for one change. After that the daily refresh brings the change.
-- `device.resync` on a phone read shows the last ask while the phone is `updating`: `requestedAt`, `attempts`, and `state`, which is what call control answered (`sent`, `held` while the phone is in a call, `no_binding` when no line is registered, `failed`), or `unanswered`.
-- A phone that has never fetched, a wiped phone, and a phone that was given a new settings address are not asked. Nor is a phone after a line password reset: it could not answer for the request with its old password.
-- Needs the schema 78 database upgrade (`tools/agent-admin.js upgrade-db`). Until then nothing is sent.
+- Call control holds the request open (`waitSeconds`, 30 at most). A change written by the API process that holds the request is given at once. A change written by another process is given within 2 seconds.
+- A phone is given to one caller only, and each time it is given counts as one ask. Nothing is counted while call control does not ask, so a phone loses no asks while call control is down.
+- Nothing reports that the phone was told. The API server knows when the phone fetches. Until then the phone is given again after 1, 5, 15 and 60 minutes and 6 hours: six times in all for one version of its settings. After that the daily refresh brings the change. A line is logged at the last ask.
+- A phone is never given twice within 10 seconds, however many changes are made.
+- `device.resync` on a phone read shows the last ask while the phone is `updating`, and is null once it has fetched: `requestedAt`, `attempts`, and `state`. The state is `taken` (given to call control), then what call control reported: `queued`, `sent`, `held` while the phone is in a call, `no_binding` when no line is registered, `failed`. `no_lines` means the phone has no active line, so it was not given.
+- A phone that has never fetched, a wiped phone, and a phone that was given a new settings address are not given.
+- A line password reset does not make a phone `updating`, so it does not start an ask. A phone that is already `updating` is given for its newest version as usual. The SIP edge then answers for the request with the new password, which a phone that still holds the old one may refuse.
+- Each API process holds at most 8 such requests open. One more is answered at once.
+- Needs the schema 78 database upgrade (`tools/agent-admin.js upgrade-db`). Until then the route answers 503 `phone_resync_not_ready`.
 
 The call control and SIP edge sides of this are not built yet.
 
