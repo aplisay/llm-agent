@@ -27,6 +27,8 @@ An organisation without the capability still has the directory, and extensions o
 
 The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admin.js upgrade-db`, see [upgrading](self-hosting/upgrading.md)). Until they have run, the API server starts with the phone system off for everyone: the directory, phone, phone system settings and capabilities routes answer 503 with code `phone_system_not_ready`, as do the call control routes for extensions, lines and call events. Calls to agents, numbers and connections work as before. The outbound refusal of extension digits and the daily purge of removed rows do nothing until then. Restart the API server after the upgrade.
 
+The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
+
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
 ### Brands
@@ -147,7 +149,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/resolve` | What should this call do? The body is `{ callId, request }`. `request.kind` is `number` (a call in on a trunk: `calledNumber`, `trunkId`, `callerId`), `registration` (a call in from a registration: `registrationId`, `calledNumber`, `callerId`), `dialled` (digits from a line: `fromEndpoint`, `digits`), `extension` or `line` (follow-ups about a call in progress) |
 | `POST /agent-db/pbx/outbound-authorisation` | May this leg to an outside number be placed? The same policy the agent workers use. The caller must fail closed |
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
-| `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered |
+| `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:

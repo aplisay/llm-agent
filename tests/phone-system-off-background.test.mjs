@@ -10,6 +10,7 @@ const table = { findOne: missingTable, findAll: missingTable, destroy: missingTa
 
 jest.unstable_mockModule('../lib/database.js', () => ({
   Trunk: {}, Organisation: {}, User: {}, RateCard: {}, Tariff: {}, TariffPrefix: {}, UsageRecord: {},
+  Call: {}, Brand: {}, OutboundEvent: table,
   Extension: table, DirectoryEntry: table, ExtensionMember: table, PhonePerson: table, Line: table,
   Op: { ne: Symbol('ne'), lt: Symbol('lt'), or: Symbol('or') },
   databaseStarted: Promise.resolve(),

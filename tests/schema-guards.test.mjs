@@ -13,9 +13,9 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system, brands and phone provisioning, in version order', () => {
+  test('registrar HA1, the phone system, brands, phone provisioning and the outbound policy, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77]]);
   });
 
   test('a schema 75 database lacks the provisioning step, and its features stay off', () => {
@@ -27,10 +27,16 @@ describe('guarded schema steps', () => {
     ]);
   });
 
+  test('a schema 76 database lacks the outbound policy step, and the earlier steps are all there', () => {
+    const rows = upgradedRows().filter((row) => row.table_name !== 'outbound_events' && !(row.table_name === 'brands' && row.column_name === 'outbound_ceiling'));
+    for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning']) expect(missingParts(step, rows)).toEqual([]);
+    expect(missingParts('outboundPolicy', rows)).toEqual(['outbound_events', 'brands.outbound_ceiling']);
+  });
+
   test('the boot reads each table a step adds or changes, once', () => {
     const tables = guardedTables();
     expect(new Set(tables).size).toBe(tables.length);
-    for (const table of ['phone_registrations', 'organisations', 'phone_numbers', 'auth_keys', 'brands', 'lines', 'call_events']) {
+    for (const table of ['phone_registrations', 'organisations', 'phone_numbers', 'auth_keys', 'brands', 'lines', 'call_events', 'outbound_events']) {
       expect(tables).toContain(table);
     }
   });

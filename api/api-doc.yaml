@@ -3836,6 +3836,7 @@ components:
           type: array
           items: { type: string }
           description: The capabilities a new organisation of this brand starts with.
+        outboundCeiling: { $ref: '#/components/schemas/OutboundCeiling' }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     BrandInput:
@@ -3843,6 +3844,85 @@ components:
       properties:
         name: { type: string, nullable: true, maxLength: 120 }
         defaultCapabilities: { type: array, items: { type: string } }
+        outboundCeiling:
+          type: object
+          nullable: true
+          description: "The most an organisation of the brand may set in its outbound policy. Fields as in `OutboundCeiling`. A field left out, or null for the whole ceiling, takes the platform's value."
+    OutboundClasses:
+      type: object
+      description: "Destination classes, each open (true) or closed. `ukLandline` 01, 02, 03, including 0118. `ukMobile` 07, without 070 and 076. `freephone` 0800, 0808. `service` 084, 087. `premium` 09, directory enquiries (the six digits 118xxx), 070, and 076 but for the Isle of Man's mobiles. `crownDependencies` the Channel Islands and the Isle of Man: the area codes 01481, 01534 and 01624, and the islands' mobile blocks. `international` any number outside +44."
+      properties:
+        ukLandline: { type: boolean }
+        ukMobile: { type: boolean }
+        freephone: { type: boolean }
+        service: { type: boolean }
+        premium: { type: boolean }
+        crownDependencies: { type: boolean }
+        international: { type: boolean }
+    OutboundCeiling:
+      type: object
+      description: "A brand's ceiling for the outbound policy of its organisations. Spend is in micros of a pound (1e-6 GBP)."
+      properties:
+        classes: { $ref: '#/components/schemas/OutboundClasses' }
+        callsInProgress: { type: integer, minimum: 0, description: "Outside calls in progress at once." }
+        callsPerMinute: { type: integer, minimum: 0, description: "Outside calls started in any minute." }
+        spendPerDayMicros: { type: integer, minimum: 0 }
+        spendPerMonthMicros: { type: integer, minimum: 0 }
+    OutboundHours:
+      type: object
+      required: [days, from, to]
+      properties:
+        timeZone: { type: string, description: "An IANA time zone. Default Europe/London." }
+        days: { type: array, items: { type: integer, minimum: 1, maximum: 7 }, description: "1 is Monday, 7 is Sunday." }
+        from: { type: string, example: "08:00" }
+        to: { type: string, example: "18:00", description: "Before `from` for hours that run past midnight." }
+    OutboundPolicy:
+      type: object
+      description: "An organisation's own outbound policy. Each value may only be lower than the brand's ceiling. A limit that is not set takes the ceiling's value."
+      properties:
+        classes: { $ref: '#/components/schemas/OutboundClasses' }
+        callsInProgress: { type: integer, minimum: 0, nullable: true }
+        callsPerMinute: { type: integer, minimum: 0, nullable: true }
+        spendPerDayMicros: { type: integer, minimum: 0, nullable: true }
+        spendPerMonthMicros: { type: integer, minimum: 0, nullable: true }
+        hours:
+          type: object
+          nullable: true
+          description: "When outside calls may be made, in the form of `OutboundHours`. Not set or null: at any time."
+    OrganisationOutboundPolicy:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/OutboundPolicy' }
+        ceiling: { $ref: '#/components/schemas/OutboundCeiling' }
+        effective:
+          type: object
+          description: "What applies now: the policy within the ceiling."
+          properties:
+            classes: { $ref: '#/components/schemas/OutboundClasses' }
+            callsInProgress: { type: integer }
+            callsPerMinute: { type: integer }
+            spendPerDayMicros: { type: integer }
+            spendPerMonthMicros: { type: integer }
+            hours: { type: object, nullable: true, description: "The hours rule that applies. Null: any time." }
+            hoursValid: { type: boolean, description: "False when the stored hours rule no longer checks. Every outside call is then refused, and `hours` shows the rule as stored." }
+        usage:
+          type: object
+          properties:
+            callsInProgress: { type: integer }
+            callsLastMinute: { type: integer }
+            spendTodayMicros: { type: number }
+            spendMonthMicros: { type: number }
+        notices:
+          type: array
+          description: "Today's refusals by the policy, by code. `limit` is true for a limit reached, which also sends the day's notice to the organisation's callback."
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              count: { type: integer }
+              firstAt: { type: string, format: date-time }
+              lastAt: { type: string, format: date-time }
+              limit: { type: boolean }
     Me:
       type: object
       description: The caller's identity and resolved permissions.

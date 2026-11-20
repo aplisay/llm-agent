@@ -25,6 +25,7 @@ jest.unstable_mockModule('../lib/database.js', () => ({
   PhonePerson: table,
   PhoneRule: table,
   Line: table,
+  OutboundEvent: table,
 }));
 
 const { stepOff } = await import('../lib/schema-guards.js');
