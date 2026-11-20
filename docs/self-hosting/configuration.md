@@ -37,7 +37,7 @@ The first API key and encryption of stored secrets.
 | `CREDENTIALS_KEY` | API |  | Key that encrypts stored SIP passwords and agent key material. Unset means they are stored in plain text, with a warning. Set it in every real deployment (openssl rand -base64 32) and never change it once data exists. Secret. |
 | `AUTHENTICATE_USERS` | API |  | Removed. If it is still set the server warns and ignores it: every request needs an API key. |
 | `B2BUA_HEARTBEAT_TOKEN` | API |  | Token that B2BUA nodes may use, instead of SHARED_API_TOKEN, to report themselves to POST /api/agent-db/b2bua-nodes. Secret. |
-| `CALLCTL_SHARED_TOKEN` | API |  | Token call control sends as x-callctl-token. It opens /api/agent-db/pbx and nothing else. Unset means those routes are closed. Use a long random value (openssl rand -hex 32). Secret. |
+| `CALLCTL_SHARED_TOKEN` | API |  | Token call control sends as x-callctl-token. It opens /api/agent-db/pbx and nothing else. Unset means those routes are closed. The API server sends the same token to call control at CALLCTL_URL. Use a long random value (openssl rand -hex 32). Secret. |
 
 ## Database
 
@@ -273,6 +273,7 @@ Phone numbers, trunks and SIP registrations.
 | `SNOM_SRAPS_KEY_SECRET` | API |  | Snom redirection service: the secret of the company API token. Secret. |
 | `SNOM_SRAPS_COMPANY_ID` | API |  | Snom redirection service: the id of the SRAPS company the phones are added to. |
 | `SNOM_SRAPS_URL` | API | `https://api.sraps.snom.com/api/v1/` | Snom redirection service: the API address. Only for tests against a stand-in. |
+| `CALLCTL_URL` | API |  | Base address of call control, for example http://callctl:8090. With it and CALLCTL_SHARED_TOKEN set, a desk phone whose settings changed is asked to fetch them at once. Unset means phones pick changes up at their daily refresh. |
 | `REGCLIENT_API_TOKEN` | API |  | Token for the B2BUA node API (SIP traces and registration probes). Unset turns those routes off (503). Secret. |
 | `REGCLIENT_API_TOKEN_PREVIOUS` | API |  | The previous token, accepted while a new one rolls out. Secret. |
 | `REGCLIENT_API_PORT` | API | `8443` | B2BUA node API port. |

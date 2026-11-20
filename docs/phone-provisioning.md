@@ -70,6 +70,25 @@ The phone names its model when it fetches. If that differs from the model that w
 
 A platform operator can set `lineLimit` on a desk phone with `PATCH /phones/{phoneId}` to give it fewer lines than its model takes.
 
+## Telling a phone that its settings changed
+
+When a directory change gives a phone different lines, the phone's state becomes `updating` and the API server asks call control to tell the phone. Call control waits while a line of that phone is in a call, then has the SIP edge send the phone a check-sync NOTIFY. The phone fetches its file again and does not restart.
+
+| Variable | Use |
+|---|---|
+| `CALLCTL_URL` | Base address of call control, for example `http://callctl:8090`. Set it on the API server |
+| `CALLCTL_SHARED_TOKEN` | Sent to call control as `x-callctl-token`. The same token call control sends to the API server |
+
+With `CALLCTL_URL` unset nothing is sent, and a phone picks a change up at its daily refresh.
+
+- The request is sent after the write has committed. The API answer does not wait for it.
+- Nothing reports that the phone was told. The API server knows when the phone fetches. Until then it asks again after 1, 5, 15 and 60 minutes and 6 hours: six times in all for one change. After that the daily refresh brings the change.
+- `device.resync` on a phone read shows the last ask while the phone is `updating`: `requestedAt`, `attempts`, and `state`, which is what call control answered (`sent`, `held` while the phone is in a call, `no_binding` when no line is registered, `failed`), or `unanswered`.
+- A phone that has never fetched, a wiped phone, and a phone that was given a new settings address are not asked. Nor is a phone after a line password reset: it could not answer for the request with its old password.
+- Needs the schema 78 database upgrade (`tools/agent-admin.js upgrade-db`). Until then nothing is sent.
+
+The call control and SIP edge sides of this are not built yet.
+
 ## States and failures
 
 `device.state` on a phone read:
