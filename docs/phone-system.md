@@ -19,6 +19,8 @@ Not here yet: the service that carries the calls, phone provisioning, hunt group
 | The `phoneSystem` capability | `PUT /organisations/{id}/capabilities` with `{ "capabilities": ["phoneSystem"] }`. Needs `organisation:setCapabilities`: a platform operator for any organisation, or a brand's service key for the organisations of its brand. A new organisation starts with its brand's defaults (see below) | Switches the phone system on for one organisation. Without it every phone system request answers 403 with code `phone_system_disabled` |
 | `PBX_RELEASE` | An environment variable of the API server | Which extension types and phone kinds the deployment accepts. Unset means `1`: types `connection` and `ring_all`, phones `deskphone` and `external` |
 
+A second capability, `phoneRedirect`, lets an organisation's desk phones be bound in the vendor's redirect service (see [phone-provisioning.md](phone-provisioning.md)). Only a platform operator gives or takes it.
+
 Taking the capability away deletes nothing. Calls are refused and the routes answer 403 until it is given back.
 
 An organisation without the capability still has the directory, and extensions of type `connection`: numbers on its own phone system, reached through one of its connections.

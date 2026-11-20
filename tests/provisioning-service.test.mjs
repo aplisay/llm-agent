@@ -12,6 +12,7 @@ import request from 'supertest';
 import yaml from 'js-yaml';
 import { setupRealDatabase, teardownRealDatabase, Organisation, PhoneRegistration } from './setup/database-test-wrapper.js';
 import { makeTestCa } from './setup/test-ca.js';
+import { startSrapsStandIn } from './setup/sraps-stand-in.js';
 
 const log = { info() {}, warn() {}, error() {}, debug() {}, child() { return this; } };
 const REALM = 'sip.prov.test.example';
@@ -72,6 +73,8 @@ describe('desk phone provisioning', () => {
     process.env.PBX_REGISTRAR_DOMAIN = REALM;
     process.env.PROV_PUBLIC_URL = PUBLIC_URL;
     delete process.env.PBX_RELEASE;
+    // No test here may reach Snom. The redirect tests point these at a stand-in.
+    for (const name of ['SNOM_SRAPS_KEY_ID', 'SNOM_SRAPS_KEY_SECRET', 'SNOM_SRAPS_COMPANY_ID', 'SNOM_SRAPS_URL']) delete process.env[name];
     await setupRealDatabase();
     db = await import('../lib/database.js');
     service = await import('../lib/provisioning/service.js');
@@ -171,6 +174,9 @@ describe('desk phone provisioning', () => {
       expect(days).toBeGreaterThan(6.9);
       expect(days).toBeLessThan(7.1);
       expect(answer.phone.device).toMatchObject({ state: 'waiting', certificatePinned: false, lineLimit: null });
+      // No redirect service is set up, so nothing was sent anywhere.
+      expect(answer.redirect).toBeNull();
+      expect(answer.phone.device.redirected).toBe(false);
 
       const device = await db.Device.findByPk(made.phone.device.id);
       expect(device.tokenHash).toBe(createHash('sha256').update(made.token).digest('hex'));
@@ -456,6 +462,169 @@ describe('desk phone provisioning', () => {
       } finally {
         await new Promise((resolve) => server.close(resolve));
       }
+    });
+  });
+
+  describe('the redirect service', () => {
+    const KEY = { keyId: 'stand-in-key-id', keySecret: 'stand-in-key-secret', companyId: 'c0ffee00c0ffee00c0ffee00c0ffee00' };
+    let sraps;
+    let phone;
+
+    beforeAll(async () => {
+      sraps = await startSrapsStandIn(KEY);
+      Object.assign(process.env, {
+        SNOM_SRAPS_KEY_ID: KEY.keyId, SNOM_SRAPS_KEY_SECRET: KEY.keySecret, SNOM_SRAPS_COMPANY_ID: KEY.companyId, SNOM_SRAPS_URL: sraps.url,
+      });
+      phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(5), model: 'D735', label: 'Boxed phone', people: [] }), 201)).phone;
+    });
+
+    test('nothing is sent for an organisation an operator has not marked', async () => {
+      const answer = await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      expect(answer.redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'not_allowed' });
+      expect(answer.provisioning.url).toMatch(/\/snom\/[a-z2-7]{26}\/\{mac\}\.xml$/);
+      expect(answer.phone.device).toMatchObject({ state: 'waiting', failure: null, redirected: false });
+      expect(sraps.state.requests).toEqual([]);
+      await Organisation.update({ capabilities: ['phoneSystem', 'phoneRedirect'] }, { where: { id: orgs.a } });
+    });
+    afterAll(async () => {
+      for (const name of ['SNOM_SRAPS_KEY_ID', 'SNOM_SRAPS_KEY_SECRET', 'SNOM_SRAPS_COMPANY_ID', 'SNOM_SRAPS_URL']) delete process.env[name];
+      await sraps.close();
+    });
+
+    test('provisioning tells it the phone\'s address, with a signed call', async () => {
+      const answer = await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      expect(answer.redirect).toEqual({ service: 'snom-sraps', bound: true });
+      expect(sraps.state.refusals).toEqual([]);
+      expect(sraps.state.endpoints.get(mac(5)).setting_server).toBe(answer.provisioning.url);
+      const days = (new Date(answer.provisioning.expiresAt) - Date.now()) / 86400000;
+      expect(days).toBeGreaterThan(29.9);
+      expect(days).toBeLessThan(30.1);
+      expect(answer.phone.device).toMatchObject({ state: 'waiting', redirected: true });
+      expect(new Date(answer.phone.device.addressExpiresAt).getTime()).toBe(new Date(answer.provisioning.expiresAt).getTime());
+    });
+
+    test('its status shows when the phone called in', async () => {
+      const path = `/phones/${phone.id}/redirect`;
+      expect((await get('memberA', path)).status).toBe(403);
+      expect((await get('ownerB', path)).status).toBe(404);
+      expect((await ok(get('ownerA', path))).redirect).toEqual({ service: 'snom-sraps', bound: true, ours: true, lastRequestAt: null, firmware: null });
+      sraps.phoneCalledIn(mac(5), '10.1.184.14');
+      const called = (await ok(get('ownerA', path))).redirect;
+      expect(called.firmware).toBe('10.1.184.14');
+      expect(called.lastRequestAt).not.toBeNull();
+    });
+
+    test('a phone another company holds is flagged, and still gets an address to type in', async () => {
+      const held = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(6), model: 'D735', label: 'Second-hand phone', people: [] }), 201)).phone;
+      sraps.state.taken.add(mac(6));
+      const answer = await ok(post('ownerA', `/phones/${held.id}/provision`));
+      expect(answer.redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'mac_taken' });
+      expect(answer.provisioning.url).toMatch(/\/snom\/[a-z2-7]{26}\/\{mac\}\.xml$/);
+      expect(answer.phone.device).toMatchObject({ state: 'waiting', failure: 'other_provider', redirected: false });
+      const days = (new Date(answer.provisioning.expiresAt) - Date.now()) / 86400000;
+      expect(days).toBeLessThan(7.1);
+    });
+
+    test('when it cannot be reached the phone is still provisioned', async () => {
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      const spare = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(7), model: 'D735', label: 'Spare', people: [] }), 201)).phone;
+      const answer = await ok(post('ownerA', `/phones/${spare.id}/provision`));
+      expect(answer.redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'unreachable' });
+      expect(answer.phone.device).toMatchObject({ state: 'waiting', failure: null, redirected: false });
+      process.env.SNOM_SRAPS_URL = sraps.url;
+    });
+
+    test('a wipe takes the phone out of it, and so does a removal', async () => {
+      const wiped = await ok(post('ownerA', `/phones/${phone.id}/wipe`));
+      expect(wiped.redirect).toEqual({ service: 'snom-sraps', bound: false });
+      expect(wiped.phone.device).toMatchObject({ state: 'wiped', redirected: false });
+      expect(sraps.state.endpoints.has(mac(5))).toBe(false);
+
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      expect(sraps.state.endpoints.has(mac(5))).toBe(true);
+      await ok(del('ownerA', `/phones/${phone.id}`));
+      expect(sraps.state.endpoints.has(mac(5))).toBe(false);
+      expect((await db.Device.findByPk(phone.device.id)).srapsEndpointId).toBeNull();
+      expect(sraps.state.refusals).toEqual([]);
+    });
+
+    test('a phone removed while the service was down is released by the sweep', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      const gone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(9), model: 'D735', label: 'Leaving phone', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${gone.id}/provision`));
+      expect(sraps.state.endpoints.has(mac(9))).toBe(true);
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      await ok(del('ownerA', `/phones/${gone.id}`));
+      expect((await db.Device.findByPk(gone.device.id)).srapsEndpointId).toBe(mac(9));
+      expect(await sweepRedirects()).toMatchObject({ released: 0 });
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      expect(sraps.state.endpoints.has(mac(9))).toBe(true);
+
+      const swept = await sweepRedirects();
+      expect(swept.released).toBeGreaterThanOrEqual(1);
+      expect(sraps.state.endpoints.has(mac(9))).toBe(false);
+      expect((await db.Device.findByPk(gone.device.id)).srapsEndpointId).toBeNull();
+      // A phone that is still in use is never swept.
+      const kept = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(10), model: 'D735', label: 'Staying phone', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${kept.id}/provision`));
+      await sweepRedirects();
+      expect(sraps.state.endpoints.has(mac(10))).toBe(true);
+    });
+
+    test('the sweep leaves a binding that a later record of the same phone holds', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      // Organisation A removes a phone while the service is down, so its record still says bound.
+      const first = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(11), model: 'D735', label: 'Passed on', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${first.id}/provision`));
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      await ok(del('ownerA', `/phones/${first.id}`));
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      // An operator frees the phone, and organisation B adds and provisions it.
+      await db.Device.update({ releasedAt: new Date() }, { where: { id: first.device.id } });
+      await Organisation.update({ capabilities: ['phoneSystem', 'phoneRedirect'] }, { where: { id: orgs.b } });
+      const second = (await ok(post('ownerB', '/phones', { kind: 'deskphone', mac: mac(11), model: 'D735', label: 'Taken on', people: [] }), 201)).phone;
+      expect(second.device.id).not.toBe(first.device.id);
+      const bound = await ok(post('ownerB', `/phones/${second.id}/provision`));
+      expect(bound.redirect).toEqual({ service: 'snom-sraps', bound: true });
+      const sent = sraps.state.requests.length;
+
+      await sweepRedirects();
+      // Nothing was sent for it, B's binding is still there, and A's old record is cleared.
+      expect(sraps.state.requests.slice(sent).filter((call) => call.url.endsWith(mac(11)))).toEqual([]);
+      expect(sraps.state.endpoints.get(mac(11)).setting_server).toBe(bound.provisioning.url);
+      expect((await db.Device.findByPk(first.device.id)).srapsEndpointId).toBeNull();
+      expect((await db.Device.findByPk(second.device.id)).srapsEndpointId).toBe(mac(11));
+      await ok(del('ownerB', `/phones/${second.id}`));
+      expect(sraps.state.endpoints.has(mac(11))).toBe(false);
+    });
+
+    test('with the service down the sweep stops at the first phone', async () => {
+      const { sweepRedirects } = await import('../lib/provisioning/phones.js');
+      process.env.SNOM_SRAPS_URL = 'http://127.0.0.1:1/api/v1/';
+      const ids = [];
+      for (const n of [12, 13]) {
+        const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(n), model: 'D735', label: `Stuck ${n}`, people: [] }), 201)).phone;
+        await db.Device.update({ srapsEndpointId: mac(n) }, { where: { id: phone.device.id } });
+        await ok(del('ownerA', `/phones/${phone.id}`));
+        ids.push(phone.device.id);
+      }
+      expect(await sweepRedirects()).toEqual({ tried: 1, released: 0 });
+      process.env.SNOM_SRAPS_URL = sraps.url;
+      // Both are released once the service is back. Neither was ever bound there, which counts as done.
+      expect((await sweepRedirects()).released).toBe(2);
+      expect(await db.Device.count({ where: { id: ids, srapsEndpointId: null } })).toBe(2);
+    });
+
+    test('taking the capability away leaves what is bound, and a release still works without it', async () => {
+      const phone = (await ok(post('ownerA', '/phones', { kind: 'deskphone', mac: mac(14), model: 'D735', label: 'Bound before', people: [] }), 201)).phone;
+      await ok(post('ownerA', `/phones/${phone.id}/provision`));
+      await Organisation.update({ capabilities: ['phoneSystem'] }, { where: { id: orgs.a } });
+      expect(sraps.state.endpoints.has(mac(14))).toBe(true);
+      expect((await ok(get('ownerA', `/phones/${phone.id}`))).device.redirected).toBe(true);
+      expect((await ok(post('ownerA', `/phones/${phone.id}/provision`))).redirect).toEqual({ service: 'snom-sraps', bound: false, error: 'not_allowed' });
+      const wiped = await ok(post('ownerA', `/phones/${phone.id}/wipe`));
+      expect(wiped.redirect).toMatchObject({ bound: false });
+      expect(sraps.state.endpoints.has(mac(14))).toBe(false);
     });
   });
 

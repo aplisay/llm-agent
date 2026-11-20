@@ -181,6 +181,24 @@ describe('brands on organisations', () => {
       expect((await Organisation.findByPk(orgs.plain)).capabilities).toEqual([]);
     });
 
+    test('cannot give a capability that only a platform operator gives, and cannot take it away', async () => {
+      const path = `/organisations/${orgs.acmeByKey}/capabilities`;
+      const refused = await put('acmeKey', path, { capabilities: ['phoneSystem', 'phoneRedirect'] });
+      expect(refused.status).toBe(403);
+      expect(refused.body.code).toBe('operator_only_capability');
+      expect((await Organisation.findByPk(orgs.acmeByKey)).capabilities).toEqual(['phoneSystem']);
+      expect(await ok(put('operator', path, { capabilities: ['phoneSystem', 'phoneRedirect'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
+      // The brand's key goes on sending the list it always sent. It works, and the operator's capability stays.
+      expect(await ok(put('acmeKey', path, { capabilities: ['phoneSystem'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
+      expect(await ok(put('acmeKey', path, { capabilities: [] }))).toEqual({ capabilities: ['phoneRedirect'] });
+      expect(await ok(put('acmeKey', path, { capabilities: ['phoneSystem', 'phoneRedirect'] }))).toEqual({ capabilities: ['phoneSystem', 'phoneRedirect'] });
+      // Only the operator takes it away.
+      expect(await ok(put('operator', path, { capabilities: ['phoneSystem'] }))).toEqual({ capabilities: ['phoneSystem'] });
+      // Nor is it a brand default.
+      const asDefault = await put('operator', `/brands/${ACME}`, { name: 'Acme', defaultCapabilities: ['phoneSystem', 'phoneRedirect'] });
+      expect(asDefault.status).toBe(400);
+    });
+
     test('reads its own brand and cannot change any brand', async () => {
       expect((await ok(get('acmeKey', '/brands'))).brands.map((b) => b.id)).toEqual([ACME]);
       expect((await get('acmeKey', `/brands/${OTHER}`)).status).toBe(404);

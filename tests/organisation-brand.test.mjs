@@ -27,6 +27,7 @@ describe('brand ids and defaults', () => {
   test('default capabilities must be known ones', () => {
     expect(validateBrandFields({ defaultCapabilities: ['phoneSystem'] })).toBeNull();
     expect(validateBrandFields({ defaultCapabilities: ['teleport'] })).toMatch(/Unknown capability/);
+    expect(validateBrandFields({ defaultCapabilities: ['phoneSystem', 'phoneRedirect'] })).toMatch(/Not a brand default/);
     expect(validateBrandFields({ defaultCapabilities: 'phoneSystem' })).toMatch(/array/);
     expect(validateBrandFields({ name: 'x'.repeat(121) })).toMatch(/name/);
   });
