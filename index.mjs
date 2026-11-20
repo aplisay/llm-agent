@@ -240,6 +240,10 @@ startCustomVoiceSweeper({ log: logger });
 // Removed directory entries and extensions are purged after 30 days.
 const { startDirectoryPurge } = await import('./lib/pbx/purge.js');
 startDirectoryPurge({ log: logger });
+// The monthly charge for each extension, checked once an hour.
+const { startExtensionCharges } = await import('./lib/extension-charge.js');
+const { databaseStarted: chargesReady } = await import('./lib/database.js');
+startExtensionCharges({ log: logger, databaseStarted: chargesReady });
 // Phones removed while the vendor's redirect service was down are released there later.
 const { startRedirectSweep } = await import('./lib/provisioning/phones.js');
 const { databaseStarted: redirectSweepReady } = await import('./lib/database.js');

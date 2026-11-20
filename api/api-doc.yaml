@@ -3498,7 +3498,34 @@ components:
           items: { type: object, properties: { entryId: { type: string }, name: { type: string } } }
         charges:
           type: object
-          description: Charges the write starts or stops. Empty until extensions are priced.
+          description: >-
+            The monthly extension charges the write starts or stops, at the price of the
+            `extension` line of the organisation's rate card. A `connection` extension is free.
+            The amounts are null when the rate card has no such line. A charge that stops is
+            not refunded for the rest of the month.
+          properties:
+            add:
+              type: array
+              items:
+                type: object
+                properties:
+                  extensionId: { type: string }
+                  number: { type: string }
+                  type: { type: string }
+                  amountMicros: { type: integer, nullable: true, description: "The charge for a full month, in millionths of the currency." }
+                  firstPeriodMicros: { type: integer, nullable: true, description: "The charge from today to the end of this month, by the day." }
+                  currency: { type: string, nullable: true }
+                  startsOn: { type: string, format: date }
+            remove:
+              type: array
+              items:
+                type: object
+                properties:
+                  extensionId: { type: string }
+                  number: { type: string }
+                  type: { type: string }
+                  endsOn: { type: string, format: date }
+                  refundMicros: { type: integer }
         dependents:
           type: object
         warnings:

@@ -1,6 +1,7 @@
 import { UsageRecord, Op } from '../../../lib/database.js';
 import { scopeWhereForUser } from '../../../lib/scope.js';
 import { requirePermission, can } from '../../../lib/auth/permissions.js';
+import { hiddenCallsExcluded } from '../../../lib/call-visibility.js';
 
 /**
  * GET /api/usage/records — the ITEMISED usage ledger.
@@ -26,6 +27,7 @@ import { requirePermission, can } from '../../../lib/auth/permissions.js';
  */
 function priceState(row) {
   if (!row.finalised) return 'provisional';
+  if (row.costStatus === 'free') return 'free';
   // cost_micros is a bigint: Sequelize hands it back as a STRING, so compare
   // numerically or every deliberate zero reads as an ordinary charge.
   if (row.costMicros != null && Number(row.costMicros) === 0) return 'included';
@@ -50,6 +52,10 @@ export default function (logger) {
 
       const scope = can(res.locals.user, 'usage', 'readAll') ? {} : scopeWhereForUser(res.locals.user);
       const and = [scope];
+      // The rows of a phone system call follow the call: a call the caller may
+      // not see shows no usage, the same answer as a call that does not exist.
+      const hidden = can(res.locals.user, 'usage', 'readAll') ? null : await hiddenCallsExcluded(res.locals.user);
+      if (hidden) and.push(hidden);
 
       // The billing instant is the anchor a customer reasons in, but it is null
       // until a row is costed — so bound on it with created_at as the fallback,
@@ -221,9 +227,10 @@ export default function (logger) {
                       costStatus: { type: 'string', nullable: true },
                       priceState: {
                         type: 'string',
-                        enum: ['priced', 'included', 'provisional', 'no_rate', 'no_line', 'errored', 'uncosted'],
+                        enum: ['priced', 'included', 'free', 'provisional', 'no_rate', 'no_line', 'errored', 'uncosted'],
                         description:
                           'priced = charged; included = deliberately zero-rated (bundled into another line); '
+                          + 'free = a phone system call or leg that stays inside the organisation, or a call in, written at nothing; '
                           + 'provisional = still metering, not yet costed by design; no_rate = no card covered '
                           + 'the billing instant; no_line = the card priced no dimension of this row; '
                           + 'errored = costing threw and will be retried; uncosted = finalised but never valued.',

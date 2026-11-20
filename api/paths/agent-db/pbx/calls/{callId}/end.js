@@ -4,6 +4,7 @@ import { sendPbxError } from '../../../../../../lib/pbx/errors.js';
 /**
  * POST /api/agent-db/pbx/calls/{callId}/end: a call or a leg has ended.
  * Internal, call control token only. Ending a call twice changes nothing.
+ * Ending writes the call's usage (lib/pbx/usage.js).
  */
 export default function (logger) {
   const end = async (req, res) => {
@@ -29,6 +30,8 @@ export default function (logger) {
               endedAt: { type: 'string', format: 'date-time', nullable: true },
               reason: { type: 'string', nullable: true, description: 'Why it ended, for example hangup, no_answer, refused.' },
               answered: { type: 'boolean', nullable: true },
+              recordedMs: { type: 'integer', minimum: 0, nullable: true, description: 'On the call itself: how long it was recorded. Charged by the recording line of the rate card.' },
+              transcribedMs: { type: 'integer', minimum: 0, nullable: true, description: 'How much of the call or leg was transcribed. Charged by the transcription line of the rate card.' },
             },
           },
         },
