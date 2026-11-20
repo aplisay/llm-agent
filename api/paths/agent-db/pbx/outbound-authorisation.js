@@ -1,13 +1,12 @@
-import { PhoneNumber } from '../../../../lib/database.js';
-import { authoriseOutboundDestination } from '../../../../lib/outbound-authorisation.js';
+import { PhoneNumber, Trunk } from '../../../../lib/database.js';
+import { authoriseOutboundDestination, isRegistrationTrunk } from '../../../../lib/outbound-authorisation.js';
 import { lineOfEndpoint } from '../../../../lib/pbx/resolve.js';
 
 /**
  * POST /api/agent-db/pbx/outbound-authorisation: call control asks before it
  * places a leg to an outside number. Internal, call control token only.
  *
- * It runs the same policy as the workers' route, with every platform trunk
- * counted as chargeable for these legs. The organisation comes from
+ * It runs the same policy as the workers' route. The organisation comes from
  * the line that is calling, or from the request for a leg with no line (a
  * mobile rung for a call in). The caller must fail closed when this route
  * cannot be reached.
@@ -34,9 +33,14 @@ export default function (logger) {
           attributes: ['aplisayId'],
         })
         : null;
-      const decision = await authoriseOutboundDestination({
-        calledId, organisationId, aplisayId: shown?.aplisayId || null, phoneSystemLeg: true,
-      });
+      const decision = await authoriseOutboundDestination({ calledId, organisationId, aplisayId: shown?.aplisayId || null });
+      if (decision.allowed && !decision.chargeable && decision.trunkId) {
+        const trunk = await Trunk.findByPk(decision.trunkId, { attributes: ['id', 'flags'] });
+        if (trunk && !isRegistrationTrunk(trunk)) {
+          logger.warn({ organisationId, trunkId: decision.trunkId },
+            'phone system leg on a trunk not flagged chargeable: it is not charged and the outbound policy does not apply. Flag the trunk if it is a platform trunk');
+        }
+      }
       if (!decision.allowed) {
         logger.info({ calledId, organisationId, code: decision.code, trunkId: decision.trunkId }, 'phone system outbound destination refused');
       }

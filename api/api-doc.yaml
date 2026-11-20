@@ -3499,10 +3499,11 @@ components:
         charges:
           type: object
           description: >-
-            The monthly extension charges the write starts or stops, at the price of the
-            `extension` line of the organisation's rate card. A `connection` extension is free.
-            The amounts are null when the rate card has no such line. A charge that stops is
-            not refunded for the rest of the month.
+            The monthly extension charges the write starts or stops. Each start quotes what the
+            monthly charge will draw this month, from the same day and on the same rate card, and
+            nothing more for a month already charged. A `connection` extension is free. `priced`
+            is false, and the amounts 0, when the rate card has no `extension` line. A charge that
+            stops is not refunded for the rest of the month. Empty until the schema 78 upgrade.
           properties:
             add:
               type: array
@@ -3512,10 +3513,11 @@ components:
                   extensionId: { type: string }
                   number: { type: string }
                   type: { type: string }
-                  amountMicros: { type: integer, nullable: true, description: "The charge for a full month, in millionths of the currency." }
-                  firstPeriodMicros: { type: integer, nullable: true, description: "The charge from today to the end of this month, by the day." }
+                  amountMicros: { type: integer, nullable: true, description: "The charge for a full month, in millionths of the currency. Null when the price could not be read." }
+                  firstPeriodMicros: { type: integer, nullable: true, description: "What the monthly charge draws this month, by the day. Null when the price could not be read." }
                   currency: { type: string, nullable: true }
-                  startsOn: { type: string, format: date }
+                  startsOn: { type: string, format: date, nullable: true }
+                  priced: { type: boolean, description: "False when the rate card has no extension line, so nothing is charged." }
             remove:
               type: array
               items:

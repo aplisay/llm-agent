@@ -28,6 +28,7 @@ import { hiddenCallsExcluded } from '../../../lib/call-visibility.js';
 function priceState(row) {
   if (!row.finalised) return 'provisional';
   if (row.costStatus === 'free') return 'free';
+  if (row.costStatus === 'unpriced') return 'unpriced';
   // cost_micros is a bigint: Sequelize hands it back as a STRING, so compare
   // numerically or every deliberate zero reads as an ordinary charge.
   if (row.costMicros != null && Number(row.costMicros) === 0) return 'included';
@@ -227,10 +228,11 @@ export default function (logger) {
                       costStatus: { type: 'string', nullable: true },
                       priceState: {
                         type: 'string',
-                        enum: ['priced', 'included', 'free', 'provisional', 'no_rate', 'no_line', 'errored', 'uncosted'],
+                        enum: ['priced', 'included', 'free', 'unpriced', 'provisional', 'no_rate', 'no_line', 'errored', 'uncosted'],
                         description:
                           'priced = charged; included = deliberately zero-rated (bundled into another line); '
                           + 'free = a phone system call or leg that stays inside the organisation, or a call in, written at nothing; '
+                          + 'unpriced = a monthly extension charge the rate card could not price, closed at nothing; '
                           + 'provisional = still metering, not yet costed by design; no_rate = no card covered '
                           + 'the billing instant; no_line = the card priced no dimension of this row; '
                           + 'errored = costing threw and will be retried; uncosted = finalised but never valued.',

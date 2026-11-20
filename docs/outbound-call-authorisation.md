@@ -127,15 +127,22 @@ allowed decisions of the last 60 seconds, answered or not.
 
 **Spend.** Spend is read through `lib/outbound-spend.js`. It counts the costed
 usage rows of finished calls that carry a destination charge: an agent's leg
-out on a chargeable trunk, and a phone system leg out on any platform trunk
+or a phone system leg out on a trunk flagged `chargeable`
 ([billing](billing-calls-from-usage.md#the-phone-system)). Monthly extension
 charges, recording and transcription do not count. A call in progress is not
 counted until it ends and is costed.
 
-**An empty balance.** When the organisation's credit balance is at zero or
-below, every outside call is refused with `balance_empty`, its agents' calls
-as well as its phones'. Calls in, calls between extensions and emergency calls
-go on. An organisation whose balance is not tracked is never refused for it.
+**An empty balance.** Once the schema 78 upgrade has run and the API server
+has restarted, when the organisation's credit balance is at zero or below,
+every outside call on a chargeable trunk is refused with `balance_empty`, its
+agents' calls as well as its phones'. Calls in, calls between extensions and
+emergency calls go on. An organisation whose balance is not tracked is never
+refused for it.
+
+**Phone system legs and the trunk.** A leg that call control places passes
+this policy only on a trunk flagged `chargeable`, like any other leg. A
+platform trunk that is not flagged lets phone system legs out with no charge
+and no policy; `yarn doctor` lists such trunks, and the server logs them.
 
 **The notice.** Each decision is written to `outbound_events`. The first refusal
 by a limit on a day for an organisation sends one `outboundLimitReached` event

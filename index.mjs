@@ -242,8 +242,19 @@ const { startDirectoryPurge } = await import('./lib/pbx/purge.js');
 startDirectoryPurge({ log: logger });
 // The monthly charge for each extension, checked once an hour.
 const { startExtensionCharges } = await import('./lib/extension-charge.js');
-const { databaseStarted: chargesReady } = await import('./lib/database.js');
+const { databaseStarted: chargesReady, Trunk: trunkModel } = await import('./lib/database.js');
 startExtensionCharges({ log: logger, databaseStarted: chargesReady });
+// A phone system leg on a trunk not flagged chargeable is not charged and skips the outbound policy.
+{
+  const { unflaggedPhoneSystemTrunks } = await import('./lib/outbound-trunk-check.js');
+  const { sequelize } = trunkModel;
+  chargesReady
+    .then(() => unflaggedPhoneSystemTrunks((sql, replacements) => sequelize.query(sql, { replacements, type: sequelize.QueryTypes.SELECT })))
+    .then((trunks) => {
+      if (trunks.length) logger.warn({ trunks }, 'phone system legs use trunks not flagged chargeable: flag each platform trunk (yarn doctor lists them)');
+    })
+    .catch((err) => logger.debug({ err: err?.message }, 'could not check the trunks of phone system numbers'));
+}
 // Phones removed while the vendor's redirect service was down are released there later.
 const { startRedirectSweep } = await import('./lib/provisioning/phones.js');
 const { databaseStarted: redirectSweepReady } = await import('./lib/database.js');
