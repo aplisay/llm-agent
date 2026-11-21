@@ -835,9 +835,11 @@ describe('phone system directory API', () => {
       expect(ended.duration).toBeGreaterThan(50000);
       const endedAgain = await ok(post('ownerA', `/agent-db/pbx/calls/${id}/end`, { reason: 'late' }));
       expect(endedAgain.metadata.pbx.endReason).toBe('hangup');
-      // A late write does not start an ended call again, and none of this is charged.
+      // A late write does not start an ended call again. The ended call has one
+      // usage row, written at nothing: a call in is free. The leg has not ended.
       expect((await ok(record(body))).live).toBe(false);
-      expect(await db.UsageRecord.count({ where: { callId: [id, legId] } })).toBe(0);
+      const usage = await db.UsageRecord.findAll({ where: { callId: [id, legId] } });
+      expect(usage.map((r) => [r.callId, r.technology, r.costStatus, Number(r.costMicros)])).toEqual([[id, 'pbx', 'free', 0]]);
     });
 
     test('bad records are refused', async () => {

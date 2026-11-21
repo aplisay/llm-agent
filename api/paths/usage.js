@@ -1,6 +1,8 @@
 import { UsageRecord, Sequelize, Op } from '../../lib/database.js';
 import { scopeWhereForUser } from '../../lib/scope.js';
 import { requirePermission, can } from '../../lib/auth/permissions.js';
+import { hiddenCallsExcluded } from '../../lib/call-visibility.js';
+import { brandsReady } from '../../lib/brands.js';
 
 let log;
 
@@ -19,6 +21,8 @@ const DIMENSIONS = {
   call: 'callId',
 };
 const DEFAULT_GROUP_BY = ['technology', 'provider', 'detail', 'unit'];
+// The brand of the organisation a row belongs to: the per-brand totals.
+const BRAND_OF_ROW = '(SELECT o.brand FROM organisations o WHERE o.id = "UsageRecord"."organisation_id")';
 
 export default function (logger) {
   log = logger;
@@ -30,12 +34,13 @@ export default function (logger) {
 const getUsage = async (req, res) => {
   if (!requirePermission(res, 'usage', 'read')) return;
   try {
-    let { startDate, endDate, groupBy, period, technology, provider, unit, callId, finalised } = req.query;
+    let { startDate, endDate, groupBy, period, technology, provider, unit, callId, finalised, brand } = req.query;
 
-    const requested = (groupBy ? String(groupBy).split(',') : DEFAULT_GROUP_BY)
-      .map((d) => d.trim())
-      .filter((d) => DIMENSIONS[d]);
-    const dimensions = (requested.length ? requested : DEFAULT_GROUP_BY).map((d) => DIMENSIONS[d]);
+    const asked = (groupBy ? String(groupBy).split(',') : DEFAULT_GROUP_BY).map((d) => d.trim());
+    const byBrand = asked.includes('brand') && brandsReady();
+    const requested = asked.filter((d) => DIMENSIONS[d]);
+    const dimensions = (requested.length || byBrand ? requested : DEFAULT_GROUP_BY).map((d) => DIMENSIONS[d]);
+    const brandOfRow = Sequelize.literal(BRAND_OF_ROW);
 
     // Time bucketing on the billing instant (billedAt), the canonical period
     // anchor — falling back to created_at for rows not yet costed (billedAt null).
@@ -46,6 +51,7 @@ const getUsage = async (req, res) => {
 
     const attributes = [
       ...dimensions,
+      ...(byBrand ? [[brandOfRow, 'brand']] : []),
       ...(periodBucket ? [[periodBucket, 'period']] : []),
       [Sequelize.fn('SUM', Sequelize.col('quantity')), 'quantity'],
       [Sequelize.fn('COUNT', Sequelize.col('id')), 'meters'],
@@ -71,12 +77,17 @@ const getUsage = async (req, res) => {
       // can present it as "included" instead of listing £0.00 lines.
       [Sequelize.literal('COUNT(*) FILTER (WHERE cost_micros = 0)'), 'zeroRatedMeters'],
     ];
-    const group = [...dimensions, ...(periodBucket ? [periodBucket] : [])];
+    const group = [...dimensions, ...(byBrand ? [brandOfRow] : []), ...(periodBucket ? [periodBucket] : [])];
 
     // Own-org by default; a usage:readAll holder (support / superAdmin) sees
     // cross-tenant usage (the one admin-surface read that is NOT own-org-only).
     const usageScope = can(res.locals.user, 'usage', 'readAll') ? {} : scopeWhereForUser(res.locals.user);
     const where = { [Op.and]: [usageScope] };
+    // The rows of a phone system call follow the call: a call the caller may
+    // not see shows no usage, the same answer as a call that does not exist.
+    const hidden = can(res.locals.user, 'usage', 'readAll') ? null : await hiddenCallsExcluded(res.locals.user);
+    if (hidden) where[Op.and].push(hidden);
+    if (brand && brandsReady()) where[Op.and].push(Sequelize.where(brandOfRow, String(brand)));
     if (startDate || endDate) {
       where.createdAt = {};
       if (startDate) where.createdAt[Op.gte] = new Date(startDate);
@@ -97,7 +108,7 @@ const getUsage = async (req, res) => {
       attributes,
       where,
       group,
-      order: dimensions.map((d) => [d, 'ASC']),
+      order: [...dimensions.map((d) => [d, 'ASC']), ...(byBrand ? [[brandOfRow, 'ASC']] : [])],
       raw: true,
     });
 
@@ -147,10 +158,17 @@ getUsage.apiDoc = {
       schema: { type: 'string' },
       description:
         'Comma-separated dimensions to group by: technology, provider, detail, unit, '
-        + 'media, currency, rateName, costStatus, agent, user, call. Defaults to '
+        + 'media, currency, rateName, costStatus, agent, user, call, brand. Defaults to '
         + '"technology,provider,detail,unit". media (webrtc/telephony) is the audio '
         + 'transport on voice rows; rateName/currency identify the card that valued the row; '
-        + 'costStatus says WHY a row is unpriced (matched | no_rate | no_line | errored | null).',
+        + 'costStatus says WHY a row is unpriced (matched | no_rate | no_line | errored | free | null). '
+        + "brand is the brand of the row's organisation: the per-brand totals. A row of a phone "
+        + 'system call that the caller may not see is left out.',
+    },
+    {
+      name: 'brand', in: 'query', required: false,
+      schema: { type: 'string' },
+      description: "Filter to the organisations of one brand. With usage:readAll, a brand's totals across its organisations.",
     },
     {
       name: 'period', in: 'query', required: false,
@@ -206,6 +224,8 @@ getUsage.apiDoc = {
                     rateName: { type: 'string', nullable: true, description: 'Rate card that valued the row.' },
                     agentId: { type: 'string', nullable: true },
                     userId: { type: 'string', nullable: true },
+                    callId: { type: 'string', nullable: true },
+                    brand: { type: 'string', nullable: true, description: "The brand of the rows' organisation, when grouped by it." },
                     period: { type: 'string', format: 'date-time', nullable: true, description: 'Bucket on billedAt (the billing instant), not created_at.' },
                     quantity: { type: 'number' },
                     meters: { type: 'number', description: 'Number of ledger rows aggregated.' },

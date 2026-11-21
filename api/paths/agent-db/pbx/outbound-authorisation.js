@@ -1,5 +1,5 @@
-import { PhoneNumber } from '../../../../lib/database.js';
-import { authoriseOutboundDestination } from '../../../../lib/outbound-authorisation.js';
+import { PhoneNumber, Trunk } from '../../../../lib/database.js';
+import { authoriseOutboundDestination, isRegistrationTrunk } from '../../../../lib/outbound-authorisation.js';
 import { lineOfEndpoint } from '../../../../lib/pbx/resolve.js';
 
 /**
@@ -34,6 +34,13 @@ export default function (logger) {
         })
         : null;
       const decision = await authoriseOutboundDestination({ calledId, organisationId, aplisayId: shown?.aplisayId || null });
+      if (decision.allowed && !decision.chargeable && decision.trunkId) {
+        const trunk = await Trunk.findByPk(decision.trunkId, { attributes: ['id', 'flags'] });
+        if (trunk && !isRegistrationTrunk(trunk)) {
+          logger.warn({ organisationId, trunkId: decision.trunkId },
+            'phone system leg on a trunk not flagged chargeable: it is not charged and the outbound policy does not apply. Flag the trunk if it is a platform trunk');
+        }
+      }
       if (!decision.allowed) {
         logger.info({ calledId, organisationId, code: decision.code, trunkId: decision.trunkId }, 'phone system outbound destination refused');
       }

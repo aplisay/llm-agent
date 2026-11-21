@@ -29,6 +29,8 @@ The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admi
 
 The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
+Billing for the phone system needs the schema 78 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not ([billing](billing-calls-from-usage.md#the-phone-system)).
+
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 
 ### Brands
@@ -150,7 +152,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/outbound-authorisation` | May this leg to an outside number be placed? The same policy the agent workers use. The caller must fail closed |
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
-| `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended |
+| `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. The call's own end may carry `recordedMs`, and any end `transcribedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
 
@@ -162,7 +164,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `connection` | Send the digits to the organisation's own phone system |
 | `agent` | Hand the call to an agent. `agent` names it: `instanceId`, `agentId` and `runtime`. Today only for a call that goes straight to an agent (see below). An agent as an extension, or as a destination of one, is a later release |
 | `forward` | Later releases |
-| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed` or `phone_system_disabled` |
+| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, or `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out) |
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
 
@@ -198,7 +200,7 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_found` | No registration has that id. The SIP account of a desk phone line is not a registration |
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
-A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. These calls write no usage yet.
+A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. Every call and answered leg writes usage when it ends: a leg out to an outside number is charged, and the rest is written at nothing. Each extension but a `connection` has a monthly charge. See [billing](billing-calls-from-usage.md#the-phone-system).
 
 ## Who sees calls
 
