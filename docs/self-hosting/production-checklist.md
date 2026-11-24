@@ -71,6 +71,15 @@ from one origin through your reverse proxy, as the test page does.
 - [ ] `RECORDING_STORAGE_PATH` points at storage you control and back up. The
       compose default is a local volume.
 - [ ] You know your retention needs for transcripts and recordings.
+- [ ] Invocation logs are deleted when you no longer need them. Each one holds
+      a call's runtime log and a copy of the agent definition.
+      `node tools/agent-admin.js purge-invocation-logs --days 30` reports
+      what it would delete. Add `--execute` to delete, and run it on a
+      schedule.
+- [ ] If you use Ultravox models, Ultravox keeps each call's transcript until
+      it is deleted. `node tools/agent-admin.js purge-ultravox-calls --days 30`
+      does the same for calls on your Ultravox account. It deletes every call
+      on that account created before the cutoff, not only this instance's.
 
 ## Operation
 
