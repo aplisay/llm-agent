@@ -105,7 +105,7 @@ export default function (logger) {
                   items: {
                     type: 'object',
                     properties: {
-                      dim: { type: 'string', enum: ['audio-path', 'model', 'tts', 'stt', 'destination'] },
+                      dim: { type: 'string', enum: ['audio-path', 'model', 'tts', 'stt', 'destination', 'extension', 'recording', 'transcription'] },
                       match: { type: 'object' },
                       unit: { type: 'string' },
                       priceMicros: { type: 'number', description: 'Micro-pence (1e-6 GBP) per `unit`.' },

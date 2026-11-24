@@ -147,7 +147,8 @@ billing `unit` and a `priceMicros`:
   row's field. A key that is left out matches anything. The keys are
   `technology`, `provider`, `detail`, `unit` and `media`.
 - **One line per dimension.** The dimensions are `audio-path`, `model`,
-  `tts`, `stt` and `destination`. In each dimension the engine uses the
+  `tts`, `stt`, `destination`, and for the phone system `extension`,
+  `recording` and `transcription`. In each dimension the engine uses the
   matching line with the most keys. If two lines have the same number of
   keys, the one that comes first on the card wins.
 - **Dimensions add up.** A row's cost is the sum over the dimensions that
@@ -445,6 +446,111 @@ reports sending. LiveKit Inference sends all of it. The Deepgram plugin,
 used when `LIVEKIT_PIPELINE_USE_PROVIDER_KEYS` is set, does not send quiet
 audio, so its row can be much shorter than the call.
 
+## The phone system
+
+An organisation with the phone system is charged for three things beside its
+agents: a monthly charge for each extension, its outside legs, and recording
+and transcription where they are used. All of them are usage rows, priced by
+the organisation's rate card and drawn from its credit balance.
+
+**When it starts.** None of this acts until `tools/agent-admin.js upgrade-db`
+has brought the database to schema 79 and the API server has restarted: no
+charge, no usage for phone system calls, no refusal on an empty balance. The
+first upgrade to schema 79 writes the instant it ran into the `metadata`
+table (key `extensionChargeStartedAt`), once. No day before that day is ever
+charged.
+
+**Every call writes usage.** When call control ends a phone system call or an
+answered leg, llm-agent writes a row for it (`technology: pbx`, `provider:
+pbx`, `detail` the call's model name, `unit: milliseconds`). A leg out to an
+outside number on a trunk flagged `chargeable` carries the destination charge
+from the card's `destination` line, as an agent's outside leg does. Every
+other row, a call between extensions, a call in, or a leg on a trunk that is
+not flagged, is written at nothing: `costMicros` 0 and `costStatus` `free`.
+`GET /usage/records` shows those as `priceState: free`.
+
+**Platform trunks must be flagged.** A phone system leg is charged, and passes
+the organisation's outbound policy, only on a trunk flagged `chargeable`
+(`PUT /trunks/{id}` with `"chargeable": true`). On each environment, flag every
+trunk that carries calls to a carrier we pay, and leave a customer's own trunk
+and every registration unflagged. Flagging a trunk applies to agents too:
+their legs on it then need a destination tariff and are charged for it.
+`yarn doctor` lists every trunk that phone system numbers use, or that
+`APLISAY_OUTBOUND_TRUNK_ID` names, which is not flagged and is not a
+registration. The server logs the same list when it starts, and a warning for
+each phone system leg placed on such a trunk.
+
+**Only its own lines price it.** A phone system row (`pbx`, `extension`,
+`recording`, `transcription`) is priced only by a line whose `match` names
+that technology. A line written for agent calls by its media, provider or
+unit alone, such as `{ "media": "telephony" }`, never prices one. A line of
+the `extension`, `recording` or `transcription` dimension must name its own
+technology, and prices nothing else. To add a charge by the minute on
+outside legs, add a line that matches `technology: pbx`.
+
+**The monthly charge for each extension.** Once an hour, and at each start,
+the server charges every live extension of an organisation with the phone
+system for the current calendar month (UK time), except extensions of type
+`connection`, which are free. The charge runs from the latest of the first of
+the month, the day the extension was created and the day charging started, by
+the day. The row is `technology: extension`, `provider: pbx`, `detail` the
+extension's type, `unit: day`, with the number of days, and it is priced by a
+line such as:
+
+```json
+{ "dim": "extension", "match": { "technology": "extension" }, "unit": "month", "priceMicros": 4000000 }
+```
+
+A `month` line divides the days by the length of that month: 20 days of a
+30-day month at £4 is £2.666667. A line may match `detail` to give one type of
+extension its own price.
+
+- **Billing instant.** The rate card is the one in force at noon UTC on the
+  first day charged, which is inside that UK day all year. When the extension
+  was created, or charging started, later that day, it is that moment
+  instead. A card version dated the first of a month prices that month.
+- **Once.** Each extension has one row a month, so the charge runs as often as
+  it likes, on as many servers as there are, and charges once. A run that
+  finds a row without a cost (a run that stopped half way) costs it.
+- **No price.** A charge the card cannot price (no `extension` line, or no
+  card) is closed at nothing: `costMicros` 0, `costStatus` `unpriced`, with
+  `metadata.unpricedBecause`. A card added later does not price a past month.
+  To start charging from a month, give the card an `extension` line from that
+  month on.
+- **In advance.** An extension removed during a month is not refunded, and one
+  created and removed between two runs is not charged.
+- **In a write.** A directory write shows the charges it starts and stops in
+  its effect (`effect.charges`), also in a dry run. Each start quotes what the
+  job will charge this month, from the same day and on the same card, and
+  nothing more for a month already charged. `priced` is false when the card
+  has no `extension` line.
+
+**Recording and transcription.** The end of a call may say how long it was
+recorded (`recordedMs`) and how much was transcribed (`transcribedMs`). Each is
+held to the length of the call or leg, and a value that is not a whole number
+of milliseconds is ignored. Each writes a row (`technology: recording` or
+`transcription`, `unit: milliseconds`) priced by a `recording` or
+`transcription` line by the minute.
+
+**An empty balance.** With the credit balance at zero or below, outside calls
+are refused (`balance_empty`, [outbound call
+authorisation](outbound-call-authorisation.md)). Calls in, calls between
+extensions and emergency calls go on. When a monthly charge draws money and
+leaves the balance below zero, the organisation is marked. If the balance is
+still below zero 30 days later, its phones stop taking calls: call control is
+told to refuse with `charge_unpaid`. Emergency calls still go out. A charge
+that draws nothing never marks it. A top-up that brings the balance back to
+zero or above clears the mark at once. An organisation whose balance is not
+tracked is never stopped.
+
+**Totals by brand.** `GET /usage?groupBy=brand` sums the usage of each brand's
+organisations, and `?brand=` keeps one brand. A platform operator sees every
+brand; anyone else sees their own organisation.
+
+**Who sees the rows.** The usage rows of a phone system call follow the call
+([who sees calls](phone-system.md#who-sees-calls)). A member sees no usage for
+a call they may not see, the same answer as for a call that does not exist.
+
 ## Checklist for a rate card
 
 - An audio-path line for each runtime and media you carry, and the
@@ -457,4 +563,6 @@ audio, so its row can be much shorter than the call.
 - `stt-aux` and `stt-output` lines if agents use side engines.
 - Zero `tts` lines for `ultravox`, `openai` and `xai` (speech the model makes
   with its own voice on Pipecat).
+- For the phone system: an `extension` line by the month, and `recording`
+  and `transcription` lines by the minute if those are used.
 - Then look for `no_line` rows: `GET /api/usage/records?costStatus=no_line`.

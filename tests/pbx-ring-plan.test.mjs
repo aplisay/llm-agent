@@ -839,3 +839,33 @@ describe('releases', () => {
     expect(sorted(releasedPhoneKinds(release))).toEqual(sorted(phoneKinds));
   });
 });
+
+describe('an unpaid monthly charge', () => {
+  const ROB_LINE = 'ln-p-rob-desk-1';
+  const DAY = 24 * 60 * 60 * 1000;
+  const owing = (daysAgo, balance = -100) => {
+    const s = baseSnapshot();
+    Object.assign(s.organisation, { balance, chargeUnpaidSince: new Date(WED_1930.valueOf() - daysAgo * DAY) });
+    return s;
+  };
+
+  test('after 30 days with the balance below zero, the phones stop taking calls', () => {
+    const s = owing(30);
+    expect(plan(s, toExtension('x-100'))).toMatchObject({ action: 'refuse', reason: 'charge_unpaid' });
+    expect(plan(s, { kind: 'dialled', lineId: ROB_LINE, digits: '101' })).toMatchObject({ action: 'refuse', reason: 'charge_unpaid' });
+  });
+
+  test.each(['999', '112'])('%s still goes out', (digits) => {
+    expect(plan(owing(45), { kind: 'dialled', lineId: ROB_LINE, digits }).action).toBe('emergency');
+  });
+
+  test('before 30 days, or with the balance back at zero, or not tracked, calls go on', () => {
+    expect(plan(owing(29), toExtension('x-100')).action).not.toBe('refuse');
+    expect(plan(owing(40, 0), toExtension('x-100')).action).not.toBe('refuse');
+    expect(plan(owing(40, null), toExtension('x-100')).action).not.toBe('refuse');
+    // An empty balance alone stops outside calls only (the outbound policy), not calls to phones.
+    const empty = baseSnapshot();
+    Object.assign(empty.organisation, { balance: -100, chargeUnpaidSince: null });
+    expect(plan(empty, toExtension('x-100')).action).not.toBe('refuse');
+  });
+});

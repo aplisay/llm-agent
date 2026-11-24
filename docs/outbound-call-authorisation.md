@@ -126,10 +126,23 @@ open by a lost write does not hold a place for good. Calls a minute counts the
 allowed decisions of the last 60 seconds, answered or not.
 
 **Spend.** Spend is read through `lib/outbound-spend.js`. It counts the costed
-usage rows of finished calls that carry a destination charge. **Phone system
-calls write no usage yet, so until billing writes their usage the daily and
-monthly spend limits do not move for them.** A call in progress is not counted
-until it ends and is costed.
+usage rows of finished calls that carry a destination charge: an agent's leg
+or a phone system leg out on a trunk flagged `chargeable`
+([billing](billing-calls-from-usage.md#the-phone-system)). Monthly extension
+charges, recording and transcription do not count. A call in progress is not
+counted until it ends and is costed.
+
+**An empty balance.** Once the schema 79 upgrade has run and the API server
+has restarted, when the organisation's credit balance is at zero or below,
+every outside call on a chargeable trunk is refused with `balance_empty`, its
+agents' calls as well as its phones'. Calls in, calls between extensions and
+emergency calls go on. An organisation whose balance is not tracked is never
+refused for it.
+
+**Phone system legs and the trunk.** A leg that call control places passes
+this policy only on a trunk flagged `chargeable`, like any other leg. A
+platform trunk that is not flagged lets phone system legs out with no charge
+and no policy; `yarn doctor` lists such trunks, and the server logs them.
 
 **The notice.** Each decision is written to `outbound_events`. The first refusal
 by a limit on a day for an organisation sends one `outboundLimitReached` event
@@ -178,6 +191,7 @@ The decision returns `{ allowed, code, reason, chargeable, trunkId, destination 
 | `destination_class` | The organisation's outbound policy does not allow the destination's class. `destinationClass` names it, or is null for a UK number in no class |
 | `outside_hours` | Outside the hours of the organisation's outbound policy |
 | `calls_in_progress_limit`, `calls_per_minute_limit`, `daily_spend_limit`, `monthly_spend_limit` | A limit of the organisation's outbound policy is reached. `limit`, `value` and `current` say which and by how much |
+| `balance_empty` | The organisation's credit balance is at zero or below |
 | `outbound_policy_unavailable` | The policy could not decide, or waited more than a second for the organisation's lock, so the call is refused |
 | `outbound_policy_not_ready` | The database lacks the schema 77 upgrade |
 
