@@ -1,6 +1,7 @@
 import { Call, Agent, Op } from '../../../../lib/database.js';
 import { visibleCallsWhere } from '../../../../lib/call-visibility.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { notRedacted } from '../../../../lib/redacted-calls.js';
 
 // Safety caps: a single call's transfer chain is small in practice.
 const MAX_LINKED = 50;   // total legs returned
@@ -32,7 +33,7 @@ export default function (logger) {
       const { callId } = req.params;
       const { limit } = req.query;
       const cap = Math.min(parseInt(limit, 10) || MAX_LINKED, MAX_LINKED);
-      const scope = await visibleCallsWhere(res.locals.user);
+      const scope = { ...(await visibleCallsWhere(res.locals.user)), ...notRedacted() };
 
       // 1. Resolve the root by walking up parentId (minimal columns — navigation
       //    only). Cycle- and depth-guarded.

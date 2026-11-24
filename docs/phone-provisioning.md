@@ -82,7 +82,7 @@ When a directory change gives a phone different lines, the phone's state becomes
 - A phone that has never fetched, a wiped phone, and a phone that was given a new settings address are not given.
 - A line password reset does not make a phone `updating`, so it does not start an ask. A phone that is already `updating` is given for its newest version as usual. The SIP edge then answers for the request with the new password, which a phone that still holds the old one may refuse.
 - Each API process holds at most 8 such requests open. One more is answered at once.
-- Needs the schema 78 database upgrade (`tools/agent-admin.js upgrade-db`). Until then the route answers 503 `phone_resync_not_ready`.
+- Needs the schema 80 database upgrade (`tools/agent-admin.js upgrade-db`). Until then the route answers 503 `phone_resync_not_ready`.
 
 The call control and SIP edge sides of this are not built yet.
 

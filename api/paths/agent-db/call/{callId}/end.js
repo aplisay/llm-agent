@@ -1,5 +1,6 @@
 import { Call , TransactionLog } from '../../../../../lib/database.js';
 import { maybeSendCallHook } from '../../../../../lib/call-hook.js';
+import { CALL_REDACTED } from '../../../../../lib/redacted-calls.js';
 
 let appParameters, log;
 
@@ -48,6 +49,7 @@ const callEnd = (async (req, res) => {
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
     }
+    if (call.redactedAt) return res.status(410).send(CALL_REDACTED);
 
     // Use provided userId/organisationId or fall back to call record values
     const finalUserId = userId || call.userId;

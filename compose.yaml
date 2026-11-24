@@ -28,6 +28,15 @@ name: aplisay
 
 x-bind: &bind ${APLISAY_BIND:-127.0.0.1}
 
+# Docker keeps a container's log until the container is removed. This caps
+# each service's log at five 20 MB files. Docker cannot cap a log by age:
+# see docs/self-hosting/production-checklist.md.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   # ── core ──────────────────────────────────────────────────────────────────
   postgres:
@@ -44,6 +53,7 @@ services:
       timeout: 5s
       retries: 20
     restart: unless-stopped
+    logging: *logging
 
   api:
     build:
@@ -89,6 +99,7 @@ services:
       timeout: 5s
       retries: 60
     restart: unless-stopped
+    logging: *logging
 
   # ── livekit ───────────────────────────────────────────────────────────────
   livekit:
@@ -120,6 +131,7 @@ services:
         protocol: udp
         host_ip: *bind
     restart: unless-stopped
+    logging: *logging
 
   livekit-worker:
     build:
@@ -148,6 +160,7 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+    logging: *logging
 
   # ── ui (development only) ─────────────────────────────────────────────────
   ui:
@@ -163,6 +176,7 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    logging: *logging
 
   # ── sip-livekit (optional) ────────────────────────────────────────────────
   # Phone calls through LiveKit SIP. Needs a public IP and these in .env:
@@ -172,6 +186,7 @@ services:
     image: redis:7-alpine
     profiles: [sip-livekit]
     restart: unless-stopped
+    logging: *logging
 
   livekit-sip:
     image: livekit/sip:v1.2.0
@@ -191,6 +206,7 @@ services:
       - redis
       - livekit
     restart: unless-stopped
+    logging: *logging
 
   # ── edge (optional) ───────────────────────────────────────────────────────
   # TLS for a public host. Set APLISAY_DOMAIN (the API) and LIVEKIT_DOMAIN (the
@@ -216,6 +232,7 @@ services:
       - api
       - livekit
     restart: unless-stopped
+    logging: *logging
 
 configs:
   caddyfile:
