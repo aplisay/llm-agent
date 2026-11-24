@@ -1,4 +1,5 @@
 import { TransactionLog } from '../../../lib/database.js';
+import { isCallRedacted, CALL_REDACTED } from '../../../lib/call-redaction.js';
 
 let appParameters, log;
 
@@ -22,6 +23,7 @@ const transactionLogCreate = (async (req, res) => {
   }
 
   try {
+    if (await isCallRedacted(callId)) return res.status(410).send(CALL_REDACTED);
     const createData = {
       userId,
       organisationId,

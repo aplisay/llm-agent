@@ -29,7 +29,7 @@ The phone system needs the schema 72 and 73 database upgrades (`tools/agent-admi
 
 The organisation's outbound policy also needs the schema 77 upgrade and then a restart of the API server. Until both are done, the outside calls of an organisation with the phone system are refused on the platform's own trunks with `outbound_policy_not_ready`, its agents' calls as well as its phones'. The policy, its limits and the brand's ceiling are in [outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy).
 
-Billing for the phone system needs the schema 78 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not ([billing](billing-calls-from-usage.md#the-phone-system)).
+Billing for the phone system needs the schema 79 upgrade and then a restart of the API server. Until both are done nothing is charged, phone system calls write no usage, and an empty balance stops nothing. Charging starts on the day the upgrade ran, and no earlier day is charged. Each platform trunk that phone system calls leave by must be flagged `chargeable`; `yarn doctor` lists those that are not ([billing](billing-calls-from-usage.md#the-phone-system)).
 
 `GET /me` returns `organisation.capabilities`, so a front end can decide which pages to show without another request.
 

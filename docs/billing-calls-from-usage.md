@@ -454,9 +454,9 @@ and transcription where they are used. All of them are usage rows, priced by
 the organisation's rate card and drawn from its credit balance.
 
 **When it starts.** None of this acts until `tools/agent-admin.js upgrade-db`
-has brought the database to schema 78 and the API server has restarted: no
+has brought the database to schema 79 and the API server has restarted: no
 charge, no usage for phone system calls, no refusal on an empty balance. The
-first upgrade to schema 78 writes the instant it ran into the `metadata`
+first upgrade to schema 79 writes the instant it ran into the `metadata`
 table (key `extensionChargeStartedAt`), once. No day before that day is ever
 charged.
 

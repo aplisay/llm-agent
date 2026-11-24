@@ -132,7 +132,7 @@ or a phone system leg out on a trunk flagged `chargeable`
 charges, recording and transcription do not count. A call in progress is not
 counted until it ends and is costed.
 
-**An empty balance.** Once the schema 78 upgrade has run and the API server
+**An empty balance.** Once the schema 79 upgrade has run and the API server
 has restarted, when the organisation's credit balance is at zero or below,
 every outside call on a chargeable trunk is refused with `balance_empty`, its
 agents' calls as well as its phones'. Calls in, calls between extensions and

@@ -2,6 +2,7 @@ import { Call, Op } from '../../../../lib/database.js';
 import { Sequelize } from 'sequelize';
 import { scopeWhereForUser } from '../../../../lib/scope.js';
 import { requirePermission } from '../../../../lib/auth/permissions.js';
+import { notRedacted } from '../../../../lib/redacted-calls.js';
 let appParameters, log;
 
 /** Finalised per-call cost in micro-pounds — see api/paths/calls.js. */
@@ -23,7 +24,8 @@ export default function (logger) {
       let where = {
         [Op.and]: [
           { agentId },
-          scopeWhereForUser(res.locals.user)
+          scopeWhereForUser(res.locals.user),
+          notRedacted(),
         ]
       };
       startDate = startDate ? new Date(startDate) : new Date(0);
