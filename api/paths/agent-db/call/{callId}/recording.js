@@ -1,4 +1,5 @@
 import { Call } from '../../../../../lib/database.js';
+import { CALL_REDACTED, deleteFromRecordingStore } from '../../../../../lib/call-redaction.js';
 
 let log;
 
@@ -25,6 +26,17 @@ const setCallRecording = async (req, res) => {
 
     if (!call) {
       return res.status(404).send({ error: 'Call not found' });
+    }
+
+    if (call.redactedAt) {
+      // The worker has already stored the audio. Recording names carry the
+      // call id; check it so a bad request cannot delete another call's object.
+      if (String(recordingId).includes(callId)) {
+        await deleteFromRecordingStore(recordingId).catch((err) => {
+          log?.error?.({ err: err?.message, callId, recordingId }, 'recording of a deleted call not removed, remove it by hand');
+        });
+      }
+      return res.status(410).send(CALL_REDACTED);
     }
 
     call.recordingId = recordingId;

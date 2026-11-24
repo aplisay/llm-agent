@@ -1,5 +1,6 @@
 import { InvocationLog } from '../../../lib/database.js';
 import { gzipSync } from 'zlib';
+import { isCallRedacted, CALL_REDACTED } from '../../../lib/call-redaction.js';
 
 /**
  * Subsystems allowed to post invocation logs. Must stay in sync with
@@ -87,6 +88,7 @@ const invocationLogCreate = (async (req, res) => {
   }
 
   try {
+    if (await isCallRedacted(callId)) return res.status(410).send(CALL_REDACTED);
     const prunedLog = pruneJson(logPayload, 512*1024);
     const jsonString = JSON.stringify(prunedLog);
     const compressed = gzipSync(Buffer.from(jsonString, 'utf8')).toString('base64');

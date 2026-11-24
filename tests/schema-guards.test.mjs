@@ -13,9 +13,15 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system, brands, phone provisioning and the outbound policy, in version order', () => {
+  test('registrar HA1, the phone system, brands, phone provisioning, the outbound policy and call redaction, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78]]);
+  });
+
+  test('a schema 77 database lacks the call redaction step, and the earlier steps are all there', () => {
+    const rows = upgradedRows().filter((row) => row.table_name !== 'calls');
+    for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning', 'outboundPolicy']) expect(missingParts(step, rows)).toEqual([]);
+    expect(missingParts('callRedaction', rows)).toEqual(['calls.redacted_at', 'calls.redacted_by']);
   });
 
   test('a schema 75 database lacks the provisioning step, and its features stay off', () => {
