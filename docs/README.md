@@ -58,6 +58,7 @@ Index of the docs in this directory. Start with the first table if you're new; t
 | [human-handback-howto.md](human-handback-howto.md) | Handing a call back to a human with context |
 | [transfer-back-plan.md](transfer-back-plan.md) | Delivery plan for transfer-back: listener override, transfer metadata, summariser pattern, bridged recording |
 | [call-recording.md](call-recording.md) | Recording lifecycle, encryption, storage and retrieval |
+| [deleting-calls.md](deleting-calls.md) | `DELETE /calls/{callId}`: what it removes, the billing record it keeps, and when it refuses |
 | [call-hooks.md](call-hooks.md) | Webhooks on call milestones |
 | [billing-calls-from-usage.md](billing-calls-from-usage.md) | Reading usage rows, how rate cards price them, and worked examples of what each call type costs |
 | [originate-api.md](originate-api.md) | Placing outbound calls from an agent/listener |

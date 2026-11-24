@@ -2,7 +2,15 @@ import { Call, Op } from '../../lib/database.js';
 import { Sequelize } from 'sequelize';
 import { visibleCallsWhere } from '../../lib/call-visibility.js';
 import { requirePermission } from '../../lib/auth/permissions.js';
+import { callRedactionReady } from '../../lib/redacted-calls.js';
+import { presentAttributes } from '../../lib/schema-guards.js';
 let appParameters, log;
+
+const REDACTED_WHERE = {
+  exclude: { redactedAt: null },
+  include: {},
+  only: { redactedAt: { [Op.ne]: null } },
+};
 
 /**
  * Finalised cost of a call in micro-pounds (1e-6 GBP): the sum of its costed,
@@ -22,11 +30,13 @@ export default function (logger) {
   const listAllCalls = (async (req, res) => {
     if (!requirePermission(res, 'call', 'read')) return;
     try {
-      let { startDate, endDate, lastIndex = 0, limit = 50 } = req.query;
+      let { startDate, endDate, lastIndex = 0, limit = 50, redacted = 'exclude' } = req.query;
+      if (!callRedactionReady() && redacted === 'only') return res.send({ calls: [], next: false });
       let where = {
         [Op.and]: [
           { index: { [Op.gt]: lastIndex } },
-          await visibleCallsWhere(res.locals.user)
+          await visibleCallsWhere(res.locals.user),
+          callRedactionReady() ? REDACTED_WHERE[redacted] ?? REDACTED_WHERE.exclude : {},
         ]
       };
       startDate = startDate ? new Date(startDate) : new Date(0);
@@ -38,7 +48,10 @@ export default function (logger) {
         };
       }
       let { count, rows: calls } = await Call.findAndCountAll({
-        attributes: ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros']],
+        attributes: [
+          ...presentAttributes(Call, ['id', 'index', 'agentId', 'parentId', 'modelName', 'callerId', 'calledId', 'startedAt', 'endedAt', 'status', 'recordingId', 'redactedAt']),
+          [Sequelize.literal(COST_MICROS_LITERAL), 'costMicros'],
+        ],
         where,
         order: [['index', 'ASC']],
         limit: parseInt(limit),
@@ -184,6 +197,17 @@ export default function (logger) {
         schema: {
           type: 'number',
           default: 50
+        }
+      },
+      {
+        description: "Deleted calls (DELETE /calls/{callId}) are left out by default. `include` lists them with the rest, and `only` lists nothing else. A deleted call shows its billing fields and `redactedAt`; its caller and called numbers are null.",
+        in: 'query',
+        name: 'redacted',
+        required: false,
+        schema: {
+          type: 'string',
+          enum: ['exclude', 'include', 'only'],
+          default: 'exclude'
         }
       }
     ],

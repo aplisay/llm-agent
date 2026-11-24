@@ -35,6 +35,14 @@
 #     docker compose -f docker-compose.dev.yml --profile voiceblender up --build
 #     cd agents/pipecat && SIP_GATEWAY=voiceblender uv run python -m pipecat_aplisay
 #
+# Docker keeps a container's log until the container is removed. This caps
+# each service's log at five 20 MB files.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   freeswitch:
     profiles: ["freeswitch"]
@@ -42,6 +50,7 @@ services:
       context: ./freeswitch/
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # mod_audio_stream's libwebsockets resolves the worker WS host via
     # getaddrinfo (/etc/hosts), NOT Docker's embedded DNS — so host.docker.internal
     # must be a real /etc/hosts entry or the WS connect fails ("connection error").
@@ -80,6 +89,7 @@ services:
       context: ./esl-poller/
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     depends_on:
       freeswitch:
         condition: service_started
@@ -120,6 +130,7 @@ services:
     image: vpbx/voiceblender:${VOICEBLENDER_VERSION:-0.16.0}
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # VB (in container) dials the host-side worker's audio WS at
     # VOICEBLENDER_WORKER_WS_BASE (ws://host.docker.internal:8082). That name
     # must resolve inside the container — host-gateway provides it on Linux and
@@ -163,6 +174,7 @@ services:
       dockerfile: agents/pipecat/sipbridge/Dockerfile
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # ``host.docker.internal`` is auto-injected on Docker Desktop (macOS /
     # Windows) but absent on Linux. ``host-gateway`` makes the same hostname
     # resolve to the host's bridge gateway on Linux, so the bridge can reach

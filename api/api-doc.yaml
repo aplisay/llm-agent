@@ -2303,6 +2303,15 @@ components:
             carries its figure or was not costed; `null` means "not costed", which is distinct
             from a zero-cost call.
           example: 777000
+        redactedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: |-
+            When the call was deleted with `DELETE /calls/{callId}`. Only `GET /calls?redacted=include`
+            or `?redacted=only` returns a deleted call. Its caller and called numbers are null and its
+            content is gone; the billing fields remain.
+          example: null
     CallId:
       type: string
       description: The Call ID the event relates to

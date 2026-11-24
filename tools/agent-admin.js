@@ -17,7 +17,10 @@ const optionDefinitions = [
   { name: 'userName', alias: 'u', type: String },
   { name: 'userId', alias: 'w', type: String },
   { name: 'key', alias: 'k', type: String },
-  { name: 'joinOnly', alias: 'j', type: Boolean }
+  { name: 'joinOnly', alias: 'j', type: Boolean },
+  { name: 'days', type: Number },
+  { name: 'execute', type: Boolean },
+  { name: 'limit', type: Number }
 ];
 const options = commandLineArgs(optionDefinitions);
 const configArgs = options.path && { path: dir.resolve(process.cwd(), options.path) };
@@ -29,7 +32,7 @@ let started;
 
 if (!command) {
   console.log(`Usage: ${process.argv[1]} --command <command> [options]`);
-  console.log(`Commands: add-org, usage, add-user, add-authkey, list-authkeys, delete-authkey, upgrade-db, normalise-orgs`);
+  console.log(`Commands: add-org, usage, add-user, add-authkey, list-authkeys, delete-authkey, upgrade-db, normalise-orgs, purge-invocation-logs, purge-ultravox-calls`);
   console.log(`Options: --path <path> -p <path> - specify the path to the.env file`);
   console.log(`Options: --email <email> -e <email> - specify the email address`);
   console.log(`Options: --orgName <orgName> -o <orgName> - specify the organisation name`);
@@ -38,6 +41,9 @@ if (!command) {
   console.log(`Options: --userId <userId> -w <userId> - specify the user id`);
   console.log(`Options: --key <key> -k <key> - specify the auth key`);
   console.log(`Options: --joinOnly -j - specify the auth key`);
+  console.log(`Options: --days <n> - purge-*: delete items created more than n days ago (default 30)`);
+  console.log(`Options: --execute - purge-*: really delete; without it the command only reports what it would delete`);
+  console.log(`Options: --limit <n> - purge-*: delete at most n items, oldest first`);
 
   exit(1);
 }
@@ -46,9 +52,46 @@ else if (command === 'upgrade-db') {
 }
 
 
+function printPurgeResult(label, result) {
+  console.log(`${label}: ${result.dryRun ? 'DRY RUN, nothing deleted (add --execute to delete)' : 'EXECUTED'}`);
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function purgeUltravoxCalls() {
+  const { ULTRAVOX_BASE_URL, cutoffFromDays, purgeUltravoxCalls: purge } = await import('../lib/retention.js');
+  if (!process.env.ULTRAVOX_API_KEY) {
+    throw new Error('ULTRAVOX_API_KEY is not set in the environment or env file');
+  }
+  const http = axios.create({
+    baseURL: ULTRAVOX_BASE_URL,
+    headers: { 'X-API-Key': process.env.ULTRAVOX_API_KEY },
+    timeout: 30000,
+  });
+  const result = await purge({
+    http,
+    cutoff: cutoffFromDays(options.days ?? 30),
+    execute: !!options.execute,
+    limit: options.limit,
+    log: (data, msg) => logger.info(data, msg),
+  });
+  printPurgeResult('purge-ultravox-calls', result);
+  if (result.failed) process.exitCode = 1;
+}
+
 async function main() {
 
-  const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize, UsageRecord } = (await import('../lib/database.js'));
+  // Needs no database, so it runs before lib/database.js is imported.
+  if (command === 'purge-ultravox-calls') {
+    try {
+      await purgeUltravoxCalls();
+    } catch (e) {
+      logger.error(e, 'error');
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const { Agent, User, Organisation, AuthKey, stopDatabase, databaseStarted, Op, Call, Sequelize, UsageRecord, InvocationLog } = (await import('../lib/database.js'));
   await databaseStarted;
   started = stopDatabase;
   try {
@@ -465,6 +508,19 @@ async function main() {
         }
         break;
 
+      case 'purge-invocation-logs': {
+        const { cutoffFromDays, purgeInvocationLogs } = await import('../lib/retention.js');
+        const result = await purgeInvocationLogs({
+          sequelize: InvocationLog.sequelize,
+          cutoff: cutoffFromDays(options.days ?? 30),
+          execute: !!options.execute,
+          limit: options.limit,
+          log: (data, msg) => logger.info(data, msg),
+        });
+        printPurgeResult('purge-invocation-logs', result);
+        break;
+      }
+
       default:
         throw new Error(`unrecognised command: ${command}`);
     }
@@ -475,7 +531,8 @@ async function main() {
     exit(1);
   }
   finally {
-    exit(0);
+    // Keep a failure's exit code: cron jobs read it.
+    exit(process.exitCode ?? 0);
   }
 }
 
