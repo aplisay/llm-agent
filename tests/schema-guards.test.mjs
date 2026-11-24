@@ -13,9 +13,9 @@ function upgradedRows() {
 }
 
 describe('guarded schema steps', () => {
-  test('registrar HA1, the phone system, brands, phone provisioning, the outbound policy, call redaction and phone resync, in version order', () => {
+  test('registrar HA1, the phone system, brands, phone provisioning, the outbound policy, call redaction, the extension charge and phone resync, in version order', () => {
     expect(Object.entries(GUARDED_STEPS).map(([name, step]) => [name, step.version]))
-      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78], ['phoneResync', 80]]);
+      .toEqual([['registrarHA1', 72], ['phoneSystem', 73], ['brands', 74], ['phoneProvisioning', 76], ['outboundPolicy', 77], ['callRedaction', 78], ['extensionCharge', 79], ['phoneResync', 80]]);
   });
 
   test('a schema 77 database lacks the call redaction step, and the earlier steps are all there', () => {
@@ -33,9 +33,9 @@ describe('guarded schema steps', () => {
     ]);
   });
 
-  test('a schema 78 database lacks the phone resync step, and the earlier steps are all there', () => {
+  test('a schema 79 database lacks the phone resync step, and the earlier steps are all there', () => {
     const rows = upgradedRows().filter((row) => !(row.table_name === 'devices' && row.column_name.startsWith('resync_')));
-    for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning', 'outboundPolicy']) expect(missingParts(step, rows)).toEqual([]);
+    for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning', 'outboundPolicy', 'callRedaction', 'extensionCharge']) expect(missingParts(step, rows)).toEqual([]);
     expect(missingParts('phoneResync', rows)).toEqual([
       'devices.resync_version', 'devices.resync_requested_at', 'devices.resync_attempts', 'devices.resync_state',
     ]);
@@ -45,6 +45,12 @@ describe('guarded schema steps', () => {
     const rows = upgradedRows().filter((row) => row.table_name !== 'outbound_events' && !(row.table_name === 'brands' && row.column_name === 'outbound_ceiling'));
     for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning']) expect(missingParts(step, rows)).toEqual([]);
     expect(missingParts('outboundPolicy', rows)).toEqual(['outbound_events', 'brands.outbound_ceiling']);
+  });
+
+  test('a schema 78 database lacks only the extension charge step', () => {
+    const rows = upgradedRows().filter((row) => !(row.table_name === 'organisations' && row.column_name === 'charge_unpaid_since'));
+    for (const step of ['registrarHA1', 'phoneSystem', 'brands', 'phoneProvisioning', 'outboundPolicy', 'callRedaction']) expect(missingParts(step, rows)).toEqual([]);
+    expect(missingParts('extensionCharge', rows)).toEqual(['organisations.charge_unpaid_since']);
   });
 
   test('the boot reads each table a step adds or changes, once', () => {

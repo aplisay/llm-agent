@@ -3507,7 +3507,36 @@ components:
           items: { type: object, properties: { entryId: { type: string }, name: { type: string } } }
         charges:
           type: object
-          description: Charges the write starts or stops. Empty until extensions are priced.
+          description: >-
+            The monthly extension charges the write starts or stops. Each start quotes what the
+            monthly charge will draw this month, from the same day and on the same rate card, and
+            nothing more for a month already charged. A `connection` extension is free. `priced`
+            is false, and the amounts 0, when the rate card has no `extension` line. A charge that
+            stops is not refunded for the rest of the month. Empty until the schema 79 upgrade.
+          properties:
+            add:
+              type: array
+              items:
+                type: object
+                properties:
+                  extensionId: { type: string }
+                  number: { type: string }
+                  type: { type: string }
+                  amountMicros: { type: integer, nullable: true, description: "The charge for a full month, in millionths of the currency. Null when the price could not be read." }
+                  firstPeriodMicros: { type: integer, nullable: true, description: "What the monthly charge draws this month, by the day. Null when the price could not be read." }
+                  currency: { type: string, nullable: true }
+                  startsOn: { type: string, format: date, nullable: true }
+                  priced: { type: boolean, description: "False when the rate card has no extension line, so nothing is charged." }
+            remove:
+              type: array
+              items:
+                type: object
+                properties:
+                  extensionId: { type: string }
+                  number: { type: string }
+                  type: { type: string }
+                  endsOn: { type: string, format: date }
+                  refundMicros: { type: integer }
         dependents:
           type: object
         warnings:

@@ -1,6 +1,7 @@
 import { Organisation, BalanceCredit, Sequelize } from '../../../../../lib/database.js';
 import { requirePermission } from '../../../../../lib/auth/permissions.js';
 import { penniesToMicros, microsToPennies } from '../../../../../lib/rates.js';
+import { noteChargeBalance } from '../../../../../lib/extension-charge.js';
 
 /**
  * POST /api/organisations/{id}/balance/credit — idempotently adjust the org's
@@ -57,6 +58,9 @@ export default function (logger) {
       return res.status(500).send({ error: 'credit failed' });
     }
 
+    // A top-up that brings the balance back to zero or above pays any unpaid extension charge.
+    await noteChargeBalance(organisationId)
+      .catch((err) => req.log.warn({ err: err?.message, organisationId }, 'could not clear the unpaid extension charge'));
     const updated = await Organisation.findByPk(organisationId);
     return res.send({ balancePennies: microsToPennies(updated.balance), credited: microsToPennies(amountMicros) });
   };
