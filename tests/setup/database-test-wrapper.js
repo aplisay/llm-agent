@@ -37,6 +37,9 @@ delete process.env.POSTGRES_CERT;
 delete process.env.POSTGRES_RO_SERVER_NAME;
 delete process.env.SECRETENV_KEY;
 delete process.env.SECRETENV_BUNDLE;
+// No suite may reach a real phone vendor from a developer's or CI's environment.
+// A test that needs one points these at a stand-in after this file has loaded.
+for (const name of ['SNOM_SRAPS_KEY_ID', 'SNOM_SRAPS_KEY_SECRET', 'SNOM_SRAPS_COMPANY_ID', 'SNOM_SRAPS_URL']) delete process.env[name];
 
 let realDb;
 let isInitialized = false;
