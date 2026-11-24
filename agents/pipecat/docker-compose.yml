@@ -43,6 +43,14 @@
 # voiceblender expect to control their own SIP/RTP UDP port ranges). For
 # non-host deployments, configure RTP ports explicitly and expose them.
 #
+# Docker keeps a container's log until the container is removed. This caps
+# each service's log at five 20 MB files.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   # ---- FreeSWITCH ingress (profile: freeswitch) -------------------------
 
@@ -52,6 +60,7 @@ services:
       context: ./freeswitch/
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # mod_audio_stream's libwebsockets resolves the worker WS host via
     # getaddrinfo (/etc/hosts), NOT Docker's embedded DNS — so host.docker.internal
     # must be a real /etc/hosts entry or the WS connect fails ("connection error").
@@ -84,6 +93,7 @@ services:
       context: ./esl-poller/
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     depends_on:
       freeswitch:
         condition: service_started
@@ -115,6 +125,7 @@ services:
     image: vpbx/voiceblender:${VOICEBLENDER_VERSION:-0.16.0}
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     environment:
 
       HTTP_ADDR: ":${VOICEBLENDER_HTTP_PORT:-8080}"
@@ -149,6 +160,7 @@ services:
       dockerfile: agents/pipecat/sipbridge/Dockerfile
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # Every variable in .env reaches the container, so the SIPBRIDGE_* settings
     # that have no line below (TLS, SRTP, RTP timeout, trace) can be set there.
     # The lines below win over .env.
@@ -195,6 +207,7 @@ services:
       dockerfile: agents/pipecat/Dockerfile
     network_mode: host
     restart: unless-stopped
+    logging: *logging
     # Every variable in .env reaches the worker: PIPECAT_SIP_OUTBOUND, provider
     # keys with no line below, recording storage and the rest of
     # docs/self-hosting/configuration.md. The lines below win over .env.

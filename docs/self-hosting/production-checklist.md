@@ -80,6 +80,10 @@ from one origin through your reverse proxy, as the test page does.
       it is deleted. `node tools/agent-admin.js purge-ultravox-calls --days 30`
       does the same for calls on your Ultravox account. It deletes every call
       on that account created before the cutoff, not only this instance's.
+- [ ] Container logs can hold phone numbers. `compose.yaml` caps each
+      service's log at five 20 MB files, which limits size but not age. For
+      an age limit, use Docker's `journald` log driver and set
+      `MaxRetentionSec=30day` and `MaxFileSec=1day` in journald.conf.
 
 ## Operation
 

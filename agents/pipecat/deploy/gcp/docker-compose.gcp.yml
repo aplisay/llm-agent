@@ -16,6 +16,15 @@
 #
 # `.env` controls which one deploy-node.sh starts via the SIP_GATEWAY +
 # COMPOSE_PROFILES variables.
+# Docker keeps a container's log until the container is removed. This caps
+# each service's log at five 100 MB files, as the LiveKit runner compose
+# does. Docker cannot cap a log by age.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
   # ---- FreeSWITCH ingress (profile: freeswitch) -------------------------
 
@@ -24,6 +33,7 @@ services:
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/freeswitch:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
+    logging: *logging
     env_file:
       - .env
     environment:
@@ -43,6 +53,7 @@ services:
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/esl-poller:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
+    logging: *logging
     depends_on:
       freeswitch:
         condition: service_started
@@ -73,6 +84,7 @@ services:
     image: vpbx/voiceblender:${VOICEBLENDER_VERSION:-0.16.0}
     network_mode: host
     restart: always
+    logging: *logging
     env_file:
       - .env
     environment:
@@ -99,6 +111,7 @@ services:
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/sipbridge:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
+    logging: *logging
     env_file:
       - .env
     environment:
@@ -131,6 +144,7 @@ services:
     image: ${IMAGE_REGISTRY}/${PROJECT_ID}/containers/${REPO_NAME}/pipecat-worker:${IMAGE_TAG:-next}
     network_mode: host
     restart: always
+    logging: *logging
     env_file:
       - .env
     environment:
