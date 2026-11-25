@@ -3512,7 +3512,8 @@ components:
             monthly charge will draw this month, from the same day and on the same rate card, and
             nothing more for a month already charged. A `connection` extension is free. `priced`
             is false, and the amounts 0, when the rate card has no `extension` line. A charge that
-            stops is not refunded for the rest of the month. Empty until the schema 79 upgrade.
+            stops is not refunded for the rest of the month. Empty until the schema 79 upgrade, and
+            for a deactivated organisation.
           properties:
             add:
               type: array
