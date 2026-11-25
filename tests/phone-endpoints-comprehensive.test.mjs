@@ -118,6 +118,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   });
 
   afterEach(async () => {
+    // No simulation outlives its test. One left running has timers of up to
+    // five minutes, and a later test that speeds timers up would speed its too.
+    for (const sim of registrationSimulator?.getAllSimulations() ?? []) {
+      registrationSimulator.stopSimulation(sim.registrationId);
+    }
     try {
       const { PhoneRegistration, PhoneNumber, Organisation } = models;
       await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
