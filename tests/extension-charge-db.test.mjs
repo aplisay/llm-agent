@@ -618,6 +618,17 @@ describe('billing for the phone system', () => {
       expect(again).toMatchObject({ extensionId: ext.id, amountMicros: 4_000_000, firstPeriodMicros: 0 });
     });
 
+    test('a write for a deactivated organisation quotes no charge, as the job charges none', async () => {
+      await Organisation.update({ status: 'deactivated' }, { where: { id: orgs.phone } });
+      const result = await directory.createEntry(ctx(false), { name: 'Ivy', kind: 'person', extension: '254', extensionType: 'ring_all' });
+      expect(result.effect.charges).toEqual({ add: [], remove: [] });
+      await charge.runExtensionCharges({ log });
+      expect(await chargeRows(orgs.phone)).toHaveLength(0);
+      await Organisation.update({ status: 'suspended' }, { where: { id: orgs.phone } });
+      const suspended = await directory.createEntry(ctx(true), { name: 'Jo', kind: 'person', extension: '255', extensionType: 'ring_all' });
+      expect(suspended.effect.charges.add).toEqual([expect.objectContaining({ number: '255', amountMicros: 4_000_000 })]);
+    });
+
     test('a change from connection to a charged type quotes what the job then charges', async () => {
       await directory.createEntry(ctx(false), { name: 'Gail', kind: 'team', extension: '253' });
       const ext = await db.Extension.findOne({ where: { organisationId: orgs.phone, number: '253' } });

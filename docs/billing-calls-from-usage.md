@@ -541,7 +541,8 @@ extension its own price.
   its effect (`effect.charges`), also in a dry run. Each start quotes what the
   job will charge this month, from the same day and on the same card, and
   nothing more for a month already charged. `priced` is false when the card
-  has no `extension` line.
+  has no `extension` line. A write for a deactivated organisation shows no
+  charges.
 
 **Recording and transcription.** The end of a call may say how long it was
 recorded (`recordedMs`) and how much was transcribed (`transcribedMs`). Each is
