@@ -460,6 +460,17 @@ first upgrade to schema 79 writes the instant it ran into the `metadata`
 table (key `extensionChargeStartedAt`), once. No day before that day is ever
 charged.
 
+**The first upgrade to schema 79, in this order:**
+
+1. Give each rate card that should charge for extensions an `extension` line
+   (below). A month whose charge finds no line is closed at nothing and never
+   charged, so without the line the rest of the first month is free.
+2. Flag every platform trunk that phone system calls leave by `chargeable`
+   (below). `yarn doctor` lists those that are not. A leg on a trunk that is
+   not flagged goes out with no charge and no policy, and is logged.
+3. Run `tools/agent-admin.js upgrade-db` ([upgrading](self-hosting/upgrading.md#the-database-schema-step)).
+4. Restart the API server.
+
 **Every call writes usage.** When call control ends a phone system call or an
 answered leg, llm-agent writes a row for it (`technology: pbx`, `provider:
 pbx`, `detail` the call's model name, `unit: milliseconds`). A leg out to an
@@ -519,6 +530,13 @@ extension its own price.
   month on.
 - **In advance.** An extension removed during a month is not refunded, and one
   created and removed between two runs is not charged.
+- **Organisation status.** A deactivated organisation (`status`
+  `deactivated`) is not charged. A suspended one is charged as usual. A month
+  charged before the organisation is deactivated keeps its charge. If it is
+  made active again, the month it comes back in is charged like any other
+  month: from the first, or from the day the extension was created, and
+  nothing more if that month was already charged. The day it came back is not
+  recorded, so it is not used.
 - **In a write.** A directory write shows the charges it starts and stops in
   its effect (`effect.charges`), also in a dry run. Each start quotes what the
   job will charge this month, from the same day and on the same card, and

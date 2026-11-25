@@ -129,7 +129,7 @@ describe('billing for the phone system', () => {
 
   beforeEach(async () => {
     for (const id of Object.values(orgs)) await clean(id);
-    await Organisation.update({ balance: 10_000_000, chargeUnpaidSince: null, outboundPolicy: null }, {
+    await Organisation.update({ balance: 10_000_000, chargeUnpaidSince: null, outboundPolicy: null, status: 'active' }, {
       where: { id: [orgs.phone, orgs.plain, orgs.bare, orgs.unrated, orgs.fresh] },
     });
     await Organisation.update({ balance: 1_000_000, chargeUnpaidSince: null }, { where: { id: orgs.owing } });
@@ -283,6 +283,34 @@ describe('billing for the phone system', () => {
       await extension(orgs.plain, '209', { createdAt: new Date('2026-10-01T00:00:00Z') });
       await charge.runExtensionCharges({ now: NOV_20, log });
       expect(await chargeRows(orgs.plain)).toHaveLength(0);
+    });
+
+    test('a deactivated organisation is not charged, and keeps a month charged before it was deactivated', async () => {
+      await extension(orgs.phone, '214', { createdAt: new Date('2026-10-01T00:00:00Z') });
+      await Organisation.update({ status: 'deactivated' }, { where: { id: orgs.phone } });
+      await charge.runExtensionCharges({ now: NOV_20, log });
+      await charge.chargeOrganisation(await orgRow(orgs.phone), { now: NOV_20, log });
+      expect(await chargeRows(orgs.phone)).toHaveLength(0);
+      expect(await balanceOf(orgs.phone)).toBe(10_000_000);
+
+      await Organisation.update({ status: 'active' }, { where: { id: orgs.phone } });
+      await charge.runExtensionCharges({ now: NOV_20, log });
+      await Organisation.update({ status: 'deactivated' }, { where: { id: orgs.phone } });
+      await charge.runExtensionCharges({ now: new Date('2026-11-25T12:00:00Z'), log });
+      await charge.runExtensionCharges({ now: new Date('2026-12-01T12:00:00Z'), log });
+      const rows = await chargeRows(orgs.phone);
+      expect(rows.map((r) => [r.metadata.month, Number(r.costMicros)])).toEqual([['2026-11', 4_000_000]]);
+      expect(await balanceOf(orgs.phone)).toBe(6_000_000);
+    });
+
+    test('a suspended organisation is charged', async () => {
+      await extension(orgs.phone, '215', { createdAt: new Date('2026-10-01T00:00:00Z') });
+      await Organisation.update({ status: 'suspended' }, { where: { id: orgs.phone } });
+      await charge.runExtensionCharges({ now: NOV_20, log });
+      const [row] = await chargeRows(orgs.phone);
+      expect(row).toMatchObject({ costStatus: 'matched' });
+      expect(Number(row.costMicros)).toBe(4_000_000);
+      expect(await balanceOf(orgs.phone)).toBe(6_000_000);
     });
 
     test('a charge the card cannot price is closed at nothing, and a later card does not price it', async () => {

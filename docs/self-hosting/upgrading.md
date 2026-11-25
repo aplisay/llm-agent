@@ -64,6 +64,11 @@ the API server, so that any feature switched off at start comes on. If you
 run several API server replicas, run it once: the schema work is serialised by
 a database lock.
 
+Some steps need data in place before they run. Schema 79, billing for the
+phone system, needs the rate card's `extension` line and the trunk flags
+first: the order is in
+[billing calls from usage](../billing-calls-from-usage.md#the-phone-system).
+
 Setting `DB_FORCE_SYNC=true` for one start of the API server does the same
 work. Remove it afterwards. Do not leave it set in production.
 
