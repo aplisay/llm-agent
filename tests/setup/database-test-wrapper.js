@@ -43,12 +43,19 @@ for (const name of ['SNOM_SRAPS_KEY_ID', 'SNOM_SRAPS_KEY_SECRET', 'SNOM_SRAPS_CO
 
 let realDb;
 let isInitialized = false;
+// The boot in flight, if any. A hook that times out leaves it running, so
+// teardownRealDatabase() waits for it: only then is there a pool to close.
+let settingUp = null;
 
-export async function setupRealDatabase() {
+export function setupRealDatabase() {
   if (isInitialized) {
-    return realDb;
+    return Promise.resolve(realDb);
   }
+  settingUp ??= bootRealDatabase().finally(() => { settingUp = null; });
+  return settingUp;
+}
 
+async function bootRealDatabase() {
   // Store original environment variables for cleanup
   const originalEnv = {
     POSTGRES_HOST: process.env.POSTGRES_HOST,
@@ -127,6 +134,8 @@ export async function setupRealDatabase() {
 }
 
 export async function teardownRealDatabase() {
+  // See settingUp. The boot's own error has gone to whoever awaited it.
+  if (settingUp) await settingUp.catch(() => {});
   if (realDb && isInitialized) {
     // Stop the real database
     await realDb.stopDatabase();
