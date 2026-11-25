@@ -25,6 +25,10 @@ export default {
   // no longer has to serialise. Override with JEST_WORKERS; global-setup.js
   // reads the resolved value and creates exactly that many databases.
   maxWorkers: Number(process.env.JEST_WORKERS) || 4,
+  // Under --experimental-vm-modules a worker keeps every test file's module
+  // graph, about 30 MB a file, so its memory grows for the whole run. jest
+  // replaces a worker whose heap is over this limit before its next file.
+  workerIdleMemoryLimit: '400MB',
   verbose: true,
   collectCoverage: true,
   coverageDirectory: 'coverage/no-db',
