@@ -89,11 +89,19 @@ describe('call log rate limiter', () => {
   });
 
   test('the window resets the budget', async () => {
-    const app = buildApp({ limit: 1, windowMs: 50 });
-    expect((await logs(app, 'alice')).status).toBe(200);
-    expect((await logs(app, 'alice')).status).toBe(429);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect((await logs(app, 'alice')).status).toBe(200);
+    // The limiter's store reads Date.now(), so the test moves the clock. With a
+    // real 50 ms window the first two requests could fall into different
+    // windows on a slow machine, and the second was then not refused.
+    const realNow = Date.now;
+    try {
+      const app = buildApp({ limit: 1, windowMs: 60_000 });
+      expect((await logs(app, 'alice')).status).toBe(200);
+      expect((await logs(app, 'alice')).status).toBe(429);
+      Date.now = () => realNow() + 60_001;
+      expect((await logs(app, 'alice')).status).toBe(200);
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   test('CORS preflight is never counted', async () => {
