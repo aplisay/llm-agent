@@ -181,6 +181,8 @@ describe('emergency address records', () => {
       '../api/paths/emergency-records/{number}.js',
       '../api/paths/emergency-records/{number}/claim.js',
       '../api/paths/agent-db/pbx/outbound-authorisation.js',
+      '../api/paths/agent-db/phone-endpoints.js',
+      '../api/paths/agent-db/phone-numbers.js',
       '../api/paths/phone-endpoints.js',
     ]) await import(file);
     await openapi.initialize({
@@ -188,7 +190,7 @@ describe('emergency address records', () => {
       apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
       dependencies: { logger: log, voices: {}, wsServer: {} },
       paths: './api/paths',
-      routesGlob: '{emergency-records{.js,/**/*.js},agent-db/pbx/outbound-authorisation.js,phone-endpoints.js}',
+      routesGlob: '{emergency-records{.js,/**/*.js},agent-db/pbx/outbound-authorisation.js,agent-db/phone-endpoints.js,agent-db/phone-numbers.js,phone-endpoints.js}',
       promiseMode: true,
       errorMiddleware: (err, req, res, next) => res.status(err.status || 500).json(err),
     });
@@ -199,6 +201,8 @@ describe('emergency address records', () => {
 
   afterAll(async () => {
     await new Promise((resolve) => server.close(resolve));
+    await db.UsageRecord.destroy({ where: { organisationId: Object.values(orgs) } });
+    await db.Call.destroy({ where: { organisationId: Object.values(orgs) } });
     await PhoneNumber.destroy({ where: { aplisayId: [CARRIER, CARRIER_2, OWN_TRUNK] } });
     await AuthKey.destroy({ where: { userId: userIds } });
     await User.destroy({ where: { id: userIds } });
@@ -250,6 +254,27 @@ describe('emergency address records', () => {
       for (const [method, path, body] of routes()) {
         await expect(callWith(null)(path, { method, body })).rejects.toEqual(refusedWith(401));
       }
+    });
+
+    test('a number row sent whole by another route does not show the record', async () => {
+      const shown = await newNumber({ emergencyAddressMode: 'own', emergencyAddress: OWN_ADDRESS });
+      await store.update(await store.claim(await store.read(shown)), send());
+      // Held, so the row has a claim's version on it as well.
+      const held = await store.claim(await store.read(shown));
+      const workers = callWith(null);
+      const headers = { 'x-shared-token': SHARED };
+      const single = (await workers(`/agent-db/phone-endpoints?type=e164-ddi&number=${shown}&trunkId=${CARRIER}`, { headers })).items[0];
+      const listed = (await workers(`/agent-db/phone-numbers?number=${shown}`, { headers }))[0];
+      const whole = JSON.parse(JSON.stringify(await rowOf(shown)));
+      for (const row of [single, listed, whole]) {
+        expect(row.number).toBe(shown);
+        expect(Object.keys(row).filter((key) => /emergency/i.test(key))).toEqual([]);
+        expect(JSON.stringify(row)).not.toContain(held.version);
+        expect(JSON.stringify(row)).not.toContain(SENT.thoroughfare);
+        expect(JSON.stringify(row)).not.toContain(OWN_ADDRESS.thoroughfare);
+      }
+      // The service still reads it all.
+      expect(await store.read(shown)).toMatchObject({ state: 'submitted', sent: SENT, mode: 'own', address: OWN_ADDRESS });
     });
 
     test('the service key opens nothing else', async () => {
@@ -688,6 +713,33 @@ describe('emergency address records', () => {
       const before = await store.read(number);
       await setRow(number, { outbound: true });
       expect(await store.read(number)).toEqual(before);
+    });
+  });
+
+  describe('the record of an emergency call that call control writes late', () => {
+    test('keeps its start time and its fields, and its leg row follows', async () => {
+      const { upsertCall, endCall } = await import('../lib/pbx/call-records.js');
+      const startedAt = new Date(Date.now() - 15 * 60 * 1000);
+      const id = randomUUID();
+      const metadata = {
+        direction: 'emergency', presentNumber: `+${ddi(1)}`, addressState: 'rejected', numberFrom: 'kept', sourceAddress: '192.0.2.10:5060',
+      };
+      const first = await upsertCall({ id, organisationId: orgs.on, callerId: '100', calledId: '999', startedAt: startedAt.toISOString(), metadata });
+      expect(first.created).toBe(true);
+      expect(first.call.startedAt).toEqual(startedAt);
+      expect(first.call.metadata.pbx).toEqual(metadata);
+
+      const answeredAt = new Date(startedAt.valueOf() + 4000);
+      const leg = await upsertCall({ id: randomUUID(), parentId: id, organisationId: orgs.on, calledId: '999', startedAt: answeredAt.toISOString(), metadata: { kind: 'emergency' } });
+      expect(leg.call).toMatchObject({ parentId: id, startedAt: answeredAt });
+
+      // The same write sent again is one row.
+      const again = await upsertCall({ id, organisationId: orgs.on, startedAt: startedAt.toISOString(), metadata: { answered: true } });
+      expect(again.created).toBe(false);
+      expect(again.call.metadata.pbx).toEqual({ ...metadata, answered: true });
+
+      const ended = await endCall(id, { endedAt: new Date(startedAt.valueOf() + 60000).toISOString(), answered: true });
+      expect(ended.call).toMatchObject({ duration: 60000, live: false });
     });
   });
 

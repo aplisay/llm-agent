@@ -652,6 +652,13 @@ describe('an emergency call and the state of the number\'s address record', () =
     }
   });
 
+  test('the digits are compared after trimming, and only 999 and 112 are emergency calls', () => {
+    expect(dial(withRecord('rejected'), ' 999 ')).toMatchObject({ action: 'emergency', emergency: { number: '999', presentNumber: '+442079460820' } });
+    for (const digits of ['9999', '0999', '1120', '911', '99', '*999', '999#']) {
+      expect({ digits, action: dial(baseSnapshot(), digits).action }).not.toEqual({ digits, action: 'emergency' });
+    }
+  });
+
   test('a rejected main number is still shown on an emergency call from an extension with no number of its own', () => {
     const s = withRecord('rejected', '+442079460801');
     s.numbers = s.numbers.filter((n) => n.extensionId !== 'x-100');
