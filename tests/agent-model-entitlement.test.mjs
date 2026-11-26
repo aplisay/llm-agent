@@ -11,6 +11,14 @@ process.env.GOOGLE_API_KEY ||= 'test-key';
 process.env.KIMI_KEY ||= 'test-key';
 process.env.OPENROUTER_KEY ||= 'test-key';
 
+// One test below lets a model call run and fail. This is Anthropic's answer to
+// a key it does not know, with no network. In place before the driver loads,
+// because the Anthropic client keeps the `fetch` it finds then.
+const fetchBefore = globalThis.fetch;
+globalThis.fetch = async (input, init) => (String(input?.url ?? input).startsWith('https://api.anthropic.com/')
+  ? Response.json({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }, { status: 401 })
+  : fetchBefore(input, init));
+
 const chatModule = (await import('../api/paths/agents/{agentId}/chat.js')).default;
 const invokeModule = (await import('../api/paths/agents/{agentId}/invoke.js')).default;
 const subagentModule = (await import('../api/paths/agent-db/subagent.js')).default;
@@ -58,6 +66,7 @@ afterAll(async () => {
   if (builderRow) await Agent.destroy({ where: { id: builderRow.id } });
   await Organisation.destroy({ where: { id: orgId } });
   await teardownRealDatabase();
+  globalThis.fetch = fetchBefore;
 });
 
 const MARKER = '[polite:agent-builder]';
