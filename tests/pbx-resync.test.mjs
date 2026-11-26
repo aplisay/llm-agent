@@ -72,6 +72,18 @@ describe('the phones call control is given', () => {
     return phones.filter((phone) => Object.values(orgs).includes(phone.organisationId));
   };
   const takeFor = (organisationId, options = {}) => resync.claimDueResyncs({ organisationId, log, ...options });
+  /**
+   * Wait until this process holds `count` claim requests open. A fixed sleep
+   * here was too short on a slow machine. The limit is under the shortest hold
+   * a test asks for, so a request cannot run out while the last one arrives.
+   */
+  const untilHeld = async (count) => {
+    const deadline = Date.now() + 4000;
+    while (resync.heldClaims() < count) {
+      if (Date.now() > deadline) throw new Error(`${resync.heldClaims()} of ${count} claim requests held after 4 s`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
   const team = async (name, number, members = [made.ada.id]) => {
     const { entry } = await ok(post('ownerA', '/directory/entries', { kind: 'team', name }), 201);
     await ok(post('ownerA', '/directory/extensions', { number, type: 'ring_all', entryId: entry.id, members }), 201);
@@ -297,8 +309,7 @@ describe('the phones call control is given', () => {
   test('a request held open is answered when a write on this process changes a phone', async () => {
     const started = Date.now();
     const pending = claim({ waitSeconds: 10 });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(resync.heldClaims()).toBeGreaterThanOrEqual(1);
+    await untilHeld(1);
     await team('Night desk', '204');
     expect(await pending).toMatchObject([{ deviceId: made.phone.device.id, attempt: 1 }]);
     expect(Date.now() - started).toBeLessThan(2000);
@@ -312,7 +323,7 @@ describe('the phones call control is given', () => {
 
     started = Date.now();
     const pending = claim({ waitSeconds: 10 });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await untilHeld(1);
     await bump(made.phone);
     expect(await pending).toMatchObject([{ deviceId: made.phone.device.id, attempt: 1 }]);
     expect(Date.now() - started).toBeLessThan(4000);
@@ -322,7 +333,7 @@ describe('the phones call control is given', () => {
   test('nothing is taken for a caller that has left', async () => {
     const leaving = request(api).post(CLAIM).set('x-callctl-token', TOKEN).send({ waitSeconds: 10 });
     leaving.end(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await untilHeld(1);
     leaving.abort();
     await new Promise((resolve) => setTimeout(resolve, 200));
     const version = await bump(made.phone);
@@ -335,12 +346,17 @@ describe('the phones call control is given', () => {
   });
 
   test('one process holds a few requests open, and answers one more at once', async () => {
-    const held = Array.from({ length: RESYNC_MAX_HELD }, () => claim({ waitSeconds: 2 }));
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(resync.heldClaims()).toBe(RESYNC_MAX_HELD);
-    const started = Date.now();
-    expect(await claim({ waitSeconds: 2 })).toEqual([]);
-    expect(Date.now() - started).toBeLessThan(1000);
+    const held = Array.from({ length: RESYNC_MAX_HELD }, () => claim({ waitSeconds: 5 }));
+    try {
+      await untilHeld(RESYNC_MAX_HELD);
+      const started = Date.now();
+      expect(await claim({ waitSeconds: 5 })).toEqual([]);
+      // Well under the 5 s it would be held for.
+      expect(Date.now() - started).toBeLessThan(2500);
+    } finally {
+      // A held request takes any phone that falls due. None may outlive this test.
+      await Promise.allSettled(held);
+    }
     expect((await Promise.all(held)).flat()).toEqual([]);
     expect(resync.heldClaims()).toBe(0);
   });

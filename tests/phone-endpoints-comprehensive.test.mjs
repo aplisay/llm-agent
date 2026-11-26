@@ -118,6 +118,11 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
   });
 
   afterEach(async () => {
+    // No simulation outlives its test. One left running has timers of up to
+    // five minutes, and a later test that speeds timers up would speed its too.
+    for (const sim of registrationSimulator?.getAllSimulations() ?? []) {
+      registrationSimulator.stopSimulation(sim.registrationId);
+    }
     try {
       const { PhoneRegistration, PhoneNumber, Organisation } = models;
       await PhoneRegistration.destroy({ where: { organisationId: testOrgId } });
@@ -2154,6 +2159,13 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
 
       global.clearTimeout = originalClearTimeout;
 
+      // Fix the order of the simulated states: "registering" at 3 s, then the final
+      // state at 10 s. Left random, the final state usually comes first, and
+      // "registering" can overwrite it between two polls below. The poll then never
+      // sees a final state and the test runs to its deadline and fails.
+      const originalRandomDelay = registrationSimulator.getRandomDelay;
+      registrationSimulator.getRandomDelay = (min, max) => (max === 10000 ? max : min);
+
       try {
         // Activate the registration to start the real simulation (but with fast timing)
         const req = createMockRequest({
@@ -2194,6 +2206,7 @@ describe('Phone Endpoints API - Comprehensive Coverage', () => {
         // Restore original setTimeout
         global.setTimeout = originalSetTimeout;
         global.clearTimeout = originalClearTimeout;
+        registrationSimulator.getRandomDelay = originalRandomDelay;
       }
     });
   });
