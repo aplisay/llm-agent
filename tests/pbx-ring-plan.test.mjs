@@ -561,7 +561,20 @@ describe('dialled digits', () => {
       phoneId: 'p-rob-desk',
       extensionId: 'x-100',
       extensionNumber: '100',
+      presentNumber: '+442079460820',
     });
+  });
+
+  test('every plan for a call from a line names the number the line shows', () => {
+    // An internal call, a call out, an emergency call, and a call that is refused.
+    for (const digits of ['200', '02079460999', '999', '12ab']) {
+      expect({ digits, shown: dial(baseSnapshot(), digits).from.presentNumber }).toEqual({ digits, shown: '+442079460820' });
+    }
+    const main = baseSnapshot();
+    main.numbers = main.numbers.filter((n) => n.extensionId !== 'x-100');
+    expect(dial(main, '200').from.presentNumber).toBe('+442079460801');
+    main.organisation.mainNumber = null;
+    expect(dial(main, '200').from.presentNumber).toBeNull();
   });
 
   test('a shared extension does not ring the phone the call comes from', () => {
@@ -613,6 +626,52 @@ describe('dialled digits', () => {
     const result = dial(baseSnapshot(), digits);
     expect(result.action).toBe('refuse');
     expect(result.reason).toBe('invalid_number');
+  });
+});
+
+describe('an emergency call and the state of the number\'s address record', () => {
+  const ROB_LINE = 'ln-p-rob-desk-1';
+  const STATES = ['not_entered', 'draft', 'invalid', 'submitted', 'accepted', 'rejected', 'carrier', 'mismatch'];
+  const withRecord = (state, number = '+442079460820') => {
+    const s = baseSnapshot();
+    s.numbers.find((n) => n.number === number).emergencyRecordState = state;
+    return s;
+  };
+  const dial = (snapshot, digits) => plan(snapshot, { kind: 'dialled', lineId: ROB_LINE, digits });
+
+  test.each(['999', '112'])('%s is placed with the line\'s number, whatever the state of its record', (digits) => {
+    const untouched = dial(baseSnapshot(), digits);
+    expect(untouched).toMatchObject({
+      action: 'emergency',
+      emergency: { number: digits, presentNumber: '+442079460820', addressState: 'not_entered' },
+      from: { lineId: ROB_LINE, presentNumber: '+442079460820' },
+    });
+    for (const state of STATES) {
+      // The whole plan, so nothing is taken away or added: only the state is reported.
+      expect(dial(withRecord(state), digits)).toEqual({ ...untouched, emergency: { ...untouched.emergency, addressState: state } });
+    }
+  });
+
+  test('a rejected main number is still shown on an emergency call from an extension with no number of its own', () => {
+    const s = withRecord('rejected', '+442079460801');
+    s.numbers = s.numbers.filter((n) => n.extensionId !== 'x-100');
+    expect(dial(s, '999')).toMatchObject({
+      action: 'emergency',
+      emergency: { number: '999', presentNumber: '+442079460801', addressState: 'rejected' },
+    });
+  });
+
+  test('a rejected record and no capability: still an emergency plan', () => {
+    const s = withRecord('rejected');
+    s.organisation.capabilities = [];
+    expect(dial(s, '999')).toMatchObject({ action: 'emergency', emergency: { presentNumber: '+442079460820', addressState: 'rejected' } });
+  });
+
+  test('the plan for a call out does not apply the rule: call control asks the outbound authorisation', () => {
+    expect(dial(withRecord('rejected'), '02079460999')).toMatchObject({
+      action: 'outside',
+      outside: { number: '+442079460999', presentNumber: '+442079460820' },
+    });
   });
 });
 
