@@ -12,7 +12,7 @@ import openapi from 'express-openapi';
 import request from 'supertest';
 import yaml from 'js-yaml';
 import {
-  setupRealDatabase, teardownRealDatabase, Organisation, User, PhoneNumber, AuthKey, Trunk,
+  setupRealDatabase, teardownRealDatabase, Organisation, User, PhoneNumber, AuthKey, Trunk, Agent, Instance,
 } from './setup/database-test-wrapper.js';
 
 const log = { info() {}, warn() {}, error() {}, debug() {}, child() { return this; } };
@@ -184,13 +184,15 @@ describe('emergency address records', () => {
       '../api/paths/agent-db/phone-endpoints.js',
       '../api/paths/agent-db/phone-numbers.js',
       '../api/paths/phone-endpoints.js',
+      '../api/paths/agents/{agentId}.js',
     ]) await import(file);
+    // `agents/*.js` is agents/{agentId}.js: braces in the glob would be read as a choice.
     await openapi.initialize({
       app,
       apiDoc: yaml.load(fs.readFileSync('./api/api-doc.yaml', 'utf8')),
       dependencies: { logger: log, voices: {}, wsServer: {} },
       paths: './api/paths',
-      routesGlob: '{emergency-records{.js,/**/*.js},agent-db/pbx/outbound-authorisation.js,agent-db/phone-endpoints.js,agent-db/phone-numbers.js,phone-endpoints.js}',
+      routesGlob: '{emergency-records{.js,/**/*.js},agent-db/pbx/outbound-authorisation.js,agent-db/phone-endpoints.js,agent-db/phone-numbers.js,phone-endpoints.js,agents/*.js}',
       promiseMode: true,
       errorMiddleware: (err, req, res, next) => res.status(err.status || 500).json(err),
     });
@@ -275,6 +277,40 @@ describe('emergency address records', () => {
       }
       // The service still reads it all.
       expect(await store.read(shown)).toMatchObject({ state: 'submitted', sent: SENT, mode: 'own', address: OWN_ADDRESS });
+    });
+
+    test('an agent sent with its listeners gives a listener\'s number without the record, and logs ids only', async () => {
+      const shown = await newNumber({ emergencyAddressMode: 'own', emergencyAddress: OWN_ADDRESS });
+      await store.update(await store.claim(await store.read(shown)), send());
+      await store.update(await store.read(shown), { state: 'rejected', code: 8, reason: 'Postcode not valid', checkedAt: AT });
+      const held = await store.claim(await store.read(shown));
+      const { userId } = await AuthKey.findOne({ where: { key: keys.owner } });
+      const agent = await Agent.create({
+        name: 'Front desk', description: 't', modelName: 'livekit:ultravox/ultravox-v0.7', prompt: 'You are a test agent.',
+        options: {}, functions: {}, keys: [], userId, organisationId: orgs.on,
+      });
+      const listener = await Instance.create({ agentId: agent.id, type: 'livekit', key: 'k', userId, organisationId: orgs.on });
+      await PhoneNumber.update({ instanceId: listener.id }, { where: { number: shown, aplisayId: CARRIER } });
+      const lines = [];
+      const info = log.info;
+      log.info = (...args) => { lines.push(args); };
+      try {
+        const sent = await callWith(keys.owner)(`/agents/${agent.id}`);
+        expect(sent.listeners.map((row) => row.id)).toEqual([listener.id]);
+        expect(sent.listeners[0].number).toMatchObject({ number: shown, handler: 'livekit', instanceId: listener.id });
+        expect(Object.keys(sent.listeners[0].number).sort())
+          .toEqual(['aplisayId', 'callReceived', 'createdAt', 'handler', 'instanceId', 'number', 'outbound', 'provisioned']);
+        const fetched = lines.filter((args) => args.includes('Agent fetched'));
+        expect(fetched).toEqual([[{ id: agent.id, listeners: [listener.id] }, 'Agent fetched']]);
+        for (const text of [JSON.stringify(sent), JSON.stringify(fetched)]) {
+          for (const part of [held.version, SENT.thoroughfare, OWN_ADDRESS.thoroughfare, 'Postcode not valid']) expect(text).not.toContain(part);
+        }
+      } finally {
+        log.info = info;
+        await Agent.destroy({ where: { id: agent.id } });
+      }
+      // The service still reads it all.
+      expect(await store.read(shown)).toMatchObject({ state: 'rejected', reason: 'Postcode not valid', mode: 'own', address: OWN_ADDRESS });
     });
 
     test('the service key opens nothing else', async () => {

@@ -61,7 +61,7 @@ It prints the key once. Give it to the sending service and store it nowhere else
 
 The service has one key. A second run of the script stops and changes nothing. To replace the key, run it with `--rotate`: it prints a new key and deletes the old one, which stops working at once.
 
-No other route gives a record. The internal routes that send a whole number row to the workers leave it out.
+No other route gives a record. The internal routes that send a whole number row to the workers leave it out, and so does an agent read with its listeners' numbers.
 
 ## The routes
 
