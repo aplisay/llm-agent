@@ -73,11 +73,11 @@ A page of records, in number order: `{ "items": [...], "next": "<number>" }`. `n
 
 - `states` is a list of states separated by commas. With none, every state.
 - Paging is by number, not by offset: pass the `next` of one page as the `after` of the following one. Rows change state while a caller pages through them, and an offset would then skip or repeat one. `after` is empty for the first page.
-- `limit` is from 1 to 500. The default is 200.
+- `limit` is a whole number from 1 to 500. The default is 200.
 
 ### `GET /emergency-records/{number}`
 
-One record as it is now. 404 when the number has no record here. A leading `+` on the number is accepted.
+One record as it is now. 404 when the number has no record here. A leading `+` on the number is accepted. On this route and the two below, 400 when the number is not digits.
 
 ### `POST /emergency-records/{number}/claim`
 
@@ -94,7 +94,7 @@ Body: `{ "expect": { "organisationId": "...", "version": "..." }, ...fields }`. 
 | Status | When |
 |---|---|
 | 200 | Written |
-| 400 | A field has the wrong form, or is not one the key may write |
+| 400 | A field has the wrong form, or is not one the key may write, or the number is not digits |
 | 404 | The number has no record here |
 | 409 | The record is not as `expect` says: `changed`, `organisation_changed`, or `claimed` when another send holds the number |
 | 422 | The key may not make this change of state: `move_not_allowed` or `state_required` |

@@ -439,7 +439,7 @@ describe('emergency address records', () => {
 
     test('refuses a state it does not know and a page size out of range', async () => {
       await expect(service('/emergency-records?states=submitted,approved')).rejects.toEqual(refusedWith(400));
-      for (const limit of ['0', '501', 'many']) {
+      for (const limit of ['0', '501', 'many', '1.5', '1e2']) {
         await expect(service(`/emergency-records?states=submitted&limit=${limit}`)).rejects.toEqual(refusedWith(400));
       }
     });
@@ -456,10 +456,26 @@ describe('emergency address records', () => {
     test('404, read as "no longer in scope", for a number with no record here', async () => {
       const offTrunk = await newNumber({ aplisayId: OWN_TRUNK });
       const noPhoneSystem = await newNumber({ organisationId: orgs.off });
-      for (const number of [offTrunk, noPhoneSystem, `${PREFIX}999`, 'not-a-number']) {
+      for (const number of [offTrunk, noPhoneSystem, `${PREFIX}999`]) {
         await expect(service(`/emergency-records/${encodeURIComponent(number)}`)).rejects.toEqual(refusedWith(404, 'not_found'));
         expect(await store.read(number)).toBeNull();
       }
+    });
+  });
+
+  describe('a number that is not digits', () => {
+    test('400 on a read, a claim and a write, where digits with no record get 404', async () => {
+      const expected = { organisationId: orgs.on, version: 'x' };
+      for (const number of ['not-a-number', '44 20 7946 0000', '+44-20-7946-0000', '4420x']) {
+        const path = `/emergency-records/${encodeURIComponent(number)}`;
+        const refused = expect.objectContaining({ status: 400, code: 'invalid_request', body: expect.objectContaining({ field: 'number' }) });
+        await expect(service(path)).rejects.toEqual(refused);
+        await expect(service(`${path}/claim`, { method: 'POST', body: { expect: expected } })).rejects.toEqual(refused);
+        await expect(service(path, { method: 'PUT', body: { expect: expected, error: 'x', errorAt: AT } })).rejects.toEqual(refused);
+      }
+      // Spaces around the digits are not part of the number.
+      const number = await newNumber();
+      expect(await service(`/emergency-records/${encodeURIComponent(` +${number} `)}`)).toMatchObject({ number });
     });
   });
 

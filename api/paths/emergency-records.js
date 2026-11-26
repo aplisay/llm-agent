@@ -13,11 +13,13 @@ export default function (logger) {
   const list = async (req, res) => {
     if (!requireEmergencyService(res, 'read')) return;
     try {
-      const { states, after, limit } = req.query || {};
+      const { states, after } = req.query || {};
+      // As it was sent: the query parser rounds a fraction down before this runs.
+      const limit = new URL(req.originalUrl, 'http://localhost').searchParams.get('limit');
       res.send(await listRecords({
         states: typeof states === 'string' && states ? states.split(',').map((state) => state.trim()).filter(Boolean) : undefined,
         after: typeof after === 'string' ? after : '',
-        limit: limit === undefined || limit === '' ? DEFAULT_PAGE : Number(limit),
+        limit: limit === null || limit === '' ? DEFAULT_PAGE : (/^\d+$/.test(limit) ? Number(limit) : NaN),
       }));
     } catch (err) {
       sendEmergencyRecordError(res, err, logger, 'error listing emergency records');
