@@ -153,6 +153,7 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `POST /agent-db/pbx/calls` | Record a call, or an answered leg of one (`parentId`). The caller chooses the id, so a write sent twice is one row |
 | `POST /agent-db/pbx/calls/{callId}/events` | Things that happened on a call and are not rows of their own, such as a phone that rang and was not answered. An outside leg that was not answered or not dialled gives back its place in the organisation's calls in progress ([outbound call authorisation](outbound-call-authorisation.md#the-organisations-outbound-policy)) |
 | `POST /agent-db/pbx/calls/{callId}/end` | The call or leg has ended. It writes the call's usage. The call's own end may carry `recordedMs`, and any end `transcribedMs` ([billing](billing-calls-from-usage.md#the-phone-system)) |
+| `PUT /agent-db/pbx/calls/{callId}/recording` | The call's recording is finished and in the recording store. See [the recording of a call](#the-recording-of-a-call) |
 | `POST /agent-db/pbx/resync/claim` | Which desk phones should be told to fetch their settings? The request may be held open. See [phone provisioning](phone-provisioning.md#telling-a-phone-that-its-settings-changed) |
 
 `resolve` always answers 200 with a plan for a request it could decide. `action` is one of:
@@ -202,6 +203,23 @@ The four refusals below carry no `organisationId`. Call control records a refuse
 | `registration_not_routed` | No agent listens on the registration, or on the number called on it |
 
 A phone system call is one `calls` row with no agent, model name `telephony:pbx-call` and platform `pbx`. Every call and answered leg writes usage when it ends: a leg out to an outside number is charged, and the rest is written at nothing. Each extension but a `connection` has a monthly charge. See [billing](billing-calls-from-usage.md#the-phone-system).
+
+### The recording of a call
+
+Call control records a call with no agent, and its finishing command encodes, encrypts and uploads the file in the format of [`lib/recording/CONTRACT.md`](../lib/recording/CONTRACT.md). It then sends `PUT /agent-db/pbx/calls/{callId}/recording` with `{ organisationId, recordingId, encryptionKey }`. `recordingId` is the object's name in the recording store and must contain the call id. `encryptionKey` is the object's 32 byte key in base64. From then on `GET /calls/{callId}/recording` plays the file to whoever [sees the call](#who-sees-calls) and may download recordings.
+
+The sender deletes its file on any 4xx answer and keeps it on a 5xx or no answer. So the route checks and stores in one statement, and answers like this:
+
+| Answer | When | Stored |
+|---|---|---|
+| 200 `{ callId, recordingId }` | The call had no recording. Also when it holds this same name already, so a request sent twice is safe | Yes |
+| 409 `{ error, code: "recording_exists", recordingId }` | The call holds another file. `recordingId` is the name it holds | No |
+| 404 `not_found` | No such call, another organisation's call, a leg, an agent's call, or a call that was deleted | No |
+| 400 `bad_request` | The body or the call id is not as above | No |
+| 403 | The token check, before the route | No |
+| 5xx | The write failed, or its result is not known | Not known |
+
+A call takes one recording. Only the call itself takes it, never a leg. The route does not check that the name is under this server's `RECORDING_STORAGE_PATH`: the finishing command must write to the same store.
 
 ## Who sees calls
 
