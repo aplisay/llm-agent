@@ -47,8 +47,8 @@ CMD [ "yarn", "test" ]
 #   docker build --secret id=SECRETENV_BUNDLE,env=SECRETENV_BUNDLE \
 #                --secret id=SECRETENV_KEY,env=SECRETENV_KEY \
 #                --build-arg BUILD_ID=<new for each build> ...
-# A build arg is copied into the build output and into the image history. A
-# secret is in neither. It needs BuildKit (DOCKER_BUILDKIT=1 on older Docker).
+# The `npx secretenv` step reads them from secret mounts under /run/secrets.
+# Secret mounts need BuildKit (DOCKER_BUILDKIT=1 on older Docker).
 #
 # `npx secretenv` runs AFTER `COPY . .` so the credentials it writes are
 # rebuilt on every commit. credentials/ is gitignored, so the COPY cannot

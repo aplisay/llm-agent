@@ -50,8 +50,8 @@ services:
       LOGLEVEL: fatal
     networks:
       - test-network
-    # `$$` is a literal `$` for the shell in the container. With a single `$`
-    # compose would paste the bundle into the command line.
+    # `$$` is a literal `$` for the shell in the container, which reads the
+    # variable itself.
     command: >
       sh -c "
         echo '🚀 Starting all tests...' && \
