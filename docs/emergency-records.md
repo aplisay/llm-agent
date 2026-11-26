@@ -163,7 +163,9 @@ The rule is in the [outbound authorisation](outbound-call-authorisation.md), for
 - For a mobile that is rung for a call in, call control names the extension's own number, which the leg shows if the carrier refuses the caller's. So such a leg is stopped too.
 - Calls that an agent places or transfers are not covered: the workers do not name the number they show.
 
-**Emergency calls are never stopped.** A call to 999 or 112 from a line always gets a plan with `action: "emergency"` and the number the line shows, whatever the state of that number's record, and even when the organisation's phone system is switched off. Call control places it without asking the outbound authorisation, and the rule gives no answer for 999 or 112 if it is ever asked. The plan reports the record's state in `emergency.addressState`, for the call record.
+**This rule never stops an emergency call.** A call to 999 or 112 from a line the platform knows gets a plan with `action: "emergency"` and the number the line shows, whatever the state of that number's record, and even when the organisation's phone system is switched off. Call control places the call from that plan, and does not ask the outbound authorisation. The plan reports the record's state in `emergency.addressState`, for the call record.
+
+The outbound authorisation is not a way to place an emergency call. Asked about 999 or 112, it answers as it did before this rule: on a platform trunk it refuses the destination with `invalid_destination`. This rule is not applied to those two numbers, so `emergency_record_rejected` is never the answer for them.
 
 ## The database upgrade
 

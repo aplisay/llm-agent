@@ -884,6 +884,19 @@ describe('emergency address records', () => {
         const withRejected = await decide({ calledId, presentNumber: `+${rejected}` });
         expect({ calledId, decision: withRejected }).toEqual({ calledId, decision: untouched });
         expect(withRejected.code).not.toBe('emergency_record_rejected');
+        expect(withRejected.allowed).toBe(false);
+      }
+      // The authorisation is not how an emergency call is placed. On a platform trunk it refuses the destination, as it did before the rule.
+      const platform = `emergency-platform-${tag}`;
+      await Trunk.create({ id: platform, name: 'A platform trunk', outbound: true, chargeable: true });
+      try {
+        for (const calledId of ['999', '112']) {
+          expect(await decide({ calledId, aplisayId: platform, presentNumber: `+${rejected}` })).toMatchObject({ allowed: false, code: 'invalid_destination' });
+        }
+        // An ordinary call on that trunk that shows the rejected number is stopped by the rule.
+        expect(await decide({ aplisayId: platform, presentNumber: `+${rejected}` })).toMatchObject({ allowed: false, code: 'emergency_record_rejected' });
+      } finally {
+        await Trunk.destroy({ where: { id: platform } });
       }
     });
 

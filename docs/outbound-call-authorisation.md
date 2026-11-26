@@ -170,7 +170,7 @@ deploy.
 
 One rule comes before both cases above. A caller may say which number a leg will show (`presentNumber`). If that number is one of the organisation's own and the state of its [emergency address record](emergency-records.md) is `rejected`, the leg is refused with `emergency_record_rejected`, on any trunk. Calls go again as soon as the record is sent again.
 
-Call control names the number on every outside leg of a phone system call. The workers do not, so an agent's calls are not covered. The rule never answers for 999 or 112: call control places those without asking, and they must never be refused here.
+Call control names the number on every outside leg of a phone system call. The workers do not, so an agent's calls are not covered. The rule is not applied to 999 or 112, so it is never the reason one is refused. Call control places those calls from the plan, without asking here. Asked about one all the same, the authorisation answers as it does without this rule: on a platform trunk it refuses the destination with `invalid_destination`.
 
 ## Narrowings
 
