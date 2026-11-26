@@ -879,23 +879,21 @@ describe('a deactivated organisation', () => {
   };
   const out = { kind: 'dialled', lineId: ROB_LINE, digits: '02079460999' };
 
-  test('its lines cannot call out', () => {
-    expect(plan(withStatus('deactivated'), out)).toMatchObject({
-      action: 'refuse', reason: 'organisation_deactivated', organisationId: 'org-1', caller: { internal: true }, from: { lineId: ROB_LINE },
-    });
+  test('its phones take no calls: out, between extensions, in, or to one line', () => {
+    const s = withStatus('deactivated');
+    const refused = { action: 'refuse', reason: 'organisation_deactivated', organisationId: 'org-1' };
+    expect(plan(s, out)).toMatchObject(refused);
+    expect(plan(s, { kind: 'dialled', lineId: ROB_LINE, digits: '101' })).toMatchObject(refused);
+    expect(plan(s, toExtension('x-100'))).toMatchObject(refused);
+    expect(plan(s, { kind: 'line', lineNumber: 1, callerId: CALLER })).toMatchObject(refused);
   });
 
   test.each(['999', '112'])('%s still goes out', (digits) => {
     expect(plan(withStatus('deactivated'), { kind: 'dialled', lineId: ROB_LINE, digits }).action).toBe('emergency');
   });
 
-  test('calls between extensions and calls in still ring', () => {
-    const s = withStatus('deactivated');
-    expect(plan(s, { kind: 'dialled', lineId: ROB_LINE, digits: '101' }).action).toBe('ring');
-    expect(plan(s, toExtension('x-100')).action).toBe('ring');
-  });
-
-  test.each(['active', 'suspended', 'provisional', undefined])('a line of an organisation with status %s calls out', (status) => {
+  test.each(['active', 'suspended', 'provisional', undefined])('the phones of an organisation with status %s take calls', (status) => {
     expect(plan(withStatus(status), out).action).toBe('outside');
+    expect(plan(withStatus(status), toExtension('x-100')).action).toBe('ring');
   });
 });

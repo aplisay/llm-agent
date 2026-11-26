@@ -173,7 +173,7 @@ A phone never rings for a call it places. When a line dials an extension that it
 
 ### A deactivated organisation
 
-When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its lines cannot call outside numbers: `resolve` refuses the call with `organisation_deactivated`. 999 and 112 still go out. Calls between extensions and calls in still ring.
+When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its phones take no calls. `resolve` refuses every request for it with `organisation_deactivated`: calls out, calls between extensions, calls in to its numbers, and the follow-ups about a call in progress. 999 and 112 still go out. `rings-now` shows that calls are not put through.
 
 Only `deactivated` does this. A `suspended` or `provisional` organisation's phones work as before.
 

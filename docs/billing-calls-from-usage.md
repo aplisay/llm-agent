@@ -531,7 +531,7 @@ extension its own price.
 - **In advance.** An extension removed during a month is not refunded, and one
   created and removed between two runs is not charged.
 - **Organisation status.** A deactivated organisation (`status`
-  `deactivated`) is not charged, and its lines cannot call out except to 999
+  `deactivated`) is not charged, and its phones take no calls except to 999
   and 112 ([the phone system](phone-system.md#a-deactivated-organisation)). A
   suspended one is charged as usual. A month charged before the organisation
   is deactivated keeps its charge. If it is made active again, the month it
