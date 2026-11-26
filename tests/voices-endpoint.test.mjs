@@ -66,6 +66,26 @@ describe('Voices Endpoint Test', () => {
     return res;
   };
 
+  test('lists each runtime with the voices its vendors answer', async () => {
+    const res = createMockResponse();
+    await voicesList(createMockRequest(), res);
+    const names = (voices) => voices.map((voice) => voice.name);
+
+    expect(Object.keys(res._body).sort()).toEqual(['jambonz', 'livekit', 'pipecat', 'ultravox']);
+    // Jambonz: the vendors whose credential passed its TTS test (the `aws` one has not).
+    expect(Object.keys(res._body.jambonz).sort()).toEqual(['deepgram', 'elevenlabs', 'google']);
+    expect(names(res._body.jambonz.google['en-GB'])).toEqual(['en-GB-Wavenet-A', 'en-GB-Wavenet-B']);
+    // A voice is listed under the locale its accent maps to, by its id.
+    expect(names(res._body.jambonz.elevenlabs['en-GB'])).toEqual(['el-made-up-brit-0001', 'el-made-up-york-0004']);
+    expect(names(res._body.ultravox.ultravox.any)).toEqual(expect.arrayContaining(['Ciara', 'Made-up clone']));
+    for (const handler of ['livekit', 'pipecat']) {
+      expect(names(res._body[handler].xAI.any)).toContain('liora');
+      expect(names(res._body[handler].elevenlabs['en-AU'])).toEqual(['el-made-up-aust-0003']);
+      expect(names(res._body[handler].OpenAI.any)).toContain('alloy');
+    }
+    expect(names(res._body.livekit.ultravox.any)).toContain('Ciara');
+  });
+
   test('should return list of available voices', async () => {
 
     const req = createMockRequest();
@@ -73,25 +93,14 @@ describe('Voices Endpoint Test', () => {
 
     await voicesList(req, res);
 
-    if (res._status !== 200 || res._status === null) {
-      // Sometimes some of our upstreams ratelimit enumerating voices so this request throws a 422 or 429
-      // the rel implementation retries so we mirror this
-      await voicesList(req, res);
-    }
-
     // Should return 200 status (or null if not explicitly set)
     expect(res._status === 200 || res._status === null).toBe(true);
     expect(res._body).toBeDefined();
     expect(typeof res._body).toBe('object');
 
-    // Should contain voice information organized by handler/provider/language.
-    // Per-provider voice lists are fetched from live upstreams (e.g. ElevenLabs),
-    // and an upstream that is rate-limited or unreachable resolves to an empty
-    // branch for that provider while the endpoint still returns 200 with the
-    // providers that did respond. So we validate the shape of whatever IS present
-    // and assert the AGGREGATE is non-empty, rather than asserting every provider
-    // branch is non-empty (which makes the test flaky on transient upstream
-    // failures — see CI where ElevenLabs returns {} but Google/Deepgram do not).
+    // Voice information organised by handler/provider/language. The vendor
+    // catalogues are stand-ins (tests/setup/vendor-stand-ins.js), so the lists
+    // are the same on every run. The first test above pins what is in them.
     const voiceEntries = Object.entries(res._body);
     expect(voiceEntries.length).toBeGreaterThan(0);
 
@@ -102,8 +111,7 @@ describe('Voices Endpoint Test', () => {
       expect(providerVoices).toBeDefined();
       expect(typeof providerVoices).toBe('object');
 
-      // Validate provider structure (handler/provider/language), tolerating
-      // empty branches from upstreams that did not respond this run.
+      // Validate provider structure (handler/provider/language).
       for (const [providerType, languageVoices] of Object.entries(providerVoices)) {
 
         expect(languageVoices).toBeDefined();
@@ -134,9 +142,6 @@ describe('Voices Endpoint Test', () => {
       }
     }
 
-    // At least one upstream must have returned voices. A single provider being
-    // transiently unavailable is tolerated above, but a completely empty result
-    // is a real regression and still fails here.
     expect(totalVoices).toBeGreaterThan(0);
 
   });
