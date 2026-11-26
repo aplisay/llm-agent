@@ -346,7 +346,11 @@ describe('emergency address records', () => {
 
     test('a number on two of the carrier\'s trunks is one record: the row made first', async () => {
       const number = await newNumber();
-      await PhoneNumber.create({ number, handler: 'livekit', organisationId: orgs.second, aplisayId: CARRIER_2 });
+      const later = await PhoneNumber.create({ number, handler: 'livekit', organisationId: orgs.second, aplisayId: CARRIER_2 });
+      // The two rows can be made in the same millisecond. Put the second one clearly after the first.
+      await PhoneNumber.sequelize.query(
+        `UPDATE phone_numbers SET created_at = created_at + interval '1 second' WHERE id = :id`, { replacements: { id: later.id } },
+      );
       const listed = (await store.list(ALL)).filter((row) => row.number === number);
       expect(listed).toHaveLength(1);
       expect(listed[0].organisationId).toBe(orgs.on);
