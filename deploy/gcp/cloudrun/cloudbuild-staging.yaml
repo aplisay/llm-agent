@@ -15,6 +15,10 @@
 # The first build after this config lands is a full miss: the current :staging
 # image was built with --no-cache and carries no cache metadata. It seeds the
 # cache for the next one.
+#
+# Settings. The Test step gives the bundle and key to the test container when
+# it runs (docker-compose.ci.yml). The Build step passes them as build secrets.
+# Neither step passes them as build args.
 steps:
   - name: gcr.io/cloud-builders/docker
     id: Test
@@ -55,10 +59,16 @@ steps:
         $_AR_HOSTNAME/$PROJECT_ID/containers/$REPO_NAME/$_SERVICE_NAME:staging
       - '--build-arg'
       - BUILDKIT_INLINE_CACHE=1
+      # Build secrets, read from this step's environment (secretEnv below).
+      # Not build args: see the runtime stage of the Dockerfile.
+      - '--secret'
+      - id=SECRETENV_BUNDLE,env=SECRETENV_BUNDLE
+      - '--secret'
+      - id=SECRETENV_KEY,env=SECRETENV_KEY
+      # The Dockerfile needs a new BUILD_ID with the secrets, so the cached
+      # credentials layer is never reused.
       - '--build-arg'
-      - SECRETENV_BUNDLE
-      - '--build-arg'
-      - SECRETENV_KEY
+      - BUILD_ID=$BUILD_ID
       - '--build-arg'
       - COMMIT_SHA=$COMMIT_SHA
       - '--build-arg'

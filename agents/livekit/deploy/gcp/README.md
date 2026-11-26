@@ -207,11 +207,12 @@ RUN npx secretenv -r GOOGLE_CREDENTIAL > credentials/google.json   # removed
 which left a live service-account private key in the layer of a *pushed* image
 — readable by anyone who could pull it, and outliving every key rotation.
 
-The objection is retention, not materialisation. Decrypting secrets during a
-build is fine and sometimes necessary: the `test` target of `Dockerfile` does
-exactly that so the CI suite can reach the external LLM providers (Google
-included), and that image is a throwaway the `Test` step in
-`cloudbuild-staging.yaml` builds, runs and discards without ever pushing it. What must not happen is a published
+The objection is retention, not materialisation. Decrypting secrets in CI is
+fine and sometimes necessary: the CI test container (the `test` target of
+`Dockerfile`) is given the bundle when it runs, so the suite can reach the
+external LLM providers (Google included). That image holds no settings, and the
+`Test` step in `cloudbuild-staging.yaml` builds, runs and discards it without
+ever pushing it. What must not happen is a published
 artefact carrying the key. Worth knowing if you fix one of the others: removing
 the file in a later `RUN` does **not** achieve that — the layer that created it
 still holds it, so it takes a same-layer `rm` or a multi-stage copy.
