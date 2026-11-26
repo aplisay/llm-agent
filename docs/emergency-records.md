@@ -59,6 +59,8 @@ node scripts/provision-emergency-service.mjs -p /path/to/your.env
 
 It prints the key once. Give it to the sending service and store it nowhere else. The key opens nothing but these four routes. A platform operator cannot give the role or its permission to a user through the API.
 
+No other route gives a record. The internal routes that send a whole number row to the workers leave it out.
+
 ## The routes
 
 All four answer 503 `emergency_records_not_ready` until the database has had the schema 81 upgrade (see the end of this page).
