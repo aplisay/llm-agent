@@ -7,6 +7,10 @@
  *
  *   node scripts/provision-emergency-service.mjs                       # repo-root .env
  *   node scripts/provision-emergency-service.mjs -p /path/to/staging.env  # per environment
+ *   node scripts/provision-emergency-service.mjs --rotate               # replace the key
+ *
+ * The service has one key. A second run stops unless it is given --rotate,
+ * which makes a new key and deletes the old one: the old key stops working at once.
  *
  * Self-contained like the other provision-*-service scripts: it talks to
  * Postgres directly and does not import the app's database module. Optional
@@ -23,6 +27,7 @@ loadEnv();
 
 const EMAIL = process.env.EMERGENCY_SERVICE_EMAIL || 'emergency-service@aplisay.internal';
 const KEY = process.env.EMERGENCY_SERVICE_KEY || `esvc_${randomBytes(24).toString('hex')}`;
+const ROTATE = process.argv.includes('--rotate');
 
 const client = new pg.Client({
   host: process.env.POSTGRES_HOST,
@@ -52,6 +57,10 @@ async function main() {
   let userId;
   if (found.rows.length) {
     userId = found.rows[0].id;
+    const others = await client.query('SELECT count(*)::int AS n FROM auth_keys WHERE user_id = $1 AND key <> $2', [userId, KEY]);
+    if (others.rows[0].n && !ROTATE) {
+      throw new Error('this service has a key already. Run again with --rotate to replace it: the old key stops working at once');
+    }
     await client.query(`UPDATE users SET role = 'emergencyService', status = 'active', organisation_id = NULL, updated_at = now() WHERE id = $1`, [userId]);
     console.log(`reusing emergencyService user ${userId} (${EMAIL})`);
   } else {
@@ -71,6 +80,9 @@ async function main() {
      ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, role_restriction = EXCLUDED.role_restriction, expires = EXCLUDED.expires, updated_at = now()`,
     [KEY, userId, JSON.stringify('emergencyService'), new Date('2099-01-01T00:00:00Z')],
   );
+
+  const old = await client.query('DELETE FROM auth_keys WHERE user_id = $1 AND key <> $2', [userId, KEY]);
+  if (old.rowCount) console.log(`deleted ${old.rowCount} earlier key(s) of this service`);
 
   console.log('\n--- the emergency service key (do NOT commit) ---');
   console.log(`EMERGENCY_SERVICE_KEY=${KEY}`);

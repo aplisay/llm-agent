@@ -59,6 +59,8 @@ node scripts/provision-emergency-service.mjs -p /path/to/your.env
 
 It prints the key once. Give it to the sending service and store it nowhere else. The key opens nothing but these four routes. A platform operator cannot give the role or its permission to a user through the API.
 
+The service has one key. A second run of the script stops and changes nothing. To replace the key, run it with `--rotate`: it prints a new key and deletes the old one, which stops working at once.
+
 No other route gives a record. The internal routes that send a whole number row to the workers leave it out.
 
 ## The routes
