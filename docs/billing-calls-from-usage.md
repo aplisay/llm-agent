@@ -531,12 +531,13 @@ extension its own price.
 - **In advance.** An extension removed during a month is not refunded, and one
   created and removed between two runs is not charged.
 - **Organisation status.** A deactivated organisation (`status`
-  `deactivated`) is not charged. A suspended one is charged as usual. A month
-  charged before the organisation is deactivated keeps its charge. If it is
-  made active again, the month it comes back in is charged like any other
-  month: from the first, or from the day the extension was created, and
-  nothing more if that month was already charged. The day it came back is not
-  recorded, so it is not used.
+  `deactivated`) is not charged, and its lines cannot call out except to 999
+  and 112 ([the phone system](phone-system.md#a-deactivated-organisation)). A
+  suspended one is charged as usual. A month charged before the organisation
+  is deactivated keeps its charge. If it is made active again, the month it
+  comes back in is charged like any other month: from the first, or from the
+  day the extension was created, and nothing more if that month was already
+  charged. The day it came back is not recorded, so it is not used.
 - **In a write.** A directory write shows the charges it starts and stops in
   its effect (`effect.charges`), also in a dry run. Each start quotes what the
   job will charge this month, from the same day and on the same card, and

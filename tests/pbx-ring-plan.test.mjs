@@ -869,3 +869,33 @@ describe('an unpaid monthly charge', () => {
     expect(plan(empty, toExtension('x-100')).action).not.toBe('refuse');
   });
 });
+
+describe('a deactivated organisation', () => {
+  const ROB_LINE = 'ln-p-rob-desk-1';
+  const withStatus = (status) => {
+    const s = baseSnapshot();
+    s.organisation.status = status;
+    return s;
+  };
+  const out = { kind: 'dialled', lineId: ROB_LINE, digits: '02079460999' };
+
+  test('its lines cannot call out', () => {
+    expect(plan(withStatus('deactivated'), out)).toMatchObject({
+      action: 'refuse', reason: 'organisation_deactivated', organisationId: 'org-1', caller: { internal: true }, from: { lineId: ROB_LINE },
+    });
+  });
+
+  test.each(['999', '112'])('%s still goes out', (digits) => {
+    expect(plan(withStatus('deactivated'), { kind: 'dialled', lineId: ROB_LINE, digits }).action).toBe('emergency');
+  });
+
+  test('calls between extensions and calls in still ring', () => {
+    const s = withStatus('deactivated');
+    expect(plan(s, { kind: 'dialled', lineId: ROB_LINE, digits: '101' }).action).toBe('ring');
+    expect(plan(s, toExtension('x-100')).action).toBe('ring');
+  });
+
+  test.each(['active', 'suspended', 'provisional', undefined])('a line of an organisation with status %s calls out', (status) => {
+    expect(plan(withStatus(status), out).action).toBe('outside');
+  });
+});

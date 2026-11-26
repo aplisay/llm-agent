@@ -798,6 +798,25 @@ describe('phone system directory API', () => {
       expect((await ok(get('ownerA', '/directory/entries'))).entries.length).toBeGreaterThan(3);
       await ok(put('operator', `/organisations/${orgs.a}/capabilities`, { capabilities: ['phoneSystem'] }));
     });
+
+    test('a deactivated organisation\'s lines cannot call out, and 999 and 112 still go out', async () => {
+      const fromSales = await usernameOf(lineOn(made.robDesk, '200'));
+      const fromRob = await usernameOf(lineOn(made.robDesk, '100'));
+      await ok(del('operator', `/organisations/${orgs.a}`));
+      try {
+        expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' }))
+          .toMatchObject({ action: 'refuse', reason: 'organisation_deactivated', organisationId: orgs.a });
+        for (const digits of ['999', '112']) {
+          expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits })).toMatchObject({ action: 'emergency', emergency: { number: digits } });
+        }
+        expect((await resolve({ kind: 'dialled', fromEndpoint: fromRob, digits: '101' })).action).toBe('ring');
+        expect((await resolve({ kind: 'number', calledNumber: ddi(3), trunkId: TRUNK, callerId: '+447700900123' })).action).toBe('ring');
+        await ok(patch('operator', `/organisations/${orgs.a}`, { status: 'suspended' }));
+        expect(await resolve({ kind: 'dialled', fromEndpoint: fromSales, digits: '02079460999' })).toMatchObject({ action: 'outside' });
+      } finally {
+        await ok(patch('operator', `/organisations/${orgs.a}`, { status: 'active' }));
+      }
+    });
   });
 
   describe('call records', () => {

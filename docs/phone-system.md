@@ -165,11 +165,19 @@ These are under `/api/agent-db/pbx`. They take `x-callctl-token` only. The worke
 | `connection` | Send the digits to the organisation's own phone system |
 | `agent` | Hand the call to an agent. `agent` names it: `instanceId`, `agentId` and `runtime`. Today only for a call that goes straight to an agent (see below). An agent as an extension, or as a destination of one, is a later release |
 | `forward` | Later releases |
-| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, or `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out) |
+| `refuse` | The call cannot be routed. `reason` says why, for example `number_not_routed`, `phone_system_disabled`, `charge_unpaid` (a monthly charge unpaid for 30 days; emergency calls still go out), or `organisation_deactivated` (see below) |
 
 The plan applies what the directory knows: members, phones, lines, do-not-ring rules, and that an outside number rings only for its own person's own extension. It does not know whether a phone is busy or connected. Call control filters the legs by that.
 
 A phone never rings for a call it places. When a line dials an extension that its own phone rings for, such as a team its user belongs to, the plan leaves that phone out and lists it in `skipped` with the reason `caller_phone`. The user's other phones still ring.
+
+### A deactivated organisation
+
+When an organisation is deactivated (`DELETE /organisations/{id}`, or `status` set to `deactivated`), its lines cannot call outside numbers: `resolve` refuses the call with `organisation_deactivated`. 999 and 112 still go out. Calls between extensions and calls in still ring.
+
+Only `deactivated` does this. A `suspended` or `provisional` organisation's phones work as before.
+
+The lines stay registered and the phones still fetch their settings, so an emergency call can still be made. Call control answers a refused call with SIP 480, as it does for `charge_unpaid`. It records the call, at no charge.
 
 ### A call that belongs to an agent
 
