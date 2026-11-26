@@ -1,0 +1,20 @@
+# Port 443 of the public name, straight to the service's own TLS port. A
+# target makes this a load balancer that passes TCP through (see do-staging).
+# Never put a balancer or proxy that ends TLS in front of it: the phone's
+# certificate would stop there.
+apiVersion: v1
+kind: Service
+metadata:
+  name: provisioning
+  namespace: llm-agent
+  labels:
+    app.kubernetes.io/name: provisioning
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: provisioning
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP

@@ -1,0 +1,23 @@
+# The certificate of the staging provisioning name, RSA 2048, Let's Encrypt
+# by DNS-01. The name is a DigitalOcean zone of its own, so the issuer's
+# DigitalOcean solver must list it before this is applied (../README.md).
+# Until then cert-manager asks, fails and keeps failing.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: provisioning-tls
+  namespace: llm-agent
+spec:
+  secretName: provisioning-tls
+  issuerRef:
+    name: letsencrypt-dns
+    kind: ClusterIssuer
+  commonName: prov-staging.aplisay.net
+  dnsNames:
+    - prov-staging.aplisay.net
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  duration: 2160h
+  renewBefore: 720h
